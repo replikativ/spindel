@@ -1,0 +1,22 @@
+;; shadow-cljs configuration for spindel CLJS support
+;; Uses deps.edn for dependency resolution (local deps work correctly)
+{:deps {:aliases [:cljs]}  ; Use deps.edn with :cljs alias
+
+ :builds
+ {:test
+  {:target :node-test
+   :output-to "target/test.js"
+   :ns-regexp "-test$"
+   :autorun true
+   :compiler-options {:optimizations :none}}
+
+  :lib
+  {:target :node-library
+   :output-to "target/spindel.js"
+   :exports {:default is.simm.spindel.core}}
+
+  :browser-test
+  {:target :browser-test
+   :test-dir "target/browser-test"
+   :ns-regexp "-test$"
+   :runner-ns shadow.test.browser}}}

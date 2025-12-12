@@ -1,0 +1,6 @@
+# Build output
+public/js/
+.shadow-cljs/
+
+# Dependencies
+node_modules/

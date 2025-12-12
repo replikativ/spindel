@@ -1,0 +1,154 @@
+(ns is.simm.spindel.dom.browser
+  "Browser discharge implementation for applying vdom to real DOM.
+
+  Works in browser environments and with jsdom in Node.js.
+
+  Usage:
+    (def d (browser/make-dom-discharge js/document))
+    (disch/render-initial! d vdom)
+    ;; Later, after vdom updates:
+    (disch/discharge-all! d updated-vdom)"
+  (:require [clojure.string :as str]
+            [is.simm.spindel.dom.discharge :as disch]))
+
+;; =============================================================================
+;; DOM Discharge Implementation
+;; =============================================================================
+
+(defrecord DOMDischarge [document elements]
+  disch/PDischarge
+
+  (create-element! [_ vnode]
+    (let [tag-name (name (:tag vnode))
+          el (.createElement document tag-name)]
+      el))
+
+  (create-text! [_ text-content]
+    (.createTextNode document text-content))
+
+  (set-attribute! [_ el attr-name attr-value]
+    (let [attr-str (name attr-name)
+          value-str (if (string? attr-value)
+                      attr-value
+                      (str attr-value))]
+      (cond
+        ;; Handle event handlers (on-click, on-change, etc. with hyphen)
+        (and (keyword? attr-name)
+             (str/starts-with? attr-str "on-"))
+        (let [event-name (subs attr-str 3)]  ; Remove "on-" prefix
+          (aset el (str "on" event-name) attr-value))
+
+        ;; Handle event handlers (onclick, onchange, etc. without hyphen)
+        (and (keyword? attr-name)
+             (str/starts-with? attr-str "on")
+             (fn? attr-value))
+        (aset el attr-str attr-value)
+
+        ;; Handle className specially
+        (= attr-name :class)
+        (.setAttribute el "class" value-str)
+
+        ;; Handle boolean attributes
+        (boolean? attr-value)
+        (if attr-value
+          (.setAttribute el attr-str "")
+          (.removeAttribute el attr-str))
+
+        ;; Standard attributes
+        :else
+        (.setAttribute el attr-str value-str))))
+
+  (remove-attribute! [_ el attr-name]
+    (let [attr-str (name attr-name)]
+      (cond
+        ;; Event handler removal
+        (and (keyword? attr-name)
+             (str/starts-with? attr-str "on-"))
+        (let [event-name (subs attr-str 3)]
+          (aset el (str "on" event-name) nil))
+
+        ;; Standard attribute removal
+        :else
+        (.removeAttribute el attr-str))))
+
+  (append-child! [_ parent child]
+    (.appendChild parent child))
+
+  (insert-child! [_ parent child index]
+    (let [children (.-childNodes parent)
+          ref-node (aget children index)]
+      (if ref-node
+        (.insertBefore parent child ref-node)
+        (.appendChild parent child))))
+
+  (remove-child! [_ parent index]
+    (let [children (.-childNodes parent)
+          child (aget children index)]
+      (when child
+        (.removeChild parent child))))
+
+  (replace-child! [_ parent new-child index]
+    (let [children (.-childNodes parent)
+          old-child (aget children index)]
+      (if old-child
+        (.replaceChild parent new-child old-child)
+        (.appendChild parent new-child))))
+
+  (move-child! [_ parent from-idx to-idx]
+    (let [children (.-childNodes parent)
+          child (aget children from-idx)]
+      (when child
+        ;; Remove from current position and insert at new position
+        ;; Note: after removal, indices shift, so we need to account for that
+        (.removeChild parent child)
+        (let [ref-node (aget (.-childNodes parent) to-idx)]
+          (if ref-node
+            (.insertBefore parent child ref-node)
+            (.appendChild parent child))))))
+
+  (set-text-content! [_ el text]
+    (set! (.-textContent el) text))
+
+  (get-element [_ vnode]
+    (get @elements vnode))
+
+  (set-element! [_ vnode el]
+    (swap! elements assoc vnode el)))
+
+;; =============================================================================
+;; Constructor
+;; =============================================================================
+
+(defn make-dom-discharge
+  "Create a DOM discharge for a document.
+
+  In browser: (make-dom-discharge js/document)
+  In jsdom: (make-dom-discharge (.-document (JSDOM. \"<html>...</html>\")))"
+  [document]
+  (->DOMDischarge document (atom {})))
+
+;; =============================================================================
+;; Convenience Functions
+;; =============================================================================
+
+(defn mount!
+  "Mount vdom tree to a container element.
+
+  Returns the discharge for later updates."
+  [container vdom]
+  (let [doc (.-ownerDocument container)
+        discharge (make-dom-discharge doc)
+        root-el (disch/render-initial! discharge vdom)]
+    (when root-el
+      (.appendChild container root-el))
+    discharge))
+
+(defn get-html
+  "Get the innerHTML of an element (useful for testing)."
+  [el]
+  (.-innerHTML el))
+
+(defn get-outer-html
+  "Get the outerHTML of an element (useful for testing)."
+  [el]
+  (.-outerHTML el))

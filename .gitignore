@@ -1,0 +1,75 @@
+# Clojure / Leiningen / deps.edn
+.cpcache/
+.nrepl-port
+.nrepl-history
+.rebel_readline_history
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+/lib/
+/classes/
+/target/
+/checkouts/
+.lein-*
+.nrepl-port
+.rebel_readline_history
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# LSP / clj-kondo
+.lsp/
+.clj-kondo/.cache/
+
+# REPL logs
+repl-mcp.log
+*.log
+
+# Reference implementation symlink
+laufzeit
+
+# Claude Code
+.claude/
+
+# Local dependency symlinks (for development reference)
+partial-cps
+simmis
+zeitlauf
+
+# Local dependency clones / experimental checkouts
+sci/
+trove/
+langchain/
+langgraph/
+swarm/
+dspy/
+dynamiq/
+deepagents/
+pymc/
+Gen.jl/
+autogen/
+beichte/
+clojure-mcp/
+gemini-cli/
+metaclj/
+opencode/
+
+# Separate inference repository (extracted)
+inference/
+
+# Experimental/in-progress code
+src/is/simm/spindel/agentic/
+test/is/simm/spindel/sci_*_test.clj
+
+# Benchmark results
+bench/*.txt
+.shadow-cljs/
+.clj-kondo/
+node_modules/

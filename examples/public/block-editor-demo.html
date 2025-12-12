@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spindel Block Editor - Incremental DOM Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .page-subtitle {
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        .info-box {
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #2e7d32;
+            font-size: 16px;
+        }
+
+        .info-box ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .info-box li {
+            color: #1b5e20;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .info-box code {
+            background: rgba(0,0,0,0.06);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+
+        #editor-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        /* Block Editor Styles */
+        .block-editor {
+            padding: 0;
+        }
+
+        .editor-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid #eee;
+            background: #fafafa;
+        }
+
+        .editor-header h2 {
+            margin: 0 0 4px 0;
+            color: #333;
+            font-size: 20px;
+        }
+
+        .editor-header .subtitle {
+            margin: 0;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .blocks-container {
+            padding: 16px 24px;
+            min-height: 400px;
+        }
+
+        .block {
+            display: flex;
+            align-items: flex-start;
+            padding: 6px 8px;
+            margin: 2px 0;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .block:hover {
+            background: #f5f5f5;
+        }
+
+        .block.focused {
+            background: #e3f2fd;
+        }
+
+        .collapse-toggle {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #999;
+            font-family: monospace;
+            font-size: 14px;
+            flex-shrink: 0;
+            border-radius: 3px;
+            margin-right: 4px;
+        }
+
+        .collapse-toggle:hover {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .collapse-toggle.collapsed {
+            color: #1976d2;
+        }
+
+        .collapse-placeholder {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+            margin-right: 4px;
+        }
+
+        .block-content {
+            flex: 1;
+            padding: 4px 8px;
+            border-radius: 4px;
+            outline: none;
+            min-height: 24px;
+            line-height: 1.5;
+            font-size: 15px;
+            color: #333;
+        }
+
+        .block-content:focus {
+            background: white;
+            box-shadow: 0 0 0 2px #1976d2;
+        }
+
+        .block-content:empty:before {
+            content: "Type something...";
+            color: #aaa;
+            pointer-events: none;
+        }
+
+        .editor-footer {
+            padding: 16px 24px;
+            border-top: 1px solid #eee;
+            background: #fafafa;
+        }
+
+        .help-text {
+            margin: 0;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .help-text code {
+            background: #e8e8e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+
+        /* Loading state */
+        #editor-container:empty:before {
+            content: "Loading...";
+            display: block;
+            padding: 40px;
+            text-align: center;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <h1>Spindel Block Editor</h1>
+    <p class="page-subtitle">Hierarchical block editor with O(delta) incremental rendering</p>
+
+    <div class="info-box">
+        <h3>Keyboard Shortcuts</h3>
+        <ul>
+            <li><code>Enter</code> - Create a new block after the current one</li>
+            <li><code>Backspace</code> (on empty block) - Delete the block</li>
+            <li><code>Tab</code> - Indent block (make it a child of the previous sibling)</li>
+            <li><code>Shift+Tab</code> - Outdent block (make it a sibling of its parent)</li>
+            <li><code>Arrow Up/Down</code> - Navigate between blocks</li>
+            <li>Click <code>+/-</code> - Collapse/expand blocks with children</li>
+        </ul>
+    </div>
+
+    <div id="editor-container">
+        <!-- Block editor renders here -->
+    </div>
+
+    <!-- Hidden container for focus management spin -->
+    <div id="focus-container" style="display:none"></div>
+
+    <script src="/js/shared.js"></script>
+    <script src="/js/block-editor-demo.js"></script>
+    <script>
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                examples.block_editor_demo.init();
+            });
+        } else {
+            examples.block_editor_demo.init();
+        }
+    </script>
+</body>
+</html>

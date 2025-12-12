@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spindel TODO MVC - Incremental DOM Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+            color: #444;
+            font-size: 18px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+
+        /* Control Buttons */
+        .button-group {
+            margin-bottom: 15px;
+        }
+
+        .button-group-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        button {
+            padding: 8px 14px;
+            font-size: 13px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+        }
+
+        .btn-add { background: #4CAF50; color: white; }
+        .btn-add:hover { background: #45a049; }
+
+        .btn-add-high { background: #f44336; color: white; }
+        .btn-add-high:hover { background: #d32f2f; }
+
+        .btn-add-low { background: #8bc34a; color: white; }
+        .btn-add-low:hover { background: #7cb342; }
+
+        .btn-remove { background: #ff5722; color: white; }
+        .btn-remove:hover { background: #e64a19; }
+
+        .btn-toggle { background: #2196F3; color: white; }
+        .btn-toggle:hover { background: #1976D2; }
+
+        .btn-bulk { background: #9c27b0; color: white; }
+        .btn-bulk:hover { background: #7b1fa2; }
+
+        .btn-clear { background: #607d8b; color: white; }
+        .btn-clear:hover { background: #455a64; }
+
+        /* Stats */
+        #render-stats {
+            background: #e3f2fd;
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            margin-bottom: 15px;
+            font-size: 13px;
+        }
+
+        /* List Container */
+        #list-container {
+            min-height: 300px;
+            border: 2px dashed #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            background: #fafafa;
+        }
+
+        /* TODO App Styles (rendered by spindel) */
+        .todo-app {
+            font-family: inherit;
+        }
+
+        .app-header {
+            margin-bottom: 15px;
+        }
+
+        .app-header h2 {
+            margin: 0 0 5px 0;
+            color: #333;
+        }
+
+        .app-header .subtitle {
+            margin: 0;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .stats-bar {
+            display: flex;
+            gap: 15px;
+            padding: 10px;
+            background: #e8f5e9;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+
+        .stats-bar .stat {
+            font-size: 13px;
+            color: #2e7d32;
+        }
+
+        .filter-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+
+        .filter-btn {
+            background: #e0e0e0;
+            color: #333;
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .filter-btn.active {
+            background: #1976d2;
+            color: white;
+        }
+
+        /* Todo List */
+        .todo-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .todo-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 15px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            transition: all 0.2s;
+        }
+
+        .todo-item:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .todo-item.done {
+            opacity: 0.7;
+        }
+
+        .todo-toggle {
+            width: 20px;
+            height: 20px;
+            margin-right: 12px;
+            cursor: pointer;
+        }
+
+        .todo-text {
+            flex: 1;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .todo-text.completed {
+            text-decoration: line-through;
+            color: #999;
+        }
+
+        .priority-badge {
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            text-transform: uppercase;
+            margin-right: 10px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .priority-badge.low {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+
+        .priority-badge.medium {
+            background: #ffe0b2;
+            color: #e65100;
+        }
+
+        .priority-badge.high {
+            background: #ffcdd2;
+            color: #c62828;
+        }
+
+        .todo-delete {
+            background: transparent;
+            border: none;
+            color: #999;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0 5px;
+            line-height: 1;
+        }
+
+        .todo-delete:hover {
+            color: #f44336;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .app-footer {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+
+        .clear-completed {
+            background: #ff5722;
+            color: white;
+        }
+
+        /* Operation Log */
+        #op-log {
+            height: 500px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 11px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+        }
+
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #333;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        /* Info Box */
+        .info-box {
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #2e7d32;
+        }
+
+        .info-box p {
+            margin: 0 0 8px 0;
+            color: #1b5e20;
+            font-size: 14px;
+        }
+
+        .info-box ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .info-box li {
+            color: #1b5e20;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Spindel TODO MVC</h1>
+    <p class="subtitle">Delta-direct incremental DOM rendering without virtual DOM diffing</p>
+
+    <div class="info-box">
+        <h3>How to Test Incremental Rendering</h3>
+        <p>This demo shows <strong>O(delta) rendering</strong> - only changed DOM nodes are touched:</p>
+        <ul>
+            <li><strong>Add items</strong> - Watch only new elements being created</li>
+            <li><strong>Remove middle</strong> - See single REMOVE operation, not re-render</li>
+            <li><strong>Toggle done</strong> - Click checkbox to see attribute updates only</li>
+            <li><strong>Cycle priority</strong> - Click priority badge to change (low/medium/high)</li>
+            <li><strong>Filter</strong> - Uses ifilter combinator for reactive filtering</li>
+        </ul>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Controls</h2>
+
+            <div class="button-group">
+                <span class="button-group-label">Add Items</span>
+                <div class="buttons">
+                    <button id="btn-add" class="btn-add">+ Add Medium</button>
+                    <button id="btn-add-high" class="btn-add-high">+ Add High</button>
+                    <button id="btn-add-low" class="btn-add-low">+ Add Low</button>
+                    <button id="btn-add-10" class="btn-bulk">+ Add 10</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <span class="button-group-label">Remove Items</span>
+                <div class="buttons">
+                    <button id="btn-remove-first" class="btn-remove">Remove First</button>
+                    <button id="btn-remove-middle" class="btn-remove">Remove Middle</button>
+                    <button id="btn-remove-last" class="btn-remove">Remove Last</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <span class="button-group-label">Modify Items</span>
+                <div class="buttons">
+                    <button id="btn-toggle-first" class="btn-toggle">Toggle First</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <span class="button-group-label">Bulk Operations</span>
+                <div class="buttons">
+                    <button id="btn-clear-all" class="btn-clear">Clear All</button>
+                </div>
+            </div>
+
+            <div id="render-stats">Items: 0 | Filter: all | Ops: 0</div>
+
+            <div id="list-container">
+                <!-- TODO app renders here -->
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>DOM Operations Log</h2>
+            <p style="color: #666; font-size: 13px; margin-top: 0;">
+                Each action clears the log. Watch how few operations occur for incremental updates.
+            </p>
+            <div id="op-log">
+                <em>Click a button or interact with the list to see DOM operations</em>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/shared.js"></script>
+    <script src="/js/todo-demo.js"></script>
+    <script>
+        // Initialize when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                examples.todo_demo.init();
+            });
+        } else {
+            examples.todo_demo.init();
+        }
+    </script>
+</body>
+</html>
