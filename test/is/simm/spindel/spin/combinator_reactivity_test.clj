@@ -228,20 +228,16 @@
           @spin1
           @spin2
           @spin3
-          (println "After initial derefs, order:" @execution-order)
           (reset! execution-order [])
 
           ;; Update signal - should execute in dependency order
           (swap! counter inc)
           (await-drain ctx)
-          (println "After signal change + drain, order:" @execution-order)
 
           ;; Get results after drain
           (let [r1 @spin1
                 r2 @spin2
                 r3 @spin3]
-            (println "Results:" r1 r2 r3)
-            (println "Final order:" @execution-order)
 
             ;; spin1 should execute before spin2, spin2 before spin3
             (let [order @execution-order

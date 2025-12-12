@@ -143,6 +143,27 @@
       (.appendChild container root-el))
     discharge))
 
+(defn refresh!
+  "Update the DOM tree with new vdom.
+
+   discharge: The discharge returned from mount!
+   new-vdom: The updated virtual DOM tree
+
+   This diffs the new vdom against the previous state and applies
+   only the necessary changes to the DOM."
+  [discharge new-vdom]
+  (disch/discharge-all! discharge new-vdom))
+
+(defn unmount!
+  "Unmount a vdom tree from the DOM.
+
+   discharge: The discharge returned from mount!
+
+   Clears the element tracking. The actual DOM elements remain
+   in place - caller should remove the container if needed."
+  [discharge]
+  (reset! (:elements discharge) {}))
+
 (defn get-html
   "Get the innerHTML of an element (useful for testing)."
   [el]

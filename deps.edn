@@ -8,7 +8,7 @@
         org.clojure/tools.analyzer.jvm {:mvn/version "1.3.2"}
         riddley/riddley {:mvn/version "0.2.0"}
         com.taoensso/trove {:mvn/version "1.1.0"}
-        is.simm/partial-cps {:git/url "https://github.com/simm-is/partial-cps" 
+        is.simm/partial-cps {:git/url "https://github.com/simm-is/partial-cps"
                              :git/sha "d05fed1847fde43259a57e51b4b53a15e75e8f50"}
         io.replikativ/hasch {:mvn/version "0.3.94"}
         org.clojure/core.async {:mvn/version "1.6.681"}}
@@ -16,6 +16,10 @@
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
+                      ;; Include distributed-scope for testing the distributed namespace
+                      ;; distributed-scope brings kabel as a transitive local dep
+                      is.simm/distributed-scope {:git/url "https://github.com/simm-is/distributed-scope"
+                                                 :git/sha "b913579cac898d4ea5746125135e45d39d034b8e"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]

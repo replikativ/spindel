@@ -868,26 +868,11 @@
              (render/render-spin! nil spin-correct discharge)
              @spin-correct
 
-             (println "\n========== INITIAL RENDER (both same) ==========")
-             (println "Operations:" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:text op) (str "text=" (pr-str (:text op))))
-                        (when (:index op) (str "idx=" (:index op)))))
-
              ;; Clear and add item
              (reset! log [])
              (swap! items-sig-correct conj {:id 3 :text "Item C"})
              (await-drain ctx)
              @spin-correct
-
-             (println "\n========== ADD ITEM - INTERVAL (incremental) ==========")
-             (println "Operations:" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:text op) (str "text=" (pr-str (:text op)))))))
 
            ;; Setup for WRONG approach (pass :new)
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
@@ -910,19 +895,7 @@
              (reset! log [])
              (swap! items-sig-wrong conj {:id 3 :text "Item C"})
              (await-drain ctx)
-             @spin-wrong
-
-             (println "\n========== ADD ITEM - :new (full recompute) ==========")
-             (println "Operations:" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:text op) (str "text=" (pr-str (:text op)))))))
-
-           (println "\n========== SUMMARY ==========")
-           (println "Incremental: Only creates new elements for added item")
-           (println "Full recompute: Removes all and recreates everything")
-           (println ""))))))
+             @spin-wrong))))))
 
 #?(:clj
    (deftest test-dom-operations-move-and-indent
@@ -932,8 +905,6 @@
          (binding [rtc/*execution-context* ctx]
            
            ;; ============ TEST 1: MOVE (reorder) ============
-           (println "\n\n============ MOVE OPERATION ============")
-           
            ;; Setup with interval approach
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  ;; Simple flat list for move testing
@@ -953,23 +924,12 @@
              (render/render-spin! nil render-spin discharge)
              @render-spin
              
-             (println "\nInitial: [First, Second, Third]")
-             (println "Initial ops:" (count @log))
-             
              ;; Move item 0 to position 2 (First -> end)
              (reset! log [])
              (swap! items-sig d/move-to 0 2)
              (await-drain ctx)
-             @render-spin
-             
-             (println "\nAfter move-item 0->2: [Second, Third, First]")
-             (println "Move ops (INTERVAL):" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:text op) (str "text=" (pr-str (:text op))))
-                        (when (contains? op :index) (str "idx=" (:index op))))))
-           
+             @render-spin)
+
            ;; Same with :new approach (loses deltas)
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  items-sig (sig/signal (d/deltaable-vector
@@ -989,16 +949,9 @@
              (reset! log [])
              (swap! items-sig d/move-to 0 2)
              (await-drain ctx)
-             @render-spin
-             
-             (println "\nMove ops (:new - full recompute):" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:text op) (str "text=" (pr-str (:text op)))))))
-           
+             @render-spin)
+
            ;; ============ TEST 2: UPDATE (indent changes style) ============
-           (println "\n\n============ UPDATE OPERATION (indent/style change) ============")
 
            ;; Indent uses update-by-key which produces :update delta
            ;; This shows that only the updated block is re-rendered
@@ -1024,23 +977,11 @@
              (render/render-spin! nil render-spin discharge)
              @render-spin
 
-             (println "\nInitial: A(d=0), B(d=0), C(d=0)")
-             (println "Initial ops:" (count @log))
-
              ;; "Indent" B by changing its depth (produces :update delta)
              (reset! log [])
              (swap! blocks-sig d/update-by-key :id 2 assoc :depth 1)
              (await-drain ctx)
-             @render-spin
-
-             (println "\nAfter update B depth: A(d=0), B(d=1), C(d=0)")
-             (println "Update ops (INTERVAL):" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:attr op) (str "attr=" (:attr op)))
-                        (when (:value op) (str "val=" (pr-str (:value op))))
-                        (when (:text op) (str "text=" (pr-str (:text op)))))))
+             @render-spin)
 
            ;; Same with :new
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
@@ -1066,18 +1007,4 @@
              ;; Use update-by-key same as interval version
              (swap! blocks-sig d/update-by-key :id 2 assoc :depth 1)
              (await-drain ctx)
-             @render-spin
-
-             (println "\nUpdate ops (:new - full recompute):" (count @log))
-             (doseq [op @log]
-               (println "  " (:op op)
-                        (when (:tag op) (str "tag=" (:tag op)))
-                        (when (:text op) (str "text=" (pr-str (:text op)))))))
-
-           (println "\n\n============ SUMMARY ============")
-           (println "MOVE with interval: Uses :move delta -> single move-child! op")
-           (println "MOVE with :new: Full recompute -> remove all, recreate all")
-           (println "")
-           (println "UPDATE with interval: Uses :update delta -> only re-renders changed item")
-           (println "UPDATE with :new: Full recompute -> remove all, recreate all")
-           (println ""))))))
+             @render-spin)))))))

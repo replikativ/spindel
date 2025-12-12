@@ -11,7 +11,9 @@
             [is.simm.partial-cps.runtime]
             [is.simm.spindel.spin.core :as spin-core])
   ;; Make the spin macro available to CLJS via require-macros
-  #?(:cljs (:require-macros [is.simm.spindel.spin.cps :refer [spin effect]])))
+  ;; Note: effect is not included here because it's defined in #?(:clj ...) only and
+  ;; causes self-referential load issues. Users can require effect separately if needed.
+  #?(:cljs (:require-macros [is.simm.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
 ;; CPS Breakpoint Machinery
