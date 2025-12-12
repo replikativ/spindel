@@ -582,6 +582,85 @@ Libraries can register custom effects:
   'my.lib/sample-adapter)
 ```
 
+## Distributed Computing
+
+Spindel integrates with [distributed-scope](https://github.com/simm-is/distributed-scope) for peer-to-peer distributed computing over WebSocket (kabel).
+
+### Setup
+
+Add distributed-scope to your dependencies:
+
+```clojure
+;; deps.edn
+{:deps {is.simm/distributed-scope {:git/url "https://github.com/simm-is/distributed-scope"
+                                   :git/sha "..."}}}
+```
+
+### Defining Distributed Functions
+
+Use `defn-spin-remote` to define functions that execute across peers:
+
+```clojure
+(require '[is.simm.spindel.distributed.macros :refer [defn-spin-remote spin-remote]])
+(require '[is.simm.spindel.distributed.core :as dist])
+
+;; Define a function that runs on a remote peer
+(defn-spin-remote fetch-page [server-id page-uuid]
+  (spin-remote server-id [page-uuid]
+    ;; This code executes on server-id
+    (let [db (get-database)]
+      (query-page db page-uuid))))
+
+;; Call from client
+(spin
+  (let [page (await (fetch-page server-peer-id my-page-uuid))]
+    (render-page page)))
+```
+
+### Key Concepts
+
+- **Explicit argument vectors**: Variables crossing the network boundary must be declared
+- **Compile-time validation**: Free variable analysis catches undeclared dependencies
+- **Context addressing**: Target specific execution contexts on remote peers
+
+```clojure
+;; Target a specific context on the remote peer
+(defn-spin-remote process-in-fork [server-id context-id data]
+  (spin-remote [server-id context-id] [data]
+    (heavy-computation data)))
+```
+
+### Execution Context Registry
+
+Register contexts for remote addressing:
+
+```clojure
+;; On the server/peer
+(require '[is.simm.spindel.distributed.core :as dist])
+
+;; Register default context
+(dist/register-context! :default my-execution-context)
+
+;; Register forked context
+(dist/register-context! :particle-1 (ctx/fork-context my-execution-context))
+```
+
+### Bridge Functions
+
+Convert between spins and core.async channels (for kabel interop):
+
+```clojure
+;; Spin → Channel (for sending results)
+(let [ch (dist/spin->chan my-spin)]
+  ;; ch receives spin result when complete
+  )
+
+;; Channel → Spin (for receiving results)
+(spin
+  (let [result (await (dist/chan->spin response-channel))]
+    (process result)))
+```
+
 ## Architecture
 
 ```
@@ -610,10 +689,13 @@ src/is/simm/spindel/
 ├── state/                # Signals, fork-safe atoms, semaphores
 ├── sequence/             # Async sequence generation (gen-aseq)
 ├── pubsub/               # Pub/sub (buffer, mult, pub)
-└── incremental/          # Delta-tracking collections
+├── incremental/          # Delta-tracking collections
+├── distributed/          # Remote spin invocation (core, macros)
+├── dom/                  # Delta-direct DOM rendering
+└── log.cljc              # Structured logging (Trove wrapper)
 ```
 
-**38 source files** total (all .cljc for CLJ/CLJS portability).
+**40+ source files** total (all .cljc for CLJ/CLJS portability).
 
 ## Critical Rule: await vs @
 
@@ -637,6 +719,44 @@ clj -M:test
 
 # ClojureScript tests
 npx shadow-cljs compile test && node target/test.js
+```
+
+### Test Logging
+
+By default, logging is suppressed during tests for clean output. To enable logging for debugging:
+
+```bash
+# Enable all logging
+SPINDEL_TEST_LOG=true clj -M:test
+
+# From REPL
+(require '[is.simm.spindel.test-config :as tc])
+(tc/enable-test-logging!)        ; Enable at :debug level
+(tc/enable-test-logging! :trace) ; Enable at specific level
+(tc/disable-test-logging!)       ; Suppress again
+```
+
+## Logging
+
+Spindel uses [Trove](https://github.com/taoensso/trove) for structured logging:
+
+```clojure
+(require '[is.simm.spindel.log :as log])
+
+;; Configure logging (call once at startup)
+(log/configure! {:min-level :info})  ; :trace :debug :info :warn :error :fatal
+
+;; Structured logging with levels
+(log/debug! {:event ::my-event :data {:key "value"}})
+(log/info!  {:event ::startup :data {:port 8080}})
+(log/warn!  {:event ::deprecated :data {:fn 'old-fn}})
+(log/error! {:event ::failure :data {:error e}})
+```
+
+Log output format:
+```
+2025-01-15T10:30:00.000Z :info my.namespace
+  data: {:port 8080}
 ```
 
 ## Dependencies

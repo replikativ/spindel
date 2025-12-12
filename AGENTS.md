@@ -227,198 +227,26 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics via ove
 
 ## Deltaable Collections
 
-**Files**:
-- [src/is/simm/spindel/incremental/deltaable.cljc](src/is/simm/spindel/incremental/deltaable.cljc)
-- [src/is/simm/spindel/incremental/combinators.cljc](src/is/simm/spindel/incremental/combinators.cljc)
+**Files**: `src/is/simm/spindel/incremental/deltaable.cljc`, `combinators.cljc`
 
-Deltaable collections track **top-level structural changes** as deltas (shallow wrapping - nested collections not wrapped).
-
-### Delta Format
+Track top-level structural changes as deltas. Types: `deltaable-vector`, `deltaable-map`, `deltaable-set`.
 
 ```clojure
-{:delta :add/:update/:remove
- :path [index-or-key]
- :value new-value
- :old-value old-value}  ; For :update only
+(def dv (-> (d/deltaable-vector [1 2]) (conj 3)))
+(d/get-deltas dv)  ; => [{:delta :add :path [2] :value 3}]
 ```
 
-### Usage
+See README.md for full documentation.
 
-```clojure
-(require '[is.simm.spindel.incremental.deltaable :as d])
+## Async Sequences & Pub/Sub
 
-;; Create deltaable vector
-(def dv (d/deltaable-vector [1 2 3]))
+**Files**: `src/is/simm/spindel/sequence/`, `src/is/simm/spindel/pubsub/`
 
-;; Operations produce deltas
-(def dv2 (conj dv 4))
-(d/get-deltas dv2)
-;; => [{:delta :add :path [3] :value 4}]
+- `gen-aseq` + `yield` for lazy async sequences
+- `mult` for fan-out, `pub` for topic routing
+- Buffer types: `fixed-buffer`, `dropping-buffer`, `sliding-buffer`
 
-;; Multiple operations accumulate
-(def dv3 (-> dv (conj 4) (assoc 0 10)))
-(d/get-deltas dv3)
-;; => [{:delta :add :path [3] :value 4}
-;;     {:delta :update :path [0] :value 10 :old-value 1}]
-
-;; Access underlying value
-@dv3  ; => [10 2 3 4]
-```
-
-### Types
-
-- `deltaable-vector` - tracks conj, assoc, pop
-- `deltaable-map` - tracks assoc, dissoc, update
-- `deltaable-set` - tracks conj, disj
-
-### Dual Perspective in Spins
-
-```clojure
-(def items (sig/signal (d/deltaable-vector [])))
-
-(spin
-  (let [{:keys [new old deltas]} (track items)]
-    ;; 1. State-based: use current value
-    (render-all new)
-
-    ;; 2. Diff-based: compare old and new
-    (when (not= (count new) (count old))
-      (update-count-badge (count new)))
-
-    ;; 3. Delta-based: process incremental changes
-    (doseq [{:keys [delta path value]} deltas]
-      (case delta
-        :add (render-item-at path value)
-        :remove (remove-item-at path)
-        :update (update-item-at path value)))))
-```
-
-### Delta Transducers
-
-```clojure
-(require '[is.simm.spindel.incremental.combinators :as ic])
-
-(ic/map-delta (fn [d] (update d :value inc)))
-(ic/filter-delta (fn [d] (= :add (:delta d))))
-(reduce d/apply-delta [] deltas)  ; Rebuild collection
-(d/compact-deltas deltas)         ; Merge redundant ops
-```
-
-## Async Sequences
-
-**Files**:
-- [src/is/simm/spindel/sequence/core.cljc](src/is/simm/spindel/sequence/core.cljc)
-- [src/is/simm/spindel/sequence/combinators.cljc](src/is/simm/spindel/sequence/combinators.cljc)
-
-Generator-based lazy async sequences using `gen-aseq` macro with `yield`.
-
-### Basic Usage
-
-```clojure
-(require '[is.simm.spindel.sequence.core :as seq-core :refer [gen-aseq yield]])
-
-;; Simple generator
-(def numbers
-  (gen-aseq
-    (yield 1)
-    (yield 2)
-    (yield 3)))
-
-;; Consume with anext (returns [value rest-seq] or nil when exhausted)
-(spin
-  (let [[v1 rest1] (await (seq-core/anext numbers))
-        [v2 rest2] (await (seq-core/anext rest1))]
-    [v1 v2]))  ; => [1 2]
-```
-
-### Loop-Based Generation
-
-```clojure
-(def countdown
-  (gen-aseq
-    (loop [n 5]
-      (when (pos? n)
-        (yield n)
-        (recur (dec n))))))
-;; Generates: 5, 4, 3, 2, 1
-```
-
-### Integration with Spins
-
-```clojure
-(def processed
-  (gen-aseq
-    (loop [n 0]
-      (when (< n 3)
-        (let [result (await (fetch-data n))]  ; Can await spins!
-          (yield (* 2 result))
-          (recur (inc n)))))))
-```
-
-### Cold Semantics
-
-Each consumer gets independent execution:
-```clojure
-(def gen (gen-aseq (yield (rand-int 100))))
-@(seq-core/anext gen)  ; => [42 ...]
-@(seq-core/anext gen)  ; => [17 ...] (different! fresh execution)
-```
-
-## Pub/Sub System
-
-**Files**:
-- [src/is/simm/spindel/pubsub/core.cljc](src/is/simm/spindel/pubsub/core.cljc)
-- [src/is/simm/spindel/pubsub/mult.cljc](src/is/simm/spindel/pubsub/mult.cljc)
-- [src/is/simm/spindel/pubsub/pub.cljc](src/is/simm/spindel/pubsub/pub.cljc)
-- [src/is/simm/spindel/pubsub/buffer.cljc](src/is/simm/spindel/pubsub/buffer.cljc)
-
-Core.async-style pub/sub primitives built on PAsyncSeq.
-
-### Mult (Fan-Out)
-
-Broadcast to multiple consumers:
-
-```clojure
-(require '[is.simm.spindel.pubsub.core :as pubsub])
-
-(def source (gen-aseq (yield 1) (yield 2) (yield 3)))
-(def m (pubsub/mult source))
-
-;; Create taps (each receives ALL items)
-(def tap1 (pubsub/tap m (pubsub/fixed-buffer 10)))
-(def tap2 (pubsub/tap m (pubsub/fixed-buffer 10)))
-
-;; Both tap1 and tap2 receive [1, 2, 3]
-;; Producer waits for ALL taps before proceeding (backpressure)
-```
-
-### Pub (Topic Routing)
-
-Route by topic function:
-
-```clojure
-(def events (gen-aseq
-              (yield {:type :user :data "login"})
-              (yield {:type :system :data "ping"})
-              (yield {:type :user :data "click"})))
-
-(def p (pubsub/pub events :type))
-
-(def user-events (pubsub/sub p :user))
-(def system-events (pubsub/sub p :system))
-
-;; user-events receives: {:type :user :data "login"}, {:type :user :data "click"}
-;; system-events receives: {:type :system :data "ping"}
-```
-
-### Buffer Types
-
-```clojure
-(pubsub/fixed-buffer 10)     ; Blocks when full
-(pubsub/dropping-buffer 10)  ; Drops newest when full
-(pubsub/sliding-buffer 10)   ; Drops oldest when full
-(pubsub/tap m nil)           ; No buffer (rendezvous)
-```
+See README.md for full documentation.
 
 ## CRITICAL: await vs @ in Spins
 
@@ -828,7 +656,83 @@ src/is/simm/spindel/
 - **Content-addressed spin caching** (for cross-fork deduplication)
 - **Benchmarks** (need to create)
 - Some combinators (race, timeout partially done)
-- Distributed execution (architecture supports it)
+
+## Distributed Computing
+
+Spindel integrates with [distributed-scope](https://github.com/simm-is/distributed-scope) for peer-to-peer distributed computing.
+
+**Files**:
+- [src/is/simm/spindel/distributed/core.cljc](src/is/simm/spindel/distributed/core.cljc) - Bridge functions (spin↔channel)
+- [src/is/simm/spindel/distributed/macros.cljc](src/is/simm/spindel/distributed/macros.cljc) - `defn-spin-remote`, `spin-remote`
+
+### Defining Distributed Functions
+
+```clojure
+(require '[is.simm.spindel.distributed.macros :refer [defn-spin-remote spin-remote]])
+(require '[is.simm.spindel.distributed.core :as dist])
+
+;; Define a function that runs on a remote peer
+(defn-spin-remote fetch-page [server-id page-uuid]
+  (spin-remote server-id [page-uuid]
+    ;; This code executes on server-id peer
+    (let [db (get-database)]
+      (query-page db page-uuid))))
+
+;; Call from client
+(spin
+  (let [page (await (fetch-page server-peer-id my-page-uuid))]
+    (render-page page)))
+```
+
+### Key Concepts
+
+- **Explicit argument vectors**: Variables crossing network boundary must be declared in `[...]`
+- **Compile-time validation**: Free variable analysis catches undeclared dependencies
+- **Context addressing**: Target specific execution contexts on remote peers
+
+```clojure
+;; Target a specific context on the remote peer
+(defn-spin-remote process-in-fork [server-id context-id data]
+  (spin-remote [server-id context-id] [data]
+    (heavy-computation data)))
+```
+
+### Execution Context Registry
+
+Register contexts for remote addressing:
+
+```clojure
+;; On the server/peer
+(dist/register-context! :default my-execution-context)
+(dist/register-context! :particle-1 (ctx/fork-context my-execution-context))
+```
+
+### Bridge Functions
+
+Convert between spins and core.async channels (for kabel interop):
+
+```clojure
+;; Spin → Channel (for sending results)
+(dist/spin->chan my-spin)
+
+;; Channel → Spin (for receiving results)
+(spin
+  (let [result (await (dist/chan->spin response-channel))]
+    (process result)))
+```
+
+### Testing Distributed Code
+
+Distributed tests require the `:test` alias which includes distributed-scope:
+
+```bash
+clj -M:test
+```
+
+Test files are in `test/is/simm/spindel/distributed/`:
+- `bridge_test.cljc` - Spin↔channel conversion tests
+- `macro_test.clj` - `defn-spin-remote` macro tests
+- `integration_test.clj` - End-to-end tests with kabel WebSocket peers
 
 ## Dependencies
 
@@ -1056,133 +960,22 @@ Used for pattern matching in various places (combinators, etc.).
 
 ## Common Patterns
 
-### Creating a Spin
+See README.md for full usage examples. Quick reference:
 
 ```clojure
-(require '[is.simm.spindel.spin.cps :refer [spin]])
-(require '[is.simm.spindel.effects.reactive :refer [await track]])
-
-(def my-spin
-  (spin
-    (let [sig-value (track some-signal)
-          spin-result (await some-other-spin)]
-      (+ (:new sig-value) spin-result))))
-```
-
-### Creating a Signal
-
-```clojure
-(require '[is.simm.spindel.state.signal :as sig])
-
-(def counter (sig/signal 0))
-(swap! counter inc)  ; => 1
-```
-
-### Working with Runtime
-
-```clojure
-(require '[is.simm.spindel.runtime.core :as rtc])
-
-;; Create runtime
+;; Create runtime and use binding
 (def ctx (ctx/create-execution-context))
-
-;; Use runtime
 (binding [rtc/*execution-context* ctx]
-  ;; All runtime operations work here
-  (def t (spin (+ 1 2)))
-  @t)  ; => 3
-```
-
-### Accessing Runtime State
-
-```clojure
-;; Read state
-(binding [rtc/*execution-context* ctx]
-  (rtc/get-state [:signals sig-id]))
-
-;; Atomic update
-(binding [rtc/*execution-context* ctx]
-  (rtc/swap-state! [:signals sig-id]
-    (fn [sig-state]
-      (assoc sig-state :snapshot new-value))))
-```
-
-### Forking Runtime
-
-```clojure
-(require '[is.simm.spindel.runtime.context :as ctx])
-
-;; Create and populate main context
-(def ctx-main (ctx/create-execution-context))
-(binding [rtc/*execution-context* ctx-main]
   (def counter (sig/signal 0))
-  (swap! counter inc))
+  (def my-spin (spin (let [{:keys [new]} (track counter)] (* 2 new))))
+  @my-spin)  ; => 0
 
-;; Fork via snapshot/restore
-(def ctx-fork (ctx/restore-snapshot (ctx/snapshot-context ctx-main)))
+;; Fork runtime (O(1) with copy-on-write)
+(def ctx-fork (ctx/fork-context ctx))
 
-;; Mutations in fork isolated from parent
-(binding [rtc/*execution-context* ctx-fork]
-  (swap! counter inc))  ; Only affects fork
-
-;; Or use fork-context for lightweight O(1) fork
-(def ctx-fork2 (ctx/fork-context ctx-main))
-```
-
-### Using Async Sequences
-
-```clojure
-(require '[is.simm.spindel.sequence.core :as seq-core :refer [gen-aseq yield]])
-
-;; Create generator
-(def items (gen-aseq
-             (loop [n 0]
-               (when (< n 5)
-                 (yield n)
-                 (recur (inc n))))))
-
-;; Consume in spin
-(spin
-  (loop [seq items, acc []]
-    (if-let [[item rest] (await (seq-core/anext seq))]
-      (recur rest (conj acc item))
-      acc)))  ; => [0 1 2 3 4]
-```
-
-### Using Pub/Sub
-
-```clojure
-(require '[is.simm.spindel.pubsub.core :as pubsub])
-
-;; Fan-out with mult
-(def source (gen-aseq (yield 1) (yield 2)))
-(def m (pubsub/mult source))
-(def tap1 (pubsub/tap m (pubsub/fixed-buffer 10)))
-(def tap2 (pubsub/tap m (pubsub/fixed-buffer 10)))
-
-;; Topic routing with pub
-(def events (gen-aseq (yield {:type :a}) (yield {:type :b})))
-(def p (pubsub/pub events :type))
-(def type-a (pubsub/sub p :a))
-```
-
-### Using Deltaable Collections
-
-```clojure
-(require '[is.simm.spindel.incremental.deltaable :as d])
-
-;; Create and modify
-(def dv (-> (d/deltaable-vector [1 2])
-            (conj 3)
-            (assoc 0 10)))
-
-;; Get deltas
-(d/get-deltas dv)
-;; => [{:delta :add :path [2] :value 3}
-;;     {:delta :update :path [0] :value 10 :old-value 1}]
-
-;; Access underlying value
-@dv  ; => [10 2 3]
+;; Access runtime state via protocols
+(rtc/get-state [:signals sig-id])
+(rtc/swap-state! [:signals sig-id] update-fn)
 ```
 
 ## Testing Strategy
@@ -1270,146 +1063,45 @@ Used for pattern matching in various places (combinators, etc.).
 
 ## Debugging Tips
 
-### Structured Logging with Trove
+### Logging
 
-Spindel uses [Trove](https://github.com/taoensso/trove) for structured logging via `is.simm.spindel.log`.
-
-**Log levels** (from lowest to highest): `:trace`, `:debug`, `:info`, `:warn`, `:error`, `:fatal`, `:report`
-
-**Default min-level**: `:info` on JVM, `nil` (all logs) on CLJS
-
-**Basic usage**:
-```clojure
-(require '[is.simm.spindel.log :as log])
-
-;; Level-specific macros
-(log/trace! {:id ::my-event :msg "Detailed trace" :data {:x 1}})
-(log/debug! {:id ::debug-info :msg "Debug info"})
-(log/info!  {:id ::user-action :msg "User logged in" :data {:user-id 123}})
-(log/warn!  {:id ::deprecation :msg "This API is deprecated"})
-(log/error! {:id ::failure :msg "Operation failed" :error some-exception})
-
-;; Generic log! with explicit level
-(log/log! {:level :info :id ::generic :msg "Message"})
-```
-
-**Configure logging** (optional - default is console output at `:info` level):
-```clojure
-;; Lower min-level to see more logs
-(log/configure! {:min-level :debug})
-
-;; Or :trace to see everything
-(log/configure! {:min-level :trace})
-```
-
-**Output format** (console backend):
-```
-2025-12-11T09:43:29.563Z :warn is.simm.spindel.dom.foreach ::ifor-each-without-interval
-  ifor-each received deltaable without interval wrapper.
-  data: {:source-type DeltaableVector, :has-deltas? false}
-```
-
-**Using in tests**: Logs go to stdout by default. Use `(log/configure! {:min-level :trace})` at test start to see all logs.
-
-**Adding logging to code**:
-```clojure
-;; In source files
-(ns my.namespace
-  (:require [is.simm.spindel.log :as log]))
-
-;; Use namespaced keywords for :id to identify log sources
-(log/debug! {:id ::processing-item
-             :msg "Processing item"
-             :data {:item-id item-id :stage :start}})
-```
-
-**Important**: The `log!` macros require a **compile-time map literal** (Trove requirement). You can include symbols inside the map, but the outer form must be a literal `{...}`:
-```clojure
-;; ✅ CORRECT - literal map with symbols inside
-(log/info! {:id ::event :data {:user-id user-id}})
-
-;; ❌ WRONG - computed map
-(log/info! (merge {:id ::event} extra-data))
-```
-
-### Check Runtime State
-
-```clojure
-;; Inspect dependency graph
-(binding [rtc/*execution-context* ctx]
-  (rtc/get-state [:graph]))
-
-;; Inspect signal state
-(binding [rtc/*execution-context* ctx]
-  (rtc/get-state [:signals sig-id]))
-
-;; Inspect spin cache
-(binding [rtc/*execution-context* ctx]
-  (rtc/get-state [:spin-outputs spin-id]))
-```
-
-### Trace Effect Dispatch
-
-Enable trace-level logging to see effect dispatch:
+Spindel uses [Trove](https://github.com/taoensso/trove) via `is.simm.spindel.log`.
 
 ```clojure
 (require '[is.simm.spindel.log :as log])
 
-;; Enable trace level
-(log/configure! {:min-level :trace})
+(log/debug! {:id ::my-event :msg "Debug info" :data {:x 1}})
+(log/info!  {:id ::startup :msg "Started"})
+(log/error! {:id ::failure :msg "Failed" :error e})
 
-;; Now run your code - will see detailed logs
+;; Configure level (default: :info on JVM, nil on CLJS)
+(log/configure! {:min-level :trace})
 ```
 
-### Check Topological Order
+**Test logging**: Suppressed by default. Enable via:
+```bash
+SPINDEL_TEST_LOG=true clj -M:test
+# Or from REPL: (tc/enable-test-logging!)
+```
+
+**Important**: `log!` macros require compile-time map literals.
+
+### Inspect Runtime State
 
 ```clojure
-(binding [rtc/*execution-context* ctx]
-  (rtc/graph-ordered-observers signal-id))
-;; Returns vector of spin-ids in execution order
+(rtc/get-state [:graph])              ; Dependency graph
+(rtc/get-state [:signals sig-id])     ; Signal state
+(rtc/get-state [:spin-outputs spin-id]) ; Spin cache
+(rtc/graph-ordered-observers sig-id)  ; Topological order
 ```
 
-### Diagnose Hanging Tests with jstack
+### Diagnose Hanging Tests
 
-When tests hang or appear to deadlock:
-
-1. **Find the Java process PID**:
 ```bash
-pgrep -f "clojure.main" | head -1
+jstack $(pgrep -f "clojure.main" | head -1) | grep -A 20 "main\|pool-"
 ```
 
-2. **Get thread stacktraces**:
-```bash
-jstack <PID>
-```
-
-3. **Filter for relevant threads** (main thread and pool threads):
-```bash
-jstack <PID> | grep -A 20 "main\|pool-"
-```
-
-**What to look for**:
-- Main thread blocked on `Object.wait()` or `promise.deref` → spin not completing
-- Pool threads all in `WAITING` state → no events being processed
-- Pool threads in `RUNNABLE` but not progressing → infinite loop or CPU-bound work
-- Lock contention (threads waiting on same monitor)
-
-**Common patterns**:
-- **Promise deadlock**: Main thread waiting on promise, but no pool thread delivering → event not enqueued or draining stopped
-- **Race condition**: Events enqueued but not processed → draining lock issue
-- **Continuation not resumed**: Spin returns `::incomplete` but continuation never called → effect handler bug
-
-**Example**:
-```bash
-# Test hanging, get stacktrace
-jstack $(pgrep -f "clojure.main" | head -1) > /tmp/stacktrace.txt
-
-# Look for main thread state
-grep -A 30 "\"main\"" /tmp/stacktrace.txt
-
-# Check if pool threads are active
-grep -A 10 "pool-.*-thread" /tmp/stacktrace.txt
-```
+Look for: main thread blocked on `Object.wait()`, pool threads in `WAITING`, lock contention.
 
 ## Next Steps for Implementation
 
