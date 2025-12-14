@@ -173,10 +173,10 @@
 
       ;; single → single: update if changed
       ;; Compare vnodes semantically:
-      ;; - If both are element vnodes with same tag, the parent considers them
-      ;;   unchanged. The child will handle its own deltas via discharge-vnode!
-      ;; - For text nodes, compare content directly.
-      ;; - Otherwise, compare by reference (for non-vnode values).
+      ;; - For element vnodes: same tag + same identity (via :key)
+      ;;   When unchanged, the child handles its own deltas via discharge-vnode!
+      ;; - For text nodes: compare content directly
+      ;; - Otherwise: use reference equality
       [:single :single]
       (let [unchanged?
             (cond
@@ -184,12 +184,23 @@
               (and (core/text-node? prev-value) (core/text-node? new-result))
               (= (:content prev-value) (:content new-result))
 
-              ;; Both are element vnodes with same tag - parent considers unchanged
+              ;; Both are element vnodes - check tag and key for identity
               ;; The child element handles its own deltas via discharge-vnode!
               ;; DO NOT check (:deltas new-result) - that would cause parent to
               ;; trigger :update which calls render-initial! and bypasses child deltas
               (and (core/vnode? prev-value) (core/vnode? new-result))
-              (= (:tag prev-value) (:tag new-result))
+              (let [same-tag? (= (:tag prev-value) (:tag new-result))
+                    prev-key (:key prev-value)
+                    new-key (:key new-result)
+                    ;; Key-based identity check:
+                    ;; - If both have explicit keys, they must match
+                    ;; - If neither has keys, rely on tag match (backward compatible)
+                    ;; - If one has key and other doesn't, they're different elements
+                    same-identity? (cond
+                                     (and prev-key new-key) (= prev-key new-key)
+                                     (and (nil? prev-key) (nil? new-key)) true
+                                     :else false)]
+                (and same-tag? same-identity?))
 
               ;; Otherwise use reference equality
               :else (= prev-value new-result))]
