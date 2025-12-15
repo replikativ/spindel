@@ -25,6 +25,9 @@
   (:refer-clojure :exclude [await])
   (:require [is.simm.distributed-scope :as ds]
             [is.simm.spindel.distributed.core :as dist]
+            [is.simm.spindel.runtime.core]
+            [is.simm.spindel.spin.cps]
+            [is.simm.spindel.effects.await]
             #?(:clj [clojure.tools.analyzer.jvm :as ana.jvm])
             #?(:clj [cljs.analyzer :as ana.js])
             [clojure.set :as set]
