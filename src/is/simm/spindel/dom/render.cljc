@@ -123,6 +123,35 @@
 ;; Element Reference Transfer
 ;; =============================================================================
 
+(defn- find-matching-old-child
+  "Find an old child that matches a new child by key or tag.
+
+  Matching rules:
+  1. If both have keys, they must match
+  2. If new has no key, match by tag at same position
+  3. Text nodes match text nodes"
+  [new-child old-children-by-key unkeyed-old-at-index]
+  (let [new-key (:key new-child)]
+    (cond
+      ;; New child has key - look up in keyed map
+      new-key
+      (get old-children-by-key new-key)
+
+      ;; Text nodes - try positional unkeyed match
+      (dom/text-node? new-child)
+      (when (and unkeyed-old-at-index (dom/text-node? unkeyed-old-at-index))
+        unkeyed-old-at-index)
+
+      ;; Element nodes without key - positional match by tag
+      (dom/element-node? new-child)
+      (when (and unkeyed-old-at-index
+                 (dom/element-node? unkeyed-old-at-index)
+                 (nil? (:key unkeyed-old-at-index))
+                 (= (:tag new-child) (:tag unkeyed-old-at-index)))
+        unkeyed-old-at-index)
+
+      :else nil)))
+
 (defn transfer-element-refs!
   "Transfer element references from old vdom tree to new vdom tree.
 
@@ -133,7 +162,10 @@
 
   In the delta-direct model, elements have stable addresses, but we
   still need to transfer refs because we use vnode object identity
-  for the element map (simpler than maintaining address->element map)."
+  for the element map (simpler than maintaining address->element map).
+
+  Handles child count changes by using :key attributes for matching
+  when available, falling back to positional matching by tag."
   [discharge old-vdom new-vdom]
   (when (and old-vdom new-vdom)
     (cond
@@ -145,23 +177,47 @@
         ;; Transfer element reference
         (when-let [el (disch/get-element discharge old-vdom)]
           (disch/set-element! discharge new-vdom el))
-        ;; Recursively transfer children
+        ;; Recursively transfer children with key-aware matching
         (let [old-children (when-let [ch (:children old-vdom)] @ch)
-              new-children (when-let [ch (:children new-vdom)] @ch)]
-          (doseq [[old-child new-child] (map vector old-children new-children)]
-            (transfer-element-refs! discharge old-child new-child))))
+              new-children (when-let [ch (:children new-vdom)] @ch)
+              ;; Build index of keyed old children
+              old-by-key (reduce (fn [acc child]
+                                   (if-let [k (:key child)]
+                                     (assoc acc k child)
+                                     acc))
+                                 {}
+                                 old-children)]
+          ;; For each new child, find matching old child
+          (doseq [[idx new-child] (map-indexed vector new-children)]
+            (when new-child
+              (let [unkeyed-old-at-idx (get old-children idx)
+                    old-child (find-matching-old-child
+                               new-child old-by-key unkeyed-old-at-idx)]
+                (when old-child
+                  (transfer-element-refs! discharge old-child new-child)))))))
 
       ;; Both are text nodes - transfer ref
       (and (dom/text-node? old-vdom) (dom/text-node? new-vdom))
       (when-let [el (disch/get-element discharge old-vdom)]
         (disch/set-element! discharge new-vdom el))
 
-      ;; Both are fragments - just recurse on children
+      ;; Both are fragments - just recurse on children with key-aware matching
       (and (dom/fragment? old-vdom) (dom/fragment? new-vdom))
       (let [old-children (when-let [ch (:children old-vdom)] @ch)
-            new-children (when-let [ch (:children new-vdom)] @ch)]
-        (doseq [[old-child new-child] (map vector old-children new-children)]
-          (transfer-element-refs! discharge old-child new-child)))
+            new-children (when-let [ch (:children new-vdom)] @ch)
+            old-by-key (reduce (fn [acc child]
+                                 (if-let [k (:key child)]
+                                   (assoc acc k child)
+                                   acc))
+                               {}
+                               old-children)]
+        (doseq [[idx new-child] (map-indexed vector new-children)]
+          (when new-child
+            (let [unkeyed-old-at-idx (get old-children idx)
+                  old-child (find-matching-old-child
+                             new-child old-by-key unkeyed-old-at-idx)]
+              (when old-child
+                (transfer-element-refs! discharge old-child new-child))))))
 
       ;; Types don't match - can't transfer
       :else nil)))
