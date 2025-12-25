@@ -94,8 +94,8 @@
 ;; OverlayBackend - Fork with delta storage
 ;; =============================================================================
 
-(defn fork-local-path?
-  "Check if path is fork-local (should not fall back to parent).
+(def default-fork-local-paths
+  "Default set of fork-local paths that don't fall back to parent.
 
   Fork-local state:
   - :continuations - Execution state specific to this fork
@@ -107,16 +107,24 @@
   - :spin-tracking - Dependency tracking
   - :subscriptions - Event subscriptions
   - :atoms - Runtime atoms"
-  [first-key]
-  (#{:continuations :engine/pending :engine/draining?
-     :engine/delayed-spins :engine/timer-handles} first-key))
+  #{:continuations :engine/pending :engine/draining?
+    :engine/delayed-spins :engine/timer-handles})
 
-(defrecord OverlayBackend [overlay-atom parent-backend]
+(defn fork-local-path?
+  "Check if path is fork-local (should not fall back to parent).
+
+  Uses the provided local-paths set or defaults to `default-fork-local-paths`."
+  ([first-key]
+   (fork-local-path? first-key default-fork-local-paths))
+  ([first-key local-paths]
+   (contains? local-paths first-key)))
+
+(defrecord OverlayBackend [overlay-atom parent-backend local-paths]
   PStateBackend
 
   (backend-read [_this path]
     ;; Special handling for fork-local state (don't fall back to parent)
-    (if (and (seq path) (fork-local-path? (first path)))
+    (if (and (seq path) (fork-local-path? (first path) local-paths))
       ;; Fork-local: overlay only, no parent fallback
       (get-in @overlay-atom path)
       ;; Shared state: check overlay, fall back to parent
@@ -182,7 +190,7 @@
         new-state)
 
       ;; Non-empty path
-      (let [is-shared? (not (fork-local-path? (first path)))
+      (let [is-shared? (not (fork-local-path? (first path) local-paths))
             path-depth (count path)]
 
         (if (and is-shared? (>= path-depth 2))
@@ -232,11 +240,45 @@
     :overlay))
 
 (defn create-overlay-backend
-  "Create OverlayBackend with empty overlay over parent backend."
+  "Create OverlayBackend with empty overlay over parent backend.
+
+  Args:
+    parent-backend - The parent backend to delegate reads to for shared state
+    initial-overlay - Initial overlay state map (default: {})
+    local-paths - Set of path keys that are fork-local and don't fall back to parent
+                  (default: default-fork-local-paths)"
   ([parent-backend]
-   (create-overlay-backend parent-backend {}))
+   (create-overlay-backend parent-backend {} default-fork-local-paths))
   ([parent-backend initial-overlay]
-   (->OverlayBackend (atom initial-overlay) parent-backend)))
+   (create-overlay-backend parent-backend initial-overlay default-fork-local-paths))
+  ([parent-backend initial-overlay local-paths]
+   (->OverlayBackend (atom initial-overlay) parent-backend local-paths)))
+
+;; =============================================================================
+;; Fork Type Helpers
+;; =============================================================================
+
+(def fork-type-local-paths
+  "Predefined local-paths sets for common fork types.
+
+  :thread - Chat threads with isolated conversation but shared DB
+  :exploration - AI explorations with isolated conversation and speculative DB
+  :branch - Durable branches with isolated conversation"
+  {:thread      (conj default-fork-local-paths :conversation)
+   :exploration (into default-fork-local-paths #{:conversation :db :base-db})
+   :branch      (conj default-fork-local-paths :conversation)})
+
+(defn local-paths-for-fork-type
+  "Get local-paths set for a fork type keyword.
+
+  Supports:
+  - :thread - Isolated conversation, shared live DB connection
+  - :exploration - Isolated conversation + speculative DB snapshot
+  - :branch - Isolated conversation (DB handled by versioning API)
+
+  Returns default-fork-local-paths for unknown types."
+  [fork-type-key]
+  (get fork-type-local-paths fork-type-key default-fork-local-paths))
 
 ;; =============================================================================
 ;; ImmutableBackend - Readonly snapshots
