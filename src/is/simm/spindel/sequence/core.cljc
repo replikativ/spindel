@@ -1,6 +1,7 @@
 (ns is.simm.spindel.sequence.core
   "Core async sequence generation - gen-aseq macro and yield"
-  (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq]]
+  (:refer-clojure :exclude [for])
+  (:require [is.simm.partial-cps.sequence :as pcps-seq :refer [PAsyncSeq]]
             [is.simm.spindel.runtime.core :as rtc]
             [is.simm.spindel.spin.core :as spin-core]
             [is.simm.spindel.spin.continuation :as cont]
@@ -14,7 +15,7 @@
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [is.simm.spindel.effects.yield :as yield-eff]))
   ;; Make macros available to CLJS via require-macros
-  #?(:cljs (:require-macros [is.simm.spindel.sequence.core :refer [gen-aseq]]
+  #?(:cljs (:require-macros [is.simm.spindel.sequence.core :refer [gen-aseq for]]
                             [is.simm.spindel.spin.cps :refer [spin]]))
   #?(:clj (:require [is.simm.spindel.spin.cps :as spin-cps :refer [spin]]))
   ;; Import Thunk type - in CLJ it's a Java class, in CLJS use refer
@@ -261,3 +262,36 @@
           (let [gen-id# ~gen-id-expr
                 cps-fn# ~cps-fn-code]
             (make-gen-aseq cps-fn# gen-id#))))))
+
+;; =============================================================================
+;; for Macro - Async sequence comprehension with spindel context
+;; =============================================================================
+
+#?(:clj
+   (defmacro for
+     "Async sequence comprehension with spindel's breakpoints and execution context.
+
+  Like clojure.core/for but for async sequences. Supports await, track, and other
+  spindel effects in the body. Returns a lazy async sequence that can be consumed
+  with anext.
+
+  Automatically captures the current execution context so that spins created in
+  the body have access to spindel's runtime.
+
+  Example:
+    (spin
+      (let [aseq (for [x [1 2 3]
+                       :when (odd? x)]
+                   (await (async-double x)))]
+        (loop [s aseq acc []]
+          (if-let [[v rest-s] (await (anext s))]
+            (recur rest-s (conj acc v))
+            acc))))
+
+  Supports all for modifiers: :let, :when, :while, and multiple bindings."
+     [seq-exprs body-expr]
+     `(pcps-seq/for-with
+        {:breakpoints (spin-cps/build-breakpoints)
+         :bindings [[rtc/*execution-context* (rtc/current-execution-context)]]}
+        ~seq-exprs
+        ~body-expr)))
