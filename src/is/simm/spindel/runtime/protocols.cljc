@@ -189,3 +189,39 @@
           (if (cas-state! ctx path old-state new-state)
             :success
             (recur))))"))
+
+;; ----------------------------------------------------------------------------
+;; External references (forkable resources)
+;; ----------------------------------------------------------------------------
+
+(defprotocol PForkable
+  "Protocol for external references that can be forked with execution contexts.
+
+  When an ExecutionContext is forked, all registered external refs in
+  [:external-refs] are forked by calling pfork on each. This enables
+  copy-on-write semantics for external systems like git repositories,
+  databases, or file systems.
+
+  Implementations should:
+  - Return a NEW instance representing the forked state
+  - NOT mutate the original instance (value semantics)
+  - Create any necessary underlying resources (e.g., git branch)
+
+  Example implementations:
+  - Git: Create new branch, return system pointing to new branch
+  - Datahike: Create branch in database, return new connection
+  - Btrfs: Create snapshot, return system pointing to snapshot"
+
+  (pfork [this fork-id]
+    "Create a forked version of this external reference.
+
+    Arguments:
+      this - The reference to fork
+      fork-id - Unique identifier for this fork (keyword)
+
+    Returns:
+      A new instance representing the forked state.
+      Must not mutate the original.
+
+    The fork-id can be used to generate unique names for underlying
+    resources (e.g., branch names like :main-fork-12345)."))

@@ -262,13 +262,15 @@
   - Inherited bindings (can be overridden)
   - New fork-id
   - Reference to parent context
+  - Auto-incremented process-id for Elle compatibility (if parent has :process-id)
 
   Options:
     :state-updates - Map of initial overlay state (optional)
                      These values will be written to the overlay immediately
     :bindings - Fork-local configuration (merged with parent bindings)
                 Map of keys to values that spins can read via (:bindings *execution-context*)
-    :metadata - Fork metadata (default: parent metadata)
+    :metadata - Fork metadata (default: parent metadata with updated process-id/depth)
+    :process-id - Override auto-assigned process-id (default: parent + 1)
 
   Returns: New ExecutionContext with overlay backend
 
@@ -285,29 +287,49 @@
       (let [client (:http-client (:bindings *execution-context*))]
         (http-get client \"http://example.com\")))
 
+    ;; Process-id is automatically assigned for Elle:
+    (def sim (create-simulation-context))  ; process-id 0
+    (def fork (fork-context sim))          ; process-id 1
+    (def fork2 (fork-context fork))        ; process-id 2
+
   Properties:
   - Fork creation is O(1) with OverlayBackend
   - Overlay stores only modifications (memory efficient)
   - Reads fall through to parent (shared observer graph)
   - Fork-local state (continuations, spin-outputs) doesn't fall back
-  - Bindings are merged (child overrides parent)"
-  [parent-ctx & {:keys [state-updates bindings metadata]
+  - Bindings are merged (child overrides parent)
+  - Process-id auto-increments for Elle compatibility"
+  [parent-ctx & {:keys [state-updates bindings metadata process-id]
                  :or {state-updates {}
                       bindings {}
-                      metadata nil}}]
+                      metadata nil
+                      process-id nil}}]
   (let [fork-id (keyword (str "fork-" (random-uuid)))
         ;; Copy parent's continuations so fork inherits reactive subscriptions
         ;; Without this, spins executed in parent won't re-execute in fork when signals change
         ;; because continuations are fork-local (no parent fallback)
         parent-continuations (rtp/get-state parent-ctx [:continuations])
 
-        ;; Initialize fork-local state (engine state, continuations)
+        ;; Fork external refs - pure map transformation
+        ;; Each entry in [:external-refs] must implement PForkable
+        parent-external-refs (rtp/get-state parent-ctx [:external-refs])
+        forked-external-refs (when (seq parent-external-refs)
+                               (persistent!
+                                 (reduce-kv
+                                   (fn [m ref-id ref]
+                                     (assoc! m ref-id (rtp/pfork ref fork-id)))
+                                   (transient {})
+                                   parent-external-refs)))
+
+        ;; Initialize fork-local state (engine state, continuations, external-refs)
         fork-local-state (merge
                            {:continuations (or parent-continuations {})  ; ← Copy parent's continuations!
                             :engine/pending []
                             :engine/draining? false
                             :engine/delayed-spins (sorted-map)
                             :engine/timer-handles {}}
+                           (when forked-external-refs
+                             {:external-refs forked-external-refs})  ; ← Include forked refs
                            state-updates)
 
         ;; Create overlay backend over parent's backend
@@ -318,8 +340,36 @@
         ;; Merge bindings (child overrides parent)
         merged-bindings (merge (:bindings parent-ctx) bindings)
 
-        ;; Inherit or override metadata
-        fork-metadata (or metadata (:metadata parent-ctx))]
+        ;; Handle metadata with process-id/fork-depth tracking for Elle compatibility
+        parent-metadata (:metadata parent-ctx)
+        parent-pid (get parent-metadata :process-id)
+        parent-depth (get parent-metadata :fork-depth 0)
+
+        ;; Auto-assign process-id: parent + 1 (if parent has process-id)
+        child-pid (or process-id
+                      (when parent-pid (inc parent-pid)))
+
+        ;; Build fork metadata with lineage tracking
+        fork-metadata (cond
+                        ;; User provided explicit metadata - use it, merge lineage if parent has it
+                        metadata
+                        (if parent-pid
+                          (merge metadata
+                                 {:process-id (or (:process-id metadata) child-pid)
+                                  :parent-process-id parent-pid
+                                  :fork-depth (inc parent-depth)})
+                          metadata)
+
+                        ;; No explicit metadata, parent has process-id - track lineage
+                        parent-pid
+                        (merge parent-metadata
+                               {:process-id child-pid
+                                :parent-process-id parent-pid
+                                :fork-depth (inc parent-depth)})
+
+                        ;; No explicit metadata, no process-id tracking - inherit parent metadata
+                        :else
+                        parent-metadata)]
 
     (->ExecutionContext
       fork-id
@@ -689,4 +739,153 @@
         (binding [is.simm.spindel.runtime.core/*execution-context* rebuild-ctx#]
           ~@body)
         (finalize-rebuild-context rebuild-ctx#))))
+
+;; =============================================================================
+;; Simulation Context (Deterministic Testing)
+;; =============================================================================
+
+(defn create-simulation-context
+  "Create an execution context optimized for deterministic simulation testing.
+
+  This is a convenience function that creates a context pre-configured for
+  simulation testing scenarios like prufstein, Elle linearizability checking,
+  and fault injection testing.
+
+  Configuration:
+  - Virtual time mode enabled (time advances explicitly via advance-time!)
+  - Synchronous executor option for deterministic execution
+  - Process-id 0 for Elle-compatible history (forks get incrementing IDs)
+  - Fork depth tracking for debugging
+
+  Options:
+    :executor    - Executor for spin scheduling (default: default-executor)
+                   Use synchronous-executor for fully deterministic tests
+    :bindings    - Fork-local configuration map (default: {})
+    :metadata    - User-defined metadata (default: {})
+    :process-id  - Elle-compatible process ID (default: 0)
+
+  Returns: ExecutionContext ready for simulation testing
+
+  Example:
+    (let [ctx (create-simulation-context
+                {:bindings {:rng my-rng :fault-config chaos}
+                 :metadata {:trial 42}})]
+      ;; Virtual time mode - control time explicitly
+      (advance-time! ctx 1000)
+
+      ;; Fork with automatic process-id assignment
+      (let [fork (fork-context ctx)]
+        ;; fork has process-id 1, fork-depth 1
+        (get-process-id fork)  ; => 1
+        ))"
+  [& {:keys [executor bindings metadata process-id]
+      :or {bindings {}
+           metadata {}
+           process-id 0}}]
+  (let [;; Create base context
+        ctx (create-execution-context
+              :executor executor
+              :bindings bindings
+              :metadata (merge metadata
+                              {:process-id process-id
+                               :fork-depth 0}))]
+
+    ;; Set virtual time mode
+    (rtp/swap-state! ctx [:engine/time-mode] (constantly :virtual))
+
+    ctx))
+
+;; =============================================================================
+;; Fork Lineage & Process ID (Elle Compatibility)
+;; =============================================================================
+
+(defn get-process-id
+  "Get Elle-compatible process ID for this context.
+
+  Process IDs are:
+  - 0 for root contexts (or as specified in create-simulation-context)
+  - Automatically incremented for forked contexts
+
+  Returns: integer process-id or 0 if not set"
+  [ctx]
+  (get-in ctx [:metadata :process-id] 0))
+
+(defn get-parent-process-id
+  "Get the process ID of the parent context.
+
+  Returns: integer parent process-id, or nil for root contexts"
+  [ctx]
+  (get-in ctx [:metadata :parent-process-id]))
+
+(defn get-fork-lineage
+  "Get the fork lineage chain from root to this context.
+
+  Returns vector of process-ids from root to current context.
+
+  Example:
+    (get-fork-lineage root)  ; => [0]
+    (get-fork-lineage fork)  ; => [0 1]
+    (get-fork-lineage fork2) ; => [0 1 2]"
+  [ctx]
+  (loop [curr ctx
+         path []]
+    (let [pid (get-process-id curr)
+          path' (cons pid path)]
+      (if-let [parent (:parent-ctx curr)]
+        (recur parent path')
+        (vec path')))))
+
+;; =============================================================================
+;; Virtual Time Control API
+;; =============================================================================
+
+(defn get-time-mode
+  "Get current time mode (:virtual or :real).
+
+  Returns: :virtual or :real"
+  [ctx]
+  (rtp/get-state ctx [:engine/time-mode]))
+
+(defn set-time-mode!
+  "Set time mode for context.
+
+  Args:
+    ctx  - ExecutionContext
+    mode - :virtual or :real
+
+  Returns: previous mode"
+  [ctx mode]
+  (simple/set-time-mode! ctx mode))
+
+(defn current-time
+  "Get current time (virtual or real) in milliseconds.
+
+  In :virtual mode, returns the virtual time set via advance-time!
+  In :real mode, returns System/currentTimeMillis or Date.now()"
+  [ctx]
+  (simple/current-time ctx))
+
+(defn advance-time!
+  "Advance virtual time to target-ms and process all scheduled events.
+
+  Only works in :virtual time mode. Throws if in :real mode.
+
+  This is the primary way to control time in simulation tests:
+  - Schedules delayed events via schedule-delayed-execution!
+  - advance-time! processes all events up to target-ms
+
+  Args:
+    ctx       - ExecutionContext
+    target-ms - Target time in milliseconds
+
+  Returns: number of events processed
+
+  Example:
+    ;; Advance 100ms and process all timeouts/delays
+    (advance-time! ctx 100)
+
+    ;; Or advance to absolute time
+    (advance-time! ctx 1000)  ; Jump to t=1000ms"
+  [ctx target-ms]
+  (simple/advance-virtual-time! ctx target-ms))
 
