@@ -6,7 +6,7 @@
 
   Responsibilities:
   - Maintain event queue (:engine/pending)
-  - Process events: :signal-change, :spin-completion, :deferred-delivery, :spin-execution
+  - Process events: :signal-change, :spin-completion, :deferred-delivery, :mailbox-post, :spin-execution
   - Drain events asynchronously on executor threads
   - Prevent concurrent draining via CAS lock (:engine/draining?)
 
@@ -26,6 +26,7 @@
             [is.simm.spindel.runtime.node-types :as nt]
             [is.simm.spindel.spin.continuation :as cont]
             [is.simm.spindel.spin.result :as result]
+            [is.simm.spindel.spin.sync :as sync]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set]))
 
@@ -115,6 +116,7 @@
   - :signal-change - marks dependent spins dirty
   - :spin-completion - resumes waiting continuations
   - :deferred-delivery - delivers value to deferred
+  - :mailbox-post - posts message to mailbox
 
   May enqueue additional events during processing (cascading).
 
@@ -240,7 +242,8 @@
 
     :deferred-delivery
     (let [deferred (:deferred event)
-          value (:value event)]
+          value (:value event)
+          state-atom (.-state-atom deferred)]  ; Access deftype field
       (log/trace! {:event :engine/deferred-delivery
                    :data {:deferred deferred :value value}})
       ;; Deliver inline - we're already on executor thread, queue broke the call stack
@@ -249,7 +252,21 @@
       ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
       (binding [rtc/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (deferred value))
+        (sync/deliver-inline! deferred value state-atom))
+      nil)
+
+    :mailbox-post
+    (let [mailbox (:mailbox event)
+          msg (:msg event)
+          state-atom (.-state-atom mailbox)]  ; Access deftype field
+      (log/trace! {:event :engine/mailbox-post
+                   :data {:mailbox mailbox :msg msg}})
+      ;; Post inline - we're already on executor thread, queue broke the call stack
+      ;; CRITICAL: Bind *execution-context* and *in-trampoline* when posting to mailbox
+      ;; The mailbox function will resume continuations which need context access
+      (binding [rtc/*execution-context* context
+                pcps-async/*in-trampoline* false]
+        (sync/post-inline! mailbox msg state-atom))
       nil)
 
     :spin-execution

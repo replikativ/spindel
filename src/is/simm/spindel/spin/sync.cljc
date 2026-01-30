@@ -10,37 +10,47 @@
 ;; Synchronization Primitives
 ;; ============================================================================
 
+(defn deliver-inline!
+  "INTERNAL: Deliver value inline, resuming readers directly.
+   Called by event handler. Do NOT call from user code - use 1-arity instead."
+  [deferred value state-atom]
+  (let [;; Atomically check if already assigned and capture pending callbacks
+        pending-callbacks (atom nil)
+        _assigned? (swap! state-atom
+                         (fn [state]
+                           (if (:assigned? state)
+                             ;; Already assigned - no change
+                             state
+                             ;; First assignment - capture pending and mark assigned
+                             (do
+                               (reset! pending-callbacks (:pending state))
+                               {:assigned? true
+                                :value value
+                                :pending []}))))]
+
+    ;; Notify all pending readers INLINE if this was the first assignment
+    ;; Event handler already bound *in-trampoline* false
+    (when-let [pending @pending-callbacks]
+      (doseq [resolve pending]
+        (cont/resume resolve value)))
+
+    ;; Return the assigned value
+    (:value @state-atom)))
+
 (deftype Deferred [id state-atom]
   #?(:clj clojure.lang.IFn :cljs IFn)
 
-  ;; 1-arity: Assign value (INTERNAL - inline delivery)
-  ;; Use this ONLY when called from within the same execution-context context
-  ;; For external delivery (futures, threads), use deliver! instead
+  ;; 1-arity: Assign value via event queue (SAFE)
+  ;; Always enqueues delivery event to prevent:
+  ;; - Stack overflow from long chains (nested trampolines)
+  ;; - Circular waits from external contexts
+  ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
   (#?(:clj invoke :cljs -invoke) [_this value]
-   (let [;; Atomically check if already assigned and capture pending callbacks
-         pending-callbacks (atom nil)
-         _assigned? (swap! state-atom
-                          (fn [state]
-                            (if (:assigned? state)
-                              ;; Already assigned - no change
-                              state
-                              ;; First assignment - capture pending and mark assigned
-                              (do
-                                (reset! pending-callbacks (:pending state))
-                                {:assigned? true
-                                 :value value
-                                 :pending []}))))]
-
-     ;; Notify all pending readers INLINE if this was the first assignment
-     ;; CRITICAL: Bind *in-trampoline* false to start new trampoline for each reader
-     ;; Readers' continuations may return Thunks (loop/recur) that need execution
-     (when-let [pending @pending-callbacks]
-       (doseq [resolve pending]
-         (binding [pcps-async/*in-trampoline* false]
-           (cont/resume resolve value))))
-
-     ;; Return the assigned value
-     (:value @state-atom)))
+   ;; Enqueue delivery event - breaks call stack, ensures proper trampoline handling
+   (rtc/enqueue-event! {:type :deferred-delivery
+                        :deferred _this
+                        :value value})
+   value)
 
   ;; 2-arity: Read as spin (resolve, reject) - standard CPS signature
   (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
@@ -188,40 +198,49 @@
   #?(:clj clojure.lang.PersistentQueue/EMPTY
      :cljs #queue []))
 
+(defn post-inline!
+  "INTERNAL: Post message inline, resuming waiters directly.
+   Called by event handler. Do NOT call from user code - use 1-arity instead."
+  [mailbox msg state-atom]
+  ;; Loop to find first non-cancelled waiter
+  (loop []
+    (let [waiter-to-try (atom nil)
+          _result (swap! state-atom
+                        (fn [state]
+                          (if (seq (:waiters state))
+                            ;; Has waiters - take first one to try
+                            (do
+                              (reset! waiter-to-try (first (:waiters state)))
+                              (update state :waiters #(vec (rest %))))
+                            ;; No waiters - add to queue
+                            (update state :queue conj msg))))]
+      (if-let [{:keys [spin-id resolve]} @waiter-to-try]
+        ;; Got a waiter - check if cancelled (outside swap, context available)
+        (if (and spin-id (rtc/spin-is-cancelled? spin-id))
+          ;; Cancelled - try next waiter
+          (recur)
+          ;; Valid waiter - resume it
+          ;; Event handler already bound *in-trampoline* false
+          (do
+            (cont/resume resolve msg)
+            nil))
+        ;; No waiter, message queued
+        nil))))
+
 (deftype Mailbox [id state-atom]
   #?(:clj clojure.lang.IFn :cljs IFn)
 
-  ;; 1-arity: Post message (PRODUCER - non-blocking)
-  ;; Adds message to queue and wakes up one waiter (FIFO)
-  ;; Skips cancelled waiters to handle race combinator cancellation
+  ;; 1-arity: Post message via event queue (SAFE)
+  ;; Always enqueues post event to prevent:
+  ;; - Stack overflow from long chains (nested trampolines)
+  ;; - Circular waits from external contexts
+  ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
   (#?(:clj invoke :cljs -invoke) [_this msg]
-   ;; Loop to find first non-cancelled waiter
-   ;; Cancellation check must happen OUTSIDE swap! because it needs execution context
-   (loop []
-     (let [waiter-to-try (atom nil)
-           _result (swap! state-atom
-                         (fn [state]
-                           (if (seq (:waiters state))
-                             ;; Has waiters - take first one to try
-                             (do
-                               (reset! waiter-to-try (first (:waiters state)))
-                               (update state :waiters #(vec (rest %))))
-                             ;; No waiters - add to queue
-                             (update state :queue conj msg))))]
-       (if-let [{:keys [spin-id resolve]} @waiter-to-try]
-         ;; Got a waiter - check if cancelled (outside swap, context available)
-         (if (and spin-id (rtc/spin-is-cancelled? spin-id))
-           ;; Cancelled - try next waiter
-           (recur)
-           ;; Valid waiter - resume it
-           ;; CRITICAL: Bind *in-trampoline* false to start new trampoline
-           ;; The waiter's continuation may return a Thunk (loop/recur) that needs execution
-           (do
-             (binding [pcps-async/*in-trampoline* false]
-               (cont/resume resolve msg))
-             nil))
-         ;; No waiter, message queued
-         nil))))
+   ;; Enqueue post event - breaks call stack, ensures proper trampoline handling
+   (rtc/enqueue-event! {:type :mailbox-post
+                        :mailbox _this
+                        :msg msg})
+   nil)
 
   ;; 2-arity: Take message (CONSUMER - blocking until available)
   ;; Works like Deferred: call cont/resume if value available, always return incomplete
