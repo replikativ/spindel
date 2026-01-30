@@ -247,15 +247,28 @@
 (extend-type Mailbox
   aseq/PAsyncSeq
   (anext [mbx]
-    ;; Return a spin that yields [msg mbx] when a message is available
+    ;; Return a CPS function (NOT a Spin) for partial-cps compatibility
+    ;; The function yields [msg mbx] when a message is available
     ;; The "rest" is the same mailbox (infinite stream)
-    ;; Use 1-arity make-spin to auto-generate unique ID (avoids cache collision)
-    (spin-core/make-spin
-     (fn [resolve reject]
-       ;; Use the mailbox's 2-arity (consumer) to get next message
-       ;; Wrap resolve to transform msg -> [msg mbx]
-       (let [wrapped-resolve (fn [msg] (resolve [msg mbx]))]
-         (mbx wrapped-resolve reject))))))
+    (fn [resolve reject]
+      ;; Capture execution context to rebind when mailbox calls continuation
+      (let [exec-ctx (try (rtc/current-execution-context)
+                         (catch #?(:clj Throwable :cljs :default) _ nil))]
+        ;; Use the mailbox's 2-arity (consumer) to get next message
+        ;; Wrap resolve to:
+        ;; 1. Rebind execution context (for nested spindel operations)
+        ;; 2. Transform msg -> [msg mbx]
+        (mbx
+         (fn [msg]
+           (if exec-ctx
+             (binding [rtc/*execution-context* exec-ctx]
+               (resolve [msg mbx]))
+             (resolve [msg mbx])))
+         (fn [error]
+           (if exec-ctx
+             (binding [rtc/*execution-context* exec-ctx]
+               (reject error))
+             (reject error))))))))
 
 (defn post!
   "Post a message to mailbox from EXTERNAL context (futures, threads, callbacks).
