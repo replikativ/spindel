@@ -3,7 +3,8 @@
   (:require [is.simm.spindel.runtime.core :as rtc]
             [is.simm.spindel.spin.core :as spin-core]
             [is.simm.spindel.state.atom :as ratom]
-            [is.simm.spindel.spin.continuation :as cont]))
+            [is.simm.spindel.spin.continuation :as cont]
+            [is.simm.partial-cps.async :as pcps-async]))
 
 ;; ============================================================================
 ;; Synchronization Primitives
@@ -31,10 +32,12 @@
                                  :pending []}))))]
 
      ;; Notify all pending readers INLINE if this was the first assignment
-     ;; SAFE ONLY because caller is in same execution-context context (no circular waits)
+     ;; CRITICAL: Bind *in-trampoline* false to start new trampoline for each reader
+     ;; Readers' continuations may return Thunks (loop/recur) that need execution
      (when-let [pending @pending-callbacks]
        (doseq [resolve pending]
-         (cont/resume resolve value)))
+         (binding [pcps-async/*in-trampoline* false]
+           (cont/resume resolve value))))
 
      ;; Return the assigned value
      (:value @state-atom)))
@@ -55,9 +58,8 @@
                                  (update state :pending (fnil conj []) resolve))))]
      (if-let [value @value-to-resolve]
        ;; Was already assigned - resolve immediately
-       (do
-         (cont/resume resolve value)
-         spin-core/incomplete)
+       ;; Return result (could be Thunk for trampoline)
+       (cont/resume resolve value)
        ;; Was not assigned - added to pending
        spin-core/incomplete))))
 
@@ -74,10 +76,11 @@
   [execution-context]
   (let [dfv-id (keyword (gensym "deferred-"))
         ;; Use fork-safe atom to store deferred state
-        state-atom (ratom/create-atom execution-context
-                                      {:assigned? false
-                                       :value nil
-                                       :pending []})
+        ;; Note: create-atom uses *execution-context* dynamically, so we bind it
+        state-atom (binding [rtc/*execution-context* execution-context]
+                     (ratom/create-atom {:assigned? false
+                                         :value nil
+                                         :pending []}))
         dfv-obj (->Deferred dfv-id state-atom)]
 
     ;; TODO: Auto-cleanup on GC (remove state-atom from execution-context when deferred is GC'd)
@@ -174,3 +177,173 @@
    (fn [_resolve _reject]
      ;; Never call resolve or reject
      spin-core/incomplete)))
+
+;; ============================================================================
+;; Mailbox - Multi-Assignment Queue
+;; ============================================================================
+
+;; Empty queue constant for cross-platform use
+(def ^:private empty-queue
+  "Empty PersistentQueue - proper FIFO data structure."
+  #?(:clj clojure.lang.PersistentQueue/EMPTY
+     :cljs #queue []))
+
+(deftype Mailbox [id state-atom]
+  #?(:clj clojure.lang.IFn :cljs IFn)
+
+  ;; 1-arity: Post message (PRODUCER - non-blocking)
+  ;; Adds message to queue and wakes up one waiter (FIFO)
+  ;; Skips cancelled waiters to handle race combinator cancellation
+  (#?(:clj invoke :cljs -invoke) [_this msg]
+   ;; Loop to find first non-cancelled waiter
+   ;; Cancellation check must happen OUTSIDE swap! because it needs execution context
+   (loop []
+     (let [waiter-to-try (atom nil)
+           _result (swap! state-atom
+                         (fn [state]
+                           (if (seq (:waiters state))
+                             ;; Has waiters - take first one to try
+                             (do
+                               (reset! waiter-to-try (first (:waiters state)))
+                               (update state :waiters #(vec (rest %))))
+                             ;; No waiters - add to queue
+                             (update state :queue conj msg))))]
+       (if-let [{:keys [spin-id resolve]} @waiter-to-try]
+         ;; Got a waiter - check if cancelled (outside swap, context available)
+         (if (and spin-id (rtc/spin-is-cancelled? spin-id))
+           ;; Cancelled - try next waiter
+           (recur)
+           ;; Valid waiter - resume it
+           ;; CRITICAL: Bind *in-trampoline* false to start new trampoline
+           ;; The waiter's continuation may return a Thunk (loop/recur) that needs execution
+           (do
+             (binding [pcps-async/*in-trampoline* false]
+               (cont/resume resolve msg))
+             nil))
+         ;; No waiter, message queued
+         nil))))
+
+  ;; 2-arity: Take message (CONSUMER - blocking until available)
+  ;; Works like Deferred: call cont/resume if value available, always return incomplete
+  ;; Stores spin-id with waiter so cancelled spins can be skipped
+  (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
+   ;; ATOMIC check-and-take or add-to-waiters
+   (let [current-spin-id rtc/*spin-id*
+         msg-to-resolve (atom ::not-found)
+         _result (swap! state-atom
+                       (fn [state]
+                         (if (seq (:queue state))
+                           ;; Queue has message - take from front (FIFO)
+                           (do
+                             (reset! msg-to-resolve (peek (:queue state)))
+                             ;; Remove front element
+                             (update state :queue pop))
+                           ;; Queue empty - add to waiters with spin-id
+                           (update state :waiters conj {:spin-id current-spin-id
+                                                        :resolve resolve}))))]
+
+     (if (not= ::not-found @msg-to-resolve)
+       ;; Got message - resume continuation immediately
+       ;; Return result (could be Thunk for trampoline)
+       (cont/resume resolve @msg-to-resolve)
+       ;; No message - added to waiters, will be resumed async
+       spin-core/incomplete))))
+
+(defn create-mailbox
+  "Create a mailbox with explicit execution-context.
+
+   A mailbox is a queue where producers post messages (non-blocking)
+   and consumers take messages (blocking until available).
+
+   State is stored in fork-safe execution-context atom.
+   Fork-safe - state is copied when execution-context is forked.
+
+   Example:
+     (def mbx (create-mailbox execution-context))
+     (mbx :msg)              ; Post message (returns nil)
+     (spin/spin (await mbx)) ; Take message (blocks until available)"
+  [execution-context]
+  (let [mbx-id (keyword (gensym "mailbox-"))
+        ;; Use fork-safe atom to store mailbox state
+        ;; Note: create-atom uses *execution-context* dynamically, so we bind it
+        ;; Queue is PersistentQueue for proper FIFO semantics
+        state-atom (binding [rtc/*execution-context* execution-context]
+                     (ratom/create-atom {:queue empty-queue  ; PersistentQueue - FIFO
+                                         :waiters []}))      ; Consumers waiting for messages
+        mbx-obj (->Mailbox mbx-id state-atom)]
+
+    ;; TODO: Auto-cleanup on GC
+
+    mbx-obj))
+
+(defn post!
+  "Post a message to mailbox from EXTERNAL context (futures, threads, callbacks).
+
+   This is the SAFE way to post from external threads/contexts. It enqueues
+   a post event to prevent blocking the caller.
+
+   Usage:
+     ;; From future (external thread)
+     (future
+       (Thread/sleep 100)
+       (post! mbx :msg))  ; Safe - enqueues event, returns immediately
+
+     ;; From callback
+     (on-websocket-message
+       (fn [msg]
+         (post! mbx msg)))  ; Safe - enqueues event
+
+   Contrast with internal posting:
+     ;; Inside spin context (SAME execution-context context)
+     (mbx :msg)  ; Fast inline posting - OK because same context
+
+   When to use which:
+   - Use (mbx msg) when: Inside spins, inside gen-aseq
+   - Use post! when: From futures, threads, async callbacks, external code
+
+   Why the distinction:
+   - Internal: Inline resume is safe (no circular waits)
+   - External: Must enqueue to prevent caller waiting for itself"
+  [mailbox msg]
+  ;; Enqueue post event - caller returns before waiter resumes
+  (rtc/enqueue-event! {:type :mailbox-post
+                       :mailbox mailbox
+                       :msg msg})
+  nil)
+
+(defn mailbox
+  "Create a mailbox using *execution-context*.
+
+   A mailbox is a queue for message passing between spins:
+   - Producers post messages (non-blocking, returns nil)
+   - Consumers take messages (blocking until available)
+
+   Usage:
+     (def mbx (mailbox))
+     (mbx :msg)              ; Post :msg (returns nil) - INTERNAL
+     (post! mbx :msg)        ; Post from external context - EXTERNAL
+
+     ;; Inside a spin, use await (not @) to take a message
+     (require '[is.simm.spindel.effects.await :refer [await]])
+     (spin/spin
+       (let [msg (await mbx)]  ; Awaits until message available
+         (process msg)))
+
+   Properties:
+   - Multiple messages: Each post adds to queue
+   - FIFO: Messages consumed in order posted
+   - Multiple consumers: Each message goes to one consumer
+   - Blocking take: Taking blocks until message available
+   - Non-blocking post: Posting always returns immediately
+   - Fork-safe: State stored in execution-context atom
+
+   Use cases:
+   - Message passing between concurrent spins
+   - Event streams / message queues
+   - Producer-consumer patterns
+   - Multi-agent communication"
+  []
+  (if-let [execution-context (try (rtc/current-execution-context) (catch #?(:clj Throwable :cljs :default) _ nil))]
+    (create-mailbox execution-context)
+    (throw (ex-info "mailbox called outside spin context"
+                    {:hint "Use create-mailbox with explicit execution-context, or call from within a spin"}))))
