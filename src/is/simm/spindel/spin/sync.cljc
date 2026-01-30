@@ -1,10 +1,11 @@
 (ns is.simm.spindel.spin.sync
-  "Synchronization primitives - Deferred, never"
+  "Synchronization primitives - Deferred, Mailbox, never"
   (:require [is.simm.spindel.runtime.core :as rtc]
             [is.simm.spindel.spin.core :as spin-core]
             [is.simm.spindel.state.atom :as ratom]
             [is.simm.spindel.spin.continuation :as cont]
-            [is.simm.partial-cps.async :as pcps-async]))
+            [is.simm.partial-cps.async :as pcps-async]
+            [is.simm.partial-cps.sequence :as aseq]))
 
 ;; ============================================================================
 ;; Synchronization Primitives
@@ -238,6 +239,23 @@
     ;; TODO: Auto-cleanup on GC
 
     mbx-obj))
+
+;; ============================================================================
+;; AsyncSeq Extension - Mailbox as Lazy Pull Stream
+;; ============================================================================
+
+(extend-type Mailbox
+  aseq/PAsyncSeq
+  (anext [mbx]
+    ;; Return a spin that yields [msg mbx] when a message is available
+    ;; The "rest" is the same mailbox (infinite stream)
+    ;; Use 1-arity make-spin to auto-generate unique ID (avoids cache collision)
+    (spin-core/make-spin
+     (fn [resolve reject]
+       ;; Use the mailbox's 2-arity (consumer) to get next message
+       ;; Wrap resolve to transform msg -> [msg mbx]
+       (let [wrapped-resolve (fn [msg] (resolve [msg mbx]))]
+         (mbx wrapped-resolve reject))))))
 
 (defn post!
   "Post a message to mailbox from EXTERNAL context (futures, threads, callbacks).
