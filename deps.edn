@@ -8,8 +8,8 @@
         org.clojure/tools.analyzer.jvm {:mvn/version "1.3.2"}
         riddley/riddley {:mvn/version "0.2.0"}
         com.taoensso/trove {:mvn/version "1.1.0"}
-        is.simm/partial-cps {:git/url "https://github.com/simm-is/partial-cps"
-                             :git/sha "d05fed1847fde43259a57e51b4b53a15e75e8f50"}
+        is.simm/partial-cps {:local/root "../partial-cps"}
+        is.simm/yggdrasil {:local/root "../yggdrasil"}
         io.replikativ/hasch {:mvn/version "0.3.94"}
         org.clojure/core.async {:mvn/version "1.6.681"}}
 
@@ -45,6 +45,8 @@
 
   :dev {:extra-paths ["test"]
         :extra-deps {org.clojure/tools.namespace {:mvn/version "1.5.0"}}}
+
+  :sci {:extra-deps {org.babashka/sci {:mvn/version "0.8.42"}}}
 
   :cljs {:extra-paths ["test"]
          :extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"}}}}}

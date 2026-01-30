@@ -155,6 +155,16 @@
                  :cljs (.-name (type awaitable)))))
       (await-deferred awaitable spin-id source-loc resolve reject)
 
+      ;; Check Mailbox by class name (avoids circular dependency)
+      ;; Works like Deferred: mailbox calls cont/resume internally if message available
+      (and awaitable
+           (= "is.simm.spindel.spin.sync.Mailbox"
+              #?(:clj (.getName (class awaitable))
+                 :cljs (.-name (type awaitable)))))
+      (do
+        (awaitable resolve reject)
+        :is.simm.spindel.spin/incomplete)
+
       ;; SignalRef is an error
       (signal-ref? awaitable)
       (reject (eff/type-error 'await "Spin or Deferred (use track for signals)" awaitable))

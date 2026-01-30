@@ -89,7 +89,6 @@
             (log/debug! {:event :cache/rebuild-mode :data {:spin-id spin-id}})
             ;; Execute spin body for side effects (nested spin creation, continuation registration)
             (binding [rtc/*execution-context* runtime
-                      rtc/*execution-context* runtime
                       rtc/*spin-id* spin-id]
               ;; Execute with dummy callbacks - we'll use cached value anyway
               (spin-fn (fn [_] nil) (fn [_] nil)))
@@ -157,7 +156,6 @@
             ;; Execute spin-fn with dynamic bindings
             ;; Phase 2: Bind both *execution-context* and *execution-context* for compatibility
             (binding [rtc/*execution-context* runtime
-                      rtc/*execution-context* runtime
                       rtc/*spin-id* spin-id]
               (let [result (spin-fn
                             ;; Resolve continuation
@@ -255,7 +253,6 @@
              (log/debug! {:event :deref/rebuild-mode :data {:spin-id spin-id}})
              ;; Execute spin body for side effects (nested spin creation, continuation registration)
              (binding [rtc/*execution-context* runtime
-                       rtc/*execution-context* runtime
                        rtc/*spin-id* spin-id]
                ;; Execute with dummy callbacks - we'll use cached value anyway
                (spin-fn (fn [_] nil) (fn [_] nil)))

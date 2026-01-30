@@ -26,7 +26,6 @@
             [is.simm.spindel.runtime.node-types :as nt]
             [is.simm.spindel.spin.continuation :as cont]
             [is.simm.spindel.spin.result :as result]
-            [is.simm.spindel.spin.sync :as sync]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set]))
 
@@ -35,6 +34,64 @@
 ;; =============================================================================
 
 (declare track-signal-dep!)
+
+;; =============================================================================
+;; Inline delivery/posting (to avoid cyclic dependency with spin/sync)
+;; =============================================================================
+
+(defn- deliver-inline!
+  "INTERNAL: Deliver value inline to deferred, resuming readers directly."
+  [deferred value state-atom]
+  (let [;; Atomically check if already assigned and capture pending callbacks
+        pending-callbacks (atom nil)
+        _assigned? (swap! state-atom
+                         (fn [state]
+                           (if (:assigned? state)
+                             ;; Already assigned - no change
+                             state
+                             ;; First assignment - capture pending and mark assigned
+                             (do
+                               (reset! pending-callbacks (:pending state))
+                               {:assigned? true
+                                :value value
+                                :pending []}))))]
+
+    ;; Notify all pending readers INLINE if this was the first assignment
+    ;; Event handler already bound *in-trampoline* false
+    (when-let [pending @pending-callbacks]
+      (doseq [resolve pending]
+        (cont/resume resolve value)))
+
+    ;; Return the assigned value
+    (:value @state-atom)))
+
+(defn- post-inline!
+  "INTERNAL: Post message inline to mailbox, resuming waiters directly."
+  [mailbox msg state-atom]
+  ;; Loop to find first non-cancelled waiter
+  (loop []
+    (let [waiter-to-try (atom nil)
+          _result (swap! state-atom
+                        (fn [state]
+                          (if (seq (:waiters state))
+                            ;; Has waiters - take first one to try
+                            (do
+                              (reset! waiter-to-try (first (:waiters state)))
+                              (update state :waiters #(vec (rest %))))
+                            ;; No waiters - add to queue
+                            (update state :queue conj msg))))]
+      (if-let [{:keys [spin-id resolve]} @waiter-to-try]
+        ;; Got a waiter - check if cancelled (outside swap, context available)
+        (if (and spin-id (rtc/spin-is-cancelled? spin-id))
+          ;; Cancelled - try next waiter
+          (recur)
+          ;; Valid waiter - resume it
+          ;; Event handler already bound *in-trampoline* false
+          (do
+            (cont/resume resolve msg)
+            nil))
+        ;; No waiter, message queued
+        nil))))
 
 ;; =============================================================================
 ;; Engine state wiring
@@ -252,7 +309,7 @@
       ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
       (binding [rtc/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (sync/deliver-inline! deferred value state-atom))
+        (deliver-inline! deferred value state-atom))
       nil)
 
     :mailbox-post
@@ -266,7 +323,7 @@
       ;; The mailbox function will resume continuations which need context access
       (binding [rtc/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (sync/post-inline! mailbox msg state-atom))
+        (post-inline! mailbox msg state-atom))
       nil)
 
     :spin-execution

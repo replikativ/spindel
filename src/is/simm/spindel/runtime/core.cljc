@@ -284,13 +284,22 @@
   *spin-id*)
 
 (defn spin-is-cancelled?
-  "Check if the current spin has been cancelled.
-	Returns false if called outside spin context or spin not cancelled."
-  []
-  (when-let [spin-id *spin-id*]
-    (when-let [result (spin-current-result spin-id)]
-      (and (= :error (:status result))
-           (= "Spin cancelled" (:message (ex-data (:error result))))))))
+  "Check if a spin has been cancelled.
+	0-arity: Check current spin via *spin-id*
+	1-arity: Check specific spin-id
+	Returns false if spin not found or not cancelled."
+  ([]
+   (when-let [spin-id *spin-id*]
+     (spin-is-cancelled? spin-id)))
+  ([spin-id]
+   (when spin-id
+     (when-let [result (spin-current-result spin-id)]
+       ;; Result is a Result record with :variant and :payload
+       ;; Check for cancellation error type from lifecycle/cancel-spin!
+       (and (= :error (:variant result))
+            (let [error (:payload result)]
+              (= :is.simm.spindel.spin.core/spin-cancelled
+                 (:type (ex-data error)))))))))
 
 (defn spin-result
   "Get the cached result of a spin if completed, or nil.

@@ -10,33 +10,6 @@
 ;; Synchronization Primitives
 ;; ============================================================================
 
-(defn deliver-inline!
-  "INTERNAL: Deliver value inline, resuming readers directly.
-   Called by event handler. Do NOT call from user code - use 1-arity instead."
-  [deferred value state-atom]
-  (let [;; Atomically check if already assigned and capture pending callbacks
-        pending-callbacks (atom nil)
-        _assigned? (swap! state-atom
-                         (fn [state]
-                           (if (:assigned? state)
-                             ;; Already assigned - no change
-                             state
-                             ;; First assignment - capture pending and mark assigned
-                             (do
-                               (reset! pending-callbacks (:pending state))
-                               {:assigned? true
-                                :value value
-                                :pending []}))))]
-
-    ;; Notify all pending readers INLINE if this was the first assignment
-    ;; Event handler already bound *in-trampoline* false
-    (when-let [pending @pending-callbacks]
-      (doseq [resolve pending]
-        (cont/resume resolve value)))
-
-    ;; Return the assigned value
-    (:value @state-atom)))
-
 (deftype Deferred [id state-atom]
   #?(:clj clojure.lang.IFn :cljs IFn)
 
@@ -197,35 +170,6 @@
   "Empty PersistentQueue - proper FIFO data structure."
   #?(:clj clojure.lang.PersistentQueue/EMPTY
      :cljs #queue []))
-
-(defn post-inline!
-  "INTERNAL: Post message inline, resuming waiters directly.
-   Called by event handler. Do NOT call from user code - use 1-arity instead."
-  [mailbox msg state-atom]
-  ;; Loop to find first non-cancelled waiter
-  (loop []
-    (let [waiter-to-try (atom nil)
-          _result (swap! state-atom
-                        (fn [state]
-                          (if (seq (:waiters state))
-                            ;; Has waiters - take first one to try
-                            (do
-                              (reset! waiter-to-try (first (:waiters state)))
-                              (update state :waiters #(vec (rest %))))
-                            ;; No waiters - add to queue
-                            (update state :queue conj msg))))]
-      (if-let [{:keys [spin-id resolve]} @waiter-to-try]
-        ;; Got a waiter - check if cancelled (outside swap, context available)
-        (if (and spin-id (rtc/spin-is-cancelled? spin-id))
-          ;; Cancelled - try next waiter
-          (recur)
-          ;; Valid waiter - resume it
-          ;; Event handler already bound *in-trampoline* false
-          (do
-            (cont/resume resolve msg)
-            nil))
-        ;; No waiter, message queued
-        nil))))
 
 (deftype Mailbox [id state-atom]
   #?(:clj clojure.lang.IFn :cljs IFn)

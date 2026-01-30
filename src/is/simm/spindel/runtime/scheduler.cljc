@@ -155,3 +155,73 @@
   []
   #?(:clj (thread-pool-executor)
      :cljs (event-loop-executor)))
+
+;; =============================================================================
+;; Synchronous Executor (Deterministic Simulation)
+;; =============================================================================
+
+#?(:clj
+   (defrecord SynchronousExecutor []
+     PExecutor
+     (execute! [_ spin-fn]
+       ;; Execute immediately on calling thread for determinism
+       ;; Returns a completed "future" for API compatibility
+       (let [result (volatile! nil)
+             exception (volatile! nil)]
+         (try
+           (vreset! result (spin-fn))
+           (catch Throwable e
+             (vreset! exception e)))
+         ;; Return mock future for API compatibility
+         (reify java.util.concurrent.Future
+           (get [_]
+             (if @exception
+               (throw @exception)
+               @result))
+           (get [_ _timeout _unit]
+             (if @exception
+               (throw @exception)
+               @result))
+           (isDone [_] true)
+           (isCancelled [_] false)
+           (cancel [_ _] false))))
+
+     (execute-after! [this delay-ms spin-fn]
+       ;; For simulation: just execute immediately on calling thread
+       ;; Time control happens via advance-time!, not actual delays
+       ;; This ensures deterministic execution order
+       (execute! this spin-fn)))
+
+   :cljs
+   (defrecord SynchronousExecutor []
+     PExecutor
+     (execute! [_ spin-fn]
+       ;; Execute immediately for determinism
+       (spin-fn)
+       nil)
+
+     (execute-after! [this delay-ms spin-fn]
+       ;; Execute immediately - time is virtual
+       (execute! this spin-fn))))
+
+(defn synchronous-executor
+  "Create synchronous executor for deterministic simulation testing.
+
+  Use when:
+  - You want execution order to be deterministic
+  - You're testing concurrent behavior via forking (not threading)
+  - You want each operation to complete before next starts
+
+  Note: execute-after! executes immediately. Time control is via
+  advance-time!, not actual delays.
+
+  This is the recommended executor for simulation contexts:
+
+  Example:
+    (def ctx (create-simulation-context
+               :executor (synchronous-executor)))
+
+    ;; All spins execute synchronously on calling thread
+    ;; Time is controlled explicitly via advance-time!"
+  []
+  (->SynchronousExecutor))
