@@ -17,9 +17,9 @@ Both support full bidirectional interop with BoundaryTask wrapper pattern.
 ### Quick Start
 
 ```clojure
-(require '[is.simm.spindel.sci.macro :as sci-macro]
-         '[is.simm.spindel.runtime.context :as ctx]
-         '[is.simm.spindel.spin.cps :refer [spin]])
+(require '[org.replikativ.spindel.sci.macro :as sci-macro]
+         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.spin.cps :refer [spin]])
 
 ;; Create runtime
 (def rt (ctx/create-execution-context))
@@ -38,8 +38,8 @@ Both support full bidirectional interop with BoundaryTask wrapper pattern.
 (binding [rtc/*execution-context* rt]
   (def result
     (sci-macro/eval-and-deref sci-ctx
-      "(require '[is.simm.spindel.spin.cps :refer [spin]]
-                 '[is.simm.spindel.effects.await :refer [await]])
+      "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+                 '[org.replikativ.spindel.effects.await :refer [await]])
        (spin
          (let [x (await my-tool)]
            (* x 2)))"))  ; => 60
@@ -62,9 +62,9 @@ See `src/is/simm/spindel/sci/macro.clj`
 ### Quick Start
 
 ```clojure
-(require '[is.simm.spindel.sci.boundary :as boundary]
-         '[is.simm.spindel.runtime.context :as ctx]
-         '[is.simm.spindel.spin.cps :refer [spin]])
+(require '[org.replikativ.spindel.sci.boundary :as boundary]
+         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.spin.cps :refer [spin]])
 
 ;; Create runtime
 (def rt (ctx/create-execution-context))
@@ -138,10 +138,10 @@ Both approaches use the same wrapper for native→SCI calls:
 ## Complete Integration Example
 
 ```clojure
-(require '[is.simm.spindel.sci.macro :as sci-macro]
-         '[is.simm.spindel.runtime.context :as ctx]
-         '[is.simm.spindel.spin.cps :refer [spin]]
-         '[is.simm.spindel.effects.await :refer [await]])
+(require '[org.replikativ.spindel.sci.macro :as sci-macro]
+         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.spin.cps :refer [spin]]
+         '[org.replikativ.spindel.effects.await :refer [await]])
 
 ;; Setup
 (def rt (ctx/create-execution-context))
@@ -164,8 +164,8 @@ Both approaches use the same wrapper for native→SCI calls:
 (binding [rtc/*execution-context* rt]
   (def agent-task
     (sci/eval-string* sci-ctx
-      "(require '[is.simm.spindel.spin.cps :refer [spin]]
-                 '[is.simm.spindel.effects.await :refer [await]])
+      "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+                 '[org.replikativ.spindel.effects.await :refer [await]])
        (spin
          (let [data (await fetch)
                processed (await process)
@@ -222,7 +222,7 @@ All tests passing (validated 2026-01-25 on nREPL port 36275):
 ;; Test 1: Simple spin
 (binding [rtc/*execution-context* rt]
   (sci-macro/eval-and-deref sci-ctx
-    "(require '[is.simm.spindel.spin.cps :refer [spin]])
+    "(require '[org.replikativ.spindel.spin.cps :refer [spin]])
      (spin (+ 100 200))"))  ; => 300 ✅
 
 ;; Test 2: Spin with await
@@ -234,8 +234,8 @@ All tests passing (validated 2026-01-25 on nREPL port 36275):
 
 (binding [rtc/*execution-context* rt]
   (sci-macro/eval-and-deref ctx
-    "(require '[is.simm.spindel.spin.cps :refer [spin]]
-               '[is.simm.spindel.effects.await :refer [await]])
+    "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+               '[org.replikativ.spindel.effects.await :refer [await]])
      (spin (let [x (await n)] (* x 2)))"))  ; => 84 ✅
 
 ;; Test 3: Chain multiple awaits
@@ -248,8 +248,8 @@ All tests passing (validated 2026-01-25 on nREPL port 36275):
 
 (binding [rtc/*execution-context* rt]
   (sci-macro/eval-and-deref ctx
-    "(require '[is.simm.spindel.spin.cps :refer [spin]]
-               '[is.simm.spindel.effects.await :refer [await]])
+    "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+               '[org.replikativ.spindel.effects.await :refer [await]])
      (spin (+ (await a) (await b)))"))  ; => 21 ✅
 
 ;; Test 4: Functional API
@@ -293,7 +293,7 @@ All tests passing (validated 2026-01-25 on nREPL port 36275):
 
 ```clojure
 (ns ratatosk.agent.execution
-  (:require [is.simm.spindel.sci.macro :as sci-macro]))
+  (:require [org.replikativ.spindel.sci.macro :as sci-macro]))
 
 (defn execute-agent-task [agent task]
   (let [sci-ctx (sci-macro/create-spin-macro-context

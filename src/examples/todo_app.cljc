@@ -22,20 +22,20 @@
     (app/run-test-scenario!)
   "
   (:refer-clojure :exclude [await])
-  (:require [is.simm.spindel.spin.cps :refer [spin]]
-            [is.simm.spindel.effects.track :refer [track]]
-            [is.simm.spindel.state.signal :as sig]
-            [is.simm.spindel.incremental.deltaable :as d]
-            [is.simm.spindel.incremental.combinators :refer [ifilter imap]]
-            [is.simm.spindel.dom.elements :as el]
-            [is.simm.spindel.dom.foreach :as foreach :refer [ifor-each]]
-            [is.simm.spindel.dom.render :as render]
-            [is.simm.spindel.dom.discharge :as disch]
-            [is.simm.spindel.runtime.core :as rtc]
-            [is.simm.spindel.runtime.context :as ctx])
-  #?(:cljs (:require-macros [is.simm.spindel.spin.cps :refer [spin]]
-                            [is.simm.spindel.incremental.combinators :refer [ifilter imap]]
-                            [is.simm.spindel.dom.foreach :refer [ifor-each]])))
+  (:require [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.incremental.deltaable :as d]
+            [org.replikativ.spindel.incremental.combinators :refer [ifilter imap]]
+            [org.replikativ.spindel.dom.elements :as el]
+            [org.replikativ.spindel.dom.foreach :as foreach :refer [ifor-each]]
+            [org.replikativ.spindel.dom.render :as render]
+            [org.replikativ.spindel.dom.discharge :as disch]
+            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.runtime.context :as ctx])
+  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
+                            [org.replikativ.spindel.incremental.combinators :refer [ifilter imap]]
+                            [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
 
 ;; =============================================================================
 ;; Application State

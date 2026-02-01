@@ -9,25 +9,25 @@
    5. Priority changes (nested element structure)
 
    All with O(delta) incremental updates - only changed DOM nodes are touched."
-  (:require [is.simm.spindel.dom.elements :as el]
-            [is.simm.spindel.dom.browser :as browser]
-            [is.simm.spindel.dom.discharge :as disch]
-            [is.simm.spindel.dom.render :as render]
-            [is.simm.spindel.dom.foreach :as foreach]
-            [is.simm.spindel.incremental.deltaable :as d]
-            [is.simm.spindel.incremental.combinators :refer [filter*]]
-            [is.simm.spindel.state.signal :as sig]
-            [is.simm.spindel.effects.track :refer [track]]
-            [is.simm.spindel.runtime.core :as rtc]
-            [is.simm.spindel.runtime.context :as ctx]
-            [is.simm.spindel.runtime.addressing]  ;; Required by spin macro expansion
-            [is.simm.spindel.spin.core]           ;; Required by spin macro expansion
-            [is.simm.partial-cps.async])          ;; Required by spin macro expansion
-  (:require-macros [is.simm.spindel.spin.cps :refer [spin]]
-                   [is.simm.spindel.state.signal :refer [signal]]
-                   [is.simm.spindel.incremental.combinators :refer [ifilter]]
-                   [is.simm.spindel.dom.foreach :refer [ifor-each]]
-                   [is.simm.spindel.dom.elements :as el]))
+  (:require [org.replikativ.spindel.dom.elements :as el]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.discharge :as disch]
+            [org.replikativ.spindel.dom.render :as render]
+            [org.replikativ.spindel.dom.foreach :as foreach]
+            [org.replikativ.spindel.incremental.deltaable :as d]
+            [org.replikativ.spindel.incremental.combinators :refer [filter*]]
+            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.runtime.addressing]  ;; Required by spin macro expansion
+            [org.replikativ.spindel.spin.core]           ;; Required by spin macro expansion
+            [org.replikativ.partial-cps.async])          ;; Required by spin macro expansion
+  (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
+                   [org.replikativ.spindel.state.signal :refer [signal]]
+                   [org.replikativ.spindel.incremental.combinators :refer [ifilter]]
+                   [org.replikativ.spindel.dom.foreach :refer [ifor-each]]
+                   [org.replikativ.spindel.dom.elements :as el]))
 
 ;; =============================================================================
 ;; State

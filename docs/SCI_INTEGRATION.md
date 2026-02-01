@@ -55,9 +55,9 @@ Both directions work seamlessly:
 ### Basic Setup
 
 ```clojure
-(require '[is.simm.spindel.sci.boundary :as boundary]
-         '[is.simm.spindel.runtime.context :as ctx]
-         '[is.simm.spindel.spin.cps :refer [spin]])
+(require '[org.replikativ.spindel.sci.boundary :as boundary]
+         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.spin.cps :refer [spin]])
 
 ;; 1. Create runtime
 (def rt (ctx/create-execution-context))
@@ -246,13 +246,13 @@ Not recommended for:
 ```clojure
 ;; Test 1: Simple async in SCI (no effects)
 (sci/eval-string* sci-ctx
-  "(require '[is.simm.partial-cps.async :refer [async]])
+  "(require '[org.replikativ.partial-cps.async :refer [async]])
    (def f (async (+ 1 2)))
    (f (fn [v] v) identity)")  ; => 3 ✅
 
 ;; Test 2: async with await in SCI
 (sci/eval-string* sci-ctx
-  "(require '[is.simm.partial-cps.async :refer [async await]])
+  "(require '[org.replikativ.partial-cps.async :refer [async await]])
    (def f (async (let [x (await (fn [r e] (r 42)))]
                    (* x 2))))
    (f (fn [v] v) identity)")  ; => 84 ✅

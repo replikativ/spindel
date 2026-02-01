@@ -78,10 +78,10 @@ Make element evaluation aware of Spin children by registering `element*` as a CP
 #### element-effect.cljc
 
 ```clojure
-(ns is.simm.spindel.dom.element-effect
+(ns org.replikativ.spindel.dom.element-effect
   "CPS breakpoint for element evaluation with Spin child support."
-  (:require [is.simm.spindel.spin.protocols :as spin-p]
-            [is.simm.spindel.dom.elements :as el]))
+  (:require [org.replikativ.spindel.spin.protocols :as spin-p]
+            [org.replikativ.spindel.dom.elements :as el]))
 
 (defn spin? [x]
   (satisfies? spin-p/PSpin x))
@@ -97,15 +97,15 @@ Make element evaluation aware of Spin children by registering `element*` as a CP
 
 ;; Breakpoint handler for spin macro
 (def element-breakpoint
-  {:handler 'is.simm.spindel.dom.element-effect/element-with-async-children
-   :direct-handler-sym 'is.simm.spindel.dom.element-effect/element-handler-direct})
+  {:handler 'org.replikativ.spindel.dom.element-effect/element-with-async-children
+   :direct-handler-sym 'org.replikativ.spindel.dom.element-effect/element-handler-direct})
 ```
 
 #### Integration in cps.cljc
 
 ```clojure
-(ns is.simm.spindel.spin.cps
-  (:require [is.simm.spindel.dom.element-effect :as elem-eff]
+(ns org.replikativ.spindel.spin.cps
+  (:require [org.replikativ.spindel.dom.element-effect :as elem-eff]
             ...))
 
 (defn build-breakpoints []
@@ -113,7 +113,7 @@ Make element evaluation aware of Spin children by registering `element*` as a CP
          ;; Existing effects (await, track)
          (build-effect-breakpoints)
          ;; Element breakpoint for async children
-         {'is.simm.spindel.dom.elements/element*
+         {'org.replikativ.spindel.dom.elements/element*
           (:handler elem-eff/element-breakpoint)}))
 ```
 

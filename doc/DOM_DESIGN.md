@@ -333,7 +333,7 @@ When `ifor-each` calls `user-card` for each user:
 **File:** `src/is/simm/spindel/dom/addressing.cljc`
 
 ```clojure
-(ns is.simm.spindel.dom.addressing
+(ns org.replikativ.spindel.dom.addressing
   "Tree-based addressing for DOM elements.")
 
 (defn compute-tree-address
@@ -362,7 +362,7 @@ When `ifor-each` calls `user-card` for each user:
 **File:** `src/is/simm/spindel/dom/cache.cljc`
 
 ```clojure
-(ns is.simm.spindel.dom.cache
+(ns org.replikativ.spindel.dom.cache
   "Slot-based caching for DOM elements.")
 
 (defrecord SlotCache [slots])
@@ -388,7 +388,7 @@ When `ifor-each` calls `user-card` for each user:
 **File:** `src/is/simm/spindel/dom/fragment.cljc`
 
 ```clojure
-(ns is.simm.spindel.dom.fragment
+(ns org.replikativ.spindel.dom.fragment
   "KeyedFragment for ifor-each results.")
 
 (defrecord KeyedFragment [items deltas])

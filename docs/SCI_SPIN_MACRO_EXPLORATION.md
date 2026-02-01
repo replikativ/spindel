@@ -11,16 +11,16 @@
 (def sci-ctx
   (sci/init
     {:namespaces
-     {'is.simm.spindel.spin.cps {'spin (var spin)}
-      'is.simm.spindel.effects.await {'await (var await) 'await-handler await-handler}
-      'is.simm.spindel.spin.core {'make-spin make-spin}
-      'is.simm.spindel.runtime.core {'current-execution-context current-execution-context ...}
+     {'org.replikativ.spindel.spin.cps {'spin (var spin)}
+      'org.replikativ.spindel.effects.await {'await (var await) 'await-handler await-handler}
+      'org.replikativ.spindel.spin.core {'make-spin make-spin}
+      'org.replikativ.spindel.runtime.core {'current-execution-context current-execution-context ...}
       ...}}))
 
 ;; In SCI - SAME syntax as native!
 (sci/eval-string* sci-ctx
-  "(require '[is.simm.spindel.spin.cps :refer [spin]]
-             '[is.simm.spindel.effects.await :refer [await]])
+  "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+             '[org.replikativ.spindel.effects.await :refer [await]])
    (spin
      (let [x (await other-spin)]
        (* x 2)))")  ; ✅ Works perfectly!
@@ -28,7 +28,7 @@
 
 **Why it works**:
 1. Macro expands in native context (uses native macro code)
-2. Expansion produces qualified symbols (e.g., `is.simm.spindel.spin.core/make-spin`)
+2. Expansion produces qualified symbols (e.g., `org.replikativ.spindel.spin.core/make-spin`)
 3. Those symbols resolve to native functions in SCI's namespace map
 4. Native functions execute with proper bindings
 
@@ -103,19 +103,19 @@ spin/cps.cljc (the macro)
   (sci/init
     {:namespaces
      {;; The macro
-      'is.simm.spindel.spin.cps
+      'org.replikativ.spindel.spin.cps
       {'spin (var spin)}
 
       ;; await effect
-      'is.simm.spindel.effects.await
+      'org.replikativ.spindel.effects.await
       {'await (var await)
        'await-handler await-handler}
 
       ;; Native functions the macro references
-      'is.simm.spindel.spin.core
+      'org.replikativ.spindel.spin.core
       {'make-spin make-spin}
 
-      'is.simm.spindel.runtime.core
+      'org.replikativ.spindel.runtime.core
       {'current-execution-context current-execution-context
        'with-execution-context (var with-execution-context)
        'spin-current-result spin-current-result
@@ -123,10 +123,10 @@ spin/cps.cljc (the macro)
        '*execution-context* (sci/new-dynamic-var '*execution-context* rt)
        '*spin-id* (sci/new-dynamic-var '*spin-id* nil)}
 
-      'is.simm.spindel.runtime.addressing
+      'org.replikativ.spindel.runtime.addressing
       {'next-address! next-address!}
 
-      'is.simm.partial-cps.async
+      'org.replikativ.partial-cps.async
       {'invoke-continuation invoke-continuation
        '*in-trampoline* (sci/new-dynamic-var '*in-trampoline* false)}}}))
 
@@ -135,8 +135,8 @@ spin/cps.cljc (the macro)
 
 ;; Use full spin syntax in SCI!
 (sci/eval-string* sci-ctx
-  "(require '[is.simm.spindel.spin.cps :refer [spin]]
-             '[is.simm.spindel.effects.await :refer [await]])
+  "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+             '[org.replikativ.spindel.effects.await :refer [await]])
    (spin
      (let [x (await other-spin)]
        (* x 2)))")
@@ -172,8 +172,8 @@ spin/cps.cljc (the macro)
 
 (binding [rtc/*execution-context* rt]
   (eval-and-deref sci-ctx
-    "(require '[is.simm.spindel.spin.cps :refer [spin]]
-               '[is.simm.spindel.effects.await :refer [await]])
+    "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+               '[org.replikativ.spindel.effects.await :refer [await]])
      (spin
        (let [x (await other-spin)]
          (* x 2)))"))  ; => 84 ✅
@@ -218,7 +218,7 @@ spin/cps.cljc (the macro)
 **Mitigation**: Can still use `async` from partial-cps for CPS:
 ```clojure
 ;; Use partial-cps async for await support
-(require '[is.simm.partial-cps.async :refer [async await]])
+(require '[org.replikativ.partial-cps.async :refer [async await]])
 (def sci-spin
   (spin/make-spin
     (async
@@ -231,10 +231,10 @@ spin/cps.cljc (the macro)
 
 ### Recommended: Native Macro Pass-Through ✅
 
-**Use `create-spin-macro-context`** from `is.simm.spindel.sci.macro`:
+**Use `create-spin-macro-context`** from `org.replikativ.spindel.sci.macro`:
 
 ```clojure
-(require '[is.simm.spindel.sci.macro :as sci-macro])
+(require '[org.replikativ.spindel.sci.macro :as sci-macro])
 
 (def sci-ctx
   (sci-macro/create-spin-macro-context
@@ -244,8 +244,8 @@ spin/cps.cljc (the macro)
 
 ;; Agent code with FULL spin syntax!
 (sci/eval-string* sci-ctx
-  "(require '[is.simm.spindel.spin.cps :refer [spin]]
-             '[is.simm.spindel.effects.await :refer [await]])
+  "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+             '[org.replikativ.spindel.effects.await :refer [await]])
    (spin
      (let [data (await tool1)]
        (await tool2 data)))")
@@ -260,7 +260,7 @@ spin/cps.cljc (the macro)
 
 ### Alternative: Functional API
 
-**Use functional API** (`make-spin`) from `is.simm.spindel.sci.boundary`:
+**Use functional API** (`make-spin`) from `org.replikativ.spindel.sci.boundary`:
 
 ```clojure
 ;; Agent with :sci isolation
@@ -300,7 +300,7 @@ spin/cps.cljc (the macro)
 **Estimated Timeline**: 1-2 weeks for full implementation + testing
 
 **Deliverables**:
-- `is.simm.spindel.sci.loader` namespace
+- `org.replikativ.spindel.sci.loader` namespace
 - Loads all spindel source into SCI
 - Maps all dependencies
 - Test suite validating spin macro parity
@@ -374,7 +374,7 @@ This avoids loading dependencies but requires sophisticated code rewriting.
 ```clojure
 ;; Desired (not working yet):
 (sci/eval-string* sci-ctx
-  "(require '[is.simm.spindel.spin.cps :refer [spin]])
+  "(require '[org.replikativ.spindel.spin.cps :refer [spin]])
    (spin (+ 1 2))")
 ;; ❌ Fails: missing dependencies
 ```

@@ -138,7 +138,7 @@ The for-each combinator for DOM already exists (`dom/foreach.cljc`). With interv
 
 ```clojure
 ;; In effects/track.cljc
-(require '[is.simm.spindel.incremental.interval :as iv])
+(require '[org.replikativ.spindel.incremental.interval :as iv])
 
 (defn- get-track-value [signal-ref]
   (let [node (sig/get-signal-state signal-ref)]
@@ -307,13 +307,13 @@ The DOM diffing in `render.cljc` can leverage the deltas:
 
 ```clojure
 (ns my-app
-  (:require [is.simm.spindel.spin.cps :refer [spin]]
-            [is.simm.spindel.effects.track :refer [track]]
-            [is.simm.spindel.state.signal :as sig]
-            [is.simm.spindel.incremental.combinators :refer [ifilter imap ireduce ifor-each]]
-            [is.simm.spindel.incremental.interval :as iv]
-            [is.simm.spindel.dom.elements :as el]
-            [is.simm.spindel.dom.render :as render]))
+  (:require [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.incremental.combinators :refer [ifilter imap ireduce ifor-each]]
+            [org.replikativ.spindel.incremental.interval :as iv]
+            [org.replikativ.spindel.dom.elements :as el]
+            [org.replikativ.spindel.dom.render :as render]))
 
 (def todos (sig/signal []))
 

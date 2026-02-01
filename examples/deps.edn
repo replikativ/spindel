@@ -1,10 +1,10 @@
 {:paths ["src"]
 
  :deps {;; Reference parent spindel library
-        is.simm/spindel {:local/root ".."}
+        org.replikativ/spindel {:local/root ".."}
 
         ;; partial-cps for CPS transformation (required by spin macro)
-        is.simm/partial-cps {:local/root "../../partial-cps"}}
+        org.replikativ/partial-cps {:local/root "../../partial-cps"}}
 
  :aliases
  {:dev {:extra-paths ["dev"]

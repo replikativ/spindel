@@ -29,18 +29,18 @@ Spindel provides cached reactive spins with automatic dependency tracking, mutab
 ;; deps.edn
 {:deps {org.clojure/clojure {:mvn/version "1.12.0"}
         org.clojure/clojurescript {:mvn/version "1.11.132"}
-        is.simm/spindel {:local/root "path/to/spindel"}}}
+        org.replikativ/spindel {:local/root "path/to/spindel"}}}
 ```
 
 ### Basic Usage
 
 ```clojure
-(require '[is.simm.spindel.runtime.core :as rtc])
-(require '[is.simm.spindel.runtime.context :as ctx])
-(require '[is.simm.spindel.spin.cps :refer [spin]])
-(require '[is.simm.spindel.state.signal :as sig])
-(require '[is.simm.spindel.effects.await :refer [await]])
-(require '[is.simm.spindel.effects.track :refer [track]])
+(require '[org.replikativ.spindel.runtime.core :as rtc])
+(require '[org.replikativ.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.spin.cps :refer [spin]])
+(require '[org.replikativ.spindel.state.signal :as sig])
+(require '[org.replikativ.spindel.effects.await :refer [await]])
+(require '[org.replikativ.spindel.effects.track :refer [track]])
 
 ;; Create execution context
 (def context (ctx/create-execution-context))
@@ -105,7 +105,7 @@ The runtime manages execution, dependency tracking, and scheduling:
 
 ```clojure
 ;; Create execution context (portable CLJ/CLJS)
-(require '[is.simm.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.runtime.context :as ctx])
 (def context (ctx/create-execution-context))
 
 ;; Use runtime via binding
@@ -126,8 +126,8 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics, enabli
 ### How Forking Works
 
 ```clojure
-(require '[is.simm.spindel.runtime.context :as ctx])
-(require '[is.simm.spindel.state.signal :as sig])
+(require '[org.replikativ.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.state.signal :as sig])
 
 ;; Create main context with a signal
 (def ctx-main (ctx/create-execution-context))
@@ -195,7 +195,7 @@ Contexts can be fully serialized for checkpointing or distribution:
 Signals are the primary reactive state primitive:
 
 ```clojure
-(require '[is.simm.spindel.state.signal :as sig])
+(require '[org.replikativ.spindel.state.signal :as sig])
 
 ;; Create signal with initial value
 (def todos (sig/signal []))
@@ -214,7 +214,7 @@ Signals are the primary reactive state primitive:
 For non-reactive state that still needs fork isolation:
 
 ```clojure
-(require '[is.simm.spindel.state.atom :as atom])
+(require '[org.replikativ.spindel.state.atom :as atom])
 
 ;; Create runtime-stored atom
 (def cache (atom/atom {}))
@@ -236,7 +236,7 @@ For non-reactive state that still needs fork isolation:
 Deltaable collections track **top-level structural changes** as deltas:
 
 ```clojure
-(require '[is.simm.spindel.incremental.deltaable :as d])
+(require '[org.replikativ.spindel.incremental.deltaable :as d])
 
 ;; Create deltaable vector
 (def dv (d/deltaable-vector [1 2 3]))
@@ -311,7 +311,7 @@ When you `track` a signal containing a deltaable collection:
 For streaming delta processing:
 
 ```clojure
-(require '[is.simm.spindel.incremental.combinators :as ic])
+(require '[org.replikativ.spindel.incremental.combinators :as ic])
 
 ;; Transform deltas
 (ic/map-delta (fn [d] (update d :value inc)))
@@ -381,7 +381,7 @@ When multiple signals change, observers execute in dependency order:
 Generate lazy async sequences using the `gen-aseq` macro:
 
 ```clojure
-(require '[is.simm.spindel.sequence.core :as seq-core :refer [gen-aseq yield]])
+(require '[org.replikativ.spindel.sequence.core :as seq-core :refer [gen-aseq yield]])
 
 ;; Simple generator
 (def numbers
@@ -444,7 +444,7 @@ Build reactive pipelines with fan-out and topic routing:
 Broadcast to multiple consumers:
 
 ```clojure
-(require '[is.simm.spindel.pubsub.core :as pubsub])
+(require '[org.replikativ.spindel.pubsub.core :as pubsub])
 
 ;; Source sequence
 (def source (gen-aseq (yield 1) (yield 2) (yield 3)))
@@ -503,8 +503,8 @@ Route by topic:
 Control timing and flow of spin execution with rate control combinators:
 
 ```clojure
-(require '[is.simm.spindel.spin.combinators :refer [debounce throttle sample relieve timeout accumulate]])
-(require '[is.simm.spindel.incremental.interval :as iv])
+(require '[org.replikativ.spindel.spin.combinators :refer [debounce throttle sample relieve timeout accumulate]])
+(require '[org.replikativ.spindel.incremental.interval :as iv])
 ```
 
 ### Basic Combinators
@@ -574,7 +574,7 @@ Effects extend the CPS transformation. Built-in effects:
 Libraries can register custom effects:
 
 ```clojure
-(require '[is.simm.spindel.effects.core :as effects])
+(require '[org.replikativ.spindel.effects.core :as effects])
 
 (effects/register-effect-by-symbol!
   'my.lib/sample
@@ -592,7 +592,7 @@ Add distributed-scope to your dependencies:
 
 ```clojure
 ;; deps.edn
-{:deps {is.simm/distributed-scope {:git/url "https://github.com/simm-is/distributed-scope"
+{:deps {org.replikativ/distributed-scope {:git/url "https://github.com/simm-is/distributed-scope"
                                    :git/sha "..."}}}
 ```
 
@@ -601,8 +601,8 @@ Add distributed-scope to your dependencies:
 Use `defn-spin-remote` to define functions that execute across peers:
 
 ```clojure
-(require '[is.simm.spindel.distributed.macros :refer [defn-spin-remote spin-remote]])
-(require '[is.simm.spindel.distributed.core :as dist])
+(require '[org.replikativ.spindel.distributed.macros :refer [defn-spin-remote spin-remote]])
+(require '[org.replikativ.spindel.distributed.core :as dist])
 
 ;; Define a function that runs on a remote peer
 (defn-spin-remote fetch-page [server-id page-uuid]
@@ -636,7 +636,7 @@ Register contexts for remote addressing:
 
 ```clojure
 ;; On the server/peer
-(require '[is.simm.spindel.distributed.core :as dist])
+(require '[org.replikativ.spindel.distributed.core :as dist])
 
 ;; Register default context
 (dist/register-context! :default my-execution-context)
@@ -730,7 +730,7 @@ By default, logging is suppressed during tests for clean output. To enable loggi
 SPINDEL_TEST_LOG=true clj -M:test
 
 # From REPL
-(require '[is.simm.spindel.test-config :as tc])
+(require '[org.replikativ.spindel.test-config :as tc])
 (tc/enable-test-logging!)        ; Enable at :debug level
 (tc/enable-test-logging! :trace) ; Enable at specific level
 (tc/disable-test-logging!)       ; Suppress again
@@ -741,7 +741,7 @@ SPINDEL_TEST_LOG=true clj -M:test
 Spindel uses [Trove](https://github.com/taoensso/trove) for structured logging:
 
 ```clojure
-(require '[is.simm.spindel.log :as log])
+(require '[org.replikativ.spindel.log :as log])
 
 ;; Configure logging (call once at startup)
 (log/configure! {:min-level :info})  ; :trace :debug :info :warn :error :fatal
@@ -768,7 +768,7 @@ Log output format:
 
 **Local dependencies**:
 - `pangloss/pattern` - Pattern matching
-- `is.simm/partial-cps` - CPS transformation
+- `org.replikativ/partial-cps` - CPS transformation
 - `com.taoensso/trove` - Structured logging
 
 ## Examples

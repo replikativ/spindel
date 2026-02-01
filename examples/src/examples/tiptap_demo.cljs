@@ -3,23 +3,23 @@
 
    This demonstrates integrating TipTap directly with spindel (no React wrapper).
    The foreign-node creates a container whose children TipTap manages."
-  (:require [is.simm.spindel.dom.elements :as el]
-            [is.simm.spindel.dom.browser :as browser]
-            [is.simm.spindel.dom.render :as render]
-            [is.simm.spindel.dom.foreign :as foreign]
-            [is.simm.spindel.state.signal :as sig]
-            [is.simm.spindel.effects.track :refer [track]]
-            [is.simm.spindel.runtime.core :as rtc]
-            [is.simm.spindel.runtime.context :as ctx]
-            [is.simm.spindel.runtime.addressing]
-            [is.simm.spindel.spin.core]
-            [is.simm.partial-cps.async]
+  (:require [org.replikativ.spindel.dom.elements :as el]
+            [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.render :as render]
+            [org.replikativ.spindel.dom.foreign :as foreign]
+            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.runtime.addressing]
+            [org.replikativ.spindel.spin.core]
+            [org.replikativ.partial-cps.async]
             ["@tiptap/core" :refer [Editor]]
             ["@tiptap/starter-kit" :default StarterKit])
-  (:require-macros [is.simm.spindel.spin.cps :refer [spin]]
-                   [is.simm.spindel.state.signal :refer [signal]]
-                   [is.simm.spindel.dom.foreign :refer [foreign-node]]
-                   [is.simm.spindel.dom.elements :as el]))
+  (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
+                   [org.replikativ.spindel.state.signal :refer [signal]]
+                   [org.replikativ.spindel.dom.foreign :refer [foreign-node]]
+                   [org.replikativ.spindel.dom.elements :as el]))
 
 ;; =============================================================================
 ;; State

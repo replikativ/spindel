@@ -10,13 +10,13 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [examples.todo-app :as app]
-            [is.simm.spindel.runtime.core :as rtc]
-            [is.simm.spindel.runtime.context :as ctx]
-            [is.simm.spindel.dom.discharge :as disch]
-            [is.simm.spindel.dom.render :as render]
-            [is.simm.spindel.incremental.deltaable :as d]
-            [is.simm.spindel.test-helpers :refer [async with-ctx run-spin!]]
-            #?(:clj [is.simm.spindel.test-async :refer [await-drain]])))
+            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.dom.discharge :as disch]
+            [org.replikativ.spindel.dom.render :as render]
+            [org.replikativ.spindel.incremental.deltaable :as d]
+            [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
+            #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]])))
 
 ;; =============================================================================
 ;; State Management Tests

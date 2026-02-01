@@ -219,7 +219,7 @@ Would need to be ported to Lean 4.
 
 **Spindel approach:**
 ```clojure
-(require '[is.simm.spindel.effects.yield :refer [yield]])
+(require '[org.replikativ.spindel.effects.yield :refer [yield]])
 (spin
   (yield 1)
   (yield 2)

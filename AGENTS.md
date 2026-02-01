@@ -82,7 +82,7 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 For non-reactive state that still needs fork isolation:
 
 ```clojure
-(require '[is.simm.spindel.state.atom :as atom])
+(require '[org.replikativ.spindel.state.atom :as atom])
 
 ;; Create runtime-stored atom
 (def cache (atom/atom {}))
@@ -123,7 +123,7 @@ For non-reactive state that still needs fork isolation:
 
 **Runtime creation**:
 ```clojure
-(require '[is.simm.spindel.runtime.core :as rtc])
+(require '[org.replikativ.spindel.runtime.core :as rtc])
 
 ;; Atoms-based (portable CLJ/CLJS)
 (def ctx (ctx/create-execution-context))
@@ -165,7 +165,7 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics via ove
 **File**: [src/is/simm/spindel/runtime/context.cljc](src/is/simm/spindel/runtime/context.cljc)
 
 ```clojure
-(require '[is.simm.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.runtime.context :as ctx])
 
 ;; Create main context
 (def ctx-main (ctx/create-execution-context))
@@ -279,7 +279,7 @@ Outside spin context (REPL, tests):
     (process result)))
 
 ;; ✅ CORRECT - CPS-transformed
-(require '[is.simm.spindel.effects.reactive :refer [await track]])
+(require '[org.replikativ.spindel.effects.reactive :refer [await track]])
 (spin/spin
   (let [result (await some-spin)]  ; GOOD!
     (process result)))
@@ -362,7 +362,7 @@ These constructs don't work because:
   (map #(await (process-spin %)) items))  ; ERROR: effects in closure!
 
 ;; ✅ CORRECT - use sequence combinators or nested spins
-(require '[is.simm.spindel.sequence.core :as seq])
+(require '[org.replikativ.spindel.sequence.core :as seq])
 (spin
   (seq/map-spins process-spin items))  ; Uses sequence combinators
 
@@ -383,7 +383,7 @@ When you need effects inside higher-order functions, you have two options:
 
 **Option 1: Sequence Combinators** (preferred when available)
 ```clojure
-(require '[is.simm.spindel.sequence.core :as seq])
+(require '[org.replikativ.spindel.sequence.core :as seq])
 
 (spin
   (seq/map-spins fetch-user user-ids))  ; CPS-aware combinator
@@ -668,8 +668,8 @@ Spindel integrates with [distributed-scope](https://github.com/simm-is/distribut
 ### Defining Distributed Functions
 
 ```clojure
-(require '[is.simm.spindel.distributed.macros :refer [defn-spin-remote spin-remote]])
-(require '[is.simm.spindel.distributed.core :as dist])
+(require '[org.replikativ.spindel.distributed.macros :refer [defn-spin-remote spin-remote]])
+(require '[org.replikativ.spindel.distributed.core :as dist])
 
 ;; Define a function that runs on a remote peer
 (defn-spin-remote fetch-page [server-id page-uuid]
@@ -746,7 +746,7 @@ Test files are in `test/is/simm/spindel/distributed/`:
   riddley/riddley {:mvn/version "0.2.0"}
   pangloss/pattern {:local/root "../pattern"}          ; Pattern matching
   com.taoensso/trove {:mvn/version "1.1.0"}           ; Structured logging
-  is.simm/partial-cps {:local/root "../partial-cps"}  ; CPS transformation
+  org.replikativ/partial-cps {:local/root "../partial-cps"}  ; CPS transformation
   io.replikativ/hasch {:local/root "../hasch"}        ; Content hashing
   org.clojure/core.async {:mvn/version "1.6.681"}}}   ; Async primitives
 ```
@@ -782,7 +782,7 @@ clj -M:repl-mcp
 **Example workflow**:
 ```clojure
 ;; Load namespace
-(require '[is.simm.spindel.spin.core :as spin] :reload)
+(require '[org.replikativ.spindel.spin.core :as spin] :reload)
 
 ;; Test function
 (def ctx (create-runtime {:impl :atoms}))
@@ -948,7 +948,7 @@ When we dispatch from outside (different thread/callback), `*in-trampoline*` is 
 The spin macro in [src/is/simm/spindel/spin/cps.cljc](src/is/simm/spindel/spin/cps.cljc) uses partial-cps for CPS transformation:
 
 1. Build breakpoints for registered effects (from effect-syntax-registry)
-2. CPS-transform body via `is.simm.partial-cps.ioc/invert`
+2. CPS-transform body via `org.replikativ.partial-cps.ioc/invert`
 3. Wrap in Spin
 4. Return result
 
@@ -1004,8 +1004,8 @@ See README.md for full usage examples. Quick reference:
 ```clojure
 (:require #?(:clj [clojure.test :refer [deftest is testing]]
              :cljs [cljs.test :refer-macros [deftest is testing]])
-          [is.simm.spindel.test-helpers :refer [async with-ctx run-spin!]]
-          [is.simm.spindel.spin.cps :refer [spin]])
+          [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
+          [org.replikativ.spindel.spin.cps :refer [spin]])
 ```
 
 **Test pattern**:
@@ -1065,10 +1065,10 @@ See README.md for full usage examples. Quick reference:
 
 ### Logging
 
-Spindel uses [Trove](https://github.com/taoensso/trove) via `is.simm.spindel.log`.
+Spindel uses [Trove](https://github.com/taoensso/trove) via `org.replikativ.spindel.log`.
 
 ```clojure
-(require '[is.simm.spindel.log :as log])
+(require '[org.replikativ.spindel.log :as log])
 
 (log/debug! {:id ::my-event :msg "Debug info" :data {:x 1}})
 (log/info!  {:id ::startup :msg "Started"})

@@ -1,9 +1,9 @@
-(require '[is.simm.spindel.runtime.core :as rtc])
-(require '[is.simm.spindel.runtime.context :as ctx])
-(require '[is.simm.spindel.runtime.impl.atoms])
-(require '[is.simm.spindel.spin.sync :as sync])
-(require '[is.simm.spindel.spin.cps :refer [spin]])
-(require '[is.simm.spindel.effects.await :refer [await]])
+(require '[org.replikativ.spindel.runtime.core :as rtc])
+(require '[org.replikativ.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.runtime.impl.atoms])
+(require '[org.replikativ.spindel.spin.sync :as sync])
+(require '[org.replikativ.spindel.spin.cps :refer [spin]])
+(require '[org.replikativ.spindel.effects.await :refer [await]])
 
 (println "=== Mailbox Debug Test ===")
 

@@ -93,7 +93,7 @@ Spindel's `*execution-context*` is deliberately NOT captured in continuation bin
 ```
 === Test 1: Pre-created spin (WORKS) ===
 Creating spin...
-Spin created: #object[is.simm.spindel.spin.core.Spin ...]
+Spin created: #object[org.replikativ.spindel.spin.core.Spin ...]
 Result: [1 2]
 
 === Test 2: Inline create+await (HANGS?) ===

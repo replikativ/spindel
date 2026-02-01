@@ -13,7 +13,7 @@
   :lib
   {:target :node-library
    :output-to "target/spindel.js"
-   :exports {:default is.simm.spindel.core}}
+   :exports {:default org.replikativ.spindel.core}}
 
   :browser-test
   {:target :browser-test
