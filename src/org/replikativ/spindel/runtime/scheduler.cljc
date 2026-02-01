@@ -52,13 +52,32 @@
            ;; Single-threaded scheduled executor with daemon thread
            (ScheduledThreadPoolExecutor. 1 tf))))
 
+     ;; Vars that should NOT be propagated to worker threads
+     ;; These are test-framework vars that accumulate incorrectly across test runs
+     ;; We use find-var to safely handle cases where clojure.test isn't loaded
+     (defn- get-excluded-binding-vars
+       "Returns set of vars that should be excluded from binding propagation.
+       Uses find-var to safely handle cases where clojure.test isn't loaded."
+       []
+       (into #{}
+         (keep identity
+           [(find-var 'clojure.test/*testing-vars*)
+            (find-var 'clojure.test/*testing-contexts*)
+            (find-var 'clojure.test/*test-out*)])))
+
+     (defn- filter-bindings
+       "Remove excluded vars from bindings map."
+       [bindings]
+       (let [excluded (get-excluded-binding-vars)]
+         (reduce dissoc bindings excluded)))
+
      ;; ThreadPool Executor - executes on a thread pool (JVM only)
      (defrecord PoolExecutor [^ExecutorService executor]
        PExecutor
        (execute! [_ spin-fn]
          ;; Capture thread bindings from current thread (includes *execution-context*, *spin-id*, etc.)
-         ;; They will be restored when spin-fn executes on worker thread
-         (let [bindings (get-thread-bindings)
+         ;; Filter out test-framework bindings that shouldn't be propagated
+         (let [bindings (filter-bindings (get-thread-bindings))
                bound-spin-fn (fn []
                                (with-bindings bindings
                                  (spin-fn)))]

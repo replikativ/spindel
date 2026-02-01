@@ -28,10 +28,8 @@
 
 ;; Fixture to ensure clean execution context between tests
 (defn clean-context-fixture [f]
-  (println "FIXTURE: Starting test, testing-vars=" (mapv str clojure.test/*testing-vars*))
   (binding [rtc/*execution-context* nil]
-    (f))
-  (println "FIXTURE: Finished test, testing-vars=" (mapv str clojure.test/*testing-vars*)))
+    (f)))
 
 (use-fixtures :each clean-context-fixture)
 
