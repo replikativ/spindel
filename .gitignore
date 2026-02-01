@@ -44,7 +44,7 @@ simmis
 zeitlauf
 
 # Local dependency clones / experimental checkouts
-sci/
+/sci/
 trove/
 langchain/
 langgraph/
@@ -66,7 +66,6 @@ inference/
 
 # Experimental/in-progress code
 src/is/simm/spindel/agentic/
-test/is/simm/spindel/sci_*_test.clj
 
 # Benchmark results
 bench/*.txt
