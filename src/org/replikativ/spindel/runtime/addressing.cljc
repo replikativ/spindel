@@ -51,7 +51,7 @@
   "Generate next deterministic address in the chain.
 
   Each call:
-  1. Reads current chain-head from context
+  1. Atomically reads current chain-head and generates new address
   2. Hashes [source-loc, chain-head] to produce new address
   3. Updates chain-head to new address
   4. Returns the new address as a keyword
@@ -60,6 +60,7 @@
   - Sequential calls at same source-loc get different addresses
   - Same execution path always produces same address sequence
   - Forked contexts continue independently from their chain-head
+  - Thread-safe: concurrent calls from same source-loc get different IDs
 
   Args:
     ctx: Execution context (must satisfy PState)
@@ -68,11 +69,15 @@
 
   Returns: Keyword like :spin-550e8400-e29b-41d4-a716-446655440000"
   [ctx prefix source-loc]
-  (let [last-addr (get-chain-head ctx)
-        new-uuid (chain-hash source-loc last-addr)
-        new-addr (keyword (str prefix "-" new-uuid))]
-    (set-chain-head! ctx new-addr)
-    new-addr))
+  ;; Use atom to capture the generated address from inside swap!
+  (let [new-addr-atom (atom nil)]
+    (rtp/swap-state! ctx [:addressing :chain-head]
+      (fn [last-addr]
+        (let [new-uuid (chain-hash source-loc last-addr)
+              new-addr (keyword (str prefix "-" new-uuid))]
+          (reset! new-addr-atom new-addr)
+          new-addr)))
+    @new-addr-atom))
 
 ;; =============================================================================
 ;; Source Location Helpers
