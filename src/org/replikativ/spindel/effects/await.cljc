@@ -66,14 +66,19 @@
                            (contains? @processed-set awaited-spin-id))
           allow-fast-path? (and (some? cached)
                                 (not rebuild?)
+                                (not (simple/dirty? ctx awaited-spin-id))  ;; NEW: Check dirty flag
                                 (or (not in-batch-mode?)  ;; Not in batch - allow
                                     spin-processed?))]    ;; In batch but cache fresh - allow
       (cond
         ;; Fast path: Spin has result AND (not in batch OR spin already processed)
         allow-fast-path?
-        (result/match cached
-          #(cont/resume resolve %)
-          #(cont/resume reject %))
+        (do
+          ;; NEW: Record await dependency even on fast-path (Design 1)
+          ;; Dependencies must be recorded for dirty propagation to work correctly
+          (simple/record-await-dependency! ctx spin-id awaited-spin-id)
+          (result/match cached
+            #(cont/resume resolve %)
+            #(cont/resume reject %)))
 
         ;; Rebuild mode: Execute child for side effects, then immediately resume with cached value
         ;; We need to execute child body (to create nested spins, register continuations)
@@ -112,7 +117,11 @@
                                          (result/match res identity identity)))}]
             (rtc/continuation-add! spin-id cont-map)
             (log/debug! {:event :await/registered-continuation
-                         :data {:parent-id spin-id :awaited-id awaited-spin-id}}))
+                         :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+
+            ;; NEW: Record await dependency for dirty propagation (Design 1)
+            ;; When child completes dirty, we'll propagate dirty flag to this parent
+            (simple/record-await-dependency! ctx spin-id awaited-spin-id))
 
           ;; Start child spin (uses noop callbacks, parent resumes via continuation)
           (spin-ref noop noop)

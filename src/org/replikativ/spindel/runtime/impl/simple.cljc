@@ -187,7 +187,12 @@
                     :engine/delayed-spins (sorted-map)   ; timestamp -> [{:spin-fn fn :id uuid}]
                     :engine/virtual-time 0               ; virtual time in ms
                     :engine/time-mode :real              ; :real or :virtual
-                    :engine/timer-handles {}))))         ; timer-id -> executor-handle
+                    :engine/timer-handles {}             ; timer-id -> executor-handle
+
+                    ;; Await dependency graph (ephemeral, cleared at generation boundaries)
+                    ;; Maps child-spin-id to set of parent-spin-ids that await it
+                    ;; When child completes dirty, propagate dirty to all parents
+                    :await-dependents {}))))             ; {child-spin-id #{parent-id ...}}
   rt-atom)
 
 ;; =============================================================================
@@ -236,6 +241,7 @@
     @event-atom))
 
 (declare try-claim-execution!)
+(declare propagate-await-dirty!)
 
 (defn process-event!
   "Process a single event.
@@ -424,6 +430,10 @@
                                              #(cont/resume (:resolve-fn cont) %)
                                              #(cont/resume (:reject-fn cont) %)))))]
                     resume-result)))))))
+
+      ;; NEW: Propagate dirty flag through await dependency graph (Design 1)
+      ;; After resuming continuations, propagate dirty to all spins awaiting this one
+      (propagate-await-dirty! context tid)
       nil)
 
     :deferred-delivery
@@ -1274,11 +1284,63 @@
                   rt-state
                   await-conts)))))))
 
+    ;; NEW: Also clear the await dependency graph (Design 1)
+    ;; Since await continuations are ephemeral, so are their dependency relationships
+    (rtp/swap-state! context [:await-dependents] (constantly {}))
+
     (let [stats @result]
       (when (pos? (:continuations-cleared stats))
         (log/debug! {:event :generation/clear-await-continuations
                      :data stats}))
       stats)))
+
+(defn record-await-dependency!
+  "Record that parent-spin awaits child-spin for dirty propagation.
+
+  When a spin registers an await continuation for another spin, we record
+  this dependency relationship. Later, when the child completes dirty,
+  we can propagate the dirty flag to all parents that await it.
+
+  This is the core mechanism for ephemeral await semantics - dependencies
+  are recorded during execution but cleared at generation boundaries.
+
+  Args:
+    context - runtime context
+    parent-spin-id - spin that is awaiting
+    child-spin-id - spin being awaited"
+  [context parent-spin-id child-spin-id]
+  (rtp/swap-state! context [:await-dependents child-spin-id]
+    (fn [parents]
+      (conj (or parents #{}) parent-spin-id)))
+  (log/trace! {:event :await/record-dependency
+               :data {:parent parent-spin-id :child child-spin-id}}))
+
+(defn propagate-await-dirty!
+  "Propagate dirty flag through await dependency graph.
+
+  When a spin completes during batch processing (signal change),
+  all spins awaiting it are marked dirty to ensure they re-execute
+  with fresh values.
+
+  This prevents glitches where parent observes stale child cache.
+  Called after spin completion. Only propagates during batch mode.
+
+  Args:
+    context - runtime context
+    spin-id - spin that just completed"
+  [context spin-id]
+  ;; Only propagate during batch processing (when in signal-change handling)
+  ;; This is when re-execution happens due to reactive dependencies
+  (when (some? *completion-queue*)
+    (let [awaiting-parents (rtp/get-state context [:await-dependents spin-id])]
+      (when (seq awaiting-parents)
+        (log/debug! {:event :engine/propagate-await-dirty
+                     :data {:from-spin spin-id
+                            :to-parents awaiting-parents
+                            :count (count awaiting-parents)}})
+        ;; Mark each parent dirty
+        (doseq [parent-id awaiting-parents]
+          (mark-dirty! context parent-id))))))
 
 (defn invalidate-created-spins!
   "Invalidate all spins that were created by this spin during previous execution.
