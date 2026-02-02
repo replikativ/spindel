@@ -99,6 +99,9 @@
       (log/trace! {:event :engine/enqueue-event
                    :data {:event {:type :spin-completion :id spin-id}}}))))
 
+;; Forward declaration for generation boundary cleanup
+(declare clear-all-await-continuations!)
+
 ;; =============================================================================
 ;; Inline delivery/posting (to avoid cyclic dependency with spin/sync)
 ;; =============================================================================
@@ -363,7 +366,12 @@
                   ;; Process completion event synchronously
                   (process-event! context comp-event)))
               ;; Recursively process any completions that were triggered
-              (recur @next-queue)))))
+              (recur @next-queue))))
+
+        ;; CRITICAL: Clear all await continuations at generation boundary
+        ;; This enforces clean separation: await continuations are ephemeral within
+        ;; a generation and should not persist across signal changes
+        (clear-all-await-continuations! context))
       nil)
 
     :spin-completion
@@ -1215,6 +1223,62 @@
                       state
                       observers))))))
   true)
+
+(defn clear-all-await-continuations!
+  "Clear all await continuations from all spins at generation boundary.
+
+  This enforces clean separation between generations: await continuations
+  are ephemeral within a generation and should not persist across
+  signal-change boundaries.
+
+  Called at the end of :signal-change processing to ensure that old
+  await continuations from previous generation don't fire when new
+  generation's spins complete.
+
+  Args:
+    context - context record (implements PState protocol)
+
+  Returns: map of {:spins-affected count :continuations-cleared count}"
+  [context]
+  (let [all-nodes (rtp/get-state context [:nodes])
+        result (atom {:spins-affected 0 :continuations-cleared 0})]
+
+    (doseq [[spin-id node] all-nodes]
+      (when node
+        (let [all-conts (rtp/get-state context [:continuations spin-id])
+              ;; Filter to only await continuations (event-key starts with [:spin/complete ...])
+              await-conts (filter (fn [[_k v]]
+                                   (and (vector? (:event-key v))
+                                        (= :spin/complete (first (:event-key v)))))
+                                 all-conts)]
+          (when (seq await-conts)
+            (swap! result update :spins-affected inc)
+            (swap! result update :continuations-cleared + (count await-conts))
+
+            ;; Remove await continuations and their subscriptions atomically
+            (rtp/swap-state! context []
+              (fn [rt-state]
+                (reduce
+                  (fn [state [cont-id cont]]
+                    (let [[_event-type child-id] (:event-key cont)
+                          ;; Remove continuation
+                          state' (update-in state [:continuations spin-id] dissoc cont-id)
+                          ;; Remove subscription
+                          spin-subs (get-in state' [:subscriptions [:spin/complete child-id] spin-id])
+                          spin-subs' (disj (or spin-subs #{}) cont-id)]
+                      (if (seq spin-subs')
+                        ;; Still have subscriptions
+                        (assoc-in state' [:subscriptions [:spin/complete child-id] spin-id] spin-subs')
+                        ;; No more subscriptions for this spin - remove entry
+                        (update-in state' [:subscriptions [:spin/complete child-id]] dissoc spin-id))))
+                  rt-state
+                  await-conts)))))))
+
+    (let [stats @result]
+      (when (pos? (:continuations-cleared stats))
+        (log/debug! {:event :generation/clear-await-continuations
+                     :data stats}))
+      stats)))
 
 (defn invalidate-created-spins!
   "Invalidate all spins that were created by this spin during previous execution.
