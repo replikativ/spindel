@@ -1255,34 +1255,38 @@
 
     (doseq [[spin-id node] all-nodes]
       (when node
-        (let [all-conts (rtp/get-state context [:continuations spin-id])
-              ;; Filter to only await continuations (event-key starts with [:spin/complete ...])
-              await-conts (filter (fn [[_k v]]
-                                   (and (vector? (:event-key v))
-                                        (= :spin/complete (first (:event-key v)))))
-                                 all-conts)]
-          (when (seq await-conts)
-            (swap! result update :spins-affected inc)
-            (swap! result update :continuations-cleared + (count await-conts))
+        ;; CRITICAL: Only clear await continuations from COMPLETED spins
+        ;; If a spin is still running (suspended awaiting children), DON'T clear
+        ;; its continuations or it will be orphaned and never resume
+        (when (and (:completed? node) (not (:running? node)))
+          (let [all-conts (rtp/get-state context [:continuations spin-id])
+                ;; Filter to only await continuations (event-key starts with [:spin/complete ...])
+                await-conts (filter (fn [[_k v]]
+                                     (and (vector? (:event-key v))
+                                          (= :spin/complete (first (:event-key v)))))
+                                   all-conts)]
+            (when (seq await-conts)
+              (swap! result update :spins-affected inc)
+              (swap! result update :continuations-cleared + (count await-conts))
 
-            ;; Remove await continuations and their subscriptions atomically
-            (rtp/swap-state! context []
-              (fn [rt-state]
-                (reduce
-                  (fn [state [cont-id cont]]
-                    (let [[_event-type child-id] (:event-key cont)
-                          ;; Remove continuation
-                          state' (update-in state [:continuations spin-id] dissoc cont-id)
-                          ;; Remove subscription
-                          spin-subs (get-in state' [:subscriptions [:spin/complete child-id] spin-id])
-                          spin-subs' (disj (or spin-subs #{}) cont-id)]
-                      (if (seq spin-subs')
-                        ;; Still have subscriptions
-                        (assoc-in state' [:subscriptions [:spin/complete child-id] spin-id] spin-subs')
-                        ;; No more subscriptions for this spin - remove entry
-                        (update-in state' [:subscriptions [:spin/complete child-id]] dissoc spin-id))))
-                  rt-state
-                  await-conts)))))))
+              ;; Remove await continuations and their subscriptions atomically
+              (rtp/swap-state! context []
+                (fn [rt-state]
+                  (reduce
+                    (fn [state [cont-id cont]]
+                      (let [[_event-type child-id] (:event-key cont)
+                            ;; Remove continuation
+                            state' (update-in state [:continuations spin-id] dissoc cont-id)
+                            ;; Remove subscription
+                            spin-subs (get-in state' [:subscriptions [:spin/complete child-id] spin-id])
+                            spin-subs' (disj (or spin-subs #{}) cont-id)]
+                        (if (seq spin-subs')
+                          ;; Still have subscriptions
+                          (assoc-in state' [:subscriptions [:spin/complete child-id] spin-id] spin-subs')
+                          ;; No more subscriptions for this spin - remove entry
+                          (update-in state' [:subscriptions [:spin/complete child-id]] dissoc spin-id))))
+                    rt-state
+                    await-conts))))))))
 
     ;; NEW: Also clear the await dependency graph (Design 1)
     ;; Since await continuations are ephemeral, so are their dependency relationships
@@ -1325,6 +1329,11 @@
   This prevents glitches where parent observes stale child cache.
   Called after spin completion. Only propagates during batch mode.
 
+  CRITICAL: Only propagate to COMPLETED parents, not to parents that are
+  currently executing/suspended. If a parent is already executing and
+  suspended on this await, it will get the fresh value when it resumes -
+  no need to mark it dirty.
+
   Args:
     context - runtime context
     spin-id - spin that just completed"
@@ -1334,13 +1343,24 @@
   (when (some? *completion-queue*)
     (let [awaiting-parents (rtp/get-state context [:await-dependents spin-id])]
       (when (seq awaiting-parents)
-        (log/debug! {:event :engine/propagate-await-dirty
-                     :data {:from-spin spin-id
-                            :to-parents awaiting-parents
-                            :count (count awaiting-parents)}})
-        ;; Mark each parent dirty
-        (doseq [parent-id awaiting-parents]
-          (mark-dirty! context parent-id))))))
+        (let [completed-parents (filter
+                                  (fn [parent-id]
+                                    (let [parent-node (rtp/get-state context [:nodes parent-id])]
+                                      ;; Only propagate if parent is completed (has cached result)
+                                      ;; Don't propagate to running/suspended parents
+                                      (and parent-node
+                                           (:completed? parent-node)
+                                           (not (:running? parent-node)))))
+                                  awaiting-parents)]
+          (when (seq completed-parents)
+            (log/debug! {:event :engine/propagate-await-dirty
+                         :data {:from-spin spin-id
+                                :to-parents completed-parents
+                                :count (count completed-parents)
+                                :skipped (- (count awaiting-parents) (count completed-parents))}})
+            ;; Mark each completed parent dirty
+            (doseq [parent-id completed-parents]
+              (mark-dirty! context parent-id))))))))
 
 (defn invalidate-created-spins!
   "Invalidate all spins that were created by this spin during previous execution.

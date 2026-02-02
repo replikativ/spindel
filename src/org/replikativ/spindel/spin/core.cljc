@@ -106,6 +106,9 @@
           (and local-cached (rtc/spin-result-clean? spin-id))
           (do
             (log/trace! {:event :cache/local-hit :data {:spin-id spin-id}})
+            ;; CRITICAL: Enqueue completion event even for cache hits
+            ;; This ensures awaiting spins' continuations are resumed
+            (simple/enqueue-completion-event! runtime spin-id)
             (result/match local-cached
               ;; Success case
               (fn [value]
