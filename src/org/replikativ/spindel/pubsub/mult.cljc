@@ -15,6 +15,7 @@
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.buffer :as buf]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.spin.protocols :as spin-p]
             [org.replikativ.spindel.runtime.core :as rtc]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
@@ -232,11 +233,11 @@
 (defn- start-pump!
   "Start the pump spin that pulls from source and delivers to taps.
 
-   The pump runs as a detached spin - we deref it in a future to kick it off
-   without blocking the caller."
+   The pump runs as a detached spin - we enqueue its execution via the event system
+   to ensure proper execution context binding."
   [mult]
   (let [{:keys [source-aseq taps-atom closed-atom pump-spin-atom]} mult
-        ;; Capture context for CLJS callback
+        ;; Capture context - needed for event-based execution
         context (rtc/current-execution-context)
         pump (spin
                (loop [source source-aseq]
@@ -253,11 +254,14 @@
                        (when (:close-with-source? @tap-state-atom)
                          (close-tap! tap-state-atom)))))))]
     (reset! pump-spin-atom pump)
-    ;; Kick off pump execution in background
-    ;; We need to invoke the spin to trigger execution
-    #?(:clj (future @pump)
-       :cljs (js/setTimeout #(binding [rtc/*execution-context* context]
-                               (pump (fn [_] nil) (fn [_] nil))) 0))
+    ;; Kick off pump execution via event system (not future!)
+    ;; This ensures execution context is properly bound when pump executes
+    (rtc/enqueue-event! {:type :spin-execution
+                         :id (spin-p/spin-id pump)
+                         :spin pump
+                         :execution-context context
+                         :resolve-fn (fn [_] nil)
+                         :reject-fn (fn [_] nil)})
     pump))
 
 (extend-type Mult

@@ -17,6 +17,7 @@
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.spin.protocols :as spin-p]
             [org.replikativ.spindel.runtime.core :as rtc]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
@@ -171,11 +172,11 @@
 (defn- start-pub-pump!
   "Start the pump spin that pulls from source and routes to topic mults.
 
-   The pump runs as a detached spin - we deref it in a future to kick it off
-   without blocking the caller."
+   The pump runs as a detached spin - we enqueue its execution via the event system
+   to ensure proper execution context binding."
   [pub]
   (let [{:keys [source-aseq topic-fn mults-atom closed-atom pump-spin-atom]} pub
-        ;; Capture runtime for CLJS callback
+        ;; Capture runtime - needed for event-based execution
         runtime (rtc/current-execution-context)
         pump (spin
                (loop [source source-aseq]
@@ -193,10 +194,14 @@
                      (doseq [[_topic {:keys [close-fn]}] @mults-atom]
                        (close-fn))))))]
     (reset! pump-spin-atom pump)
-    ;; Kick off pump execution in background
-    #?(:clj (future @pump)
-       :cljs (js/setTimeout #(binding [rtc/*execution-context* runtime]
-                               (pump (fn [_] nil) (fn [_] nil))) 0))
+    ;; Kick off pump execution via event system (not future!)
+    ;; This ensures execution context is properly bound when pump executes
+    (rtc/enqueue-event! {:type :spin-execution
+                         :id (spin-p/spin-id pump)
+                         :spin pump
+                         :execution-context runtime
+                         :resolve-fn (fn [_] nil)
+                         :reject-fn (fn [_] nil)})
     pump))
 
 (extend-type Pub
