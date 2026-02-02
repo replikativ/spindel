@@ -234,13 +234,17 @@
           ;; This ensures the dependency graph stays connected across resumptions.
           (track-signal-dep! context spin-id sid)
 
-          ;; CRITICAL: Mark spin as not completed and dirty before resuming (like laufzeit lines 246, 252)
+          ;; CRITICAL: Mark spin as not completed, dirty, AND running before resuming (like laufzeit lines 246, 252)
           ;; This allows the spin to be resumed from the track breakpoint
+          ;; CRITICAL: Set running?=true to prevent child spins from marking this spin dirty when they complete
+          ;; Without this, resumed spins that create child spins get marked dirty by those children,
+          ;; causing extra re-executions when later dereferenced
           (rtp/swap-state! context [:nodes spin-id]
             (fn [node]
               (when node
                 (-> node
                     (assoc :completed? false)
+                    (assoc :running? true)
                     (np/mark-dirty)))))
 
           ;; Resume continuation with fresh signal value from :on-resume callback
