@@ -499,3 +499,4 @@
           (is (= [6 10 14 18 22] (mapv deref level3)) "Level3 should all double")
           (is (= 70 @final-spin) "Final-spin should sum to 70")
           (is (= 70 @observer) "Observer should see updated value"))))))
+
