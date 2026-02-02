@@ -70,7 +70,7 @@
 
    Returns the mult for the topic."
   [mults-atom topic]
-  (or (get @mults-atom topic)
+  (or (:mult (get @mults-atom topic))
       (let [;; Create a promise-based async sequence for this topic
             ;; Items will be pushed when they arrive
             topic-items-atom (atom [])

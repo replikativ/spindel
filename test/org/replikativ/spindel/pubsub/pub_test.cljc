@@ -177,3 +177,37 @@
                              acc)))]
            (is (seq result) "Should drain at least some items")
            (is (= (first result) 0) "First item should be 0"))))))
+;; =============================================================================
+;; Multiple Subscribers Per Topic Tests
+;; =============================================================================
+
+#?(:clj
+   (deftest test-pub-multiple-subscribers-per-topic
+     (testing "multiple subscribers to same topic each receive all items"
+       (let [items (vec (for [i (range 5)]
+                          {:type :a :value i}))
+             source (vec->aseq items)
+             p (pub/pub source :type)
+             sub1 (pub/sub p :a (buf/fixed-buffer 10))
+             sub2 (pub/sub p :a (buf/fixed-buffer 10))]
+
+         ;; Let pump run
+         @(spin (await (comb/sleep 200)))
+
+         ;; Consume from both subscribers sequentially
+         (let [result1 @(spin
+                          (loop [seq sub1 acc []]
+                            (if-let [[item rest-seq] (await (anext seq))]
+                              (recur rest-seq (conj acc (:value item)))
+                              acc)))
+               result2 @(spin
+                          (loop [seq sub2 acc []]
+                            (if-let [[item rest-seq] (await (anext seq))]
+                              (recur rest-seq (conj acc (:value item)))
+                              acc)))]
+
+           ;; Both should get all items (order may vary due to concurrent delivery)
+           (is (= 5 (count result1)) "First subscriber should get 5 items")
+           (is (= 5 (count result2)) "Second subscriber should get 5 items")
+           (is (= (set (range 5)) (set result1)) "First subscriber should get all values")
+           (is (= (set (range 5)) (set result2)) "Second subscriber should get all values"))))))

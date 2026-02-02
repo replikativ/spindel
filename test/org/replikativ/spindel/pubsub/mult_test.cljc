@@ -219,3 +219,25 @@
            ;; Should get all items that were buffered
            (is (seq result) "Should drain at least some items")
            (is (= (first result) 0) "First item should be 0"))))))
+;; =============================================================================
+;; Pump Execution Tests (verifies event-based pump fix)
+;; =============================================================================
+
+#?(:clj
+   (deftest test-mult-pump-execution-context
+     (testing "pump executes with correct execution context"
+       (let [source (vec->aseq [1 2 3])
+             m (mult/mult source)
+             t (mult/tap m (buf/fixed-buffer 10))]
+
+         ;; Consume items - this forces pump to execute
+         (let [result @(spin
+                         (loop [seq t
+                                acc []]
+                           (if-let [[item rest-seq] (await (anext seq))]
+                             (recur rest-seq (conj acc item))
+                             acc)))]
+
+           ;; Pump should have delivered all items successfully
+           ;; (verifying event-based execution works correctly)
+           (is (= [1 2 3] result) "Pump should deliver all items via event-based execution"))))))
