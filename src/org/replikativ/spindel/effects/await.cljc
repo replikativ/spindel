@@ -8,6 +8,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.bindings :as bindings]
+            [org.replikativ.spindel.runtime.impl.simple :as simple]  ;; For *completion-queue*
             [org.replikativ.spindel.spin.protocols :as tp]
             [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.spin.result :as result]
@@ -57,10 +58,19 @@
     (rtc/deps-track-spin! spin-id awaited-spin-id)
 
     ;; Check if spin value available via protocol
-    (let [cached (rtc/spin-current-result awaited-spin-id)]
+    (let [cached (rtc/spin-current-result awaited-spin-id)
+          ;; CRITICAL: Disable fast path during batch mode to prevent glitches
+          ;; UNLESS the spin has already been processed in this batch (cache is fresh)
+          in-batch-mode? (some? simple/*completion-queue*)
+          spin-processed? (when-let [processed-set simple/*processed-spins*]
+                           (contains? @processed-set awaited-spin-id))
+          allow-fast-path? (and (some? cached)
+                                (not rebuild?)
+                                (or (not in-batch-mode?)  ;; Not in batch - allow
+                                    spin-processed?))]    ;; In batch but cache fresh - allow
       (cond
-        ;; Fast path: Spin already has result AND not in rebuild mode
-        (and (some? cached) (not rebuild?))
+        ;; Fast path: Spin has result AND (not in batch OR spin already processed)
+        allow-fast-path?
         (result/match cached
           #(cont/resume resolve %)
           #(cont/resume reject %))

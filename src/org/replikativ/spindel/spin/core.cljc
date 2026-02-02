@@ -182,7 +182,8 @@
                                                  :data {:spin-id spin-id :deps-hash deps-hash}})))
 
                                 ;; Emit spin-completion event for engine
-                                (rtc/enqueue-event! {:type :spin-completion :id spin-id})
+                                ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
+                                (simple/enqueue-completion-event! current-rt spin-id)
                                 (log/debug! {:event :spin/completed
                                              :data {:spin-id spin-id :enqueued :spin-completion}})
 
@@ -220,7 +221,8 @@
                                 (rtc/graph-commit-deps! spin-id)
 
                                 ;; Notify dependents just like success path
-                                (rtc/enqueue-event! {:type :spin-completion :id spin-id})
+                                ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
+                                (simple/enqueue-completion-event! _current-rt spin-id)
                                 (log/debug! {:event :spin/errored
                                              :data {:spin-id spin-id :enqueued :spin-completion}})
 
