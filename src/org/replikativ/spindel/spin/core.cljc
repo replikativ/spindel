@@ -148,6 +148,7 @@
                 executing? (atom true)]
 
             (log/debug! {:event :spin/start :data {:spin-id spin-id}})
+            (log/trace! {:event :spin/executing-body :data {:spin-id spin-id :thread (.getName (Thread/currentThread))}})
 
             ;; CRITICAL: Invalidate spins created during previous execution
             ;; Their closures captured values from the old run - now stale
@@ -191,6 +192,15 @@
                                     ;; Call resolve via cont/resume to handle Thunk returns
                                     (cont/resume resolve value)))
 
+                                ;; CRITICAL: Also call any pending callbacks from shared state
+                                ;; These are from duplicate :spin-execution events that were skipped
+                                (let [pending (simple/take-pending-callbacks! current-rt spin-id)]
+                                  (when (seq pending)
+                                    (log/trace! {:event :spin/pending-callbacks
+                                                 :data {:spin-id spin-id :count (count pending)}})
+                                    (doseq [{:keys [resolve]} pending]
+                                      (resolve value))))  ; Direct call, not cont/resume
+
                                 (reset! executing? false)
                                 value))  ; Return for trampoline - closes (let [current-rt ...])
 
@@ -223,6 +233,16 @@
                                     ;; Call reject via cont/resume to handle Thunk returns
                                     (cont/resume reject error)))
 
+                                ;; CRITICAL: Also call any pending callbacks from shared state
+                                ;; These are from duplicate :spin-execution events that were skipped
+                                (let [current-rt (rtc/current-execution-context)
+                                      pending (simple/take-pending-callbacks! current-rt spin-id)]
+                                  (when (seq pending)
+                                    (log/trace! {:event :spin/pending-callbacks-error
+                                                 :data {:spin-id spin-id :count (count pending)}})
+                                    (doseq [{:keys [reject]} pending]
+                                      (reject error))))  ; Direct call, not cont/resume
+
                                 (reset! executing? false)
                                 ;; Don't re-throw! Error already recorded in spin state.
                                 nil)))]  ; Return nil instead of throwing - closes (let [_current-rt ...]) and (fn [error] ...) and (spin-fn ...)
@@ -230,6 +250,11 @@
                 ;; Check if another caller arrived while we were starting
                 ;; If so, they couldn't have registered (we didn't expose the atom)
                 ;; This is safe because spin execution is idempotent via caching
+
+                ;; CRITICAL: If spin returned ::incomplete (suspended awaiting deferred),
+                ;; clear running? flag so deref doesn't poll-wait forever
+                (when (= result ::incomplete)
+                  (simple/mark-not-running! runtime spin-id))
 
                 ;; Return result (could be value or ::incomplete from nested await)
                 result))))))
@@ -263,24 +288,40 @@
            (and cached (rtc/spin-result-clean? spin-id))
            (result/unwrap cached)
 
-           ;; Not completed or dirty - schedule execution on executor to avoid deadlock
+           ;; Not completed or dirty - check if already running
            :else
-           (let [result-promise (promise)]
-             (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
-             ;; Enqueue spin execution event - will run on thread pool for async executors
-             ;; This avoids deadlock: main thread blocks here, executor runs spin + events
-             (rtc/enqueue-event! {:type :spin-execution
-                                   :id spin-id
-                                   :spin this
-                                   :resolve-fn (fn [value]
-                                                 (deliver result-promise (result/ok value)))
-                                   :reject-fn (fn [error]
-                                                (deliver result-promise (result/error error)))})
-             ;; Block main thread waiting for result (executor will deliver)
-             (let [res @result-promise]
-               (log/trace! {:event :spin/deref-done
-                            :data {:spin-id spin-id :result res}})
-               (result/unwrap res)))))
+           (if (simple/running? runtime spin-id)
+             ;; Spin is already executing - poll-wait for completion
+             ;; This prevents duplicate execution when multiple threads deref the same spin
+             (do
+               (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
+               (loop []
+                 (Thread/sleep 1) ;; Poll every 1ms
+                 (let [cached (rtc/spin-current-result spin-id)]
+                   (if (and cached (rtc/spin-result-clean? spin-id))
+                     ;; Spin completed - return result
+                     (do
+                       (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
+                       (result/unwrap cached))
+                     ;; Still executing or not clean yet - keep waiting
+                     (recur)))))
+             ;; Not running - schedule execution on executor to avoid deadlock
+             (let [result-promise (promise)]
+               (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
+               ;; Enqueue spin execution event - will run on thread pool for async executors
+               ;; This avoids deadlock: main thread blocks here, executor runs spin + events
+               (rtc/enqueue-event! {:type :spin-execution
+                                    :id spin-id
+                                    :spin this
+                                    :resolve-fn (fn [value]
+                                                  (deliver result-promise (result/ok value)))
+                                    :reject-fn (fn [error]
+                                                 (deliver result-promise (result/error error)))})
+               ;; Block main thread waiting for result (executor will deliver)
+               (let [res @result-promise]
+                 (log/trace! {:event :spin/deref-done
+                              :data {:spin-id spin-id :result res}})
+                 (result/unwrap res))))))
        :cljs
        (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 

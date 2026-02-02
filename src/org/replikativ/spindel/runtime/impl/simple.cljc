@@ -34,6 +34,8 @@
 ;; =============================================================================
 
 (declare track-signal-dep!)
+(declare add-pending-callback!)
+(declare take-pending-callbacks!)
 
 ;; =============================================================================
 ;; Inline delivery/posting (to avoid cyclic dependency with spin/sync)
@@ -167,6 +169,8 @@
             (vec (rest queue)))
           queue)))
     @event-atom))
+
+(declare try-claim-execution!)
 
 (defn process-event!
   "Process a single event.
@@ -336,16 +340,38 @@
           execution-context (:execution-context event)]  ; May be nil for normal spins
       (log/trace! {:event :engine/spin-execution
                    :data {:spin-id tid}})
-      ;; Execute spin on executor thread with provided callbacks
-      ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
-      ;; This ensures invoke-continuation establishes a new trampoline loop
-      ;; If execution-context is provided (e.g., from SMC), bind it; otherwise use context
-      (binding [rtc/*execution-context* (or execution-context context)
-                rtc/*spin-id* tid
-                pcps-async/*in-trampoline* false]
-        ;; Invoke spin (Spin implements IFn)
-        (let [result (spin resolve-fn reject-fn)]
-          nil)))
+      ;; Try to atomically claim execution
+      ;; This checks cache AND running? atomically to prevent duplicate execution
+      (if-not (try-claim-execution! context tid)
+        ;; Failed to claim - either cached or already running
+        ;; Check which case to handle appropriately
+        (let [node (rtp/get-state context [:nodes tid])
+              cached (when node (np/get-value node))
+              is-clean? (when node (not (np/dirty? node)))]
+          (if (and cached is-clean?)
+            ;; Already cached - deliver result via callbacks without re-executing
+            (do
+              (log/trace! {:event :engine/spin-execution-cached
+                           :data {:spin-id tid}})
+              (result/match cached
+                (fn [value] (resolve-fn value))
+                (fn [error] (reject-fn error))))
+            ;; Not cached - must be running, add callbacks to pending
+            (do
+              (log/trace! {:event :engine/spin-execution-skip-running
+                           :data {:spin-id tid}})
+              (add-pending-callback! context tid {:resolve resolve-fn :reject reject-fn}))))
+        ;; Successfully claimed - proceed with execution
+        ;; Execute spin on executor thread with provided callbacks
+        ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
+        ;; This ensures invoke-continuation establishes a new trampoline loop
+        ;; If execution-context is provided (e.g., from SMC), bind it; otherwise use context
+        (binding [rtc/*execution-context* (or execution-context context)
+                  rtc/*spin-id* tid
+                  pcps-async/*in-trampoline* false]
+          ;; Invoke spin (Spin implements IFn)
+          (let [result (spin resolve-fn reject-fn)]
+            nil))))
 
     ;; Unknown event type
     (do
@@ -412,10 +438,15 @@
               (trigger-drain! context executor))))))))
 
 (defn await-drain-complete!
-  "Wait for any in-progress drain to complete AND pending queue to be empty.
+  "Wait for event queue to drain AND all spins to complete execution.
 
-  Busy-waits until both :engine/draining? is false AND :engine/pending is empty.
-  This ensures async drains triggered by signal swaps fully complete before proceeding.
+  Busy-waits until:
+  - :engine/draining? is false (no active drain session)
+  - :engine/pending is empty (no queued events)
+  - No spins have :running? = true (no in-flight spin bodies)
+
+  This is critical for tests to avoid race conditions where await-drain returns
+  but spin bodies are still executing on the thread pool.
 
   Args:
     context - context record
@@ -430,22 +461,28 @@
        (loop []
          (swap! iterations inc)
          (let [draining? (rtp/get-state context [:engine/draining?])
-               pending (rtp/get-state context [:engine/pending])]
-           (if (or draining? (seq pending))
+               pending (rtp/get-state context [:engine/pending])
+               ;; NEW: Check if any spins are currently running
+               nodes (rtp/get-state context [:nodes])
+               running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
+           (if (or draining? (seq pending) (seq running-spins))
              (if (< (System/currentTimeMillis) deadline)
                (do
                  (Thread/sleep 1)
                  (recur))
                false) ; Timeout
-             true)))) ; Drain complete AND queue empty
+             true)))) ; Drain complete AND queue empty AND no running spins
      :cljs
      ;; CLJS: busy wait without Thread/sleep (use promises/async in real impl)
      (let [start (.now js/Date)
            deadline (+ start timeout-ms)]
        (loop []
          (let [draining? (rtp/get-state context [:engine/draining?])
-               pending (rtp/get-state context [:engine/pending])]
-           (if (or draining? (seq pending))
+               pending (rtp/get-state context [:engine/pending])
+               ;; NEW: Check if any spins are currently running
+               nodes (rtp/get-state context [:nodes])
+               running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
+           (if (or draining? (seq pending) (seq running-spins))
              (if (< (.now js/Date) deadline)
                (recur)
                false) ; Timeout
@@ -1182,6 +1219,146 @@
   (if-let [node (get-node context spin-id)]
     (np/dirty? node)
     false))
+
+(defn running?
+  "Check if a spin is currently executing.
+
+  Returns true if the spin is in-flight (execution started but not yet
+  completed via cache-result!). This includes spins that are suspended
+  waiting on a deferred.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin to check
+
+  Returns: true if spin is executing, false otherwise"
+  [context spin-id]
+  (if-let [node (get-node context spin-id)]
+    (:running? node)
+    false))
+
+(defn mark-running!
+  "Mark a spin as currently executing.
+
+  Sets the running? flag to true. Called at the start of direct spin execution
+  (Case 3 in invoke path) to indicate the spin is in-flight.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin to mark as running
+
+  Returns: true"
+  [context spin-id]
+  (rtp/swap-state! context [:nodes spin-id]
+    (fn [node]
+      (if node
+        (assoc node :running? true)
+        (nt/->spin-node nil :clean false true #{} {} nil {} nil #{}))))
+  true)
+
+(defn try-claim-execution!
+  "Atomically try to claim execution of a spin.
+
+  Uses atomic swap to check cached/running? and set running? in one operation.
+  If already running OR already cached (clean), returns false without modifying state.
+  If not running and not cached, atomically sets running?=true and returns true.
+
+  This is CRITICAL for preventing duplicate execution when multiple
+  :spin-execution events are enqueued for the same spin. The cache check
+  must be atomic with the claim to prevent the race where thread A checks
+  cache, thread B completes and caches, then thread A claims and re-executes.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin to claim
+
+  Returns: true if claimed (proceed to execute)
+           false if already running/cached (skip execution or use cached value)"
+  [context spin-id]
+  (let [claimed? (atom false)]
+    (rtp/swap-state! context [:nodes spin-id]
+      (fn [node]
+        (if node
+          (let [cached (np/get-value node)
+                is-clean? (not (np/dirty? node))]
+            (cond
+              ;; Already has clean cached result - don't claim
+              (and cached is-clean?)
+              (do (reset! claimed? false)
+                  (log/trace! {:event :claim/failed-already-cached :data {:spin-id spin-id}})
+                  node)
+
+              ;; Already running - don't claim
+              (:running? node)
+              (do (reset! claimed? false)
+                  (log/trace! {:event :claim/failed-already-running :data {:spin-id spin-id}})
+                  node)
+
+              ;; Not running and not cached - claim it
+              :else
+              (do (reset! claimed? true)
+                  (log/trace! {:event :claim/success-from-existing :data {:spin-id spin-id}})
+                  (assoc node :running? true))))
+          ;; No node - create and claim
+          (do (reset! claimed? true)
+              (log/trace! {:event :claim/success-new-node :data {:spin-id spin-id}})
+              (nt/->spin-node nil :clean false true #{} {} nil {} nil #{})))))
+    @claimed?))
+
+(defn mark-not-running!
+  "Clear the running? flag for a spin.
+
+  Called when a spin yields (returns ::incomplete) to indicate it's no longer
+  actively executing - it's suspended waiting for a continuation.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin to mark as not running
+
+  Returns: true"
+  [context spin-id]
+  (rtp/swap-state! context [:nodes spin-id]
+    (fn [node]
+      (when node
+        (assoc node :running? false))))
+  true)
+
+(defn add-pending-callback!
+  "Add a callback to be invoked when a currently-running spin completes.
+
+  When multiple :spin-execution events are enqueued for the same spin,
+  the first one executes and subsequent ones add their callbacks here.
+  When the spin completes, all pending callbacks are invoked.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin
+    callback - Map with :resolve and :reject functions
+
+  Returns: true"
+  [context spin-id callback]
+  (rtp/swap-state! context [:pending-callbacks spin-id]
+    (fn [callbacks]
+      (conj (or callbacks []) callback)))
+  true)
+
+(defn take-pending-callbacks!
+  "Atomically take and clear all pending callbacks for a spin.
+
+  Called when a spin completes to get all callbacks that need to be notified.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin
+
+  Returns: Vector of callback maps"
+  [context spin-id]
+  (let [result (atom nil)]
+    (rtp/swap-state! context [:pending-callbacks spin-id]
+      (fn [callbacks]
+        (reset! result callbacks)
+        nil))  ; Clear after taking
+    (or @result [])))
 
 (defn get-deps-hash
   "Get the content hash of a spin's dependencies.
