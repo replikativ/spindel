@@ -266,14 +266,27 @@
           ;; Get observers in topological order (glitch-free)
           observers (rtp/ordered-observers context sid)
           ;; Create completion queue for glitch-free batch processing
-          completion-queue (atom [])]
+          completion-queue (atom [])
+          ;; CRITICAL: Increment batch generation for ENTIRE signal-change processing
+          ;; This ensures await dependencies registered during track continuation resumption
+          ;; have the correct generation value (not nil)
+          batch-gen (rtp/swap-state! context [:engine/batch-generation]
+                      (fn [gen] (inc (or gen 0))))]
       (log/trace! {:event :engine/signal-change
-                   :data {:signal-id sid :observers observers}})
+                   :data {:signal-id sid :observers observers :generation batch-gen}})
+
+      ;; CRITICAL: Clear await continuations at generation boundary (Design 1)
+      ;; Must happen BEFORE track continuations resume to prevent old await
+      ;; continuations from being resumed during batch processing
+      (clear-all-await-continuations! context)
 
       ;; Resume track continuations for spins watching this signal
       ;; (Like laufzeit's consume - persistent continuations that resume on signal change)
-      ;; CRITICAL: Bind *completion-queue* so spin completions are deferred until batch finishes
-      (binding [*completion-queue* completion-queue]
+      ;; CRITICAL: Bind *completion-queue* AND *batch-generation* so:
+      ;; 1. Spin completions are deferred until batch finishes
+      ;; 2. Await dependencies are registered with the correct generation
+      (binding [*completion-queue* completion-queue
+                *batch-generation* batch-gen]
         (doseq [spin-id observers]
           (when-let [cont (rtp/earliest-continuation context spin-id sid)]
             (log/debug! {:event :engine/resuming-track-continuation
@@ -349,10 +362,8 @@
       ;; Generation-based deduplication: Track [parent-id child-id generation] triples
       ;; to prevent duplicate notifications from same child in same batch
       ;; while allowing different children to notify the same parent
-      (let [;; Increment batch generation (stored in context state)
-            batch-gen (rtp/swap-state! context [:engine/batch-generation]
-                        (fn [gen] (inc (or gen 0))))
-            resumed-set (atom #{})  ;; Track [parent child gen] triples
+      ;; NOTE: batch-gen is already incremented in outer scope (signal-change handler)
+      (let [resumed-set (atom #{})  ;; Track [parent child gen] triples
             processed-set (atom #{})]  ;; Track which spins have been processed
         (loop [queue-to-process @completion-queue]
           (when (seq queue-to-process)
@@ -372,12 +383,7 @@
                   ;; Process completion event synchronously
                   (process-event! context comp-event)))
               ;; Recursively process any completions that were triggered
-              (recur @next-queue))))
-
-        ;; CRITICAL: Clear all await continuations at generation boundary
-        ;; This enforces clean separation: await continuations are ephemeral within
-        ;; a generation and should not persist across signal changes
-        (clear-all-await-continuations! context))
+              (recur @next-queue)))))
       nil)
 
     :spin-completion
@@ -1235,15 +1241,14 @@
   true)
 
 (defn clear-all-await-continuations!
-  "Clear all await continuations from all spins at generation boundary.
+  "Clear ephemeral await continuations from completed spins at generation boundary.
 
-  This enforces clean separation between generations: await continuations
-  are ephemeral within a generation and should not persist across
+  Only clears continuations marked with :ephemeral-await? true. This preserves
+  persistent reactive continuations (like those from the parallel combinator)
+  while clearing ephemeral await continuations that should not persist across
   signal-change boundaries.
 
-  Called at the end of :signal-change processing to ensure that old
-  await continuations from previous generation don't fire when new
-  generation's spins complete.
+  Called at generation boundaries to ensure clean separation between generations.
 
   Args:
     context - context record (implements PState protocol)
@@ -1260,10 +1265,10 @@
         ;; its continuations or it will be orphaned and never resume
         (when (and (:completed? node) (not (:running? node)))
           (let [all-conts (rtp/get-state context [:continuations spin-id])
-                ;; Filter to only await continuations (event-key starts with [:spin/complete ...])
+                ;; Filter to only EPHEMERAL await continuations (marked with :ephemeral-await? true)
+                ;; This excludes persistent reactive continuations (like parallel's) which should NOT be cleared
                 await-conts (filter (fn [[_k v]]
-                                     (and (vector? (:event-key v))
-                                          (= :spin/complete (first (:event-key v)))))
+                                     (:ephemeral-await? v))
                                    all-conts)]
             (when (seq await-conts)
               (swap! result update :spins-affected inc)

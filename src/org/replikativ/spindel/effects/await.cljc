@@ -112,6 +112,7 @@
                           :reject-fn reject
                           :source-loc source-loc
                           :bindings captured-bindings
+                          :ephemeral-await? true  ;; Mark as ephemeral await continuation (Design 1)
                           :on-resume (fn [_rt]
                                        (let [res (rtc/spin-current-result awaited-spin-id)]
                                          (result/match res identity identity)))}]
