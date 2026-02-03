@@ -74,11 +74,17 @@
   Nil when not in batched completion processing."
   nil)
 
+;; Forward declarations for mutual recursion
+(declare trigger-drain!)
+
 (defn enqueue-completion-event!
   "Enqueue a spin completion event, respecting batch mode.
 
   If *completion-queue* is bound (we're in a signal-change batch), appends to
   the queue for later processing. Otherwise enqueues immediately.
+
+  CRITICAL: Also triggers drain if NOT already draining, to ensure completion events
+  from worker threads get processed (fixes hang when main thread blocks in deref).
 
   This is the ONLY way spin completions should be enqueued to ensure glitch-freedom.
 
@@ -87,17 +93,31 @@
     spin-id - ID of completed spin"
   [context spin-id]
   (if-let [queue *completion-queue*]
-    ;; In batch mode - defer to queue
+    ;; In batch mode - defer to queue (drain happens after batch completes)
     (do
       (swap! queue conj {:type :spin-completion :id spin-id})
       (log/trace! {:event :engine/batch-completion-deferred
                    :data {:spin-id spin-id :queue-size (inc (count @queue))}}))
-    ;; Not in batch - enqueue immediately (normal path)
+    ;; Not in batch - enqueue immediately
     (do
       (rtp/swap-state-args! context [:engine/pending] conj
                            [{:type :spin-completion :id spin-id}])
       (log/trace! {:event :engine/enqueue-event
-                   :data {:event {:type :spin-completion :id spin-id}}}))))
+                   :data {:event {:type :spin-completion :id spin-id}}})
+      ;; CRITICAL: Trigger drain from worker threads, but only if NOT in batch processing
+      ;; - Worker threads need explicit drain because they don't participate in event loop
+      ;; - BUT if we're in batch mode (*batch-generation* bound), don't trigger drain
+      ;;   because that would break batching semantics and cause extra re-executions
+      ;; - Main thread doesn't need this - events processed during normal drain cycles
+      #?(:clj
+         (when (and (nil? *batch-generation*)  ;; Not in batch mode
+                    (not (.equals (.getName (Thread/currentThread)) "main")))  ;; Worker thread
+           (log/trace! {:event :engine/trigger-drain-from-worker
+                        :data {:thread (.getName (Thread/currentThread)) :spin-id spin-id}})
+           (trigger-drain! context (:executor context)))
+         :cljs
+         ;; CLJS always runs on main event loop, no worker threads
+         nil))))
 
 ;; Forward declaration for generation boundary cleanup
 (declare clear-all-await-continuations!)
