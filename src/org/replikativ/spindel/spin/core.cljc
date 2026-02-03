@@ -310,11 +310,12 @@
                        (result/unwrap cached))
                      ;; Still executing or not clean yet - keep waiting
                      (recur)))))
-             ;; Not running - schedule execution on executor to avoid deadlock
+             ;; Not running - enqueue spin execution with poll-and-drain
+             ;; CRITICAL: Must enqueue to maintain event ordering and avoid glitches
              (let [result-promise (promise)]
                (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
-               ;; Enqueue spin execution event - will run on thread pool for async executors
-               ;; This avoids deadlock: main thread blocks here, executor runs spin + events
+               ;; Enqueue spin execution event - preserves event queue ordering
+               ;; This ensures glitch-free execution: events processed in order
                (rtc/enqueue-event! {:type :spin-execution
                                     :id spin-id
                                     :spin this
@@ -322,11 +323,31 @@
                                                   (deliver result-promise (result/ok value)))
                                     :reject-fn (fn [error]
                                                  (deliver result-promise (result/error error)))})
-               ;; Block main thread waiting for result (executor will deliver)
-               (let [res @result-promise]
-                 (log/trace! {:event :spin/deref-done
-                              :data {:spin-id spin-id :result res}})
-                 (result/unwrap res))))))
+               ;; CRITICAL: Poll-and-drain loop
+               ;; Main thread actively processes events while waiting for result
+               ;; This prevents deadlock when worker threads await nested spins
+               (loop [iterations 0]
+                 (cond
+                   ;; Success: result ready
+                   (realized? result-promise)
+                   (do
+                     (log/trace! {:event :spin/deref-done
+                                  :data {:spin-id spin-id :iterations iterations}})
+                     (result/unwrap @result-promise))
+
+                   ;; Timeout after 30 seconds (3000 iterations * 10ms)
+                   (> iterations 3000)
+                   (throw (ex-info "Spin deref timed out after 30 seconds"
+                                   {:spin-id spin-id :iterations iterations}))
+
+                   ;; Keep waiting and processing events
+                   :else
+                   (do
+                     ;; Drain events to process nested spin completions
+                     (simple/trigger-drain! runtime (:executor runtime))
+                     ;; Brief sleep to avoid busy-wait
+                     (Thread/sleep 10)
+                     (recur (inc iterations)))))))))
        :cljs
        (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 

@@ -83,9 +83,6 @@
   If *completion-queue* is bound (we're in a signal-change batch), appends to
   the queue for later processing. Otherwise enqueues immediately.
 
-  CRITICAL: Also triggers drain if NOT already draining, to ensure completion events
-  from worker threads get processed (fixes hang when main thread blocks in deref).
-
   This is the ONLY way spin completions should be enqueued to ensure glitch-freedom.
 
   Args:
@@ -98,26 +95,12 @@
       (swap! queue conj {:type :spin-completion :id spin-id})
       (log/trace! {:event :engine/batch-completion-deferred
                    :data {:spin-id spin-id :queue-size (inc (count @queue))}}))
-    ;; Not in batch - enqueue immediately
+    ;; Not in batch - enqueue immediately (normal path)
     (do
       (rtp/swap-state-args! context [:engine/pending] conj
                            [{:type :spin-completion :id spin-id}])
       (log/trace! {:event :engine/enqueue-event
-                   :data {:event {:type :spin-completion :id spin-id}}})
-      ;; CRITICAL: Trigger drain from worker threads, but only if NOT in batch processing
-      ;; - Worker threads need explicit drain because they don't participate in event loop
-      ;; - BUT if we're in batch mode (*batch-generation* bound), don't trigger drain
-      ;;   because that would break batching semantics and cause extra re-executions
-      ;; - Main thread doesn't need this - events processed during normal drain cycles
-      #?(:clj
-         (when (and (nil? *batch-generation*)  ;; Not in batch mode
-                    (not (.equals (.getName (Thread/currentThread)) "main")))  ;; Worker thread
-           (log/trace! {:event :engine/trigger-drain-from-worker
-                        :data {:thread (.getName (Thread/currentThread)) :spin-id spin-id}})
-           (trigger-drain! context (:executor context)))
-         :cljs
-         ;; CLJS always runs on main event loop, no worker threads
-         nil))))
+                   :data {:event {:type :spin-completion :id spin-id}}}))))
 
 ;; Forward declaration for generation boundary cleanup
 (declare clear-all-await-continuations!)
@@ -655,7 +638,13 @@
 
   This is called after external changes to ensure events are processed
   eventually. If draining is already in progress, the new events will
-  be picked up by the current drain session.
+  be picked up by the current drain session (via CAS in drain-events!).
+
+  IMPORTANT: This intentionally does NOT check draining? flag before scheduling.
+  Multiple trigger-drain! calls may schedule redundant drain-events!, but the CAS
+  in drain-events! ensures only one drains at a time. Redundant drains see empty
+  queue and exit immediately. This design ensures events eventually get processed
+  even with concurrent trigger-drain! calls.
 
   Args:
     context - context record
