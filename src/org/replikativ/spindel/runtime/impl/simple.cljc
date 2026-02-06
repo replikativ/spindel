@@ -27,7 +27,8 @@
             [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.spin.result :as result]
             [is.simm.partial-cps.async :as pcps-async]
-            [clojure.set :as set]))
+            [clojure.set :as set])
+  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue])))
 
 ;; =============================================================================
 ;; Forward declarations
@@ -38,41 +39,76 @@
 (declare take-pending-callbacks!)
 
 ;; =============================================================================
-;; Glitch Prevention - Batched Completion Events
+;; Glitch Prevention - Batch as Context State
 ;; =============================================================================
+;;
+;; The batch mechanism prevents FRP glitches by deferring spin completion events
+;; during signal-change processing. Instead of dynamic bindings (fragile across
+;; thread boundaries), the batch is stored as context state at :engine/current-batch.
+;; Any thread with access to the context can find and interact with the batch.
+;;
+;; See doc/design/runtime-redesign.md for full design rationale.
 
-(def ^:dynamic *completion-queue*
-  "When bound to an atom during signal-change processing, spin completion events
-  are appended to this queue instead of being immediately enqueued. This ensures
-  topological ordering is preserved - all observers in a batch complete before
-  their parents are notified, preventing glitches.
+(defprotocol PBatchQueue
+  "Portable queue for batch completion events."
+  (batch-put! [q event] "Add event to queue (thread-safe)")
+  (batch-take! [q] "Block until event available, return it (JVM: blocks thread, CLJS: throws)")
+  (batch-poll! [q] "Non-blocking take, return event or nil"))
 
-  Nil when not in a signal-change batch (normal event processing)."
-  nil)
+#?(:clj
+   (deftype BlockingBatchQueue [^LinkedBlockingQueue queue]
+     PBatchQueue
+     (batch-put! [_ event] (.put queue event))
+     (batch-take! [_] (.take queue))
+     (batch-poll! [_] (.poll queue)))
 
-(def ^:dynamic *resumed-continuations*
-  "When bound to an atom containing a set during batched completion processing,
-  tracks which [parent-id child-id generation] triples have been resumed.
-  This prevents duplicate resumptions from the SAME child in the SAME generation
-  while allowing DIFFERENT children to notify the same parent.
+   :cljs
+   (deftype AtomBatchQueue [events-atom]
+     PBatchQueue
+     (batch-put! [_ event] (swap! events-atom conj event))
+     (batch-take! [_] (throw (ex-info "batch-take! not supported in CLJS (single-threaded)" {})))
+     (batch-poll! [_]
+       (let [result (atom nil)]
+         (swap! events-atom
+           (fn [events]
+             (if (seq events)
+               (do (reset! result (first events))
+                   (vec (rest events)))
+               events)))
+         @result))))
 
-  Nil when not in batched completion processing."
-  nil)
+(defn create-batch-queue
+  "Create a platform-appropriate batch queue."
+  []
+  #?(:clj (->BlockingBatchQueue (LinkedBlockingQueue.))
+     :cljs (->AtomBatchQueue (atom []))))
 
-(def ^:dynamic *batch-generation*
-  "When bound during batched completion processing, contains the generation number
-  for this batch. Increments with each signal change to distinguish different batches.
+(defn create-batch
+  "Create a Batch data structure for a signal-change processing cycle.
 
-  Nil when not in batched completion processing."
-  nil)
+  The batch is stored in context state at :engine/current-batch and coordinates
+  glitch-free completion event processing across threads.
 
-(def ^:dynamic *processed-spins*
-  "When bound to an atom containing a set during batched completion processing, tracks
-  which spin-ids have had their completion events processed in this batch. This allows
-  await's fast-path to work for spins that have fresh caches (completed in this batch).
-
-  Nil when not in batched completion processing."
-  nil)
+  Fields:
+    :generation     - monotonic counter for deduplication
+    :signal-id      - signal that triggered this batch
+    :observers      - set of observer spin-ids expected to complete
+    :completed      - atom tracking which observers have completed
+    :resumed-conts  - atom tracking [parent child gen] dedup triples
+    :processed      - atom tracking spins with fresh cache in this batch
+    :processed-events - atom for event deduplication
+    :events         - PBatchQueue for completion events"
+  [context signal-id observers]
+  (let [gen (rtp/swap-state! context [:engine/batch-generation]
+              (fn [gen] (inc (or gen 0))))]
+    {:generation gen
+     :signal-id signal-id
+     :observers (set observers)
+     :completed (atom #{})
+     :resumed-conts (atom #{})
+     :processed (atom #{})
+     :processed-events (atom #{})
+     :events (create-batch-queue)}))
 
 ;; Forward declarations for mutual recursion
 (declare trigger-drain!)
@@ -80,8 +116,8 @@
 (defn enqueue-completion-event!
   "Enqueue a spin completion event, respecting batch mode.
 
-  If *completion-queue* is bound (we're in a signal-change batch), appends to
-  the queue for later processing. Otherwise enqueues immediately.
+  If a batch is active in context state (we're in a signal-change batch), routes
+  to the batch's event queue. Otherwise enqueues immediately to the engine queue.
 
   This is the ONLY way spin completions should be enqueued to ensure glitch-freedom.
 
@@ -89,18 +125,24 @@
     context - context record
     spin-id - ID of completed spin"
   [context spin-id]
-  (if-let [queue *completion-queue*]
-    ;; In batch mode - defer to queue (drain happens after batch completes)
+  (if-let [batch (rtp/get-state context [:engine/current-batch])]
+    ;; In batch mode - route to batch's event queue (thread-safe via BlockingQueue)
     (do
-      (swap! queue conj {:type :spin-completion :id spin-id})
+      (batch-put! (:events batch) {:type :spin-completion :id spin-id})
+      ;; Track observer completion
+      (when (contains? (:observers batch) spin-id)
+        (swap! (:completed batch) conj spin-id))
       (log/trace! {:event :engine/batch-completion-deferred
-                   :data {:spin-id spin-id :queue-size (inc (count @queue))}}))
-    ;; Not in batch - enqueue immediately (normal path)
+                   :data {:spin-id spin-id}}))
+    ;; Not in batch - enqueue immediately and trigger drain
+    ;; CRITICAL: Must trigger drain for contexts without background drain thread
+    ;; (e.g., restored snapshots, forked contexts)
     (do
       (rtp/swap-state-args! context [:engine/pending] conj
                            [{:type :spin-completion :id spin-id}])
       (log/trace! {:event :engine/enqueue-event
-                   :data {:event {:type :spin-completion :id spin-id}}}))))
+                   :data {:event {:type :spin-completion :id spin-id}}})
+      (trigger-drain! context (:executor context)))))
 
 ;; Forward declaration for generation boundary cleanup
 (declare clear-all-await-continuations!)
@@ -268,155 +310,139 @@
     (let [sid (:id event)
           ;; Get observers in topological order (glitch-free)
           observers (rtp/ordered-observers context sid)
-          ;; Create completion queue for glitch-free batch processing
-          completion-queue (atom [])
-          ;; CRITICAL: Increment batch generation for ENTIRE signal-change processing
-          ;; This ensures await dependencies registered during track continuation resumption
-          ;; have the correct generation value (not nil)
-          batch-gen (rtp/swap-state! context [:engine/batch-generation]
-                      (fn [gen] (inc (or gen 0))))]
+          ;; Create batch and store in context state
+          ;; Any thread with context access can find the batch (no dynamic binding needed)
+          batch (create-batch context sid observers)]
+      (rtp/swap-state! context [:engine/current-batch] (constantly batch))
+
       (log/trace! {:event :engine/signal-change
-                   :data {:signal-id sid :observers observers :generation batch-gen}})
+                   :data {:signal-id sid :observers observers :generation (:generation batch)}})
 
       ;; CRITICAL: Clear await continuations at generation boundary (Design 1)
       ;; Must happen BEFORE track continuations resume to prevent old await
       ;; continuations from being resumed during batch processing
       (clear-all-await-continuations! context)
 
-      ;; Resume track continuations for spins watching this signal
-      ;; (Like laufzeit's consume - persistent continuations that resume on signal change)
-      ;; CRITICAL: Bind *completion-queue* AND *batch-generation* for the ENTIRE signal-change
-      ;; processing, including both track continuation resumption AND batch processing.
-      ;; This ensures async child spins (on worker threads) can add events to the batch queue
-      ;; even after the track continuation returns.
-      (let [resumed-set (atom #{})  ;; Track [parent child gen] triples
-            processed-set (atom #{})  ;; Track which spins have been processed
-            processed-events (atom #{})]  ;; Track which events we've already processed (dedup)
-        (binding [*completion-queue* completion-queue
-                  *batch-generation* batch-gen
-                  *resumed-continuations* resumed-set
-                  *processed-spins* processed-set]
-          ;; Phase 1: Resume track continuations
-          (doseq [spin-id observers]
-            (when-let [cont (rtp/earliest-continuation context spin-id sid)]
-              (log/debug! {:event :engine/resuming-track-continuation
-                           :data {:spin-id spin-id :signal-id sid}})
+      ;; Phase 1: Resume track continuations (sequential for now)
+      ;; No dynamic bindings needed for batch state - it's in context state.
+      ;; Async children on thread pool find the batch via context state lookup.
+      ;; Track which observers were actually resumed (some may lack continuations).
+      (let [resumed-observers (atom #{})]
+        (doseq [spin-id observers]
+          (when-let [cont (rtp/earliest-continuation context spin-id sid)]
+            (swap! resumed-observers conj spin-id)
+            (log/debug! {:event :engine/resuming-track-continuation
+                         :data {:spin-id spin-id :signal-id sid}})
 
-              ;; CRITICAL: Remove all continuations with order > resumed continuation's order
-              ;; These are stale continuations from a previous execution that's now being invalidated.
-              ;; Without this, when a later signal changes, it would find the stale continuation
-              ;; (which captured old values) instead of the fresh one from re-execution.
-              (let [cont-order (:order cont)
-                    all-conts (rtp/get-state context [:continuations spin-id])
-                    ;; Collect signal-ids from continuations with order < cont-order (skipped continuations)
-                    ;; These are dependencies that won't be re-tracked by the resumed execution
-                    skipped-signal-ids (->> (vals all-conts)
-                                            (filter #(< (:order %) cont-order))
-                                            (keep :signal-id))]
-                ;; Remove stale continuations (order > cont-order)
-                (rtp/swap-state! context [:continuations spin-id]
-                  (fn [conts]
-                    (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
+            ;; CRITICAL: Remove all continuations with order > resumed continuation's order
+            ;; These are stale continuations from a previous execution that's now being invalidated.
+            (let [cont-order (:order cont)
+                  all-conts (rtp/get-state context [:continuations spin-id])
+                  skipped-signal-ids (->> (vals all-conts)
+                                          (filter #(< (:order %) cont-order))
+                                          (keep :signal-id))]
+              ;; Remove stale continuations (order > cont-order)
+              (rtp/swap-state! context [:continuations spin-id]
+                (fn [conts]
+                  (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
 
-                ;; CRITICAL: Re-track signal dependencies from skipped continuations
-                ;; When resuming from continuation N, continuations 1 to N-1 don't re-execute,
-                ;; so their signals aren't re-tracked. Without this, record-deps! would compute
-                ;; removed-signals = old-signals - tracked-signals and remove these signals.
-                ;; By re-tracking them here, we preserve the dependency graph.
-                (doseq [skipped-sid skipped-signal-ids]
-                  (track-signal-dep! context spin-id skipped-sid)))
+              ;; Re-track signal dependencies from skipped continuations
+              (doseq [skipped-sid skipped-signal-ids]
+                (track-signal-dep! context spin-id skipped-sid)))
 
-              ;; CRITICAL: Re-track the resumed signal dependency
-              ;; Without this, when record-deps! is called after spin completion,
-              ;; it would find empty tracking data and remove the spin from observers.
-              ;; This ensures the dependency graph stays connected across resumptions.
-              (track-signal-dep! context spin-id sid)
+            ;; Re-track the resumed signal dependency
+            (track-signal-dep! context spin-id sid)
 
-              ;; CRITICAL: Mark spin as not completed, dirty, AND running before resuming (like laufzeit lines 246, 252)
-              ;; This allows the spin to be resumed from the track breakpoint
-              ;; CRITICAL: Set running?=true to prevent child spins from marking this spin dirty when they complete
-              ;; Without this, resumed spins that create child spins get marked dirty by those children,
-              ;; causing extra re-executions when later dereferenced
-              (rtp/swap-state! context [:nodes spin-id]
-                (fn [node]
-                  (when node
-                    (-> node
-                        (assoc :completed? false)
-                        (assoc :running? true)
-                        (np/mark-dirty)))))
+            ;; Mark spin as not completed, dirty, AND running before resuming
+            (rtp/swap-state! context [:nodes spin-id]
+              (fn [node]
+                (when node
+                  (-> node
+                      (assoc :completed? false)
+                      (assoc :running? true)
+                      (np/mark-dirty)))))
 
-              ;; Resume continuation with fresh signal value from :on-resume callback
-              ;; CRITICAL: Bind *in-trampoline* to false when resuming from event handler
-              ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
-              ;; CRITICAL: Restore context bindings (DOM context like :dom/parent-addr, :dom/current-slot)
-              ;; These were captured when the continuation was created in track.cljc
-              (let [ctx-bindings (:ctx-bindings cont)
-                    ctx-with-bindings (if ctx-bindings
-                                        (update context :bindings merge ctx-bindings)
-                                        context)]
-                (binding [rtc/*execution-context* ctx-with-bindings
-                          rtc/*spin-id* spin-id
-                          pcps-async/*in-trampoline* false]
-                  (rtp/resume-continuation!
-                   context
-                   spin-id
-                   cont
-                   ;; resume-continuation! already calls :on-resume and passes value here
-                   (fn [signal-value]
-                     (cont/resume (:resolve-fn cont) signal-value)))))))
+            ;; Resume continuation with fresh signal value from :on-resume callback
+            (let [ctx-bindings (:ctx-bindings cont)
+                  ctx-with-bindings (if ctx-bindings
+                                      (update context :bindings merge ctx-bindings)
+                                      context)]
+              (binding [rtc/*execution-context* ctx-with-bindings
+                        rtc/*spin-id* spin-id
+                        pcps-async/*in-trampoline* false]
+                (rtp/resume-continuation!
+                 context
+                 spin-id
+                 cont
+                 (fn [signal-value]
+                   (cont/resume (:resolve-fn cont) signal-value)))))))
 
-          ;; Phase 2: Process batched completion events
-          ;; CRITICAL: This happens INSIDE the binding scope so async children can still
-          ;; add events to completion-queue via their captured bindings.
-          ;; Keep reading from completion-queue until no more events arrive.
-          ;;
-          ;; CRITICAL: After processing, wait briefly for async children to complete.
-          ;; Children execute on thread pool and may complete after we check the queue.
-          ;; Without waiting, we'd exit before children add their completion events.
-          ;; Track resumed spins that haven't completed yet.
-          (let [resumed-spins-completed (atom #{})]
-            (loop [empty-checks 0]
-              ;; Atomically get and clear pending events
-              (let [queue-to-process (loop []
-                                       (let [current @completion-queue
-                                             ;; Filter out already processed events
-                                             new-events (remove #(contains? @processed-events (:id %)) current)]
-                                         (if (compare-and-set! completion-queue current [])
-                                           (vec new-events)
-                                           (recur))))]
-                (if (seq queue-to-process)
-                  (do
-                    (log/debug! {:event :engine/processing-batched-completions
-                                 :data {:count (count queue-to-process)
-                                        :generation batch-gen}})
-                    (doseq [comp-event queue-to-process]
-                      ;; Mark this event as processed (dedup)
-                      (swap! processed-events conj (:id comp-event))
-                      ;; Mark this spin as processed before handling
-                      (swap! processed-set conj (:id comp-event))
-                      ;; Track if a resumed spin completed
-                      (when (contains? observers (:id comp-event))
-                        (swap! resumed-spins-completed conj (:id comp-event)))
-                      ;; Process completion event synchronously
-                      (process-event! context comp-event))
-                    ;; Reset empty check counter when we processed events
-                    (recur 0))
-                  ;; Queue is empty - wait for async children if needed
-                  ;; Check if any resumed spins (observers) haven't completed yet
-                  (let [any-resumed-not-complete? (some (fn [spin-id]
-                                                         (not (contains? @resumed-spins-completed spin-id)))
-                                                       observers)]
-                    (when (and any-resumed-not-complete? (< empty-checks 100))
-                      ;; Some resumed spins haven't completed, wait a bit for their children
-                      #?(:clj (Thread/sleep 1) :cljs nil)
-                      (recur (inc empty-checks))))))))))
+        ;; Update batch observers to only include actually-resumed observers
+        ;; Observers without continuations won't produce completion events
+        (reset! (:completed batch)
+                (set/difference @(:completed batch) (set/difference (:observers batch) @resumed-observers)))
+        (let [actual-observers @resumed-observers]
+
+      ;; Phase 2: Process batched completion events (NO POLLING)
+      ;; Uses BlockingQueue.take() which blocks with zero CPU until event arrives.
+      ;; Events are added by worker threads via enqueue-completion-event! → batch-put!
+      (when (seq actual-observers)
+        #?(:clj
+           (loop []
+             ;; Block until an event arrives (zero CPU while waiting)
+             (let [comp-event (batch-take! (:events batch))
+                   eid (:id comp-event)]
+               ;; Process event (dedup + track)
+               (when-not (contains? @(:processed-events batch) eid)
+                 (swap! (:processed-events batch) conj eid)
+                 (swap! (:processed batch) conj eid)
+                 (log/debug! {:event :engine/processing-batched-completions
+                              :data {:spin-id eid :generation (:generation batch)}})
+                 (process-event! context comp-event))
+               ;; Drain any additional available events (non-blocking)
+               (loop []
+                 (when-let [e (batch-poll! (:events batch))]
+                   (let [eid2 (:id e)]
+                     (when-not (contains? @(:processed-events batch) eid2)
+                       (swap! (:processed-events batch) conj eid2)
+                       (swap! (:processed batch) conj eid2)
+                       (process-event! context e)))
+                   (recur)))
+               ;; Check if all actually-resumed observers have completed
+               (if (every? #(contains? @(:completed batch) %) actual-observers)
+                 ;; Final non-blocking drain for cascading events
+                 (loop []
+                   (when-let [e (batch-poll! (:events batch))]
+                     (let [eid3 (:id e)]
+                       (when-not (contains? @(:processed-events batch) eid3)
+                         (swap! (:processed-events batch) conj eid3)
+                         (swap! (:processed batch) conj eid3)
+                         (process-event! context e)))
+                     (recur)))
+                 ;; More observers pending - wait for next event
+                 (recur))))
+           :cljs
+           ;; CLJS: non-blocking drain (TODO: proper callback-based completion)
+           (loop []
+             (when-let [e (batch-poll! (:events batch))]
+               (let [eid (:id e)]
+                 (when-not (contains? @(:processed-events batch) eid)
+                   (swap! (:processed-events batch) conj eid)
+                   (swap! (:processed batch) conj eid)
+                   (process-event! context e)))
+               (recur)))))))  ;; close (let [actual-observers ...]) and (let [resumed-observers ...])
+
+      ;; Clear batch from context state
+      (rtp/swap-state! context [:engine/current-batch] (constantly nil))
       nil)
 
     :spin-completion
     (let [tid (:id event)
           ;; Get all parent spin-ids that have continuations subscribed
           parent-spin-ids (keys (rtp/get-state context
-                                   [:subscriptions [:spin/complete tid]]))]
+                                   [:subscriptions [:spin/complete tid]]))
+          ;; Read batch from context state (nil when not in batch mode)
+          batch (rtp/get-state context [:engine/current-batch])]
       (log/trace! {:event :engine/spin-completion
                    :data {:spin-id tid :parent-spin-ids parent-spin-ids}})
 
@@ -428,25 +454,19 @@
           (doseq [cont-id cont-ids]
             (let [cont (rtp/get-state context
                          [:continuations parent-id cont-id])
-                  ;; Generation-based deduplication: [parent-id child-id generation]
-                  ;; Prevents SAME child from notifying parent multiple times in SAME batch
-                  ;; but allows DIFFERENT children to notify the same parent
-                  generation *batch-generation*
+                  ;; Generation-based deduplication via batch state (not dynamic bindings)
+                  generation (when batch (:generation batch))
                   dedup-key [parent-id tid generation]
-                  already-resumed? (when (and generation *resumed-continuations*)
-                                     (contains? @*resumed-continuations* dedup-key))]
+                  already-resumed? (when (and generation batch)
+                                     (contains? @(:resumed-conts batch) dedup-key))]
               (when (and cont (not already-resumed?))
                 ;; Mark [parent child generation] as resumed
-                (when (and generation *resumed-continuations*)
-                  (swap! *resumed-continuations* conj dedup-key))
+                (when (and generation batch)
+                  (swap! (:resumed-conts batch) conj dedup-key))
                 (log/debug! {:event :engine/resuming-await-continuation
                              :data {:parent-id parent-id :cont-id cont-id :child-id tid
                                     :generation generation}})
                 ;; Resume continuation
-                ;; Restore parent *spin-id* and *execution-context* when resuming
-                ;; CRITICAL: Bind *in-trampoline* to false when resuming from event handler
-                ;; This ensures invoke-continuation establishes a new trampoline loop
-                ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
                 (binding [rtc/*execution-context* context
                           rtc/*spin-id* parent-id
                           pcps-async/*in-trampoline* false]
@@ -455,7 +475,7 @@
                                        parent-id
                                        cont
                                        (fn [_child-value-from-on-resume]
-                                         ;; Get child's result from :nodes SpinNode (Phase 1B)
+                                         ;; Get child's result from :nodes SpinNode
                                          (let [spin-node (rtp/get-state context [:nodes tid])
                                                child-result (when spin-node (:result spin-node))]
                                            (result/match child-result
@@ -463,8 +483,7 @@
                                              #(cont/resume (:reject-fn cont) %)))))]
                     resume-result)))))))
 
-      ;; NEW: Propagate dirty flag through await dependency graph (Design 1)
-      ;; After resuming continuations, propagate dirty to all spins awaiting this one
+      ;; Propagate dirty flag through await dependency graph (Design 1)
       (propagate-await-dirty! context tid)
       nil)
 
@@ -1250,7 +1269,7 @@
     (fn [rt-state]
       ;; Collect all nodes to mark dirty using breadth-first traversal
       ;; This ensures we mark the full transitive closure of dependents
-      (let [in-batch? (some? *completion-queue*)]
+      (let [in-batch? (some? (get rt-state :engine/current-batch))]
         (loop [to-visit #{spin-id}
                visited #{}
                state rt-state]
@@ -1388,7 +1407,7 @@
   ;; Only propagate during batch processing (when in signal-change handling)
   ;; This is when re-execution happens due to reactive dependencies.
   ;; Outside batch mode, normal await completion handles value propagation.
-  (when (some? *completion-queue*)
+  (when (some? (rtp/get-state context [:engine/current-batch]))
     (let [awaiting-parents (rtp/get-state context [:await-dependents spin-id])]
       (when (seq awaiting-parents)
         (let [;; Check which parents have continuations registered for this spin's completion

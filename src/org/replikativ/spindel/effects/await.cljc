@@ -8,7 +8,8 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.bindings :as bindings]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]  ;; For *completion-queue*
+            [org.replikativ.spindel.runtime.protocols :as rtp]
+            [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.spin.protocols :as tp]
             [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.spin.result :as result]
@@ -61,12 +62,14 @@
     (let [cached (rtc/spin-current-result awaited-spin-id)
           ;; CRITICAL: Disable fast path during batch mode to prevent glitches
           ;; UNLESS the spin has already been processed in this batch (cache is fresh)
-          in-batch-mode? (some? simple/*completion-queue*)
-          spin-processed? (when-let [processed-set simple/*processed-spins*]
-                           (contains? @processed-set awaited-spin-id))
+          ;; Batch is now in context state, not dynamic binding
+          batch (rtp/get-state ctx [:engine/current-batch])
+          in-batch-mode? (some? batch)
+          spin-processed? (when batch
+                           (contains? @(:processed batch) awaited-spin-id))
           allow-fast-path? (and (some? cached)
                                 (not rebuild?)
-                                (not (simple/dirty? ctx awaited-spin-id))  ;; NEW: Check dirty flag
+                                (not (simple/dirty? ctx awaited-spin-id))
                                 (or (not in-batch-mode?)  ;; Not in batch - allow
                                     spin-processed?))]    ;; In batch but cache fresh - allow
       (cond
