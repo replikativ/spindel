@@ -94,30 +94,41 @@
                          (when (= n (swap! completed inc))
                            ;; All children completed initially
                            (when (compare-and-set! done? false true)
-                             ;; Register continuations for reactive child re-completions
-                             ;; This makes parallel reactive: when children re-run due to
-                             ;; tracked signal changes, parallel will update and notify awaiters
-                             ;; Only register for actual Spins (not deferreds which are one-shot)
-                             (doseq [[j t] (map-indexed vector spin-vec)]
-                               (when (satisfies? tp/PSpin t)
-                                 (let [t-id (tp/spin-id t)
-                                       captured-bindings (bindings/capture-bindings)
-                                       cont-map {:event-key [:spin/complete t-id]
-                                                 :resolve-fn (fn [_]
-                                                               ;; Child re-completed, update our result
-                                                               (let [child-result (rtc/spin-current-result t-id)
-                                                                     new-val (:payload child-result)]
-                                                                 ;; Update result in runtime state (fork-safe)
-                                                                 (rtc/swap-state! results-path #(assoc % j new-val))
-                                                                 ;; Get current results and re-cache
-                                                                 (let [current-results (rtc/get-state results-path)]
-                                                                   ;; Re-cache parallel's result to notify our awaiters
-                                                                   (rtc/spin-cache-result!
-                                                                     parallel-spin-id
-                                                                     (result/ok current-results))
-                                                                   ;; Fire completion event to resume awaiting spins
-                                                                   (rtc/enqueue-event!
-                                                                     {:type :spin-completion :id parallel-spin-id}))))
+                             ;; Capture initial values BEFORE registering continuations
+                             ;; Used to distinguish initial completion events (already in queue)
+                             ;; from re-completions (should trigger notifications)
+                             (let [initial-results (vec (rtc/get-state results-path))]
+                               ;; Register continuations for reactive child re-completions
+                               ;; This makes parallel reactive: when children re-run due to
+                               ;; tracked signal changes, parallel will update and notify awaiters
+                               ;; Only register for actual Spins (not deferreds which are one-shot)
+                               (doseq [[j t] (map-indexed vector spin-vec)]
+                                 (when (satisfies? tp/PSpin t)
+                                   (let [t-id (tp/spin-id t)
+                                         initial-val (get initial-results j)
+                                         captured-bindings (bindings/capture-bindings)
+                                         cont-map {:event-key [:spin/complete t-id]
+                                                   :resolve-fn (fn [_]
+                                                                 ;; Child completed, check if value changed from initial
+                                                                 ;; This distinguishes initial completion events (still in queue)
+                                                                 ;; from actual re-completions due to signal changes
+                                                                 (let [child-result (rtc/spin-current-result t-id)
+                                                                       new-val (:payload child-result)]
+                                                                   ;; Only notify if value differs from initial
+                                                                   ;; Initial completion events have same value as initial-val
+                                                                   ;; Re-completions have different value
+                                                                   (when (not= new-val initial-val)
+                                                                     ;; Update result in runtime state (fork-safe)
+                                                                     (rtc/swap-state! results-path #(assoc % j new-val))
+                                                                     ;; Get current results and re-cache
+                                                                     (let [current-results (rtc/get-state results-path)]
+                                                                       ;; Re-cache parallel's result to notify our awaiters
+                                                                       (rtc/spin-cache-result!
+                                                                         parallel-spin-id
+                                                                         (result/ok current-results))
+                                                                       ;; Fire completion event to resume awaiting spins
+                                                                       (rtc/enqueue-event!
+                                                                         {:type :spin-completion :id parallel-spin-id})))))
                                                  :reject-fn (fn [e]
                                                               ;; Child failed on re-run
                                                               (rtc/spin-cache-result!
@@ -127,9 +138,9 @@
                                                                 {:type :spin-completion :id parallel-spin-id}))
                                                  :bindings captured-bindings
                                                  :on-resume (fn [_] nil)}]
-                                   (rtc/continuation-add! parallel-spin-id cont-map))))
-                             ;; Initial resolve with current results from runtime state
-                             (cont/resume resolve (rtc/get-state results-path)))))
+                                      (rtc/continuation-add! parallel-spin-id cont-map))))
+                               ;; Initial resolve with current results from runtime state
+                               (cont/resume resolve (rtc/get-state results-path))))))
 
                  on-err (fn [e]
                           ;; First error wins; cancel siblings and reject

@@ -109,7 +109,8 @@
 (defn run-spin!
   "Execute a spin with callbacks.
 
-   Invokes the spin and triggers event draining.
+   Invokes the spin with callbacks. Event draining is handled automatically
+   by the background drain thread in the execution context.
    Use within a with-ctx block or with *execution-context* bound.
 
    Arguments:
@@ -124,9 +125,8 @@
            (fn [result] (is (= 3 result)) (done))
            (fn [error] (is false) (done)))))"
   [t on-success on-error]
-  (let [ctx (rtc/current-execution-context)]
-    (t on-success on-error)
-    (simple/trigger-drain! ctx (:executor ctx))))
+  ;; Just invoke the spin - background drain thread handles event processing
+  (t on-success on-error))
 
 #?(:clj
    (defmacro test-spin

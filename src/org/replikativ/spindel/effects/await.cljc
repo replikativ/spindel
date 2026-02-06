@@ -106,13 +106,21 @@
           ;; Register continuation for spin completion event
           ;; IMPORTANT: Capture bindings so they're restored when continuation resumes
           ;; This ensures dynamic vars like *yield-handler* are available after suspension
+          ;;
+          ;; For reactive spins (PSpin), mark continuation as persistent so it survives
+          ;; signal-change boundaries. This allows combinators like `parallel` to notify
+          ;; their awaiters when children update reactively.
+          ;; For non-reactive spins (deferreds), mark as ephemeral.
           (let [captured-bindings (bindings/capture-bindings)
+                is-reactive-spin (satisfies? tp/PSpin spin-ref)
                 cont-map {:event-key [:spin/complete awaited-spin-id]
                           :resolve-fn resolve
                           :reject-fn reject
                           :source-loc source-loc
                           :bindings captured-bindings
-                          :ephemeral-await? true  ;; Mark as ephemeral await continuation (Design 1)
+                          ;; Reactive spins (like parallel) may update during batch processing
+                          ;; Their awaiters need persistent continuations to receive updates
+                          :ephemeral-await? (not is-reactive-spin)
                           :on-resume (fn [_rt]
                                        (let [res (rtc/spin-current-result awaited-spin-id)]
                                          (result/match res identity identity)))}]

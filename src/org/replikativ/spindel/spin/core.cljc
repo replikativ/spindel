@@ -326,28 +326,16 @@
                ;; CRITICAL: Poll-and-drain loop
                ;; Main thread actively processes events while waiting for result
                ;; This prevents deadlock when worker threads await nested spins
-               (loop [iterations 0]
-                 (cond
-                   ;; Success: result ready
-                   (realized? result-promise)
+               ;; Block main thread waiting for result
+               ;; Background drain thread ensures events get processed continuously
+               (let [res (deref result-promise 30000 ::timeout)]
+                 (if (= res ::timeout)
+                   (throw (ex-info "Spin deref timed out after 30 seconds"
+                                   {:spin-id spin-id}))
                    (do
                      (log/trace! {:event :spin/deref-done
-                                  :data {:spin-id spin-id :iterations iterations}})
-                     (result/unwrap @result-promise))
-
-                   ;; Timeout after 30 seconds (3000 iterations * 10ms)
-                   (> iterations 3000)
-                   (throw (ex-info "Spin deref timed out after 30 seconds"
-                                   {:spin-id spin-id :iterations iterations}))
-
-                   ;; Keep waiting and processing events
-                   :else
-                   (do
-                     ;; Drain events to process nested spin completions
-                     (simple/trigger-drain! runtime (:executor runtime))
-                     ;; Brief sleep to avoid busy-wait
-                     (Thread/sleep 10)
-                     (recur (inc iterations)))))))))
+                                  :data {:spin-id spin-id :result res}})
+                     (result/unwrap res))))))))
        :cljs
        (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 

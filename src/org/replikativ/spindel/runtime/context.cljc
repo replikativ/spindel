@@ -64,7 +64,9 @@
    parent-ctx    ; Parent ExecutionContext (nil for root)
    executor      ; Executor for scheduling (shared across forks for now)
    bindings      ; Fork-local configuration (map for spin access via *execution-context*)
-   metadata]     ; User-defined fork metadata (e.g., {:particle-id 123})
+   metadata      ; User-defined fork metadata (e.g., {:particle-id 123})
+   running       ; Atom controlling background drain thread lifecycle
+   drain-thread] ; Background thread that continuously drains event queue
 
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
@@ -243,14 +245,55 @@
                               :engine/time-mode :real
                               :engine/timer-handles {}})
         ;; Create AtomBackend for root context
-        atom-backend (backend/create-atom-backend initial-rt-state)]
-    (->ExecutionContext
-      fork-id
-      atom-backend
-      nil    ; No parent for root
-      executor
-      bindings
-      metadata)))
+        atom-backend (backend/create-atom-backend initial-rt-state)
+        ;; Create background drain thread control
+        running (atom true)
+        ;; Create the execution context first (needed for drain thread)
+        ctx (->ExecutionContext
+              fork-id
+              atom-backend
+              nil    ; No parent for root
+              executor
+              bindings
+              metadata
+              running
+              nil)   ; drain-thread - will be set below
+        ;; Start background drain thread
+        ;; This continuously processes events from the queue, ensuring callbacks fire
+        ;; even when main thread is not in deref poll-and-drain
+        drain-thread (future
+                       (while @running
+                         (try
+                           (simple/drain-events! ctx executor)
+                           (catch Exception e
+                             ;; Log but don't crash drain thread
+                             (println "ERROR in background drain thread:" e)))
+                         ;; 10ms polling - balance between responsiveness and CPU usage
+                         ;; enqueue-event! still triggers immediate drain for fast path
+                         (Thread/sleep 10)))]
+    ;; Update context with drain-thread reference
+    (assoc ctx :drain-thread drain-thread)))
+
+(defn stop-context!
+  "Stop an execution context's background drain thread.
+
+  This should be called when a context is no longer needed to prevent
+  thread leaks. After stopping, the context should not be used for
+  reactive operations.
+
+  Args:
+    context - ExecutionContext to stop
+
+  Returns: nil"
+  [context]
+  (when-let [running (:running context)]
+    (reset! running false))
+  ;; Wait briefly for drain thread to notice
+  (when-let [drain-thread (:drain-thread context)]
+    (try
+      (deref drain-thread 100 :timeout)
+      (catch Exception _ nil)))
+  nil)
 
 ;; =============================================================================
 ;; Forking
@@ -380,7 +423,10 @@
       parent-ctx  ; Keep parent reference
       (:executor parent-ctx)  ; Share executor (for now)
       merged-bindings
-      fork-metadata)))
+      fork-metadata
+      (:running parent-ctx)      ; Share parent's drain thread control
+      (:drain-thread parent-ctx) ; Share parent's drain thread
+      )))
 
 ;; =============================================================================
 ;; Accessors
@@ -569,7 +615,10 @@
       nil  ; No parent - independent snapshot
       (:executor ctx)  ; Share executor
       (:bindings ctx)  ; Copy bindings
-      (assoc (:metadata ctx) :snapshot? true))))
+      (assoc (:metadata ctx) :snapshot? true)
+      nil   ; No drain thread - snapshot is immutable
+      nil)  ; No drain thread - snapshot is immutable
+    ))
 
 (defn restore-snapshot
   "Restore a snapshot to a live execution context.
@@ -633,14 +682,25 @@
   Returns: ExecutionContext with ImmutableBackend"
   [edn-string executor]
   (let [{:keys [backend fork-id bindings metadata]} (read-string-safe @incognito-read-handlers edn-string)
-        backend-obj (backend/deserialize-backend backend @incognito-read-handlers)]
-    (->ExecutionContext
-      fork-id
-      backend-obj
-      nil  ; No parent
-      executor
-      bindings
-      metadata)))
+        backend-obj (backend/deserialize-backend backend @incognito-read-handlers)
+        ;; Only create drain thread for mutable backends (AtomBackend, OverlayBackend)
+        ;; ImmutableBackend doesn't support CAS operations needed by drain-events!
+        backend-type (backend/backend-type backend-obj)
+        mutable? (or (= backend-type :atom) (= backend-type :overlay))]
+    (if mutable?
+      ;; Mutable backend - create drain thread
+      (let [running (atom true)
+            ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil)
+            drain-thread (future
+                           (while @running
+                             (try
+                               (simple/drain-events! ctx-temp executor)
+                               (catch Exception e
+                                 (println "ERROR in background drain thread:" e)))
+                             (Thread/sleep 10)))]
+        (assoc ctx-temp :drain-thread drain-thread))
+      ;; Immutable backend - no drain thread
+      (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil))))
 
 ;; =============================================================================
 ;; Rebuild Execution State
