@@ -22,7 +22,8 @@
             [org.replikativ.spindel.runtime.node-types :as nt]
             [org.replikativ.spindel.runtime.addressing :as addressing]
             [org.replikativ.spindel.spin.result :as result]
-            [incognito.edn :refer [read-string-safe]]))
+            [incognito.edn :refer [read-string-safe]])
+  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit])))
 
 ;; =============================================================================
 ;; Incognito Handlers for Serialization
@@ -66,7 +67,8 @@
    bindings      ; Fork-local configuration (map for spin access via *execution-context*)
    metadata      ; User-defined fork metadata (e.g., {:particle-id 123})
    running       ; Atom controlling background drain thread lifecycle
-   drain-thread] ; Background thread that continuously drains event queue
+   drain-thread  ; Background thread that continuously drains event queue
+   drain-signal] ; LinkedBlockingQueue for waking drain thread (nil for forks)
 
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
@@ -248,6 +250,8 @@
         atom-backend (backend/create-atom-backend initial-rt-state)
         ;; Create background drain thread control
         running (atom true)
+        ;; Notification queue for waking drain thread (zero-polling)
+        drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
         ;; Create the execution context first (needed for drain thread)
         ctx (->ExecutionContext
               fork-id
@@ -257,20 +261,22 @@
               bindings
               metadata
               running
-              nil)   ; drain-thread - will be set below
-        ;; Start background drain thread
-        ;; This continuously processes events from the queue, ensuring callbacks fire
-        ;; even when main thread is not in deref poll-and-drain
-        drain-thread (future
-                       (while @running
-                         (try
-                           (simple/drain-events! ctx executor)
-                           (catch Exception e
-                             ;; Log but don't crash drain thread
-                             (println "ERROR in background drain thread:" e)))
-                         ;; 10ms polling - balance between responsiveness and CPU usage
-                         ;; enqueue-event! still triggers immediate drain for fast path
-                         (Thread/sleep 10)))]
+              nil    ; drain-thread - will be set below
+              drain-signal)
+        ;; Start background drain thread (zero-polling via LinkedBlockingQueue)
+        ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
+        ;; Wakes instantly when trigger-drain! calls .offer(:drain)
+        drain-thread #?(:clj
+                        (future
+                          (while @running
+                            (try
+                              ;; Block until signaled or 1s timeout (zero CPU while waiting)
+                              (.poll drain-signal 1 TimeUnit/SECONDS)
+                              (simple/drain-events! ctx executor)
+                              (catch Exception e
+                                ;; Log but don't crash drain thread
+                                (println "ERROR in background drain thread:" e)))))
+                        :cljs nil)]
     ;; Update context with drain-thread reference
     (assoc ctx :drain-thread drain-thread)))
 
@@ -288,10 +294,14 @@
   [context]
   (when-let [running (:running context)]
     (reset! running false))
-  ;; Wait briefly for drain thread to notice
+  ;; Wake drain thread immediately so it notices running=false
+  #?(:clj
+     (when-let [ds (:drain-signal context)]
+       (.offer ^LinkedBlockingQueue ds :stop)))
+  ;; Wait briefly for drain thread to exit
   (when-let [drain-thread (:drain-thread context)]
     (try
-      (deref drain-thread 100 :timeout)
+      (deref drain-thread 200 :timeout)
       (catch Exception _ nil)))
   nil)
 
@@ -424,8 +434,9 @@
       (:executor parent-ctx)  ; Share executor (for now)
       merged-bindings
       fork-metadata
-      (:running parent-ctx)      ; Share parent's drain thread control
-      (:drain-thread parent-ctx) ; Share parent's drain thread
+      (:running parent-ctx)       ; Share parent's drain thread control
+      (:drain-thread parent-ctx)  ; Share parent's drain thread
+      (:drain-signal parent-ctx)  ; Share parent's drain signal
       )))
 
 ;; =============================================================================
@@ -617,7 +628,8 @@
       (:bindings ctx)  ; Copy bindings
       (assoc (:metadata ctx) :snapshot? true)
       nil   ; No drain thread - snapshot is immutable
-      nil)  ; No drain thread - snapshot is immutable
+      nil   ; No drain thread - snapshot is immutable
+      nil)  ; No drain signal - snapshot is immutable
     ))
 
 (defn restore-snapshot
@@ -688,19 +700,22 @@
         backend-type (backend/backend-type backend-obj)
         mutable? (or (= backend-type :atom) (= backend-type :overlay))]
     (if mutable?
-      ;; Mutable backend - create drain thread
+      ;; Mutable backend - create drain thread with notification-based wakeup
       (let [running (atom true)
-            ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil)
-            drain-thread (future
-                           (while @running
-                             (try
-                               (simple/drain-events! ctx-temp executor)
-                               (catch Exception e
-                                 (println "ERROR in background drain thread:" e)))
-                             (Thread/sleep 10)))]
+            drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
+            ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil drain-signal)
+            drain-thread #?(:clj
+                            (future
+                              (while @running
+                                (try
+                                  (.poll drain-signal 1 TimeUnit/SECONDS)
+                                  (simple/drain-events! ctx-temp executor)
+                                  (catch Exception e
+                                    (println "ERROR in background drain thread:" e)))))
+                            :cljs nil)]
         (assoc ctx-temp :drain-thread drain-thread))
       ;; Immutable backend - no drain thread
-      (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil))))
+      (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil nil))))
 
 ;; =============================================================================
 ;; Rebuild Execution State

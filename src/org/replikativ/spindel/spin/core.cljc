@@ -9,7 +9,9 @@
             [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.runtime])
-  #?(:clj (:import [is.simm.partial_cps.runtime Thunk])))
+  #?(:clj (:import [is.simm.partial_cps.runtime Thunk]
+                    [java.util.concurrent ForkJoinPool]
+                    [java.util.concurrent.locks LockSupport])))
 
 ;; =============================================================================
 ;; Automatic Spin Cleanup via Finalizers
@@ -296,20 +298,27 @@
            ;; Not completed or dirty - check if already running
            :else
            (if (simple/running? runtime spin-id)
-             ;; Spin is already executing - poll-wait for completion
+             ;; Spin is already executing - wait for completion via managedBlock
              ;; This prevents duplicate execution when multiple threads deref the same spin
+             ;; managedBlock tells ForkJoinPool to create compensating threads if needed
              (do
                (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
-               (loop []
-                 (Thread/sleep 1) ;; Poll every 1ms
-                 (let [cached (rtc/spin-current-result spin-id)]
-                   (if (and cached (rtc/spin-result-clean? spin-id))
-                     ;; Spin completed - return result
-                     (do
-                       (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
-                       (result/unwrap cached))
-                     ;; Still executing or not clean yet - keep waiting
-                     (recur)))))
+               (let [result-val (volatile! nil)]
+                 (ForkJoinPool/managedBlock
+                   (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
+                     (block [_]
+                       (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
+                       (let [cached (rtc/spin-current-result spin-id)]
+                         (if (and cached (rtc/spin-result-clean? spin-id))
+                           (do (vreset! result-val cached) true)
+                           false)))
+                     (isReleasable [_]
+                       (let [cached (rtc/spin-current-result spin-id)]
+                         (if (and cached (rtc/spin-result-clean? spin-id))
+                           (do (vreset! result-val cached) true)
+                           false)))))
+                 (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
+                 (result/unwrap @result-val)))
              ;; Not running - enqueue spin execution with poll-and-drain
              ;; CRITICAL: Must enqueue to maintain event ordering and avoid glitches
              (let [result-promise (promise)]

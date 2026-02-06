@@ -28,7 +28,8 @@
             [org.replikativ.spindel.spin.result :as result]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
-  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue])))
+  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
+                    [java.util.concurrent.locks LockSupport])))
 
 ;; =============================================================================
 ;; Forward declarations
@@ -288,6 +289,58 @@
 (declare try-claim-execution!)
 (declare propagate-await-dirty!)
 
+(defn- resume-single-observer!
+  "Resume a single observer's track continuation during Phase 1 of signal-change.
+
+  Handles: stale continuation cleanup, signal dep re-tracking, marking dirty/running,
+  and resuming the continuation with the fresh signal value.
+
+  Args:
+    context - execution context
+    spin-id - observer spin to resume
+    sid - signal that changed
+    cont - the earliest continuation for this observer"
+  [context spin-id sid cont]
+  (log/debug! {:event :engine/resuming-track-continuation
+               :data {:spin-id spin-id :signal-id sid}})
+
+  ;; Remove stale continuations (order > resumed continuation's order)
+  (let [cont-order (:order cont)
+        all-conts (rtp/get-state context [:continuations spin-id])
+        skipped-signal-ids (->> (vals all-conts)
+                                (filter #(< (:order %) cont-order))
+                                (keep :signal-id))]
+    (rtp/swap-state! context [:continuations spin-id]
+      (fn [conts]
+        (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
+    (doseq [skipped-sid skipped-signal-ids]
+      (track-signal-dep! context spin-id skipped-sid)))
+
+  ;; Re-track the resumed signal dependency
+  (track-signal-dep! context spin-id sid)
+
+  ;; Mark spin as not completed, dirty, AND running
+  (rtp/swap-state! context [:nodes spin-id]
+    (fn [node]
+      (when node
+        (-> node
+            (assoc :completed? false)
+            (assoc :running? true)
+            (np/mark-dirty)))))
+
+  ;; Resume continuation with fresh signal value
+  (let [ctx-bindings (:ctx-bindings cont)
+        ctx-with-bindings (if ctx-bindings
+                            (update context :bindings merge ctx-bindings)
+                            context)]
+    (binding [rtc/*execution-context* ctx-with-bindings
+              rtc/*spin-id* spin-id
+              pcps-async/*in-trampoline* false]
+      (rtp/resume-continuation!
+       context spin-id cont
+       (fn [signal-value]
+         (cont/resume (:resolve-fn cont) signal-value))))))
+
 (defn process-event!
   "Process a single event.
 
@@ -323,59 +376,47 @@
       ;; continuations from being resumed during batch processing
       (clear-all-await-continuations! context)
 
-      ;; Phase 1: Resume track continuations (sequential for now)
-      ;; No dynamic bindings needed for batch state - it's in context state.
-      ;; Async children on thread pool find the batch via context state lookup.
-      ;; Track which observers were actually resumed (some may lack continuations).
-      (let [resumed-observers (atom #{})]
-        (doseq [spin-id observers]
-          (when-let [cont (rtp/earliest-continuation context spin-id sid)]
-            (swap! resumed-observers conj spin-id)
-            (log/debug! {:event :engine/resuming-track-continuation
-                         :data {:spin-id spin-id :signal-id sid}})
+      ;; Phase 1: Resume track continuations
+      ;; With ForkJoinPool: parallel dispatch when >1 observer, sequential otherwise.
+      ;; Each observer's state preparation and resume is independent (atomic ops on own node).
+      (let [resumed-observers (atom #{})
+            ;; Collect observers that have continuations (sequential scan)
+            observers-with-conts (vec (keep (fn [spin-id]
+                                             (when-let [cont (rtp/earliest-continuation context spin-id sid)]
+                                               [spin-id cont]))
+                                           observers))
+            do-resume! (fn [[spin-id cont]]
+                         (swap! resumed-observers conj spin-id)
+                         (resume-single-observer! context spin-id sid cont))]
 
-            ;; CRITICAL: Remove all continuations with order > resumed continuation's order
-            ;; These are stale continuations from a previous execution that's now being invalidated.
-            (let [cont-order (:order cont)
-                  all-conts (rtp/get-state context [:continuations spin-id])
-                  skipped-signal-ids (->> (vals all-conts)
-                                          (filter #(< (:order %) cont-order))
-                                          (keep :signal-id))]
-              ;; Remove stale continuations (order > cont-order)
-              (rtp/swap-state! context [:continuations spin-id]
-                (fn [conts]
-                  (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
-
-              ;; Re-track signal dependencies from skipped continuations
-              (doseq [skipped-sid skipped-signal-ids]
-                (track-signal-dep! context spin-id skipped-sid)))
-
-            ;; Re-track the resumed signal dependency
-            (track-signal-dep! context spin-id sid)
-
-            ;; Mark spin as not completed, dirty, AND running before resuming
-            (rtp/swap-state! context [:nodes spin-id]
-              (fn [node]
-                (when node
-                  (-> node
-                      (assoc :completed? false)
-                      (assoc :running? true)
-                      (np/mark-dirty)))))
-
-            ;; Resume continuation with fresh signal value from :on-resume callback
-            (let [ctx-bindings (:ctx-bindings cont)
-                  ctx-with-bindings (if ctx-bindings
-                                      (update context :bindings merge ctx-bindings)
-                                      context)]
-              (binding [rtc/*execution-context* ctx-with-bindings
-                        rtc/*spin-id* spin-id
-                        pcps-async/*in-trampoline* false]
-                (rtp/resume-continuation!
-                 context
-                 spin-id
-                 cont
-                 (fn [signal-value]
-                   (cont/resume (:resolve-fn cont) signal-value)))))))
+        ;; Dispatch: sequential for 0-1 observers, parallel for >1
+        #?(:clj
+           (if (<= (count observers-with-conts) 1)
+             ;; Sequential path (no overhead)
+             (doseq [obs observers-with-conts]
+               (do-resume! obs))
+             ;; Parallel path: dispatch to executor, wait via managedBlock
+             (let [executor (:executor context)
+                   latch (CountDownLatch. (count observers-with-conts))]
+               (doseq [obs observers-with-conts]
+                 (scheduler/execute! executor
+                   (fn []
+                     (try
+                       (do-resume! obs)
+                       (finally
+                         (.countDown latch))))))
+               ;; Wait for all observers via managedBlock (creates compensating threads)
+               (ForkJoinPool/managedBlock
+                 (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
+                   (block [_]
+                     (.await latch)
+                     true)
+                   (isReleasable [_]
+                     (zero? (.getCount latch)))))))
+           :cljs
+           ;; CLJS: always sequential (single-threaded)
+           (doseq [obs observers-with-conts]
+             (do-resume! obs)))
 
         ;; Update batch observers to only include actually-resumed observers
         ;; Observers without continuations won't produce completion events
@@ -624,13 +665,14 @@
 (defn await-drain-complete!
   "Wait for event queue to drain AND all spins to complete execution.
 
-  Busy-waits until:
+  Waits until:
   - :engine/draining? is false (no active drain session)
   - :engine/pending is empty (no queued events)
   - No spins have :running? = true (no in-flight spin bodies)
 
-  This is critical for tests to avoid race conditions where await-drain returns
-  but spin bodies are still executing on the thread pool.
+  JVM: Uses ForkJoinPool.managedBlock + LockSupport.parkNanos (100us)
+  instead of Thread/sleep (1ms). 10x lower latency, and managedBlock tells
+  ForkJoinPool to create compensating threads if this is a pool thread.
 
   Args:
     context - context record
@@ -641,42 +683,51 @@
   #?(:clj
      (let [start (System/currentTimeMillis)
            deadline (+ start timeout-ms)
-           iterations (atom 0)]
-       (loop []
-         (swap! iterations inc)
-         (let [draining? (rtp/get-state context [:engine/draining?])
-               pending (rtp/get-state context [:engine/pending])
-               ;; NEW: Check if any spins are currently running
-               nodes (rtp/get-state context [:nodes])
-               running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
-           (if (or draining? (seq pending) (seq running-spins))
-             (if (< (System/currentTimeMillis) deadline)
-               (do
-                 (Thread/sleep 1)
-                 (recur))
-               false) ; Timeout
-             true)))) ; Drain complete AND queue empty AND no running spins
+           done? (fn []
+                   (let [draining? (rtp/get-state context [:engine/draining?])
+                         pending (rtp/get-state context [:engine/pending])
+                         nodes (rtp/get-state context [:nodes])
+                         running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
+                     (and (not draining?) (empty? pending) (empty? running-spins))))]
+       (if (done?)
+         true
+         ;; Use managedBlock so ForkJoinPool creates compensating threads
+         (let [result (volatile! false)]
+           (ForkJoinPool/managedBlock
+             (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
+               (block [_]
+                 (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
+                 (let [d (done?)]
+                   (when d (vreset! result true))
+                   (or d (>= (System/currentTimeMillis) deadline))))
+               (isReleasable [_]
+                 (cond
+                   (done?)
+                   (do (vreset! result true) true)
+                   (>= (System/currentTimeMillis) deadline)
+                   true ; timeout - result stays false
+                   :else false))))
+           @result)))
      :cljs
-     ;; CLJS: busy wait without Thread/sleep (use promises/async in real impl)
+     ;; CLJS: busy wait (use promises/async in real impl)
      (let [start (.now js/Date)
            deadline (+ start timeout-ms)]
        (loop []
          (let [draining? (rtp/get-state context [:engine/draining?])
                pending (rtp/get-state context [:engine/pending])
-               ;; NEW: Check if any spins are currently running
                nodes (rtp/get-state context [:nodes])
                running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
            (if (or draining? (seq pending) (seq running-spins))
              (if (< (.now js/Date) deadline)
                (recur)
-               false) ; Timeout
-             true)))))) ; Drain complete AND queue empty
+               false)
+             true))))))
 
 (defn trigger-drain!
   "Trigger async draining of the event queue.
 
-  Schedules drain-events! to run on the executor. Does not wait for
-  completion - returns immediately.
+  Schedules drain-events! to run on the executor AND wakes the background
+  drain thread via drain-signal (if present). Does not wait for completion.
 
   This is called after external changes to ensure events are processed
   eventually. If draining is already in progress, the new events will
@@ -694,6 +745,10 @@
 
   Returns: true if scheduled, false if no executor available"
   [context executor]
+  ;; Wake background drain thread via notification queue (zero-polling)
+  #?(:clj
+     (when-let [ds (:drain-signal context)]
+       (.offer ^java.util.concurrent.LinkedBlockingQueue ds :drain)))
   (if executor
     (do
       (scheduler/execute! executor

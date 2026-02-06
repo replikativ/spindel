@@ -1,6 +1,6 @@
 # Runtime Redesign: Batch State & Level-Parallel Execution
 
-**Status:** Proposed
+**Status:** Implemented (Steps 1-5 complete, Step 6 deferred — see §6.1)
 **Date:** 2026-02-05
 **Branch:** `feature/ephemeral-await-design1`
 

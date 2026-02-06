@@ -4,10 +4,10 @@
   Executors provide the execution context (thread pool, event loop, etc.) where
   spin functions run. The runtime uses executors to run spins, but maintains
   control over scheduling strategy (when/what to execute) via PScheduler protocol."
-  #?(:cljs (:require [org.replikativ.spindel.runtime.bindings :as bindings]))
+  (:require [org.replikativ.spindel.runtime.bindings :as bindings])
   #?(:clj (:import [java.util.concurrent Executors ExecutorService ThreadPoolExecutor
                                          ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
-                                         TimeUnit LinkedBlockingQueue Callable])))
+                                         TimeUnit LinkedBlockingQueue Callable ForkJoinPool ForkJoinPool$ForkJoinWorkerThreadFactory])))
 
 (defprotocol PExecutor
   "Protocol for executing spin functions in different contexts.
@@ -52,42 +52,36 @@
            ;; Single-threaded scheduled executor with daemon thread
            (ScheduledThreadPoolExecutor. 1 tf))))
 
-     ;; Vars that should NOT be propagated to worker threads
-     ;; These are test-framework vars that accumulate incorrectly across test runs
-     ;; We use find-var to safely handle cases where clojure.test isn't loaded
-     (defn- get-excluded-binding-vars
-       "Returns set of vars that should be excluded from binding propagation.
-       Uses find-var to safely handle cases where clojure.test isn't loaded."
+     ;; Targeted binding capture: only the 4 bindings vars + *execution-context*
+     ;; This replaces blanket get-thread-bindings (~30+ vars) with exactly
+     ;; the 5 vars that matter. *execution-context* is resolved at runtime
+     ;; to avoid circular dependency with runtime.core.
+     (defn- capture-targeted-bindings
+       "Capture only the dynamic vars that matter for worker threads.
+       Returns a bindings map suitable for with-bindings."
        []
-       (into #{}
-         (keep identity
-           [(find-var 'clojure.test/*testing-vars*)
-            (find-var 'clojure.test/*testing-contexts*)
-            (find-var 'clojure.test/*test-out*)])))
-
-     (defn- filter-bindings
-       "Remove excluded vars from bindings map."
-       [bindings]
-       (let [excluded (get-excluded-binding-vars)]
-         (reduce dissoc bindings excluded)))
+       (let [;; bindings/capture-bindings captures the 4 vars from bindings.cljc
+             base (bindings/capture-bindings)
+             ;; Also capture *execution-context* (resolved to avoid circular dep)
+             exec-ctx-var (resolve 'org.replikativ.spindel.runtime.core/*execution-context*)]
+         (if (and exec-ctx-var (.isBound ^clojure.lang.Var exec-ctx-var))
+           (assoc base exec-ctx-var (.get ^clojure.lang.Var exec-ctx-var))
+           base)))
 
      ;; ThreadPool Executor - executes on a thread pool (JVM only)
+     ;; Kept for backward compatibility; prefer ForkJoinPoolExecutor for new code.
      (defrecord PoolExecutor [^ExecutorService executor]
        PExecutor
        (execute! [_ spin-fn]
-         ;; Capture thread bindings from current thread (includes *execution-context*, *spin-id*, etc.)
-         ;; Filter out test-framework bindings that shouldn't be propagated
-         (let [bindings (filter-bindings (get-thread-bindings))
+         (let [bindings (capture-targeted-bindings)
                bound-spin-fn (fn []
                                (with-bindings bindings
                                  (spin-fn)))]
-           ;; Submit bound-spin-fn and return Future for async result
            (.submit executor ^Callable (reify Callable
                                          (call [_]
                                            (bound-spin-fn))))))
 
        (execute-after! [this delay-ms spin-fn]
-         ;; Use shared ScheduledExecutor to schedule submission to thread pool
          (.schedule ^ScheduledExecutorService @delay-executor
                     ^Runnable (fn [] (execute! this spin-fn))
                     (long delay-ms)
@@ -95,7 +89,31 @@
 
        java.io.Closeable
        (close [_]
-         (.shutdown executor))))
+         (.shutdown executor)))
+
+     ;; ForkJoinPool Executor - work-stealing pool with managed blocking (JVM only)
+     ;; ForkJoinPool creates compensating threads when workers block (via managedBlock),
+     ;; which prevents thread pool deadlock when drain threads wait on CountDownLatch.
+     (defrecord ForkJoinPoolExecutor [^ForkJoinPool pool]
+       PExecutor
+       (execute! [_ spin-fn]
+         (let [bindings (capture-targeted-bindings)
+               bound-spin-fn (fn []
+                               (with-bindings bindings
+                                 (spin-fn)))]
+           (.submit pool ^Callable (reify Callable
+                                     (call [_]
+                                       (bound-spin-fn))))))
+
+       (execute-after! [this delay-ms spin-fn]
+         (.schedule ^ScheduledExecutorService @delay-executor
+                    ^Runnable (fn [] (execute! this spin-fn))
+                    (long delay-ms)
+                    TimeUnit/MILLISECONDS))
+
+       java.io.Closeable
+       (close [_]
+         (.shutdown pool))))
 
    :cljs
    ;; EventLoop Executor - executes via setTimeout (JS only)
@@ -118,41 +136,79 @@
          nil))))
 
 #?(:clj
-   (defn thread-pool-executor
-     "Create an executor that runs spins on a fixed thread pool with unbounded queue.
+   (do
+     (defn thread-pool-executor
+       "Create an executor that runs spins on a fixed thread pool with unbounded queue.
 
-      Use for:
-      - Production (JVM)
-      - Parallel spin execution
-      - Non-blocking reactive updates
+        Kept for backward compatibility. Prefer fork-join-executor for new code.
 
-      Options:
-        :threads - Number of threads (default: available processors)
+        Options:
+          :threads - Number of threads (default: available processors)
 
-      Uses an unbounded LinkedBlockingQueue - spins will queue indefinitely
-      until executed. OOM is the natural boundary if spins queue faster than
-      they can be processed.
+        Note: Must call .close to shutdown the thread pool when done."
+       [& {:keys [threads]
+           :or {threads (.availableProcessors (Runtime/getRuntime))}}]
+       (let [thread-factory (reify java.util.concurrent.ThreadFactory
+                              (newThread [_ runnable]
+                                (doto (Thread. runnable)
+                                  (.setDaemon true))))
+             executor (java.util.concurrent.ThreadPoolExecutor.
+                        threads
+                        threads
+                        60000
+                        TimeUnit/MILLISECONDS
+                        (LinkedBlockingQueue.)
+                        thread-factory)]
+         (.prestartAllCoreThreads executor)
+         (->PoolExecutor executor)))
 
-      Note: Must call .close to shutdown the thread pool when done."
-     [& {:keys [threads]
-         :or {threads (.availableProcessors (Runtime/getRuntime))}}]
-     (let [;; Create ThreadFactory that makes daemon threads (allows JVM to exit)
-           thread-factory (reify java.util.concurrent.ThreadFactory
-                            (newThread [_ runnable]
-                              (doto (Thread. runnable)
-                                (.setDaemon true))))
-           executor (java.util.concurrent.ThreadPoolExecutor.
-                      threads                          ; core pool size
-                      threads                          ; max pool size
-                      60000                           ; keep alive time (1 minute)
-                      TimeUnit/MILLISECONDS           ; time unit
-                      (LinkedBlockingQueue.)          ; work queue
-                      thread-factory)]                ; daemon thread factory
-       ;; CRITICAL: Prestart all core threads!
-       ;; With unbounded queue, threads are NEVER created lazily
-       ;; because queue never fills up. Must create them upfront.
-       (.prestartAllCoreThreads executor)
-       (->PoolExecutor executor))))
+     (defn fork-join-executor
+       "Create a ForkJoinPool-based executor with work stealing and managed blocking.
+
+        ForkJoinPool creates compensating threads when workers block (via managedBlock),
+        which prevents the thread pool deadlock that occurs with fixed ThreadPoolExecutor
+        when drain threads block on CountDownLatch waiting for workers.
+
+        Options:
+          :parallelism - Number of worker threads (default: available processors)
+
+        asyncMode=true configures FIFO scheduling (best for event-driven workloads).
+
+        Note: Must call .close to shutdown the pool when done."
+       [& {:keys [parallelism]
+           :or {parallelism (.availableProcessors (Runtime/getRuntime))}}]
+       (let [pool (ForkJoinPool.
+                    (int parallelism)
+                    ForkJoinPool/defaultForkJoinWorkerThreadFactory
+                    nil    ; UncaughtExceptionHandler
+                    true)] ; asyncMode = true (FIFO for event-driven workloads)
+         (->ForkJoinPoolExecutor pool)))
+
+     (defn virtual-threads-available?
+       "Check if virtual threads are available (JVM 21+).
+        Uses reflection to avoid compile-time dependency on Java 21+ APIs."
+       []
+       (try
+         (.getMethod Executors "newVirtualThreadPerTaskExecutor" (into-array Class []))
+         true
+         (catch NoSuchMethodException _ false)))
+
+     (defn virtual-thread-executor
+       "Create an executor that runs each task on a new virtual thread (JVM 21+).
+
+        Virtual threads eliminate pool exhaustion entirely: blocking yields the
+        carrier thread, enabling unlimited concurrency without deadlock.
+
+        ForkJoinPool.managedBlock calls from other parts of the runtime are harmless
+        on virtual threads (they just block the virtual thread, which is free).
+
+        Uses reflection for backward compatibility with JVM < 21.
+
+        Note: Must call .close to shutdown the executor when done."
+       []
+       (let [method (.getMethod Executors "newVirtualThreadPerTaskExecutor" (into-array Class []))
+             ^ExecutorService executor (.invoke method nil (into-array Object []))]
+         (->PoolExecutor executor)))))
 
 #?(:cljs
    (do
@@ -169,10 +225,12 @@
 (defn default-executor
   "Create the default executor for the current platform.
 
-   JVM: ThreadPoolExecutor with available processor count
+   JVM: Virtual threads (JVM 21+), falling back to ForkJoinPool
    JS:  EventLoopExecutor"
   []
-  #?(:clj (thread-pool-executor)
+  #?(:clj (if (virtual-threads-available?)
+            (virtual-thread-executor)
+            (fork-join-executor))
      :cljs (event-loop-executor)))
 
 ;; =============================================================================
