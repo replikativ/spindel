@@ -133,6 +133,9 @@
       ;; Track observer completion
       (when (contains? (:observers batch) spin-id)
         (swap! (:completed batch) conj spin-id))
+      ;; Mark as processed early so propagate-await-dirty! knows this spin
+      ;; already has a fresh cache (e.g., completed via inline await in Phase 1)
+      (swap! (:processed batch) conj spin-id)
       (log/trace! {:event :engine/batch-completion-deferred
                    :data {:spin-id spin-id}}))
     ;; Not in batch - enqueue immediately and trigger drain
@@ -1462,12 +1465,13 @@
   ;; Only propagate during batch processing (when in signal-change handling)
   ;; This is when re-execution happens due to reactive dependencies.
   ;; Outside batch mode, normal await completion handles value propagation.
-  (when (some? (rtp/get-state context [:engine/current-batch]))
+  (when-let [batch (rtp/get-state context [:engine/current-batch])]
     (let [awaiting-parents (rtp/get-state context [:await-dependents spin-id])]
       (when (seq awaiting-parents)
         (let [;; Check which parents have continuations registered for this spin's completion
               ;; These parents will be notified via continuation resume (not dirty re-execution)
               completion-event-key [:spin/complete spin-id]
+              processed @(:processed batch)
               parents-to-dirty (filter
                                  (fn [parent-id]
                                    (let [parent-node (rtp/get-state context [:nodes parent-id])
@@ -1479,9 +1483,12 @@
                                      ;; 2. Parent is not currently running
                                      ;; 3. Parent does NOT have a continuation for our completion
                                      ;;    (continuations handle notification via resume, not re-execution)
+                                     ;; 4. Parent was NOT already processed in this batch
+                                     ;;    (inline await already consumed fresh value)
                                      (and parent-node
                                           (not (:running? parent-node))
-                                          (not has-completion-continuation))))
+                                          (not has-completion-continuation)
+                                          (not (contains? processed parent-id)))))
                                  awaiting-parents)]
           (when (seq parents-to-dirty)
             (log/debug! {:event :engine/propagate-await-dirty
@@ -1904,6 +1911,7 @@
     ;; This matches the behavior in spin/core.cljc where the spin is considered
     ;; suspended, not actively running. The spin will be woken up when its
     ;; await continuation is resumed.
+    ;; Must match spin.core/incomplete (can't require spin.core - circular dep)
     (when (= ret :org.replikativ.spindel.spin/incomplete)
       (mark-not-running! context spin-id))
     ;; Never remove continuations - maintain fully reactive graph

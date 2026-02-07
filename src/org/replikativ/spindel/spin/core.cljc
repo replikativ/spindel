@@ -258,9 +258,9 @@
                 ;; If so, they couldn't have registered (we didn't expose the atom)
                 ;; This is safe because spin execution is idempotent via caching
 
-                ;; CRITICAL: If spin returned ::incomplete (suspended awaiting deferred),
+                ;; CRITICAL: If spin returned incomplete (suspended awaiting deferred),
                 ;; clear running? flag so deref doesn't poll-wait forever
-                (when (= result ::incomplete)
+                (when (= result :org.replikativ.spindel.spin/incomplete)
                   (simple/mark-not-running! runtime spin-id))
 
                 ;; Return result (could be value or ::incomplete from nested await)
@@ -379,15 +379,9 @@
      (rtc/spin-register! spin-id {:provides #{}})
 
      ;; Register automatic cleanup when spin is GC'd
-     #?(:clj
-        (.register @spin-cleaner
-                   reactive-spin
-                   (reify Runnable
-                     (run [_]
-                       ;; Clean up spin from runtime when GC'd
-                       ;; Note: This runs without *execution-context* bound, so cleanup must be done differently
-                       ;; TODO: Runtime should handle cleanup via weak refs
-                       )))
+     ;; JVM: Skip - the cleaner Runnable was a no-op (TODO: implement via weak refs)
+     ;; CLJS: Register for graph-clear-deps! cleanup
+     #?(:clj nil
         :cljs
         (when spin-registry
           (.register spin-registry
@@ -443,5 +437,7 @@
 ;; Export the ::spin-cancelled constant for use by other namespaces
 (def spin-cancelled ::spin-cancelled)
 
-;; Export the ::incomplete constant
-(def incomplete ::incomplete)
+;; Sentinel value returned when a spin suspends (awaiting deferred/child)
+;; NOTE: Uses explicit keyword to ensure consistency across all namespaces.
+;; All code comparing against this value must use spin-core/incomplete.
+(def incomplete :org.replikativ.spindel.spin/incomplete)

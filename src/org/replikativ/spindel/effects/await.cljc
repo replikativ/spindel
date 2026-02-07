@@ -16,7 +16,8 @@
             [org.replikativ.spindel.spin.core :as spin-core]       ;; For Spin import
             [org.replikativ.spindel.state.signal :as sig]    ;; For SignalRef import
             [org.replikativ.spindel.effects.core :as eff]
-            [org.replikativ.spindel.log :as log])
+            [org.replikativ.spindel.log :as log]
+            [is.simm.partial-cps.async :as pcps-async])
   #?(:clj (:import [org.replikativ.spindel.spin.core Spin]
                    [org.replikativ.spindel.state.signal SignalRef])))
 
@@ -103,45 +104,46 @@
                 (ex-info "No cached result for child in rebuild mode"
                          {:parent-id spin-id :child-id awaited-spin-id})))))
 
-        ;; Normal slow path: Register continuation and start spin, then suspend
+        ;; Normal slow path: Start child, check if completed synchronously
         :else
         (do
-          ;; Register continuation for spin completion event
-          ;; IMPORTANT: Capture bindings so they're restored when continuation resumes
-          ;; This ensures dynamic vars like *yield-handler* are available after suspension
-          ;;
-          ;; For reactive spins (PSpin), mark continuation as persistent so it survives
-          ;; signal-change boundaries. This allows combinators like `parallel` to notify
-          ;; their awaiters when children update reactively.
-          ;; For non-reactive spins (deferreds), mark as ephemeral.
-          (let [captured-bindings (bindings/capture-bindings)
-                is-reactive-spin (satisfies? tp/PSpin spin-ref)
-                cont-map {:event-key [:spin/complete awaited-spin-id]
-                          :resolve-fn resolve
-                          :reject-fn reject
-                          :source-loc source-loc
-                          :bindings captured-bindings
-                          ;; Reactive spins (like parallel) may update during batch processing
-                          ;; Their awaiters need persistent continuations to receive updates
-                          :ephemeral-await? (not is-reactive-spin)
-                          :on-resume (fn [_rt]
-                                       (let [res (rtc/spin-current-result awaited-spin-id)]
-                                         (result/match res identity identity)))}]
-            (rtc/continuation-add! spin-id cont-map)
-            (log/debug! {:event :await/registered-continuation
-                         :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+          ;; Start child spin FIRST (try inline execution)
+          ;; CRITICAL: Bind *in-trampoline* to false so the child spin creates its own
+          ;; trampoline and runs to completion (or returns ::incomplete). Without this,
+          ;; the child's CPS function returns Thunks instead of completing, because
+          ;; it inherits *in-trampoline*=true from the parent's trampoline context.
+          (let [child-result (binding [pcps-async/*in-trampoline* false]
+                               (spin-ref noop noop))]
+            (if (not= child-result spin-core/incomplete)
+              ;; Synchronous completion - inline resume (no continuation, no event queue!)
+              ;; The child completed during (spin-ref noop noop), result is cached.
+              ;; Resume parent directly via cont/resume - the CPS trampoline handles
+              ;; stack depth via Thunks from loop/recur.
+              (do
+                (log/trace! {:event :await/inline-resume
+                             :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+                (simple/record-await-dependency! ctx spin-id awaited-spin-id)
+                (let [child-cached (rtc/spin-current-result awaited-spin-id)]
+                  (result/match child-cached
+                    #(cont/resume resolve %)
+                    #(cont/resume reject %))))
 
-            ;; NEW: Record await dependency for dirty propagation (Design 1)
-            ;; When child completes dirty, we'll propagate dirty flag to this parent
-            (simple/record-await-dependency! ctx spin-id awaited-spin-id))
-
-          ;; Start child spin (uses noop callbacks, parent resumes via continuation)
-          (spin-ref noop noop)
-          (log/debug! {:event :await/started-child
-                       :data {:parent-id spin-id :awaited-id awaited-spin-id}})
-
-          ;; Suspend parent until continuation resumes
-          :org.replikativ.spindel.spin/incomplete)))))
+              ;; Async - child returned ::incomplete, register continuation and suspend
+              (do
+                (let [is-reactive-spin (satisfies? tp/PSpin spin-ref)
+                      cont-map {:event-key [:spin/complete awaited-spin-id]
+                                :resolve-fn resolve
+                                :reject-fn reject
+                                :source-loc source-loc
+                                :ephemeral-await? (not is-reactive-spin)
+                                :on-resume (fn [_rt]
+                                             (let [res (rtc/spin-current-result awaited-spin-id)]
+                                               (result/match res identity identity)))}]
+                  (rtc/continuation-add! spin-id cont-map)
+                  (log/debug! {:event :await/registered-continuation
+                               :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+                  (simple/record-await-dependency! ctx spin-id awaited-spin-id))
+                spin-core/incomplete))))))))
 
 (defn- await-deferred
   "Direct await handler for Deferred.
@@ -152,7 +154,7 @@
   ;; Call the deferred, it will invoke resolve/reject when ready
   (deferred resolve reject)
   ;; Suspend parent
-  :org.replikativ.spindel.spin/incomplete)
+  spin-core/incomplete)
 
 (defn reactive-spin?
   "Check if value is a Spin. Works across CLJ/CLJS."
@@ -194,7 +196,7 @@
                  :cljs (.-name (type awaitable)))))
       (do
         (awaitable resolve reject)
-        :org.replikativ.spindel.spin/incomplete)
+        spin-core/incomplete)
 
       ;; SignalRef is an error
       (signal-ref? awaitable)

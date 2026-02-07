@@ -1,8 +1,12 @@
 (ns org.replikativ.spindel.bench.fork-join-bench
   "Fork-Join benchmark — mirrors Kyo's ForkJoinBench.
 
-  Creates 10,000 spins that return a unit value, then derefs all of them.
-  Measures spin creation + deref overhead."
+  Creates 10,000 spins that return a unit value, then awaits/derefs all of them.
+  Measures spin creation + await/deref overhead.
+
+  Two variants:
+  - await: faithful to real Spindel usage (spin + await inside CPS body)
+  - deref: JVM-only convenience path (@spin)"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.bench.harness :as h]
             [org.replikativ.spindel.runtime.context :as ctx]
@@ -18,10 +22,23 @@
   ([mode]
    (let [bench-f (if (= mode :quick) h/quick-bench-fn h/bench-fn)]
      (h/with-bench-ctx [ctx]
+       ;; Variant 1: await-based (faithful to real Spindel usage)
+       ;; Each child spin completes synchronously; with inline await optimization,
+       ;; the parent resumes inline without event queue round-trips.
        (bench-f
-         (str "fork-join " N " spins")
+         (str "fork-join " N " spins (await)")
          (fn []
-           ;; Create N spins and deref each one
+           @(spin
+              (loop [i 0]
+                (when (< i N)
+                  (await (spin :done))
+                  (recur (inc i)))))))
+
+       ;; Variant 2: deref-based (original, for comparison)
+       ;; Each @spin goes through the event queue.
+       (bench-f
+         (str "fork-join " N " spins (deref)")
+         (fn []
            (let [spins (doall (for [_ (range N)]
                                 (spin :done)))]
              (doseq [s spins]
