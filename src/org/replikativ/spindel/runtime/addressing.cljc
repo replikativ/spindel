@@ -7,14 +7,14 @@
   - Determinism: Same execution path → same addresses
   - Fork-safe: Forked contexts replay with same addresses
   - Parallel-safe: Parallel branches get deterministic branch IDs
-  - Collision-resistant: Uses hasch.core/uuid (SHA-512, UUID-5 format)
+  - Collision-resistant: Uses fast murmur3-based content hashing
 
   The chain-head is stored in execution context state at [:addressing :chain-head].
   When forked, both forks start with the same chain-head and evolve independently.
 
   For parallel execution, use `with-parallel-branch` to assign deterministic
   branch IDs based on index."
-  (:require [hasch.core :as hc]
+  (:require [org.replikativ.spindel.runtime.hash :as h]
             [clojure.string :as str]
             [org.replikativ.spindel.runtime.protocols :as rtp]))
 
@@ -23,11 +23,9 @@
 ;; =============================================================================
 
 (defn chain-hash
-  "Generate content-addressed hash from source-loc and previous address.
-
-  Uses hasch.core/uuid for portable, deterministic hashing (SHA-512, UUID-5 format)."
+  "Generate content-addressed hash from source-loc and previous address."
   [source-loc last-address]
-  (hc/uuid [source-loc last-address]))
+  (h/content-hash [source-loc last-address]))
 
 (defn get-chain-head
   "Get current chain head from execution context.
@@ -69,15 +67,11 @@
 
   Returns: Keyword like :spin-550e8400-e29b-41d4-a716-446655440000"
   [ctx prefix source-loc]
-  ;; Use atom to capture the generated address from inside swap!
-  (let [new-addr-atom (atom nil)]
-    (rtp/swap-state! ctx [:addressing :chain-head]
-      (fn [last-addr]
-        (let [new-uuid (chain-hash source-loc last-addr)
-              new-addr (keyword (str prefix "-" new-uuid))]
-          (reset! new-addr-atom new-addr)
-          new-addr)))
-    @new-addr-atom))
+  (let [last-addr (get-chain-head ctx)
+        new-uuid (chain-hash source-loc last-addr)
+        new-addr (keyword (str prefix "-" new-uuid))]
+    (set-chain-head! ctx new-addr)
+    new-addr))
 
 ;; =============================================================================
 ;; Source Location Helpers
@@ -108,7 +102,7 @@
   - Same branch index always gets same chain-head (deterministic)
   - Order of parallel execution doesn't matter"
   [base-chain-head branch-index]
-  (keyword (str "branch-" (hc/uuid [base-chain-head :parallel branch-index]))))
+  (keyword (str "branch-" (h/content-hash [base-chain-head :parallel branch-index]))))
 
 (defn with-parallel-branches
   "Execute functions in parallel branches with deterministic addressing.
@@ -147,7 +141,7 @@
 
         ;; Update chain-head to reflect all branches completed
         ;; This hash depends on base + all branch heads
-        merged-head (keyword (str "merged-" (hc/uuid [base-head :merged branch-heads])))]
+        merged-head (keyword (str "merged-" (h/content-hash [base-head :merged branch-heads])))]
 
     (set-chain-head! ctx merged-head)
     results))

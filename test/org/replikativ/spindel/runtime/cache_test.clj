@@ -34,7 +34,7 @@
           h1 (cache/compute-deps-hash sig-vals spin-vals nil)
           h2 (cache/compute-deps-hash sig-vals spin-vals nil)]
       (is (= h1 h2))
-      (is (uuid? h1)))))
+      (is (string? h1)))))
 
 (deftest test-compute-deps-hash-different
   (testing "Different values produce different hashes"

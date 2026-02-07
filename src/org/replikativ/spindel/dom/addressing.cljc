@@ -27,7 +27,7 @@
     (with-parent-addr my-addr
       (let [child-result (await some-spin)]
         (build-element ...)))"
-  (:require [hasch.core :as hc]
+  (:require [org.replikativ.spindel.runtime.hash :as h]
             [org.replikativ.spindel.runtime.core :as rtc])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.addressing])))
 
@@ -51,7 +51,7 @@
   - Stable: sibling changes don't affect this element's address"
   [source-loc parent-addr slot-index]
   (let [hash-input [source-loc parent-addr slot-index]
-        uuid (hc/uuid hash-input)]
+        uuid (h/content-hash hash-input)]
     (keyword (str "el-" uuid))))
 
 (defn keyed-child-address
@@ -67,7 +67,7 @@
   Returns: Keyword address"
   [parent-addr item-key]
   (let [hash-input [parent-addr :keyed item-key]
-        uuid (hc/uuid hash-input)]
+        uuid (h/content-hash hash-input)]
     (keyword (str "keyed-" uuid))))
 
 ;; =============================================================================

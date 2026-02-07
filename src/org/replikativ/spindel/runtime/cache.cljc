@@ -12,8 +12,8 @@
   When multiple forks have identical dependency values, they share the same
   deps-hash and get cache hits, avoiding redundant computation.
 
-  Performance: Uses hasch.core/uuid for content-addressed hashing."
-  (:require [hasch.core :as hc]
+  Performance: Uses fast murmur3-based content hashing."
+  (:require [org.replikativ.spindel.runtime.hash :as h]
             [org.replikativ.spindel.log :as log]))
 
 ;; =============================================================================
@@ -65,7 +65,7 @@
           (compute-deps-hash {sig-1 99} {} nil))
     ;=> true"
   [signal-values spin-values effect-ctx-hash]
-  (hc/uuid
+  (h/content-hash
     {:signals signal-values
      ;; Only hash relevant parts of spin results (status + value)
      :spins (into {}
@@ -96,7 +96,7 @@
   Property: Same generations → same hash
   Property: Different generations → different hash (cache miss, recompute)"
   [signal-generations spin-hashes effect-ctx-hash]
-  (hc/uuid
+  (h/content-hash
     {:signals signal-generations
      :spins spin-hashes
      :effect-ctx effect-ctx-hash}))

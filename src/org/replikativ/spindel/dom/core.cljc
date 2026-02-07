@@ -14,7 +14,7 @@
   3. Path-based updates for efficient tree modification
   4. Addressing for element identity across renders"
   (:require [org.replikativ.spindel.incremental.deltaable :as d]
-            [hasch.core :as hc]))
+            [org.replikativ.spindel.runtime.hash :as h]))
 
 ;; =============================================================================
 ;; VNode Predicates
@@ -235,7 +235,7 @@
   Combines base address with content key for stable identity
   regardless of position in list."
   [base-addr key]
-  (keyword (str "keyed-" (hc/uuid [base-addr :keyed key]))))
+  (keyword (str "keyed-" (h/content-hash [base-addr :keyed key]))))
 
 (defn derive-child-chain
   "Derive a child chain head from parent address.
@@ -243,14 +243,14 @@
   Used for subtree isolation - changes inside a subtree
   don't affect sibling addresses."
   [parent-addr]
-  (keyword (str "child-" (hc/uuid [parent-addr :child-chain]))))
+  (keyword (str "child-" (h/content-hash [parent-addr :child-chain]))))
 
 (defn next-address
   "Generate next deterministic address from chain head and source location.
 
   Returns [new-address new-chain-head]."
   [chain-head prefix source-loc]
-  (let [new-uuid (hc/uuid [source-loc chain-head])
+  (let [new-uuid (h/content-hash [source-loc chain-head])
         new-addr (keyword (str prefix "-" new-uuid))]
     [new-addr new-addr]))  ; Address becomes new chain head
 

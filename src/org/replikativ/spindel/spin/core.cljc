@@ -298,27 +298,26 @@
            ;; Not completed or dirty - check if already running
            :else
            (if (simple/running? runtime spin-id)
-             ;; Spin is already executing - wait for completion via managedBlock
+             ;; Spin is executing or suspended on deferred - wait for completion via promise callback
              ;; This prevents duplicate execution when multiple threads deref the same spin
-             ;; managedBlock tells ForkJoinPool to create compensating threads if needed
              (do
                (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
-               (let [result-val (volatile! nil)]
-                 (ForkJoinPool/managedBlock
-                   (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
-                     (block [_]
-                       (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
-                       (let [cached (rtc/spin-current-result spin-id)]
-                         (if (and cached (rtc/spin-result-clean? spin-id))
-                           (do (vreset! result-val cached) true)
-                           false)))
-                     (isReleasable [_]
-                       (let [cached (rtc/spin-current-result spin-id)]
-                         (if (and cached (rtc/spin-result-clean? spin-id))
-                           (do (vreset! result-val cached) true)
-                           false)))))
-                 (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
-                 (result/unwrap @result-val)))
+               (let [result-promise (promise)]
+                 ;; Register callback for when spin completes
+                 (simple/add-pending-callback! runtime spin-id
+                   {:resolve (fn [v] (deliver result-promise (result/ok v)))
+                    :reject (fn [e] (deliver result-promise (result/error e)))})
+                 ;; Double-check: spin might have completed between running? check and callback registration
+                 (let [cached-now (rtc/spin-current-result spin-id)]
+                   (if (and cached-now (rtc/spin-result-clean? spin-id))
+                     (result/unwrap cached-now)
+                     (let [res (deref result-promise 30000 ::timeout)]
+                       (if (= res ::timeout)
+                         (throw (ex-info "Spin deref timed out after 30 seconds (waiting for running spin)"
+                                         {:spin-id spin-id}))
+                         (do
+                           (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
+                           (result/unwrap res))))))))
              ;; Not running - enqueue spin execution with poll-and-drain
              ;; CRITICAL: Must enqueue to maintain event ordering and avoid glitches
              (let [result-promise (promise)]
