@@ -13,7 +13,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.addressing]
             [org.replikativ.spindel.spin.core]
-            [org.replikativ.partial-cps.async]
+            [is.simm.partial-cps.async]
             ["@tiptap/core" :refer [Editor]]
             ["@tiptap/starter-kit" :default StarterKit])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]

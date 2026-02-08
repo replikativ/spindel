@@ -1147,6 +1147,111 @@
                         subs)))))))
   true)
 
+(defn full-cleanup-spin!
+  "Remove ALL runtime state for a spin atomically.
+
+  Unlike clear-deps! which only clears deps/continuations/subscriptions,
+  this removes the spin node itself and all 8+ state locations.
+
+  Used by GC cleanup when a spin is safe to fully remove (no observers).
+
+  TRANSACTIONAL: All state changes happen atomically in a single swap-state!.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin to fully remove
+
+  Returns: true"
+  [context spin-id]
+  (rtp/swap-state! context []
+    (fn [state]
+      (let [node (get-in state [:nodes spin-id])
+            deps (when node (np/get-deps node))
+            signal-deps (:signals deps #{})
+            spin-deps (:spins deps #{})]
+        (-> state
+            ;; 1. Unregister from signal observers
+            (as-> s (reduce (fn [s sid]
+                              (if (get-in s [:nodes sid])
+                                (update-in s [:nodes sid] np/remove-observer spin-id)
+                                s))
+                            s signal-deps))
+            ;; 2. Unregister from spin observers
+            (as-> s (reduce (fn [s tid]
+                              (if (get-in s [:nodes tid])
+                                (update-in s [:nodes tid] np/remove-observer spin-id)
+                                s))
+                            s spin-deps))
+            ;; 3. Remove the spin node itself
+            (update :nodes dissoc spin-id)
+            ;; 4. Remove metadata
+            (update :spins-meta dissoc spin-id)
+            ;; 5. Remove cached output
+            (update :spin-outputs dissoc spin-id)
+            ;; 6. Remove continuations
+            (update :continuations dissoc spin-id)
+            ;; 7. Remove pending callbacks
+            (update :pending-callbacks dissoc spin-id)
+            ;; 8. Remove tracking data
+            (update :spin-tracking dissoc spin-id)
+            ;; 9. Clean subscriptions (remove spin-id from all event keys)
+            (update :subscriptions
+              (fn [subs]
+                (when subs
+                  (persistent!
+                    (reduce-kv (fn [acc ek m]
+                                 (let [m' (dissoc m spin-id)]
+                                   (if (seq m') (assoc! acc ek m') acc)))
+                               (transient {}) subs)))))
+            ;; 10. Clean await-dependents (remove this spin as parent)
+            (update :await-dependents
+              (fn [deps]
+                (when deps
+                  (persistent!
+                    (reduce-kv (fn [m child-id parents]
+                                 (let [parents' (disj parents spin-id)]
+                                   (if (seq parents')
+                                     (assoc! m child-id parents')
+                                     m)))
+                               (transient {}) deps)))))))))
+  true)
+
+(defn try-gc-cleanup-spin!
+  "Called from GC callback. Attempts full cleanup if safe, otherwise marks
+  the spin as orphaned for deferred cleanup.
+
+  A spin is safe to fully clean when:
+  1. Its Spin object was GC'd (caller ensures this)
+  2. It has no observers (no other spins depend on it)
+
+  If the spin has observers, it's marked :orphaned? true. When those observers
+  are eventually cleaned up and this spin loses its last observer, cascading
+  cleanup will remove it.
+
+  Args:
+    context - context record (implements PState protocol)
+    spin-id - ID of spin whose Spin object was GC'd
+
+  Returns: nil"
+  [context spin-id]
+  (let [node (rtp/get-state context [:nodes spin-id])]
+    (when node ;; may already be cleaned
+      (if (empty? (np/get-observers node))
+        ;; No observers → full cleanup + cascade to dependencies
+        (let [deps (np/get-deps node)
+              dep-spin-ids (:spins deps #{})]
+          (full-cleanup-spin! context spin-id)
+          ;; Cascade: check if any spin dependency is now cleanable
+          (doseq [dep-id dep-spin-ids]
+            (let [dep-node (rtp/get-state context [:nodes dep-id])]
+              (when (and dep-node
+                         (:orphaned? dep-node)
+                         (empty? (np/get-observers dep-node)))
+                (full-cleanup-spin! context dep-id)))))
+        ;; Has observers → mark orphaned, defer cleanup
+        (rtp/swap-state! context [:nodes spin-id]
+          #(when % (assoc % :orphaned? true)))))))
+
 (defn track-signal-dep!
   "Track that a spin depends on a signal (during execution).
 

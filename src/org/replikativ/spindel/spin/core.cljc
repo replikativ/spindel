@@ -11,7 +11,8 @@
             [is.simm.partial-cps.runtime])
   #?(:clj (:import [is.simm.partial_cps.runtime Thunk]
                     [java.util.concurrent ForkJoinPool]
-                    [java.util.concurrent.locks LockSupport])))
+                    [java.util.concurrent.locks LockSupport]
+                    [java.lang.ref WeakReference])))
 
 ;; =============================================================================
 ;; Automatic Spin Cleanup via Finalizers
@@ -27,19 +28,26 @@
    (def ^:private spin-registry
      "Global FinalizationRegistry for automatic spin cleanup when spins are GC'd.
       Only available in modern JS runtimes (Node 14+, Chrome 84+).
-      Degrades gracefully if not available."
+      Degrades gracefully if not available.
+
+      Each registration holds a WeakRef to the ExecutionContext so cleanup
+      works even when *execution-context* is not dynamically bound (GC
+      callbacks run outside user code)."
      (when (exists? js/FinalizationRegistry)
        (js/FinalizationRegistry.
         (fn [held-value]
-          (let [{:keys [spin-id]} (js->clj held-value :keywordize-keys true)]
-            ;; Clean up spin from runtime - only if runtime is bound
-            ;; Cleanup can happen after test teardown when runtime is no longer bound
-            (try
-              (when (rtc/execution-context-bound?)
-                (rtc/graph-clear-deps! spin-id))
-              (catch :default _
-                ;; Silently ignore errors during cleanup
-                nil))))))))
+          (try
+            (if-let [cleanup-fn (.-cleanup_fn held-value)]
+              ;; Generic cleanup callback (from register-cleanup!)
+              (cleanup-fn)
+              ;; Spin-specific cleanup via WeakRef to context
+              (let [spin-id (.-spin_id held-value)
+                    weak-ctx (.-weak_ctx held-value)]
+                (when-let [ctx (and weak-ctx (.deref weak-ctx))]
+                  (simple/try-gc-cleanup-spin! ctx spin-id))))
+            (catch :default _
+              ;; Silently ignore errors during GC cleanup
+              nil)))))))
 
 ;; =============================================================================
 ;; Spin - Pure CPS Interface (Fork-Safe!)
@@ -380,14 +388,29 @@
      (rtc/spin-register! spin-id {:provides #{}})
 
      ;; Register automatic cleanup when spin is GC'd
-     ;; JVM: Skip - the cleaner Runnable was a no-op (TODO: implement via weak refs)
-     ;; CLJS: Register for graph-clear-deps! cleanup
-     #?(:clj nil
+     ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
+     ;; can find the context even when *execution-context* is not bound.
+     #?(:clj
+        (let [ctx (rtc/current-execution-context)
+              weak-ctx (WeakReference. ctx)
+              sid spin-id]
+          (.register ^java.lang.ref.Cleaner @spin-cleaner
+                     reactive-spin
+                     (reify Runnable
+                       (run [_]
+                         (try
+                           (when-let [c (.get weak-ctx)]
+                             (simple/try-gc-cleanup-spin! c sid))
+                           (catch Exception _
+                             ;; Silently ignore errors during GC cleanup
+                             nil))))))
         :cljs
         (when spin-registry
-          (.register spin-registry
-                     reactive-spin
-                     (clj->js {:spin-id spin-id}))))
+          (let [ctx (rtc/current-execution-context)]
+            (.register spin-registry
+                       reactive-spin
+                       #js {:spin_id spin-id
+                            :weak_ctx (js/WeakRef. ctx)}))))
 
      reactive-spin)))
 
@@ -402,16 +425,19 @@
    - cleanup-fn: Function to call when obj is GC'd (takes no args)"
   [obj cleanup-fn]
   #?(:clj
-     (.register @spin-cleaner
+     (.register ^java.lang.ref.Cleaner @spin-cleaner
                 obj
                 (reify Runnable
                   (run [_]
-                    (cleanup-fn))))
+                    (try
+                      (cleanup-fn)
+                      (catch Exception _
+                        nil)))))
      :cljs
      (when spin-registry
        (.register spin-registry
                   obj
-                  (clj->js {:cleanup-fn cleanup-fn})))))
+                  #js {:cleanup_fn cleanup-fn}))))
 
 ;; =============================================================================
 ;; Helper Functions (used by lifecycle.cljc)

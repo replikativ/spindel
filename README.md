@@ -19,7 +19,7 @@ Spindel provides cached reactive spins with automatic dependency tracking, mutab
 
 ## Status
 
-**Core functionality complete** - 337 CLJ / 149 CLJS tests passing. Spins, signals, runtime, effects, forking, sequences, pub/sub all working.
+**Core functionality complete** - 634 CLJ / 241 CLJS tests passing. Spins, signals, runtime, effects, forking, sequences, pub/sub all working.
 
 ## Quick Start
 
@@ -29,25 +29,29 @@ Spindel provides cached reactive spins with automatic dependency tracking, mutab
 ;; deps.edn
 {:deps {org.clojure/clojure {:mvn/version "1.12.0"}
         org.clojure/clojurescript {:mvn/version "1.11.132"}
-        org.replikativ/spindel {:local/root "path/to/spindel"}}}
+        org.replikativ/spindel {:mvn/version "0.1.0"}}}
 ```
 
 ### Basic Usage
 
 ```clojure
+;; Convenience entry point (re-exports core APIs)
+(require '[org.replikativ.spindel.core :as s :refer [spin signal await track]])
 (require '[org.replikativ.spindel.runtime.core :as rtc])
-(require '[org.replikativ.spindel.runtime.context :as ctx])
-(require '[org.replikativ.spindel.spin.cps :refer [spin]])
-(require '[org.replikativ.spindel.state.signal :as sig])
-(require '[org.replikativ.spindel.effects.await :refer [await]])
-(require '[org.replikativ.spindel.effects.track :refer [track]])
+
+;; Or require individual namespaces for full control:
+;; (require '[org.replikativ.spindel.runtime.context :as ctx])
+;; (require '[org.replikativ.spindel.spin.cps :refer [spin]])
+;; (require '[org.replikativ.spindel.state.signal :as sig])
+;; (require '[org.replikativ.spindel.effects.await :refer [await]])
+;; (require '[org.replikativ.spindel.effects.track :refer [track]])
 
 ;; Create execution context
-(def context (ctx/create-execution-context))
+(def context (s/create-execution-context))
 
 ;; Create a signal
 (binding [rtc/*execution-context* context]
-  (def counter (sig/signal 0)))
+  (def counter (signal 0)))
 
 ;; Create a spin that depends on the signal
 (binding [rtc/*execution-context* context]
@@ -682,7 +686,7 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 ## Project Structure
 
 ```
-src/is/simm/spindel/
+src/org/replikativ/spindel/
 ├── spin/                 # Spin, CPS transformation, combinators
 ├── effects/              # Effect system (await, track, yield)
 ├── runtime/              # Protocols, ExecutionContext, backends
@@ -755,7 +759,7 @@ Spindel uses [Trove](https://github.com/taoensso/trove) for structured logging:
 
 Log output format:
 ```
-2025-01-15T10:30:00.000Z :info my.namespace
+2026-02-07T10:30:00.000Z :info my.namespace
   data: {:port 8080}
 ```
 
@@ -764,12 +768,13 @@ Log output format:
 **Core**:
 - Clojure 1.12.0
 - ClojureScript 1.11.132
-- `io.replikativ/hasch` - Content-addressed hashing
-
-**Local dependencies**:
-- `pangloss/pattern` - Pattern matching
-- `org.replikativ/partial-cps` - CPS transformation
+- `org.replikativ/hasch` - Content-addressed hashing
+- `is.simm/partial-cps` - CPS transformation engine
+- `org.replikativ/yggdrasil` - Data structure utilities
+- `org.clojure/core.async` - Async primitives
 - `com.taoensso/trove` - Structured logging
+- `org.clojure/tools.analyzer.jvm` - Code analysis for CPS
+- `riddley/riddley` - Code walking for macro expansion
 
 ## Examples
 
@@ -807,8 +812,8 @@ npm run watch:all
 
 ## License
 
-(Specify license here)
+Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 ## Authors
 
-(Specify authors here)
+Christian Weilbach ([@whilo](https://github.com/whilo))

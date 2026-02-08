@@ -21,7 +21,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.addressing]
             [org.replikativ.spindel.spin.core]
-            [org.replikativ.partial-cps.async])
+            [is.simm.partial-cps.async])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                    [org.replikativ.spindel.state.signal :refer [signal]]
                    [org.replikativ.spindel.incremental.combinators :refer [islice]]

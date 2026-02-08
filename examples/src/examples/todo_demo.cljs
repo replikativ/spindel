@@ -22,7 +22,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.addressing]  ;; Required by spin macro expansion
             [org.replikativ.spindel.spin.core]           ;; Required by spin macro expansion
-            [org.replikativ.partial-cps.async])          ;; Required by spin macro expansion
+            [is.simm.partial-cps.async])          ;; Required by spin macro expansion
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                    [org.replikativ.spindel.state.signal :refer [signal]]
                    [org.replikativ.spindel.incremental.combinators :refer [ifilter]]
