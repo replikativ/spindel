@@ -201,6 +201,27 @@
                      {:backend-type (backend/backend-type backend)})))))
 
 ;; =============================================================================
+;; Safe Printing (prevent circular reference overflow)
+;; =============================================================================
+
+;; ExecutionContext contains backend → state → nodes → ... which can reference
+;; back to the context, creating circular print chains. Override the default
+;; defrecord print method with a bounded summary.
+
+#?(:clj
+   (defmethod print-method ExecutionContext [ctx ^java.io.Writer w]
+     (.write w (str "#ExecutionContext{:fork-id " (:fork-id ctx)
+                    ", :backend-type " (backend/backend-type (:backend ctx))
+                    "}")))
+   :cljs
+   (extend-type ExecutionContext
+     IPrintWithWriter
+     (-pr-writer [ctx writer _opts]
+       (-write writer (str "#ExecutionContext{:fork-id " (:fork-id ctx)
+                           ", :backend-type " (backend/backend-type (:backend ctx))
+                           "}")))))
+
+;; =============================================================================
 ;; Creation
 ;; =============================================================================
 
@@ -299,10 +320,11 @@
      (when-let [ds (:drain-signal context)]
        (.offer ^LinkedBlockingQueue ds :stop)))
   ;; Wait briefly for drain thread to exit
-  (when-let [drain-thread (:drain-thread context)]
-    (try
-      (deref drain-thread 200 :timeout)
-      (catch Exception _ nil)))
+  #?(:clj
+     (when-let [drain-thread (:drain-thread context)]
+       (try
+         (deref drain-thread 200 :timeout)
+         (catch Exception _ nil))))
   nil)
 
 ;; =============================================================================

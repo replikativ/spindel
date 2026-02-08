@@ -255,6 +255,31 @@
    (->OverlayBackend (atom initial-overlay) parent-backend local-paths)))
 
 ;; =============================================================================
+;; Safe Printing (prevent circular reference overflow)
+;; =============================================================================
+
+;; Backend state-atom can contain the entire runtime state which may have
+;; circular references back to the ExecutionContext. Override print methods
+;; to show summaries instead of full state.
+
+#?(:clj
+   (do
+     (defmethod print-method AtomBackend [b ^java.io.Writer w]
+       (.write w (str "#AtomBackend{:keys " (keys @(:state-atom b)) "}")))
+     (defmethod print-method OverlayBackend [b ^java.io.Writer w]
+       (.write w (str "#OverlayBackend{:overlay-keys " (keys @(:overlay-atom b)) "}"))))
+   :cljs
+   (do
+     (extend-type AtomBackend
+       IPrintWithWriter
+       (-pr-writer [b writer _opts]
+         (-write writer (str "#AtomBackend{:keys " (keys @(.-state-atom b)) "}"))))
+     (extend-type OverlayBackend
+       IPrintWithWriter
+       (-pr-writer [b writer _opts]
+         (-write writer (str "#OverlayBackend{:overlay-keys " (keys @(.-overlay-atom b)) "}"))))))
+
+;; =============================================================================
 ;; Fork Type Helpers
 ;; =============================================================================
 

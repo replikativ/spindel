@@ -141,11 +141,13 @@
    (deftest test-pub-closed-detection
      (testing "pub detects when source is exhausted"
        (let [source (vec->aseq [{:type :a :value 1}])
-             p (pub/pub source :type)
-             _ (pub/sub p :a (buf/fixed-buffer 10))]
+             p (pub/pub source :type)]
 
-         ;; Initially not closed
+         ;; Not closed before pump starts (no subscription yet)
          (is (not (pub/pub-closed? p)))
+
+         ;; Subscribe starts the pump
+         (pub/sub p :a (buf/fixed-buffer 10))
 
          ;; Let pump run to completion via async delay
          @(spin (await (comb/sleep 200)))

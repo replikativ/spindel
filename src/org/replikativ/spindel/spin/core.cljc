@@ -71,6 +71,7 @@
 
   #?(:clj clojure.lang.IFn :cljs IFn)
   (#?(:clj invoke :cljs -invoke) [this resolve reject]
+    ;; DEBUG: Track invoke depth in CLJS
     ;; Standard CPS signature: (spin resolve reject)
     ;; Runtime and spin-id obtained from dynamic bindings
     (let [runtime (rtc/current-execution-context)
@@ -153,7 +154,7 @@
                 executing? (atom true)]
 
             (log/debug! {:event :spin/start :data {:spin-id spin-id}})
-            (log/trace! {:event :spin/executing-body :data {:spin-id spin-id :thread (.getName (Thread/currentThread))}})
+            (log/trace! {:event :spin/executing-body :data {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")}})
 
             ;; CRITICAL: Invalidate spins created during previous execution
             ;; Their closures captured values from the old run - now stale

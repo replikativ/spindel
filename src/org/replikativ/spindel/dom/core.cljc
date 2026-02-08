@@ -277,11 +277,14 @@
 (defn clear-deltas
   "Return a new vnode with deltas cleared.
 
-  Used after discharge to prepare for next render cycle."
+  Used after discharge to prepare for next render cycle.
+  Clears both DeltaableMap/DeltaableVector deltas and
+  the :deltas field from slot reconciliation."
   [vnode]
   (cond-> vnode
     (:attrs vnode) (update :attrs d/clear-deltas)
-    (:children vnode) (update :children d/clear-deltas)))
+    (:children vnode) (update :children d/clear-deltas)
+    (:deltas vnode) (dissoc :deltas)))
 
 (defn clear-deltas-deep
   "Recursively clear deltas from vnode and all descendants."

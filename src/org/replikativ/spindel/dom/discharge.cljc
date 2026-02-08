@@ -287,11 +287,19 @@
 (defn apply-child-deltas!
   "Apply all child deltas from vnode to element.
 
-  Deltas come from the :deltas field set by element* during slot reconciliation."
+  Deltas come from two sources:
+  1. The :deltas field set by element* during slot reconciliation
+  2. The DeltaableVector children (from dom/append-child, dom/update-child, etc.)"
   [discharge el vnode]
+  ;; Apply slot reconciliation deltas
   (when-let [deltas (:deltas vnode)]
     (doseq [delta deltas]
-      (apply-child-delta! discharge el delta))))
+      (apply-child-delta! discharge el delta)))
+  ;; Apply DeltaableVector children deltas (from direct manipulation)
+  (when-let [children (:children vnode)]
+    (when-let [child-deltas (d/get-deltas children)]
+      (doseq [delta child-deltas]
+        (apply-child-delta! discharge el delta)))))
 
 ;; =============================================================================
 ;; VNode Discharge
@@ -339,7 +347,8 @@
   [vnode]
   (when vnode
     (let [has-attr-deltas? (and (:attrs vnode) (d/has-deltas? (:attrs vnode)))
-          has-child-deltas? (seq (:deltas vnode))
+          has-child-deltas? (or (seq (:deltas vnode))
+                            (and (:children vnode) (d/has-deltas? (:children vnode))))
           has-deltas? (or has-attr-deltas? has-child-deltas?)
           children (when-let [ch (:children vnode)]
                      (if (d/deltaable? ch) @ch ch))
@@ -385,6 +394,7 @@
   [vnode]
   (cond-> vnode
     (:attrs vnode) (update :attrs d/clear-deltas)
+    (:children vnode) (update :children d/clear-deltas)
     (:deltas vnode) (dissoc :deltas)))
 
 (defn clear-deltas-deep

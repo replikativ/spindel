@@ -115,43 +115,46 @@
   PAsyncSeq
   (anext [this]
     (spin
-      (let [{:keys [buffer closed? error item-available-atom]} @tap-state-atom]
-        (cond
-          ;; Check for error first
-          (and error @error)
-          (throw @error)
+      ;; Use loop instead of recursive (await (anext this)) to avoid
+      ;; stack overflow in CLJS where promise delivery is synchronous
+      (loop []
+        (let [{:keys [buffer closed? error item-available-atom]} @tap-state-atom]
+          (cond
+            ;; Check for error first
+            (and error @error)
+            (throw @error)
 
-          ;; Check if closed
-          (and closed? @closed?)
-          (if (and buffer (pos? (count buffer)))
-            ;; Drain remaining buffer
+            ;; Check if closed
+            (and closed? @closed?)
+            (if (and buffer (pos? (count buffer)))
+              ;; Drain remaining buffer
+              (let [item (buf/remove! buffer)]
+                (signal-space-available! tap-state-atom)
+                [item this])
+              ;; Nothing left
+              nil)
+
+            ;; Check for rendezvous item (nil buffer case)
+            (and (nil? buffer) (contains? @tap-state-atom :rendezvous-item))
+            (let [item (:rendezvous-item @tap-state-atom)]
+              ;; Remove item and signal space available
+              (swap! tap-state-atom dissoc :rendezvous-item)
+              (signal-space-available! tap-state-atom)
+              [item this])
+
+            ;; Try to get from buffer
+            (and buffer (pos? (count buffer)))
             (let [item (buf/remove! buffer)]
               (signal-space-available! tap-state-atom)
               [item this])
-            ;; Nothing left
-            nil)
 
-          ;; Check for rendezvous item (nil buffer case)
-          (and (nil? buffer) (contains? @tap-state-atom :rendezvous-item))
-          (let [item (:rendezvous-item @tap-state-atom)]
-            ;; Remove item and signal space available
-            (swap! tap-state-atom dissoc :rendezvous-item)
-            (signal-space-available! tap-state-atom)
-            [item this])
-
-          ;; Try to get from buffer
-          (and buffer (pos? (count buffer)))
-          (let [item (buf/remove! buffer)]
-            (signal-space-available! tap-state-atom)
-            [item this])
-
-          ;; Buffer empty (or rendezvous with no item) - wait for item
-          :else
-          (do
-            ;; Wait for item-available signal
-            (await (promise-spin @item-available-atom))
-            ;; Retry (state may have changed)
-            (await (anext this))))))))
+            ;; Buffer empty (or rendezvous with no item) - wait for item
+            :else
+            (do
+              ;; Wait for item-available signal
+              (await (promise-spin @item-available-atom))
+              ;; Retry (state may have changed)
+              (recur))))))))
 
 (defn- close-tap!
   "Close a tap, optionally with error."
