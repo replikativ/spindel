@@ -127,7 +127,8 @@
           started (start-server! url server-id)
           _client (start-client! url client-id)]
       (try
-        (let [result @(spin (await (compute-on-server server-id 10 32)))]
+        (let [result (deref (spin (await (compute-on-server server-id 10 32))) 10000 ::timeout)]
+          (is (not= ::timeout result) "Remote computation timed out")
           (is (= 42 result)))
         (finally
           (stop-server! started))))))
@@ -142,15 +143,18 @@
           _client (start-client! url client-id)]
       (try
         (testing "explicit nil return"
-          (let [result @(spin (await (return-nil server-id)))]
+          (let [result (deref (spin (await (return-nil server-id))) 10000 ::timeout)]
+            (is (not= ::timeout result) "Remote nil return timed out")
             (is (nil? result))))
 
         (testing "conditional nil - when true"
-          (let [result @(spin (await (conditional-nil server-id true)))]
+          (let [result (deref (spin (await (conditional-nil server-id true))) 10000 ::timeout)]
+            (is (not= ::timeout result) "Remote conditional-nil timed out")
             (is (= 42 result))))
 
         (testing "conditional nil - when false"
-          (let [result @(spin (await (conditional-nil server-id false)))]
+          (let [result (deref (spin (await (conditional-nil server-id false))) 10000 ::timeout)]
+            (is (not= ::timeout result) "Remote conditional-nil timed out")
             (is (nil? result))))
         (finally
           (stop-server! started))))))
@@ -169,7 +173,7 @@
         ;; Error is wrapped by distributed-scope as "Remote invocation error"
         ;; The original "boom" message is in the :error data
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Remote invocation error"
-              @(spin (await (throw-error server-id "boom")))))
+              (deref (spin (await (throw-error server-id "boom"))) 10000 ::timeout)))
         (finally
           (stop-server! started))))))
 
@@ -183,10 +187,12 @@
           _client (start-client! url client-id)]
       (try
         ;; Caller coordinates: initial=10 -> inc -> 11 -> *2 -> 22
-        (let [result @(spin
-                        (let [incremented (await (increment-remote server-id 10))
-                              doubled (await (double-remote server-id incremented))]
-                          doubled))]
+        (let [result (deref (spin
+                            (let [incremented (await (increment-remote server-id 10))
+                                  doubled (await (double-remote server-id incremented))]
+                              doubled))
+                          10000 ::timeout)]
+          (is (not= ::timeout result) "Multi-step remote calls timed out")
           (is (= 22 result)))
         (finally
           (stop-server! started))))))
@@ -225,11 +231,13 @@
           _client (start-client! url client-id)]
       (try
         ;; Read from context A
-        (let [result-a @(spin (await (read-from-context server-id :ctx-a :test-value)))]
+        (let [result-a (deref (spin (await (read-from-context server-id :ctx-a :test-value))) 10000 ::timeout)]
+          (is (not= ::timeout result-a) "Context A read timed out")
           (is (= 100 result-a) "Should read from context A's bindings"))
 
         ;; Read from context B
-        (let [result-b @(spin (await (read-from-context server-id :ctx-b :test-value)))]
+        (let [result-b (deref (spin (await (read-from-context server-id :ctx-b :test-value))) 10000 ::timeout)]
+          (is (not= ::timeout result-b) "Context B read timed out")
           (is (= 200 result-b) "Should read from context B's bindings"))
         (finally
           ;; Cleanup
@@ -255,7 +263,8 @@
           _client (start-client! url client-id)]
       (try
         ;; read-from-context with explicit context-id
-        (let [result @(spin (await (read-from-context server-id :default :test-value)))]
+        (let [result (deref (spin (await (read-from-context server-id :default :test-value))) 10000 ::timeout)]
+          (is (not= ::timeout result) "Default context read timed out")
           (is (= 42 result) "Should read from default context"))
         (finally
           (dist/unregister-context! :default)

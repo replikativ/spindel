@@ -22,7 +22,8 @@
                [org.replikativ.spindel.effects.track :refer [track]]
                [org.replikativ.spindel.incremental.interval :as iv]
                [org.replikativ.spindel.incremental.combinators :as ic]
-               [org.replikativ.spindel.incremental.deltaable :as d])
+               [org.replikativ.spindel.incremental.deltaable :as d]
+               [org.replikativ.spindel.test-async :refer [await-drain]])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]])))
 
@@ -385,7 +386,8 @@
 
              ;; Add even number
              (swap! data-signal conj 6)
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= [6 12] @results) "After adding 6: 2 + 4 + 6 = 12")))))))
 
 ;; =============================================================================
@@ -421,17 +423,20 @@
 
              ;; Add active todo
              (swap! todos-signal conj {:id 1 :status :active :hours 5})
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= [0 5] @results) "After adding active todo: 5 hours")
 
              ;; Add done todo (should not affect sum)
              (swap! todos-signal conj {:id 2 :status :done :hours 3})
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= [0 5 5] @results) "After adding done todo: still 5 hours")
 
              ;; Add another active todo
              (swap! todos-signal conj {:id 3 :status :active :hours 8})
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= [0 5 5 13] @results) "After adding active todo: 5 + 8 = 13")))))))
 
 #?(:clj
@@ -468,7 +473,8 @@
 
              ;; Add value - should trigger re-execution
              (swap! data-signal conj 6)
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= 2 @filter-calls) "Filter called on update")
              (is (= 2 @map-calls) "Map called on update")))))))
 
@@ -505,12 +511,14 @@
 
              ;; Complete task 1 (2 hours done)
              (swap! todos (fn [v] (assoc v 0 {:id 1 :text "Task 1" :done true :hours 2})))
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= [5 3] @results) "After completing Task 1: 3 remaining hours")
 
              ;; Add new task
              (swap! todos conj {:id 4 :text "Task 4" :done false :hours 4})
-             (Thread/sleep 100)
+             (await-drain exec-ctx)
+             (Thread/sleep 50)
              (is (= [5 3 7] @results) "After adding Task 4: 3 + 4 = 7 remaining hours")))))))
 
 ;; =============================================================================

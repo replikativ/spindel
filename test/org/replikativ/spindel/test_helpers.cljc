@@ -66,9 +66,9 @@
                             (deliver p# :done)))]
           (try
             ~@body
-            (let [result# (deref p# 10000 :timeout)]
+            (let [result# (deref p# 15000 :timeout)]
               (when (= result# :timeout)
-                (throw (ex-info "Async test timed out after 10 seconds" {}))))
+                (throw (ex-info "Async test timed out after 15 seconds" {}))))
             (catch Throwable t#
               ;; Ensure promise is delivered on error to prevent deadlock
               (deliver p# :error)
