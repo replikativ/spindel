@@ -23,7 +23,8 @@
             [org.replikativ.spindel.runtime.addressing :as addressing]
             [org.replikativ.spindel.spin.result :as result]
             [incognito.edn :refer [read-string-safe]])
-  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit])))
+  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]
+                    [java.lang.ref Cleaner])))
 
 ;; =============================================================================
 ;; Incognito Handlers for Serialization
@@ -225,6 +226,10 @@
 ;; Creation
 ;; =============================================================================
 
+#?(:clj
+   (def ^:private ^Cleaner context-cleaner
+     (Cleaner/create)))
+
 (defn create-execution-context
   "Create a new root execution context.
 
@@ -287,17 +292,31 @@
         ;; Start background drain thread (zero-polling via LinkedBlockingQueue)
         ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
         ;; Wakes instantly when trigger-drain! calls .offer(:drain)
+        ;; Uses daemon thread so leaked contexts don't prevent JVM exit
+        ;; or accumulate thread overhead in tests
         drain-thread #?(:clj
-                        (future
-                          (while @running
-                            (try
-                              ;; Block until signaled or 1s timeout (zero CPU while waiting)
-                              (.poll drain-signal 1 TimeUnit/SECONDS)
-                              (simple/drain-events! ctx executor)
-                              (catch Exception e
-                                ;; Log but don't crash drain thread
-                                (println "ERROR in background drain thread:" e)))))
+                        (doto (Thread.
+                                (fn []
+                                  (while @running
+                                    (try
+                                      ;; Block until signaled or 1s timeout (zero CPU while waiting)
+                                      (.poll drain-signal 1 TimeUnit/SECONDS)
+                                      (simple/drain-events! ctx executor)
+                                      (catch Exception e
+                                        ;; Log but don't crash drain thread
+                                        (println "ERROR in background drain thread:" e))))))
+                          (.setDaemon true)
+                          (.start))
                         :cljs nil)]
+    ;; Register GC cleaner to stop drain thread if context is abandoned.
+    ;; IMPORTANT: The Runnable must NOT capture `ctx` — only the primitives
+    ;; needed to stop the drain thread, otherwise the Cleaner prevents GC.
+    #?(:clj
+       (.register context-cleaner ctx
+                  (reify Runnable
+                    (run [_]
+                      (reset! running false)
+                      (.offer ^LinkedBlockingQueue drain-signal :stop)))))
     ;; Update context with drain-thread reference
     (assoc ctx :drain-thread drain-thread)))
 
@@ -321,9 +340,9 @@
        (.offer ^LinkedBlockingQueue ds :stop)))
   ;; Wait briefly for drain thread to exit
   #?(:clj
-     (when-let [drain-thread (:drain-thread context)]
+     (when-let [^Thread drain-thread (:drain-thread context)]
        (try
-         (deref drain-thread 200 :timeout)
+         (.join drain-thread 200)
          (catch Exception _ nil))))
   nil)
 
@@ -727,13 +746,16 @@
             drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
             ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil drain-signal)
             drain-thread #?(:clj
-                            (future
-                              (while @running
-                                (try
-                                  (.poll drain-signal 1 TimeUnit/SECONDS)
-                                  (simple/drain-events! ctx-temp executor)
-                                  (catch Exception e
-                                    (println "ERROR in background drain thread:" e)))))
+                            (doto (Thread.
+                                    (fn []
+                                      (while @running
+                                        (try
+                                          (.poll drain-signal 1 TimeUnit/SECONDS)
+                                          (simple/drain-events! ctx-temp executor)
+                                          (catch Exception e
+                                            (println "ERROR in background drain thread:" e))))))
+                              (.setDaemon true)
+                              (.start))
                             :cljs nil)]
         (assoc ctx-temp :drain-thread drain-thread))
       ;; Immutable backend - no drain thread

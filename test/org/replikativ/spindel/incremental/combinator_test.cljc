@@ -380,14 +380,13 @@
                      (iv/get-new summed)))]
 
              ;; Trigger initial execution
-             (result-spin (fn [_] nil) (fn [e] (throw e)))
-             (Thread/sleep 100)
+             @result-spin
              (is (= [6] @results) "Initial sum of evens: 2 + 4 = 6")
 
              ;; Add even number
              (swap! data-signal conj 6)
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @result-spin
              (is (= [6 12] @results) "After adding 6: 2 + 4 + 6 = 12")))))))
 
 ;; =============================================================================
@@ -417,26 +416,25 @@
                      (iv/get-new total)))]
 
              ;; Trigger initial execution
-             (pipeline-spin (fn [_] nil) (fn [e] (throw e)))
-             (Thread/sleep 100)
+             @pipeline-spin
              (is (= [0] @results) "Initial: empty list = 0 hours")
 
              ;; Add active todo
              (swap! todos-signal conj {:id 1 :status :active :hours 5})
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @pipeline-spin
              (is (= [0 5] @results) "After adding active todo: 5 hours")
 
              ;; Add done todo (should not affect sum)
              (swap! todos-signal conj {:id 2 :status :done :hours 3})
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @pipeline-spin
              (is (= [0 5 5] @results) "After adding done todo: still 5 hours")
 
              ;; Add another active todo
              (swap! todos-signal conj {:id 3 :status :active :hours 8})
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @pipeline-spin
              (is (= [0 5 5 13] @results) "After adding active todo: 5 + 8 = 13")))))))
 
 #?(:clj
@@ -466,15 +464,14 @@
                      (iv/get-new doubled)))]
 
              ;; Initial execution
-             (pipeline-spin (fn [_] nil) (fn [e] (throw e)))
-             (Thread/sleep 100)
+             @pipeline-spin
              (is (= 1 @filter-calls) "Filter called once on initial")
              (is (= 1 @map-calls) "Map called once on initial")
 
              ;; Add value - should trigger re-execution
              (swap! data-signal conj 6)
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @pipeline-spin
              (is (= 2 @filter-calls) "Filter called on update")
              (is (= 2 @map-calls) "Map called on update")))))))
 
@@ -505,20 +502,19 @@
                      (iv/get-new total)))]
 
              ;; Initial: 2 + 3 = 5 hours remaining
-             (remaining-hours-spin (fn [_] nil) (fn [e] (throw e)))
-             (Thread/sleep 100)
+             @remaining-hours-spin
              (is (= [5] @results) "Initial: 2 + 3 = 5 remaining hours")
 
              ;; Complete task 1 (2 hours done)
              (swap! todos (fn [v] (assoc v 0 {:id 1 :text "Task 1" :done true :hours 2})))
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @remaining-hours-spin
              (is (= [5 3] @results) "After completing Task 1: 3 remaining hours")
 
              ;; Add new task
              (swap! todos conj {:id 4 :text "Task 4" :done false :hours 4})
              (await-drain exec-ctx)
-             (Thread/sleep 50)
+             @remaining-hours-spin
              (is (= [5 3 7] @results) "After adding Task 4: 3 + 4 = 7 remaining hours")))))))
 
 ;; =============================================================================

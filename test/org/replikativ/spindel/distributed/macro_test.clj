@@ -27,7 +27,8 @@
                 rtc/*execution-context* rt]
         (f))
       (finally
-        (dist/unregister-context! :default)))))
+        (dist/unregister-context! :default)
+        (ctx/stop-context! rt)))))
 
 (use-fixtures :each with-runtime)
 

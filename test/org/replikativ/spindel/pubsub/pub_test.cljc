@@ -23,10 +23,13 @@
 (def ^:dynamic *test-runtime* nil)
 
 (defn with-execution-context [f]
-  (let [ctx (ctx/create-execution-context)]
-    (binding [*test-runtime* ctx
-              rtc/*execution-context* ctx]
-      (f))))
+  (let [c (ctx/create-execution-context)]
+    (try
+      (binding [*test-runtime* c
+                rtc/*execution-context* c]
+        (f))
+      (finally
+        (ctx/stop-context! c)))))
 
 (use-fixtures :each with-execution-context)
 

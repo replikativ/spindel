@@ -91,6 +91,7 @@
 
      Binds both *execution-context* and *execution-context* for full compatibility.
      The context is available as a local binding.
+     Automatically stops the context's drain thread on exit.
 
      Usage:
        (with-ctx [ctx]
@@ -98,9 +99,12 @@
            ...))"
      [[ctx-sym] & body]
      `(let [~ctx-sym (create-test-context)]
-        (binding [rtc/*execution-context* ~ctx-sym
-                  rtc/*execution-context* ~ctx-sym]
-          ~@body))))
+        (try
+          (binding [rtc/*execution-context* ~ctx-sym
+                    rtc/*execution-context* ~ctx-sym]
+            ~@body)
+          (finally
+            (ctx/stop-context! ~ctx-sym))))))
 
 ;; =============================================================================
 ;; Spin Execution Helpers
