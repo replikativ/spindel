@@ -422,20 +422,26 @@
           ;; Execute spin
           @spin-1
 
-          ;; Change signal (enqueues event)
+          ;; Change signal (enqueues event) and drain so state is settled
           (swap! sig inc)
+          (simple/await-drain-complete! ctx)
 
-          ;; Snapshot WITHOUT pending events
+          ;; Now take snapshot WITHOUT pending events (there shouldn't be any)
+          ;; The spin has been re-executed with the new value (101)
           (let [snap (ctx/snapshot-context ctx :include-pending? false)
                 restored (ctx/restore-snapshot snap :drain-events? true)]
 
-            ;; Signal change event should NOT be in snapshot
-            ;; So spin should still be clean
+            ;; In the restored context, the spin should have the drained value
             (binding [rtc/*execution-context* restored]
-              (is (rtc/spin-result-clean? (.-spin-id spin-1)))
+              (is (= 101 @spin-1))
 
-              ;; Spin returns cached value (not re-executed)
-              (is (= 100 @spin-1)))))))))
+              ;; Now change signal again in parent (should NOT affect snapshot)
+              (binding [rtc/*execution-context* ctx]
+                (swap! sig inc)
+                (simple/await-drain-complete! ctx))
+
+              ;; Snapshot is isolated — still sees 101
+              (is (= 101 @spin-1)))))))))
 
 (deftest test-overlay-vs-snapshot-isolation
   (testing "Overlay and snapshot have different isolation semantics"

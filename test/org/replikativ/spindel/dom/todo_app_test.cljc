@@ -144,16 +144,19 @@
              ;; Add first todo
              (swap! todos conj {:id "1" :text "Buy milk" :done false})
              (await-drain rt)
+             (Thread/sleep 50)
              (is (= 1 @last-item-count))
 
              ;; Add second todo
              (swap! todos conj {:id "2" :text "Walk dog" :done false})
              (await-drain rt)
+             (Thread/sleep 50)
              (is (= 2 @last-item-count))
 
              ;; Add third todo
              (swap! todos conj {:id "3" :text "Write code" :done true})
              (await-drain rt)
+             (Thread/sleep 50)
              (is (= 3 @last-item-count))))))))
 
 #?(:clj

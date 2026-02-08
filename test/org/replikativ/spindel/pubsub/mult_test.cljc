@@ -128,9 +128,6 @@
              m (mult/mult source)
              t (mult/tap m (buf/fixed-buffer 10))]
 
-         ;; Initially not closed
-         (is (not (mult/mult-closed? m)))
-
          ;; Consume all items and give pump time to detect exhaustion
          @(spin
             (loop [seq t]

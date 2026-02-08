@@ -164,6 +164,8 @@
           started (start-server! url server-id)
           _client (start-client! url client-id)]
       (try
+        ;; Allow peer handshake to complete before invoking remote function
+        (Thread/sleep 200)
         ;; Error is wrapped by distributed-scope as "Remote invocation error"
         ;; The original "boom" message is in the :error data
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Remote invocation error"

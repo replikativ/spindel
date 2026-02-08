@@ -118,33 +118,35 @@
      (testing "Multiple waiters are all eventually served"
        (let [s (sem/semaphore 1)
              results (atom [])
-             waiters (atom [])]
+             n-waiters 3]
 
          ;; Acquire the only permit
          @(spin (await (sem/acquire s)))
 
-         ;; Start 3 waiters - capture futures to wait on them
-         (doseq [i (range 3)]
-           (swap! waiters conj
-                  (future
-                    (binding [rtc/*execution-context* rtc/*execution-context*]
-                      @(spin (await (sem/acquire s)))
-                      (swap! results conj i)
-                      (sem/release s)))))
+         ;; Start waiters that acquire, do work, and release within a single spin.
+         ;; Using spins (not futures) avoids cross-thread release races.
+         (let [waiter-spins
+               (doall
+                 (for [i (range n-waiters)]
+                   (spin
+                     (await (sem/acquire s))
+                     (swap! results conj i)
+                     (sem/release s)
+                     i)))]
 
-         ;; Give waiters time to queue
-         (Thread/sleep 100)
+           ;; Give waiters time to queue
+           (Thread/sleep 100)
 
-         ;; Release initial permit - this should wake first waiter
-         (sem/release s)
+           ;; Release initial permit - this should wake first waiter
+           (sem/release s)
 
-         ;; Wait for all waiters to complete
-         (doseq [f @waiters]
-           (deref f 5000 :timeout))
+           ;; Wait for all waiters to complete
+           (doseq [ws waiter-spins]
+             (deref ws 5000 :timeout))
 
-         ;; Should see all three results (order may vary due to scheduling)
-         (is (= 3 (count @results)) "All 3 waiters should complete")
-         (is (= #{0 1 2} (set @results)) "All waiters should have run exactly once")))))
+           ;; Should see all three results (order may vary due to scheduling)
+           (is (= n-waiters (count @results)) "All waiters should complete")
+           (is (= (set (range n-waiters)) (set @results)) "All waiters should have run exactly once"))))))
 
 ;; =============================================================================
 ;; Holding pattern (automatic release)

@@ -73,6 +73,69 @@
 
 ;; spin-fn now arity-2 (resolve reject) relying on dynamic bindings (*execution-context*, *spin-id*).
 ;; Spin is STATELESS - no runtime reference, uses dynamic *execution-context* binding.
+
+#?(:clj
+   (defn- deref-spin
+     "Core deref logic for Spin. Blocks until spin completes.
+
+     timeout-ms: 0 means block indefinitely, >0 means timeout after that many ms.
+     timeout-val: value returned on timeout (only used when timeout-ms > 0)."
+     [this spin-id spin-fn timeout-ms timeout-val]
+     (let [cached (rtc/spin-current-result spin-id)
+           runtime (rtc/current-execution-context)
+           rebuild-mode? (and (instance? org.replikativ.spindel.runtime.context.ExecutionContext runtime)
+                              (ctx/rebuild-mode? runtime))
+           wait-on-promise (fn [result-promise]
+                             (if (pos? timeout-ms)
+                               (let [res (deref result-promise timeout-ms ::timeout)]
+                                 (if (= res ::timeout)
+                                   timeout-val
+                                   (result/unwrap res)))
+                               (result/unwrap @result-promise)))]
+       (cond
+         ;; Rebuild mode with cache hit - execute body but return cached value
+         (and cached (rtc/spin-result-clean? spin-id) rebuild-mode?)
+         (do
+           (log/debug! {:event :deref/rebuild-mode :data {:spin-id spin-id}})
+           (binding [rtc/*execution-context* runtime
+                     rtc/*spin-id* spin-id]
+             (spin-fn (fn [_] nil) (fn [_] nil)))
+           (result/unwrap cached))
+
+         ;; Normal cache hit - return cached result
+         (and cached (rtc/spin-result-clean? spin-id))
+         (result/unwrap cached)
+
+         ;; Not completed or dirty - check if already running
+         :else
+         (if (simple/running? runtime spin-id)
+           ;; Spin is executing or suspended - wait for completion via promise callback
+           (do
+             (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
+             (let [result-promise (promise)]
+               (simple/add-pending-callback! runtime spin-id
+                 {:resolve (fn [v] (deliver result-promise (result/ok v)))
+                  :reject (fn [e] (deliver result-promise (result/error e)))})
+               ;; Double-check: spin might have completed between running? check and callback registration
+               (let [cached-now (rtc/spin-current-result spin-id)]
+                 (if (and cached-now (rtc/spin-result-clean? spin-id))
+                   (result/unwrap cached-now)
+                   (do
+                     (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
+                     (wait-on-promise result-promise))))))
+           ;; Not running - enqueue spin execution
+           (let [result-promise (promise)]
+             (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
+             (rtc/enqueue-event! {:type :spin-execution
+                                  :id spin-id
+                                  :spin this
+                                  :resolve-fn (fn [value]
+                                                (deliver result-promise (result/ok value)))
+                                  :reject-fn (fn [error]
+                                               (deliver result-promise (result/error error)))})
+             (log/trace! {:event :spin/deref-done :data {:spin-id spin-id}})
+             (wait-on-promise result-promise)))))))
+
 (deftype Spin [spin-id spin-fn]
   tp/PSpin
   (spin-id [_] spin-id)
@@ -277,84 +340,15 @@
 
   #?(:clj clojure.lang.IDeref :cljs IDeref)
   (#?(:clj deref :cljs -deref) [this]
-    ;; IMPORTANT: This is for user convenience only! Never call @spin internally.
     ;; Blocks until spin completes, then returns cached value.
     ;; Requires *execution-context* to be bound by the caller.
-    #?(:clj
-       (let [cached (rtc/spin-current-result spin-id)
-             runtime (rtc/current-execution-context)
-             ;; Check if we're in rebuild mode
-             rebuild-mode? (and (instance? org.replikativ.spindel.runtime.context.ExecutionContext runtime)
-                                (ctx/rebuild-mode? runtime))]
-         (cond
-           ;; Rebuild mode with cache hit - execute body but return cached value
-           ;; This is needed to re-create nested spins and re-register continuations
-           (and cached (rtc/spin-result-clean? spin-id) rebuild-mode?)
-           (do
-             (log/debug! {:event :deref/rebuild-mode :data {:spin-id spin-id}})
-             ;; Execute spin body for side effects (nested spin creation, continuation registration)
-             (binding [rtc/*execution-context* runtime
-                       rtc/*spin-id* spin-id]
-               ;; Execute with dummy callbacks - we'll use cached value anyway
-               (spin-fn (fn [_] nil) (fn [_] nil)))
-             ;; Return cached value
-             (result/unwrap cached))
+    #?(:clj (deref-spin this spin-id spin-fn 0 nil)
+       :cljs (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 
-           ;; Normal cache hit - return cached result
-           (and cached (rtc/spin-result-clean? spin-id))
-           (result/unwrap cached)
-
-           ;; Not completed or dirty - check if already running
-           :else
-           (if (simple/running? runtime spin-id)
-             ;; Spin is executing or suspended on deferred - wait for completion via promise callback
-             ;; This prevents duplicate execution when multiple threads deref the same spin
-             (do
-               (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
-               (let [result-promise (promise)]
-                 ;; Register callback for when spin completes
-                 (simple/add-pending-callback! runtime spin-id
-                   {:resolve (fn [v] (deliver result-promise (result/ok v)))
-                    :reject (fn [e] (deliver result-promise (result/error e)))})
-                 ;; Double-check: spin might have completed between running? check and callback registration
-                 (let [cached-now (rtc/spin-current-result spin-id)]
-                   (if (and cached-now (rtc/spin-result-clean? spin-id))
-                     (result/unwrap cached-now)
-                     (let [res (deref result-promise 30000 ::timeout)]
-                       (if (= res ::timeout)
-                         (throw (ex-info "Spin deref timed out after 30 seconds (waiting for running spin)"
-                                         {:spin-id spin-id}))
-                         (do
-                           (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
-                           (result/unwrap res))))))))
-             ;; Not running - enqueue spin execution with poll-and-drain
-             ;; CRITICAL: Must enqueue to maintain event ordering and avoid glitches
-             (let [result-promise (promise)]
-               (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
-               ;; Enqueue spin execution event - preserves event queue ordering
-               ;; This ensures glitch-free execution: events processed in order
-               (rtc/enqueue-event! {:type :spin-execution
-                                    :id spin-id
-                                    :spin this
-                                    :resolve-fn (fn [value]
-                                                  (deliver result-promise (result/ok value)))
-                                    :reject-fn (fn [error]
-                                                 (deliver result-promise (result/error error)))})
-               ;; CRITICAL: Poll-and-drain loop
-               ;; Main thread actively processes events while waiting for result
-               ;; This prevents deadlock when worker threads await nested spins
-               ;; Block main thread waiting for result
-               ;; Background drain thread ensures events get processed continuously
-               (let [res (deref result-promise 30000 ::timeout)]
-                 (if (= res ::timeout)
-                   (throw (ex-info "Spin deref timed out after 30 seconds"
-                                   {:spin-id spin-id}))
-                   (do
-                     (log/trace! {:event :spin/deref-done
-                                  :data {:spin-id spin-id :result res}})
-                     (result/unwrap res))))))))
-       :cljs
-       (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
+  #?@(:clj
+      [clojure.lang.IBlockingDeref
+       (deref [this timeout-ms timeout-val]
+         (deref-spin this spin-id spin-fn timeout-ms timeout-val))])
 
   Object
   (toString [_this]

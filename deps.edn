@@ -10,7 +10,7 @@
         com.taoensso/trove {:mvn/version "1.1.0"}
         is.simm/partial-cps {:mvn/version "0.1.52"}
         org.replikativ/yggdrasil {:mvn/version "0.1.6"}
-        org.replikativ/hasch {:mvn/version "0.3.96"}
+        org.replikativ/hasch {:mvn/version "0.3.97"}
         org.clojure/core.async {:mvn/version "1.6.681"}}
 
  :aliases

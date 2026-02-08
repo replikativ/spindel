@@ -254,6 +254,8 @@
             (swap! state-sig mutation-fn)
             (#?(:clj org.replikativ.spindel.test-async/await-drain
                 :cljs identity) rt)
+            ;; Give executor time to process spin re-execution after drain
+            #?(:clj (Thread/sleep 50) :cljs nil)
 
             ;; Get final vdom from spin and convert to DOM structure
             (let [incremental-vdom @app-spin
