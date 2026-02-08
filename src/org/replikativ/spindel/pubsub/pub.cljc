@@ -183,9 +183,10 @@
                  (if-let [result (await (anext source))]
                    (let [[item rest-seq] result
                          topic (topic-fn item)]
-                     ;; Deliver to topic mult if it exists
-                     (when-let [{:keys [push-fn]} (get @mults-atom topic)]
-                       (push-fn item))
+                     ;; Ensure topic mult exists (auto-create if needed to prevent
+                     ;; race between pump and late subscribers)
+                     (ensure-topic-mult! mults-atom topic)
+                     ((:push-fn (get @mults-atom topic)) item)
                      (recur rest-seq))
                    ;; Source exhausted
                    (do

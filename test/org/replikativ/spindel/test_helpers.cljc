@@ -125,8 +125,14 @@
            (fn [result] (is (= 3 result)) (done))
            (fn [error] (is false) (done)))))"
   [t on-success on-error]
-  ;; Just invoke the spin - background drain thread handles event processing
-  (t on-success on-error))
+  ;; Invoke the spin. On JVM, wrap callbacks to preserve *report-counters*
+  ;; so that assertions fired from drain/executor threads are properly counted.
+  #?(:clj
+     (let [counters ct/*report-counters*]
+       (t (fn [v] (binding [ct/*report-counters* counters] (on-success v)))
+          (fn [e] (binding [ct/*report-counters* counters] (on-error e)))))
+     :cljs
+     (t on-success on-error)))
 
 #?(:clj
    (defmacro test-spin
