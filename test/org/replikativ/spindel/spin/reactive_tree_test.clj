@@ -24,8 +24,8 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
-            [org.replikativ.spindel.state.signal :as sig]
-            [org.replikativ.spindel.state.atom :refer [atom]]
+            [org.replikativ.spindel.signal :as sig]
+            [org.replikativ.spindel.atom :refer [atom]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.test-async :refer [await-drain]]))

@@ -1,8 +1,8 @@
-(ns org.replikativ.spindel.state.atom-test
+(ns org.replikativ.spindel.atom-test
   "Tests for fork-safe runtime atoms with ExecutionContext"
   #?(:clj
      (:require [clojure.test :refer [deftest is testing]]
-               [org.replikativ.spindel.state.atom :as ratom]
+               [org.replikativ.spindel.atom :as ratom]
                [org.replikativ.spindel.runtime.context :as ctx]
                [org.replikativ.spindel.runtime.core :as rtc]
                [org.replikativ.spindel.runtime.scheduler :as sched]
@@ -11,7 +11,7 @@
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]]
-               [org.replikativ.spindel.state.atom :as ratom]
+               [org.replikativ.spindel.atom :as ratom]
                [org.replikativ.spindel.runtime.context :as ctx]
                [org.replikativ.spindel.runtime.core :as rtc]
                [org.replikativ.spindel.runtime.state-backend :as backend]

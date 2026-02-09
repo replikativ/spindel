@@ -2,7 +2,7 @@
   "Synchronization primitives - Deferred, Mailbox, never"
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.state.atom :as ratom]
+            [org.replikativ.spindel.atom :as ratom]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.sequence :as aseq]))
 

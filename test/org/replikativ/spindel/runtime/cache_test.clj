@@ -4,7 +4,7 @@
             [org.replikativ.spindel.runtime.cache :as cache]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.track :refer [track]]))
 

@@ -28,7 +28,7 @@
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.dom.foreach]
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.state.signal]
+            [org.replikativ.spindel.signal]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
@@ -37,7 +37,7 @@
             [is.simm.partial-cps.async]
             [clojure.string :as str])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
-                   [org.replikativ.spindel.state.signal :refer [signal]]
+                   [org.replikativ.spindel.signal :refer [signal]]
                    [org.replikativ.spindel.dom.elements :as el]
                    [org.replikativ.spindel.dom.foreach :refer [ifor-each]]))
 

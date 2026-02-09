@@ -16,7 +16,7 @@
             [org.replikativ.spindel.dom.foreach :as foreach]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.combinators :refer [filter*]]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
@@ -24,7 +24,7 @@
             [org.replikativ.spindel.spin.core]           ;; Required by spin macro expansion
             [is.simm.partial-cps.async])          ;; Required by spin macro expansion
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
-                   [org.replikativ.spindel.state.signal :refer [signal]]
+                   [org.replikativ.spindel.signal :refer [signal]]
                    [org.replikativ.spindel.incremental.combinators :refer [ifilter]]
                    [org.replikativ.spindel.dom.foreach :refer [ifor-each]]
                    [org.replikativ.spindel.dom.elements :as el]))

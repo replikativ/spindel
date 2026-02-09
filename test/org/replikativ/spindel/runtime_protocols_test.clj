@@ -7,7 +7,7 @@
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.runtime.impl.graph :as graph]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.await :refer [await]]

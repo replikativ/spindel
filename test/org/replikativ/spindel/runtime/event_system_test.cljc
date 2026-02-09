@@ -13,7 +13,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.track :refer [track]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))

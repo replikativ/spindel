@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.state.atom
+(ns org.replikativ.spindel.atom
   (:refer-clojure :exclude [atom])
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.state-backend :as backend]))

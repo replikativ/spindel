@@ -15,15 +15,15 @@
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.runtime.nodes :as nodes]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
-                             [org.replikativ.spindel.state.signal :refer [signal]])))
+                             [org.replikativ.spindel.signal :refer [signal]])))
 
 #?(:clj (require '[org.replikativ.spindel.spin.cps :refer [spin]]
-                  '[org.replikativ.spindel.state.signal :refer [signal]]
+                  '[org.replikativ.spindel.signal :refer [signal]]
                   '[org.replikativ.spindel.test-async :refer [await-drain]]))
 
 ;; =============================================================================

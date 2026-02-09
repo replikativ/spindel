@@ -17,7 +17,7 @@
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]

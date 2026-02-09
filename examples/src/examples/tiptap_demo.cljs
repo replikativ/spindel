@@ -7,7 +7,7 @@
             [org.replikativ.spindel.dom.browser :as browser]
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.dom.foreign :as foreign]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
@@ -17,7 +17,7 @@
             ["@tiptap/core" :refer [Editor]]
             ["@tiptap/starter-kit" :default StarterKit])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
-                   [org.replikativ.spindel.state.signal :refer [signal]]
+                   [org.replikativ.spindel.signal :refer [signal]]
                    [org.replikativ.spindel.dom.foreign :refer [foreign-node]]
                    [org.replikativ.spindel.dom.elements :as el]))
 

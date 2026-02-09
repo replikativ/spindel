@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.state.signal
+(ns org.replikativ.spindel.signal
   "Signal creation and manipulation"
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.nodes :as nodes]

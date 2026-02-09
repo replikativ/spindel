@@ -12,7 +12,7 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :refer [parallel race accumulate]]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.incremental.interval :as iv]

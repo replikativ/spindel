@@ -17,12 +17,12 @@
         (->> todos-iv (ifilter :active) (imap :hours) (ireduce + 0))))"
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.bindings :as bindings]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.runtime.effects :as eff]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.log :as log])
-  #?(:clj (:import [org.replikativ.spindel.state.signal SignalRef])))
+  #?(:clj (:import [org.replikativ.spindel.signal SignalRef])))
 
 (defn signal-ref?
   "Check if value is a SignalRef. Works across CLJ/CLJS."

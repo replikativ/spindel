@@ -20,7 +20,7 @@
    [org.replikativ.spindel.pubsub.mult :as pubsub-mult]
    [org.replikativ.spindel.pubsub.pub :as pubsub-pub]
    #?(:clj [org.replikativ.spindel.spin.cps :as spin-cps])
-   #?(:clj [org.replikativ.spindel.state.signal :as sig])
+   #?(:clj [org.replikativ.spindel.signal :as sig])
    #?(:clj [org.replikativ.spindel.sequence.core :as seq-core]))
   #?(:cljs (:require-macros [org.replikativ.spindel.core :refer [spin signal batch gen-aseq for]])))
 
@@ -47,14 +47,14 @@
 #?(:clj
    (defmacro signal
      "Create a reactive signal with deterministic ID.
-      See org.replikativ.spindel.state.signal/signal for full docs."
+      See org.replikativ.spindel.signal/signal for full docs."
      [& args]
      `(sig/signal ~@args)))
 
 #?(:clj
    (defmacro batch
      "Execute body with signal updates batched into a single reactive propagation.
-      See org.replikativ.spindel.state.signal/batch for full docs."
+      See org.replikativ.spindel.signal/batch for full docs."
      [& body]
      `(sig/batch ~@body)))
 

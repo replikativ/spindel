@@ -7,7 +7,7 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.state.signal :as sig]))
+            [org.replikativ.spindel.signal :as sig]))
 
 ;; =============================================================================
 ;; Interval Tests (formerly SignalValue/SignalDeltaView)

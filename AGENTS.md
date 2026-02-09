@@ -82,7 +82,7 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 For non-reactive state that still needs fork isolation:
 
 ```clojure
-(require '[org.replikativ.spindel.state.atom :as atom])
+(require '[org.replikativ.spindel.atom :as atom])
 
 ;; Create runtime-stored atom
 (def cache (atom/atom {}))

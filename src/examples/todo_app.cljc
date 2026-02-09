@@ -24,7 +24,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.combinators :refer [ifilter imap]]
             [org.replikativ.spindel.dom.elements :as el]

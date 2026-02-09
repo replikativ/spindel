@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.state.semaphore-test
+(ns org.replikativ.spindel.semaphore-test
   "Tests for fork-safe semaphores with execution context.
    CLJ-only: requires Thread/sleep, future, promise, and blocking deref."
   (:refer-clojure :exclude [await])
@@ -7,7 +7,7 @@
                [org.replikativ.spindel.runtime.core :as rtc]
                [org.replikativ.spindel.runtime.context :as ctx]
                [org.replikativ.spindel.runtime.scheduler :as sched]
-               [org.replikativ.spindel.state.semaphore :as sem]
+               [org.replikativ.spindel.semaphore :as sem]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.await :refer [await]])
      :cljs

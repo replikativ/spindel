@@ -42,7 +42,7 @@ Spindel provides cached reactive spins with automatic dependency tracking, mutab
 ;; Or require individual namespaces for full control:
 ;; (require '[org.replikativ.spindel.runtime.context :as ctx])
 ;; (require '[org.replikativ.spindel.spin.cps :refer [spin]])
-;; (require '[org.replikativ.spindel.state.signal :as sig])
+;; (require '[org.replikativ.spindel.signal :as sig])
 ;; (require '[org.replikativ.spindel.effects.await :refer [await]])
 ;; (require '[org.replikativ.spindel.effects.track :refer [track]])
 
@@ -131,7 +131,7 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics, enabli
 
 ```clojure
 (require '[org.replikativ.spindel.runtime.context :as ctx])
-(require '[org.replikativ.spindel.state.signal :as sig])
+(require '[org.replikativ.spindel.signal :as sig])
 
 ;; Create main context with a signal
 (def ctx-main (ctx/create-execution-context))
@@ -199,7 +199,7 @@ Contexts can be fully serialized for checkpointing or distribution:
 Signals are the primary reactive state primitive:
 
 ```clojure
-(require '[org.replikativ.spindel.state.signal :as sig])
+(require '[org.replikativ.spindel.signal :as sig])
 
 ;; Create signal with initial value
 (def todos (sig/signal []))
@@ -218,7 +218,7 @@ Signals are the primary reactive state primitive:
 For non-reactive state that still needs fork isolation:
 
 ```clojure
-(require '[org.replikativ.spindel.state.atom :as atom])
+(require '[org.replikativ.spindel.atom :as atom])
 
 ;; Create runtime-stored atom
 (def cache (atom/atom {}))

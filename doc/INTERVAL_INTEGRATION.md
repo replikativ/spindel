@@ -309,7 +309,7 @@ The DOM diffing in `render.cljc` can leverage the deltas:
 (ns my-app
   (:require [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.incremental.combinators :refer [ifilter imap ireduce ifor-each]]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.dom.elements :as el]

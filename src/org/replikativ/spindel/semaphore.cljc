@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.state.semaphore
+(ns org.replikativ.spindel.semaphore
   "Fork-safe semaphores for rate limiting and resource management.
 
   A semaphore controls access to a limited number of permits. Spins acquire permits
@@ -11,7 +11,7 @@
   - Resource safety: holding ensures permit release even on errors
 
   Usage:
-    (require '[org.replikativ.spindel.state.semaphore :as sem]
+    (require '[org.replikativ.spindel.semaphore :as sem]
              '[org.replikativ.spindel.effects.reactive :refer [await]])
 
     ;; Limit to 10 concurrent database connections

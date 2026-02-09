@@ -26,7 +26,7 @@
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]
-            [org.replikativ.spindel.state.signal :as sig]
+            [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.runtime.core :as rtc]

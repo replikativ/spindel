@@ -718,7 +718,7 @@
   ;;
   ;; (require '[org.replikativ.spindel.spin.cps :refer [spin]]
   ;;          '[org.replikativ.spindel.effects.track :refer [track]]
-  ;;          '[org.replikativ.spindel.state.signal :as sig])
+  ;;          '[org.replikativ.spindel.signal :as sig])
   ;;
   ;; (def todos (sig/signal []))
   ;;
