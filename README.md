@@ -807,7 +807,19 @@ npm run watch:all
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Comprehensive development guide
+**Guides**:
+- [Getting Started](docs/getting-started.md) — Step-by-step tutorial from zero to working reactive system
+- [Concepts](docs/concepts.md) — Mental model: spins, signals, effects, and how they fit together
+- [Effects](docs/effects.md) — `await`, `track`, `yield`, async sequences, and custom effects
+- [Combinators](docs/combinators.md) — `parallel`, `race`, `timeout`, rate control, error handling
+- [Incremental](docs/incremental.md) — Delta-tracking collections, intervals, and incremental combinators
+- [Pub/Sub](docs/pubsub.md) — Fan-out broadcasting and topic-based routing with backpressure
+- [Forking](docs/forking.md) — Copy-on-write context forking, snapshots, and serialization
+- [SCI Integration](docs/sci-integration.md) — Sandboxed execution with SCI for agent isolation
+
+**Reference**:
+- [API Reference](docs/api-reference.md) — Namespace-by-namespace function listing
+- [CLAUDE.md](CLAUDE.md) — Development guide
 
 ## License
 
