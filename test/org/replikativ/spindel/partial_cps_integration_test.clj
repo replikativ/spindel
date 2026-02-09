@@ -29,7 +29,6 @@
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.effects.await :refer [await]]
             [is.simm.partial-cps.async :as pcps :refer [async]]))
 

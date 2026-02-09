@@ -3,7 +3,6 @@
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.atom :as ratom]
-            [org.replikativ.spindel.spin.continuation :as cont]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.sequence :as aseq]))
 
@@ -57,7 +56,7 @@
        ;; CRITICAL: Reset *in-trampoline* to ensure Thunks from recur are trampolined
        ;; When called synchronously inside a spin's trampoline, we need a fresh trampoline
        (binding [pcps-async/*in-trampoline* false]
-         (cont/resume resolve value))
+         (spin-core/resume resolve value))
        ;; Was not assigned - added to pending
        spin-core/incomplete))))
 
@@ -202,7 +201,7 @@
    nil)
 
   ;; 2-arity: Take message (CONSUMER - blocking until available)
-  ;; Works like Deferred: call cont/resume if value available, always return incomplete
+  ;; Works like Deferred: call spin-core/resume if value available, always return incomplete
   ;; Stores spin-id with waiter so cancelled spins can be skipped
   (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
    ;; ATOMIC check-and-take or add-to-waiters
@@ -225,7 +224,7 @@
        ;; CRITICAL: Reset *in-trampoline* to ensure Thunks from recur are trampolined
        ;; When called synchronously inside a spin's trampoline, we need a fresh trampoline
        (binding [pcps-async/*in-trampoline* false]
-         (cont/resume resolve @msg-to-resolve))
+         (spin-core/resume resolve @msg-to-resolve))
        ;; No message - added to waiters, will be resumed async
        spin-core/incomplete))))
 

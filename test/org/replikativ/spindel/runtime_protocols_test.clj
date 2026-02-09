@@ -9,8 +9,7 @@
             [org.replikativ.spindel.runtime.impl.graph :as graph]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.protocols :as tp]
-            [org.replikativ.spindel.spin.result :as result]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.test-async :refer [await-drain]]))
@@ -94,9 +93,9 @@
             ;; All three spins should be in the list
             (is (seq observers))
             ;; spin1 should come before spin2, spin2 before spin3
-            (let [t1-idx (.indexOf observers (tp/spin-id spin1))
-                  t2-idx (.indexOf observers (tp/spin-id spin2))
-                  t3-idx (.indexOf observers (tp/spin-id spin3))]
+            (let [t1-idx (.indexOf observers (spin-core/spin-id spin1))
+                  t2-idx (.indexOf observers (spin-core/spin-id spin2))
+                  t3-idx (.indexOf observers (spin-core/spin-id spin3))]
               (is (< t1-idx t2-idx) "spin1 should be before spin2")
               (is (< t2-idx t3-idx) "spin2 should be before spin3"))))))))
 
@@ -179,15 +178,15 @@
         (let [spin-id :test-spin]
 
           ;; Cache successful result
-          (rtp/cache-result! ctx spin-id (result/ok 42))
+          (rtp/cache-result! ctx spin-id (spin-core/ok 42))
 
           ;; Verify cached
           (let [cached (rtc/get-state [:nodes spin-id])
                 res (rtp/current-result ctx spin-id)]
             (is (some? cached))
             (is (= :clean (:status cached)))
-            (is (result/ok? res))
-            (is (= 42 (result/unwrap res)))
+            (is (spin-core/ok? res))
+            (is (= 42 (spin-core/unwrap res)))
             (is (true? (:completed? cached)))))))))
 
 (deftest test-pspin-lifecycle-cache-error
@@ -198,14 +197,14 @@
               error (ex-info "Test error" {:code 42})]
 
           ;; Cache error result
-          (rtp/cache-result! ctx spin-id (result/error error))
+          (rtp/cache-result! ctx spin-id (spin-core/error error))
 
           ;; Verify cached
           (let [cached (rtc/get-state [:nodes spin-id])
                 res (rtp/current-result ctx spin-id)]
             (is (= :clean (:status cached)))
-            (is (result/error? res))
-            (is (thrown? clojure.lang.ExceptionInfo (result/unwrap res)))))))))
+            (is (spin-core/error? res))
+            (is (thrown? clojure.lang.ExceptionInfo (spin-core/unwrap res)))))))))
 
 (deftest test-pspin-lifecycle-mark-dirty
   (testing "mark-dirty! changes status to dirty"
@@ -214,7 +213,7 @@
         (let [spin-id :test-spin]
 
           ;; Cache clean value
-          (rtp/cache-result! ctx spin-id (result/ok 42))
+          (rtp/cache-result! ctx spin-id (spin-core/ok 42))
           (is (= :clean (get-in (rtc/get-state [:nodes spin-id]) [:status])))
           (is (true? (rtp/clean? ctx spin-id)))
 
@@ -237,12 +236,12 @@
           (is (nil? (rtp/current-result ctx spin-id)))
 
           ;; Cache value
-          (rtp/cache-result! ctx spin-id (result/ok 42))
+          (rtp/cache-result! ctx spin-id (spin-core/ok 42))
 
           ;; Retrieve cached value
           (let [res (rtp/current-result ctx spin-id)]
-            (is (result/ok? res))
-            (is (= 42 (result/unwrap res)))))))))
+            (is (spin-core/ok? res))
+            (is (= 42 (spin-core/unwrap res)))))))))
 
 ;; =============================================================================
 ;; PContinuation Protocol Tests - Continuation Management
@@ -393,10 +392,10 @@
           (is (= 0 @doubled))
 
           ;; Verify spin is cached
-          (let [res (rtp/current-result ctx (tp/spin-id doubled))]
-            (is (rtp/clean? ctx (tp/spin-id doubled)))
-            (is (result/ok? res))
-            (is (= 0 (result/unwrap res))))
+          (let [res (rtp/current-result ctx (spin-core/spin-id doubled))]
+            (is (rtp/clean? ctx (spin-core/spin-id doubled)))
+            (is (spin-core/ok? res))
+            (is (= 0 (spin-core/unwrap res))))
 
           ;; Update signal - marks spin dirty
           (swap! counter inc)
@@ -406,10 +405,10 @@
           (is (= 2 @doubled))
 
           ;; Verify new cached value
-          (let [res (rtp/current-result ctx (tp/spin-id doubled))]
-            (is (rtp/clean? ctx (tp/spin-id doubled)))
-            (is (result/ok? res))
-            (is (= 2 (result/unwrap res)))))))))
+          (let [res (rtp/current-result ctx (spin-core/spin-id doubled))]
+            (is (rtp/clean? ctx (spin-core/spin-id doubled)))
+            (is (spin-core/ok? res))
+            (is (= 2 (spin-core/unwrap res)))))))))
 
 (deftest test-protocols-integration-observer-chain
   (testing "Observer chain maintains consistency across protocols"
@@ -428,12 +427,12 @@
           @spin2
 
           ;; Verify dependencies recorded (Phase 1B: read from SpinNode :deps)
-          (let [t1-node (rtc/get-state [:nodes (tp/spin-id spin1)])
-                t2-node (rtc/get-state [:nodes (tp/spin-id spin2)])
+          (let [t1-node (rtc/get-state [:nodes (spin-core/spin-id spin1)])
+                t2-node (rtc/get-state [:nodes (spin-core/spin-id spin2)])
                 t1-deps (:deps t1-node)
                 t2-deps (:deps t2-node)]
             (is (contains? (:signals t1-deps) (:id source)))
-            (is (contains? (:spins t2-deps) (tp/spin-id spin1))))
+            (is (contains? (:spins t2-deps) (spin-core/spin-id spin1))))
 
           ;; Update signal
           (swap! source + 1)

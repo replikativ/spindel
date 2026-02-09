@@ -8,7 +8,7 @@
                [org.replikativ.spindel.runtime.scheduler :as sched]
                [org.replikativ.spindel.runtime.context :as ctx]
                [org.replikativ.spindel.spin.sync :as sync]
-               [org.replikativ.spindel.spin.protocols :as tp]
+               [org.replikativ.spindel.spin.core :as spin-core]
                [org.replikativ.spindel.spin.combinators :refer [parallel]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.await :refer [await]]
@@ -336,7 +336,7 @@
                                                          pcps-async/*in-trampoline* false]
                                                  (await model-spin))]
                                     (rtp/enqueue! parent-ctx
-                                      {:type :spin-completion :id (tp/spin-id model-spin)})
+                                      {:type :spin-completion :id (spin-core/spin-id model-spin)})
                                     result))))
                  result @(parallel (first batch-spins)
                                    (second batch-spins)

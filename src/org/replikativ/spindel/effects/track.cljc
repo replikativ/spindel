@@ -18,7 +18,7 @@
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.bindings :as bindings]
             [org.replikativ.spindel.state.signal :as sig]
-            [org.replikativ.spindel.spin.continuation :as cont]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.core :as eff]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.log :as log])
@@ -161,10 +161,10 @@
                             :consumed-generation current-generation}})))
 
     ;; Return value via resolve continuation (synchronous on first call)
-    ;; CRITICAL: Must call cont/resume like await does, not return value directly
+    ;; CRITICAL: Must call spin-core/resume like await does, not return value directly
     ;; Continuation is stored for later resumptions on signal changes
     ;; On first call, we return full deltas (initial render needs them)
-    (cont/resume resolve (get-track-value signal-ref))))
+    (spin-core/resume resolve (get-track-value signal-ref))))
 
 (defn track-handler
   "Unified direct track handler - dispatches based on type.

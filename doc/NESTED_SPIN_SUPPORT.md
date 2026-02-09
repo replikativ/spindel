@@ -80,11 +80,11 @@ Make element evaluation aware of Spin children by registering `element*` as a CP
 ```clojure
 (ns org.replikativ.spindel.dom.element-effect
   "CPS breakpoint for element evaluation with Spin child support."
-  (:require [org.replikativ.spindel.spin.protocols :as spin-p]
+  (:require [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.dom.elements :as el]))
 
 (defn spin? [x]
-  (satisfies? spin-p/PSpin x))
+  (satisfies? spin-core/PSpin x))
 
 ;; This gets CPS-transformed by the spin macro
 (defn element-with-async-children

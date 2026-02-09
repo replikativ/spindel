@@ -16,7 +16,7 @@
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.spin.protocols :as tp]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.test-async :refer [await-drain]]))
 
 ;; =============================================================================
@@ -150,7 +150,7 @@
                                   c (:new (track sig-c))]
                               (+ a b c)))
 
-                spin-id (tp/spin-id test-spin)
+                spin-id (spin-core/spin-id test-spin)
 
                 ;; Observer makes it reactive
                 observer (spin (await test-spin))]
@@ -197,7 +197,7 @@
                                  (:new (track (nth sigs 3)))
                                  (:new (track (nth sigs 4)))))
 
-                  spin-id (tp/spin-id test-spin)
+                  spin-id (spin-core/spin-id test-spin)
 
                   ;; Observer
                   observer (spin (await test-spin))]

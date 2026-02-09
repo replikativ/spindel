@@ -6,8 +6,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.protocols :as tp]
-            [org.replikativ.spindel.spin.result :as result]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -170,7 +169,7 @@
     (async done
       (with-ctx [_ctx]
         (let [error-spin (spin (throw (ex-info "Error" {})))
-              spin-id (tp/spin-id error-spin)]
+              spin-id (spin-core/spin-id error-spin)]
 
           ;; Execute spin
           (run-spin! error-spin
@@ -182,7 +181,7 @@
                        (let [res (rtc/spin-current-result spin-id)]
                          (is (some? res))
                          (is (rtc/spin-result-clean? spin-id))
-                         (is (result/error? res))
+                         (is (spin-core/error? res))
                          (done)))))))))
 
 ;; =============================================================================

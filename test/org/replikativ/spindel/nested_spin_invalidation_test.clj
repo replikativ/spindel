@@ -11,7 +11,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.protocols :as tp]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -63,14 +63,14 @@
               parent-spin
               (spin
                 (let [child (spin :child-result)]
-                  (reset! child-id (tp/spin-id child))
+                  (reset! child-id (spin-core/spin-id child))
                   (await child)))]
 
           ;; Execute parent, which creates child
           @parent-spin
 
           ;; Check that child's created-by points to parent
-          (let [parent-id (tp/spin-id parent-spin)
+          (let [parent-id (spin-core/spin-id parent-spin)
                 child-node (rtc/get-state [:nodes @child-id])]
             (is (= parent-id (:created-by child-node))
                 "Child's created-by should point to parent")
@@ -99,7 +99,7 @@
                    (let [child (spin
                                 (swap! execution-count inc)
                                 new)]
-                     (reset! child-id (tp/spin-id child))
+                     (reset! child-id (spin-core/spin-id child))
                      (await child))))]
 
             ;; First execution

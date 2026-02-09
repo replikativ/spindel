@@ -14,7 +14,6 @@
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.runtime.node-protocols :as np]
-            [org.replikativ.spindel.spin.protocols :as tp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -36,7 +35,7 @@
     (async done
       (with-ctx [ctx]
         (let [s (spin 42)
-              sid (tp/spin-id s)]
+              sid (spin-core/spin-id s)]
           (run-spin! s
             (fn [_]
               ;; Verify state exists before cleanup
@@ -60,7 +59,7 @@
         (let [sig-ref (signal 0)
               sig-id (:id sig-ref)
               s (spin (let [{:keys [new]} (track sig-ref)] new))
-              sid (tp/spin-id s)]
+              sid (spin-core/spin-id s)]
           (run-spin! s
             (fn [_]
               ;; Verify spin is in signal's observers
@@ -79,11 +78,11 @@
     (async done
       (with-ctx [ctx]
         (let [p (spin 42)
-              parent-id (tp/spin-id p)]
+              parent-id (spin-core/spin-id p)]
           (run-spin! p
             (fn [_]
               (let [c (spin (* 2 (await p)))
-                    child-id (tp/spin-id c)]
+                    child-id (spin-core/spin-id c)]
                 (run-spin! c
                   (fn [_]
                     ;; Verify child is in parent's observers
@@ -107,7 +106,7 @@
     (async done
       (with-ctx [ctx]
         (let [s (spin 42)
-              sid (tp/spin-id s)]
+              sid (spin-core/spin-id s)]
           (run-spin! s
             (fn [_]
               ;; Spin has no observers - should be fully cleaned
@@ -121,7 +120,7 @@
     (async done
       (with-ctx [ctx]
         (let [p (spin 42)
-              parent-id (tp/spin-id p)]
+              parent-id (spin-core/spin-id p)]
           (run-spin! p
             (fn [_]
               (let [c (spin (* 2 (await p)))]
@@ -141,11 +140,11 @@
     (async done
       (with-ctx [ctx]
         (let [p (spin 42)
-              parent-id (tp/spin-id p)]
+              parent-id (spin-core/spin-id p)]
           (run-spin! p
             (fn [_]
               (let [c (spin (* 2 (await p)))
-                    child-id (tp/spin-id c)]
+                    child-id (spin-core/spin-id c)]
                 (run-spin! c
                   (fn [_]
                     ;; First: orphan the parent (has observer, can't clean yet)
@@ -165,7 +164,7 @@
     (async done
       (with-ctx [ctx]
         (let [s (spin 42)
-              sid (tp/spin-id s)]
+              sid (spin-core/spin-id s)]
           (run-spin! s
             (fn [_]
               ;; Clean once
@@ -205,7 +204,7 @@
                         (done))
                       ;; Create next spin
                       (let [s (spin (+ i 1))
-                            sid (tp/spin-id s)]
+                            sid (spin-core/spin-id s)]
                         (swap! spin-ids conj sid)
                         (run-spin! s
                           (fn [_] (create-next (inc i)))
@@ -224,7 +223,7 @@
          (binding [rtc/*execution-context* ctx]
            ;; Create a spin in a local scope so it can be GC'd
            (let [s (spin 42)]
-             (reset! spin-id-holder (tp/spin-id s))
+             (reset! spin-id-holder (spin-core/spin-id s))
              @s)
            ;; s is now out of scope - verify state exists
            (is (some? (rtp/get-state ctx [:nodes @spin-id-holder])) "State should exist before GC"))
@@ -268,7 +267,7 @@
          (let [ctx (ctx/create-execution-context)]
            (binding [rtc/*execution-context* ctx]
              (let [s (spin 42)]
-               (reset! spin-id-holder (tp/spin-id s))
+               (reset! spin-id-holder (spin-core/spin-id s))
                @s)))
          ;; Both ctx and spin are out of scope - force GC
          ;; This should be safe (no NPE, no errors)

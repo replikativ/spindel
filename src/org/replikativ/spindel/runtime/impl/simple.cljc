@@ -24,8 +24,6 @@
             [org.replikativ.spindel.runtime.cache :as cache]
             [org.replikativ.spindel.runtime.node-protocols :as np]
             [org.replikativ.spindel.runtime.node-types :as nt]
-            [org.replikativ.spindel.spin.continuation :as cont]
-            [org.replikativ.spindel.spin.result :as result]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
@@ -178,7 +176,7 @@
     ;; Event handler already bound *in-trampoline* false
     (when-let [pending @pending-callbacks]
       (doseq [resolve pending]
-        (cont/resume resolve value)))
+        (pcps-async/invoke-continuation resolve value)))
 
     ;; Return the assigned value
     (:value @state-atom)))
@@ -206,7 +204,7 @@
           ;; Valid waiter - resume it
           ;; Event handler already bound *in-trampoline* false
           (do
-            (cont/resume resolve msg)
+            (pcps-async/invoke-continuation resolve msg)
             nil))
         ;; No waiter, message queued
         nil))))
@@ -308,7 +306,7 @@
       (rtp/resume-continuation!
        context spin-id cont
        (fn [signal-value]
-         (cont/resume (:resolve-fn cont) signal-value))))))
+         (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
 
 (defn process-event!
   "Process a single event.
@@ -488,9 +486,9 @@
                                          ;; Get child's result from :nodes SpinNode
                                          (let [spin-node (rtp/get-state context [:nodes tid])
                                                child-result (when spin-node (:result spin-node))]
-                                           (result/match child-result
-                                             #(cont/resume (:resolve-fn cont) %)
-                                             #(cont/resume (:reject-fn cont) %)))))]
+                                           (if (= (:variant child-result) :ok)
+                                             (pcps-async/invoke-continuation (:resolve-fn cont) (:payload child-result))
+                                             (pcps-async/invoke-continuation (:reject-fn cont) (:payload child-result))))))]
                     resume-result)))))))
 
       ;; Propagate dirty flag through await dependency graph (Design 1)
@@ -547,9 +545,9 @@
             (do
               (log/trace! {:event :engine/spin-execution-cached
                            :data {:spin-id tid}})
-              (result/match cached
-                (fn [value] (resolve-fn value))
-                (fn [error] (reject-fn error))))
+              (if (= (:variant cached) :ok)
+                (resolve-fn (:payload cached))
+                (reject-fn (:payload cached))))
             ;; Not cached - must be running, add callbacks to pending
             (do
               (log/trace! {:event :engine/spin-execution-skip-running
@@ -1353,7 +1351,7 @@
   Args:
     context - context record (implements PState protocol)
     spin-id - ID of spin whose result to cache
-    result - Result record (from org.replikativ.spindel.spin.result)
+    result - Result record (from org.replikativ.spindel.spin.core)
 
   Returns: true"
   [context spin-id result]

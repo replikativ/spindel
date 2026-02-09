@@ -4,7 +4,6 @@
   (:require [is.simm.partial-cps.sequence :as pcps-seq :refer [PAsyncSeq]]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.combinators :refer [race]]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -109,7 +108,7 @@
                                  (binding [async/*in-trampoline* false]
                                    ;; Resume continuation - the yield-handler will
                                    ;; already be bound by the calling anext
-                                   (let [result (cont/resume cont-r nil)]
+                                   (let [result (spin-core/resume cont-r nil)]
                                      result)))
 
                 rest-gen (ASeqGenerator.

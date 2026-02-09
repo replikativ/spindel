@@ -10,9 +10,6 @@
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.spin.protocols :as tp]
-            [org.replikativ.spindel.spin.continuation :as cont]
-            [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.core :as eff]
             [org.replikativ.spindel.effects.track :as track]
@@ -44,13 +41,14 @@
   NOTE: In rebuild mode, we SKIP the fast path to ensure child spin bodies execute
   (for side effects like nested spin creation and continuation registration)."
   [^Spin spin-ref spin-id source-loc resolve reject]
-  (let [awaited-spin-id (tp/spin-id spin-ref)
+  (let [awaited-spin-id (spin-core/spin-id spin-ref)
         noop (fn [& _] nil)
         ctx (rtc/current-execution-context)
         rebuild? (ctx/rebuild-mode? ctx)]
 
     ;; Track spin dependency
     (rtc/deps-track-spin! spin-id awaited-spin-id)
+
 
     ;; Check if spin value available via protocol
     (let [cached (rtc/spin-current-result awaited-spin-id)
@@ -73,9 +71,9 @@
           ;; NEW: Record await dependency even on fast-path (Design 1)
           ;; Dependencies must be recorded for dirty propagation to work correctly
           (simple/record-await-dependency! ctx spin-id awaited-spin-id)
-          (result/match cached
-            #(cont/resume resolve %)
-            #(cont/resume reject %)))
+          (spin-core/match cached
+            #(spin-core/resume resolve %)
+            #(spin-core/resume reject %)))
 
         ;; Rebuild mode: Execute child for side effects, then immediately resume with cached value
         ;; We need to execute child body (to create nested spins, register continuations)
@@ -89,11 +87,11 @@
           ;; Get cached result (should exist after child execution)
           (let [child-cached (rtc/spin-current-result awaited-spin-id)]
             (if child-cached
-              (result/match child-cached
-                #(cont/resume resolve %)
-                #(cont/resume reject %))
+              (spin-core/match child-cached
+                #(spin-core/resume resolve %)
+                #(spin-core/resume reject %))
               ;; No cache? Shouldn't happen in rebuild mode
-              (cont/resume reject
+              (spin-core/resume reject
                 (ex-info "No cached result for child in rebuild mode"
                          {:parent-id spin-id :child-id awaited-spin-id})))))
 
@@ -120,7 +118,7 @@
                 child-resolve (fn [v]
                                 (vreset! child-value v)
                                 (vreset! child-completed? true)
-                                (rtc/spin-cache-result! awaited-spin-id (result/ok v))
+                                (rtc/spin-cache-result! awaited-spin-id (spin-core/ok v))
                                 ;; Commit deps so child registers as signal observer
                                 (rtc/graph-commit-deps! awaited-spin-id)
                                 (when-not @in-sync-phase
@@ -130,7 +128,7 @@
                 child-reject (fn [e]
                                (vreset! child-error e)
                                (vreset! child-completed? true)
-                               (rtc/spin-cache-result! awaited-spin-id (result/error e))
+                               (rtc/spin-cache-result! awaited-spin-id (spin-core/error e))
                                (rtc/graph-commit-deps! awaited-spin-id)
                                (when-not @in-sync-phase
                                  (simple/enqueue-completion-event! ctx awaited-spin-id))
@@ -148,15 +146,15 @@
               (do
                 (simple/record-await-dependency! ctx spin-id awaited-spin-id)
                 (if @child-error
-                  (cont/resume reject @child-error)
-                  (cont/resume resolve @child-value)))
+                  (spin-core/resume reject @child-error)
+                  (spin-core/resume resolve @child-value)))
 
               ;; Async — child returned ::incomplete. Don't call invoke (would
               ;; double-execute). child-resolve/child-reject will fire completion
               ;; events when the child eventually completes.
               :else
               (do
-                (let [is-reactive-spin (satisfies? tp/PSpin spin-ref)
+                (let [is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
                       cont-map {:event-key [:spin/complete awaited-spin-id]
                                 :resolve-fn resolve
                                 :reject-fn reject
@@ -164,7 +162,7 @@
                                 :ephemeral-await? (not is-reactive-spin)
                                 :on-resume (fn [_rt]
                                              (let [res (rtc/spin-current-result awaited-spin-id)]
-                                               (result/match res identity identity)))}]
+                                               (spin-core/match res identity identity)))}]
                   (rtc/continuation-add! spin-id cont-map)
                   (log/debug! {:event :await/registered-continuation
                                :data {:parent-id spin-id :awaited-id awaited-spin-id}})

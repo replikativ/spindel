@@ -16,7 +16,7 @@
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.spin.protocols :as tp]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.test-async :refer [await-drain]]))
 
 ;; =============================================================================
@@ -46,7 +46,7 @@
                               (swap! exec-count inc)
                               [a-val b-val c-val]))
 
-                spin-id (tp/spin-id test-spin)]
+                spin-id (spin-core/spin-id test-spin)]
 
             ;; Initial execution - all three continuations registered
             (is (= [:a1 :b1 :c1] @test-spin))
@@ -112,7 +112,7 @@
                                   v5 (:new (track sig-5))]
                               (+ v1 v2 v3 v4 v5)))
 
-                spin-id (tp/spin-id test-spin)]
+                spin-id (spin-core/spin-id test-spin)]
 
             ;; Initial execution
             (is (= 15 @test-spin)) ; 1+2+3+4+5
@@ -170,7 +170,7 @@
                                        c (:new (track sig-c))]
                                    [a b c]))
 
-                spin-id (tp/spin-id dependent-spin)]
+                spin-id (spin-core/spin-id dependent-spin)]
 
             ;; Execute to register dependencies
             @dependent-spin
@@ -223,7 +223,7 @@
                                   b (:new (track sig-b))]
                               [a b]))
 
-                spin-id (tp/spin-id test-spin)]
+                spin-id (spin-core/spin-id test-spin)]
 
             ;; Execute to create continuations
             @test-spin
@@ -255,7 +255,7 @@
                                   b (:new (track sig-b))]
                               [a b]))
 
-                spin-id (tp/spin-id test-spin)]
+                spin-id (spin-core/spin-id test-spin)]
 
             ;; Execute to create subscriptions
             @test-spin
@@ -294,8 +294,8 @@
                 parent-spin (spin
                               (await child-spin))
 
-                parent-id (tp/spin-id parent-spin)
-                child-id (tp/spin-id child-spin)]
+                parent-id (spin-core/spin-id parent-spin)
+                child-id (spin-core/spin-id child-spin)]
 
             ;; Execute to create dependencies
             @parent-spin

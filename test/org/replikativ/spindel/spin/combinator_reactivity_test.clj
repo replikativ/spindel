@@ -11,7 +11,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :refer [parallel race accumulate]]
-            [org.replikativ.spindel.spin.protocols :as tp]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -54,8 +54,8 @@
             ;; Initial execution
             (let [result-1 @outer-spin
                   parallel-id (when @parallel-spin-holder
-                                (tp/spin-id @parallel-spin-holder))
-                  outer-id (tp/spin-id outer-spin)]
+                                (spin-core/spin-id @parallel-spin-holder))
+                  outer-id (spin-core/spin-id outer-spin)]
               (is (= [1 2] result-1) "Initial parallel result")
               ;; outer-exec-count is 2 because:
               ;; 1. First execution when outer-spin runs
@@ -72,7 +72,7 @@
             ;; After signal change + drain, check that parallel updated
             (let [result-2 @outer-spin
                   parallel-id (when @parallel-spin-holder
-                                (tp/spin-id @parallel-spin-holder))]
+                                (spin-core/spin-id @parallel-spin-holder))]
               ;; parallel should have updated to [10 2]
               (is (= [10 2] result-2) "Parallel result updated after signal change")
               ;; Child A should have re-executed

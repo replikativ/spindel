@@ -28,7 +28,7 @@
   produce vnodes with deltas attached that are discharged to the DOM."
   (:require [org.replikativ.spindel.dom.core :as dom]
             [org.replikativ.spindel.dom.discharge :as disch]
-            [org.replikativ.spindel.spin.protocols :as spin-p]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.log :as log]))
 
 ;; =============================================================================
@@ -330,7 +330,7 @@
   "
   [container the-spin discharge]
   (let [render-effect (create-render-effect container discharge)
-        spin-id (spin-p/spin-id the-spin)]
+        spin-id (spin-core/spin-id the-spin)]
 
     (log/debug! {:event :render/start
                  :data {:spin-id spin-id}})

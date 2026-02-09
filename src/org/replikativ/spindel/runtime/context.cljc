@@ -23,7 +23,6 @@
             [org.replikativ.spindel.runtime.node-protocols :as np]
             [org.replikativ.spindel.runtime.node-types :as nt]
             [org.replikativ.spindel.runtime.addressing :as addressing]
-            [org.replikativ.spindel.spin.result :as result]
             [incognito.edn :refer [read-string-safe]])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]
                     [java.lang.ref Cleaner])))
@@ -42,7 +41,7 @@
          'org.replikativ.spindel.runtime.node_types.SignalNode
          (fn [node] (into {} node))
 
-         'org.replikativ.spindel.spin.result.Result
+         'org.replikativ.spindel.spin.core.Result
          (fn [r] (into {} r))}))
 
 (def incognito-read-handlers
@@ -55,8 +54,8 @@
          'org.replikativ.spindel.runtime.node_types.SignalNode
          nt/map->SignalNode
 
-         'org.replikativ.spindel.spin.result.Result
-         result/map->Result}))
+         'org.replikativ.spindel.spin.core.Result
+         (fn [m] ((requiring-resolve 'org.replikativ.spindel.spin.core/map->Result) m))}))
 
 ;; =============================================================================
 ;; ExecutionContext Record

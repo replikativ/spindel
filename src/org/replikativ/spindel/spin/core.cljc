@@ -1,15 +1,88 @@
 (ns org.replikativ.spindel.spin.core
-  "Core Spin deftype - stateless spin execution"
+  "Core Spin deftype - stateless spin execution.
+
+  Includes spin protocols, result types, continuation helpers,
+  lifecycle management, and error combinators."
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.cache :as cache]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.spin.protocols :as tp]
-            [org.replikativ.spindel.spin.continuation :as cont]
-            [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.log :as log]
+            [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
   #?(:clj (:import [java.lang.ref WeakReference])))
+
+;; =============================================================================
+;; PSpin Protocol (from spin/protocols.cljc)
+;; =============================================================================
+
+(defprotocol PSpin
+  (spin-id [_] "Spin id of this spin."))
+
+;; =============================================================================
+;; Result Type (from spin/result.cljc)
+;; =============================================================================
+
+(defprotocol PResult
+  "Protocol for spin execution results."
+  (ok? [this]
+    "Returns true if this is a success result, false if error.")
+  (error? [this]
+    "Returns true if this is an error result, false if success.")
+  (unwrap [this]
+    "Returns the value if success, throws the error if failure.")
+  (match [this ok-fn error-fn]
+    "Pattern match on result without throwing.
+    Calls ok-fn with value if success, error-fn with error if failure."))
+
+(defrecord Result [variant payload]
+  PResult
+  (ok? [_]
+    (= variant :ok))
+
+  (error? [_]
+    (= variant :error))
+
+  (unwrap [_]
+    (if (= variant :ok)
+      payload
+      (throw payload)))
+
+  (match [_ ok-fn error-fn]
+    (if (= variant :ok)
+      (ok-fn payload)
+      (error-fn payload))))
+
+(defn ok
+  "Create a success result with the given value.
+  Value can be nil."
+  [value]
+  (->Result :ok value))
+
+(defn error
+  "Create an error result with the given throwable."
+  [err]
+  (->Result :error err))
+
+;; =============================================================================
+;; Continuation Helpers (from spin/continuation.cljc)
+;; =============================================================================
+
+(defn resume
+  "Resume a CPS continuation (resolve or reject callback) with a value.
+
+  This is the universal wrapper for calling any continuation in the system.
+  It ensures that if the continuation returns a Thunk (as happens in loop/recur),
+  that Thunk is properly trampolined to prevent stack overflow.
+
+  Usage:
+    (resume resolve value)
+    (resume reject error)
+
+  ALWAYS use this function instead of calling continuations directly.
+  Direct calls will fail in loop/recur contexts."
+  [cont-fn value]
+  (pcps-async/invoke-continuation cont-fn value))
 
 ;; =============================================================================
 ;; Automatic Spin Cleanup via Finalizers
@@ -62,12 +135,6 @@
 ;; Forward declaration for error handling
 (declare abort-spin-chain!)
 
-;; =============================================================================
-;; Trampoline Helper - Removed, now using cont/resume
-;; =============================================================================
-;; The trampoline-thunk function has been replaced with cont/resume which
-;; provides the same functionality through invoke-continuation from partial-cps.
-
 ;; spin-fn now arity-2 (resolve reject) relying on dynamic bindings (*execution-context*, *spin-id*).
 ;; Spin is STATELESS - no runtime reference, uses dynamic *execution-context* binding.
 
@@ -87,8 +154,8 @@
                                (let [res (deref result-promise timeout-ms ::timeout)]
                                  (if (= res ::timeout)
                                    timeout-val
-                                   (result/unwrap res)))
-                               (result/unwrap @result-promise)))]
+                                   (unwrap res)))
+                               (unwrap @result-promise)))]
        (cond
          ;; Rebuild mode with cache hit - execute body but return cached value
          (and cached (rtc/spin-result-clean? spin-id) rebuild-mode?)
@@ -97,11 +164,11 @@
            (binding [rtc/*execution-context* runtime
                      rtc/*spin-id* spin-id]
              (spin-fn (fn [_] nil) (fn [_] nil)))
-           (result/unwrap cached))
+           (unwrap cached))
 
          ;; Normal cache hit - return cached result
          (and cached (rtc/spin-result-clean? spin-id))
-         (result/unwrap cached)
+         (unwrap cached)
 
          ;; Not completed or dirty - check if already running
          :else
@@ -111,12 +178,12 @@
              (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
              (let [result-promise (promise)]
                (simple/add-pending-callback! runtime spin-id
-                 {:resolve (fn [v] (deliver result-promise (result/ok v)))
-                  :reject (fn [e] (deliver result-promise (result/error e)))})
+                 {:resolve (fn [v] (deliver result-promise (ok v)))
+                  :reject (fn [e] (deliver result-promise (error e)))})
                ;; Double-check: spin might have completed between running? check and callback registration
                (let [cached-now (rtc/spin-current-result spin-id)]
                  (if (and cached-now (rtc/spin-result-clean? spin-id))
-                   (result/unwrap cached-now)
+                   (unwrap cached-now)
                    (do
                      (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
                      (wait-on-promise result-promise))))))
@@ -127,19 +194,18 @@
                                   :id spin-id
                                   :spin this
                                   :resolve-fn (fn [value]
-                                                (deliver result-promise (result/ok value)))
-                                  :reject-fn (fn [error]
-                                               (deliver result-promise (result/error error)))})
+                                                (deliver result-promise (ok value)))
+                                  :reject-fn (fn [e]
+                                               (deliver result-promise (error e)))})
              (log/trace! {:event :spin/deref-done :data {:spin-id spin-id}})
              (wait-on-promise result-promise)))))))
 
 (deftype Spin [spin-id spin-fn]
-  tp/PSpin
+  PSpin
   (spin-id [_] spin-id)
 
   #?(:clj clojure.lang.IFn :cljs IFn)
   (#?(:clj invoke :cljs -invoke) [this resolve reject]
-    ;; DEBUG: Track invoke depth in CLJS
     ;; Standard CPS signature: (spin resolve reject)
     ;; Runtime and spin-id obtained from dynamic bindings
     (let [runtime (rtc/current-execution-context)
@@ -164,12 +230,12 @@
               ;; Execute with dummy callbacks - we'll use cached value anyway
               (spin-fn (fn [_] nil) (fn [_] nil)))
             ;; Return cached value
-            (result/match local-cached
+            (match local-cached
               (fn [value]
-                (cont/resume resolve value)
+                (resume resolve value)
                 value)
               (fn [error]
-                (cont/resume reject error)
+                (resume reject error)
                 (when-not (= ::spin-cancelled (:type (ex-data error)))
                   (throw error)))))
 
@@ -180,17 +246,17 @@
             ;; CRITICAL: Enqueue completion event even for cache hits
             ;; This ensures awaiting spins' continuations are resumed
             (simple/enqueue-completion-event! runtime spin-id)
-            (result/match local-cached
+            (match local-cached
               ;; Success case
               (fn [value]
-                ;; Call resolve via cont/resume to handle Thunk returns
-                (cont/resume resolve value)
+                ;; Call resolve via resume to handle Thunk returns
+                (resume resolve value)
                 ;; Return the spin's value (not the callback result)
                 value)
               ;; Error case
               (fn [error]
-                ;; Call reject via cont/resume to handle Thunk returns
-                (cont/resume reject error)
+                ;; Call reject via resume to handle Thunk returns
+                (resume reject error)
                 ;; Re-throw the error UNLESS it's a cancellation error
                 ;; (cancellation errors are handled via callbacks, not exceptions)
                 (when-not (= ::spin-cancelled (:type (ex-data error)))
@@ -204,14 +270,14 @@
                          :data {:spin-id spin-id :deps-hash deps-hash}})
             ;; Update local cache from global cache
             (rtc/spin-cache-result! spin-id global-cached)
-            (result/match global-cached
+            (match global-cached
               ;; Success case
               (fn [value]
-                (cont/resume resolve value)
+                (resume resolve value)
                 value)
               ;; Error case
               (fn [error]
-                (cont/resume reject error)
+                (resume reject error)
                 (when-not (= ::spin-cancelled (:type (ex-data error)))
                   (throw error)))))
 
@@ -240,7 +306,7 @@
                               ;; we need to write to the fork's state, not the parent's.
                               (let [current-rt (rtc/current-execution-context)]
                                 ;; Cache result via protocol (uses current-rt via dynamic binding)
-                                (rtc/spin-cache-result! spin-id (result/ok value))
+                                (rtc/spin-cache-result! spin-id (ok value))
 
                                 ;; Store for non-blocking await
                                 (rtc/swap-state! [:spin-outputs spin-id] (constantly value))
@@ -251,7 +317,7 @@
                                 ;; NEW: Store in global content-addressed cache
                                 (let [deps-hash (simple/get-deps-hash current-rt spin-id)]
                                   (when deps-hash
-                                    (cache/store! spin-id deps-hash nil (result/ok value))
+                                    (cache/store! spin-id deps-hash nil (ok value))
                                     (log/debug! {:event :cache/global-store
                                                  :data {:spin-id spin-id :deps-hash deps-hash}})))
 
@@ -264,8 +330,8 @@
                                 ;; Call all pending callbacks from local state
                                 (let [callbacks @callbacks-atom]
                                   (doseq [{:keys [resolve]} callbacks]
-                                    ;; Call resolve via cont/resume to handle Thunk returns
-                                    (cont/resume resolve value)))
+                                    ;; Call resolve via resume to handle Thunk returns
+                                    (resume resolve value)))
 
                                 ;; CRITICAL: Also call any pending callbacks from shared state
                                 ;; These are from duplicate :spin-execution events that were skipped
@@ -274,22 +340,22 @@
                                     (log/trace! {:event :spin/pending-callbacks
                                                  :data {:spin-id spin-id :count (count pending)}})
                                     (doseq [{:keys [resolve]} pending]
-                                      (resolve value))))  ; Direct call, not cont/resume
+                                      (resolve value))))  ; Direct call, not resume
 
                                 (reset! executing? false)
                                 value))  ; Return for trampoline - closes (let [current-rt ...])
 
                             ;; Reject continuation
-                            (fn [error]
+                            (fn [err]
                               ;; CRITICAL: Get CURRENT runtime, not captured one!
                               ;; When continuation is resumed in a fork context,
                               ;; we need to write to the fork's state, not the parent's.
                               (let [_current-rt (rtc/current-execution-context)]
                                 ;; Cache error via protocol (uses current-rt via dynamic binding)
-                                (rtc/spin-cache-result! spin-id (result/error error))
+                                (rtc/spin-cache-result! spin-id (error err))
 
                                 ;; Store error marker for non-blocking await
-                                (rtc/swap-state! [:spin-outputs spin-id] (constantly [:error error]))
+                                (rtc/swap-state! [:spin-outputs spin-id] (constantly [:error err]))
 
                                 ;; Record dependencies even on error
                                 (rtc/graph-commit-deps! spin-id)
@@ -301,13 +367,13 @@
                                              :data {:spin-id spin-id :enqueued :spin-completion}})
 
                                 ;; Abort downstream spins
-                                (abort-spin-chain! spin-id error)
+                                (abort-spin-chain! spin-id err)
 
                                 ;; Call all pending callbacks from local state
                                 (let [callbacks @callbacks-atom]
                                   (doseq [{:keys [reject]} callbacks]
-                                    ;; Call reject via cont/resume to handle Thunk returns
-                                    (cont/resume reject error)))
+                                    ;; Call reject via resume to handle Thunk returns
+                                    (resume reject err)))
 
                                 ;; CRITICAL: Also call any pending callbacks from shared state
                                 ;; These are from duplicate :spin-execution events that were skipped
@@ -317,15 +383,11 @@
                                     (log/trace! {:event :spin/pending-callbacks-error
                                                  :data {:spin-id spin-id :count (count pending)}})
                                     (doseq [{:keys [reject]} pending]
-                                      (reject error))))  ; Direct call, not cont/resume
+                                      (reject err))))  ; Direct call, not resume
 
                                 (reset! executing? false)
                                 ;; Don't re-throw! Error already recorded in spin state.
-                                nil)))]  ; Return nil instead of throwing - closes (let [_current-rt ...]) and (fn [error] ...) and (spin-fn ...)
-
-                ;; Check if another caller arrived while we were starting
-                ;; If so, they couldn't have registered (we didn't expose the atom)
-                ;; This is safe because spin execution is idempotent via caching
+                                nil)))]  ; Return nil instead of throwing
 
                 ;; CRITICAL: If spin returned incomplete (suspended awaiting deferred),
                 ;; clear running? flag so deref doesn't poll-wait forever
@@ -431,7 +493,7 @@
                   #js {:cleanup_fn cleanup-fn}))))
 
 ;; =============================================================================
-;; Helper Functions (used by lifecycle.cljc)
+;; Helper Functions
 ;; =============================================================================
 
 (defn abort-spin-chain!
@@ -445,9 +507,9 @@
 
    Parameters:
      spin-id - ID of the spin to abort
-     error - The error/exception that caused the abortion"
-  [spin-id error]
-  (rtc/spin-cache-result! spin-id (result/error error))
+     err - The error/exception that caused the abortion"
+  [spin-id err]
+  (rtc/spin-cache-result! spin-id (error err))
   ;; TODO: Propagate to observers via PGraph/ordered-observers protocol
   ;; For now, observers are handled by engine events
   )
@@ -459,3 +521,107 @@
 ;; NOTE: Uses explicit keyword to ensure consistency across all namespaces.
 ;; All code comparing against this value must use spin-core/incomplete.
 (def incomplete :org.replikativ.spindel.spin/incomplete)
+
+;; =============================================================================
+;; Spin Lifecycle (from spin/lifecycle.cljc)
+;; =============================================================================
+
+(defn spin-cancelled?
+  "Check if a spin has been cancelled by user.
+
+   Uses PSpin protocol and PSpinLifecycle to check error state.
+   Requires *execution-context* to be bound."
+  [spin]
+  (let [cached (rtc/spin-current-result (spin-id spin))]
+    (when (and cached (error? cached))
+      (match cached
+        (fn [_] false)
+        (fn [e] (= "Spin cancelled by user" (.getMessage ^Throwable e)))))))
+
+(defn spin-failed?
+  "Check if a spin has failed (either due to error or cancellation).
+
+   Uses PSpin protocol and PSpinLifecycle to check cached error.
+   Requires *execution-context* to be bound.
+   This includes both user-initiated cancellation and error propagation."
+  [spin]
+  (let [cached (rtc/spin-current-result (spin-id spin))]
+    (boolean (and cached (error? cached)))))
+
+(defn cancel-spin!
+  "Cancel a spin and all its observers (cooperative cancellation).
+
+   Spins will check cancellation at await points (cooperative, not preemptive).
+
+   Parameters:
+     spin - The Spin to cancel (not spin-id!)
+
+   Returns:
+     nil"
+  [spin]
+  (let [sid (spin-id spin)
+        err (ex-info "Spin cancelled by user"
+                     {:type spin-cancelled
+                      :spin-id sid
+                      :cancelled-at #?(:clj (java.util.Date.)
+                                       :cljs (js/Date.))})]
+    ;; Requires *execution-context* to be bound by caller
+    (abort-spin-chain! sid err)))
+
+(defn cleanup-spin!
+  "Manually clean up a spin, removing it from the runtime.
+
+   This is useful when you want explicit cleanup without waiting for GC.
+   The spin will be removed from:
+   - All signal observer lists
+   - All spin observer lists
+   - The dependency graph
+
+   After cleanup, the spin should not be dereferenced again.
+
+   Parameters:
+     spin - The Spin to clean up (not spin-id!)
+
+   Returns:
+     nil"
+  [spin]
+  (let [sid (spin-id spin)]
+    ;; Cancel the spin first (stops any running computation)
+    (cancel-spin! spin)
+    ;; Clean up dependencies and remove from runtime
+    (rtc/graph-clear-deps! sid)))
+
+;; =============================================================================
+;; Error Handling Combinators (from spin/error.cljc)
+;; =============================================================================
+
+(defn attempt
+  "Wrap spin result in a zero-argument function that returns result or throws error.
+
+   Always succeeds - errors are captured as throwable functions."
+  ([spin]
+   (make-spin
+    (fn [runtime-atom _ resolve _]
+      ;; Always succeed with a thunk capturing either value or error
+      (let [sid (spin-id spin)
+            on-ok (fn [v] (resolve (fn [] v)))
+            on-err (fn [e] (resolve (fn [] (throw e))))]
+        (spin runtime-atom sid on-ok on-err)
+        incomplete)))))
+
+(defn absolve
+  "Unwrap a spin returning a zero-argument function, calling it and returning result.
+
+   Inverse of attempt - converts wrapped errors back to thrown errors."
+  ([spin]
+   (make-spin
+    (fn [runtime-atom _ resolve reject]
+      (let [sid (spin-id spin)
+            on-ok (fn [thunk]
+                    (try
+                      (resolve (thunk))
+                      (catch #?(:clj Throwable :cljs :default) e
+                        (reject e))))
+            on-err (fn [e] (reject e))]
+        (spin runtime-atom sid on-ok on-err)
+        incomplete)))))

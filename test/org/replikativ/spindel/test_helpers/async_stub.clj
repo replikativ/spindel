@@ -4,7 +4,6 @@
   These stubs simulate external async operations (like HTTP requests, database
   queries, etc.) that complete on a different thread/tick from when they're called."
   (:require [org.replikativ.spindel.spin.core :as spin]
-            [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [is.simm.partial-cps.async :as async]))
@@ -45,7 +44,7 @@
           (rtc/schedule-delayed-execution! runtime delay-ms
             #(binding [rtc/*execution-context* runtime
                        async/*in-trampoline* false]
-               (cont/resume resolve value)))
+               (spin/resume resolve value)))
           ;; Return incomplete - continuation will be invoked later via scheduled execution
           spin/incomplete))
       spin-id))))
@@ -74,7 +73,7 @@
         ;; Use runtime's delayed execution mechanism (same as sleep combinator)
         (rtc/schedule-delayed-execution! runtime delay-ms
           #(binding [async/*in-trampoline* false]
-             (cont/resume reject (ex-info error-msg {}))))
+             (spin/resume reject (ex-info error-msg {}))))
         ;; Return incomplete - continuation will be invoked later via scheduled execution
         spin/incomplete))
     :async-fetch-error)))

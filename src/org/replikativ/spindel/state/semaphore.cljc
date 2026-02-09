@@ -22,7 +22,6 @@
                (spin/spin (query-database)))))"
   (:refer-clojure :exclude [])
   (:require [org.replikativ.spindel.spin.core :as spin]
-            [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.protocols :as rtp]))
 
@@ -131,7 +130,7 @@
 
        ;; If we got the permit, resolve immediately
        (when @got-permit?
-         (cont/resume resolve :acquired))
+         (spin/resume resolve :acquired))
 
        spin/incomplete))))
 
@@ -166,7 +165,7 @@
               (do
                 ;; Successfully dequeued - schedule waiter to run on executor
                 (rtp/schedule-spin-execution! rtc/*execution-context*
-                                              #(cont/resume (:resolve waiter) :acquired))
+                                              #(spin/resume (:resolve waiter) :acquired))
                 :released)
               ;; CAS failed - retry
               (recur)))
@@ -212,9 +211,9 @@
           (the-spin
            (fn [result]
              (release sem)  ; Release on success
-             (cont/resume resolve result))
+             (spin/resume resolve result))
            (fn [error]
              (release sem)  ; Release on error
-             (cont/resume reject error))))
+             (spin/resume reject error))))
         reject))
      spin/incomplete)))

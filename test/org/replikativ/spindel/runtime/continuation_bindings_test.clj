@@ -4,8 +4,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.spin.core :as spin]
-            [org.replikativ.spindel.spin.continuation :as cont]))
+            [org.replikativ.spindel.spin.core :as spin]))
 
 (deftest continuation-captures-bindings-test
   (testing "continuation-add! automatically captures bindings"

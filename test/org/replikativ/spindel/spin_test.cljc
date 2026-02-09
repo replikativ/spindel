@@ -6,7 +6,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.spin.protocols :as tp]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -163,7 +163,7 @@
 
              (is (= 30 @sum-spin))
 
-             (let [spin-id (tp/spin-id sum-spin)
+             (let [spin-id (spin-core/spin-id sum-spin)
                    spin-node (rtc/get-state [:nodes spin-id])
                    deps (:deps spin-node)]
                (is (some? spin-node) "Spin node should exist")

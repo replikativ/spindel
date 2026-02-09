@@ -17,7 +17,6 @@
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.protocols :as spin-p]
             [org.replikativ.spindel.runtime.core :as rtc]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
@@ -198,7 +197,7 @@
     ;; Kick off pump execution via event system (not future!)
     ;; This ensures execution context is properly bound when pump executes
     (rtc/enqueue-event! {:type :spin-execution
-                         :id (spin-p/spin-id pump)
+                         :id (spin-core/spin-id pump)
                          :spin pump
                          :execution-context runtime
                          :resolve-fn (fn [_] nil)

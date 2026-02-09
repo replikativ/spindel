@@ -4,10 +4,6 @@
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.bindings :as bindings]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.continuation :as cont]
-            [org.replikativ.spindel.spin.lifecycle :as lifecycle]
-            [org.replikativ.spindel.spin.protocols :as tp]
-            [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -102,8 +98,8 @@
                                ;; tracked signal changes, parallel will update and notify awaiters
                                ;; Only register for actual Spins (not deferreds which are one-shot)
                                (doseq [[j t] (map-indexed vector spin-vec)]
-                                 (when (satisfies? tp/PSpin t)
-                                   (let [t-id (tp/spin-id t)
+                                 (when (satisfies? spin-core/PSpin t)
+                                   (let [t-id (spin-core/spin-id t)
                                          initial-val (get initial-results j)
                                          captured-bindings (bindings/capture-bindings)
                                          cont-map {:event-key [:spin/complete t-id]
@@ -124,7 +120,7 @@
                                                                        ;; Re-cache parallel's result to notify our awaiters
                                                                        (rtc/spin-cache-result!
                                                                          parallel-spin-id
-                                                                         (result/ok current-results))
+                                                                         (spin-core/ok current-results))
                                                                        ;; Fire completion event to resume awaiting spins
                                                                        (rtc/enqueue-event!
                                                                          {:type :spin-completion :id parallel-spin-id})))))
@@ -132,22 +128,22 @@
                                                               ;; Child failed on re-run
                                                               (rtc/spin-cache-result!
                                                                 parallel-spin-id
-                                                                (result/error e))
+                                                                (spin-core/error e))
                                                               (rtc/enqueue-event!
                                                                 {:type :spin-completion :id parallel-spin-id}))
                                                  :bindings captured-bindings
                                                  :on-resume (fn [_] nil)}]
                                       (rtc/continuation-add! parallel-spin-id cont-map))))
                                ;; Initial resolve with current results from runtime state
-                               (cont/resume resolve (rtc/get-state results-path))))))
+                               (spin-core/resume resolve (rtc/get-state results-path))))))
 
                  on-err (fn [e]
                           ;; First error wins; cancel siblings and reject
                           (when (compare-and-set! done? false true)
                             (doseq [[j other] (map-indexed vector spin-vec)]
                               (when (not= i j)
-                                (lifecycle/cancel-spin! other)))
-                            (cont/resume reject e)))]
+                                (spin-core/cancel-spin! other)))
+                            (spin-core/resume reject e)))]
              ;; Invoke child spin via execution-context scheduling to enable parallelism
              ;; Must explicitly bind *execution-context* because CLJS capture-bindings excludes it
              ;; to avoid circular references
@@ -187,7 +183,7 @@
           ;; Non-blocking delay via execution-context scheduling
           ;; Event loop will establish binding when spin executes
           (rtc/schedule-delayed-execution! execution-context duration
-                                           #(cont/resume resolve value))
+                                           #(spin-core/resume resolve value))
           spin-core/incomplete))))))
 
 ;; =============================================================================
@@ -247,18 +243,18 @@
                              (doseq [[j other-t] (map-indexed vector spin-vec)]
                                (when (not= idx j)
                                  (try
-                                   (lifecycle/cancel-spin! other-t)
+                                   (spin-core/cancel-spin! other-t)
                                    (catch #?(:clj Throwable :cljs :default) _
                                      ;; Ignore cancellation errors - already handled
                                      ;; by the on-err callback's ex-data check
                                      nil))))
-                             (cont/resume resolve v)))
+                             (spin-core/resume resolve v)))
                    on-err (fn [e]
                             ;; Ignore cancellation errors from losing spins
                             ;; (they're expected when a winner cancels them)
                             (when-not (= spin-core/spin-cancelled (:type (ex-data e)))
                               (when (compare-and-set! done? false true)
-                                (cont/resume reject e))))]
+                                (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
                (rtc/schedule-spin-execution! execution-context
                                              (fn []

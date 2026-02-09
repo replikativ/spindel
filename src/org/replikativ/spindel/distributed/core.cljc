@@ -16,7 +16,6 @@
   - Each execution context can be addressed by peer-id + fork-id"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.runtime.core :as rtc]
             [is.simm.partial-cps.async :as pcps-async]
             #?(:clj [clojure.core.async :as a :refer [put! take! chan close!]]
@@ -108,8 +107,8 @@
               (binding [pcps-async/*in-trampoline* false
                         rtc/*execution-context* captured-rt]
                 (if (instance? #?(:clj Throwable :cljs js/Error) result)
-                  (cont/resume reject result)
-                  (cont/resume resolve result))))))
+                  (spin-core/resume reject result)
+                  (spin-core/resume resolve result))))))
         ;; Return incomplete - will complete when channel delivers
         spin-core/incomplete))))
 
