@@ -190,46 +190,42 @@
         new-state)
 
       ;; Non-empty path
+      ;; CRITICAL: All writes must be atomic (f runs inside swap!) to prevent
+      ;; concurrent read-modify-write races on the overlay atom.
+      ;; The previous read-outside/write-inside pattern lost events when
+      ;; concurrent threads (drain + enqueue) modified the same fork-local path.
       (let [is-shared? (not (fork-local-path? (first path) local-paths))
             path-depth (count path)]
 
         (if (and is-shared? (>= path-depth 2))
           ;; Shared path with depth ≥ 2: Copy-on-write at entity level
           ;; e.g., [:nodes spin-1 :dirty?] → copy entire [:nodes spin-1] node
-          (let [entity-path (take 2 path)  ;; Entity = top two levels (e.g., [:nodes spin-1])
-                field-path (drop 2 path)   ;; Field within entity (e.g., [:dirty?])
+          (let [entity-path (vec (take 2 path))  ;; Entity = top two levels (e.g., [:nodes spin-1])
+                field-path (vec (drop 2 path))]  ;; Field within entity (e.g., [:dirty?])
 
-                ;; Check if entity already in overlay
-                entity-in-overlay? (not= ::not-found
-                                         (get-in @overlay-atom entity-path ::not-found))]
+            ;; Atomic copy-on-write + update in single swap!
+            (get-in
+              (swap! overlay-atom
+                (fn [ov]
+                  (let [entity-in-overlay? (not= ::not-found
+                                                 (get-in ov entity-path ::not-found))
+                        ;; If entity not in overlay, copy from parent first
+                        ov (if entity-in-overlay?
+                             ov
+                             (if-let [parent-entity (when parent-backend
+                                                      (backend-read parent-backend entity-path))]
+                               (assoc-in ov entity-path parent-entity)
+                               ov))
+                        ;; Now apply f to the current value at path
+                        current (get-in ov path)
+                        new-val (f current)]
+                    (assoc-in ov path new-val))))
+              path))
 
-            (if entity-in-overlay?
-              ;; Entity already copied - just update field
-              (let [current (backend-read this path)
-                    new-val (f current)]
-                (swap! overlay-atom assoc-in path new-val)
-                new-val)
-
-              ;; First write to this entity - copy entire entity from parent
-              (let [parent-entity (when parent-backend
-                                    (backend-read parent-backend entity-path))
-                    ;; Copy entity to overlay first
-                    _ (when parent-entity
-                        (swap! overlay-atom assoc-in entity-path parent-entity))
-                    ;; Now modify the field
-                    current (if (empty? field-path)
-                              parent-entity
-                              (get-in parent-entity field-path))
-                    new-val (f current)]
-                ;; Write the new value
-                (swap! overlay-atom assoc-in path new-val)
-                new-val)))
-
-          ;; Shallow path or fork-local: direct write
-          (let [current (backend-read this path)
-                new-val (f current)]
-            (swap! overlay-atom assoc-in path new-val)
-            new-val)))))
+          ;; Shallow path or fork-local: atomic direct write
+          (get-in
+            (swap! overlay-atom update-in path f)
+            path)))))
 
   (backend-deref [_]
     ;; Return overlay only (not merged with parent)
