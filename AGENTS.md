@@ -721,6 +721,21 @@ Convert between spins and core.async channels (for kabel interop):
     (process result)))
 ```
 
+### Running Tests
+
+```bash
+# Full JVM test suite
+clj -M:test
+
+# When running tests multiple times (e.g. flake detection), always pipe output
+# to a file first, then inspect — avoids slow inline grep and lost output:
+for i in $(seq 1 10); do echo "=== RUN $i ===" && clj -M:test 2>&1 && echo; done > /tmp/spindel-test.log 2>&1
+grep -E "failures|errors|FAIL|ERROR in" /tmp/spindel-test.log
+
+# For single-namespace runs, use the nREPL (much faster, no JVM startup):
+clj-nrepl-eval -p <port> "(require '[clojure.test :refer [run-tests]] '[some.test-ns :reload :all]) (run-tests 'some.test-ns)"
+```
+
 ### Testing Distributed Code
 
 Distributed tests require the `:test` alias which includes distributed-scope:
