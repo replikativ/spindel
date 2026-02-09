@@ -21,7 +21,7 @@
    [org.replikativ.spindel.pubsub.pub :as pubsub-pub]
    #?(:clj [org.replikativ.spindel.spin.cps :as spin-cps])
    #?(:clj [org.replikativ.spindel.signal :as sig])
-   #?(:clj [org.replikativ.spindel.sequence.core :as seq-core]))
+   #?(:clj [org.replikativ.spindel.seq.core :as seq-core]))
   #?(:cljs (:require-macros [org.replikativ.spindel.core :refer [spin signal batch gen-aseq for]])))
 
 ;; =============================================================================
@@ -61,14 +61,14 @@
 #?(:clj
    (defmacro gen-aseq
      "Generate a lazy async sequence using yield.
-      See org.replikativ.spindel.sequence.core/gen-aseq for full docs."
+      See org.replikativ.spindel.seq.core/gen-aseq for full docs."
      [& body]
      `(seq-core/gen-aseq ~@body)))
 
 #?(:clj
    (defmacro for
      "Async sequence comprehension with spindel effects support.
-      See org.replikativ.spindel.sequence.core/for for full docs."
+      See org.replikativ.spindel.seq.core/for for full docs."
      [seq-exprs body-expr]
      `(seq-core/for ~seq-exprs ~body-expr)))
 

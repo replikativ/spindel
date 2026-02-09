@@ -362,7 +362,7 @@ These constructs don't work because:
   (map #(await (process-spin %)) items))  ; ERROR: effects in closure!
 
 ;; ✅ CORRECT - use sequence combinators or nested spins
-(require '[org.replikativ.spindel.sequence.core :as seq])
+(require '[org.replikativ.spindel.seq.core :as seq])
 (spin
   (seq/map-spins process-spin items))  ; Uses sequence combinators
 
@@ -383,7 +383,7 @@ When you need effects inside higher-order functions, you have two options:
 
 **Option 1: Sequence Combinators** (preferred when available)
 ```clojure
-(require '[org.replikativ.spindel.sequence.core :as seq])
+(require '[org.replikativ.spindel.seq.core :as seq])
 
 (spin
   (seq/map-spins fetch-user user-ids))  ; CPS-aware combinator
@@ -410,7 +410,7 @@ This is **identical to core.async's `go` macro limitations**:
 ### Workarounds
 
 1. **Use `loop/recur`** for iteration with effects
-2. **Use sequence combinators** from `spindel.sequence.core` (in progress)
+2. **Use sequence combinators** from `spindel.seq.core` (in progress)
 3. **Nest `spin` macros** when you need effects in higher-order function arguments
 4. **Avoid lazy sequences** inside spin bodies
 

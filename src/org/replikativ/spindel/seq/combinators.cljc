@@ -1,8 +1,8 @@
-(ns org.replikativ.spindel.sequence.combinators
+(ns org.replikativ.spindel.seq.combinators
   "Async sequence combinators and utilities"
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.spin :as spin]
-            [org.replikativ.spindel.sequence.core :as core]
+            [org.replikativ.spindel.seq.core :as core]
             [org.replikativ.spindel.effects.reactive :refer [await]]
             [org.replikativ.spindel.log :as log]))
 

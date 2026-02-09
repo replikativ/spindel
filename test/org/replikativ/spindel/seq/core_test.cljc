@@ -1,11 +1,11 @@
-(ns org.replikativ.spindel.sequence.core-test
+(ns org.replikativ.spindel.seq.core-test
   "Tests for async sequence generation with yield.
 
   Cross-platform tests using async/done pattern."
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.sequence.core :as seq-core]
+            [org.replikativ.spindel.seq.core :as seq-core]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]

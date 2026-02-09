@@ -385,7 +385,7 @@ When multiple signals change, observers execute in dependency order:
 Generate lazy async sequences using the `gen-aseq` macro:
 
 ```clojure
-(require '[org.replikativ.spindel.sequence.core :as seq-core :refer [gen-aseq yield]])
+(require '[org.replikativ.spindel.seq.core :as seq-core :refer [gen-aseq yield]])
 
 ;; Simple generator
 (def numbers

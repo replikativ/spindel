@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.sequence.core
+(ns org.replikativ.spindel.seq.core
   "Core async sequence generation - gen-aseq macro and yield"
   (:refer-clojure :exclude [for])
   (:require [is.simm.partial-cps.sequence :as pcps-seq :refer [PAsyncSeq]]
@@ -11,7 +11,7 @@
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.effects.yield :as yield-eff]))
   ;; Make macros available to CLJS via require-macros
-  #?(:cljs (:require-macros [org.replikativ.spindel.sequence.core :refer [gen-aseq for]]
+  #?(:cljs (:require-macros [org.replikativ.spindel.seq.core :refer [gen-aseq for]]
                             [org.replikativ.spindel.spin.cps :refer [spin]]))
   #?(:clj (:require [org.replikativ.spindel.spin.cps :as spin-cps :refer [spin]])))
 
@@ -228,7 +228,7 @@
 
            ;; Merge spin breakpoints with yield breakpoint
            breakpoints-map (assoc spin-breakpoints
-                                  `org.replikativ.spindel.sequence.core/yield yield-bp-var)
+                                  `org.replikativ.spindel.seq.core/yield yield-bp-var)
 
            ;; CPS-transform the body using partial-cps machinery
            ;; ioc/invert handles macro expansion internally via expand-macro
