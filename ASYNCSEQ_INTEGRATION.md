@@ -75,7 +75,7 @@ Successfully integrated partial-cps's AsyncSeq protocol with spindel's Mailbox. 
 
 ### Why Context Rebinding Is Necessary
 
-Spindel's `*execution-context*` is deliberately NOT captured in continuation bindings (see `runtime/bindings.cljc:54`). When partial-cps resumes its continuations, the context needs to be explicitly rebound.
+Spindel's `*execution-context*` is deliberately NOT captured in continuation bindings (see `engine/bindings.cljc:54`). When partial-cps resumes its continuations, the context needs to be explicitly rebound.
 
 ## Testing Findings
 
@@ -114,7 +114,7 @@ Result: [100 200]
 
 2. **✅ Hang is specific to make-spin** - Confirmed. Both vectors and Mailboxes hang when wrapped in make-spin
 
-3. **✅ Executor exists** - Confirmed. `:atoms` runtime creates default executor (`runtime/impl/atoms.cljc:16`)
+3. **✅ Executor exists** - Confirmed. `:atoms` runtime creates default executor (`engine/impl/simple.cljc`)
 
 4. **❓ Event queue processing** - Unclear. Events are enqueued but unclear if they're being processed in time
 

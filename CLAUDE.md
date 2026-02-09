@@ -58,7 +58,7 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 
 ### 2. Signal (Mutable Time-Varying Values)
 
-**File**: [src/org/replikativ/spindel/state/signal.cljc](src/org/replikativ/spindel/state/signal.cljc)
+**File**: [src/org/replikativ/spindel/signal.cljc](src/org/replikativ/spindel/signal.cljc)
 
 ```clojure
 (defrecord SignalRef [id initial-value])
@@ -77,7 +77,7 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 
 ### 3. Fork-Safe Atoms
 
-**File**: [src/org/replikativ/spindel/state/atom.cljc](src/org/replikativ/spindel/state/atom.cljc)
+**File**: [src/org/replikativ/spindel/atom.cljc](src/org/replikativ/spindel/atom.cljc)
 
 For non-reactive state that still needs fork isolation:
 
@@ -101,13 +101,13 @@ For non-reactive state that still needs fork isolation:
 ### 4. Runtime (Execution Context)
 
 **Files**:
-- [src/org/replikativ/spindel/runtime/core.cljc](src/org/replikativ/spindel/runtime/core.cljc) - Facades + dynamic bindings
-- [src/org/replikativ/spindel/runtime/protocols.cljc](src/org/replikativ/spindel/runtime/protocols.cljc) - Protocol definitions
-- [src/org/replikativ/spindel/runtime/context.cljc](src/org/replikativ/spindel/runtime/context.cljc) - ExecutionContext (main API)
-- [src/org/replikativ/spindel/runtime/impl/simple.cljc](src/org/replikativ/spindel/runtime/impl/simple.cljc) - Core implementation
-- [src/org/replikativ/spindel/runtime/state_backend.cljc](src/org/replikativ/spindel/runtime/state_backend.cljc) - State backend abstraction
+- [src/org/replikativ/spindel/engine/core.cljc](src/org/replikativ/spindel/engine/core.cljc) - Facades + dynamic bindings
+- [src/org/replikativ/spindel/engine/protocols.cljc](src/org/replikativ/spindel/engine/protocols.cljc) - Protocol definitions
+- [src/org/replikativ/spindel/engine/context.cljc](src/org/replikativ/spindel/engine/context.cljc) - ExecutionContext (main API)
+- [src/org/replikativ/spindel/engine/impl/simple.cljc](src/org/replikativ/spindel/engine/impl/simple.cljc) - Core implementation
+- [src/org/replikativ/spindel/engine/state_backend.cljc](src/org/replikativ/spindel/engine/state_backend.cljc) - State backend abstraction
 
-**Seven runtime protocols** (defined in `runtime/protocols.cljc`):
+**Seven runtime protocols** (defined in `engine/protocols.cljc`):
 1. **PGraph** - Dependency graph (record-deps!, clear-deps!, ordered-observers)
 2. **PDepsTracking** - Transient dependency recording during execution
 3. **PSpinLifecycle** - Spin registration, caching, scheduling, dirty marking
@@ -117,9 +117,9 @@ For non-reactive state that still needs fork isolation:
 7. **PState** - General atomic state (swap-state!, get-state, cas-state!)
 
 **Additional protocols** (in other namespaces):
-- **PExecutor** - Execution location (execute!, execute-after!) - in `runtime/scheduler.cljc`
-- **PSpin** - Spin ID accessor (spin-id) - in `spin/protocols.cljc`
-- **PEffectHandler** - Effect handling - in `effects/core.cljc`
+- **PExecutor** - Execution location (execute!, execute-after!) - in `engine/scheduler.cljc`
+- **PSpin** - Spin ID accessor (spin-id) - in `spin/core.cljc`
+- **PEffectHandler** - Effect handling - in `engine/effects.cljc`
 
 **Runtime creation**:
 ```clojure
@@ -132,7 +132,7 @@ For non-reactive state that still needs fork isolation:
 ### 5. Effect System (CPS Extension Points)
 
 **Files**:
-- [src/org/replikativ/spindel/effects/core.cljc](src/org/replikativ/spindel/effects/core.cljc) - Effect protocol
+- [src/org/replikativ/spindel/engine/effects.cljc](src/org/replikativ/spindel/engine/effects.cljc) - Effect protocol
 - [src/org/replikativ/spindel/effects/reactive.cljc](src/org/replikativ/spindel/effects/reactive.cljc) - Built-in effects
 
 **PEffectHandler protocol**:
@@ -162,7 +162,7 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics via ove
 
 ### Forking API
 
-**File**: [src/org/replikativ/spindel/runtime/context.cljc](src/org/replikativ/spindel/runtime/context.cljc)
+**File**: [src/org/replikativ/spindel/engine/context.cljc](src/org/replikativ/spindel/engine/context.cljc)
 
 ```clojure
 (require '[org.replikativ.spindel.engine.context :as ctx])
@@ -240,7 +240,7 @@ See README.md for full documentation.
 
 ## Async Sequences & Pub/Sub
 
-**Files**: `src/org/replikativ/spindel/sequence/`, `src/org/replikativ/spindel/pubsub/`
+**Files**: `src/org/replikativ/spindel/seq/`, `src/org/replikativ/spindel/pubsub/`
 
 - `gen-aseq` + `yield` for lazy async sequences
 - `mult` for fan-out, `pub` for topic routing
@@ -466,7 +466,7 @@ When working with runtime state:
 - `rtp/swap-state-args!` - Atomic update with args
 - `rtp/cas-state!` - Compare-and-set at path
 
-Or use the facade functions in `runtime/core.cljc` which automatically use `*execution-context*`:
+Or use the facade functions in `engine/core.cljc` which automatically use `*execution-context*`:
 - `ec/get-state`
 - `ec/swap-state!`
 - etc.
@@ -484,7 +484,7 @@ All state lives in the runtime atom/refs, never in spin objects:
 
 Fine-grained protocols (7 runtime + additional) instead of monolithic interfaces:
 - Implementations mix & match what they support
-- High-level code calls through facades in `runtime/core.cljc`
+- High-level code calls through facades in `engine/core.cljc`
 - Enables experimentation without breaking old code
 
 ### 3. CPS as Universal Extension Point
@@ -518,7 +518,7 @@ Uses **topological sorting** (like Clara Rules and Missionary):
 - Spins execute in correct dependency order
 - Ensures glitch-free updates without complex clock synchronization
 
-**Implementation**: [src/org/replikativ/spindel/runtime/impl/atoms.cljc](src/org/replikativ/spindel/runtime/impl/atoms.cljc) `ordered-observers` function.
+**Implementation**: [src/org/replikativ/spindel/engine/impl/simple.cljc](src/org/replikativ/spindel/engine/impl/simple.cljc) `ordered-observers` function.
 
 ## Automatic Dependency Tracking
 
@@ -584,21 +584,15 @@ src/org/replikativ/spindel/
 ├── core.cljc                    # Main API (placeholder)
 ├── log.cljc                     # Structured logging via Trove
 ├── spin/
-│   ├── core.cljc               # Spin deftype
-│   ├── protocols.cljc          # PSpin protocol
+│   ├── core.cljc               # Spin deftype, protocols, result, continuation, lifecycle, error
 │   ├── cps.cljc                # spin macro + CPS transformation
-│   ├── continuation.cljc       # Continuation utilities
-│   ├── result.cljc             # Result record type
-│   ├── lifecycle.cljc          # Cancellation, cleanup, status
 │   ├── combinators.cljc        # join, parallel, race, sleep
-│   ├── error.cljc              # Error handling: attempt, absolve
 │   └── sync.cljc               # Deferred synchronization
 ├── effects/
-│   ├── core.cljc               # PEffectHandler protocol + registration
 │   ├── await.cljc              # await effect (spins + deferred)
 │   ├── track.cljc              # track effect (signals)
 │   └── yield.cljc              # yield effect (sequence generation)
-├── runtime/
+├── engine/
 │   ├── core.cljc               # Facades + dynamic bindings
 │   ├── protocols.cljc          # 7 runtime protocols
 │   ├── context.cljc            # ExecutionContext (main API)
@@ -607,29 +601,36 @@ src/org/replikativ/spindel/
 │   ├── addressing.cljc         # Deterministic addressing
 │   ├── bindings.cljc           # Dynamic binding management
 │   ├── cache.cljc              # Content-addressed caching
-│   ├── node_protocols.cljc     # Node-level protocols
-│   ├── node_types.cljc         # SpinNode, SignalNode records
+│   ├── hash.cljc               # Fast murmur3 hashing
+│   ├── nodes.cljc              # Node protocols + SpinNode, SignalNode records
+│   ├── effects.cljc            # PEffectHandler protocol + registration
 │   └── impl/
-│       ├── atoms.cljc          # Atoms runtime (delegates to context)
-│       └── simple.cljc         # Core implementation
-├── sequence/
+│       ├── simple.cljc         # Core implementation
+│       ├── graph.cljc          # Dependency graph operations
+│       └── delayed.cljc        # Delayed evaluation utilities
+├── seq/
 │   ├── core.cljc               # Async sequence generation
 │   └── combinators.cljc        # Stream combinators
 ├── pubsub/
 │   ├── buffer.cljc             # Fixed, sliding, dropping buffers
 │   ├── mult.cljc               # Fan-out to multiple taps
-│   ├── pub.cljc                # Topic-based routing
-│   └── core.cljc               # Public API
-├── state/
-│   ├── atom.cljc               # Fork-safe runtime atoms
-│   ├── signal.cljc             # Signal creation/manipulation
-│   └── semaphore.cljc          # Semaphore primitive
+│   └── pub.cljc                # Topic-based routing
+├── atom.cljc                    # Fork-safe runtime atoms
+├── signal.cljc                  # Signal creation/manipulation
+├── semaphore.cljc               # Semaphore primitive
+├── yggdrasil.cljc               # Tree structure utilities
 └── incremental/
-    ├── deltaable.cljc          # Delta-tracking collections
+    ├── deltaable.cljc          # Delta-tracking collections (re-exports)
+    ├── deltaable/
+    │   ├── protocols.cljc      # PDeltaable, PWrapDeltaable, PUnwrapDeltaable
+    │   ├── vector.cljc         # DeltaableVector
+    │   ├── map.cljc            # DeltaableMap
+    │   └── set.cljc            # DeltaableSet
+    ├── interval.cljc           # Interval abstraction (old, new, deltas)
     └── combinators.cljc        # Delta-aware operations
 ```
 
-**38 source files** (all .cljc for CLJ/CLJS portability).
+**54 source files** (all .cljc for CLJ/CLJS portability).
 
 ## Current Implementation Status
 
@@ -1065,8 +1066,8 @@ See README.md for full usage examples. Quick reference:
 
 **For implementation**:
 - [src/org/replikativ/spindel/spin/core.cljc](src/org/replikativ/spindel/spin/core.cljc) - Spin
-- [src/org/replikativ/spindel/runtime/protocols.cljc](src/org/replikativ/spindel/runtime/protocols.cljc) - Protocol definitions
-- [src/org/replikativ/spindel/runtime/impl/atoms.cljc](src/org/replikativ/spindel/runtime/impl/atoms.cljc) - Reference implementation
+- [src/org/replikativ/spindel/engine/protocols.cljc](src/org/replikativ/spindel/engine/protocols.cljc) - Protocol definitions
+- [src/org/replikativ/spindel/engine/impl/simple.cljc](src/org/replikativ/spindel/engine/impl/simple.cljc) - Reference implementation
 
 ## Important Design Decisions
 
@@ -1151,14 +1152,14 @@ Look for: main thread blocked on `Object.wait()`, pool threads in `WAITING`, loc
 When implementing specific features, start at these entry points:
 
 - **Spin creation**: [src/org/replikativ/spindel/spin/cps.cljc](src/org/replikativ/spindel/spin/cps.cljc) `spin` macro
-- **Signal creation**: [src/org/replikativ/spindel/state/signal.cljc](src/org/replikativ/spindel/state/signal.cljc) `signal` macro
-- **Runtime creation**: [src/org/replikativ/spindel/runtime/context.cljc](src/org/replikativ/spindel/runtime/context.cljc) `create-execution-context`
-- **Runtime forking**: [src/org/replikativ/spindel/runtime/context.cljc](src/org/replikativ/spindel/runtime/context.cljc) `snapshot-context`, `restore-snapshot`, `fork-context`
-- **Effect registration**: [src/org/replikativ/spindel/effects/core.cljc](src/org/replikativ/spindel/effects/core.cljc) `register-effect-by-symbol!`
-- **Dependency tracking**: [src/org/replikativ/spindel/runtime/impl/atoms.cljc](src/org/replikativ/spindel/runtime/impl/atoms.cljc) `record-deps!`
-- **Topological sort**: [src/org/replikativ/spindel/runtime/impl/atoms.cljc](src/org/replikativ/spindel/runtime/impl/atoms.cljc) `ordered-observers`
+- **Signal creation**: [src/org/replikativ/spindel/signal.cljc](src/org/replikativ/spindel/signal.cljc) `signal` macro
+- **Runtime creation**: [src/org/replikativ/spindel/engine/context.cljc](src/org/replikativ/spindel/engine/context.cljc) `create-execution-context`
+- **Runtime forking**: [src/org/replikativ/spindel/engine/context.cljc](src/org/replikativ/spindel/engine/context.cljc) `snapshot-context`, `restore-snapshot`, `fork-context`
+- **Effect registration**: [src/org/replikativ/spindel/engine/effects.cljc](src/org/replikativ/spindel/engine/effects.cljc) `register-effect-by-symbol!`
+- **Dependency tracking**: [src/org/replikativ/spindel/engine/impl/simple.cljc](src/org/replikativ/spindel/engine/impl/simple.cljc) `record-deps!`
+- **Topological sort**: [src/org/replikativ/spindel/engine/impl/simple.cljc](src/org/replikativ/spindel/engine/impl/simple.cljc) `ordered-observers`
 - **Deltaable collections**: [src/org/replikativ/spindel/incremental/deltaable.cljc](src/org/replikativ/spindel/incremental/deltaable.cljc) `deltaable-vector`, `deltaable-map`, `deltaable-set`
-- **Async sequences**: [src/org/replikativ/spindel/sequence/core.cljc](src/org/replikativ/spindel/sequence/core.cljc) `gen-aseq`, `yield`, `anext`
+- **Async sequences**: [src/org/replikativ/spindel/seq/core.cljc](src/org/replikativ/spindel/seq/core.cljc) `gen-aseq`, `yield`, `anext`
 - **Pub/sub mult**: [src/org/replikativ/spindel/pubsub/mult.cljc](src/org/replikativ/spindel/pubsub/mult.cljc) `mult`, `tap`, `untap`
 - **Pub/sub routing**: [src/org/replikativ/spindel/pubsub/pub.cljc](src/org/replikativ/spindel/pubsub/pub.cljc) `pub`, `sub`, `unsub`
 - **Buffers**: [src/org/replikativ/spindel/pubsub/buffer.cljc](src/org/replikativ/spindel/pubsub/buffer.cljc) `fixed-buffer`, `dropping-buffer`, `sliding-buffer`

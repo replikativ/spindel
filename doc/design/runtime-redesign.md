@@ -526,11 +526,11 @@ the same context and would clobber each other.
 
 | File | Changes |
 |------|---------|
-| `runtime/impl/simple.cljc` | Remove 4 dynamic vars. Rewrite signal-change handler with Batch. Rewrite Phase 2 with BlockingQueue. Add parallel Phase 1. |
+| `engine/impl/simple.cljc` | Remove 4 dynamic vars. Rewrite signal-change handler with Batch. Rewrite Phase 2 with BlockingQueue. Add parallel Phase 1. |
 | `effects/await.cljc` | Replace `*completion-queue*`/`*processed-spins*` reads with context state lookup. |
 | `spin/core.cljc` | `enqueue-completion-event!` reads batch from context state. |
-| `runtime/context.cljc` | Add `:drain-mode` to ExecutionContext. Change fork/restore to use synchronous draining. |
-| `runtime/scheduler.cljc` | Simplify binding capture (fewer vars to propagate). |
+| `engine/context.cljc` | Add `:drain-mode` to ExecutionContext. Change fork/restore to use synchronous draining. |
+| `engine/scheduler.cljc` | Simplify binding capture (fewer vars to propagate). |
 
 ### 9.2 Files Unchanged
 
@@ -538,8 +538,8 @@ the same context and would clobber each other.
 |------|-----|
 | `effects/track.cljc` | Track handler doesn't interact with batch state directly. |
 | `spin/combinators.cljc` | Parallel combinator uses `enqueue-completion-event!` which is updated. |
-| `state/signal.cljc` | Signal `batch` macro is orthogonal (collects signal IDs, not engine batching). |
-| `runtime/core.cljc` | `*spin-id*` and `*execution-context*` unchanged. |
+| `signal.cljc` | Signal `batch` macro is orthogonal (collects signal IDs, not engine batching). |
+| `engine/core.cljc` | `*spin-id*` and `*execution-context*` unchanged. |
 
 ## 10. Migration Plan
 

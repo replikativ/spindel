@@ -33,6 +33,9 @@ pom.xml.asc
 # Claude Code
 .claude/
 
+# Internal technical docs (design notes, exploration logs)
+.internal/
+
 # Reference implementation symlink
 laufzeit
 

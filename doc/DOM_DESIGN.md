@@ -65,7 +65,7 @@ Spindel DOM is a **delta-direct rendering system** that maps reactive data chang
 
 ### The Problem with Chain-Based Addressing
 
-The existing `runtime/addressing.cljc` uses hash-chain addressing where each address depends on all prior execution. This is wrong for DOM because:
+The existing `engine/addressing.cljc` uses hash-chain addressing where each address depends on all prior execution. This is wrong for DOM because:
 
 1. **Siblings are independent** - adding a sibling shouldn't affect other siblings
 2. **Conditionals appear/disappear** - skipped code shouldn't affect later addresses
@@ -573,7 +573,7 @@ The following code becomes unnecessary:
 
 ## References
 
-- `src/is/simm/spindel/runtime/context.cljc` - ExecutionContext with bindings
-- `src/is/simm/spindel/runtime/addressing.cljc` - Chain-based addressing (for spins)
+- `src/is/simm/spindel/engine/context.cljc` - ExecutionContext with bindings
+- `src/is/simm/spindel/engine/addressing.cljc` - Chain-based addressing (for spins)
 - `src/is/simm/spindel/incremental/combinators.cljc` - Interval-based combinators
 - `src/is/simm/spindel/incremental/interval.cljc` - Interval abstraction

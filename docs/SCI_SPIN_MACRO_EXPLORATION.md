@@ -63,18 +63,16 @@ Enable the same `spin` macro programming model in both native and SCI contexts:
 **Dependencies Required**:
 ```
 spin/cps.cljc (the macro)
-├── runtime/core.cljc (with-execution-context, current-execution-context, protocol fns)
-├── runtime/addressing.cljc (next-address!)
-├── effects/core.cljc (effect registry)
+├── engine/core.cljc (with-execution-context, current-execution-context, protocol fns)
+├── engine/addressing.cljc (next-address!)
+├── engine/effects.cljc (effect registry)
 │   └── log.cljc (logging - can stub)
 ├── effects/await.cljc
-│   └── runtime/bindings.cljc
+│   └── engine/bindings.cljc
 ├── effects/track.cljc
 │   └── (more dependencies...)
-├── spin/continuation.cljc
-├── spin/core.cljc (make-spin, Spin deftype)
-│   ├── spin/types-protocols.cljc
-│   ├── runtime/protocols.cljc
+├── spin/core.cljc (make-spin, Spin deftype, continuation, result, lifecycle, error)
+│   ├── engine/protocols.cljc
 │   └── (more dependencies...)
 └── partial-cps/* (already loaded ✅)
 ```
@@ -88,7 +86,7 @@ spin/cps.cljc (the macro)
 **Progress**:
 - ✅ partial-cps loads successfully (CPS transformation works)
 - ✅ effects/core loads (with stubbed log namespace)
-- ❌ effects/await fails (needs runtime/bindings)
+- ❌ effects/await fails (needs engine/bindings)
 - ❌ spin/core not attempted (complex deftype with protocols)
 
 **Estimated Effort**: 4-8 hours to map all dependencies and create stubs/wrappers

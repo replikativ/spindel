@@ -362,7 +362,7 @@ as "eventually consistent" checks with reasonable timeouts.
 ## Implementation Plan
 
 1. Add `:orphaned?` field to SpinNode (default `false`)
-2. Implement `full-cleanup-spin!` in `runtime/impl/simple.cljc`
+2. Implement `full-cleanup-spin!` in `engine/impl/simple.cljc`
 3. Implement `try-gc-cleanup-spin!` in `spin/core.cljc`
 4. Update JVM `make-spin` to register Cleaner with WeakReference to context
 5. Update CLJS `make-spin` to register FinalizationRegistry with WeakRef to context

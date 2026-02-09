@@ -689,9 +689,11 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 src/org/replikativ/spindel/
 ├── spin/                 # Spin, CPS transformation, combinators
 ├── effects/              # Effect system (await, track, yield)
-├── runtime/              # Protocols, ExecutionContext, backends
-├── state/                # Signals, fork-safe atoms, semaphores
-├── sequence/             # Async sequence generation (gen-aseq)
+├── engine/               # Protocols, ExecutionContext, backends
+├── signal.cljc           # Reactive signals with delta tracking
+├── atom.cljc             # Fork-safe runtime atoms
+├── semaphore.cljc        # Async semaphores
+├── seq/                  # Async sequence generation (gen-aseq)
 ├── pubsub/               # Pub/sub (buffer, mult, pub)
 ├── incremental/          # Delta-tracking collections
 ├── distributed/          # Remote spin invocation (core, macros)
@@ -806,9 +808,6 @@ npm run watch:all
 ## Documentation
 
 - [CLAUDE.md](CLAUDE.md) - Comprehensive development guide
-- [doc/DOM_DESIGN.md](doc/DOM_DESIGN.md) - Delta-direct DOM rendering architecture
-- [doc/INCREMENTAL_MODEL.md](doc/INCREMENTAL_MODEL.md) - Incremental computation model
-- [doc/INTERVAL_INTEGRATION.md](doc/INTERVAL_INTEGRATION.md) - Interval-based delta tracking
 
 ## License
 

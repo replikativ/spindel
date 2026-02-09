@@ -10,7 +10,7 @@ This document outlines how the interval abstraction unifies signals, incremental
 
 ### Three Separate Abstractions
 
-1. **SignalDeltaView** (`state/signal.cljc`)
+1. **SignalDeltaView** (`signal.cljc`)
    - Returned by `track` effect
    - Has `:new`, `:old`, `:delta` keys
    - Wraps snapshot values from signals
@@ -100,7 +100,7 @@ VDom Update       →  Interval
 
 ### 2. SignalNode Already Has What We Need
 
-Looking at `node_types.cljc`:
+Looking at `engine/nodes.cljc`:
 
 ```clojure
 (defrecord SignalNode [snapshot          ; Current value
