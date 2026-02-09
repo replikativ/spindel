@@ -9,9 +9,9 @@
             [org.replikativ.spindel.dom.foreign :as foreign]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.addressing]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.addressing]
             [org.replikativ.spindel.spin.core]
             [is.simm.partial-cps.async]
             ["@tiptap/core" :refer [Editor]]
@@ -54,7 +54,7 @@
                                   (let [html (.getHTML (.-editor props))]
                                     (js/console.log "Editor updated, HTML length:" (count html))
                                     ;; Update signal - needs execution context bound
-                                    (binding [rtc/*execution-context* runtime]
+                                    (binding [ec/*execution-context* runtime]
                                       (reset! content-signal html))))})]
     (js/console.log "TipTap editor created successfully")
     (reset! editor-atom editor)
@@ -128,7 +128,7 @@
     ;; Set up reactive rendering
     (js/console.log "Setting up reactive rendering...")
     (try
-      (binding [rtc/*execution-context* runtime]
+      (binding [ec/*execution-context* runtime]
         ;; Pass content signal to the app spin for reactive tracking
         (let [app-spin (make-app-spin content-sig)]
           (js/console.log "App spin created, starting render...")

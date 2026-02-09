@@ -1,8 +1,8 @@
 (ns org.replikativ.spindel.spin.combinators
   "Spin combinators - parallel, race, sleep, rate control, and accumulation"
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.bindings :as bindings]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -63,7 +63,7 @@
   [& spins]
   (when (empty? spins)
     (throw (ex-info "parallel requires at least one spin" {})))
-  (let [execution-context (rtc/current-execution-context)
+  (let [execution-context (ec/current-execution-context)
         ;; Generate ID upfront so we can reference it in continuations
         parallel-spin-id (keyword (gensym "parallel-"))
         n (count spins)
@@ -74,9 +74,9 @@
         spin-vec (vec spins)
         ;; Path in runtime state for this parallel's results
         results-path [:parallel/results parallel-spin-id]]
-    (binding [rtc/*execution-context* execution-context]
+    (binding [ec/*execution-context* execution-context]
       ;; Initialize results vector in runtime state (fork-safe)
-      (rtc/swap-state! results-path (constantly (vec (repeat n nil))))
+      (ec/swap-state! results-path (constantly (vec (repeat n nil))))
 
       (spin-core/make-spin
        (fn [resolve reject]
@@ -85,14 +85,14 @@
          (doseq [[i child-spin] (map-indexed vector spin-vec)]
            (let [on-ok (fn [v]
                          ;; Update result for this child in runtime state (fork-safe)
-                         (rtc/swap-state! results-path #(assoc % i v))
+                         (ec/swap-state! results-path #(assoc % i v))
                          (when (= n (swap! completed inc))
                            ;; All children completed initially
                            (when (compare-and-set! done? false true)
                              ;; Capture initial values BEFORE registering continuations
                              ;; Used to distinguish initial completion events (already in queue)
                              ;; from re-completions (should trigger notifications)
-                             (let [initial-results (vec (rtc/get-state results-path))]
+                             (let [initial-results (vec (ec/get-state results-path))]
                                ;; Register continuations for reactive child re-completions
                                ;; This makes parallel reactive: when children re-run due to
                                ;; tracked signal changes, parallel will update and notify awaiters
@@ -107,35 +107,35 @@
                                                                  ;; Child completed, check if value changed from initial
                                                                  ;; This distinguishes initial completion events (still in queue)
                                                                  ;; from actual re-completions due to signal changes
-                                                                 (let [child-result (rtc/spin-current-result t-id)
+                                                                 (let [child-result (ec/spin-current-result t-id)
                                                                        new-val (:payload child-result)]
                                                                    ;; Only notify if value differs from initial
                                                                    ;; Initial completion events have same value as initial-val
                                                                    ;; Re-completions have different value
                                                                    (when (not= new-val initial-val)
                                                                      ;; Update result in runtime state (fork-safe)
-                                                                     (rtc/swap-state! results-path #(assoc % j new-val))
+                                                                     (ec/swap-state! results-path #(assoc % j new-val))
                                                                      ;; Get current results and re-cache
-                                                                     (let [current-results (rtc/get-state results-path)]
+                                                                     (let [current-results (ec/get-state results-path)]
                                                                        ;; Re-cache parallel's result to notify our awaiters
-                                                                       (rtc/spin-cache-result!
+                                                                       (ec/spin-cache-result!
                                                                          parallel-spin-id
                                                                          (spin-core/ok current-results))
                                                                        ;; Fire completion event to resume awaiting spins
-                                                                       (rtc/enqueue-event!
+                                                                       (ec/enqueue-event!
                                                                          {:type :spin-completion :id parallel-spin-id})))))
                                                  :reject-fn (fn [e]
                                                               ;; Child failed on re-run
-                                                              (rtc/spin-cache-result!
+                                                              (ec/spin-cache-result!
                                                                 parallel-spin-id
                                                                 (spin-core/error e))
-                                                              (rtc/enqueue-event!
+                                                              (ec/enqueue-event!
                                                                 {:type :spin-completion :id parallel-spin-id}))
                                                  :bindings captured-bindings
                                                  :on-resume (fn [_] nil)}]
-                                      (rtc/continuation-add! parallel-spin-id cont-map))))
+                                      (ec/continuation-add! parallel-spin-id cont-map))))
                                ;; Initial resolve with current results from runtime state
-                               (spin-core/resume resolve (rtc/get-state results-path))))))
+                               (spin-core/resume resolve (ec/get-state results-path))))))
 
                  on-err (fn [e]
                           ;; First error wins; cancel siblings and reject
@@ -147,9 +147,9 @@
              ;; Invoke child spin via execution-context scheduling to enable parallelism
              ;; Must explicitly bind *execution-context* because CLJS capture-bindings excludes it
              ;; to avoid circular references
-             (rtc/schedule-spin-execution! execution-context
+             (ec/schedule-spin-execution! execution-context
                                            (fn []
-                                             (binding [rtc/*execution-context* execution-context]
+                                             (binding [ec/*execution-context* execution-context]
                                                (child-spin on-ok on-err))))))
 
          ;; Async coordination; parent suspends
@@ -176,13 +176,13 @@
   ([duration]
    (sleep duration nil))
   ([duration value]
-   (let [execution-context (rtc/current-execution-context)]
-    (binding [rtc/*execution-context* execution-context]
+   (let [execution-context (ec/current-execution-context)]
+    (binding [ec/*execution-context* execution-context]
        (spin-core/make-spin
         (fn [resolve _]
           ;; Non-blocking delay via execution-context scheduling
           ;; Event loop will establish binding when spin executes
-          (rtc/schedule-delayed-execution! execution-context duration
+          (ec/schedule-delayed-execution! execution-context duration
                                            #(spin-core/resume resolve value))
           spin-core/incomplete))))))
 
@@ -228,8 +228,8 @@
     (throw (ex-info "race requires at least one spin" {})))
   ;; Capture execution-context at creation time (like parallel does)
   ;; This ensures bindings are captured before any async scheduling
-  (let [execution-context (rtc/current-execution-context)]
-    (binding [rtc/*execution-context* execution-context]
+  (let [execution-context (ec/current-execution-context)]
+    (binding [ec/*execution-context* execution-context]
       (spin-core/make-spin
        (fn [resolve reject]
          (let [done? (atom false)
@@ -256,9 +256,9 @@
                               (when (compare-and-set! done? false true)
                                 (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
-               (rtc/schedule-spin-execution! execution-context
+               (ec/schedule-spin-execution! execution-context
                                              (fn []
-                                               (binding [rtc/*execution-context* execution-context]
+                                               (binding [ec/*execution-context* execution-context]
                                                  (t on-ok on-err))))))
            spin-core/incomplete))))))
 

@@ -3,8 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -17,7 +17,7 @@
      (fn [f]
        (let [ctx (ctx/create-execution-context)]
          (try
-           (binding [rtc/*execution-context* ctx]
+           (binding [ec/*execution-context* ctx]
              (f))
            (finally
              (ctx/stop-context! ctx)))))))
@@ -154,13 +154,13 @@
 #?(:clj
    (deftest test-mailbox-external-post
      (testing "External post! from future works correctly"
-       (binding [rtc/*execution-context* (ctx/create-execution-context)]
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [mbx (sync/mailbox)
                result-promise (promise)]
 
            ;; Start consumer
            (future
-             (binding [rtc/*execution-context* (rtc/current-execution-context)]
+             (binding [ec/*execution-context* (ec/current-execution-context)]
                (let [msg @(spin (await mbx))]
                  (deliver result-promise msg))))
 
@@ -177,7 +177,7 @@
 #?(:clj
    (deftest test-mailbox-queue-buildup
      (testing "Messages queue up when no consumers"
-       (binding [rtc/*execution-context* (ctx/create-execution-context)]
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [mbx (sync/mailbox)]
 
            ;; Post many messages with no consumers
@@ -194,7 +194,7 @@
 #?(:clj
    (deftest test-mailbox-multiple-producers
      (testing "Multiple producers posting concurrently"
-       (binding [rtc/*execution-context* (ctx/create-execution-context)]
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [mbx (sync/mailbox)
                n-messages 100
                results (atom [])]
@@ -203,7 +203,7 @@
            (let [producers (doall
                              (for [i (range 10)]
                                (future
-                                 (binding [rtc/*execution-context* (rtc/current-execution-context)]
+                                 (binding [ec/*execution-context* (ec/current-execution-context)]
                                    (dotimes [j 10]
                                      (mbx [i j]))))))]
 
@@ -220,14 +220,14 @@
 #?(:clj
    (deftest test-mailbox-rendezvous-pattern
      (testing "Rendezvous: producer waits for consumer"
-       (binding [rtc/*execution-context* (ctx/create-execution-context)]
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [mbx (sync/mailbox)
                consumer-ready (promise)
                message-received (promise)]
 
            ;; Consumer waits
            (future
-             (binding [rtc/*execution-context* (rtc/current-execution-context)]
+             (binding [ec/*execution-context* (ec/current-execution-context)]
                (deliver consumer-ready :ready)
                (let [msg @(spin (await mbx))]
                  (deliver message-received msg))))

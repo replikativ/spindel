@@ -22,13 +22,13 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.test-async :refer [await-drain]]))
 
 ;; Fixture to ensure clean execution context between tests
 (defn clean-context-fixture [f]
-  (binding [rtc/*execution-context* nil]
+  (binding [ec/*execution-context* nil]
     (f)))
 
 (use-fixtures :each clean-context-fixture)
@@ -69,7 +69,7 @@
 (deftest test-await-in-element-children
   (testing "await works directly inside element children"
     (let [rt (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* rt]
+      (binding [ec/*execution-context* rt]
         (let [{:keys [discharge log]} (disch/make-mock-discharge)
               d (sync/deferred)
               render-spin (spin
@@ -92,7 +92,7 @@
 (deftest test-component-spin-awaited
   (testing "Component that returns spin can be awaited in element child"
     (let [rt (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* rt]
+      (binding [ec/*execution-context* rt]
         (let [{:keys [discharge log]} (disch/make-mock-discharge)
               render-spin (spin
                             (el/div {:class "app"}
@@ -110,7 +110,7 @@
 (deftest test-nested-component-spins
   (testing "Nested component spins work correctly"
     (let [rt (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* rt]
+      (binding [ec/*execution-context* rt]
         (let [{:keys [discharge log]} (disch/make-mock-discharge)
               render-spin (spin
                             (el/div {:class "root"}
@@ -128,7 +128,7 @@
 (deftest test-component-with-local-state
   (testing "Component with local signal/track works"
     (let [rt (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* rt]
+      (binding [ec/*execution-context* rt]
         (let [{:keys [discharge log]} (disch/make-mock-discharge)
               render-spin (spin
                             (el/div {:class "app"}
@@ -146,7 +146,7 @@
 (deftest test-multiple-async-children
   (testing "Multiple async children are evaluated in order"
     (let [rt (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* rt]
+      (binding [ec/*execution-context* rt]
         (let [{:keys [discharge log]} (disch/make-mock-discharge)
               render-spin (spin
                             (el/ul {:class "list"}

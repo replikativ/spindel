@@ -1,9 +1,9 @@
-(ns org.replikativ.spindel.runtime.protocols
+(ns org.replikativ.spindel.engine.protocols
   "Granular runtime subprotocols used by higher-level subsystems.
 
   Implementations (e.g., :atoms, :seq-volatile, :stm) can mix and match
   consistency and performance by providing these protocols. High-level code
-  should call through facades in `org.replikativ.spindel.runtime.core`.
+  should call through facades in `org.replikativ.spindel.engine.core`.
   ")
 
 ;; ----------------------------------------------------------------------------

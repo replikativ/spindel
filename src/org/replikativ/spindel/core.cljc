@@ -9,7 +9,7 @@
    For advanced usage, require individual namespaces directly."
   (:refer-clojure :exclude [for])
   (:require
-   [org.replikativ.spindel.runtime.context :as ctx]
+   [org.replikativ.spindel.engine.context :as ctx]
    [org.replikativ.spindel.effects.await :as fx-await]
    [org.replikativ.spindel.effects.track :as fx-track]
    [org.replikativ.spindel.effects.yield :as fx-yield]
@@ -29,9 +29,9 @@
 ;; =============================================================================
 
 ;; NOTE: *execution-context* cannot be re-exported as a proper binding target.
-;; Use `rtc/*execution-context*` directly with `binding`:
-;;   (require '[org.replikativ.spindel.runtime.core :as rtc])
-;;   (binding [rtc/*execution-context* ctx] ...)
+;; Use `ec/*execution-context*` directly with `binding`:
+;;   (require '[org.replikativ.spindel.engine.core :as ec])
+;;   (binding [ec/*execution-context* ctx] ...)
 
 ;; =============================================================================
 ;; Macros (CLJ-only definitions, CLJS gets them via :require-macros)

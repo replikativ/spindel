@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.dependency-management-test
+(ns org.replikativ.spindel.engine.dependency-management-test
   "Critical tests for dependency management, continuation lifecycle, and graph operations.
 
   These tests verify core reactive graph operations that were previously untested:
@@ -7,11 +7,11 @@
   3. Deep dependency chains (stress test for real-world usage)"
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.nodes :as nodes]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.nodes :as nodes]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -27,7 +27,7 @@
   (testing "Stale continuations removed when signal changes before later tracks execute"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Three signals tracked in sequence
                 sig-a (sig/signal :a1)
                 sig-b (sig/signal :b1)
@@ -97,7 +97,7 @@
   (testing "Continuation order correctly preserved and stale removed"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-1 (sig/signal 1)
                 sig-2 (sig/signal 2)
                 sig-3 (sig/signal 3)
@@ -157,7 +157,7 @@
   (testing "clear-deps! removes spin from all signal and spin observers"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Create multiple signals
                 sig-a (sig/signal :a)
                 sig-b (sig/signal :b)
@@ -214,7 +214,7 @@
   (testing "clear-deps! removes all continuations for the spin"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal :a)
                 sig-b (sig/signal :b)
 
@@ -246,7 +246,7 @@
   (testing "clear-deps! removes all subscription entries for the spin"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal :a)
                 sig-b (sig/signal :b)
 
@@ -283,7 +283,7 @@
   (testing "clear-deps! handles both signal and spin dependencies"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal :a)
 
                 ;; Child spin that tracks signal
@@ -332,7 +332,7 @@
   (testing "Deep chain of 25 spins executes and updates correctly"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Root signal
                 root-sig (sig/signal 0)
 
@@ -403,7 +403,7 @@
   (testing "Deep chain completes in reasonable time"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [root-sig (sig/signal 0)
 
                 ;; Helper to create chain of N levels
@@ -444,7 +444,7 @@
   (testing "Very deep chain (30 levels) does not cause stack overflow"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           ;; This test primarily verifies we don't hit recursion limits
           ;; The reactive graph uses iteration, not recursion, so should handle this
           (let [root-sig (sig/signal 1)
@@ -470,7 +470,7 @@
   (testing "Combination of wide fan-out and deep chain"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [root-sig (sig/signal 1)
 
                 ;; First level: 5 spins tracking root

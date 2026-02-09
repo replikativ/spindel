@@ -6,12 +6,12 @@
   - Deferred: async callback-based suspension
   - SignalRef: error (use track instead)"
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.runtime.effects :as eff]
+            [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.effects.track :as track]
             [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.async :as pcps-async])
@@ -43,15 +43,15 @@
   [^Spin spin-ref spin-id source-loc resolve reject]
   (let [awaited-spin-id (spin-core/spin-id spin-ref)
         noop (fn [& _] nil)
-        ctx (rtc/current-execution-context)
+        ctx (ec/current-execution-context)
         rebuild? (ctx/rebuild-mode? ctx)]
 
     ;; Track spin dependency
-    (rtc/deps-track-spin! spin-id awaited-spin-id)
+    (ec/deps-track-spin! spin-id awaited-spin-id)
 
 
     ;; Check if spin value available via protocol
-    (let [cached (rtc/spin-current-result awaited-spin-id)
+    (let [cached (ec/spin-current-result awaited-spin-id)
           ;; CRITICAL: Disable fast path during batch mode to prevent glitches
           ;; UNLESS the spin has already been processed in this batch (cache is fresh)
           ;; Batch is now in context state, not dynamic binding
@@ -85,7 +85,7 @@
           (log/debug! {:event :await/rebuild-child-executed
                        :data {:parent-id spin-id :awaited-id awaited-spin-id}})
           ;; Get cached result (should exist after child execution)
-          (let [child-cached (rtc/spin-current-result awaited-spin-id)]
+          (let [child-cached (ec/spin-current-result awaited-spin-id)]
             (if child-cached
               (spin-core/match child-cached
                 #(spin-core/resume resolve %)
@@ -118,9 +118,9 @@
                 child-resolve (fn [v]
                                 (vreset! child-value v)
                                 (vreset! child-completed? true)
-                                (rtc/spin-cache-result! awaited-spin-id (spin-core/ok v))
+                                (ec/spin-cache-result! awaited-spin-id (spin-core/ok v))
                                 ;; Commit deps so child registers as signal observer
-                                (rtc/graph-commit-deps! awaited-spin-id)
+                                (ec/graph-commit-deps! awaited-spin-id)
                                 (when-not @in-sync-phase
                                   ;; Async completion: fire event so parent continuation resumes
                                   (simple/enqueue-completion-event! ctx awaited-spin-id))
@@ -128,12 +128,12 @@
                 child-reject (fn [e]
                                (vreset! child-error e)
                                (vreset! child-completed? true)
-                               (rtc/spin-cache-result! awaited-spin-id (spin-core/error e))
-                               (rtc/graph-commit-deps! awaited-spin-id)
+                               (ec/spin-cache-result! awaited-spin-id (spin-core/error e))
+                               (ec/graph-commit-deps! awaited-spin-id)
                                (when-not @in-sync-phase
                                  (simple/enqueue-completion-event! ctx awaited-spin-id))
                                nil)
-                _raw-result (binding [rtc/*spin-id* awaited-spin-id
+                _raw-result (binding [ec/*spin-id* awaited-spin-id
                                       pcps-async/*in-trampoline* false]
                               (child-spin-fn child-resolve child-reject))]
             ;; End sync phase — any future callback invocation is async
@@ -161,9 +161,9 @@
                                 :source-loc source-loc
                                 :ephemeral-await? (not is-reactive-spin)
                                 :on-resume (fn [_rt]
-                                             (let [res (rtc/spin-current-result awaited-spin-id)]
+                                             (let [res (ec/spin-current-result awaited-spin-id)]
                                                (spin-core/match res identity identity)))}]
-                  (rtc/continuation-add! spin-id cont-map)
+                  (ec/continuation-add! spin-id cont-map)
                   (log/debug! {:event :await/registered-continuation
                                :data {:parent-id spin-id :awaited-id awaited-spin-id}})
                   (simple/record-await-dependency! ctx spin-id awaited-spin-id))
@@ -240,5 +240,5 @@
 (eff/register-effect-by-symbol!
   'org.replikativ.spindel.effects.await/await
   ::await-handler
-  'org.replikativ.spindel.runtime.effects/one-arg->awaitable-map
+  'org.replikativ.spindel.engine.effects/one-arg->awaitable-map
   'org.replikativ.spindel.effects.await/await-handler)

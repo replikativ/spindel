@@ -1,12 +1,12 @@
-(ns org.replikativ.spindel.runtime.core
+(ns org.replikativ.spindel.engine.core
 	"Core runtime context and protocol facades.
 
 	This namespace defines dynamic binding for the active runtime (*execution-context*) and
 	thin facades that dispatch to runtime subprotocols in
-	org.replikativ.spindel.runtime.protocols. Concrete implementations live under
-	org.replikativ.spindel.runtime.impl.* (e.g., atoms, sequential, stm)."
-	(:require [org.replikativ.spindel.runtime.protocols :as rtp]
-	          [org.replikativ.spindel.runtime.bindings :as bindings]))
+	org.replikativ.spindel.engine.protocols. Concrete implementations live under
+	org.replikativ.spindel.engine.impl.* (e.g., atoms, sequential, stm)."
+	(:require [org.replikativ.spindel.engine.protocols :as rtp]
+	          [org.replikativ.spindel.engine.bindings :as bindings]))
 
 ;; =============================================================================
 ;; Dynamic runtime execution context

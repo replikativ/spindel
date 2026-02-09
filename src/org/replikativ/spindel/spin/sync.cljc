@@ -1,6 +1,6 @@
 (ns org.replikativ.spindel.spin.sync
   "Synchronization primitives - Deferred, Mailbox, never"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
+  (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.atom :as ratom]
             [is.simm.partial-cps.async :as pcps-async]
@@ -30,7 +30,7 @@
      (if @i-won?
        ;; We won - enqueue delivery event and return true
        (do
-         (rtc/enqueue-event! {:type :deferred-delivery
+         (ec/enqueue-event! {:type :deferred-delivery
                               :deferred _this
                               :value value})
          true)
@@ -74,7 +74,7 @@
   (let [dfv-id (keyword (gensym "deferred-"))
         ;; Use fork-safe atom to store deferred state
         ;; Note: create-atom uses *execution-context* dynamically, so we bind it
-        state-atom (binding [rtc/*execution-context* execution-context]
+        state-atom (binding [ec/*execution-context* execution-context]
                      (ratom/create-atom {:assigned? false
                                          :value nil
                                          :pending []}))
@@ -117,7 +117,7 @@
   [deferred value]
   ;; Get execution-context from dynamic binding (*execution-context* is available via with-context or binding propagation)
   ;; Enqueue delivery event - caller returns before continuations execute
-  (rtc/enqueue-event! {:type :deferred-delivery
+  (ec/enqueue-event! {:type :deferred-delivery
                        :deferred deferred
                        :value value})
   value)
@@ -150,7 +150,7 @@
    - Lazy initialization of shared resources
    - One-time event notification"
   []
-  (if-let [execution-context (try (rtc/current-execution-context) (catch #?(:clj Throwable :cljs :default) _ nil))]
+  (if-let [execution-context (try (ec/current-execution-context) (catch #?(:clj Throwable :cljs :default) _ nil))]
     (create-deferred execution-context)
     (throw (ex-info "deferred called outside spin context"
                     {:hint "Use create-deferred with explicit execution-context, or call from within a spin"}))))
@@ -195,7 +195,7 @@
   ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
   (#?(:clj invoke :cljs -invoke) [_this msg]
    ;; Enqueue post event - breaks call stack, ensures proper trampoline handling
-   (rtc/enqueue-event! {:type :mailbox-post
+   (ec/enqueue-event! {:type :mailbox-post
                         :mailbox _this
                         :msg msg})
    nil)
@@ -205,7 +205,7 @@
   ;; Stores spin-id with waiter so cancelled spins can be skipped
   (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
    ;; ATOMIC check-and-take or add-to-waiters
-   (let [current-spin-id rtc/*spin-id*
+   (let [current-spin-id ec/*spin-id*
          msg-to-resolve (atom ::not-found)
          _result (swap! state-atom
                        (fn [state]
@@ -246,7 +246,7 @@
         ;; Use fork-safe atom to store mailbox state
         ;; Note: create-atom uses *execution-context* dynamically, so we bind it
         ;; Queue is PersistentQueue for proper FIFO semantics
-        state-atom (binding [rtc/*execution-context* execution-context]
+        state-atom (binding [ec/*execution-context* execution-context]
                      (ratom/create-atom {:queue empty-queue  ; PersistentQueue - FIFO
                                          :waiters []}))      ; Consumers waiting for messages
         mbx-obj (->Mailbox mbx-id state-atom)]
@@ -267,7 +267,7 @@
     ;; The "rest" is the same mailbox (infinite stream)
     (fn [resolve reject]
       ;; Capture execution context to rebind when mailbox calls continuation
-      (let [exec-ctx (try (rtc/current-execution-context)
+      (let [exec-ctx (try (ec/current-execution-context)
                          (catch #?(:clj Throwable :cljs :default) _ nil))]
         ;; Use the mailbox's 2-arity (consumer) to get next message
         ;; Wrap resolve to:
@@ -276,12 +276,12 @@
         (mbx
          (fn [msg]
            (if exec-ctx
-             (binding [rtc/*execution-context* exec-ctx]
+             (binding [ec/*execution-context* exec-ctx]
                (resolve [msg mbx]))
              (resolve [msg mbx])))
          (fn [error]
            (if exec-ctx
-             (binding [rtc/*execution-context* exec-ctx]
+             (binding [ec/*execution-context* exec-ctx]
                (reject error))
              (reject error))))))))
 
@@ -315,7 +315,7 @@
    - External: Must enqueue to prevent caller waiting for itself"
   [mailbox msg]
   ;; Enqueue post event - caller returns before waiter resumes
-  (rtc/enqueue-event! {:type :mailbox-post
+  (ec/enqueue-event! {:type :mailbox-post
                        :mailbox mailbox
                        :msg msg})
   nil)
@@ -352,7 +352,7 @@
    - Producer-consumer patterns
    - Multi-agent communication"
   []
-  (if-let [execution-context (try (rtc/current-execution-context) (catch #?(:clj Throwable :cljs :default) _ nil))]
+  (if-let [execution-context (try (ec/current-execution-context) (catch #?(:clj Throwable :cljs :default) _ nil))]
     (create-mailbox execution-context)
     (throw (ex-info "mailbox called outside spin context"
                     {:hint "Use create-mailbox with explicit execution-context, or call from within a spin"}))))

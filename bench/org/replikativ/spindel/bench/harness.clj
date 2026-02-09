@@ -3,9 +3,9 @@
 
   Provides context setup/teardown, criterium wrappers, and result collection."
   (:require [criterium.core :as crit]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]))
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]))
 
 ;; =============================================================================
 ;; Context Management
@@ -24,7 +24,7 @@
   [[ctx-sym] & body]
   `(let [~ctx-sym (ctx/create-execution-context)]
      (try
-       (binding [rtc/*execution-context* ~ctx-sym]
+       (binding [ec/*execution-context* ~ctx-sym]
          ~@body)
        (finally
          (ctx/stop-context! ~ctx-sym)))))

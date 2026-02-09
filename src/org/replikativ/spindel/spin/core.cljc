@@ -3,10 +3,10 @@
 
   Includes spin protocols, result types, continuation helpers,
   lifecycle management, and error combinators."
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.cache :as cache]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.context :as ctx]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.cache :as cache]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
@@ -145,9 +145,9 @@
      timeout-ms: 0 means block indefinitely, >0 means timeout after that many ms.
      timeout-val: value returned on timeout (only used when timeout-ms > 0)."
      [this spin-id spin-fn timeout-ms timeout-val]
-     (let [cached (rtc/spin-current-result spin-id)
-           runtime (rtc/current-execution-context)
-           rebuild-mode? (and (instance? org.replikativ.spindel.runtime.context.ExecutionContext runtime)
+     (let [cached (ec/spin-current-result spin-id)
+           runtime (ec/current-execution-context)
+           rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
                               (ctx/rebuild-mode? runtime))
            wait-on-promise (fn [result-promise]
                              (if (pos? timeout-ms)
@@ -158,16 +158,16 @@
                                (unwrap @result-promise)))]
        (cond
          ;; Rebuild mode with cache hit - execute body but return cached value
-         (and cached (rtc/spin-result-clean? spin-id) rebuild-mode?)
+         (and cached (ec/spin-result-clean? spin-id) rebuild-mode?)
          (do
            (log/debug! {:event :deref/rebuild-mode :data {:spin-id spin-id}})
-           (binding [rtc/*execution-context* runtime
-                     rtc/*spin-id* spin-id]
+           (binding [ec/*execution-context* runtime
+                     ec/*spin-id* spin-id]
              (spin-fn (fn [_] nil) (fn [_] nil)))
            (unwrap cached))
 
          ;; Normal cache hit - return cached result
-         (and cached (rtc/spin-result-clean? spin-id))
+         (and cached (ec/spin-result-clean? spin-id))
          (unwrap cached)
 
          ;; Not completed or dirty - check if already running
@@ -181,8 +181,8 @@
                  {:resolve (fn [v] (deliver result-promise (ok v)))
                   :reject (fn [e] (deliver result-promise (error e)))})
                ;; Double-check: spin might have completed between running? check and callback registration
-               (let [cached-now (rtc/spin-current-result spin-id)]
-                 (if (and cached-now (rtc/spin-result-clean? spin-id))
+               (let [cached-now (ec/spin-current-result spin-id)]
+                 (if (and cached-now (ec/spin-result-clean? spin-id))
                    (unwrap cached-now)
                    (do
                      (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
@@ -190,7 +190,7 @@
            ;; Not running - enqueue spin execution
            (let [result-promise (promise)]
              (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
-             (rtc/enqueue-event! {:type :spin-execution
+             (ec/enqueue-event! {:type :spin-execution
                                   :id spin-id
                                   :spin this
                                   :resolve-fn (fn [value]
@@ -208,25 +208,25 @@
   (#?(:clj invoke :cljs -invoke) [this resolve reject]
     ;; Standard CPS signature: (spin resolve reject)
     ;; Runtime and spin-id obtained from dynamic bindings
-    (let [runtime (rtc/current-execution-context)
-          local-cached (rtc/spin-current-result spin-id)
+    (let [runtime (ec/current-execution-context)
+          local-cached (ec/spin-current-result spin-id)
           ;; NEW: Check global content-addressed cache
           deps-hash (simple/get-deps-hash runtime spin-id)
           global-cached (when deps-hash
                           (cache/lookup spin-id deps-hash nil))
           ;; Check if we're in rebuild mode
-          rebuild-mode? (and (instance? org.replikativ.spindel.runtime.context.ExecutionContext runtime)
+          rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
                              (ctx/rebuild-mode? runtime))]
       (cond
           ;; Case 1a: Cache hit + rebuild mode - execute body for side effects, return cached value
           ;; Rebuild mode is used after deserialization to re-create nested spins and
           ;; re-register continuations, while returning the previously cached values.
-          (and local-cached (rtc/spin-result-clean? spin-id) rebuild-mode?)
+          (and local-cached (ec/spin-result-clean? spin-id) rebuild-mode?)
           (do
             (log/debug! {:event :cache/rebuild-mode :data {:spin-id spin-id}})
             ;; Execute spin body for side effects (nested spin creation, continuation registration)
-            (binding [rtc/*execution-context* runtime
-                      rtc/*spin-id* spin-id]
+            (binding [ec/*execution-context* runtime
+                      ec/*spin-id* spin-id]
               ;; Execute with dummy callbacks - we'll use cached value anyway
               (spin-fn (fn [_] nil) (fn [_] nil)))
             ;; Return cached value
@@ -240,7 +240,7 @@
                   (throw error)))))
 
           ;; Case 1b: Local cache hit (normal mode) - resolve from local cache (fastest!)
-          (and local-cached (rtc/spin-result-clean? spin-id))
+          (and local-cached (ec/spin-result-clean? spin-id))
           (do
             (log/trace! {:event :cache/local-hit :data {:spin-id spin-id}})
             ;; CRITICAL: Enqueue completion event even for cache hits
@@ -269,7 +269,7 @@
             (log/debug! {:event :cache/global-hit
                          :data {:spin-id spin-id :deps-hash deps-hash}})
             ;; Update local cache from global cache
-            (rtc/spin-cache-result! spin-id global-cached)
+            (ec/spin-cache-result! spin-id global-cached)
             (match global-cached
               ;; Success case
               (fn [value]
@@ -296,23 +296,23 @@
 
             ;; Execute spin-fn with dynamic bindings
             ;; Bind *execution-context* for this scope
-            (binding [rtc/*execution-context* runtime
-                      rtc/*spin-id* spin-id]
+            (binding [ec/*execution-context* runtime
+                      ec/*spin-id* spin-id]
               (let [result (spin-fn
                             ;; Resolve continuation
                             (fn [value]
                               ;; CRITICAL: Get CURRENT runtime, not captured one!
                               ;; When continuation is resumed in a fork context,
                               ;; we need to write to the fork's state, not the parent's.
-                              (let [current-rt (rtc/current-execution-context)]
+                              (let [current-rt (ec/current-execution-context)]
                                 ;; Cache result via protocol (uses current-rt via dynamic binding)
-                                (rtc/spin-cache-result! spin-id (ok value))
+                                (ec/spin-cache-result! spin-id (ok value))
 
                                 ;; Store for non-blocking await
-                                (rtc/swap-state! [:spin-outputs spin-id] (constantly value))
+                                (ec/swap-state! [:spin-outputs spin-id] (constantly value))
 
                                 ;; Record dependencies (computes deps-hash)
-                                (rtc/graph-commit-deps! spin-id)
+                                (ec/graph-commit-deps! spin-id)
 
                                 ;; NEW: Store in global content-addressed cache
                                 (let [deps-hash (simple/get-deps-hash current-rt spin-id)]
@@ -350,15 +350,15 @@
                               ;; CRITICAL: Get CURRENT runtime, not captured one!
                               ;; When continuation is resumed in a fork context,
                               ;; we need to write to the fork's state, not the parent's.
-                              (let [_current-rt (rtc/current-execution-context)]
+                              (let [_current-rt (ec/current-execution-context)]
                                 ;; Cache error via protocol (uses current-rt via dynamic binding)
-                                (rtc/spin-cache-result! spin-id (error err))
+                                (ec/spin-cache-result! spin-id (error err))
 
                                 ;; Store error marker for non-blocking await
-                                (rtc/swap-state! [:spin-outputs spin-id] (constantly [:error err]))
+                                (ec/swap-state! [:spin-outputs spin-id] (constantly [:error err]))
 
                                 ;; Record dependencies even on error
-                                (rtc/graph-commit-deps! spin-id)
+                                (ec/graph-commit-deps! spin-id)
 
                                 ;; Notify dependents just like success path
                                 ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
@@ -377,7 +377,7 @@
 
                                 ;; CRITICAL: Also call any pending callbacks from shared state
                                 ;; These are from duplicate :spin-execution events that were skipped
-                                (let [current-rt (rtc/current-execution-context)
+                                (let [current-rt (ec/current-execution-context)
                                       pending (simple/take-pending-callbacks! current-rt spin-id)]
                                   (when (seq pending)
                                     (log/trace! {:event :spin/pending-callbacks-error
@@ -427,7 +427,7 @@
    Uses Cleaner (Java 9+) or FinalizationRegistry (JS).
 
    Usage:
-     (binding [rtc/*execution-context* my-runtime]
+     (binding [ec/*execution-context* my-runtime]
        (def my-reactive (make-spin my-spin-fn :my-spin))
        @my-reactive)  ; Runs spin, caches result
 
@@ -438,13 +438,13 @@
    (let [reactive-spin (->Spin spin-id spin-fn)]
 
      ;; Register spin with runtime via protocol (uses dynamic *execution-context*)
-     (rtc/spin-register! spin-id {:provides #{}})
+     (ec/spin-register! spin-id {:provides #{}})
 
      ;; Register automatic cleanup when spin is GC'd
      ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
      ;; can find the context even when *execution-context* is not bound.
      #?(:clj
-        (let [ctx (rtc/current-execution-context)
+        (let [ctx (ec/current-execution-context)
               weak-ctx (WeakReference. ctx)
               sid spin-id]
           (.register ^java.lang.ref.Cleaner @spin-cleaner
@@ -459,7 +459,7 @@
                              nil))))))
         :cljs
         (when spin-registry
-          (let [ctx (rtc/current-execution-context)]
+          (let [ctx (ec/current-execution-context)]
             (.register spin-registry
                        reactive-spin
                        #js {:spin_id spin-id
@@ -509,7 +509,7 @@
      spin-id - ID of the spin to abort
      err - The error/exception that caused the abortion"
   [spin-id err]
-  (rtc/spin-cache-result! spin-id (error err))
+  (ec/spin-cache-result! spin-id (error err))
   ;; TODO: Propagate to observers via PGraph/ordered-observers protocol
   ;; For now, observers are handled by engine events
   )
@@ -532,7 +532,7 @@
    Uses PSpin protocol and PSpinLifecycle to check error state.
    Requires *execution-context* to be bound."
   [spin]
-  (let [cached (rtc/spin-current-result (spin-id spin))]
+  (let [cached (ec/spin-current-result (spin-id spin))]
     (when (and cached (error? cached))
       (match cached
         (fn [_] false)
@@ -545,7 +545,7 @@
    Requires *execution-context* to be bound.
    This includes both user-initiated cancellation and error propagation."
   [spin]
-  (let [cached (rtc/spin-current-result (spin-id spin))]
+  (let [cached (ec/spin-current-result (spin-id spin))]
     (boolean (and cached (error? cached)))))
 
 (defn cancel-spin!
@@ -589,7 +589,7 @@
     ;; Cancel the spin first (stops any running computation)
     (cancel-spin! spin)
     ;; Clean up dependencies and remove from runtime
-    (rtc/graph-clear-deps! sid)))
+    (ec/graph-clear-deps! sid)))
 
 ;; =============================================================================
 ;; Error Handling Combinators (from spin/error.cljc)

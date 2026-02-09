@@ -1,7 +1,7 @@
 (ns org.replikativ.spindel.atom
   (:refer-clojure :exclude [atom])
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.state-backend :as backend]))
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.state-backend :as backend]))
 
 ;; Fork-safe atoms that store state inside the runtime.
 ;; API is 100% compatible with clojure.core/atom for easy migration.
@@ -43,11 +43,11 @@
      clojure.lang.IDeref
      (deref [_this]
        ;; Use dynamically bound *execution-context* - no captured runtime!
-       (rtc/get-state [:atoms id :value]))
+       (ec/get-state [:atoms id :value]))
 
      clojure.lang.IMeta
      (meta [_this]
-       (rtc/get-state [:atoms id :meta]))
+       (ec/get-state [:atoms id :meta]))
 
      clojure.lang.IRef
      (setValidator [_this _vf]
@@ -56,31 +56,31 @@
                 "Validators not yet supported on runtime atoms")))
      (getValidator [_this] nil)
      (getWatches [_this]
-       (rtc/get-state [:atoms id :watchers]))
+       (ec/get-state [:atoms id :watchers]))
      (addWatch [this key f]
-       (rtc/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:atoms id :watchers]
                         (fn [watchers] (assoc watchers key f)))
        this)
      (removeWatch [this key]
-       (rtc/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:atoms id :watchers]
                         (fn [watchers] (dissoc watchers key)))
        this)
 
      clojure.lang.IAtom
      (swap [_this f]
-       (rtc/swap-state! [:atoms id :value] f))
+       (ec/swap-state! [:atoms id :value] f))
      (swap [_this f arg]
-       (rtc/swap-state! [:atoms id :value]
+       (ec/swap-state! [:atoms id :value]
                         (fn [v] (f v arg))))
      (swap [_this f arg1 arg2]
-       (rtc/swap-state! [:atoms id :value]
+       (ec/swap-state! [:atoms id :value]
                         (fn [v] (f v arg1 arg2))))
      (swap [_this f x y args]
-       (rtc/swap-state! [:atoms id :value]
+       (ec/swap-state! [:atoms id :value]
                         (fn [v] (apply f v x y args))))
 
      (reset [_this newval]
-       (rtc/swap-state! [:atoms id :value] (constantly newval)))
+       (ec/swap-state! [:atoms id :value] (constantly newval)))
 
      (compareAndSet [_this _oldval _newval]
        ;; CAS not supported for now (could add with custom logic if needed)
@@ -92,37 +92,37 @@
      IDeref
      (-deref [_this]
        ;; Use dynamically bound *execution-context* - no captured runtime!
-       (rtc/get-state [:atoms id :value]))
+       (ec/get-state [:atoms id :value]))
 
      IMeta
      (-meta [_this]
-       (rtc/get-state [:atoms id :meta]))
+       (ec/get-state [:atoms id :meta]))
 
      IWatchable
      (-add-watch [this key f]
-       (rtc/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:atoms id :watchers]
                         (fn [watchers] (assoc watchers key f)))
        this)
      (-remove-watch [this key]
-       (rtc/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:atoms id :watchers]
                         (fn [watchers] (dissoc watchers key)))
        this)
 
      IReset
      (-reset! [_this newval]
-       (rtc/swap-state! [:atoms id :value] (constantly newval)))
+       (ec/swap-state! [:atoms id :value] (constantly newval)))
 
      ISwap
      (-swap! [_this f]
-       (rtc/swap-state! [:atoms id :value] f))
+       (ec/swap-state! [:atoms id :value] f))
      (-swap! [_this f a]
-       (rtc/swap-state! [:atoms id :value]
+       (ec/swap-state! [:atoms id :value]
                         (fn [v] (f v a))))
      (-swap! [_this f a b]
-       (rtc/swap-state! [:atoms id :value]
+       (ec/swap-state! [:atoms id :value]
                         (fn [v] (f v a b))))
      (-swap! [_this f a b xs]
-       (rtc/swap-state! [:atoms id :value]
+       (ec/swap-state! [:atoms id :value]
                         (fn [v] (apply f v a b xs))))))
 
 ;; =============================================================================
@@ -150,7 +150,7 @@
     (swap! cache conj item)
     @cache  ; => [item]"
   [initial-value & {:keys [meta]}]
-  (let [runtime (rtc/current-execution-context)
+  (let [runtime (ec/current-execution-context)
         atom-id (keyword (gensym "atom-"))
         runtime-atom-obj (->RuntimeAtom atom-id)]  ; No runtime captured!
 
@@ -158,8 +158,8 @@
     (install-atom-watcher! runtime)
 
     ;; Initialize state in runtime (value, watchers, and metadata all fork-safe)
-    (binding [rtc/*execution-context* runtime]
-      (rtc/swap-state! [:atoms atom-id]
+    (binding [ec/*execution-context* runtime]
+      (ec/swap-state! [:atoms atom-id]
                        (fn [_] {:value initial-value
                                 :watchers {}
                                 :meta meta})))
@@ -175,8 +175,8 @@
                   (reify Runnable
                     (run [_]
                       ;; Remove from runtime when GC'd
-                      (binding [rtc/*execution-context* runtime]
-                        (rtc/swap-state! [:atoms]
+                      (binding [ec/*execution-context* runtime]
+                        (ec/swap-state! [:atoms]
                                          (fn [atoms] (dissoc atoms atom-id)))))))
        :cljs
        ;; CLJS cleanup would use FinalizationRegistry when available; no-op.

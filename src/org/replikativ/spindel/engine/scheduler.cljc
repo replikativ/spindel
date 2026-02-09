@@ -1,10 +1,10 @@
-(ns org.replikativ.spindel.runtime.scheduler
+(ns org.replikativ.spindel.engine.scheduler
   "Executors for running spin functions.
 
   Executors provide the execution context (thread pool, event loop, etc.) where
   spin functions run. The runtime uses executors to run spins, but maintains
   control over scheduling strategy (when/what to execute) via PScheduler protocol."
-  (:require [org.replikativ.spindel.runtime.bindings :as bindings])
+  (:require [org.replikativ.spindel.engine.bindings :as bindings])
   #?(:clj (:import [java.util.concurrent Executors ExecutorService ThreadPoolExecutor
                                          ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
                                          TimeUnit LinkedBlockingQueue Callable ForkJoinPool])))
@@ -63,7 +63,7 @@
        (let [;; bindings/capture-bindings captures the 4 vars from bindings.cljc
              base (bindings/capture-bindings)
              ;; Also capture *execution-context* (resolved to avoid circular dep)
-             exec-ctx-var (resolve 'org.replikativ.spindel.runtime.core/*execution-context*)]
+             exec-ctx-var (resolve 'org.replikativ.spindel.engine.core/*execution-context*)]
          (if (and exec-ctx-var (.isBound ^clojure.lang.Var exec-ctx-var))
            (assoc base exec-ctx-var (.get ^clojure.lang.Var exec-ctx-var))
            base)))

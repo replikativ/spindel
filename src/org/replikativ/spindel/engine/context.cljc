@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.context
+(ns org.replikativ.spindel.engine.context
   "Execution contexts for fork-safe computation.
 
   An ExecutionContext wraps a runtime and adds fork-specific state:
@@ -14,14 +14,14 @@
   - Independent state per fork (mutations don't affect siblings)
   - Shared parent state via OverlayBackend (memory efficient)
   - Fork-local effect handlers (can override behavior per branch)"
-  (:require [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.impl.delayed :as delayed]
-            [org.replikativ.spindel.runtime.impl.graph :as graph]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.scheduler :as sched]
-            [org.replikativ.spindel.runtime.state-backend :as backend]
-            [org.replikativ.spindel.runtime.nodes :as nodes]
-            [org.replikativ.spindel.runtime.addressing :as addressing]
+  (:require [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.impl.delayed :as delayed]
+            [org.replikativ.spindel.engine.impl.graph :as graph]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.scheduler :as sched]
+            [org.replikativ.spindel.engine.state-backend :as backend]
+            [org.replikativ.spindel.engine.nodes :as nodes]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [incognito.edn :refer [read-string-safe]])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]
                     [java.lang.ref Cleaner])))
@@ -34,10 +34,10 @@
   "Write handlers for custom record types.
 
   Convert records to plain maps for serialization."
-  (atom {'org.replikativ.spindel.runtime.nodes.SpinNode
+  (atom {'org.replikativ.spindel.engine.nodes.SpinNode
          (fn [node] (into {} node))
 
-         'org.replikativ.spindel.runtime.nodes.SignalNode
+         'org.replikativ.spindel.engine.nodes.SignalNode
          (fn [node] (into {} node))
 
          'org.replikativ.spindel.spin.core.Result
@@ -47,10 +47,10 @@
   "Read handlers for custom record types.
 
   Convert plain maps back to records after deserialization."
-  (atom {'org.replikativ.spindel.runtime.nodes.SpinNode
+  (atom {'org.replikativ.spindel.engine.nodes.SpinNode
          nodes/map->SpinNode
 
-         'org.replikativ.spindel.runtime.nodes.SignalNode
+         'org.replikativ.spindel.engine.nodes.SignalNode
          nodes/map->SignalNode
 
          'org.replikativ.spindel.spin.core.Result
@@ -653,7 +653,7 @@
     ;; Later:
     (def restored (deserialize-context (slurp \"snapshot.edn\") executor))
     (def live (restore-snapshot restored))
-    (binding [rtc/*execution-context* live]
+    (binding [ec/*execution-context* live]
       (swap! signal inc)  ; Modify state
       @spin)              ; Re-execute
 
@@ -866,7 +866,7 @@
     Example:
       ;; Original execution
       (def ctx (create-execution-context))
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         @(model-fn))
 
       ;; Serialize
@@ -883,8 +883,8 @@
                            ~snapshot-ctx
                            :initial-chain-head (:initial-chain-head ~opts))]
         ;; Require runtime.core to get the binding vars
-        (require 'org.replikativ.spindel.runtime.core)
-        (binding [org.replikativ.spindel.runtime.core/*execution-context* rebuild-ctx#]
+        (require 'org.replikativ.spindel.engine.core)
+        (binding [org.replikativ.spindel.engine.core/*execution-context* rebuild-ctx#]
           ~@body)
         (finalize-rebuild-context rebuild-ctx#))))
 

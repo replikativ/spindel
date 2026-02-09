@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.impl.delayed
+(ns org.replikativ.spindel.engine.impl.delayed
   "Delayed spin scheduling and virtual time management.
 
   Provides time-based scheduling of spin execution, including:
@@ -8,9 +8,9 @@
   All state is stored in the execution context at :engine/delayed-spins,
   :engine/virtual-time, :engine/time-mode, :engine/timer-handles."
   (:require [org.replikativ.spindel.log :as log]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.scheduler :as scheduler]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.scheduler :as scheduler]))
 
 (defn current-time
   "Get current time (virtual or real) in milliseconds."
@@ -77,7 +77,7 @@
                    :data {:spin-id id :fire-time fire-time :now now}})
       (when executor
         (scheduler/execute! executor
-          #(binding [rtc/*execution-context* context]
+          #(binding [ec/*execution-context* context]
              (spin-fn)))))
 
     (count @ready-spins)))

@@ -3,18 +3,18 @@
   #?(:clj
      (:require [clojure.test :refer [deftest is testing]]
                [org.replikativ.spindel.atom :as ratom]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
-               [org.replikativ.spindel.runtime.state-backend :as backend]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.scheduler :as sched]
+               [org.replikativ.spindel.engine.state-backend :as backend]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]]
                [org.replikativ.spindel.atom :as ratom]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.state-backend :as backend]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.state-backend :as backend]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
@@ -93,7 +93,7 @@
    (deftest test-atom-watchers
      (testing "Runtime atoms support watchers"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [my-atom (ratom/create-atom 0)
                  watch-calls (atom [])]
 
@@ -124,7 +124,7 @@
    (deftest test-atom-forking
      (testing "Runtime atoms fork correctly with ExecutionContext"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [my-atom (ratom/create-atom [1 2 3])]
 
              ;; Original has [1 2 3]
@@ -136,7 +136,7 @@
                    forked-atom (ratom/->RuntimeAtom atom-id)]
 
                ;; Forked atom has same initial value (reads from parent backend)
-               (binding [rtc/*execution-context* forked-ctx]
+               (binding [ec/*execution-context* forked-ctx]
                  (is (= [1 2 3] @forked-atom))
 
                  ;; Modify forked atom
@@ -155,7 +155,7 @@
                (is (= [1 2 3 5] @my-atom))
 
                ;; Forked unchanged (copy-on-write)
-               (binding [rtc/*execution-context* forked-ctx]
+               (binding [ec/*execution-context* forked-ctx]
                  (is (= [1 2 3 4] @forked-atom))))))))))
 
 #?(:clj
@@ -168,7 +168,7 @@
          (is (= :atom (backend/backend-type (:backend exec-ctx))))
 
          ;; Create atom with ExecutionContext
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [my-atom (ratom/create-atom 42)]
              (is (= 42 @my-atom))
 
@@ -199,7 +199,7 @@
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
 
          ;; Create multiple atoms - watcher should be installed once per backend (idempotent)
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [atom1 (ratom/create-atom 1)
                  atom2 (ratom/create-atom 2)
                  atom3 (ratom/create-atom 3)]

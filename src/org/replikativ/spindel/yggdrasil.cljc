@@ -20,7 +20,7 @@
 
      ;; Fork automatically branches all registered yggdrasil systems
      (let [child-ctx (ctx/fork-context parent-ctx)]
-       (rtc/with-context child-ctx
+       (ec/with-context child-ctx
          @ygit  ; => GitSystem on forked branch (automatic!)
          (d/transact! @ydb [{:foo/bar 1}]))
        (ygg/merge-to-parent! child-ctx))
@@ -30,9 +30,9 @@
        (ygg/with-fork fork
          @ygit)  ; => forked
        (ygg/merge-fork! fork))"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.context :as ctx]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.context :as ctx]
             #?(:clj [yggdrasil.protocols :as ygg])))
 
 ;; =============================================================================
@@ -87,7 +87,7 @@
      clojure.lang.IDeref
      (deref [_this]
        ;; Look up from [:external-refs id] in current context
-       (if-let [sys (rtc/get-state [:external-refs id])]
+       (if-let [sys (ec/get-state [:external-refs id])]
          sys
          (throw (ex-info "Yggdrasil system not found in current context"
                          {:id id
@@ -95,7 +95,7 @@
 
      clojure.lang.IMeta
      (meta [_this]
-       (when-let [sys (rtc/get-state [:external-refs id])]
+       (when-let [sys (ec/get-state [:external-refs id])]
          {:system-id id
           :system-type (ygg/system-type sys)
           :current-branch (ygg/current-branch sys)})))
@@ -104,7 +104,7 @@
    (deftype YggRef [id]
      IDeref
      (-deref [_this]
-       (if-let [sys (rtc/get-state [:external-refs id])]
+       (if-let [sys (ec/get-state [:external-refs id])]
          sys
          (throw (ex-info "Yggdrasil system not found in current context"
                          {:id id}))))
@@ -147,7 +147,7 @@
   [sys]
   #?(:clj
      (let [sys-id (ygg/system-id sys)]
-       (rtc/swap-state! [:external-refs sys-id] (constantly sys))
+       (ec/swap-state! [:external-refs sys-id] (constantly sys))
        (->YggRef sys-id))
      :cljs
      (throw (ex-info "Yggdrasil not yet supported in ClojureScript" {}))))
@@ -162,14 +162,14 @@
 
    Returns: Yggdrasil system or nil"
   [sys-id]
-  (rtc/get-state [:external-refs sys-id]))
+  (ec/get-state [:external-refs sys-id]))
 
 (defn registered-systems
   "Get all registered yggdrasil systems from current context.
 
    Returns: Map of {sys-id -> system}"
   []
-  (rtc/get-state [:external-refs]))
+  (ec/get-state [:external-refs]))
 
 ;; =============================================================================
 ;; Fork Handle (for backwards compatibility and explicit control)
@@ -210,7 +210,7 @@
        (merge-fork! fork))"
   []
   #?(:clj
-     (let [parent-ctx (rtc/current-execution-context)
+     (let [parent-ctx (ec/current-execution-context)
            ;; fork-context automatically forks all [:external-refs] via PForkable
            child-ctx (ctx/fork-context parent-ctx)
            fork-id (:fork-id child-ctx)]
@@ -235,7 +235,7 @@
             (spit (str (git/worktree-path @ygit) \"/new.clj\") \"...\"))
           (merge-fork! fork))"
      [fork-handle & body]
-     `(rtc/with-context (:child-ctx ~fork-handle)
+     `(ec/with-context (:child-ctx ~fork-handle)
         ~@body)))
 
 ;; =============================================================================
@@ -378,7 +378,7 @@
      (let [sys-id (if (ygg-ref? sys-or-ref)
                     (ygg-ref-id sys-or-ref)
                     (ygg/system-id sys-or-ref))
-           ctx (rtc/current-execution-context)
+           ctx (ec/current-execution-context)
            parent-ctx (:parent-ctx ctx)]
        (when parent-ctx
          (rtp/get-state parent-ctx [:external-refs sys-id])))))

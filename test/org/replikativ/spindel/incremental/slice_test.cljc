@@ -14,9 +14,9 @@
      (:refer-clojure :exclude [filter map reduce]))
   #?(:clj
      (:require [clojure.test :refer [deftest is testing]]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.scheduler :as sched]
                [org.replikativ.spindel.signal :as sig]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.track :refer [track]]
@@ -33,7 +33,7 @@
 #?(:clj
    (defmacro with-test-context [& body]
      `(let [exec-ctx# (ctx/create-execution-context :executor (sched/default-executor))]
-        (binding [rtc/*execution-context* exec-ctx#]
+        (binding [ec/*execution-context* exec-ctx#]
           ~@body))))
 
 ;; =============================================================================
@@ -313,7 +313,7 @@
            (doseq [{:keys [old-window new-window]} test-cases]
              ;; Reset context for each test case
              (let [ctx (ctx/create-execution-context :executor (sched/default-executor))]
-               (binding [rtc/*execution-context* ctx]
+               (binding [ec/*execution-context* ctx]
                  (let [loc {:file (str "correctness-" (:start old-window))
                             :line (:start new-window)
                             :column 0}
@@ -446,7 +446,7 @@
 
            ;; Naive approach: just subvec each time (no deltas)
            naive-times
-           (binding [rtc/*execution-context* exec-ctx]
+           (binding [ec/*execution-context* exec-ctx]
              (doall
                (for [i (range num-slides)]
                  (let [start (* i slide-delta)
@@ -458,7 +458,7 @@
 
            ;; Incremental approach with islice
            incremental-times
-           (binding [rtc/*execution-context* exec-ctx]
+           (binding [ec/*execution-context* exec-ctx]
              (let [source-loc {:file "bench" :line 1 :column 0}]
                (doall
                  (for [i (range num-slides)]

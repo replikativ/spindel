@@ -22,8 +22,8 @@
                (spin/spin (query-database)))))"
   (:refer-clojure :exclude [])
   (:require [org.replikativ.spindel.spin.core :as spin]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.protocols :as rtp]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]))
 
 ;; =============================================================================
 ;; Semaphore - Fork-safe permit-based synchronization
@@ -33,11 +33,11 @@
   #?@(:clj [clojure.lang.IDeref
             (deref [this]
               ;; Use dynamically bound *execution-context* - no captured runtime!
-              (rtc/get-state [:semaphores id :permits]))]
+              (ec/get-state [:semaphores id :permits]))]
       :cljs [IDeref
              (-deref [this]
                ;; Use dynamically bound *execution-context* - no captured runtime!
-               (rtc/get-state [:semaphores id :permits]))]))
+               (ec/get-state [:semaphores id :permits]))]))
 
 ;; =============================================================================
 ;; Public API
@@ -53,7 +53,7 @@
   This enables proper forking: semaphores work with whatever runtime is bound at use-time.
 
   Example:
-    (def sem (create-semaphore (rtc/current-execution-context) 5))
+    (def sem (create-semaphore (ec/current-execution-context) 5))
     @sem  ; => 5 (current permits available)"
   [execution-context max-permits]
   {:pre [(pos? max-permits)]}
@@ -61,8 +61,8 @@
         sem-obj (->Semaphore sem-id)]  ; No runtime captured!
 
     ;; Initialize state in runtime
-    (binding [rtc/*execution-context* execution-context]
-      (rtc/swap-state! [:semaphores sem-id]
+    (binding [ec/*execution-context* execution-context]
+      (ec/swap-state! [:semaphores sem-id]
                        (fn [_]
                          {:permits max-permits
                           :max-permits max-permits
@@ -76,7 +76,7 @@
 (defn semaphore
   "Create a semaphore with N permits.
 
-  Must be called within a spin context (where rtc/*execution-context* is bound).
+  Must be called within a spin context (where ec/*execution-context* is bound).
 
   Example:
     (def sem (semaphore 10))  ; 10 concurrent permits
@@ -84,7 +84,7 @@
   [max-permits]
   {:pre [(pos? max-permits)]}
   (try
-    (let [ctx (rtc/current-execution-context)]
+    (let [ctx (ec/current-execution-context)]
       (create-semaphore ctx max-permits))
     (catch #?(:clj Throwable :cljs :default) _
       (throw (ex-info "semaphore called outside spin context"
@@ -113,7 +113,7 @@
 
        ;; Atomically try to acquire or enqueue
        ;; Uses *execution-context* from spin context - no captured runtime!
-       (rtc/swap-state! [:semaphores sem-id]
+       (ec/swap-state! [:semaphores sem-id]
          (fn [state]
            (let [permits (:permits state)]
              (if (pos? permits)
@@ -151,7 +151,7 @@
     (loop []
       ;; Uses *execution-context* from call context - no captured runtime!
       (let [path [:semaphores sem-id]
-            old-state (rtc/get-state path)
+            old-state (ec/get-state path)
             queue (:waiting-queue old-state)
             permits (:permits old-state)
             max-permits (:max-permits old-state)]
@@ -161,10 +161,10 @@
           (seq queue)
           (let [waiter (peek queue)
                 new-state (update old-state :waiting-queue pop)]
-            (if (rtc/cas-state! path old-state new-state)
+            (if (ec/cas-state! path old-state new-state)
               (do
                 ;; Successfully dequeued - schedule waiter to run on executor
-                (rtp/schedule-spin-execution! rtc/*execution-context*
+                (rtp/schedule-spin-execution! ec/*execution-context*
                                               #(spin/resume (:resolve waiter) :acquired))
                 :released)
               ;; CAS failed - retry
@@ -173,7 +173,7 @@
           ;; Queue empty - increment permits (up to max)
           (< permits max-permits)
           (let [new-state (update old-state :permits inc)]
-            (if (rtc/cas-state! path old-state new-state)
+            (if (ec/cas-state! path old-state new-state)
               :released
               ;; CAS failed - retry
               (recur)))

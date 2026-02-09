@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.phase3-property-tests
+(ns org.replikativ.spindel.engine.phase3-property-tests
   "Phase 3: Property-Based Tests - Core invariant validation
 
   These tests validate critical invariants through randomized scenarios:
@@ -9,9 +9,9 @@
   Note: These are manual property tests (not using test.check) to minimize dependencies."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -27,7 +27,7 @@
   (testing "Diamond dependency never sees inconsistent values (glitch-freedom)"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           ;; Run test with multiple random updates
           (dotimes [trial 20]
             (let [root-sig (sig/signal 0)
@@ -61,7 +61,7 @@
   (testing "Wide diamond (4 middle nodes) maintains consistency"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (dotimes [trial 10]
             (let [root-sig (sig/signal 0)
                   inconsistencies (atom [])
@@ -102,7 +102,7 @@
   (testing "Deep chain maintains consistency under rapid updates"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (dotimes [trial 10]
             (let [root-sig (sig/signal 0)
 
@@ -139,7 +139,7 @@
   (testing "Continuation count stays bounded under repeated signal changes"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal 0)
                 sig-b (sig/signal 0)
                 sig-c (sig/signal 0)
@@ -184,7 +184,7 @@
   (testing "Continuations cleaned up correctly under random signal change patterns"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (dotimes [trial 5]
             (let [;; 5 signals
                   sigs (mapv (fn [_] (sig/signal 0)) (range 5))
@@ -225,7 +225,7 @@
   (testing "Concurrent updates from multiple threads don't lose events"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 0)
                 update-count (atom 0)
                 observed-values (atom #{})
@@ -247,7 +247,7 @@
             (let [futures (doall
                             (for [thread-id (range n-threads)]
                               (future
-                                (binding [rtc/*execution-context* ctx]
+                                (binding [ec/*execution-context* ctx]
                                   (dotimes [i n-updates-per-thread]
                                     (reset! sig (+ (* thread-id 100) i)))))))]
 
@@ -274,7 +274,7 @@
 #_(deftest property-concurrent-multi-signal-consistency
   (testing "Concurrent updates to multiple signals maintain consistency"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [sig-a (sig/signal 0)
               sig-b (sig/signal 0)
               inconsistencies (atom [])
@@ -296,7 +296,7 @@
                 futures (doall
                           (for [thread-id (range n-threads)]
                             (future
-                              (binding [rtc/*execution-context* ctx]
+                              (binding [ec/*execution-context* ctx]
                                 (dotimes [i 20]
                                   (let [val (+ (* thread-id 100) i)]
                                     (sig/batch
@@ -320,7 +320,7 @@
   (testing "All signal changes eventually drain (no infinite loops or deadlocks)"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (dotimes [trial 10]
             (let [sigs (mapv (fn [_] (sig/signal 0)) (range 5))
 
@@ -357,7 +357,7 @@
   (testing "Multiple derefs of same spin return same value (until signal changes)"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 42)
                 test-spin (spin (* 2 (:new (track sig))))]
 

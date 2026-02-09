@@ -2,7 +2,7 @@
   "Async test utilities for spindel.
 
   Provides await-drain for waiting for reactive event processing to complete."
-  (:require [org.replikativ.spindel.runtime.impl.simple :as simple]))
+  (:require [org.replikativ.spindel.engine.impl.simple :as simple]))
 
 (defn await-drain
   "Wait for async drain to complete on the given execution context.

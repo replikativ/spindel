@@ -2,7 +2,7 @@
   "yield effect - suspend and emit value in async sequence.
 
   Only used within gen-aseq context. Not registered globally."
-  (:require [org.replikativ.spindel.runtime.core :as rtc]))
+  (:require [org.replikativ.spindel.engine.core :as ec]))
 
 ;; =============================================================================
 ;; Public API Shim
@@ -33,7 +33,7 @@
                 marker# {::yield-marker true
                          :value yield-value#
                          :continuation-r ~r}]
-            (if-let [handler# rtc/*yield-handler*]
+            (if-let [handler# ec/*yield-handler*]
               (handler# marker# nil)
               (throw (ex-info "*yield-handler* not bound in yield context" {})))
             ;; Return incomplete - actual result delivered via handler

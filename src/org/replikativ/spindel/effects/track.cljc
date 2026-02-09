@@ -15,11 +15,11 @@
     (spin
       (let [todos-iv (track todos)]
         (->> todos-iv (ifilter :active) (imap :hours) (ireduce + 0))))"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.bindings :as bindings]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.runtime.effects :as eff]
+            [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.log :as log])
   #?(:clj (:import [org.replikativ.spindel.signal SignalRef])))
@@ -138,7 +138,7 @@
     (when spin-id
       (let [captured-bindings (bindings/capture-bindings)
             ;; Capture context bindings for DOM addressing
-            captured-ctx-bindings (when-let [ctx (rtc/current-execution-context)]
+            captured-ctx-bindings (when-let [ctx (ec/current-execution-context)]
                                     (:bindings ctx))
             cont {:event-key [:signal signal-id]
                   :resolve-fn resolve
@@ -153,8 +153,8 @@
                   ;; Uses captured generation to detect stale deltas
                   :on-resume (fn [_]
                                (get-track-value-if-newer signal-ref current-generation))}]
-        (rtc/continuation-add! spin-id cont)
-        (rtc/deps-track-signal! spin-id signal-id)
+        (ec/continuation-add! spin-id cont)
+        (ec/deps-track-signal! spin-id signal-id)
         (log/debug! {:event :track/registered
                      :data {:spin-id spin-id
                             :signal-id signal-id
@@ -194,5 +194,5 @@
 (eff/register-effect-by-symbol!
   'org.replikativ.spindel.effects.track/track
   ::track-handler
-  'org.replikativ.spindel.runtime.effects/one-arg->awaitable-map
+  'org.replikativ.spindel.engine.effects/one-arg->awaitable-map
   'org.replikativ.spindel.effects.track/track-handler)

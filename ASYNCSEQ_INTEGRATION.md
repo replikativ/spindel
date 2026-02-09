@@ -9,7 +9,7 @@ Successfully integrated partial-cps's AsyncSeq protocol with spindel's Mailbox. 
 ### 1. Direct CPS Function Usage
 ```clojure
 ;; Await raw partial-cps async functions - WORKS PERFECTLY
-(binding [rtc/*execution-context* ctx]
+(binding [ec/*execution-context* ctx]
   @(spin (await (aseq/into [] (take 3) mailbox))))
 ;; => [msg1 msg2 msg3]
 
@@ -52,18 +52,18 @@ Successfully integrated partial-cps's AsyncSeq protocol with spindel's Mailbox. 
     ;; Returns CPS function: (fn [resolve reject] ...)
     (fn [resolve reject]
       ;; Capture execution context for nested operations
-      (let [exec-ctx (try (rtc/current-execution-context) (catch _ nil))]
+      (let [exec-ctx (try (ec/current-execution-context) (catch _ nil))]
         (mbx
           ;; Wrap resolve to rebind context
           (fn [msg]
             (if exec-ctx
-              (binding [rtc/*execution-context* exec-ctx]
+              (binding [ec/*execution-context* exec-ctx]
                 (resolve [msg mbx]))
               (resolve [msg mbx])))
           ;; Wrap reject to rebind context
           (fn [error]
             (if exec-ctx
-              (binding [rtc/*execution-context* exec-ctx]
+              (binding [ec/*execution-context* exec-ctx]
                 (reject error))
               (reject error))))))))
 ```

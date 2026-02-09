@@ -5,8 +5,8 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.signal :as sig]))
 
 ;; =============================================================================
@@ -127,7 +127,7 @@
      (testing "Signal integration with dual perspective"
        (let [ctx (ctx/create-execution-context)]
 
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 0)]
            ;; Initial state
            (let [[new old deltas] (sig/get-signal-detailed counter)]

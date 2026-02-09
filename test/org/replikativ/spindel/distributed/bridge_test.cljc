@@ -3,9 +3,9 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [org.replikativ.spindel.distributed.core :as dist]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.scheduler :as scheduler]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]]
             #?(:clj [clojure.core.async :as a :refer [go <! >! chan close! put! take!]]
@@ -27,7 +27,7 @@
     (dist/register-context! :default rt)
     (try
       (binding [*test-runtime* rt
-                rtc/*execution-context* rt]
+                ec/*execution-context* rt]
         (f))
       (finally
         (dist/unregister-context! :default)

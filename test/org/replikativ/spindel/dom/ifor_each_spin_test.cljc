@@ -17,8 +17,8 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.combinators :as combinators]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -28,7 +28,7 @@
 ;; Fixture to ensure clean execution context between tests
 #?(:clj
    (defn clean-context-fixture [f]
-     (binding [rtc/*execution-context* nil]
+     (binding [ec/*execution-context* nil]
        (f))))
 
 #?(:clj (use-fixtures :each clean-context-fixture))

@@ -24,9 +24,9 @@
 
   See CLAUDE.md for architectural details."
   (:require [clojure.test :refer [deftest testing is]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -42,7 +42,7 @@
   ([ctx t] (run-spin ctx t 1000))
   ([ctx t timeout-ms]
    (let [result (promise)]
-     (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+     (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
        (t #(deliver result %) #(deliver result [:error %]))
        (simple/trigger-drain! ctx (:executor ctx)))
      (deref result timeout-ms :timeout))))
@@ -63,14 +63,14 @@
     3. Awaits the Deferred, which suspends the async computation"
   [ms value]
   (fn [resolve _reject]
-    (let [runtime (rtc/current-execution-context)]
+    (let [runtime (ec/current-execution-context)]
       (if runtime
         ;; In spindel context - use Deferred for proper integration
         (let [d (sync/deferred)]
           ;; Schedule timer to deliver to deferred
           (future
             (Thread/sleep ms)
-            (binding [rtc/*execution-context* runtime]
+            (binding [ec/*execution-context* runtime]
               (d value)
               (simple/trigger-drain! runtime (:executor runtime))))
           ;; Await the deferred - this suspends correctly
@@ -90,14 +90,14 @@
 (deftest test-sync-async-passthrough
   (testing "Synchronous async block passes through correctly"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async (+ 1 2 3)))))]
       (is (= 6 (run-spin ctx t))
           "async block returning immediate value should work")))
 
   (testing "Nested sync async blocks"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (let [a (pcps/await (async 10))
                                    b (pcps/await (async 20))]
@@ -108,7 +108,7 @@
 (deftest test-async-with-deferred-delivery
   (testing "Async block with deferred-delivery event"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (pcps/await (async-sleep 10 :slept))
                              :done))))]
@@ -118,7 +118,7 @@
 (deftest test-spin-inside-async
   (testing "Creating spindel spin inside async block"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              ;; Create a spindel spin inside async
                              ;; and await it via pcps/await (treats it as IFn)
@@ -134,7 +134,7 @@
 (deftest test-sequential-async-awaits
   (testing "Multiple sequential pcps/await calls"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (let [a (pcps/await (async 10))
                                    b (pcps/await (async 20))
@@ -145,7 +145,7 @@
 
   (testing "Loop with pcps/await"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (loop [i 0 sum 0]
                                (if (< i 5)
@@ -162,7 +162,7 @@
 (deftest test-error-propagation
   (testing "Error in async block propagates to spin"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (throw (ex-info "test error" {:code 42}))))))
           result (run-spin ctx t)]
@@ -173,7 +173,7 @@
 
   (testing "Error in nested async propagates"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (pcps/await (async
                                            (throw (ex-info "nested error" {}))))))))
@@ -188,7 +188,7 @@
 (deftest test-mixed-spin-async
   (testing "Alternating spin and async awaits"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin
                 (let [;; await a spin
                       a (await (spin 10))
@@ -202,7 +202,7 @@
 
   (testing "Async block creating multiple spins"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              (let [t1 (spin 10)
                                    t2 (spin 20)
@@ -222,7 +222,7 @@
     (let [ctx (ctx/create-execution-context)
           ;; Create a simple thunk that resolves immediately
           thunk (fn [resolve _reject] (resolve 42))
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await thunk)))]
       (is (= 42 (run-spin ctx t))
           "Plain IFn should be passed through and called")))
@@ -231,7 +231,7 @@
     (let [ctx (ctx/create-execution-context)
           ;; async macro returns an IFn
           async-thunk (async (* 6 7))
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await async-thunk)))]
       (is (= 42 (run-spin ctx t))
           "async thunk should pass through await"))))
@@ -243,10 +243,10 @@
 (deftest test-runtime-context-in-async
   (testing "Runtime context available inside async block"
     (let [ctx (ctx/create-execution-context)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
                              ;; Check that runtime is accessible
-                             (let [ctx (rtc/current-execution-context)]
+                             (let [ctx (ec/current-execution-context)]
                                (if ctx :has-runtime :no-runtime))))))]
       (is (= :has-runtime (run-spin ctx t))
           "Runtime should be accessible inside async via dynamic binding")))
@@ -254,9 +254,9 @@
   (testing "Spin ID available in async block"
     (let [ctx (ctx/create-execution-context)
           captured-id (atom nil)
-          t (binding [rtc/*execution-context* ctx rtc/*execution-context* ctx]
+          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
               (spin (await (async
-                             (reset! captured-id rtc/*spin-id*)
+                             (reset! captured-id ec/*spin-id*)
                              :done))))]
       (run-spin ctx t)
       (is (some? @captured-id)

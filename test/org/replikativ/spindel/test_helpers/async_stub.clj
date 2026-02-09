@@ -4,8 +4,8 @@
   These stubs simulate external async operations (like HTTP requests, database
   queries, etc.) that complete on a different thread/tick from when they're called."
   (:require [org.replikativ.spindel.spin.core :as spin]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [is.simm.partial-cps.async :as async]))
 
 (defn async-fetch
@@ -35,14 +35,14 @@
    (let [spin-id (keyword (str "async-fetch-" value))]
      (spin/make-spin
       (fn [resolve reject]
-        (let [runtime (rtc/current-execution-context)]
+        (let [runtime (ec/current-execution-context)]
           ;; Use runtime's delayed execution mechanism (same as sleep combinator)
           ;; This properly integrates with the event queue and executor
           ;; CRITICAL: Bind *execution-context* to captured runtime when callback fires.
           ;; The callback runs on a thread pool thread with NO bindings, so we must
           ;; restore the context that was active when async-fetch was called.
-          (rtc/schedule-delayed-execution! runtime delay-ms
-            #(binding [rtc/*execution-context* runtime
+          (ec/schedule-delayed-execution! runtime delay-ms
+            #(binding [ec/*execution-context* runtime
                        async/*in-trampoline* false]
                (spin/resume resolve value)))
           ;; Return incomplete - continuation will be invoked later via scheduled execution
@@ -69,9 +69,9 @@
   ([error-msg delay-ms]
    (spin/make-spin
     (fn [resolve reject]
-      (let [runtime (rtc/current-execution-context)]
+      (let [runtime (ec/current-execution-context)]
         ;; Use runtime's delayed execution mechanism (same as sleep combinator)
-        (rtc/schedule-delayed-execution! runtime delay-ms
+        (ec/schedule-delayed-execution! runtime delay-ms
           #(binding [async/*in-trampoline* false]
              (spin/resume reject (ex-info error-msg {}))))
         ;; Return incomplete - continuation will be invoked later via scheduled execution
@@ -126,5 +126,5 @@
     (use-fixtures :once async-stub/with-execution-context)"
   [f]
   (let [ctx (ctx/create-execution-context)]
-    (binding [rtc/*execution-context* ctx]
+    (binding [ec/*execution-context* ctx]
       (f))))

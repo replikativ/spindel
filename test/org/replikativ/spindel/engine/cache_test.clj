@@ -1,9 +1,9 @@
-(ns org.replikativ.spindel.runtime.cache-test
+(ns org.replikativ.spindel.engine.cache-test
   "Tests for content-addressed caching"
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [org.replikativ.spindel.runtime.cache :as cache]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.cache :as cache]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.track :refer [track]]))
@@ -66,7 +66,7 @@
     (let [ctx (ctx/create-execution-context)
           executed (atom 0)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [my-spin (spin
                         (do
                           (swap! executed inc)
@@ -88,7 +88,7 @@
     (let [ctx (ctx/create-execution-context)
           executed (atom 0)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [sig (sig/signal 42)
               my-spin (spin
                         (let [{:keys [new]} (track sig)]
@@ -113,7 +113,7 @@
   (testing "Different signal values create different cache entries"
     (let [ctx (ctx/create-execution-context)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [sig-1 (sig/signal 42)
               executed-1 (atom 0)
               spin-1 (spin
@@ -151,7 +151,7 @@
           executed-1 (atom 0)
           executed-2 (atom 0)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [sig (sig/signal 42)]
         ;; Create first spin that depends on signal
         (let [spin-1 (spin
@@ -185,7 +185,7 @@
     (let [ctx (ctx/create-execution-context)
           executed (atom 0)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [sig (sig/signal 10)]
         (let [my-spin (spin
                         (let [{:keys [new]} (track sig)]

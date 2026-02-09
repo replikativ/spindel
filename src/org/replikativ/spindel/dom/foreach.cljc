@@ -96,7 +96,7 @@
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.log :as log])
@@ -161,12 +161,12 @@
   Cache structure: {:by-key {key -> rendered-vnode}
                     :order [key1 key2 ...]}"
   [addr]
-  (rtc/get-state [:dom/keyed-cache addr]))
+  (ec/get-state [:dom/keyed-cache addr]))
 
 (defn- set-keyed-cache!
   "Store keyed cache at address."
   [addr cache-data]
-  (rtc/swap-state! [:dom/keyed-cache addr] (constantly cache-data)))
+  (ec/swap-state! [:dom/keyed-cache addr] (constantly cache-data)))
 
 ;; =============================================================================
 ;; Stale Delta Clearing

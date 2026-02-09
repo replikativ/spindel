@@ -3,8 +3,8 @@
    Ported from laufzeit, adapted for spindel's execution-context API."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -22,7 +22,7 @@
 (deftest test-diamond-problem-no-glitch
   (testing "Diamond problem: spins resume in topological order, no glitches"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [;; Root signal
               a (sig/signal 1)
 
@@ -62,7 +62,7 @@
 (deftest test-multiple-signal-changes-no-glitch
   (testing "Multiple signal changes maintain consistency"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [x (sig/signal 1)
               y (sig/signal 2)
 
@@ -102,7 +102,7 @@
 (deftest test-deep-dependency-chain
   (testing "Deep dependency chains maintain topological order"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [s (sig/signal 1)
 
               ;; Chain: s -> a -> b -> c -> d
@@ -142,7 +142,7 @@
 (deftest test-wide-fan-out-no-glitch
   (testing "Wide fan-out from single signal maintains consistency"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [;; Single source signal
               source (sig/signal 10)
 
@@ -177,7 +177,7 @@
 (deftest test-mixed-dependencies-no-glitch
   (testing "Mixed signal and spin dependencies maintain consistency"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [;; Two independent signals
               s1 (sig/signal 2)
               s2 (sig/signal 3)

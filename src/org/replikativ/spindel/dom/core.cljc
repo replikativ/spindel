@@ -14,7 +14,7 @@
   3. Path-based updates for efficient tree modification
   4. Addressing for element identity across renders"
   (:require [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.runtime.hash :as h]))
+            [org.replikativ.spindel.engine.hash :as h]))
 
 ;; =============================================================================
 ;; VNode Predicates

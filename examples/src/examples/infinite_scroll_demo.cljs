@@ -17,9 +17,9 @@
             [org.replikativ.spindel.incremental.combinators :as ic]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.addressing]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.addressing]
             [org.replikativ.spindel.spin.core]
             [is.simm.partial-cps.async])
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -255,7 +255,7 @@
                    (apply str)))))))
 
 (defn update-stats-display! []
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     (let [items @items-signal
           window @window-signal]
       ;; Update metrics
@@ -278,7 +278,7 @@
 
 (defn update-window! [scroll-top]
   (let [t0 (js/performance.now)]
-    (binding [rtc/*execution-context* runtime]
+    (binding [ec/*execution-context* runtime]
       (let [items @items-signal
             new-window (compute-window scroll-top (count items))
             old-window @window-signal]
@@ -311,7 +311,7 @@
 
 (defn add-items! [n]
   (reset! op-log [])
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     (let [current-items @items-signal
           current-count (count current-items)
           new-items (vec (concat current-items
@@ -322,7 +322,7 @@
 
 (defn remove-items! [n]
   (reset! op-log [])
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     (let [current-items @items-signal
           new-count (max 0 (- (count current-items) n))]
       (reset! items-signal (subvec current-items 0 new-count))))
@@ -332,7 +332,7 @@
 (defn reset-items! []
   (reset! op-log [])
   (reset! total-ops 0)
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     (reset! items-signal (generate-items INITIAL_ITEMS))
     (reset! window-signal {:start 0 :end VISIBLE_ITEMS}))
   (scroll-to! 0)
@@ -375,21 +375,21 @@
   (when-let [btn (js/document.getElementById "btn-jump-middle")]
     (.addEventListener btn "click"
       (fn [_]
-        (binding [rtc/*execution-context* runtime]
+        (binding [ec/*execution-context* runtime]
           (let [mid (quot (count @items-signal) 2)]
             (jump-to-index! mid))))))
 
   (when-let [btn (js/document.getElementById "btn-jump-end")]
     (.addEventListener btn "click"
       (fn [_]
-        (binding [rtc/*execution-context* runtime]
+        (binding [ec/*execution-context* runtime]
           (let [end-idx (- (count @items-signal) VISIBLE_ITEMS)]
             (jump-to-index! end-idx))))))
 
   (when-let [btn (js/document.getElementById "btn-jump-random")]
     (.addEventListener btn "click"
       (fn [_]
-        (binding [rtc/*execution-context* runtime]
+        (binding [ec/*execution-context* runtime]
           (let [max-idx (- (count @items-signal) VISIBLE_ITEMS)
                 rand-idx (rand-int max-idx)]
             (jump-to-index! rand-idx))))))
@@ -415,7 +415,7 @@
   (js/console.log "Initializing Infinite Scroll demo...")
 
   ;; Reset signal values for hot reload
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     (reset! items-signal (generate-items INITIAL_ITEMS))
     (reset! window-signal {:start 0 :end (+ VISIBLE_ITEMS (* 2 OVERSCAN))}))
 
@@ -424,7 +424,7 @@
         discharge (make-logging-discharge js/document op-log)]
 
     ;; Set up reactive rendering - pass SignalRefs directly (make-app-spin tracks them)
-    (binding [rtc/*execution-context* runtime]
+    (binding [ec/*execution-context* runtime]
       (let [app-spin (make-app-spin items-signal window-signal)]
         (reset! render-handle
                 (render/render-spin! container app-spin discharge))))

@@ -306,8 +306,8 @@ This is Bulk Synchronous Parallel (BSP) applied to FRP propagation.
   (doseq [spin-id observers]
     (execute! executor
       (fn []
-        (binding [rtc/*execution-context* context
-                  rtc/*spin-id* spin-id
+        (binding [ec/*execution-context* context
+                  ec/*spin-id* spin-id
                   pcps-async/*in-trampoline* false]
           (try
             (resume-track-continuation! context spin-id signal-id)

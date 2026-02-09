@@ -26,9 +26,9 @@
 
     (deftest simple-test
       (test-spin (spin (+ 1 2)) 3))"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             #?(:clj [clojure.test :as ct]
                :cljs [cljs.test :as ct]))
   #?(:cljs (:require-macros [org.replikativ.spindel.test-helpers])))
@@ -100,7 +100,7 @@
      [[ctx-sym] & body]
      `(let [~ctx-sym (create-test-context)]
         (try
-          (binding [rtc/*execution-context* ~ctx-sym]
+          (binding [ec/*execution-context* ~ctx-sym]
             ~@body)
           (finally
             (ctx/stop-context! ~ctx-sym))))))

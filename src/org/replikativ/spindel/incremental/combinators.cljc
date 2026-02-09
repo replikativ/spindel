@@ -26,7 +26,7 @@
    5. Returns interval for downstream"
   (:refer-clojure :exclude [filter map reduce])
   (:require [org.replikativ.spindel.incremental.interval :as iv]
-            [org.replikativ.spindel.runtime.core :as rtc]))
+            [org.replikativ.spindel.engine.core :as ec]))
 
 ;; =============================================================================
 ;; Helper: Address-based result storage
@@ -48,12 +48,12 @@
 (defn- get-prev-result
   "Get the previous result for a combinator at the given address."
   [address]
-  (rtc/get-state [:incremental address]))
+  (ec/get-state [:incremental address]))
 
 (defn- store-result!
   "Store the combinator's result at the given address."
   [address result]
-  (rtc/swap-state! [:incremental address] (constantly result))
+  (ec/swap-state! [:incremental address] (constantly result))
   result)
 
 (defn- with-incremental-cache

@@ -8,8 +8,8 @@
   differ (no explicit cede), so we measure deep spin chains."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.bench.harness :as h]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]))
 

@@ -7,8 +7,8 @@
   3. How do rate combinators behave with reactive sources?"
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :refer [parallel race accumulate]]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -26,7 +26,7 @@
   (testing "parallel updates and notifies awaiters when child signals change"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal 1)
                 sig-b (sig/signal 2)
                 outer-exec-count (atom 0)
@@ -101,7 +101,7 @@
   (testing "race completes once with winner and ignores subsequent signal changes"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-fast (sig/signal :fast-1)
                 sig-slow (sig/signal :slow-1)
                 outer-exec-count (atom 0)
@@ -136,7 +136,7 @@
   (testing "accumulate re-runs when its tracked signal changes, propagating to awaiter"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [counter-sig (sig/signal 0)
 
                 ;; accumulate creates a spin that tracks the signal
@@ -176,7 +176,7 @@
   (testing "When outer spin tracks signal, it re-runs and creates new parallel"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [multiplier-sig (sig/signal 2)
                 outer-exec-count (atom 0)
 
@@ -215,7 +215,7 @@
   (testing "Signal change propagates through chain of awaiting spins"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [counter (sig/signal 0)
                 execution-order (atom [])
 
@@ -275,7 +275,7 @@
   (testing "accumulate merges intervals from multiple signal changes"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [items-sig (sig/signal [])
 
                 ;; accumulate should merge intervals across changes
@@ -317,7 +317,7 @@
   (testing "parallel with pure (non-tracking) children completes once"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [exec-count (atom 0)
 
                 outer-spin

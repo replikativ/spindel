@@ -25,7 +25,7 @@
   (:refer-clojure :exclude [await])
   (:require [is.simm.distributed-scope :as ds]
             [org.replikativ.spindel.distributed.core :as dist]
-            [org.replikativ.spindel.runtime.core]
+            [org.replikativ.spindel.engine.core]
             [org.replikativ.spindel.spin.cps]
             [org.replikativ.spindel.effects.await]
             #?(:clj [clojure.tools.analyzer.jvm :as ana.jvm])
@@ -225,7 +225,7 @@
                             ;; The spin macro calls current-runtime at creation time for ID generation
                             ;; So the binding must be in effect before (spin ...) is evaluated
                             (if ctx#
-                              (binding [org.replikativ.spindel.runtime.core/*execution-context* ctx#]
+                              (binding [org.replikativ.spindel.engine.core/*execution-context* ctx#]
                                 (dist/spin->chan
                                   (org.replikativ.spindel.spin.cps/spin
                                     ~@remote-body)))

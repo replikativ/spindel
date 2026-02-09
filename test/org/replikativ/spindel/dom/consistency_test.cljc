@@ -45,8 +45,8 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -228,7 +228,7 @@
   (let [final-state (mutation-fn initial-state)]
     ;; Both paths need execution context for ifor-each
     (let [rt (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* rt]
+      (binding [ec/*execution-context* rt]
         ;; Direct path: render final state to fresh DOM (needs context for ifor-each)
         (let [direct-vdom (render-fn final-state)
               direct-structure (vdom-to-structure direct-vdom)]
@@ -526,7 +526,7 @@
    (deftest test-signal-based-list-add
      (testing "Signal-based list addition produces correct deltas"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  items (sig/signal [])
                  render-count (atom 0)
@@ -564,7 +564,7 @@
    (deftest test-signal-based-list-remove
      (testing "Signal-based list removal produces correct deltas"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  items (sig/signal [{:id "1" :text "A"}
                                     {:id "2" :text "B"}])
@@ -597,7 +597,7 @@
    (deftest test-signal-based-list-update
      (testing "Signal-based list update produces correct deltas"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  items (sig/signal [{:id "1" :text "A"}
                                     {:id "2" :text "B"}])

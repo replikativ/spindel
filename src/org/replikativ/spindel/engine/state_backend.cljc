@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.state-backend
+(ns org.replikativ.spindel.engine.state-backend
   "State backend abstraction for ExecutionContext.
 
   Provides pluggable storage strategies:

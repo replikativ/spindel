@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.event-system-test
+(ns org.replikativ.spindel.engine.event-system-test
   "Tests for event queue and drain system.
 
   The event system is critical infrastructure that processes state changes
@@ -9,10 +9,10 @@
   - Test synchronization (await-drain) works correctly"
   (:require #?(:clj [clojure.test :refer [deftest is testing]])
             #?(:cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.signal :as sig]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.track :refer [track]])
@@ -28,7 +28,7 @@
        (let [ctx (ctx/create-execution-context)
              processing-order (atom [])]
 
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Create 10 signals
            (let [signals (mapv (fn [i] (sig/signal i)) (range 10))
                  ;; Create tracking spin that records order
@@ -69,7 +69,7 @@
              n-changes-per-thread 100
              change-count (atom 0)]
 
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Create signal and tracking spin
            (let [test-sig (sig/signal 0)
                  tracker (spin
@@ -112,12 +112,12 @@
              n-signals-per-thread 5
              all-signals (atom [])]
 
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Each thread creates its own signals
            (let [futures (repeatedly n-threads
                            (fn []
                              (future
-                               (binding [rtc/*execution-context* ctx]
+                               (binding [ec/*execution-context* ctx]
                                  (let [thread-signals (mapv (fn [_] (sig/signal 0))
                                                            (range n-signals-per-thread))]
                                    (swap! all-signals into thread-signals)
@@ -152,7 +152,7 @@
        (let [ctx (ctx/create-execution-context)
              start (System/currentTimeMillis)]
 
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; No events enqueued
            (let [result (simple/await-drain-complete! ctx :timeout-ms 1000)
                  elapsed (- (System/currentTimeMillis) start)]
@@ -166,7 +166,7 @@
        (let [ctx (ctx/create-execution-context)
              processed (atom false)]
 
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Create signal that will trigger processing
            (let [sig (sig/signal 0)
                  tracker (spin

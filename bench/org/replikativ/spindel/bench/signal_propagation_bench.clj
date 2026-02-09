@@ -8,8 +8,8 @@
   Kyo Signal has no DAG — would need manual Promise chaining."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.bench.harness :as h]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]

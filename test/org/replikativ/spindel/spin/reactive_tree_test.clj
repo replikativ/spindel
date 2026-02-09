@@ -20,8 +20,8 @@
    Layer 0: Operations (add-block!, move-block!, etc.)"
   (:refer-clojure :exclude [await atom])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
             [org.replikativ.spindel.signal :as sig]
@@ -64,7 +64,7 @@
   (testing "Index signal tracks children-by-parent derived from blocks signal"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Layer 1: Source data
                 blocks-sig (sig/signal
                              {:b1 (make-block :b1 nil 0 "Block 1")
@@ -122,7 +122,7 @@
   (testing "Each node's render spin tracks only its own data"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Source data
                 blocks-sig (sig/signal
                              {:b1 (make-block :b1 nil 0 "Block 1")
@@ -180,7 +180,7 @@
   (testing "Per-block signals enable truly independent re-renders"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Per-block signals (fine-grained)
                 b1-sig (sig/signal (make-block :b1 nil 0 "Block 1"))
                 b2-sig (sig/signal (make-block :b2 nil 1 "Block 2"))
@@ -232,7 +232,7 @@
   (testing "Moving a block updates children lists of both old and new parent"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Initial: b3 is child of b1
                 blocks-sig (sig/signal
                              {:b1 (make-block :b1 nil 0 "Parent 1")
@@ -298,7 +298,7 @@
   (testing "Pattern for handling structural changes (add/remove/reorder)"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Children list signal for one parent
                 children-sig (sig/signal [:c1 :c2 :c3])
 
@@ -344,7 +344,7 @@
   (testing "Recursive tree structure with nested spins"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Tree structure:
                 ;; root
                 ;; ├── a
@@ -408,7 +408,7 @@
   (testing "Index can be updated incrementally from deltas"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Initial blocks
                 blocks-sig (sig/signal
                              {:b1 (make-block :b1 nil 0 "B1")
@@ -449,7 +449,7 @@
   (testing "Focus signal tracked per-block without full tree re-render"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [focus-sig (sig/signal :b1)  ; Currently focused block
 
                 ;; Per-block signals
@@ -501,7 +501,7 @@
   (testing "Collapse state can be stored per-block and affects children visibility"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [;; Blocks with collapse state in metadata
                 blocks-sig (sig/signal
                              {:parent {:block/id :parent

@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.cache
+(ns org.replikativ.spindel.engine.cache
   "Global content-addressed cache for spin results.
 
   Enables sharing computation across execution contexts (forks) when
@@ -13,7 +13,7 @@
   deps-hash and get cache hits, avoiding redundant computation.
 
   Performance: Uses fast murmur3-based content hashing."
-  (:require [org.replikativ.spindel.runtime.hash :as h]
+  (:require [org.replikativ.spindel.engine.hash :as h]
             [org.replikativ.spindel.log :as log]))
 
 ;; =============================================================================

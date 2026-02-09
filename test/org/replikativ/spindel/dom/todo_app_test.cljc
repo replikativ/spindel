@@ -24,8 +24,8 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -66,7 +66,7 @@
    (deftest test-todo-app-initial-render
      (testing "Todo app renders initial empty state"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  todos (sig/signal [])
                  app-spin (spin
@@ -96,7 +96,7 @@
    (deftest test-todo-app-add-item
      (testing "Adding todo item triggers re-render"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  todos (sig/signal [])
                  render-count (atom 0)
@@ -125,7 +125,7 @@
    (deftest test-todo-app-multiple-items
      (testing "Multiple todos render correctly"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  todos (sig/signal [])
                  last-item-count (atom 0)
@@ -163,7 +163,7 @@
    (deftest test-todo-app-update-item
      (testing "Updating todo triggers re-render with new state"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  todos (sig/signal [{:id "1" :text "Buy milk" :done false}])
                  last-done-status (atom nil)
@@ -196,7 +196,7 @@
    (deftest test-todo-app-stats-update
      (testing "Stats update correctly when items change"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  todos (sig/signal [])
                  last-stats (atom {:total 0 :done 0})
@@ -237,7 +237,7 @@
    (deftest test-ifor-each-returns-keyed-fragment
      (testing "ifor-each returns KeyedFragment"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [items [{:id "1" :text "A"} {:id "2" :text "B"}]
                  render-fn (fn [item] (el/li (:text item)))
                  result (foreach/ifor-each :id items render-fn)]

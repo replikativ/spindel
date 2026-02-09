@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.effects
+(ns org.replikativ.spindel.engine.effects
   "Effect system for extensible continuation handling.
 
   Effects are the extension mechanism for laufzeit's CPS transformation.
@@ -22,7 +22,7 @@
   2. **Invocation**: Spin macro intercepts calls to those symbols and dispatches
   3. **Runtime swapping**: Forked runtimes can replace handlers if desired
   4. **Continuation**: Handlers call resolve/reject to resume execution"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
+  (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.log :as log]))
 
 ;; =============================================================================
@@ -33,7 +33,7 @@
   "Protocol for effect handlers that extend the CPS transformation.
 
   Effect handlers are the extension mechanism for laufzeit. They receive:
-  - runtime: The runtime context (access via rtc/*execution-context* binding)
+  - runtime: The runtime context (access via ec/*execution-context* binding)
   - args: Arguments passed to the effect (e.g., signal-ref, spin-ref)
   - resolve: Continuation to call with success value
   - reject: Continuation to call with error
@@ -49,7 +49,7 @@
     "Handle an effect invocation.
 
     Args:
-    - context: Execution context instance (bound in rtc/*execution-context*)
+    - context: Execution context instance (bound in ec/*execution-context*)
     - args: Map of effect-specific arguments
     - resolve: (fn [value] ...) - Resume with success
     - reject: (fn [error] ...) - Resume with error
@@ -162,7 +162,7 @@
 
   Called at entry point of all effect handlers to enforce cancellation."
   [spin-id]
-  (when (and spin-id (rtc/spin-is-cancelled?))
+  (when (and spin-id (ec/spin-is-cancelled?))
     (throw (ex-info "Spin cancelled" {:spin-id spin-id}))))
 
 (defn type-error

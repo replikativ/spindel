@@ -9,11 +9,11 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.nodes :as nodes]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -220,7 +220,7 @@
      (testing "GC of Spin object triggers cleanup of runtime state (JVM)"
        (let [ctx (ctx/create-execution-context)
              spin-id-holder (atom nil)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Create a spin in a local scope so it can be GC'd
            (let [s (spin 42)]
              (reset! spin-id-holder (spin-core/spin-id s))
@@ -239,7 +239,7 @@
    (deftest test-no-residual-after-bulk-gc-jvm
      (testing "No residual spin state after creating and GC'ing many spins (JVM)"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Create and deref 100 spins
            (dotimes [i 100]
              @(spin (+ i 1))))
@@ -265,7 +265,7 @@
        (let [spin-id-holder (atom nil)]
          ;; Create context and spin in a scope that lets them be GC'd
          (let [ctx (ctx/create-execution-context)]
-           (binding [rtc/*execution-context* ctx]
+           (binding [ec/*execution-context* ctx]
              (let [s (spin 42)]
                (reset! spin-id-holder (spin-core/spin-id s))
                @s)))

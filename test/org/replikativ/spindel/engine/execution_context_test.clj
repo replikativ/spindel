@@ -1,16 +1,16 @@
-(ns org.replikativ.spindel.runtime.execution-context-test
+(ns org.replikativ.spindel.engine.execution-context-test
   "Tests for ExecutionContext - Phase 2 fork-safe runtime."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.signal :as sig]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.state-backend :as backend]
-            [org.replikativ.spindel.runtime.nodes :as nodes]))
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.state-backend :as backend]
+            [org.replikativ.spindel.engine.nodes :as nodes]))
 
 (deftest test-execution-context-creation
   (testing "ExecutionContext can be created with default options"
@@ -155,14 +155,14 @@
     ;; Create signal in parent BEFORE forking
     (let [parent-ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* parent-ctx]
+        (binding [ec/*execution-context* parent-ctx]
           (let [counter (sig/signal 100)]
             ;; NOW fork - both forks get copy of signal state
             (let [fork1 (ctx/fork-context parent-ctx)
                   fork2 (ctx/fork-context parent-ctx)]
 
               ;; Mutate signal in fork1 to value 42
-              (binding [rtc/*execution-context* fork1]
+              (binding [ec/*execution-context* fork1]
                 (swap! counter (constantly 42))
                 (let [doubled (spin
                                 (let [{:keys [new]} (track counter)]
@@ -171,7 +171,7 @@
                   (is (= 84 @doubled))))
 
               ;; Mutate signal in fork2 to value 99
-              (binding [rtc/*execution-context* fork2]
+              (binding [ec/*execution-context* fork2]
                 (swap! counter (constantly 99))
                 (let [doubled (spin
                                 (let [{:keys [new]} (track counter)]
@@ -187,7 +187,7 @@
           execution-count (atom 0)]
       (try
         ;; Create signal and spin in parent BEFORE forking
-        (binding [rtc/*execution-context* parent-ctx]
+        (binding [ec/*execution-context* parent-ctx]
           (let [counter (sig/signal 42)
                 ;; Create spin in parent that counts executions
                 ;; Counter AFTER track so it increments on continuation resumption
@@ -199,14 +199,14 @@
             (let [fork1 (ctx/fork-context parent-ctx)
                   fork2 (ctx/fork-context parent-ctx)]
               ;; Execute in fork1 (should run and cache)
-              (binding [rtc/*execution-context* fork1]
+              (binding [ec/*execution-context* fork1]
                 (is (= 84 @counting-spin))
                 (is (= 1 @execution-count))
                 ;; Execute again in fork1 (should hit cache)
                 (is (= 84 @counting-spin))
                 (is (= 1 @execution-count))) ; Still 1 - cache hit!
               ;; Execute in fork2 (independent cache - should re-execute)
-              (binding [rtc/*execution-context* fork2]
+              (binding [ec/*execution-context* fork2]
                 (is (= 84 @counting-spin))
                 (is (= 2 @execution-count)) ; Incremented - cache miss!
                 ;; Execute again in fork2 (should hit fork2's cache)
@@ -221,7 +221,7 @@
           count-1 (atom 0)
           count-2 (atom 0)]
 
-      (binding [rtc/*execution-context* parent-ctx]
+      (binding [ec/*execution-context* parent-ctx]
         (let [sig-1 (sig/signal 100)
               sig-2 (sig/signal 200)
               ;; spin-1 depends only on sig-1
@@ -245,7 +245,7 @@
 
           ;; Fork and modify ONLY sig-1
           (let [fork (ctx/fork-context parent-ctx)]
-            (binding [rtc/*execution-context* fork]
+            (binding [ec/*execution-context* fork]
               ;; Modify sig-1 in fork
               (swap! sig-1 (constantly 42))
 
@@ -275,7 +275,7 @@
   (testing "Snapshot is fully independent from parent"
     (let [parent-ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* parent-ctx]
+        (binding [ec/*execution-context* parent-ctx]
           (let [sig (sig/signal 100)
                 spin-1 (spin (let [{:keys [new]} (track sig)] new))]
             ;; Execute in parent
@@ -292,7 +292,7 @@
               (is (= 101 @sig))
 
               ;; Snapshot should be unchanged (independent copy)
-              (binding [rtc/*execution-context* snapshot]
+              (binding [ec/*execution-context* snapshot]
                 (is (= 100 @sig))
                 (is (= 100 @spin-1))))))
         (finally
@@ -313,7 +313,7 @@
   (testing "Serialize and deserialize preserves state"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 42)
                 spin-1 (spin (let [{:keys [new]} (track sig)] (* 2 new)))]
             ;; Execute spin
@@ -328,7 +328,7 @@
                     restored (ctx/restore-snapshot restored-snap)]
 
                 ;; State should be preserved
-                (binding [rtc/*execution-context* restored]
+                (binding [ec/*execution-context* restored]
                   (is (= 42 @sig))
                   (is (= 84 @spin-1)))))))
         (finally
@@ -348,7 +348,7 @@
           (is (= :atom (backend/backend-type (:backend restored))))
 
           ;; Can modify state after restore
-          (binding [rtc/*execution-context* restored]
+          (binding [ec/*execution-context* restored]
             (let [sig (sig/signal 100)]
               (swap! sig inc)
               (is (= 101 @sig)))))
@@ -360,7 +360,7 @@
     (let [ctx (ctx/create-execution-context)
           execution-count (atom 0)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 10)
                 ;; Counter AFTER track so it increments on continuation resumption
                 spin-1 (spin
@@ -377,7 +377,7 @@
                   restored (ctx/restore-snapshot snap)]
 
               ;; Modify signal in restored context
-              (binding [rtc/*execution-context* restored]
+              (binding [ec/*execution-context* restored]
                 (swap! sig (constantly 42))
                 (simple/await-drain-complete! restored)
 
@@ -391,7 +391,7 @@
   (testing "In-flight spins are cleaned up in snapshot"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 10)
                 spin-1 (spin (let [{:keys [new]} (track sig)] new))]
 
@@ -399,17 +399,17 @@
             @spin-1
 
             ;; Manually mark spin as running (simulate in-flight)
-            (rtc/swap-state! [:nodes (.-spin-id spin-1) :running?] (constantly true))
-            (rtc/swap-state! [:nodes (.-spin-id spin-1) :completed?] (constantly false))
+            (ec/swap-state! [:nodes (.-spin-id spin-1) :running?] (constantly true))
+            (ec/swap-state! [:nodes (.-spin-id spin-1) :completed?] (constantly false))
 
             ;; Create snapshot with clean-in-flight? true
             (let [snap (ctx/snapshot-context ctx :clean-in-flight? true)
                   restored (ctx/restore-snapshot snap)]
 
               ;; Spin should be marked dirty in snapshot
-              (binding [rtc/*execution-context* restored]
-                (is (not (rtc/spin-result-clean? (.-spin-id spin-1))))
-                (is (rtc/spin-result-dirty? (.-spin-id spin-1)))))))
+              (binding [ec/*execution-context* restored]
+                (is (not (ec/spin-result-clean? (.-spin-id spin-1))))
+                (is (ec/spin-result-dirty? (.-spin-id spin-1)))))))
         (finally
           (ctx/stop-context! ctx))))))
 
@@ -418,7 +418,7 @@
     (let [ctx (ctx/create-execution-context)
           count-1 (atom 0)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 100)
                 ;; Counter AFTER track so it increments on continuation resumption
                 spin-1 (spin
@@ -443,10 +443,10 @@
                   restored (ctx/restore-snapshot snap :drain-events? true)]
 
               ;; Event should have been processed during restore
-              (binding [rtc/*execution-context* restored]
+              (binding [ec/*execution-context* restored]
                 ;; Spin should be CLEAN after event processing - the continuation
                 ;; resumed and completed the spin with the new signal value
-                (is (rtc/spin-result-clean? (.-spin-id spin-1)))
+                (is (ec/spin-result-clean? (.-spin-id spin-1)))
 
                 ;; Spin already re-executed during drain via continuation
                 ;; @spin-1 returns cached result (no additional execution)
@@ -460,7 +460,7 @@
   (testing "Snapshot can exclude pending events"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 100)
                 spin-1 (spin (let [{:keys [new]} (track sig)] new))]
 
@@ -477,11 +477,11 @@
                   restored (ctx/restore-snapshot snap :drain-events? true)]
 
               ;; In the restored context, the spin should have the drained value
-              (binding [rtc/*execution-context* restored]
+              (binding [ec/*execution-context* restored]
                 (is (= 101 @spin-1))
 
                 ;; Now change signal again in parent (should NOT affect snapshot)
-                (binding [rtc/*execution-context* ctx]
+                (binding [ec/*execution-context* ctx]
                   (swap! sig inc)
                   (simple/await-drain-complete! ctx))
 
@@ -494,7 +494,7 @@
   (testing "Overlay and snapshot have different isolation semantics"
     (let [parent (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* parent]
+        (binding [ec/*execution-context* parent]
           (let [sig (sig/signal 100)
                 spin-1 (spin (let [{:keys [new]} (track sig)] new))]
 
@@ -513,11 +513,11 @@
               (is (= 101 @sig))
 
               ;; Overlay sees parent's change (reads fall through)
-              (binding [rtc/*execution-context* overlay-fork]
+              (binding [ec/*execution-context* overlay-fork]
                 (is (= 101 @sig)))
 
               ;; Snapshot does NOT see parent's change (independent copy)
-              (binding [rtc/*execution-context* snapshot-fork]
+              (binding [ec/*execution-context* snapshot-fork]
                 (is (= 100 @sig))))))
         (finally
           (ctx/stop-context! parent))))))
@@ -527,7 +527,7 @@
     (let [parent (ctx/create-execution-context)
           count-1 (atom 0)]
       (try
-        (binding [rtc/*execution-context* parent]
+        (binding [ec/*execution-context* parent]
           (let [sig (sig/signal 100)
                 ;; Counter AFTER track so it increments on continuation resumption
                 spin-1 (spin
@@ -542,7 +542,7 @@
             (let [fork (ctx/fork-context parent)]
 
               ;; Change signal in fork only
-              (binding [rtc/*execution-context* fork]
+              (binding [ec/*execution-context* fork]
                 (swap! sig (constantly 42))
                 (simple/await-drain-complete! fork)
 
@@ -562,7 +562,7 @@
   (testing "In-memory snapshots preserve continuations, serialization drops them"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           ;; Add some continuations to parent
           (rtp/add-continuation! ctx :test-spin-1 {:id :cont-1 :type :test})
           (rtp/add-continuation! ctx :test-spin-2 {:id :cont-2 :type :test})
@@ -587,7 +587,7 @@
   (testing "Snapshot marks in-flight spins as dirty"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           ;; Create a long-running spin by manually setting running flag
           (rtp/swap-state! ctx [:nodes :test-spin]
             (constantly (nodes/->spin-node
@@ -620,7 +620,7 @@
   (testing "clean-in-flight? option controls spin cleanup"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           ;; Add in-flight spin
           (rtp/swap-state! ctx [:nodes :test-spin]
             (constantly (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{})))

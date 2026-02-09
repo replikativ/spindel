@@ -18,8 +18,8 @@
          (let [x (await other-spin)]
            (* x 2)))\")"
   (:require [sci.core :as sci]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.addressing :as addressing]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :as eff-await]
@@ -43,12 +43,12 @@
     :expose-track? - Include track effect (default true)
 
   Example:
-    (require '[org.replikativ.spindel.runtime.context :as ctx]
+    (require '[org.replikativ.spindel.engine.context :as ctx]
              '[org.replikativ.spindel.sci.boundary :as boundary])
 
     (def rt (ctx/create-execution-context))
 
-    (binding [rtc/*execution-context* rt]
+    (binding [ec/*execution-context* rt]
       (def native-spin (spin (+ 10 20))))  ; => 30
 
     (def sci-ctx
@@ -57,7 +57,7 @@
          :native-spins {'my-native-spin native-spin}}))
 
     ;; SCI code with full spin syntax!
-    (binding [rtc/*execution-context* rt]
+    (binding [ec/*execution-context* rt]
       (def sci-spin
         (sci/eval-string* sci-ctx
           \"(require '[org.replikativ.spindel.spin.cps :refer [spin]]
@@ -66,7 +66,7 @@
              (let [x (await my-native-spin)]
                (* x 2)))\")))
 
-    (binding [rtc/*execution-context* rt]
+    (binding [ec/*execution-context* rt]
       @sci-spin)  ; => 60"
   [{:keys [runtime native-spins expose-track?]
     :or {native-spins {}
@@ -92,15 +92,15 @@
                       'org.replikativ.spindel.spin.core
                       {'make-spin spin-core/make-spin}
 
-                      'org.replikativ.spindel.runtime.core
+                      'org.replikativ.spindel.engine.core
                       {'*execution-context* (sci/new-dynamic-var '*execution-context* runtime)
                        '*spin-id* (sci/new-dynamic-var '*spin-id* nil)
-                       'current-execution-context rtc/current-execution-context
-                       'with-context (var rtc/with-context)
-                       'spin-current-result rtc/spin-current-result
-                       'deps-track-spin! rtc/deps-track-spin!}
+                       'current-execution-context ec/current-execution-context
+                       'with-context (var ec/with-context)
+                       'spin-current-result ec/spin-current-result
+                       'deps-track-spin! ec/deps-track-spin!}
 
-                      'org.replikativ.spindel.runtime.addressing
+                      'org.replikativ.spindel.engine.addressing
                       {'next-address! addressing/next-address!}
 
                       'is.simm.partial-cps.async
@@ -146,7 +146,7 @@
   Convenience for testing. Requires *execution-context* to be bound.
 
   Example:
-    (binding [rtc/*execution-context* rt]
+    (binding [ec/*execution-context* rt]
       (eval-and-deref sci-ctx
         \"(require '[org.replikativ.spindel.spin.cps :refer [spin]])
          (spin (* 7 6))\"))  ; => 42"
@@ -159,7 +159,7 @@
 ;; =============================================================================
 
 (comment
-  (require '[org.replikativ.spindel.runtime.context :as ctx]
+  (require '[org.replikativ.spindel.engine.context :as ctx]
            '[org.replikativ.spindel.sci.boundary :as boundary])
 
   ;; Setup
@@ -168,13 +168,13 @@
   ;; Test 1: Simple spin
   (def sci-ctx (create-spin-macro-context {:runtime rt}))
 
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (eval-and-deref sci-ctx
       "(require '[org.replikativ.spindel.spin.cps :refer [spin]])
        (spin (+ 100 200))"))  ; => 300
 
   ;; Test 2: Spin with await
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (def native-spin (spin (* 7 6))))  ; => 42
 
   (def sci-ctx-await
@@ -182,7 +182,7 @@
       {:runtime rt
        :native-spins {'other-spin native-spin}}))
 
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (eval-and-deref sci-ctx-await
       "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
                  '[org.replikativ.spindel.effects.await :refer [await]])
@@ -191,7 +191,7 @@
            (* x 2)))"))  ; => 84
 
   ;; Test 3: Chain multiple awaits
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (def spin-a (spin (+ 10 5)))   ; => 15
     (def spin-b (spin (* 3 2))))   ; => 6
 
@@ -201,7 +201,7 @@
        :native-spins {'a spin-a
                       'b spin-b}}))
 
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (eval-and-deref sci-ctx-chain
       "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
                  '[org.replikativ.spindel.effects.await :refer [await]])

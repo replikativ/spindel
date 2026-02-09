@@ -3,8 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.signal :as sig]
@@ -40,7 +40,7 @@
    (deftest test-error-is-cached
      (testing "Spin error is cached and rethrown on subsequent calls"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [exec-count (atom 0)
                  error-spin (spin
                               (swap! exec-count inc)
@@ -178,9 +178,9 @@
                        (done))
                      (fn [_error]
                        ;; Check cached value indicates error
-                       (let [res (rtc/spin-current-result spin-id)]
+                       (let [res (ec/spin-current-result spin-id)]
                          (is (some? res))
-                         (is (rtc/spin-result-clean? spin-id))
+                         (is (ec/spin-result-clean? spin-id))
                          (is (spin-core/error? res))
                          (done)))))))))
 
@@ -192,7 +192,7 @@
    (deftest test-spin-division-by-zero
      (testing "Spin with arithmetic error throws exception"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [div-spin (spin (/ 1 0))]
              (is (thrown? ArithmeticException @div-spin))))))))
 
@@ -200,7 +200,7 @@
    (deftest test-spin-null-pointer
      (testing "Spin with null pointer access throws NPE"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [npe-spin (spin (.toString nil))]
              (is (thrown? NullPointerException @npe-spin))))))))
 
@@ -208,7 +208,7 @@
    (deftest test-error-cache-stores-correct-error
      (testing "Cached error is the same instance"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [original-error (ex-info "Original" {:data 123})
                  error-spin (spin (throw original-error))]
 
@@ -226,7 +226,7 @@
    (deftest test-error-with-cause
      (testing "Error with cause chain is preserved"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [root-cause (Exception. "Root cause")
                  wrapped-error (ex-info "Wrapped" {:wrapped true} root-cause)
                  error-spin (spin (throw wrapped-error))]
@@ -248,7 +248,7 @@
    (deftest test-spin-error-then-signal-change
      (testing "Spin that initially errors can succeed after signal change"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [divisor (sig/signal 0)
                  div-spin (spin
                             (let [{:keys [new]} (track divisor)]
@@ -268,7 +268,7 @@
    (deftest test-retry-with-success
      (testing "Spin retries and eventually succeeds"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [attempt-signal (sig/signal 1)
                  retry-spin (spin
                               (let [{:keys [new]} (track attempt-signal)]
@@ -299,7 +299,7 @@
    (deftest test-successful-spin-then-error
      (testing "Spin succeeds, then signal changes cause error"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [value (sig/signal 10)
                  risky-spin (spin
                               (let [{:keys [new]} (track value)]
@@ -322,7 +322,7 @@
    (deftest test-error-then-success
      (testing "Spin errors, then signal changes lead to success"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [value (sig/signal -5)
                  guarded-spin (spin
                                 (let [{:keys [new]} (track value)]
@@ -349,7 +349,7 @@
    (deftest test-runtime-exception
      (testing "RuntimeException is properly handled"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [runtime-error-spin (spin (throw (RuntimeException. "Runtime error")))]
              (is (thrown? RuntimeException @runtime-error-spin))))))))
 
@@ -357,7 +357,7 @@
    (deftest test-illegal-argument-exception
      (testing "IllegalArgumentException is properly handled"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [illegal-arg-spin (spin
                                     (throw (IllegalArgumentException. "Invalid argument")))]
              (is (thrown? IllegalArgumentException @illegal-arg-spin))))))))
@@ -366,6 +366,6 @@
    (deftest test-assertion-error
      (testing "AssertionError is properly handled"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [assertion-spin (spin (assert false "Assertion failed"))]
              (is (thrown? AssertionError @assertion-spin))))))))

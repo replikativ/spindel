@@ -17,7 +17,7 @@
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.core :as ec]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
@@ -176,7 +176,7 @@
   [pub]
   (let [{:keys [source-aseq topic-fn mults-atom closed-atom pump-spin-atom]} pub
         ;; Capture runtime - needed for event-based execution
-        runtime (rtc/current-execution-context)
+        runtime (ec/current-execution-context)
         pump (spin
                (loop [source source-aseq]
                  (if-let [result (await (anext source))]
@@ -196,7 +196,7 @@
     (reset! pump-spin-atom pump)
     ;; Kick off pump execution via event system (not future!)
     ;; This ensures execution context is properly bound when pump executes
-    (rtc/enqueue-event! {:type :spin-execution
+    (ec/enqueue-event! {:type :spin-execution
                          :id (spin-core/spin-id pump)
                          :spin pump
                          :execution-context runtime

@@ -2,7 +2,7 @@
   "Core async sequence generation - gen-aseq macro and yield"
   (:refer-clojure :exclude [for])
   (:require [is.simm.partial-cps.sequence :as pcps-seq :refer [PAsyncSeq]]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.combinators :refer [race]]
@@ -64,11 +64,11 @@
      ;; CLJS: Set var value directly, don't restore on return
      ;; The yield-handler is specific to this execution context
      (do
-       (set! rtc/*yield-handler* yield-handler)
+       (set! ec/*yield-handler* yield-handler)
        (cps-fn resolve-fn reject-fn))
      :clj
      ;; CLJ: binding works correctly with thread-local semantics
-     (binding [rtc/*yield-handler* yield-handler]
+     (binding [ec/*yield-handler* yield-handler]
        (cps-fn resolve-fn reject-fn))))
 
 (deftype ASeqGenerator [gen-id cps-fn shared-term-deferred resolve-fn reject-fn]
@@ -215,7 +215,7 @@
            gen-id-expr `(keyword (str "gen-aseq-" ~ns-name "-" ~line "-" ~col "-" (random-uuid)))
 
            ;; Get current runtime (will be bound dynamically)
-           runtime-expr `(rtc/current-execution-context)
+           runtime-expr `(ec/current-execution-context)
 
            ;; Build breakpoints: Start with all spin breakpoints (await, track, extensible effects)
            ;; then add yield breakpoint
@@ -252,7 +252,7 @@
                                     result#))))
                             (catch ~(if is-cljs? :default `Throwable) t# (~e t#))))]
 
-       `(binding [rtc/*execution-context* ~runtime-expr]
+       `(binding [ec/*execution-context* ~runtime-expr]
           (let [gen-id# ~gen-id-expr
                 cps-fn# ~cps-fn-code]
             (make-gen-aseq cps-fn# gen-id#))))))
@@ -286,6 +286,6 @@
      [seq-exprs body-expr]
      `(pcps-seq/for-with
         {:breakpoints (spin-cps/build-breakpoints)
-         :bindings [[rtc/*execution-context* (rtc/current-execution-context)]]}
+         :bindings [[ec/*execution-context* (ec/current-execution-context)]]}
         ~seq-exprs
         ~body-expr)))

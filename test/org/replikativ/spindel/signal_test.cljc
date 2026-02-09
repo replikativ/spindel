@@ -3,8 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -214,7 +214,7 @@
    (deftest test-signal-interval-scalar
      (testing "Interval for scalar values"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 0)
                  spin-result (spin
                                (let [view (track counter)]
@@ -240,7 +240,7 @@
    (deftest test-signal-interval-vector
      (testing "Interval for vector values with deltas"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (sig/signal [])
                  spin-result (spin
                                (let [view (track todos)]
@@ -267,7 +267,7 @@
    (deftest test-signal-interval-deltaable-operations
      (testing "Deltaable collections track operations via Interval"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [items (sig/signal [])
                  deltas-spin (spin
                                (let [{:keys [delta]} (track items)]
@@ -296,7 +296,7 @@
    (deftest test-signal-multiple-observers
      (testing "Multiple spins can observe the same signal"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [counter (sig/signal 0)
                  doubled (spin
                            (let [{:keys [new]} (track counter)]
@@ -331,7 +331,7 @@
    (deftest test-signal-observers-independence
      (testing "Observers execute independently"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [counter (sig/signal 0)
                  exec-count-1 (atom 0)
                  exec-count-2 (atom 0)
@@ -364,7 +364,7 @@
    (deftest test-signal-observer-topological-order
      (testing "Observers execute in topological order"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [counter (sig/signal 0)
                  execution-order (atom [])
                  spin1 (spin
@@ -409,7 +409,7 @@
    (deftest test-signal-concurrent-updates
      (testing "Signal handles multiple updates between spin executions"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [counter (sig/signal 0)
                  spin-result (spin
                                (let [{:keys [new]} (track counter)]
@@ -431,7 +431,7 @@
    (deftest test-signal-same-value-update
      (testing "Signal update with same value"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [counter (sig/signal 0)
                  exec-count (atom 0)
                  spin-result (spin
@@ -455,7 +455,7 @@
    (deftest test-signal-nil-values
      (testing "Signals can hold nil values"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [nullable (sig/signal nil)
                  spin-result (spin
                                (let [{:keys [new]} (track nullable)]
@@ -475,7 +475,7 @@
    (deftest test-signal-false-values
      (testing "Signals can hold false values"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [bool-sig (sig/signal false)
                  spin-result (spin
                                (let [{:keys [new]} (track bool-sig)]
@@ -499,7 +499,7 @@
    (deftest test-multi-signal-dependency-preservation
      (testing "When resuming from later signal, earlier signal dependencies are preserved"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [;; Signal A is tracked first, Signal B is tracked second
                  signal-a (sig/signal :a1)
                  signal-b (sig/signal :b1)
@@ -535,7 +535,7 @@
    (deftest test-multi-signal-later-then-earlier-sequence
      (testing "Changing signals in reverse order (later then earlier) maintains reactivity"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [signal-a (sig/signal 0)
                  signal-b (sig/signal 0)
                  signal-c (sig/signal 0)
@@ -582,7 +582,7 @@
    (deftest test-conditional-signal-tracking
      (testing "Conditional branches only track signals in taken branch"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [condition (sig/signal true)
                  signal-true-branch (sig/signal :true-val)
                  signal-false-branch (sig/signal :false-val)

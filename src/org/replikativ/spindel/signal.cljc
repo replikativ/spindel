@@ -1,7 +1,7 @@
 (ns org.replikativ.spindel.signal
   "Signal creation and manipulation"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.nodes :as nodes]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
@@ -51,7 +51,7 @@
                 ids# @*batched-signal-ids*]
             ;; Enqueue one event per distinct signal (preserve order)
             (doseq [id# (distinct ids#)]
-              (rtc/enqueue-event! {:type :signal-change :id id#}))
+              (ec/enqueue-event! {:type :signal-change :id id#}))
             result#)))))
 
 ;; CLJS version - function since macros not available cross-platform
@@ -69,7 +69,7 @@
                ids @*batched-signal-ids*]
            ;; Enqueue one event per distinct signal (preserve order)
            (doseq [id (distinct ids)]
-             (rtc/enqueue-event! {:type :signal-change :id id}))
+             (ec/enqueue-event! {:type :signal-change :id id}))
            result)))))
 
 ;; =============================================================================
@@ -99,7 +99,7 @@
 
        clojure.lang.IAtom
        ;; Enable standard clojure.core/swap! and reset! on SignalRef.
-       ;; These delegate to swap-signal*-explicit which uses rtc/*execution-context*.
+       ;; These delegate to swap-signal*-explicit which uses ec/*execution-context*.
        (swap [this f]
          (swap-signal*-explicit this f))
        (swap [this f a]
@@ -142,9 +142,9 @@
 (defn ensure-signal-initialized!
   [^SignalRef signal-ref]
   (let [id (:id signal-ref)]
-    (when-not (rtc/get-state [:nodes id])
+    (when-not (ec/get-state [:nodes id])
       ;; Write to [:nodes id] using SignalNode (Phase 1B)
-      (rtc/swap-state! [:nodes id]
+      (ec/swap-state! [:nodes id]
         (fn [existing-node]
           (or existing-node
               (let [wrapped (d/wrap-deltaable (:initial-value signal-ref))]
@@ -157,7 +157,7 @@
   (ensure-signal-initialized! signal-ref)
   ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
   (let [id (:id signal-ref)
-        node (rtc/get-state [:nodes id])]
+        node (ec/get-state [:nodes id])]
     (when node
       (nodes/get-value node))))
 
@@ -168,7 +168,7 @@
   [signal-ref]
   (ensure-signal-initialized! signal-ref)
   ;; NEW: Read from :nodes (Phase 1B read migration)
-  (rtc/get-state [:nodes (:id signal-ref)]))
+  (ec/get-state [:nodes (:id signal-ref)]))
 
 (defn clear-signal-deltas!
   "Clear deltas from signal node after they've been consumed.
@@ -180,7 +180,7 @@
   is needed for reactive change detection."
   [signal-ref]
   (let [id (:id signal-ref)]
-    (rtc/swap-state! [:nodes id]
+    (ec/swap-state! [:nodes id]
       (fn [node]
         (when node
           (nodes/->signal-node
@@ -247,15 +247,15 @@
       (let [source-loc {:file *file*
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
-        `(let [ctx# (rtc/current-execution-context)
-               id# (org.replikativ.spindel.runtime.addressing/next-address! ctx# "signal" ~source-loc)]
+        `(let [ctx# (ec/current-execution-context)
+               id# (org.replikativ.spindel.engine.addressing/next-address! ctx# "signal" ~source-loc)]
            (->SignalRef id# (d/clear-deltas ~initial-value)))))
      ([ctx initial-value]
       (let [source-loc {:file *file*
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
         `(let [ctx# ~ctx
-               id# (org.replikativ.spindel.runtime.addressing/next-address! ctx# "signal" ~source-loc)]
+               id# (org.replikativ.spindel.engine.addressing/next-address! ctx# "signal" ~source-loc)]
            (->SignalRef id# (d/clear-deltas ~initial-value)))))))
 
 (defn- swap-signal*-explicit
@@ -265,7 +265,7 @@
   (let [id (:id signal-ref)]
 
     ;; Update signal value in [:nodes id] using SignalNode (Phase 1B)
-    (let [new-node (rtc/swap-state! [:nodes id]
+    (let [new-node (ec/swap-state! [:nodes id]
                      (fn [old-node]
                        (when old-node
                          (let [old-value (nodes/get-value old-node)
@@ -286,7 +286,7 @@
         ;; Batching: collect signal ID for later
         (swap! *batched-signal-ids* conj id)
         ;; Normal: enqueue engine event for reactive propagation
-        (rtc/enqueue-event! {:type :signal-change :id id}))
+        (ec/enqueue-event! {:type :signal-change :id id}))
 
       ;; Return new snapshot
       (nodes/get-value new-node))))
@@ -301,7 +301,7 @@
         changed? (volatile! false)]
 
     ;; Update signal value in [:nodes id] using SignalNode (Phase 1B)
-    (rtc/swap-state! [:nodes id]
+    (ec/swap-state! [:nodes id]
       (fn [old-node]
         (when old-node
           (let [old-value (nodes/get-value old-node)
@@ -319,7 +319,7 @@
                               (inc old-generation))))))
 
     ;; Enqueue engine event
-    (rtc/enqueue-event! {:type :signal-change :id id})
+    (ec/enqueue-event! {:type :signal-change :id id})
 
     ;; Return changed flag
     @changed?))

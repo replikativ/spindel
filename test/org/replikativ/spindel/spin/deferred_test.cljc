@@ -3,8 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -17,7 +17,7 @@
      (fn [f]
        (let [ctx (ctx/create-execution-context)]
          (try
-           (binding [rtc/*execution-context* ctx]
+           (binding [ec/*execution-context* ctx]
              (f))
            (finally
              (ctx/stop-context! ctx)))))))
@@ -83,7 +83,7 @@
 #?(:clj
    (deftest test-deferred-multiple-readers
      (testing "Multiple readers all get the same value"
-       (binding [rtc/*execution-context* (ctx/create-execution-context)]
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [d (sync/deferred)
                results (atom [])]
 
@@ -104,13 +104,13 @@
 #?(:clj
    (deftest test-deferred-delivery-during-await
      (testing "Delivery while await is blocked"
-       (binding [rtc/*execution-context* (ctx/create-execution-context)]
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [d (sync/deferred)
                result-promise (promise)]
 
            ;; Start async reader
            (future
-             (binding [rtc/*execution-context* (rtc/current-execution-context)]
+             (binding [ec/*execution-context* (ec/current-execution-context)]
                (let [result @(spin (await d))]
                  (deliver result-promise result))))
 

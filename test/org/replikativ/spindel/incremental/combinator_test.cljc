@@ -14,9 +14,9 @@
      (:refer-clojure :exclude [filter map reduce]))
   #?(:clj
      (:require [clojure.test :refer [deftest is testing]]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.scheduler :as sched]
                [org.replikativ.spindel.signal :as sig]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.track :refer [track]]
@@ -103,7 +103,7 @@
    (deftest test-filter-initial-execution
      (testing "Filter computes full result on first execution"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [source (iv/interval nil [1 2 3 4 5] nil)
                  result (ic/filter even? source)]
              (is (= [2 4] (iv/get-new result)))
@@ -113,7 +113,7 @@
    (deftest test-filter-incremental-add
      (testing "Filter processes :add delta incrementally"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; First execution - establishes cache
            (let [source1 (iv/interval nil [1 2 3 4] nil)
                  result1 (ic/filter* {:file "test" :line 1 :column 0} even? source1)]
@@ -135,7 +135,7 @@
    (deftest test-filter-enter-exit
      (testing "Filter handles enter/exit on :update delta"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; Initial: [1 2 3] filtered for even gives [2]
            (let [source1 (iv/interval nil [1 2 3] nil)
                  result1 (ic/filter* {:file "test" :line 10 :column 0} even? source1)]
@@ -159,7 +159,7 @@
    (deftest test-map-initial-execution
      (testing "Map transforms all values on first execution"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [source (iv/interval nil [1 2 3] nil)
                  result (ic/map #(* 2 %) source)]
              (is (= [2 4 6] (iv/get-new result)))
@@ -169,7 +169,7 @@
    (deftest test-map-incremental-add
      (testing "Map transforms only :add delta"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; First execution
            (let [source1 (iv/interval nil [1 2 3] nil)
                  result1 (ic/map* {:file "test" :line 20 :column 0} #(* 2 %) source1)]
@@ -192,7 +192,7 @@
    (deftest test-reduce-initial-execution
      (testing "Reduce computes full result on first execution"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [source (iv/interval nil [1 2 3 4] nil)
                  result (ic/reduce + 0 source)]
              ;; Returns interval wrapping scalar
@@ -203,7 +203,7 @@
    (deftest test-reduce-incremental-add
      (testing "Reduce applies enter-fn for :add delta"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; First execution: sum = 6
            (let [source1 (iv/interval nil [1 2 3] nil)
                  result1 (ic/reduce* {:file "test" :line 30 :column 0} + 0 + - source1)]
@@ -221,7 +221,7 @@
    (deftest test-reduce-incremental-remove
      (testing "Reduce applies exit-fn for :remove delta"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; First execution: sum = 10
            (let [source1 (iv/interval nil [1 2 3 4] nil)
                  result1 (ic/reduce* {:file "test" :line 40 :column 0} + 0 + - source1)]
@@ -243,7 +243,7 @@
    (deftest test-pipeline-filter-map-reduce
      (testing "Chained combinators pass intervals correctly"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; Pipeline: filter even -> double -> sum
            ;; [1 2 3 4] -> [2 4] -> [4 8] -> 12
            (let [source (iv/interval nil [1 2 3 4] nil)
@@ -258,7 +258,7 @@
    (deftest test-pipeline-incremental
      (testing "Pipeline processes incremental updates correctly"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; Initial: [1 2 3 4] -> filter even [2 4] -> double [4 8] -> sum 12
            (let [source1 (iv/interval nil [1 2 3 4] nil)
                  step1-r1 (ic/filter* {:file "test" :line 60 :column 0} even? source1)
@@ -288,7 +288,7 @@
    (deftest test-for-each-initial
      (testing "For-each transforms all items on first execution"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [todos [{:id 1 :text "A"} {:id 2 :text "B"}]
                  source (iv/interval nil todos nil)
                  result (ic/for-each :id #(assoc % :rendered true) source)]
@@ -303,7 +303,7 @@
              transform-fn (fn [item]
                            (swap! transform-count inc)
                            (assoc item :rendered true))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; Initial: 2 items
            (let [source1 (iv/interval nil [{:id 1 :text "A"} {:id 2 :text "B"}] nil)
                  result1 (ic/for-each* {:file "test" :line 70 :column 0} :id transform-fn source1)]
@@ -327,7 +327,7 @@
    (deftest test-address-caching
      (testing "Same source-loc uses same cache"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; Two calls with same source-loc should share cache
            (let [source-loc {:file "cache-test" :line 100 :column 0}
                  source1 (iv/interval nil [1 2 3] nil)
@@ -346,7 +346,7 @@
    (deftest test-different-addresses
      (testing "Different source-locs use different caches"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; First filter at line 200
            (let [source (iv/interval nil [1 2 3 4] nil)
                  result1 (ic/filter* {:file "test" :line 200 :column 0} even? source)
@@ -363,7 +363,7 @@
    (deftest test-integration-with-signals
      (testing "Combinators work with signal tracking in spin"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [results (atom [])
                  data-signal (sig/signal (d/deltaable-vector [1 2 3 4]))
 
@@ -397,7 +397,7 @@
    (deftest test-cascading-multiple-updates
      (testing "Multiple rapid signal updates processed correctly"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [results (atom [])
                  todos-signal (sig/signal (d/deltaable-vector []))
 
@@ -441,7 +441,7 @@
    (deftest test-signal-update-triggers-incremental
      (testing "Signal update delta propagates through pipeline"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [filter-calls (atom 0)
                  map-calls (atom 0)
                  data-signal (sig/signal (d/deltaable-vector [1 2 3 4 5]))
@@ -479,7 +479,7 @@
    (deftest test-todo-list-realistic-scenario
      (testing "Realistic todo list with multiple operations"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            (let [results (atom [])
                  todos (sig/signal (d/deltaable-vector
                                     [{:id 1 :text "Task 1" :done false :hours 2}
@@ -525,7 +525,7 @@
    (deftest test-ifilter-macro
      (testing "ifilter macro captures source location"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; First call
            (let [source1 (iv/interval nil [1 2 3 4 5] nil)
                  result1 (ic/ifilter even? source1)]
@@ -544,7 +544,7 @@
    (deftest test-pipeline-with-macros
      (testing "Pipeline using macros works correctly"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [rtc/*execution-context* exec-ctx]
+         (binding [ec/*execution-context* exec-ctx]
            ;; Pipeline: filter even -> double -> sum
            (let [source (iv/interval nil [1 2 3 4] nil)
                  filtered (ic/ifilter even? source)

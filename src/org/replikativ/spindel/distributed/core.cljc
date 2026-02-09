@@ -16,7 +16,7 @@
   - Each execution context can be addressed by peer-id + fork-id"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.core :as ec]
             [is.simm.partial-cps.async :as pcps-async]
             #?(:clj [clojure.core.async :as a :refer [put! take! chan close!]]
                :cljs [cljs.core.async :as a :refer [chan close! put! take!]])))
@@ -95,7 +95,7 @@
   [ch]
   ;; Capture current execution context at creation time
   ;; This is necessary because the take! callback runs on a different thread
-  (let [captured-rt rtc/*execution-context*]
+  (let [captured-rt ec/*execution-context*]
     ;; Return a Spin that waits for the channel
     (spin-core/make-spin
       (fn [resolve reject]
@@ -105,7 +105,7 @@
             (let [result (unwrap-nil result)]
               ;; CRITICAL: Rebind runtime context and *in-trampoline* when resuming
               (binding [pcps-async/*in-trampoline* false
-                        rtc/*execution-context* captured-rt]
+                        ec/*execution-context* captured-rt]
                 (if (instance? #?(:clj Throwable :cljs js/Error) result)
                   (spin-core/resume reject result)
                   (spin-core/resume resolve result))))))

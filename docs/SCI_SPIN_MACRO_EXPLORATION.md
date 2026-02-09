@@ -14,7 +14,7 @@
      {'org.replikativ.spindel.spin.cps {'spin (var spin)}
       'org.replikativ.spindel.effects.await {'await (var await) 'await-handler await-handler}
       'org.replikativ.spindel.spin.core {'make-spin make-spin}
-      'org.replikativ.spindel.runtime.core {'current-execution-context current-execution-context ...}
+      'org.replikativ.spindel.engine.core {'current-execution-context current-execution-context ...}
       ...}}))
 
 ;; In SCI - SAME syntax as native!
@@ -47,7 +47,7 @@ Enable the same `spin` macro programming model in both native and SCI contexts:
 
 ```clojure
 ;; Native
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def my-spin (spin (+ 1 2))))
 
 ;; SCI (desired)
@@ -115,7 +115,7 @@ spin/cps.cljc (the macro)
       'org.replikativ.spindel.spin.core
       {'make-spin make-spin}
 
-      'org.replikativ.spindel.runtime.core
+      'org.replikativ.spindel.engine.core
       {'current-execution-context current-execution-context
        'with-execution-context (var with-execution-context)
        'spin-current-result spin-current-result
@@ -123,7 +123,7 @@ spin/cps.cljc (the macro)
        '*execution-context* (sci/new-dynamic-var '*execution-context* rt)
        '*spin-id* (sci/new-dynamic-var '*spin-id* nil)}
 
-      'org.replikativ.spindel.runtime.addressing
+      'org.replikativ.spindel.engine.addressing
       {'next-address! next-address!}
 
       'org.replikativ.partial-cps.async
@@ -163,14 +163,14 @@ spin/cps.cljc (the macro)
 **Verified**:
 ```clojure
 ;; Test: spin with await
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def native-spin (spin (* 7 6))))  ; => 42
 
 (def sci-ctx (create-spin-macro-context
                {:runtime rt
                 :native-spins {'other-spin native-spin}}))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (eval-and-deref sci-ctx
     "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
                '[org.replikativ.spindel.effects.await :refer [await]])
@@ -188,7 +188,7 @@ spin/cps.cljc (the macro)
 **Works Today**:
 ```clojure
 ;; Native
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def native-spin
     (spin (await other-spin))))
 
@@ -348,7 +348,7 @@ This avoids loading dependencies but requires sophisticated code rewriting.
 
 ```clojure
 ;; Test: SCI spin calls native spin
-(def native-spin (binding [rtc/*execution-context* rt]
+(def native-spin (binding [ec/*execution-context* rt]
                    (spin (+ 10 5))))  ; => 15
 
 (def sci-ctx (boundary/create-spindel-sci-context
@@ -365,7 +365,7 @@ This avoids loading dependencies but requires sophisticated code rewriting.
            reject))
        :sci-test)"))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   @sci-spin)  ; => 30 ✅
 ```
 

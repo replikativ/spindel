@@ -30,9 +30,9 @@
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.signal]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.addressing]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.addressing]
             [org.replikativ.spindel.spin.core]
             [is.simm.partial-cps.async]
             [clojure.string :as str])
@@ -575,7 +575,7 @@
 (defn init-sample-data!
   "Initialize with sample hierarchical blocks in document order."
   []
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     ;; Create blocks - first block starts focused
     (let [block1 (make-block "Welcome to Spindel Block Editor" nil 0 :focused true)
           block2 (make-block "Features" nil 1)
@@ -610,20 +610,20 @@
         focus-container (js/document.getElementById "focus-container")
         discharge (browser/make-dom-discharge js/document)]
 
-    (binding [rtc/*execution-context* runtime]
+    (binding [ec/*execution-context* runtime]
       (let [app-spin (make-app-spin blocks-signal)]
         (reset! render-handle
                 (render/render-spin! container app-spin discharge))))
 
-    (binding [rtc/*execution-context* runtime]
+    (binding [ec/*execution-context* runtime]
       (let [focus-spin (make-focus-spin blocks-signal)]
         (reset! focus-render-handle
                 (render/render-spin! focus-container focus-spin discharge))))
 
-    (.addEventListener container "keydown" (rtc/make-handler runtime handle-keydown))
+    (.addEventListener container "keydown" (ec/make-handler runtime handle-keydown))
     (.addEventListener container "input" handle-input)
-    (.addEventListener container "click" (rtc/make-handler runtime handle-click))
-    (.addEventListener container "focus" (rtc/make-handler runtime handle-focus) true)
-    (.addEventListener container "blur" (rtc/make-handler runtime handle-blur) true)
+    (.addEventListener container "click" (ec/make-handler runtime handle-click))
+    (.addEventListener container "focus" (ec/make-handler runtime handle-focus) true)
+    (.addEventListener container "blur" (ec/make-handler runtime handle-blur) true)
 
     (js/console.log "Block Editor demo initialized!")))

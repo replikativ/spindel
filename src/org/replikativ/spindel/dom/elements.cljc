@@ -34,7 +34,7 @@
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
-            [org.replikativ.spindel.runtime.core :as rtc])
+            [org.replikativ.spindel.engine.core :as ec])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements])))
 
 ;; =============================================================================
@@ -244,7 +244,7 @@
                                  (range) child-syms children))]
        (if (seq children)
          ;; With children: use let-binding approach
-         `(if rtc/*execution-context*
+         `(if ec/*execution-context*
             ;; With context: use CPS-aware caching element
             (let [my-addr# (addr/current-element-address ~source-loc)]
               (addr/with-parent-addr my-addr#
@@ -253,7 +253,7 @@
             ;; Without context: simple element (no caching)
             (simple-element ~tag ~attrs-form [~@children]))
          ;; No children: simpler expansion
-         `(if rtc/*execution-context*
+         `(if ec/*execution-context*
             (let [my-addr# (addr/current-element-address ~source-loc)]
               (build-element ~tag my-addr# ~attrs-form []))
             (simple-element ~tag ~attrs-form []))))))
@@ -415,13 +415,13 @@
                                    [sym `(addr/with-slot ~idx ~child-expr)])
                                  (range) child-syms children))]
        (if (seq children)
-         `(if rtc/*execution-context*
+         `(if ec/*execution-context*
             (let [my-addr# (addr/current-element-address ~source-loc)]
               (addr/with-parent-addr my-addr#
                 (let [~@child-bindings]
                   (build-element ~tag my-addr# ~attrs-form [~@child-syms]))))
             (simple-element ~tag ~attrs-form [~@children]))
-         `(if rtc/*execution-context*
+         `(if ec/*execution-context*
             (let [my-addr# (addr/current-element-address ~source-loc)]
               (build-element ~tag my-addr# ~attrs-form []))
             (simple-element ~tag ~attrs-form []))))))

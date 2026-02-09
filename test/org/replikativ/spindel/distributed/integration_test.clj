@@ -10,9 +10,9 @@
             [org.replikativ.spindel.distributed.macros :refer [defn-spin-remote spin-remote]]
             [org.replikativ.spindel.distributed.core :as dist]
             [is.simm.distributed-scope :as ds]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.scheduler :as scheduler]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [kabel.peer :as peer]
@@ -42,7 +42,7 @@
     (dist/register-context! :default rt)
     (try
       (binding [*test-runtime* rt
-                rtc/*execution-context* rt]
+                ec/*execution-context* rt]
         (f))
       (finally
         (dist/unregister-context! :default)
@@ -206,7 +206,7 @@
 (defn-spin-remote read-from-context [server-id context-id key]
   (spin-remote [server-id context-id] [key]
     ;; Read a value from the execution context's bindings
-    (get-in rtc/*execution-context* [:bindings key])))
+    (get-in ec/*execution-context* [:bindings key])))
 
 (deftest ^:integration test-context-addressing
   (testing "Remote execution with explicit context-id"

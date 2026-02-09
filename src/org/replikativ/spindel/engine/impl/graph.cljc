@@ -1,10 +1,10 @@
-(ns org.replikativ.spindel.runtime.impl.graph
+(ns org.replikativ.spindel.engine.impl.graph
   "Graph operations for topological sorting and observer ordering.
 
   Pure computation over the dependency graph stored in context state.
   Used by signal-change processing to determine the correct order
   for re-executing observer spins (glitch-free updates)."
-  (:require [org.replikativ.spindel.runtime.nodes :as nodes]))
+  (:require [org.replikativ.spindel.engine.nodes :as nodes]))
 
 (defn collect-transitive-observers
   "Collect all spins transitively dependent on initial-spin-ids.

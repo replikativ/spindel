@@ -27,8 +27,8 @@
     (with-parent-addr my-addr
       (let [child-result (await some-spin)]
         (build-element ...)))"
-  (:require [org.replikativ.spindel.runtime.hash :as h]
-            [org.replikativ.spindel.runtime.core :as rtc])
+  (:require [org.replikativ.spindel.engine.hash :as h]
+            [org.replikativ.spindel.engine.core :as ec])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.addressing])))
 
 ;; =============================================================================
@@ -79,7 +79,7 @@
 
   Returns nil if at root level (no parent)."
   []
-  (when-let [ctx rtc/*execution-context*]
+  (when-let [ctx ec/*execution-context*]
     (get-in ctx [:bindings :dom/parent-addr])))
 
 (defn get-current-slot
@@ -87,7 +87,7 @@
 
   Returns nil if not inside an element's child evaluation."
   []
-  (when-let [ctx rtc/*execution-context*]
+  (when-let [ctx ec/*execution-context*]
     (get-in ctx [:bindings :dom/current-slot])))
 
 ;; =============================================================================
@@ -103,9 +103,9 @@
 
      Used by element macros to set context before evaluating children."
      [parent-addr & body]
-     `(if-let [ctx# rtc/*execution-context*]
+     `(if-let [ctx# ec/*execution-context*]
         (let [new-ctx# (assoc-in ctx# [:bindings :dom/parent-addr] ~parent-addr)]
-          (binding [rtc/*execution-context* new-ctx#]
+          (binding [ec/*execution-context* new-ctx#]
             ~@body))
         ;; No context - just run body (for testing without runtime)
         (do ~@body))))
@@ -119,9 +119,9 @@
 
      Used by element macros for each child position."
      [slot-index & body]
-     `(if-let [ctx# rtc/*execution-context*]
+     `(if-let [ctx# ec/*execution-context*]
         (let [new-ctx# (assoc-in ctx# [:bindings :dom/current-slot] ~slot-index)]
-          (binding [rtc/*execution-context* new-ctx#]
+          (binding [ec/*execution-context* new-ctx#]
             ~@body))
         ;; No context - just run body
         (do ~@body))))
@@ -157,9 +157,9 @@
   Executes thunk with parent-addr set. Use the macro version in element
   macros for CPS/await support."
   [parent-addr thunk]
-  (if-let [ctx rtc/*execution-context*]
+  (if-let [ctx ec/*execution-context*]
     (let [new-ctx (assoc-in ctx [:bindings :dom/parent-addr] parent-addr)]
-      (binding [rtc/*execution-context* new-ctx]
+      (binding [ec/*execution-context* new-ctx]
         (thunk)))
     (thunk)))
 
@@ -169,9 +169,9 @@
   Executes thunk with slot-index set. Use the macro version in element
   macros for CPS/await support."
   [slot-index thunk]
-  (if-let [ctx rtc/*execution-context*]
+  (if-let [ctx ec/*execution-context*]
     (let [new-ctx (assoc-in ctx [:bindings :dom/current-slot] slot-index)]
-      (binding [rtc/*execution-context* new-ctx]
+      (binding [ec/*execution-context* new-ctx]
         (thunk)))
     (thunk)))
 

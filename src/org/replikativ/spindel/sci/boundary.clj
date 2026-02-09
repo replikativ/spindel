@@ -8,7 +8,7 @@
 
   Based on zeitlauf SCI integration findings (see SCI_RUNTIME_BOUNDARY_DESIGN.md)."
   (:require [sci.core :as sci]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.sci.core :as sci-core]))
 
@@ -22,13 +22,13 @@
 (deftype BoundaryTask [task runtime task-spin-id]
   clojure.lang.IFn
   (invoke [this resolve reject]
-    (binding [rtc/*execution-context* runtime
-              rtc/*spin-id* task-spin-id]
+    (binding [ec/*execution-context* runtime
+              ec/*spin-id* task-spin-id]
       (task resolve reject)))
 
   clojure.lang.IDeref
   (deref [this]
-    (binding [rtc/*execution-context* runtime]
+    (binding [ec/*execution-context* runtime]
       @task)))
 
 (defn wrap-spin-for-sci
@@ -66,8 +66,8 @@
         (resolve (+ 1 2)))
       :my-spin)"
   [spin-fn spin-id runtime]
-  (binding [rtc/*execution-context* runtime
-            rtc/*spin-id* spin-id]
+  (binding [ec/*execution-context* runtime
+            ec/*spin-id* spin-id]
     (spin-core/make-spin spin-fn spin-id)))
 
 ;; =============================================================================
@@ -121,9 +121,9 @@
                                   {'make-spin (fn [spin-fn spin-id]
                                                 (make-spin-for-sci spin-fn spin-id runtime))}}
                                  (when expose-runtime-state?
-                                   {'spindel.runtime
-                                    {'get-state (fn [path] (rtc/get-state path))
-                                     'swap-state! (fn [path f & args] (apply rtc/swap-state! path f args))}}))})]
+                                   {'spindel.engine
+                                    {'get-state (fn [path] (ec/get-state path))
+                                     'swap-state! (fn [path f & args] (apply ec/swap-state! path f args))}}))})]
 
     ;; Load partial-cps for CPS transformation support
     (sci-core/load-partial-cps! sci-ctx)
@@ -135,14 +135,14 @@
 ;; =============================================================================
 
 (comment
-  (require '[org.replikativ.spindel.runtime.context :as ctx]
+  (require '[org.replikativ.spindel.engine.context :as ctx]
            '[org.replikativ.spindel.spin.cps :refer [spin]])
 
   ;; Setup
   (def rt (ctx/create-execution-context))
 
   ;; Create native spin
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (def native-spin (spin (+ 10 5))))  ; Returns 15
 
   ;; Create SCI context with native spin exposed
@@ -164,11 +164,11 @@
   (def sci-spin (sci/eval-string* sci-ctx sci-code))
 
   ;; Execute from native
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     @sci-spin)  ; => 30
 
   ;; Bidirectional chain: Native → SCI → Native
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     (def native-2 (spin (* 3 2))))  ; Returns 6
 
   (def sci-ctx-chain
@@ -192,6 +192,6 @@
 
   (def chained (sci/eval-string* sci-ctx-chain chain-code))
 
-  (binding [rtc/*execution-context* rt]
+  (binding [ec/*execution-context* rt]
     @chained)  ; => 21 (15 + 6)
   )

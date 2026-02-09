@@ -56,7 +56,7 @@
   - Multiple mounts/unmounts may occur if the element is conditionally rendered"
   (:require [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.addressing :as addr]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.log :as log]))
 
 ;; =============================================================================
@@ -68,8 +68,8 @@
   This tells the discharge system to skip children.
   Only works when execution context is bound."
   [addr]
-  (when rtc/*execution-context*
-    (rtc/swap-state! [:dom/foreign addr] (constantly true))))
+  (when ec/*execution-context*
+    (ec/swap-state! [:dom/foreign addr] (constantly true))))
 
 ;; =============================================================================
 ;; Foreign Node Implementation
@@ -164,7 +164,7 @@
      (let [source-loc {:file *file*
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
-       `(if rtc/*execution-context*
+       `(if ec/*execution-context*
           (foreign-node* ~source-loc ~opts)
           ;; Without context: create simple element (no lifecycle callbacks)
           (el/simple-element (:tag ~opts :div)

@@ -3,9 +3,9 @@
   (:refer-clojure :exclude [await])
   #?(:clj
      (:require [clojure.test :refer [deftest is testing use-fixtures]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.scheduler :as sched]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.combinators :refer [debounce throttle sample relieve timeout sleep race accumulate]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -17,8 +17,8 @@
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.combinators :refer [debounce throttle sample relieve timeout sleep race accumulate]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -38,7 +38,7 @@
      (fn [f]
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})]
          (try
-           (binding [rtc/*execution-context* execution-ctx]
+           (binding [ec/*execution-context* execution-ctx]
              (f))
            (finally
              (ctx/stop-context! execution-ctx)))))))
@@ -292,11 +292,11 @@
    (deftest test-accumulate-basic
      (testing "Accumulate returns interval from signal"
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})
-             sig (binding [rtc/*execution-context* execution-ctx]
+             sig (binding [ec/*execution-context* execution-ctx]
                    (signal [1 2 3]))
-             acc-spin (binding [rtc/*execution-context* execution-ctx]
+             acc-spin (binding [ec/*execution-context* execution-ctx]
                         (accumulate sig iv/merge-intervals))]
-         (binding [rtc/*execution-context* execution-ctx]
+         (binding [ec/*execution-context* execution-ctx]
            (let [result @acc-spin]
              (is (satisfies? iv/PInterval result) "Result should be an interval")
              (is (= [1 2 3] @result) "Interval new value should match signal")))))))
@@ -306,9 +306,9 @@
      (testing "Accumulate preserves delta information"
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})
              dv (d/deltaable-vector [1 2 3])
-             sig (binding [rtc/*execution-context* execution-ctx]
+             sig (binding [ec/*execution-context* execution-ctx]
                    (signal dv))]
-         (binding [rtc/*execution-context* execution-ctx]
+         (binding [ec/*execution-context* execution-ctx]
            ;; Update signal with deltaable operation
            (swap! sig conj 4)
            (let [acc-spin (accumulate sig iv/merge-intervals)

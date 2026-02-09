@@ -20,8 +20,8 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -75,7 +75,7 @@
 (deftest test-update-render-no-deltas
   (testing "Update render with no deltas does minimal work"
     ;; Ensure no execution context is bound (could leak from previous tests)
-    (binding [rtc/*execution-context* nil]
+    (binding [ec/*execution-context* nil]
       (let [{:keys [discharge log]} (disch/make-mock-discharge)
             v1 (el/div {:class "same"})
             container nil
@@ -144,7 +144,7 @@
    (deftest test-initial-render-creates-elements
      (testing "Initial render creates all DOM elements"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  counter (sig/signal 0)
                  render-spin (spin
@@ -169,7 +169,7 @@
    (deftest test-signal-update-triggers-rerender
      (testing "Signal update triggers spin re-execution"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  counter (sig/signal 0)
                  render-count (atom 0)
@@ -199,7 +199,7 @@
    (deftest test-deltaable-collection-deltas-available
      (testing "Deltaable collection deltas are available in track"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  items (sig/signal [])
                  captured-deltas (atom nil)
@@ -234,7 +234,7 @@
    (deftest test-multiple-updates-produce-deltas
      (testing "Multiple signal updates produce corresponding deltas"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  items (sig/signal [])
                  delta-history (atom [])
@@ -284,7 +284,7 @@
    (deftest test-remove-produces-remove-delta
      (testing "Removing from deltaable produces :remove delta"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  items (sig/signal [{:id "1" :text "A"}
                                     {:id "2" :text "B"}
@@ -319,7 +319,7 @@
    (deftest test-filter-vec-produces-multiple-remove-deltas
      (testing "filter-vec produces :remove delta for each filtered item"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  items (sig/signal [{:id "1" :done false}
                                     {:id "2" :done true}
@@ -352,7 +352,7 @@
    (deftest test-render-count-matches-signal-updates
      (testing "Render count matches number of signal updates"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  counter (sig/signal 0)
                  render-count (atom 0)
@@ -379,7 +379,7 @@
    (deftest test-old-value-available-in-interval
      (testing "Old value is available via interval for comparison"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  counter (sig/signal 0)
                  captured-old (atom nil)

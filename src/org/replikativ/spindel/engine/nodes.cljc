@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.nodes
+(ns org.replikativ.spindel.engine.nodes
   "Protocols and type implementations for unified reactive nodes.
 
   This namespace defines fine-grained protocols for the unified :nodes structure

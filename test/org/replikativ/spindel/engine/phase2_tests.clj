@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.phase2-tests
+(ns org.replikativ.spindel.engine.phase2-tests
   "Phase 2: High Priority Tests - Performance and caching validation
 
   These tests validate performance-critical optimizations:
@@ -7,10 +7,10 @@
   3. Generation-based caching - validates O(1) identity checks"
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.nodes :as nodes]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -26,7 +26,7 @@
   (testing "Single signal with 100 direct observers updates efficiently"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [root-sig (sig/signal 1)
 
                 ;; Create 100 spins that track the same signal
@@ -119,7 +119,7 @@
   (testing "50 observers with 2-level aggregation"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [root-sig (sig/signal 1)
 
                 ;; Level 1: 50 direct observers
@@ -155,7 +155,7 @@
   (testing "Batch macro batches multiple signal updates"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal 0)
                 sig-b (sig/signal 0)
                 sig-c (sig/signal 0)
@@ -193,7 +193,7 @@
   (testing "Nested batches work correctly"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal 0)
                 sig-b (sig/signal 0)
 
@@ -229,7 +229,7 @@
   (testing "Signal generation increments on each update"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 0)]
 
             ;; Get initial generation
@@ -258,7 +258,7 @@
   (testing "Spin returns cached result when no dependencies changed"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig (sig/signal 1)
                 exec-count (atom 0)
 
@@ -291,7 +291,7 @@
   (testing "Spins have deps-hash after execution for caching"
     (let [ctx (ctx/create-execution-context)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [sig-a (sig/signal :a)
                 sig-b (sig/signal :b)
 

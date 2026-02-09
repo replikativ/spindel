@@ -31,8 +31,8 @@
             [org.replikativ.spindel.dom.foreach :as foreach :refer [ifor-each]]
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.dom.discharge :as disch]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx])
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.incremental.combinators :refer [ifilter imap]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))

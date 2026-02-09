@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.addressing-test
+(ns org.replikativ.spindel.engine.addressing-test
   "Tests for deterministic address generation (hash-chain addressing).
 
   The addressing system is critical infrastructure that generates unique,
@@ -8,9 +8,9 @@
   our semaphore test failures (race condition in next-address!)."
   (:require #?(:clj [clojure.test :refer [deftest is testing]])
             #?(:cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.addressing :as addressing]))
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.addressing :as addressing]))
 
 ;; =============================================================================
 ;; Concurrent Address Generation Tests
@@ -30,7 +30,7 @@
          (let [futures (repeatedly n-threads
                          (fn []
                            (future
-                             (binding [rtc/*execution-context* ctx]
+                             (binding [ec/*execution-context* ctx]
                                (dotimes [_ n-calls-per-thread]
                                  ;; Same source location across all threads
                                  (let [id (addressing/next-address! ctx "test" source-loc)]
@@ -61,7 +61,7 @@
          (let [futures (mapv
                          (fn [thread-id]
                            (future
-                             (binding [rtc/*execution-context* ctx]
+                             (binding [ec/*execution-context* ctx]
                                (dotimes [i 50]
                                  (let [source-loc [:thread thread-id :call i]
                                        id (addressing/next-address! ctx "test" source-loc)]
@@ -94,7 +94,7 @@
           ids-run-1 (atom [])
           ids-run-2 (atom [])]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; First run
         (doseq [loc source-locs]
           (swap! ids-run-1 conj (addressing/next-address! ctx "test" loc)))
@@ -116,7 +116,7 @@
           ids-1 (atom [])
           ids-2 (atom [])]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Sequence 1
         (swap! ids-1 conj (addressing/next-address! ctx "test" [:a]))
         (swap! ids-1 conj (addressing/next-address! ctx "test" [:b]))
@@ -139,7 +139,7 @@
 (deftest test-chain-head-get-set
   (testing "Chain head can be get and set"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Initially nil
         (is (nil? (addressing/get-chain-head ctx)))
 
@@ -189,7 +189,7 @@
           n 1000
           ids (atom #{})]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (dotimes [i n]
           (swap! ids conj
                  (addressing/next-address! ctx "test" [:long-chain i])))
@@ -201,7 +201,7 @@
 (deftest test-empty-source-location
   (testing "Empty source location is valid"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [id (addressing/next-address! ctx "test" [])]
           (is (keyword? id))
           (is (not (nil? id))))))))

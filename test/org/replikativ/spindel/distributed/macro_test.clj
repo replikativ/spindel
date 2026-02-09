@@ -4,9 +4,9 @@
             [org.replikativ.spindel.distributed.macros :refer [defn-spin-remote spin-remote]]
             [org.replikativ.spindel.distributed.core :as dist]
             [is.simm.distributed-scope :as ds]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.scheduler :as scheduler]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [clojure.core.async :as a :refer [go <! >! chan close! put!]]))
@@ -24,7 +24,7 @@
     (dist/register-context! :default rt)
     (try
       (binding [*test-runtime* rt
-                rtc/*execution-context* rt]
+                ec/*execution-context* rt]
         (f))
       (finally
         (dist/unregister-context! :default)

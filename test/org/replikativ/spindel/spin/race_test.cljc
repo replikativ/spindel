@@ -3,9 +3,9 @@
   (:refer-clojure :exclude [await])
   #?(:clj
      (:require [clojure.test :refer [deftest is testing use-fixtures]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.scheduler :as sched]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.combinators :refer [race]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -13,8 +13,8 @@
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.combinators :refer [race]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -28,7 +28,7 @@
      (fn [f]
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})]
          (try
-           (binding [rtc/*execution-context* execution-ctx]
+           (binding [ec/*execution-context* execution-ctx]
              (f))
            (finally
              (ctx/stop-context! execution-ctx)))))))

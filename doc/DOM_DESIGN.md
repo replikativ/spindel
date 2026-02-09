@@ -200,13 +200,13 @@ The parent element recognizes `KeyedFragment` and:
               [~@(map (fn [child] `(fn [] ~child)) children)]))))
 
 (defn div* [source-loc attrs child-thunks]
-  (let [ctx (rtc/*execution-context*)
+  (let [ctx (ec/*execution-context*)
         parent-addr (get-in ctx [:bindings :dom/parent-addr])
         current-slot (get-in ctx [:bindings :dom/current-slot])
         my-addr (compute-tree-address source-loc parent-addr current-slot)]
 
     ;; Get previous cache
-    (let [prev-cache (rtc/get-state [:dom/cache my-addr])
+    (let [prev-cache (ec/get-state [:dom/cache my-addr])
 
           ;; Evaluate children with context bindings
           new-children
@@ -215,7 +215,7 @@ The parent element recognizes `KeyedFragment` and:
                    (let [child-ctx (update ctx :bindings merge
                                            {:dom/parent-addr my-addr
                                             :dom/current-slot idx})]
-                     (binding [rtc/*execution-context* child-ctx]
+                     (binding [ec/*execution-context* child-ctx]
                        (child-thunk))))
                  child-thunks))
 
@@ -224,7 +224,7 @@ The parent element recognizes `KeyedFragment` and:
           (reconcile-children prev-cache new-children)
 
           ;; Update cache
-          _ (rtc/swap-state! [:dom/cache my-addr] (constantly slots))
+          _ (ec/swap-state! [:dom/cache my-addr] (constantly slots))
 
           ;; Build vnode with deltas
           flat-children (flatten-slots slots)]
@@ -557,7 +557,7 @@ The following code becomes unnecessary:
 
 2. **Context required** - DOM elements must run within an execution context
    ```clojure
-   (binding [rtc/*execution-context* ctx]
+   (binding [ec/*execution-context* ctx]
      (el/div ...))
    ```
 

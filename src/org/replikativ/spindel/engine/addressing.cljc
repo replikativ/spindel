@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.addressing
+(ns org.replikativ.spindel.engine.addressing
   "Deterministic addressing for spins and probabilistic inference.
 
   Uses hash-chain approach: each address depends on all previous addresses
@@ -14,9 +14,9 @@
 
   For parallel execution, use `with-parallel-branch` to assign deterministic
   branch IDs based on index."
-  (:require [org.replikativ.spindel.runtime.hash :as h]
+  (:require [org.replikativ.spindel.engine.hash :as h]
             [clojure.string :as str]
-            [org.replikativ.spindel.runtime.protocols :as rtp]))
+            [org.replikativ.spindel.engine.protocols :as rtp]))
 
 ;; =============================================================================
 ;; Hash-Chain Core

@@ -109,8 +109,8 @@ still reference it by ID.
   "Called from GC callback. Attempts full cleanup if safe, otherwise marks
    the spin as orphaned for deferred cleanup."
   [ctx spin-id]
-  (binding [rtc/*execution-context* ctx]
-    (let [node (rtc/get-state [:nodes spin-id])]
+  (binding [ec/*execution-context* ctx]
+    (let [node (ec/get-state [:nodes spin-id])]
       (when node  ;; may already be cleaned
         (if (empty? (:observers node))
           ;; No observers → full cleanup + cascade to dependencies
@@ -118,13 +118,13 @@ still reference it by ID.
             (full-cleanup-spin! spin-id)
             ;; Cascade: check if any dependency is now cleanable
             (doseq [dep-id dep-spin-ids]
-              (let [dep-node (rtc/get-state [:nodes dep-id])]
+              (let [dep-node (ec/get-state [:nodes dep-id])]
                 (when (and dep-node
                            (:orphaned? dep-node)
                            (empty? (:observers dep-node)))
                   (full-cleanup-spin! dep-id)))))
           ;; Has observers → mark orphaned, defer cleanup
-          (rtc/swap-state! [:nodes spin-id]
+          (ec/swap-state! [:nodes spin-id]
             #(assoc % :orphaned? true)))))))
 ```
 
@@ -140,7 +140,7 @@ Removes all 8 state locations atomically:
 (defn full-cleanup-spin!
   "Remove all runtime state for a spin. Must be called with *execution-context* bound."
   [spin-id]
-  (let [ctx (rtc/current-execution-context)]
+  (let [ctx (ec/current-execution-context)]
     (rtp/swap-state! ctx []
       (fn [state]
         (let [node (get-in state [:nodes spin-id])
@@ -263,7 +263,7 @@ GC callbacks must never throw:
 ```clojure
 (deftest test-spin-gc-cleanup
   (let [ctx (ctx/create-execution-context)]
-    (binding [rtc/*execution-context* ctx]
+    (binding [ec/*execution-context* ctx]
       ;; Create a spin, capture its ID
       (let [spin-id (atom nil)]
         (let [s (spin 42)]
@@ -274,9 +274,9 @@ GC callbacks must never throw:
         (System/gc)
         (Thread/sleep 200)
         ;; Verify state is cleaned up
-        (is (nil? (rtc/get-state [:nodes @spin-id])))
-        (is (nil? (rtc/get-state [:spin-outputs @spin-id])))
-        (is (nil? (rtc/get-state [:spins-meta @spin-id])))))))
+        (is (nil? (ec/get-state [:nodes @spin-id])))
+        (is (nil? (ec/get-state [:spin-outputs @spin-id])))
+        (is (nil? (ec/get-state [:spins-meta @spin-id])))))))
 ```
 
 ### Test: Deferred cleanup with observers
@@ -284,7 +284,7 @@ GC callbacks must never throw:
 ```clojure
 (deftest test-spin-gc-deferred-when-observed
   (let [ctx (ctx/create-execution-context)]
-    (binding [rtc/*execution-context* ctx]
+    (binding [ec/*execution-context* ctx]
       (let [parent-id (atom nil)
             child (let [p (spin 42)]
                     (reset! parent-id (tp/spin-id p))
@@ -294,8 +294,8 @@ GC callbacks must never throw:
         (System/gc)
         (Thread/sleep 200)
         ;; Parent should be orphaned but NOT cleaned (child observes it)
-        (is (some? (rtc/get-state [:nodes @parent-id])))
-        (is (:orphaned? (rtc/get-state [:nodes @parent-id])))
+        (is (some? (ec/get-state [:nodes @parent-id])))
+        (is (:orphaned? (ec/get-state [:nodes @parent-id])))
         ;; Now drop child
         )
       ;; child is now out of scope
@@ -311,12 +311,12 @@ GC callbacks must never throw:
 ```clojure
 (deftest test-spin-gc-fork-isolation
   (let [ctx (ctx/create-execution-context)]
-    (binding [rtc/*execution-context* ctx]
+    (binding [ec/*execution-context* ctx]
       (let [s (spin 42)]
         @s
         ;; Fork and use the spin in the fork
         (let [fork-ctx (ctx/fork-context ctx)]
-          (binding [rtc/*execution-context* fork-ctx]
+          (binding [ec/*execution-context* fork-ctx]
             ;; await triggers COW of the spin's node into fork overlay
             (let [f (spin (await s))]
               @f)))
@@ -342,7 +342,7 @@ as "eventually consistent" checks with reasonable timeouts.
 ```clojure
 (deftest test-no-residual-after-bulk
   (let [ctx (ctx/create-execution-context)]
-    (binding [rtc/*execution-context* ctx]
+    (binding [ec/*execution-context* ctx]
       ;; Create and deref 1000 spins
       (dotimes [_ 1000]
         @(spin 42))
@@ -350,9 +350,9 @@ as "eventually consistent" checks with reasonable timeouts.
       (System/gc)
       (Thread/sleep 500)
       ;; Check runtime state size
-      (let [nodes (rtc/get-state [:nodes])
-            outputs (rtc/get-state [:spin-outputs])
-            meta (rtc/get-state [:spins-meta])]
+      (let [nodes (ec/get-state [:nodes])
+            outputs (ec/get-state [:spin-outputs])
+            meta (ec/get-state [:spins-meta])]
         ;; Should have 0 spin nodes (no signals, no persistent spins)
         (is (zero? (count (filter #(= :spin (:type (val %))) nodes))))
         (is (zero? (count outputs)))

@@ -18,9 +18,9 @@
             [org.replikativ.spindel.incremental.combinators :refer [filter*]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.addressing]  ;; Required by spin macro expansion
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.addressing]  ;; Required by spin macro expansion
             [org.replikativ.spindel.spin.core]           ;; Required by spin macro expansion
             [is.simm.partial-cps.async])          ;; Required by spin macro expansion
   (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -286,7 +286,7 @@
 
 (defn update-stats-display! []
   (when-let [stats-el (js/document.getElementById "render-stats")]
-    (rtc/with-context runtime
+    (ec/with-context runtime
       (fn []
         (let [todos @todos-signal
               filter-mode @filter-signal]
@@ -337,7 +337,7 @@
 
 (defn setup-event-delegation! [container]
   ;; Use event delegation on the container with context auto-bound
-  (.addEventListener container "click" (rtc/make-handler runtime handle-list-click)))
+  (.addEventListener container "click" (ec/make-handler runtime handle-list-click)))
 
 ;; =============================================================================
 ;; Button Handlers (assume *execution-context* is bound)
@@ -418,9 +418,9 @@
   (js/console.log "Initializing TODO MVC demo...")
 
   ;; Reset signal values for hot reload
-  ;; NOTE: Use direct `binding` form instead of `rtc/with-context` because the
+  ;; NOTE: Use direct `binding` form instead of `ec/with-context` because the
   ;; macro version (used in CLJS compilation) doesn't call the callback function.
-  (binding [rtc/*execution-context* runtime]
+  (binding [ec/*execution-context* runtime]
     (reset! todos-signal (d/deltaable-vector []))
     (reset! filter-signal :all))
 
@@ -430,12 +430,12 @@
 
     ;; Set up reactive rendering
     ;; Pass SignalRefs (not dereferenced values) so track can work
-    ;; NOTE: Use direct `binding` form instead of `rtc/with-context` because the
+    ;; NOTE: Use direct `binding` form instead of `ec/with-context` because the
     ;; macro version (used in CLJS compilation) doesn't call the callback function.
     (js/console.log "Setting up reactive rendering with binding...")
     (try
-      (binding [rtc/*execution-context* runtime]
-        (js/console.log "Inside binding, context-bound?:" (rtc/execution-context-bound?))
+      (binding [ec/*execution-context* runtime]
+        (js/console.log "Inside binding, context-bound?:" (ec/execution-context-bound?))
         (let [app-spin (make-app-spin todos-signal filter-signal)]
           (js/console.log "app-spin created:" app-spin)
           (js/console.log "About to call render-spin!...")
@@ -451,30 +451,30 @@
 
     ;; Wire up control panel buttons with auto-bound context
     (when-let [btn (js/document.getElementById "btn-add")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-add-todo)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-add-todo)))
 
     (when-let [btn (js/document.getElementById "btn-add-high")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-add-high)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-add-high)))
 
     (when-let [btn (js/document.getElementById "btn-add-low")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-add-low)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-add-low)))
 
     (when-let [btn (js/document.getElementById "btn-add-10")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-add-10)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-add-10)))
 
     (when-let [btn (js/document.getElementById "btn-toggle-first")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-toggle-first)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-toggle-first)))
 
     (when-let [btn (js/document.getElementById "btn-remove-first")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-remove-first)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-remove-first)))
 
     (when-let [btn (js/document.getElementById "btn-remove-last")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-remove-last)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-remove-last)))
 
     (when-let [btn (js/document.getElementById "btn-remove-middle")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-remove-middle)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-remove-middle)))
 
     (when-let [btn (js/document.getElementById "btn-clear-all")]
-      (.addEventListener btn "click" (rtc/make-handler runtime handle-clear-all)))
+      (.addEventListener btn "click" (ec/make-handler runtime handle-clear-all)))
 
     (js/console.log "TODO MVC demo initialized!")))

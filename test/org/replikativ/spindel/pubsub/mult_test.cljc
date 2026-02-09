@@ -4,8 +4,8 @@
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.pubsub.buffer :as buf]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.spin.combinators :as comb]
@@ -25,7 +25,7 @@
   (let [c (ctx/create-execution-context)]
     (try
       (binding [*test-runtime* c
-                rtc/*execution-context* c]
+                ec/*execution-context* c]
         (f))
       (finally
         (ctx/stop-context! c)))))

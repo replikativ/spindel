@@ -3,10 +3,10 @@
   (:refer-clojure :exclude [await])
   #?(:clj
      (:require [clojure.test :refer [deftest is testing use-fixtures]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.protocols :as rtp]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
-               [org.replikativ.spindel.runtime.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.protocols :as rtp]
+               [org.replikativ.spindel.engine.scheduler :as sched]
+               [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.core :as spin-core]
                [org.replikativ.spindel.spin.combinators :refer [parallel]]
@@ -17,8 +17,8 @@
                [is.simm.partial-cps.async :as pcps-async])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.context :as ctx]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.combinators :refer [parallel]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -32,7 +32,7 @@
      (fn [f]
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})]
          (try
-           (binding [rtc/*execution-context* execution-ctx]
+           (binding [ec/*execution-context* execution-ctx]
              (f))
            (finally
              (ctx/stop-context! execution-ctx)))))))
@@ -242,13 +242,13 @@
      (testing "Parallel where spins use actually forked contexts (like inference)"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [batch-spins (repeatedly 3
                               (fn []
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)]
-                                    (binding [rtc/*execution-context* forked-ctx]
+                                    (binding [ec/*execution-context* forked-ctx]
                                       (let [subspin (spin (* 5 6))]
                                         (await subspin)))))))
                  result @(parallel (first batch-spins)
@@ -261,13 +261,13 @@
      (testing "Parallel with forked context AND trampoline binding (exact inference scenario)"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [batch-spins (repeatedly 3
                               (fn []
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)]
-                                    (binding [rtc/*execution-context* forked-ctx
+                                    (binding [ec/*execution-context* forked-ctx
                                               pcps-async/*in-trampoline* false]
                                       (let [subspin (spin (* 7 8))]
                                         (await subspin)))))))
@@ -281,14 +281,14 @@
      (testing "Parallel where multiple batch spins await the SAME shared spin (like inference prog)"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [shared-spin (spin (+ 10 20))
                  batch-spins (repeatedly 3
                               (fn []
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)]
-                                    (binding [rtc/*execution-context* forked-ctx
+                                    (binding [ec/*execution-context* forked-ctx
                                               pcps-async/*in-trampoline* false]
                                       (await shared-spin))))))
                  result @(parallel (first batch-spins)
@@ -301,7 +301,7 @@
      (testing "Parallel where model spin uses nested await (like probabilistic models)"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [model-spin (spin
                               (let [inner-spin (spin (* 2 3))]
                                 (+ 100 (await inner-spin))))
@@ -310,7 +310,7 @@
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)]
-                                    (binding [rtc/*execution-context* forked-ctx
+                                    (binding [ec/*execution-context* forked-ctx
                                               pcps-async/*in-trampoline* false]
                                       (await model-spin))))))
                  result @(parallel (first batch-spins)
@@ -323,7 +323,7 @@
      (testing "Parallel where model spin uses async-fetch (truly pauses)"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [model-spin (spin
                               (let [async-val (await (async-stub/async-fetch 42 5))]
                                 (* 2 async-val)))
@@ -332,7 +332,7 @@
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)
-                                        result (binding [rtc/*execution-context* forked-ctx
+                                        result (binding [ec/*execution-context* forked-ctx
                                                          pcps-async/*in-trampoline* false]
                                                  (await model-spin))]
                                     (rtp/enqueue! parent-ctx
@@ -348,7 +348,7 @@
      (testing "Parallel where model spin awaits multiple async operations"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [model-spin (spin
                               (let [a (await (async-stub/async-fetch 10 5))
                                     b (await (async-stub/async-fetch 20 5))]
@@ -358,7 +358,7 @@
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)]
-                                    (binding [rtc/*execution-context* forked-ctx
+                                    (binding [ec/*execution-context* forked-ctx
                                               pcps-async/*in-trampoline* false]
                                       (await model-spin))))))
                  result @(parallel (first batch-spins)
@@ -371,17 +371,17 @@
      (testing "Parallel where model is created OUTSIDE the execution context (like test setup)"
        (let [parent-ctx (ctx/create-execution-context
                          {:executor (sched/thread-pool-executor 4)})
-             model-spin (binding [rtc/*execution-context* parent-ctx]
+             model-spin (binding [ec/*execution-context* parent-ctx]
                           (spin
                             (let [inner (spin (* 5 5))]
                               (await inner))))]
-         (binding [rtc/*execution-context* parent-ctx]
+         (binding [ec/*execution-context* parent-ctx]
            (let [batch-spins (repeatedly 3
                               (fn []
                                 (spin
                                   (let [snap (ctx/snapshot-context parent-ctx)
                                         forked-ctx (ctx/restore-snapshot snap :drain-events? false)]
-                                    (binding [rtc/*execution-context* forked-ctx
+                                    (binding [ec/*execution-context* forked-ctx
                                               pcps-async/*in-trampoline* false]
                                       (await model-spin))))))
                  result @(parallel (first batch-spins)

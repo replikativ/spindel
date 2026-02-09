@@ -37,7 +37,7 @@ Both directions work seamlessly:
 `make-spin` API works identically in SCI and native:
 ```clojure
 ;; Native
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def my-spin
     (spin-core/make-spin
       (fn [resolve reject] (resolve 42))
@@ -56,7 +56,7 @@ Both directions work seamlessly:
 
 ```clojure
 (require '[org.replikativ.spindel.sci.boundary :as boundary]
-         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.engine.context :as ctx]
          '[org.replikativ.spindel.spin.cps :refer [spin]])
 
 ;; 1. Create runtime
@@ -74,7 +74,7 @@ Both directions work seamlessly:
        :sci-spin)"))
 
 ;; 4. Use from native
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   @sci-spin)  ; => 3
 ```
 
@@ -82,7 +82,7 @@ Both directions work seamlessly:
 
 ```clojure
 ;; Create native spins
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def fetch-data (spin (do-fetch)))
   (def process-data (spin (do-process data))))
 
@@ -121,9 +121,9 @@ Both directions work seamlessly:
 
     ;; SCI: Isolated context with forked runtime
     :sci
-    {:runtime (rtc/fork-runtime parent-runtime)
+    {:runtime (ec/fork-runtime parent-runtime)
      :sci-ctx (boundary/create-spindel-sci-context
-                {:runtime (rtc/fork-runtime parent-runtime)
+                {:runtime (ec/fork-runtime parent-runtime)
                  :expose-runtime-state? false})}
 
     ;; Shared SCI: Multiple agents share SCI context
@@ -161,8 +161,8 @@ Both directions work seamlessly:
   clojure.lang.IFn
   (invoke [this resolve reject]
     ;; Establish bindings before calling native code
-    (binding [rtc/*execution-context* runtime
-              rtc/*spin-id* task-spin-id]
+    (binding [ec/*execution-context* runtime
+              ec/*spin-id* task-spin-id]
       (task resolve reject))))
 ```
 
@@ -265,11 +265,11 @@ Not recommended for:
        (fn [resolve reject] (resolve 99))
        :test)"))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   @sci-spin)  ; => 99 ✅
 
 ;; Test 4: Native spin from SCI
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def native-spin (spin (+ 10 5))))  ; => 15
 
 (def wrapped (boundary/wrap-spin-for-sci native-spin rt))

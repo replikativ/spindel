@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.hash
+(ns org.replikativ.spindel.engine.hash
   "Fast deterministic content hashing for addressing.
 
   Uses hasch.fast/sha256-uuid for 128-bit cryptographic hashes (SHA-256)

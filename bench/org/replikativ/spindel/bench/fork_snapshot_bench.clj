@@ -8,8 +8,8 @@
   No analog in Kyo or Kotlin."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.bench.harness :as h]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -41,7 +41,7 @@
                (fn []
                  (let [forked (ctx/fork-context ctx)]
                    ;; Verify fork is usable
-                   (binding [rtc/*execution-context* forked]
+                   (binding [ec/*execution-context* forked]
                      (let [s (spin :forked)]
                        @s))))))
            sizes))))))

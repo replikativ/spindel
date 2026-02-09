@@ -3,8 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.signal :as sig]
@@ -90,7 +90,7 @@
    (deftest test-spin-caching-with-computation
      (testing "Expensive computations are cached"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [exec-count (atom 0)
                  expensive-spin (spin
                                   (swap! exec-count inc)
@@ -153,7 +153,7 @@
    (deftest test-dependency-graph-recording
      (testing "Dependencies are recorded in the graph after spin execution"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [x-signal (sig/signal 10)
                  y-signal (sig/signal 20)
                  sum-spin (spin
@@ -164,14 +164,14 @@
              (is (= 30 @sum-spin))
 
              (let [spin-id (spin-core/spin-id sum-spin)
-                   spin-node (rtc/get-state [:nodes spin-id])
+                   spin-node (ec/get-state [:nodes spin-id])
                    deps (:deps spin-node)]
                (is (some? spin-node) "Spin node should exist")
                (is (contains? (:signals deps) (:id x-signal)) "x-signal should be tracked")
                (is (contains? (:signals deps) (:id y-signal)) "y-signal should be tracked")
 
-               (let [x-observers (rtc/get-state [:nodes (:id x-signal) :observers])
-                     y-observers (rtc/get-state [:nodes (:id y-signal) :observers])]
+               (let [x-observers (ec/get-state [:nodes (:id x-signal) :observers])
+                     y-observers (ec/get-state [:nodes (:id y-signal) :observers])]
                  (is (contains? x-observers spin-id) "Spin should observe x-signal")
                  (is (contains? y-observers spin-id) "Spin should observe y-signal")))))))))
 
@@ -183,7 +183,7 @@
    (deftest test-signal-change-marks-spin-dirty
      (testing "When signal changes, spin is marked dirty and re-executes on next deref"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 0)
                  exec-count (atom 0)
                  doubled (spin
@@ -204,7 +204,7 @@
    (deftest test-multiple-signal-updates
      (testing "Spin re-executes for each signal update"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 0)
                  exec-count (atom 0)
                  doubled (spin
@@ -234,7 +234,7 @@
    (deftest test-multiple-signals-one-changes
      (testing "Spin only re-executes when one of its signals changes"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [x (sig/signal 10)
                  y (sig/signal 20)
                  exec-count (atom 0)

@@ -29,8 +29,8 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]]
@@ -257,7 +257,7 @@
      (testing "ifor-each renders initial blocks"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [b1 (make-block "Block 1" nil 0)
                  b2 (make-block "Block 2" nil 1)
                  blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
@@ -288,7 +288,7 @@
      (testing "Adding block produces :add delta"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [b1 (make-block "Block 1" nil 0)
                  blocks-sig (sig/signal (d/deltaable-vector [b1]))
 
@@ -324,7 +324,7 @@
      (testing "Updating block content produces :update delta"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [b1 (make-block "Original" nil 0)
                  blocks-sig (sig/signal (d/deltaable-vector [b1]))
 
@@ -356,7 +356,7 @@
      (testing "Deleting block produces :remove delta"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [b1 (make-block "Block 1" nil 0)
                  b2 (make-block "Block 2" nil 1)
                  blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
@@ -388,7 +388,7 @@
      (testing "Move operation produces :move delta"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [;; Use DeltaableVector directly with move-to
                  items-sig (sig/signal (d/deltaable-vector [:a :b :c :d]))
 
@@ -431,7 +431,7 @@
      (testing "Create document like block_editor_demo.cljs init-sample-data!"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Create structure matching block_editor_demo.cljs
            (let [block1 (make-block "Welcome to Spindel Block Editor" nil 0)
                  block2 (make-block "Features" nil 1)
@@ -484,7 +484,7 @@
      (testing "Edit document: add, update, indent, outdent, delete"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Start with simple 3-block structure
            (let [block1 (make-block "Introduction" nil 0)
                  block2 (make-block "Main Content" nil 1)
@@ -559,7 +559,7 @@
      (testing "Indent/outdent with deep nesting"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [;; Create 4-level deep structure
                  root (make-block "Root" nil 0)
                  l1 (make-block "Level 1" (:id root) 0)
@@ -616,7 +616,7 @@
        ;; to propagate deltas through the tree traversal.
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  b1 {:id 1 :content "Block 1"}
                  b2 {:id 2 :content "Block 2"}
@@ -698,7 +698,7 @@
        ;; through the full reactive pipeline: signal -> track -> ifor-each
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [;; Create signal with deltaable vector
                  items-sig (sig/signal (d/deltaable-vector [{:id 1 :text "A"}
                                                             {:id 2 :text "B"}]))
@@ -782,7 +782,7 @@
        ;; Must pass the full interval for incremental updates.
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [items-sig (sig/signal (d/deltaable-vector [{:id 1 :text "A"}]))
                  ;; Track which code path for-each* takes
                  incremental-path-taken (atom {:correct 0 :wrong 0})
@@ -850,7 +850,7 @@
        ;; the DOM operations logged by MockDischarge
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            ;; Setup for CORRECT approach (pass interval)
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  items-sig-correct (sig/signal (d/deltaable-vector
@@ -902,7 +902,7 @@
      (testing "DOM operations for move and indent with depth changes"
        (reset-id-counter!)
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            
            ;; ============ TEST 1: MOVE (reorder) ============
            ;; Setup with interval approach

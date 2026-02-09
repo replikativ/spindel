@@ -4,8 +4,8 @@
    CLJ-only: Requires git filesystem operations."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [org.replikativ.spindel.yggdrasil :as ygg]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [yggdrasil.adapters.git :as git-adapter]
             [yggdrasil.protocols :as ygg-proto]
             [clojure.java.io :as io]
@@ -66,7 +66,7 @@
 (deftest test-yggref-creation
   (testing "YggRef can be created and dereferenced"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)]
           (is (ygg/ygg-ref? yref) "register! returns a YggRef")
           (is (some? @yref) "YggRef can be dereferenced")
@@ -76,11 +76,11 @@
 (deftest test-yggref-outside-context-throws
   (testing "YggRef deref outside context throws meaningful error"
     (let [ctx (ctx/create-execution-context)
-          yref (binding [rtc/*execution-context* ctx]
+          yref (binding [ec/*execution-context* ctx]
                  (ygg/register! *test-git-system*))]
       ;; Outside the context, deref should throw
       (let [ctx-empty (ctx/create-execution-context)]
-        (binding [rtc/*execution-context* ctx-empty]
+        (binding [ec/*execution-context* ctx-empty]
           (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                 #"Yggdrasil system not found"
                                 @yref)))))))
@@ -88,7 +88,7 @@
 (deftest test-registered-systems
   (testing "registered-systems returns all registered systems"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (is (empty? (ygg/registered-systems)) "Initially empty")
         (ygg/register! *test-git-system*)
         (is (= 1 (count (ygg/registered-systems))) "One system registered")))))
@@ -100,7 +100,7 @@
 (deftest test-fork-creates-branch
   (testing "fork! creates a new git branch"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)
               _ (is (= :main (ygg-proto/current-branch @yref)))
               fork-handle (ygg/fork!)]
@@ -123,7 +123,7 @@
 (deftest test-fork-isolation
   (testing "Parent and fork have independent git systems"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)
               fork-handle (ygg/fork!)
               parent-identity (System/identityHashCode @yref)]
@@ -138,7 +138,7 @@
 (deftest test-fork-worktree-exists
   (testing "Fork creates worktree directory"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)
               fork-handle (ygg/fork!)]
 
@@ -158,7 +158,7 @@
 (deftest test-merge-fork
   (testing "merge-fork! merges forked branch to parent"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)
               fork-handle (ygg/fork!)]
 
@@ -184,7 +184,7 @@
 (deftest test-discard-fork-cleanup
   (testing "discard-fork! removes forked branch and worktree"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)
               fork-handle (ygg/fork!)
               forked-branch-name (atom nil)
@@ -219,7 +219,7 @@
 (deftest test-nested-forks
   (testing "Forks can be nested (fork from fork)"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [yref (ygg/register! *test-git-system*)
               outer-fork (ygg/fork!)]
 
@@ -246,7 +246,7 @@
 (deftest test-fork-handle-type
   (testing "fork! returns a ForkHandle"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (ygg/register! *test-git-system*)
         (let [fork-handle (ygg/fork!)]
           (is (ygg/fork-handle? fork-handle)
@@ -270,7 +270,7 @@
           second-repo-path (create-temp-repo)
           second-git-system (git-adapter/create second-repo-path)]
       (try
-        (binding [rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx]
           (let [yref1 (ygg/register! *test-git-system*)
                 yref2 (ygg/register! second-git-system)
                 fork-handle (ygg/fork!)]

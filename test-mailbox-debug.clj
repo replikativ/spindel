@@ -1,13 +1,13 @@
-(require '[org.replikativ.spindel.runtime.core :as rtc])
-(require '[org.replikativ.spindel.runtime.context :as ctx])
-(require '[org.replikativ.spindel.runtime.impl.atoms])
+(require '[org.replikativ.spindel.engine.core :as ec])
+(require '[org.replikativ.spindel.engine.context :as ctx])
+(require '[org.replikativ.spindel.engine.impl.atoms])
 (require '[org.replikativ.spindel.spin.sync :as sync])
 (require '[org.replikativ.spindel.spin.cps :refer [spin]])
 (require '[org.replikativ.spindel.effects.await :refer [await]])
 
 (println "=== Mailbox Debug Test ===")
 
-(binding [rtc/*execution-context* (ctx/create-execution-context)]
+(binding [ec/*execution-context* (ctx/create-execution-context)]
   (let [mbx (sync/mailbox)]
     (println "1. Created mailbox")
 

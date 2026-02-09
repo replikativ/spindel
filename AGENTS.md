@@ -53,8 +53,8 @@ Overlay Backend (for forks) or Atoms Backend (for root)
 **Critical design**: Spins are **stateless** - no internal atoms. All state lives in runtime (enables forking).
 
 **Access runtime via dynamic bindings**:
-- `rtc/*execution-context*` - Current runtime instance
-- `rtc/*spin-id*` - Current spin ID during execution
+- `ec/*execution-context*` - Current runtime instance
+- `ec/*spin-id*` - Current spin ID during execution
 
 ### 2. Signal (Mutable Time-Varying Values)
 
@@ -123,7 +123,7 @@ For non-reactive state that still needs fork isolation:
 
 **Runtime creation**:
 ```clojure
-(require '[org.replikativ.spindel.runtime.core :as rtc])
+(require '[org.replikativ.spindel.engine.core :as ec])
 
 ;; Atoms-based (portable CLJ/CLJS)
 (def ctx (ctx/create-execution-context))
@@ -165,7 +165,7 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics via ove
 **File**: [src/org/replikativ/spindel/runtime/context.cljc](src/org/replikativ/spindel/runtime/context.cljc)
 
 ```clojure
-(require '[org.replikativ.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.engine.context :as ctx])
 
 ;; Create main context
 (def ctx-main (ctx/create-execution-context))
@@ -184,18 +184,18 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics via ove
 
 ```clojure
 ;; Parent context with signal
-(binding [rtc/*execution-context* ctx-main]
+(binding [ec/*execution-context* ctx-main]
   (def counter (sig/signal 0))
   (swap! counter inc))  ; counter = 1
 
 ;; Fork and mutate
 (def ctx-fork (ctx/restore-snapshot (ctx/snapshot-context ctx-main)))
-(binding [rtc/*execution-context* ctx-fork]
+(binding [ec/*execution-context* ctx-fork]
   (swap! counter inc)   ; fork: counter = 2
   (swap! counter inc))  ; fork: counter = 3
 
 ;; Parent unchanged!
-(binding [rtc/*execution-context* ctx-main]
+(binding [ec/*execution-context* ctx-main]
   @counter)  ; => 1 (still 1!)
 ```
 
@@ -432,7 +432,7 @@ This maintains the abstraction boundary and ensures code works across all runtim
 ### The Rule
 
 When working with runtime state:
-- ✅ **CORRECT**: `(rtp/get-state runtime [:spins tid])` or `(rtc/get-state [:spins tid])`
+- ✅ **CORRECT**: `(rtp/get-state runtime [:spins tid])` or `(ec/get-state [:spins tid])`
 - ❌ **WRONG**: `(:state runtime)` or `@(:state runtime)`
 
 ### Why This Matters
@@ -467,8 +467,8 @@ When working with runtime state:
 - `rtp/cas-state!` - Compare-and-set at path
 
 Or use the facade functions in `runtime/core.cljc` which automatically use `*execution-context*`:
-- `rtc/get-state`
-- `rtc/swap-state!`
+- `ec/get-state`
+- `ec/swap-state!`
 - etc.
 
 ## Key Design Principles
@@ -534,14 +534,14 @@ Spindel automatically tracks dependencies at runtime for incremental reactivity:
     (* x y)))
 ```
 
-- `track` calls `rtc/deps-track-signal!` to record signal dependency
-- `await` calls `rtc/deps-track-spin!` to record spin dependency
+- `track` calls `ec/deps-track-signal!` to record signal dependency
+- `await` calls `ec/deps-track-spin!` to record spin dependency
 - Dependencies stored in `[:tracking spin-id]` during execution
 
 **Commit Phase (On Completion):**
 ```clojure
 ;; In spin resolve-fn (spin/core.cljc:113)
-(rtc/graph-commit-deps! spin-id)
+(ec/graph-commit-deps! spin-id)
 ```
 
 - Moves dependencies from `[:tracking spin-id]` to `[:graph spin-id]`
@@ -801,12 +801,12 @@ clj -M:repl-mcp
 
 ;; Test function
 (def ctx (create-runtime {:impl :atoms}))
-(binding [rtc/*execution-context* ctx]
+(binding [ec/*execution-context* ctx]
   (def t (spin/make-spin (fn [resolve reject] (resolve 42)) :test))
   @t)  ; => 42
 
 ;; Check state
-(rtc/get-state [:spin-outputs :test])  ; => 42
+(ec/get-state [:spin-outputs :test])  ; => 42
 ```
 
 ## Development Approach
@@ -980,7 +980,7 @@ See README.md for full usage examples. Quick reference:
 ```clojure
 ;; Create runtime and use binding
 (def ctx (ctx/create-execution-context))
-(binding [rtc/*execution-context* ctx]
+(binding [ec/*execution-context* ctx]
   (def counter (sig/signal 0))
   (def my-spin (spin (let [{:keys [new]} (track counter)] (* 2 new))))
   @my-spin)  ; => 0
@@ -989,8 +989,8 @@ See README.md for full usage examples. Quick reference:
 (def ctx-fork (ctx/fork-context ctx))
 
 ;; Access runtime state via protocols
-(rtc/get-state [:signals sig-id])
-(rtc/swap-state! [:signals sig-id] update-fn)
+(ec/get-state [:signals sig-id])
+(ec/swap-state! [:signals sig-id] update-fn)
 ```
 
 ## Testing Strategy
@@ -1104,10 +1104,10 @@ SPINDEL_TEST_LOG=true clj -M:test
 ### Inspect Runtime State
 
 ```clojure
-(rtc/get-state [:graph])              ; Dependency graph
-(rtc/get-state [:signals sig-id])     ; Signal state
-(rtc/get-state [:spin-outputs spin-id]) ; Spin cache
-(rtc/graph-ordered-observers sig-id)  ; Topological order
+(ec/get-state [:graph])              ; Dependency graph
+(ec/get-state [:signals sig-id])     ; Signal state
+(ec/get-state [:spin-outputs spin-id]) ; Spin cache
+(ec/graph-ordered-observers sig-id)  ; Topological order
 ```
 
 ### Diagnose Hanging Tests

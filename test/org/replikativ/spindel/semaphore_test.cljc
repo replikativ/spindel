@@ -4,9 +4,9 @@
   (:refer-clojure :exclude [await])
   #?(:clj
      (:require [clojure.test :refer [deftest is testing use-fixtures]]
-               [org.replikativ.spindel.runtime.core :as rtc]
-               [org.replikativ.spindel.runtime.context :as ctx]
-               [org.replikativ.spindel.runtime.scheduler :as sched]
+               [org.replikativ.spindel.engine.core :as ec]
+               [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.scheduler :as sched]
                [org.replikativ.spindel.semaphore :as sem]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.await :refer [await]])
@@ -25,7 +25,7 @@
      (fn [f]
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})]
          (try
-           (binding [rtc/*execution-context* execution-ctx]
+           (binding [ec/*execution-context* execution-ctx]
              (f))
            (finally
              (ctx/stop-context! execution-ctx)))))))
@@ -97,7 +97,7 @@
 
          ;; Second spin should wait
          (future
-           (binding [rtc/*execution-context* rtc/*execution-context*]
+           (binding [ec/*execution-context* ec/*execution-context*]
              (deliver waiter-started :started)
              (let [result @(spin (await (sem/acquire s)))]
                (deliver waiter-completed result))))
@@ -213,7 +213,7 @@
          (let [futures (doall
                         (for [_i (range spins)]
                           (future
-                            (binding [rtc/*execution-context* rtc/*execution-context*]
+                            (binding [ec/*execution-context* ec/*execution-context*]
                               @(sem/holding s
                                  (spin
                                   ;; Atomically increment and capture max - this is crucial!
@@ -265,7 +265,7 @@
        (let [ctx1 (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})]
 
          ;; Create semaphore in ctx1
-         (binding [rtc/*execution-context* ctx1]
+         (binding [ec/*execution-context* ctx1]
            (let [s (sem/semaphore 5)]
 
              ;; Use in ctx1
@@ -273,5 +273,5 @@
              (is (= 4 @s) "Should have 4 permits in ctx1")
 
              ;; Verify semaphore still works with same context
-             (binding [rtc/*execution-context* ctx1]
+             (binding [ec/*execution-context* ctx1]
                (is (= 4 @s) "Should still see 4 permits in same context"))))))))

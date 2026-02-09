@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.impl.simple
+(ns org.replikativ.spindel.engine.impl.simple
   "Portable async event-based runtime (CLJ/CLJS).
 
   This engine processes events using a FIFO queue with async draining.
@@ -17,12 +17,12 @@
   "
   (:refer-clojure :exclude [node])
   (:require [org.replikativ.spindel.log :as log]
-            [org.replikativ.spindel.runtime.scheduler :as scheduler]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.bindings :as bindings]
-            [org.replikativ.spindel.runtime.cache :as cache]
-            [org.replikativ.spindel.runtime.nodes :as nodes]
+            [org.replikativ.spindel.engine.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.bindings :as bindings]
+            [org.replikativ.spindel.engine.cache :as cache]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
@@ -197,7 +197,7 @@
                             (update state :queue conj msg))))]
       (if-let [{:keys [spin-id resolve]} @waiter-to-try]
         ;; Got a waiter - check if cancelled (outside swap, context available)
-        (if (and spin-id (rtc/spin-is-cancelled? spin-id))
+        (if (and spin-id (ec/spin-is-cancelled? spin-id))
           ;; Cancelled - try next waiter
           (recur)
           ;; Valid waiter - resume it
@@ -299,8 +299,8 @@
         ctx-with-bindings (if ctx-bindings
                             (update context :bindings merge ctx-bindings)
                             context)]
-    (binding [rtc/*execution-context* ctx-with-bindings
-              rtc/*spin-id* spin-id
+    (binding [ec/*execution-context* ctx-with-bindings
+              ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
       (rtp/resume-continuation!
        context spin-id cont
@@ -474,8 +474,8 @@
                              :data {:parent-id parent-id :cont-id cont-id :child-id tid
                                     :generation generation}})
                 ;; Resume continuation
-                (binding [rtc/*execution-context* context
-                          rtc/*spin-id* parent-id
+                (binding [ec/*execution-context* context
+                          ec/*spin-id* parent-id
                           pcps-async/*in-trampoline* false]
                   (let [resume-result (rtp/resume-continuation!
                                        context
@@ -504,7 +504,7 @@
       ;; CRITICAL: Bind *execution-context* and *in-trampoline* when delivering deferred value
       ;; The deferred function will resume continuations which need context access
       ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
-      (binding [rtc/*execution-context* context
+      (binding [ec/*execution-context* context
                 pcps-async/*in-trampoline* false]
         (deliver-inline! deferred value state-atom))
       nil)
@@ -518,7 +518,7 @@
       ;; Post inline - we're already on executor thread, queue broke the call stack
       ;; CRITICAL: Bind *execution-context* and *in-trampoline* when posting to mailbox
       ;; The mailbox function will resume continuations which need context access
-      (binding [rtc/*execution-context* context
+      (binding [ec/*execution-context* context
                 pcps-async/*in-trampoline* false]
         (post-inline! mailbox msg state-atom))
       nil)
@@ -557,8 +557,8 @@
         ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
         ;; This ensures invoke-continuation establishes a new trampoline loop
         ;; If execution-context is provided (e.g., from SMC), bind it; otherwise use context
-        (binding [rtc/*execution-context* (or execution-context context)
-                  rtc/*spin-id* tid
+        (binding [ec/*execution-context* (or execution-context context)
+                  ec/*spin-id* tid
                   pcps-async/*in-trampoline* false]
           ;; Invoke spin (Spin implements IFn)
           (let [result (spin resolve-fn reject-fn)]
@@ -1092,7 +1092,7 @@
   Returns: true"
   [context spin-id spin-meta]
   ;; Get the current spin-id (creator) from dynamic binding
-  (let [creator-id rtc/*spin-id*]
+  (let [creator-id ec/*spin-id*]
 
     ;; Write metadata
     (rtp/swap-state! context [:spins-meta spin-id] (constantly spin-meta))

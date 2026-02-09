@@ -37,10 +37,10 @@ Spindel provides cached reactive spins with automatic dependency tracking, mutab
 ```clojure
 ;; Convenience entry point (re-exports core APIs)
 (require '[org.replikativ.spindel.core :as s :refer [spin signal await track]])
-(require '[org.replikativ.spindel.runtime.core :as rtc])
+(require '[org.replikativ.spindel.engine.core :as ec])
 
 ;; Or require individual namespaces for full control:
-;; (require '[org.replikativ.spindel.runtime.context :as ctx])
+;; (require '[org.replikativ.spindel.engine.context :as ctx])
 ;; (require '[org.replikativ.spindel.spin.cps :refer [spin]])
 ;; (require '[org.replikativ.spindel.signal :as sig])
 ;; (require '[org.replikativ.spindel.effects.await :refer [await]])
@@ -50,22 +50,22 @@ Spindel provides cached reactive spins with automatic dependency tracking, mutab
 (def context (s/create-execution-context))
 
 ;; Create a signal
-(binding [rtc/*execution-context* context]
+(binding [ec/*execution-context* context]
   (def counter (signal 0)))
 
 ;; Create a spin that depends on the signal
-(binding [rtc/*execution-context* context]
+(binding [ec/*execution-context* context]
   (def doubled
     (spin
       (let [{:keys [new]} (track counter)]
         (* 2 new)))))
 
 ;; Execute spin
-(binding [rtc/*execution-context* context]
+(binding [ec/*execution-context* context]
   @doubled)  ; => 0
 
 ;; Update signal - spin automatically re-executes
-(binding [rtc/*execution-context* context]
+(binding [ec/*execution-context* context]
   (swap! counter inc)
   @doubled)  ; => 2
 ```
@@ -109,11 +109,11 @@ The runtime manages execution, dependency tracking, and scheduling:
 
 ```clojure
 ;; Create execution context (portable CLJ/CLJS)
-(require '[org.replikativ.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.engine.context :as ctx])
 (def context (ctx/create-execution-context))
 
 ;; Use runtime via binding
-(binding [rtc/*execution-context* context]
+(binding [ec/*execution-context* context]
   ;; All operations here
   )
 ```
@@ -130,12 +130,12 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics, enabli
 ### How Forking Works
 
 ```clojure
-(require '[org.replikativ.spindel.runtime.context :as ctx])
+(require '[org.replikativ.spindel.engine.context :as ctx])
 (require '[org.replikativ.spindel.signal :as sig])
 
 ;; Create main context with a signal
 (def ctx-main (ctx/create-execution-context))
-(binding [rtc/*execution-context* ctx-main]
+(binding [ec/*execution-context* ctx-main]
   (def counter (sig/signal 0))
   (swap! counter inc))  ; counter = 1
 
@@ -146,12 +146,12 @@ Spindel's runtime supports **O(1) forking** with copy-on-write semantics, enabli
 (def ctx-fork (ctx/restore-snapshot snapshot))
 
 ;; Mutations in fork don't affect parent
-(binding [rtc/*execution-context* ctx-fork]
+(binding [ec/*execution-context* ctx-fork]
   (swap! counter inc)   ; fork: counter = 2
   (swap! counter inc))  ; fork: counter = 3
 
 ;; Parent unchanged
-(binding [rtc/*execution-context* ctx-main]
+(binding [ec/*execution-context* ctx-main]
   @counter)  ; => 1 (still 1!)
 ```
 
@@ -578,7 +578,7 @@ Effects extend the CPS transformation. Built-in effects:
 Libraries can register custom effects:
 
 ```clojure
-(require '[org.replikativ.spindel.runtime.effects :as effects])
+(require '[org.replikativ.spindel.engine.effects :as effects])
 
 (effects/register-effect-by-symbol!
   'my.lib/sample

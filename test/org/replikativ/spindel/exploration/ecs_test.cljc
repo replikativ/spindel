@@ -21,8 +21,8 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
@@ -183,7 +183,7 @@
    (deftest test-signal-world-tracking
      (testing "World signal tracks changes via spin"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [world-sig (sig/signal (make-world [(make-entity "e1" :health 100)]))
                  captured-deltas (atom nil)
                  captured-tick (atom nil)
@@ -211,7 +211,7 @@
    (deftest test-derived-view-entities-with-health
      (testing "Derived view filters entities incrementally"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
                                                      (make-entity "e2" :health 0)   ; Dead
                                                      (make-entity "e3" :health 50)]))
@@ -305,7 +305,7 @@
    (deftest test-fork-evaluates-without-mutation
      (testing "Forked context allows evaluation without mutating parent"
        (let [rt-main (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt-main]
+         (binding [ec/*execution-context* rt-main]
            (let [world-sig (sig/signal (make-world [(make-entity "player" :health 100)
                                                      (make-entity "enemy" :health 50)]))]
              ;; Initial score
@@ -313,7 +313,7 @@
 
              ;; Fork and simulate damage in fork
              (let [rt-fork (ctx/fork-context rt-main)]
-               (binding [rtc/*execution-context* rt-fork]
+               (binding [ec/*execution-context* rt-fork]
                  ;; Apply damage in fork
                  (swap! world-sig apply-action {:type :attack
                                                 :attacker-id "enemy"
@@ -329,14 +329,14 @@
    (deftest test-fork-compare-strategies
      (testing "Fork enables comparing multiple AI strategies"
        (let [rt-main (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt-main]
+         (binding [ec/*execution-context* rt-main]
            (let [initial-world (make-world [(make-entity "ai" :health 50 :velocity [1 0])
                                             (make-entity "target" :health 100)])
                  world-sig (sig/signal initial-world)
 
                  ;; Strategy A: Attack
                  score-attack (let [rt-fork (ctx/fork-context rt-main)]
-                                (binding [rtc/*execution-context* rt-fork]
+                                (binding [ec/*execution-context* rt-fork]
                                   (swap! world-sig apply-action {:type :attack
                                                                   :attacker-id "ai"
                                                                   :target-id "target"
@@ -345,7 +345,7 @@
 
                  ;; Strategy B: Heal self
                  score-heal (let [rt-fork (ctx/fork-context rt-main)]
-                              (binding [rtc/*execution-context* rt-fork]
+                              (binding [ec/*execution-context* rt-fork]
                                 (swap! world-sig apply-action {:type :heal
                                                                 :entity-id "ai"
                                                                 :amount 30})
@@ -362,14 +362,14 @@
    (deftest test-fork-lookahead-simulation
      (testing "Fork enables multi-step lookahead"
        (let [rt-main (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt-main]
+         (binding [ec/*execution-context* rt-main]
            (let [;; World where entity moves right each tick
                  initial-world (make-world [(make-entity "mover" :position [0 0] :velocity [10 0])])
                  world-sig (sig/signal initial-world)]
 
              ;; Simulate 5 ticks in a fork
              (let [rt-fork (ctx/fork-context rt-main)
-                   future-pos (binding [rtc/*execution-context* rt-fork]
+                   future-pos (binding [ec/*execution-context* rt-fork]
                                 ;; Tick 5 times
                                 (dotimes [_ 5]
                                   (swap! world-sig tick-world))
@@ -386,7 +386,7 @@
    (deftest test-fork-is-lightweight
      (testing "Creating many forks is efficient"
        (let [rt-main (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt-main]
+         (binding [ec/*execution-context* rt-main]
            (let [world-sig (sig/signal (make-world
                                          (for [i (range 100)]
                                            (make-entity (str "e" i) :health (rand-int 100)))))]
@@ -396,7 +396,7 @@
                    scores (doall
                             (for [_ (range 100)]
                               (let [rt-fork (ctx/fork-context rt-main)]
-                                (binding [rtc/*execution-context* rt-fork]
+                                (binding [ec/*execution-context* rt-fork]
                                   ;; Do some work in each fork - increment health
                                   (let [current (get-in @world-sig [:entities "e0" :health])]
                                     (swap! world-sig update-entity "e0" :health (inc current)))
@@ -446,7 +446,7 @@
    (deftest test-world-render-with-signal
      (testing "World renders correctly through signal + spin"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
                                                      (make-entity "e2" :health 50)]))
@@ -478,7 +478,7 @@
    (deftest test-add-entity-triggers-render
      (testing "Adding entity triggers re-render"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  world-sig (sig/signal (make-world [(make-entity "e1" :health 100)]))
                  entity-counts (atom [])
@@ -509,7 +509,7 @@
    (deftest test-remove-entity-triggers-render
      (testing "Removing entity triggers re-render"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
                                                      (make-entity "e2" :health 50)
@@ -536,7 +536,7 @@
    (deftest test-sparse-updates-efficient
      (testing "Updating 1 of 100 entities only re-renders once"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [{:keys [discharge]} (disch/make-mock-discharge)
                  ;; Create world with 100 entities
                  initial-entities (for [i (range 100)]

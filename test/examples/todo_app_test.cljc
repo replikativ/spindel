@@ -10,8 +10,8 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [examples.todo-app :as app]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.incremental.deltaable :as d]
@@ -26,7 +26,7 @@
    (deftest test-add-todo
      (testing "Adding todos updates signal with proper deltas"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)]
              ;; Initially empty
              (is (empty? @todos))
@@ -51,7 +51,7 @@
    (deftest test-toggle-todo
      (testing "Toggling todo updates done status"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)]
              ;; Add a todo
              (app/add-todo! todos "Test task")
@@ -71,7 +71,7 @@
    (deftest test-remove-todo
      (testing "Removing todo updates signal with :remove delta"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)]
              ;; Add several todos
              (app/add-todo! todos "First task" :high)
@@ -104,7 +104,7 @@
      (testing "Removing todo triggers correct DOM operations"
        (let [rt (ctx/create-execution-context)
              {:keys [discharge log]} (disch/make-mock-discharge)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)
                  filter-sig (app/make-filter-signal)
                  app (app/make-app-spin todos filter-sig)]
@@ -147,7 +147,7 @@
    (deftest test-filter-signal
      (testing "Filter signal tracks current mode"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [filter-sig (app/make-filter-signal)]
              ;; Default is :all
              (is (= :all @filter-sig))
@@ -168,7 +168,7 @@
    (deftest test-app-spin-initial-render
      (testing "App spin produces initial vdom"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)
                  filter-sig (app/make-filter-signal)
                  app (app/make-app-spin todos filter-sig)
@@ -182,7 +182,7 @@
    (deftest test-app-spin-with-todos
      (testing "App spin renders todos correctly"
        (let [rt (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)
                  filter-sig (app/make-filter-signal)
                  app (app/make-app-spin todos filter-sig)]
@@ -205,7 +205,7 @@
      (testing "App spin re-renders on signal changes"
        (let [rt (ctx/create-execution-context)
              {:keys [discharge log]} (disch/make-mock-discharge)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)
                  filter-sig (app/make-filter-signal)
                  app (app/make-app-spin todos filter-sig)
@@ -235,7 +235,7 @@
            {:keys [discharge log]} (disch/make-mock-discharge)
            execution-trace (atom [])]
 
-       (binding [rtc/*execution-context* rt]
+       (binding [ec/*execution-context* rt]
          (let [todos (app/make-todos-signal)
                filter-sig (app/make-filter-signal)
                app-spin (app/make-app-spin todos filter-sig)]
@@ -305,7 +305,7 @@
      (testing "Rendering is O(delta), not O(n)"
        (let [rt (ctx/create-execution-context)
              {:keys [discharge log]} (disch/make-mock-discharge)]
-         (binding [rtc/*execution-context* rt]
+         (binding [ec/*execution-context* rt]
            (let [todos (app/make-todos-signal)
                  filter-sig (app/make-filter-signal)
                  app (app/make-app-spin todos filter-sig)]

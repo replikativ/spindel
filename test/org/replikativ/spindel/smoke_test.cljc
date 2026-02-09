@@ -10,8 +10,8 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -29,7 +29,7 @@
      (testing "End-to-end: runtime → signal → spin → execution"
        (let [ctx (ctx/create-execution-context)]
          (is (some? ctx) "Context should be created")
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 0)]
              (is (some? counter) "Signal should be created")
              (is (= 0 @counter) "Signal initial value should be 0")
@@ -47,7 +47,7 @@
    (deftest smoke-test-multiple-signals-clj
      (testing "Spin can depend on multiple signals"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [x (sig/signal 10)
                  y (sig/signal 20)
                  sum-spin (spin

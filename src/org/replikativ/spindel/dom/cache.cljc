@@ -12,7 +12,7 @@
   - :nil    - Slot is empty (conditional returned nil)
   - :single - Slot contains one vnode
   - :keyed  - Slot contains KeyedFragment (from ifor-each)"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
+  (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.dom.core :as core]))
 
 ;; Forward declaration for KeyedFragment check
@@ -53,7 +53,7 @@
 
   Returns: Vector of slot entries, or nil if not cached."
   [addr]
-  (rtc/get-state [:dom/cache addr]))
+  (ec/get-state [:dom/cache addr]))
 
 (defn set-slot-cache!
   "Store slot cache for an element address.
@@ -62,7 +62,7 @@
     addr - Element address (keyword)
     slots - Vector of {:type :value} slot entries"
   [addr slots]
-  (rtc/swap-state! [:dom/cache addr] (constantly slots)))
+  (ec/swap-state! [:dom/cache addr] (constantly slots)))
 
 ;; =============================================================================
 ;; Attribute Cache Access
@@ -73,7 +73,7 @@
 
   Returns: Map of previous attribute values, or nil if not cached."
   [addr]
-  (rtc/get-state [:dom/attr-cache addr]))
+  (ec/get-state [:dom/attr-cache addr]))
 
 (defn set-attr-cache!
   "Store attr cache for an element address.
@@ -82,7 +82,7 @@
     addr - Element address (keyword)
     attrs - Map of attribute values"
   [addr attrs]
-  (rtc/swap-state! [:dom/attr-cache addr] (constantly attrs)))
+  (ec/swap-state! [:dom/attr-cache addr] (constantly attrs)))
 
 ;; =============================================================================
 ;; Attribute Reconciliation

@@ -2,11 +2,11 @@
   "Tests for runtime protocol implementations: PGraph, PDepsTracking, PSpinLifecycle, PState, etc."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.impl.graph :as graph]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.impl.graph :as graph]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -21,7 +21,7 @@
 (deftest test-pgraph-record-deps
   (testing "record-deps! commits tracked dependencies to graph"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [signal1 (sig/signal 0)
               signal2 (sig/signal 0)
               spin-id :test-spin]
@@ -34,7 +34,7 @@
           (rtp/record-deps! ctx spin-id)
 
           ;; Verify dependencies stored in SpinNode (Phase 1B)
-          (let [spin-node (rtc/get-state [:nodes spin-id])
+          (let [spin-node (ec/get-state [:nodes spin-id])
                 deps (:deps spin-node)]
             (is (some? spin-node))
             (is (contains? (:signals deps) (:id signal1)))
@@ -43,7 +43,7 @@
 (deftest test-pgraph-clear-deps
   (testing "clear-deps! removes spin from graph and observers"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [signal1 (sig/signal 0)
               spin-id :test-spin]
 
@@ -52,7 +52,7 @@
           (rtp/record-deps! ctx spin-id)
 
           ;; Verify dependencies exist (Phase 1B: check SpinNode deps)
-          (let [spin-node (rtc/get-state [:nodes spin-id])]
+          (let [spin-node (ec/get-state [:nodes spin-id])]
             (is (some? spin-node))
             (is (some? (:deps spin-node))))
 
@@ -60,7 +60,7 @@
           (rtp/clear-deps! ctx spin-id)
 
           ;; Verify cleanup (deps should be empty)
-          (let [spin-node (rtc/get-state [:nodes spin-id])
+          (let [spin-node (ec/get-state [:nodes spin-id])
                 deps (:deps spin-node)]
             (is (empty? (:signals deps)))
             (is (empty? (:spins deps))))
@@ -70,7 +70,7 @@
 (deftest test-pgraph-ordered-observers
   (testing "ordered-observers returns observers in topological order"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [counter (sig/signal 0)
               spin1 (spin
                       (let [{:keys [new]} (track counter)]
@@ -88,7 +88,7 @@
           @spin3
 
           ;; Get ordered observers for the signal
-          (let [rt-state (rtc/get-state [])
+          (let [rt-state (ec/get-state [])
                 observers (graph/ordered-observers rt-state (:id counter))]
             ;; All three spins should be in the list
             (is (seq observers))
@@ -106,7 +106,7 @@
 (deftest test-pdeps-tracking-signal
   (testing "track-signal-dep! records signal dependencies"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [signal1 (sig/signal 0)
               spin-id :test-spin]
 
@@ -114,14 +114,14 @@
           (rtp/track-signal-dep! ctx spin-id (:id signal1))
 
           ;; Verify tracking state (stored in :signal-generations map)
-          (let [tracked (rtc/get-state [:spin-tracking spin-id])]
+          (let [tracked (ec/get-state [:spin-tracking spin-id])]
             (is (some? tracked))
             (is (contains? (:signal-generations tracked) (:id signal1)))))))))
 
 (deftest test-pdeps-tracking-spin
   (testing "track-spin-dep! records spin dependencies"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [parent-id :parent-spin
               child-id :child-spin]
 
@@ -129,14 +129,14 @@
           (rtp/track-spin-dep! ctx parent-id child-id)
 
           ;; Verify tracking state (stored in :spin-hashes map)
-          (let [tracked (rtc/get-state [:spin-tracking parent-id])]
+          (let [tracked (ec/get-state [:spin-tracking parent-id])]
             (is (some? tracked))
             (is (contains? (:spin-hashes tracked) child-id))))))))
 
 (deftest test-pdeps-tracking-multiple
   (testing "Multiple dependencies can be tracked"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [sig1 (sig/signal 0)
               sig2 (sig/signal 0)
               spin-id :test-spin
@@ -148,7 +148,7 @@
           (rtp/track-spin-dep! ctx spin-id child-id)
 
           ;; Verify all tracked (stored in :signal-generations and :spin-hashes maps)
-          (let [tracked (rtc/get-state [:spin-tracking spin-id])]
+          (let [tracked (ec/get-state [:spin-tracking spin-id])]
             (is (= 2 (count (:signal-generations tracked))))
             (is (= 1 (count (:spin-hashes tracked))))))))))
 
@@ -159,7 +159,7 @@
 (deftest test-pspin-lifecycle-register
   (testing "register-spin! stores spin metadata"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin
               spin-meta {:created-at (System/currentTimeMillis)}]
 
@@ -167,21 +167,21 @@
           (rtp/register-spin! ctx spin-id spin-meta)
 
           ;; Verify metadata stored
-          (let [stored-meta (rtc/get-state [:spins-meta spin-id])]
+          (let [stored-meta (ec/get-state [:spins-meta spin-id])]
             (is (some? stored-meta))
             (is (= spin-meta stored-meta))))))))
 
 (deftest test-pspin-lifecycle-cache-value
   (testing "cache-result! stores result and marks clean"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin]
 
           ;; Cache successful result
           (rtp/cache-result! ctx spin-id (spin-core/ok 42))
 
           ;; Verify cached
-          (let [cached (rtc/get-state [:nodes spin-id])
+          (let [cached (ec/get-state [:nodes spin-id])
                 res (rtp/current-result ctx spin-id)]
             (is (some? cached))
             (is (= :clean (:status cached)))
@@ -192,7 +192,7 @@
 (deftest test-pspin-lifecycle-cache-error
   (testing "cache-result! stores errors"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin
               error (ex-info "Test error" {:code 42})]
 
@@ -200,7 +200,7 @@
           (rtp/cache-result! ctx spin-id (spin-core/error error))
 
           ;; Verify cached
-          (let [cached (rtc/get-state [:nodes spin-id])
+          (let [cached (ec/get-state [:nodes spin-id])
                 res (rtp/current-result ctx spin-id)]
             (is (= :clean (:status cached)))
             (is (spin-core/error? res))
@@ -209,19 +209,19 @@
 (deftest test-pspin-lifecycle-mark-dirty
   (testing "mark-dirty! changes status to dirty"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin]
 
           ;; Cache clean value
           (rtp/cache-result! ctx spin-id (spin-core/ok 42))
-          (is (= :clean (get-in (rtc/get-state [:nodes spin-id]) [:status])))
+          (is (= :clean (get-in (ec/get-state [:nodes spin-id]) [:status])))
           (is (true? (rtp/clean? ctx spin-id)))
 
           ;; Mark dirty
           (rtp/mark-dirty! ctx spin-id)
 
           ;; Verify dirty
-          (let [cached (rtc/get-state [:nodes spin-id])]
+          (let [cached (ec/get-state [:nodes spin-id])]
             (is (false? (:completed? cached)))
             (is (= :dirty (:status cached)))
             (is (true? (rtp/dirty? ctx spin-id)))))))))
@@ -229,7 +229,7 @@
 (deftest test-pspin-lifecycle-current-value
   (testing "current-result retrieves cached result"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin]
 
           ;; Initially no cached value
@@ -250,7 +250,7 @@
 (deftest test-pcontinuation-add-remove
   (testing "add-continuation! and remove-continuation! work correctly"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin
               cont {:event-key [:signal :sig-1]
                     :on-resume (fn [_] 42)
@@ -263,19 +263,19 @@
             (is (some? (:order added-cont)))
 
             ;; Verify stored
-            (let [stored (rtc/get-state [:continuations spin-id (:id added-cont)])]
+            (let [stored (ec/get-state [:continuations spin-id (:id added-cont)])]
               (is (some? stored)))
 
             ;; Remove continuation
             (rtp/remove-continuation! ctx spin-id (:id added-cont))
 
             ;; Verify removed
-            (is (nil? (rtc/get-state [:continuations spin-id (:id added-cont)])))))))))
+            (is (nil? (ec/get-state [:continuations spin-id (:id added-cont)])))))))))
 
 (deftest test-pcontinuation-earliest
   (testing "earliest-continuation returns earliest by order"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [spin-id :test-spin
               sig-id :sig-1
               cont1 {:event-key [:signal sig-id]
@@ -303,62 +303,62 @@
 (deftest test-pstate-swap
   (testing "swap-state! atomically updates state"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Initialize some state
-        (rtc/swap-state! [:test-data] (constantly {:counter 0}))
+        (ec/swap-state! [:test-data] (constantly {:counter 0}))
 
         ;; Update via swap-state!
-        (rtc/swap-state! [:test-data :counter] inc)
+        (ec/swap-state! [:test-data :counter] inc)
 
         ;; Verify updated
-        (is (= 1 (rtc/get-state [:test-data :counter])))))))
+        (is (= 1 (ec/get-state [:test-data :counter])))))))
 
 (deftest test-pstate-swap-with-function
   (testing "swap-state! applies function correctly"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Initialize
-        (rtc/swap-state! [:numbers] (constantly []))
+        (ec/swap-state! [:numbers] (constantly []))
 
         ;; Append multiple values
-        (rtc/swap-state! [:numbers] #(conj % 1))
-        (rtc/swap-state! [:numbers] #(conj % 2))
-        (rtc/swap-state! [:numbers] #(conj % 3))
+        (ec/swap-state! [:numbers] #(conj % 1))
+        (ec/swap-state! [:numbers] #(conj % 2))
+        (ec/swap-state! [:numbers] #(conj % 3))
 
         ;; Verify
-        (is (= [1 2 3] (rtc/get-state [:numbers])))))))
+        (is (= [1 2 3] (ec/get-state [:numbers])))))))
 
 (deftest test-pstate-get
   (testing "get-state retrieves values at path"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Set up nested state
-        (rtc/swap-state! [:test-data] (constantly {:a {:b {:c 42}}}))
+        (ec/swap-state! [:test-data] (constantly {:a {:b {:c 42}}}))
 
         ;; Retrieve at different levels
-        (is (some? (rtc/get-state [:test-data])))
-        (is (some? (rtc/get-state [:test-data :a])))
-        (is (some? (rtc/get-state [:test-data :a :b])))
-        (is (= 42 (rtc/get-state [:test-data :a :b :c])))
+        (is (some? (ec/get-state [:test-data])))
+        (is (some? (ec/get-state [:test-data :a])))
+        (is (some? (ec/get-state [:test-data :a :b])))
+        (is (= 42 (ec/get-state [:test-data :a :b :c])))
 
         ;; Non-existent path
-        (is (nil? (rtc/get-state [:non-existent])))))))
+        (is (nil? (ec/get-state [:non-existent])))))))
 
 (deftest test-pstate-nested-updates
   (testing "swap-state! works with nested paths"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Initialize nested structure
-        (rtc/swap-state! [:users] (constantly {}))
-        (rtc/swap-state! [:users :user-1] (constantly {:name "Alice" :age 30}))
-        (rtc/swap-state! [:users :user-2] (constantly {:name "Bob" :age 25}))
+        (ec/swap-state! [:users] (constantly {}))
+        (ec/swap-state! [:users :user-1] (constantly {:name "Alice" :age 30}))
+        (ec/swap-state! [:users :user-2] (constantly {:name "Bob" :age 25}))
 
         ;; Update nested value
-        (rtc/swap-state! [:users :user-1 :age] inc)
+        (ec/swap-state! [:users :user-1 :age] inc)
 
         ;; Verify
-        (is (= 31 (rtc/get-state [:users :user-1 :age])))
-        (is (= 25 (rtc/get-state [:users :user-2 :age])))))))
+        (is (= 31 (ec/get-state [:users :user-1 :age])))
+        (is (= 25 (ec/get-state [:users :user-2 :age])))))))
 
 ;; =============================================================================
 ;; PEngine Protocol Tests - Event Queue
@@ -367,12 +367,12 @@
 (deftest test-penqueue-event!
   (testing "enqueue! adds events to queue"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Enqueue signal change event
         (rtp/enqueue! ctx {:type :signal-change :id :sig-1})
 
         ;; Verify event in queue (implementation detail, but we can check)
-        (let [pending (rtc/get-state [:engine/pending])]
+        (let [pending (ec/get-state [:engine/pending])]
           (is (some? pending)))))))
 
 ;; =============================================================================
@@ -382,7 +382,7 @@
 (deftest test-protocols-integration-signal-spin-flow
   (testing "Full flow: track deps, cache value, mark dirty, re-execute"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [counter (sig/signal 0)
               doubled (spin
                         (let [{:keys [new]} (track counter)]
@@ -413,7 +413,7 @@
 (deftest test-protocols-integration-observer-chain
   (testing "Observer chain maintains consistency across protocols"
     (let [ctx (ctx/create-execution-context)]
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [source (sig/signal 1)
               spin1 (spin
                       (let [{:keys [new]} (track source)]
@@ -427,8 +427,8 @@
           @spin2
 
           ;; Verify dependencies recorded (Phase 1B: read from SpinNode :deps)
-          (let [t1-node (rtc/get-state [:nodes (spin-core/spin-id spin1)])
-                t2-node (rtc/get-state [:nodes (spin-core/spin-id spin2)])
+          (let [t1-node (ec/get-state [:nodes (spin-core/spin-id spin1)])
+                t2-node (ec/get-state [:nodes (spin-core/spin-id spin2)])
                 t1-deps (:deps t1-node)
                 t2-deps (:deps t2-node)]
             (is (contains? (:signals t1-deps) (:id source)))

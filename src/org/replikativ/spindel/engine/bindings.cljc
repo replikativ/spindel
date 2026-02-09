@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.bindings
+(ns org.replikativ.spindel.engine.bindings
   "Dynamic binding capture and restore across async boundaries.
 
   Captures thread-local bindings when continuations are created,
@@ -56,9 +56,9 @@
   #?(:clj
      ;; CLJ: Use resolve at runtime (works in CLJ)
      ;; NOTE: *execution-context* deliberately NOT included - bound by event handlers
-     [(resolve 'org.replikativ.spindel.runtime.core/*spin-id*)
-      (resolve 'org.replikativ.spindel.runtime.core/*worker-id*)
-      (resolve 'org.replikativ.spindel.runtime.core/*yield-handler*)]
+     [(resolve 'org.replikativ.spindel.engine.core/*spin-id*)
+      (resolve 'org.replikativ.spindel.engine.core/*worker-id*)
+      (resolve 'org.replikativ.spindel.engine.core/*yield-handler*)]
      :cljs
      ;; CLJS: Use pre-registered vars
      @registered-vars))

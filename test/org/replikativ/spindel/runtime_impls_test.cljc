@@ -12,15 +12,15 @@
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
             [org.replikativ.spindel.test-async :refer [await-drain]]
-            [org.replikativ.spindel.runtime.impl.simple :as simple]))
+            [org.replikativ.spindel.engine.impl.simple :as simple]))
 
 ;; =============================================================================
 ;; ExecutionContext is the unified runtime implementation
@@ -205,7 +205,7 @@
    (deftest test-signal-tracking
      (testing "Spins can track signals with ExecutionContext"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 0)
                  doubled (spin
                            (let [{:keys [new]} (track counter)]
@@ -223,7 +223,7 @@
    (deftest test-dependency-tracking
      (testing "Dependency graph is correctly maintained"
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
+         (binding [ec/*execution-context* ctx]
            (let [counter (sig/signal 10)
                  doubled (spin
                            (let [{:keys [new]} (track counter)]

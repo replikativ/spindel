@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.runtime.rebuild-mode-test
+(ns org.replikativ.spindel.engine.rebuild-mode-test
   "Tests for rebuild mode - execution state recovery after serialization.
 
   Rebuild mode allows spins to re-execute their bodies (for side effects like
@@ -9,12 +9,12 @@
   - Recovery of continuations for incremental reactivity
   - Cross-platform state transfer (CLJ <-> CLJS)"
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.addressing :as addressing]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.runtime.protocols :as rtp]))
+            [org.replikativ.spindel.engine.protocols :as rtp]))
 
 ;; =============================================================================
 ;; Helper Functions
@@ -72,8 +72,8 @@
                         42))]
       (try
         ;; First execution - normal mode
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           (let [t1 (make-spin)]
             (is (= 42 @t1))
             (is (= 1 @call-counter))))
@@ -84,8 +84,8 @@
 
         ;; Second execution - rebuild mode
         (let [rebuild-ctx (ctx/set-execution-mode ctx :rebuild)]
-          (binding [rtc/*execution-context* rebuild-ctx
-                    rtc/*execution-context* rebuild-ctx]
+          (binding [ec/*execution-context* rebuild-ctx
+                    ec/*execution-context* rebuild-ctx]
             (let [t2 (make-spin)]
               ;; Spin body should execute (counter increments)
               ;; But result should be cached value (42)
@@ -104,8 +104,8 @@
                         100))]
       (try
         ;; First execution - normal mode
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           (let [t1 (make-spin)]
             (is (= 100 @t1))
             (is (= [:executed] @side-effect-log))))
@@ -116,8 +116,8 @@
 
         ;; Second execution - rebuild mode
         (let [rebuild-ctx (ctx/set-execution-mode ctx :rebuild)]
-          (binding [rtc/*execution-context* rebuild-ctx
-                    rtc/*execution-context* rebuild-ctx]
+          (binding [ec/*execution-context* rebuild-ctx
+                    ec/*execution-context* rebuild-ctx]
             (let [t2 (make-spin)]
               (is (= 100 @t2))
               ;; Body DID execute (side effect logged)
@@ -136,13 +136,13 @@
           make-model (fn []
                        (spin
                          (let [inner (spin
-                                       (swap! inner-spin-ids conj rtc/*spin-id*)
+                                       (swap! inner-spin-ids conj ec/*spin-id*)
                                        99)]
                            (await inner))))]
       (try
         ;; First execution - normal mode
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           (let [outer (make-model)]
             (is (= 99 @outer))
             (is (= 1 (count @inner-spin-ids)))))
@@ -156,8 +156,8 @@
 
           ;; Second execution - rebuild mode
           (let [rebuild-ctx (ctx/set-execution-mode ctx :rebuild)]
-            (binding [rtc/*execution-context* rebuild-ctx
-                      rtc/*execution-context* rebuild-ctx]
+            (binding [ec/*execution-context* rebuild-ctx
+                      ec/*execution-context* rebuild-ctx]
               (let [outer (make-model)]
                 (is (= 99 @outer))
                 ;; Inner spin was created again
@@ -179,14 +179,14 @@
           spin-ids-run-2 (atom [])
           make-model (fn [id-log]
                        (spin
-                         (swap! id-log conj rtc/*spin-id*)
-                         (let [a (spin (swap! id-log conj rtc/*spin-id*) 1)
-                               b (spin (swap! id-log conj rtc/*spin-id*) 2)]
+                         (swap! id-log conj ec/*spin-id*)
+                         (let [a (spin (swap! id-log conj ec/*spin-id*) 1)
+                               b (spin (swap! id-log conj ec/*spin-id*) 2)]
                            (+ (await a) (await b)))))]
       (try
         ;; First execution - normal mode
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           (let [outer (make-model spin-ids-run-1)]
             (is (= 3 @outer))))
 
@@ -195,8 +195,8 @@
 
         ;; Second execution - rebuild mode
         (let [rebuild-ctx (ctx/set-execution-mode ctx :rebuild)]
-          (binding [rtc/*execution-context* rebuild-ctx
-                    rtc/*execution-context* rebuild-ctx]
+          (binding [ec/*execution-context* rebuild-ctx
+                    ec/*execution-context* rebuild-ctx]
             (let [outer (make-model spin-ids-run-2)]
               (is (= 3 @outer)))))
 
@@ -215,8 +215,8 @@
     (let [ctx (ctx/create-execution-context)]
       (try
         ;; First execution to populate state
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           @(spin 42))
 
         ;; Snapshot the context
@@ -258,20 +258,20 @@
           values (atom [])
           make-model (fn []
                        (spin
-                         (swap! spin-ids conj rtc/*spin-id*)
+                         (swap! spin-ids conj ec/*spin-id*)
                          (let [a (spin
-                                   (swap! spin-ids conj rtc/*spin-id*)
+                                   (swap! spin-ids conj ec/*spin-id*)
                                    10)
                                b (spin
-                                   (swap! spin-ids conj rtc/*spin-id*)
+                                   (swap! spin-ids conj ec/*spin-id*)
                                    20)]
                            (let [result (+ (await a) (await b))]
                              (swap! values conj result)
                              result))))]
       (try
         ;; Phase 1: Original execution
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           (let [model (make-model)]
             (is (= 30 @model))))
 
@@ -314,8 +314,8 @@
       (try
         ;; Execute in rebuild mode WITHOUT prior cache
         (let [rebuild-ctx (ctx/set-execution-mode ctx :rebuild)]
-          (binding [rtc/*execution-context* rebuild-ctx
-                    rtc/*execution-context* rebuild-ctx]
+          (binding [ec/*execution-context* rebuild-ctx
+                    ec/*execution-context* rebuild-ctx]
             (let [t (make-spin)]
               ;; Should compute normally when no cache exists
               (is (= 6 @t)))))
@@ -331,8 +331,8 @@
                         (swap! call-counter inc)
                         99))]
       (try
-        (binding [rtc/*execution-context* ctx
-                  rtc/*execution-context* ctx]
+        (binding [ec/*execution-context* ctx
+                  ec/*execution-context* ctx]
           ;; First call - computes
           (let [t1 (make-spin)]
             (is (= 99 @t1))

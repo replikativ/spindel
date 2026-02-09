@@ -1,8 +1,8 @@
 (ns org.replikativ.spindel.spin.cps
   "CPS transformation machinery for spin macro"
-  (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.addressing :as addressing]
-            [org.replikativ.spindel.runtime.effects]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.effects]
             [org.replikativ.spindel.effects.await]   ;; Load await effect handler
             [org.replikativ.spindel.effects.track]   ;; Load track effect handler
             [is.simm.partial-cps.async :as async]
@@ -34,7 +34,7 @@
                            (catch ~(if (:js-globals env) :default `Throwable) t#
                              (async/invoke-continuation ~e t#))))
                ;; Read spin-id from dynamic binding at runtime
-               current-spin-id# rtc/*spin-id*]
+               current-spin-id# ec/*spin-id*]
            ;; Direct call to handler, bypassing dispatch
            (~direct-fn-sym ~@args current-spin-id# ~current-ns resolve# reject#))))))
 
@@ -51,7 +51,7 @@
      4. This allows users to override await/track before spindel loads while
         keeping direct handler optimization for the default implementation"
      []
-     (let [reg (org.replikativ.spindel.runtime.effects/get-effect-syntax)
+     (let [reg (org.replikativ.spindel.engine.effects/get-effect-syntax)
 
            entries (for [[sym {:keys [handler direct-handler-sym]}] reg]
                      (let [ vname (symbol (str "bp__" (name handler)))
@@ -124,14 +124,14 @@
       - Automatically cleaned up when GC'd
       "
      [& body]
-     (let [execution-context-expr `(rtc/current-execution-context)
+     (let [execution-context-expr `(ec/current-execution-context)
            cps-fn (build-cps-fn body (build-breakpoints) &env)
            ;; Capture source location at macro expansion time
            source-loc {:file *file*
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
        `(let [ctx# ~execution-context-expr]
-          (rtc/with-context ctx#
+          (ec/with-context ctx#
             ;; Generate deterministic spin ID via hash-chain addressing
             (let [spin-id# (addressing/next-address! ctx# "spin" ~source-loc)]
               (spin-core/make-spin ~cps-fn spin-id#))))))
@@ -170,7 +170,7 @@
       Unlike `spin`, the return value of the body is discarded (nil is returned).
       This makes it clear that the effect is for side effects only."
      [& body]
-     (let [execution-context-expr `(rtc/current-execution-context)
+     (let [execution-context-expr `(ec/current-execution-context)
            ;; Wrap body to return nil after executing
            body-with-nil (concat body [nil])
            cps-fn (build-cps-fn body-with-nil (build-breakpoints) &env)
@@ -179,7 +179,7 @@
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
        `(let [ctx# ~execution-context-expr]
-          (rtc/with-context ctx#
+          (ec/with-context ctx#
             ;; Generate deterministic effect ID via hash-chain addressing
             (let [spin-id# (addressing/next-address! ctx# "effect" ~source-loc)]
               (spin-core/make-spin ~cps-fn spin-id#))))))))

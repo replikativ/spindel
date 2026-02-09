@@ -18,14 +18,14 @@ Both support full bidirectional interop with BoundaryTask wrapper pattern.
 
 ```clojure
 (require '[org.replikativ.spindel.sci.macro :as sci-macro]
-         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.engine.context :as ctx]
          '[org.replikativ.spindel.spin.cps :refer [spin]])
 
 ;; Create runtime
 (def rt (ctx/create-execution-context))
 
 ;; Create native spin
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def native-tool (spin (+ 10 20))))  ; => 30
 
 ;; Create SCI context with native spin exposed
@@ -35,7 +35,7 @@ Both support full bidirectional interop with BoundaryTask wrapper pattern.
      :native-spins {'my-tool native-tool}}))
 
 ;; SCI code - IDENTICAL syntax to native!
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def result
     (sci-macro/eval-and-deref sci-ctx
       "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
@@ -63,14 +63,14 @@ See `src/is/simm/spindel/sci/macro.clj`
 
 ```clojure
 (require '[org.replikativ.spindel.sci.boundary :as boundary]
-         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.engine.context :as ctx]
          '[org.replikativ.spindel.spin.cps :refer [spin]])
 
 ;; Create runtime
 (def rt (ctx/create-execution-context))
 
 ;; Create native spin
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def native-tool (spin (+ 10 20))))
 
 ;; Create SCI context
@@ -90,7 +90,7 @@ See `src/is/simm/spindel/sci/macro.clj`
            reject))
        :my-spin)"))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   @result)  ; => 60
 ```
 
@@ -124,8 +124,8 @@ Both approaches use the same wrapper for native→SCI calls:
 (deftype BoundaryTask [task runtime task-spin-id]
   clojure.lang.IFn
   (invoke [this resolve reject]
-    (binding [rtc/*execution-context* runtime
-              rtc/*spin-id* task-spin-id]
+    (binding [ec/*execution-context* runtime
+              ec/*spin-id* task-spin-id]
       (task resolve reject))))
 ```
 
@@ -139,7 +139,7 @@ Both approaches use the same wrapper for native→SCI calls:
 
 ```clojure
 (require '[org.replikativ.spindel.sci.macro :as sci-macro]
-         '[org.replikativ.spindel.runtime.context :as ctx]
+         '[org.replikativ.spindel.engine.context :as ctx]
          '[org.replikativ.spindel.spin.cps :refer [spin]]
          '[org.replikativ.spindel.effects.await :refer [await]])
 
@@ -147,7 +147,7 @@ Both approaches use the same wrapper for native→SCI calls:
 (def rt (ctx/create-execution-context))
 
 ;; Native spins (tools available to agents)
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def fetch-data (spin (do-fetch)))
   (def process-data (spin (do-process data)))
   (def save-result (spin (do-save result))))
@@ -161,7 +161,7 @@ Both approaches use the same wrapper for native→SCI calls:
                     'save save-result}}))
 
 ;; Agent code in SCI - full composition!
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def agent-task
     (sci/eval-string* sci-ctx
       "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
@@ -173,7 +173,7 @@ Both approaches use the same wrapper for native→SCI calls:
            {:status :success :saved saved}))")))
 
 ;; Execute
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   @agent-task)  ; => {:status :success :saved ...}
 ```
 
@@ -220,33 +220,33 @@ All tests passing (validated 2026-01-25 on nREPL port 36275):
 
 ```clojure
 ;; Test 1: Simple spin
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (sci-macro/eval-and-deref sci-ctx
     "(require '[org.replikativ.spindel.spin.cps :refer [spin]])
      (spin (+ 100 200))"))  ; => 300 ✅
 
 ;; Test 2: Spin with await
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def native (spin (* 7 6))))  ; => 42
 
 (def ctx (sci-macro/create-spin-macro-context
            {:runtime rt :native-spins {'n native}}))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (sci-macro/eval-and-deref ctx
     "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
                '[org.replikativ.spindel.effects.await :refer [await]])
      (spin (let [x (await n)] (* x 2)))"))  ; => 84 ✅
 
 ;; Test 3: Chain multiple awaits
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (def a (spin (+ 10 5)))   ; => 15
   (def b (spin (* 3 2))))   ; => 6
 
 (def ctx (sci-macro/create-spin-macro-context
            {:runtime rt :native-spins {'a a 'b b}}))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   (sci-macro/eval-and-deref ctx
     "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
                '[org.replikativ.spindel.effects.await :refer [await]])
@@ -262,7 +262,7 @@ All tests passing (validated 2026-01-25 on nREPL port 36275):
                (fn [r e] (n (fn [v] (r (* v 2))) e))
                :test)"))
 
-(binding [rtc/*execution-context* rt]
+(binding [ec/*execution-context* rt]
   @spin)  ; => 84 ✅
 
 ;; Test 5: Bidirectional chain

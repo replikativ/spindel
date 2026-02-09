@@ -1,7 +1,7 @@
-(ns org.replikativ.spindel.runtime.node-protocols-test
+(ns org.replikativ.spindel.engine.node-protocols-test
   "Unit tests for node protocols and node type implementations."
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.nodes :as nodes]))
+            [org.replikativ.spindel.engine.nodes :as nodes]))
 
 ;; =============================================================================
 ;; SignalNode Tests

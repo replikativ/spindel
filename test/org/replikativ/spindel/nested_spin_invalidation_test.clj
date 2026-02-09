@@ -8,8 +8,8 @@
    This tests the creator-child tracking and invalidation mechanism."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.signal :as sig]
@@ -25,7 +25,7 @@
   (testing "Nested spin uses updated closure values when parent reruns"
     (let [ctx (ctx/create-execution-context)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         ;; Signal that the outer spin tracks
         (let [multiplier-signal (sig/signal 2)]
           ;; Outer spin creates an inner spin that captures the tracked value
@@ -58,7 +58,7 @@
   (testing "Spins created during execution are tracked as children"
     (let [ctx (ctx/create-execution-context)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [child-id (atom nil)
               parent-spin
               (spin
@@ -71,12 +71,12 @@
 
           ;; Check that child's created-by points to parent
           (let [parent-id (spin-core/spin-id parent-spin)
-                child-node (rtc/get-state [:nodes @child-id])]
+                child-node (ec/get-state [:nodes @child-id])]
             (is (= parent-id (:created-by child-node))
                 "Child's created-by should point to parent")
 
             ;; Check that parent's created-spins contains child
-            (let [parent-node (rtc/get-state [:nodes parent-id])]
+            (let [parent-node (ec/get-state [:nodes parent-id])]
               (is (contains? (:created-spins parent-node) @child-id)
                   "Parent's created-spins should contain child"))))))))
 
@@ -88,7 +88,7 @@
   (testing "Child spins are marked dirty when parent re-executes"
     (let [ctx (ctx/create-execution-context)]
 
-      (binding [rtc/*execution-context* ctx]
+      (binding [ec/*execution-context* ctx]
         (let [trigger-signal (sig/signal :initial)]
           (let [child-id (atom nil)
                 execution-count (atom 0)
