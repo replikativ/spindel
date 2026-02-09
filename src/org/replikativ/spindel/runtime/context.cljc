@@ -323,26 +323,54 @@
 (defn stop-context!
   "Stop an execution context's background drain thread.
 
+  Only root contexts own the drain infrastructure; forks share the parent's,
+  so calling this on a fork is a safe no-op.
+
   This should be called when a context is no longer needed to prevent
   thread leaks. After stopping, the context should not be used for
   reactive operations.
+
+  Note: Does NOT close the executor — in-flight async callbacks may still
+  need it. Use close-context! for full cleanup including executor shutdown.
 
   Args:
     context - ExecutionContext to stop
 
   Returns: nil"
   [context]
-  (when-let [running (:running context)]
-    (reset! running false))
-  ;; Wake drain thread immediately so it notices running=false
+  ;; Only root contexts own the drain thread; forks share parent's
+  (when (nil? (:parent-ctx context))
+    (when-let [running (:running context)]
+      (reset! running false))
+    ;; Wake drain thread immediately so it notices running=false
+    #?(:clj
+       (when-let [ds (:drain-signal context)]
+         (.offer ^LinkedBlockingQueue ds :stop)))
+    ;; Wait briefly for drain thread to exit
+    #?(:clj
+       (when-let [^Thread drain-thread (:drain-thread context)]
+         (try
+           (.join drain-thread 200)
+           (catch Exception _ nil)))))
+  nil)
+
+(defn close-context!
+  "Fully shut down an execution context: stop drain thread and close executor.
+
+  Calls stop-context! then closes the executor if it implements Closeable.
+  Use this only when you are certain no in-flight async work remains.
+
+  Args:
+    context - ExecutionContext to close
+
+  Returns: nil"
+  [context]
+  (stop-context! context)
   #?(:clj
-     (when-let [ds (:drain-signal context)]
-       (.offer ^LinkedBlockingQueue ds :stop)))
-  ;; Wait briefly for drain thread to exit
-  #?(:clj
-     (when-let [^Thread drain-thread (:drain-thread context)]
+     (when (and (nil? (:parent-ctx context))
+                (instance? java.io.Closeable (:executor context)))
        (try
-         (.join drain-thread 200)
+         (.close ^java.io.Closeable (:executor context))
          (catch Exception _ nil))))
   nil)
 

@@ -24,8 +24,11 @@
    (use-fixtures :each
      (fn [f]
        (let [execution-ctx (ctx/create-execution-context {:executor (sched/thread-pool-executor 4)})]
-         (binding [rtc/*execution-context* execution-ctx]
-           (f))))))
+         (try
+           (binding [rtc/*execution-context* execution-ctx]
+             (f))
+           (finally
+             (ctx/stop-context! execution-ctx)))))))
 
 ;; =============================================================================
 ;; Basic semaphore creation and deref

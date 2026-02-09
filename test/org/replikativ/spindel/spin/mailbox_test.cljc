@@ -17,8 +17,11 @@
    (use-fixtures :each
      (fn [f]
        (let [ctx (ctx/create-execution-context)]
-         (binding [rtc/*execution-context* ctx]
-           (f))))))
+         (try
+           (binding [rtc/*execution-context* ctx]
+             (f))
+           (finally
+             (ctx/stop-context! ctx)))))))
 
 ;; =============================================================================
 ;; Cross-platform tests (async pattern)
