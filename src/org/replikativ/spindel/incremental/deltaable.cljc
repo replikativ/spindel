@@ -23,64 +23,38 @@
          (update :users conj \"Alice\"))  ; :update delta for :users (NOT for conj)
      (get-deltas dm))  ; => [{:delta :add :path [:b] :value 2}
                        ;;     {:delta :update :path [:users] :value [\"Alice\"] :old-value []}]"
-  (:refer-clojure :exclude [map filter remove keep transduce]))
+  (:refer-clojure :exclude [map filter remove keep transduce])
+  (:require [org.replikativ.spindel.incremental.deltaable.protocols :as proto]
+            [org.replikativ.spindel.incremental.deltaable.vector :as dvec]
+            [org.replikativ.spindel.incremental.deltaable.map :as dmap]
+            [org.replikativ.spindel.incremental.deltaable.set :as dset])
+  #?(:clj (:import [org.replikativ.spindel.incremental.deltaable.vector DeltaableVector]
+                    [org.replikativ.spindel.incremental.deltaable.map DeltaableMap]
+                    [org.replikativ.spindel.incremental.deltaable.set DeltaableSet])))
 
-;; Protocol: Collection-Level Structural Deltas
+;; =============================================================================
+;; Re-export protocols from deltaable.protocols
+;; =============================================================================
 
-(defprotocol PDeltaable
-  "Protocol for collections that track structural changes as deltas.
+(def PDeltaable proto/PDeltaable)
+(def PWrapDeltaable proto/PWrapDeltaable)
+(def PUnwrapDeltaable proto/PUnwrapDeltaable)
 
-   Collections implementing this protocol record operations (conj, assoc, dissoc)
-   and make them available as a sequence of deltas.
+;; =============================================================================
+;; Re-export constructors and helpers from sub-namespaces
+;; =============================================================================
 
-   Delta format:
-   {:delta :add/:remove/:update
-    :path [:users 0 :name]
-    :value new-value
-    :old-value old-value}  ; For :update only"
-  (get-deltas [this]
-    "Returns sequence of deltas since last reset, or nil if no structural deltas.
-
-     For simple values (numbers, strings, keywords): returns nil
-     For collections (vectors, maps, sets): returns [{:delta ...} ...]")
-  (deltaable? [this]
-    "Returns true if this is a deltaable collection (DeltaableVector/Map/Set).
-     Returns false for plain values and non-deltaable collections."))
-
-;; Protocol: Wrapping Custom Types as Deltaable (for extensibility)
-
-(defprotocol PWrapDeltaable
-  "Protocol for wrapping custom types as deltaable collections.
-
-   Extend this protocol to add deltaable tracking to your custom types.
-   This enables signals to contain custom types with delta tracking.
-
-   Note: With shallow wrapping, this only wraps the TOP-LEVEL.
-   Nested values remain plain collections."
-  (wrap-deltaable [x]
-    "Wrap x as a top-level deltaable collection.
-
-     - For already-deltaable collections: returns unchanged
-     - For plain vectors/maps/sets: wraps as DeltaableVector/Map/Set
-     - For custom types: define your own implementation
-     - For other values: returns unchanged (treated as leaf values)"))
-
-;; Protocol: Unwrapping Deltaables to Plain Collections
-
-(defprotocol PUnwrapDeltaable
-  "Protocol for unwrapping deltaable collections to plain collections.
-
-   Symmetric counterpart to IWrapDeltaable. Extend this protocol to provide
-   custom unwrapping behavior for your types."
-  (unwrap-deltaable [x]
-    "Recursively unwrap deltaable collections to plain collections.
-
-     - For deltaable collections: recursively unwraps to plain vectors/maps/sets
-     - For plain values: returns unchanged
-     - For nil: returns nil
-
-     This is the explicit way to compare deltaable collections with plain ones,
-     since deltaables only equal other deltaables with matching value + deltas."))
+(def deltaable-vector dvec/deltaable-vector)
+(def remove-at dvec/remove-at)
+(def insert-at dvec/insert-at)
+(def move-to dvec/move-to)
+(def filter-vec dvec/filter-vec)
+(def find-index dvec/find-index)
+(def update-first-where dvec/update-first-where)
+(def update-by-key dvec/update-by-key)
+(def deltaable-map dmap/deltaable-map)
+(def deltaable-map-with-deltas dmap/deltaable-map-with-deltas)
+(def deltaable-set dset/deltaable-set)
 
 ;; =============================================================================
 ;; Simple Value Wrapper (No Structural Deltas)
@@ -88,7 +62,7 @@
 
 #?(:clj
    (defrecord DeltaableValue [v]
-     PDeltaable
+     proto/PDeltaable
      (get-deltas [_]
        "Simple values have no structural deltas"
        nil)
@@ -103,7 +77,7 @@
 
    :cljs
    (defrecord DeltaableValue [v]
-     PDeltaable
+     proto/PDeltaable
      (get-deltas [_]
        "Simple values have no structural deltas"
        nil)
@@ -126,7 +100,7 @@
 
 ;; Extend protocol to everything for uniform interface
 
-(extend-protocol PDeltaable
+(extend-protocol proto/PDeltaable
   #?(:clj Object :cljs default)
   (get-deltas [_]
     "Non-deltaable values return nil (no structural changes)"
@@ -153,7 +127,7 @@
    - Non-deltaable values
    - Deltaable values with empty delta vector"
   [x]
-  (seq (get-deltas x)))
+  (seq (proto/get-deltas x)))
 
 (defn unwrap
   "Unwrap a deltaable value to get the raw value.
@@ -169,886 +143,31 @@
     :else x))
 
 ;; =============================================================================
-;; DeltaableVector - Tracks TOP-LEVEL structural operations only
-;; =============================================================================
-
-#?(:clj
-   (deftype DeltaableVector [v deltas _meta]
-     ;; NO path field - always top-level
-     ;; NO nested wrapping - inner values are plain
-
-     PDeltaable
-     (get-deltas [_]
-       "Returns sequence of deltas from this operation"
-       deltas)
-     (deltaable? [_]
-       "DeltaableVector is a deltaable collection"
-       true)
-
-     ;; IPersistentCollection
-     clojure.lang.IPersistentCollection
-     (count [_] (count v))
-
-     (cons [this x]
-       "Add element to end of vector (records top-level delta only)"
-       (let [new-delta {:delta :add
-                       :path [(count v)]
-                       :value x}
-             new-deltas (conj deltas new-delta)]
-         (DeltaableVector. (conj v x) new-deltas _meta)))
-
-     (empty [_]
-       "Return empty deltaable vector"
-       (DeltaableVector. [] [] _meta))
-
-     (equiv [this other]
-       "DeltaableVector only equals other DeltaableVector with same value + deltas"
-       (or (identical? this other)
-           (and (instance? DeltaableVector other)
-                (= v (.-v other))
-                (= deltas (.-deltas other)))))
-
-     ;; IPersistentVector
-     clojure.lang.IPersistentVector
-     (assocN [this i x]
-       "Update element at index i or add new element (records top-level delta only)"
-       (let [is-update? (< i (count v))
-             old-value (when is-update? (nth v i))
-             new-delta (if is-update?
-                        {:delta :update
-                         :path [i]
-                         :value x
-                         :old-value old-value}
-                        {:delta :add
-                         :path [i]
-                         :value x})]
-         (DeltaableVector. (assoc v i x) (conj deltas new-delta) _meta)))
-
-     (length [_] (count v))
-
-     ;; IPersistentStack
-     clojure.lang.IPersistentStack
-     (peek [_]
-       (peek v))
-
-     (pop [this]
-       "Remove last element from vector (records :remove delta)"
-       (if (empty? v)
-         (throw (IllegalStateException. "Can't pop empty vector"))
-         (let [idx (dec (count v))
-               old-value (nth v idx)
-               new-delta {:delta :remove
-                          :path [idx]
-                          :old-value old-value}]
-           (DeltaableVector. (pop v) (conj deltas new-delta) _meta))))
-
-     ;; Indexed
-     clojure.lang.Indexed
-     (nth [this i]
-       (nth v i))
-
-     (nth [this i not-found]
-       (if (< i (count v))
-         (.nth this i)
-         not-found))
-
-     ;; ILookup
-     clojure.lang.ILookup
-     (valAt [this k]
-       (when (and (integer? k) (>= k 0) (< k (count v)))
-         (.nth this k)))
-     (valAt [this k not-found]
-       (if (and (integer? k) (>= k 0) (< k (count v)))
-         (.nth this k)
-         not-found))
-
-     ;; Seqable
-     clojure.lang.Seqable
-     (seq [_] (seq v))
-
-     ;; Associative
-     clojure.lang.Associative
-     (containsKey [this k]
-       (and (integer? k) (>= k 0) (< k (count v))))
-     (entryAt [this k]
-       (when (.containsKey this k)
-         (clojure.lang.MapEntry. k (.nth this k))))
-     (assoc [this k x] (.assocN this k x))
-
-     ;; IObj
-     clojure.lang.IObj
-     (meta [_] _meta)
-     (withMeta [this new-meta]
-       (DeltaableVector. v deltas new-meta))
-
-     ;; IDeref - convenience for unwrapping
-     clojure.lang.IDeref
-     (deref [_]
-       "Deref returns the underlying vector"
-       v)
-
-     ;; Java Object
-     Object
-     (toString [_] (str v))
-     (hashCode [_] (.hashCode v))
-     (equals [this other]
-       "DeltaableVector equals other DeltaableVector if both value and deltas match.
-        Use (= plain (->plain deltaable)) for plain collection comparison."
-       (or (identical? this other)
-           (and (instance? DeltaableVector other)
-                (= v (.-v other))
-                (= deltas (.-deltas other))))))
-
-   :cljs
-   (deftype DeltaableVector [v deltas _meta]
-     ;; NO path field - always top-level
-     ;; NO nested wrapping - inner values are plain
-
-     PDeltaable
-     (get-deltas [_]
-       "Returns sequence of deltas from this operation"
-       deltas)
-     (deltaable? [_]
-       "DeltaableVector is a deltaable collection"
-       true)
-
-     ICollection
-     (-conj [this x]
-       "Add element to end of vector (records top-level delta only)"
-       (let [new-delta {:delta :add
-                       :path [(count v)]
-                       :value x}
-             new-deltas (conj deltas new-delta)]
-         (DeltaableVector. (conj v x) new-deltas _meta)))
-
-     IEmptyableCollection
-     (-empty [_]
-       "Return empty deltaable vector"
-       (DeltaableVector. [] [] _meta))
-
-     IVector
-     (-assoc-n [this i x]
-       "Update element at index i or add new element (records top-level delta only)"
-       (let [is-update? (< i (count v))
-             old-value (when is-update? (nth v i))
-             new-delta (if is-update?
-                        {:delta :update
-                         :path [i]
-                         :value x
-                         :old-value old-value}
-                        {:delta :add
-                         :path [i]
-                         :value x})]
-         (DeltaableVector. (assoc v i x) (conj deltas new-delta) _meta)))
-
-     IStack
-     (-peek [_]
-       (peek v))
-
-     (-pop [_]
-       "Remove last element from vector (records :remove delta)"
-       (if (empty? v)
-         (throw (js/Error. "Can't pop empty vector"))
-         (let [idx (dec (count v))
-               old-value (nth v idx)
-               new-delta {:delta :remove
-                          :path [idx]
-                          :old-value old-value}]
-           (DeltaableVector. (pop v) (conj deltas new-delta) _meta))))
-
-     IIndexed
-     (-nth [_ i]
-       (nth v i))
-
-     (-nth [_ i not-found]
-       (if (< i (count v))
-         (nth v i)
-         not-found))
-
-     ILookup
-     (-lookup [this k]
-       (when (and (integer? k) (>= k 0) (< k (count v)))
-         (-nth this k)))
-     (-lookup [this k not-found]
-       (if (and (integer? k) (>= k 0) (< k (count v)))
-         (-nth this k)
-         not-found))
-
-     ISeqable
-     (-seq [_] (seq v))
-
-     IAssociative
-     (-contains-key? [this k]
-       (and (integer? k) (>= k 0) (< k (count v))))
-     (-assoc [this k x] (-assoc-n this k x))
-
-     IMeta
-     (-meta [_] _meta)
-
-     IWithMeta
-     (-with-meta [this new-meta]
-       (DeltaableVector. v deltas new-meta))
-
-     IDeref
-     (-deref [_]
-       "Deref returns the underlying vector"
-       v)
-
-     ICounted
-     (-count [_] (count v))
-
-     IHash
-     (-hash [_] (hash v))
-
-     IEquiv
-     (-equiv [this other]
-       (or (identical? this other)
-           (and (vector? other)
-                (let [other-v (if (instance? DeltaableVector other)
-                               (.-v other)
-                               other)]
-                  (= v other-v)))))))
-
-(defn deltaable-vector
-  "Create a DeltaableVector with initial values (NO deep wrapping).
-
-   Values are stored as-is without wrapping nested collections.
-   Only top-level operations are tracked as deltas.
-
-   Example:
-     (deltaable-vector [1 2 3])
-     (deltaable-vector [{:a 1} {:b 2}])  ; Maps inside are NOT wrapped"
-  [coll]
-  (DeltaableVector. (vec coll) [] nil))
-
-(defn remove-at
-  "Remove element at index from a DeltaableVector, recording a :remove delta.
-
-   Returns a new DeltaableVector with the element removed and delta tracked.
-   This is the proper way to remove elements from vectors (not just pop).
-
-   Example:
-     (remove-at dv 2)  ; Remove element at index 2"
-  [dv idx]
-  (let [v (.-v dv)
-        deltas (.-deltas dv)
-        meta-val (.-_meta dv)]
-    (if (and (>= idx 0) (< idx (count v)))
-      (let [old-value (nth v idx)
-            new-v (into (subvec v 0 idx) (subvec v (inc idx)))
-            new-delta {:delta :remove
-                       :path [idx]
-                       :old-value old-value}]
-        (DeltaableVector. new-v (conj deltas new-delta) meta-val))
-      (throw (#?(:clj IllegalArgumentException. :cljs js/Error.)
-              (str "Index out of bounds: " idx))))))
-
-(defn insert-at
-  "Insert element at index in a DeltaableVector, recording an :add delta.
-
-   Returns a new DeltaableVector with the element inserted and delta tracked.
-   Elements at and after the index are shifted right.
-
-   Args:
-     dv - DeltaableVector to modify
-     idx - Index at which to insert (0 to count inclusive)
-     value - Element to insert
-
-   Example:
-     (insert-at dv 2 :new)  ; Insert :new at index 2
-     ; [a b c] -> [a b :new c]
-
-   Delta format:
-     {:delta :add
-      :path [idx]
-      :value element}"
-  [dv idx value]
-  (let [v (.-v dv)
-        deltas (.-deltas dv)
-        meta-val (.-_meta dv)
-        n (count v)]
-    (if (and (>= idx 0) (<= idx n))  ; idx can be 0 to n (append at end)
-      (let [new-v (into (conj (subvec v 0 idx) value)
-                        (subvec v idx))
-            new-delta {:delta :add
-                       :path [idx]
-                       :value value}]
-        (DeltaableVector. new-v (conj deltas new-delta) meta-val))
-      (throw (#?(:clj IllegalArgumentException. :cljs js/Error.)
-              (str "Index out of bounds: " idx " (count=" n ")"))))))
-
-(defn move-to
-  "Move element from one index to another in a DeltaableVector, recording a :move delta.
-
-   Returns a new DeltaableVector with the element moved and delta tracked.
-   The :move delta enables efficient DOM reordering without remove+add.
-
-   Args:
-     dv - DeltaableVector to modify
-     from-idx - Current index of the element to move
-     to-idx - Target index (after removal, before insertion)
-
-   The to-idx is interpreted as the position in the resulting vector,
-   accounting for the removal of the element at from-idx.
-
-   Example:
-     (move-to dv 0 2)  ; Move first element to position 2
-     ; [a b c d] -> [b c a d]  (a moves from 0 to 2)
-
-   Delta format:
-     {:delta :move
-      :from-path [from-idx]
-      :to-path [to-idx]
-      :value element}"
-  [dv from-idx to-idx]
-  (let [v (.-v dv)
-        deltas (.-deltas dv)
-        meta-val (.-_meta dv)
-        n (count v)]
-    (if (and (>= from-idx 0) (< from-idx n)
-             (>= to-idx 0) (<= to-idx (dec n)))  ; to-idx can be at most n-1 (last position)
-      (let [element (nth v from-idx)
-            ;; Remove from original position
-            without-elem (into (subvec v 0 from-idx) (subvec v (inc from-idx)))
-            ;; Insert at new position
-            new-v (into (conj (subvec without-elem 0 to-idx) element)
-                        (subvec without-elem to-idx))
-            new-delta {:delta :move
-                       :from-path [from-idx]
-                       :to-path [to-idx]
-                       :value element}]
-        (DeltaableVector. new-v (conj deltas new-delta) meta-val))
-      (throw (#?(:clj IllegalArgumentException. :cljs js/Error.)
-              (str "Index out of bounds: from=" from-idx " to=" to-idx " count=" n))))))
-
-(defn filter-vec
-  "Filter a DeltaableVector, recording :remove deltas for filtered-out elements.
-
-   Returns a new DeltaableVector with only items matching pred.
-   Each removed item generates a :remove delta.
-
-   Example:
-     (filter-vec #(not (:done %)) todos)  ; Remove completed todos"
-  [pred dv]
-  (let [v (.-v dv)
-        deltas (.-deltas dv)
-        meta-val (.-_meta dv)
-        ;; Collect indices to remove (in reverse order to maintain correct indices)
-        remove-indices (keep-indexed #(when (not (pred %2)) %1) v)
-        ;; Build remove deltas
-        remove-deltas (mapv (fn [idx]
-                              {:delta :remove
-                               :path [idx]
-                               :old-value (nth v idx)})
-                            remove-indices)
-        ;; Filter the vector
-        new-v (vec (clojure.core/filter pred v))]
-    (DeltaableVector. new-v (into deltas remove-deltas) meta-val)))
-
-(defn find-index
-  "Find index of first item matching predicate in a collection.
-
-   Returns the index (0-based) or nil if not found.
-   Works with any indexed collection (vectors, DeltaableVector).
-
-   Example:
-     (find-index #(= (:id %) 42) todos)  ; => 3 or nil"
-  [pred coll]
-  (first (keep-indexed #(when (pred %2) %1) coll)))
-
-(defn update-first-where
-  "Update first item matching pred in a DeltaableVector.
-
-   Applies (f item & args) to the first item where (pred item) is truthy.
-   Records an :update delta for the changed item.
-   Returns unchanged vector if no match found.
-
-   This preserves DeltaableVector and generates proper deltas, unlike mapv.
-
-   Example:
-     ;; Toggle done status for item with id 42
-     (update-first-where todos #(= (:id %) 42) update :done not)
-
-     ;; Set content of block
-     (update-first-where blocks #(= (:id %) block-id) assoc :content \"new\")"
-  [dv pred f & args]
-  (if-let [idx (find-index pred dv)]
-    (let [old-value (nth dv idx)
-          new-value (apply f old-value args)]
-      (assoc dv idx new-value))
-    dv))
-
-(defn update-by-key
-  "Update item in DeltaableVector where (key-fn item) equals target-key.
-
-   Convenience wrapper around update-first-where for common key-based lookups.
-   Records an :update delta for the changed item.
-   Returns unchanged vector if no match found.
-
-   Example:
-     ;; Update block with id 42
-     (update-by-key blocks :id 42 assoc :content \"new\")
-
-     ;; Toggle todo with specific id
-     (update-by-key todos :id todo-id update :done not)"
-  [dv key-fn target-key f & args]
-  (apply update-first-where dv #(= (key-fn %) target-key) f args))
-
-;; =============================================================================
-;; DeltaableMap - Map with delta tracking
-;; =============================================================================
-
-#?(:clj
-   (deftype DeltaableMap [m deltas _meta]
-     ;; NO path field - always top-level
-     ;; NO nested wrapping - inner values are plain
-
-     PDeltaable
-     (get-deltas [_]
-       "Returns sequence of deltas from this operation"
-       deltas)
-     (deltaable? [_]
-       "DeltaableMap is a deltaable collection"
-       true)
-
-     clojure.lang.IPersistentCollection
-     (cons [this o]
-       "Add key-value pair to map"
-       (if (map-entry? o)
-         (.assoc this (key o) (val o))
-         (throw (IllegalArgumentException. "cons on map expects MapEntry"))))
-
-     (empty [_]
-       "Return empty deltaable map"
-       (DeltaableMap. {} [] _meta))
-
-     (equiv [this other]
-       "DeltaableMap only equals other DeltaableMap with same value + deltas"
-       (or (identical? this other)
-           (and (instance? DeltaableMap other)
-                (= m (.-m other))
-                (= deltas (.-deltas other)))))
-
-     ;; IPersistentMap
-     clojure.lang.IPersistentMap
-     (assoc [this k v]
-       "Associate key with value (records top-level delta only)"
-       (let [is-update? (contains? m k)
-             old-value (when is-update? (get m k))
-             new-delta (if is-update?
-                        {:delta :update
-                         :path [k]
-                         :value v
-                         :old-value old-value}
-                        {:delta :add
-                         :path [k]
-                         :value v})]
-         (DeltaableMap. (assoc m k v) (conj deltas new-delta) _meta)))
-
-     (without [this k]
-       "Remove key from map (records top-level delta only)"
-       (if (contains? m k)
-         (let [old-value (get m k)
-               new-delta {:delta :remove
-                         :path [k]
-                         :old-value old-value}]
-           (DeltaableMap. (dissoc m k) (conj deltas new-delta) _meta))
-         this))
-
-     ;; ILookup
-     clojure.lang.ILookup
-     (valAt [this k]
-       (get m k))
-     (valAt [this k not-found]
-       (get m k not-found))
-
-     ;; Seqable
-     clojure.lang.Seqable
-     (seq [_] (seq m))
-
-     ;; Associative
-     clojure.lang.Associative
-     (containsKey [this k]
-       (contains? m k))
-     (entryAt [this k]
-       (when (contains? m k)
-         (clojure.lang.MapEntry. k (get m k))))
-
-     ;; Counted
-     clojure.lang.Counted
-     (count [_] (count m))
-
-     ;; IObj
-     clojure.lang.IObj
-     (meta [_] _meta)
-     (withMeta [this new-meta]
-       (DeltaableMap. m deltas new-meta))
-
-     ;; IDeref - convenience for unwrapping
-     clojure.lang.IDeref
-     (deref [_]
-       "Unwrap to plain map"
-       m)
-
-     ;; IFn - enable (map :key) syntax
-     clojure.lang.IFn
-     (invoke [this k]
-       (get m k))
-     (invoke [this k not-found]
-       (get m k not-found))
-
-     ;; Iterable - needed for keys, vals, reduce, etc.
-     java.lang.Iterable
-     (iterator [_]
-       (.iterator m))
-
-     ;; IMapIterable - enables efficient keyIterator/valIterator
-     clojure.lang.IMapIterable
-     (keyIterator [_]
-       (clojure.lang.RT/iter (keys m)))
-     (valIterator [_]
-       (clojure.lang.RT/iter (vals m)))
-
-     ;; Object
-     Object
-     (toString [_]
-       (str m))
-     (hashCode [_]
-       (.hashCode m))
-     (equals [this other]
-       "DeltaableMap equals other DeltaableMap if both value and deltas match.
-        Use (= plain (->plain deltaable)) for plain collection comparison."
-       (or (identical? this other)
-           (and (instance? DeltaableMap other)
-                (= m (.-m other))
-                (= deltas (.-deltas other))))))
-
-   :cljs
-   (deftype DeltaableMap [m deltas _meta]
-     ;; NO nested wrapping - inner values are plain
-
-     PDeltaable
-     (get-deltas [_]
-       deltas)
-     (deltaable? [_]
-       "DeltaableMap is a deltaable collection"
-       true)
-
-     ICollection
-     (-conj [this entry]
-       (if (map-entry? entry)
-         (-assoc this (key entry) (val entry))
-         (throw (js/Error. "conj on map expects MapEntry"))))
-
-     IEmptyableCollection
-     (-empty [_]
-       (DeltaableMap. {} [] _meta))
-
-     IEquiv
-     (-equiv [this other]
-       (or (identical? this other)
-           (and (map? other)
-                (= (count m) (count other))
-                (let [other-m (if (instance? DeltaableMap other)
-                                (.-m other)
-                                other)]
-                  (= m other-m)))))
-
-     IAssociative
-     (-assoc [this k v]
-       "Associate key with value (records top-level delta only)"
-       (let [is-update? (contains? m k)
-             old-value (when is-update? (get m k))
-             new-delta (if is-update?
-                        {:delta :update
-                         :path [k]
-                         :value v
-                         :old-value old-value}
-                        {:delta :add
-                         :path [k]
-                         :value v})]
-         (DeltaableMap. (assoc m k v) (conj deltas new-delta) _meta)))
-     (-contains-key? [this k]
-       (contains? m k))
-
-     IMap
-     (-dissoc [this k]
-       "Remove key from map (records top-level delta only)"
-       (if (contains? m k)
-         (let [old-value (get m k)
-               new-delta {:delta :remove
-                         :path [k]
-                         :old-value old-value}]
-           (DeltaableMap. (dissoc m k) (conj deltas new-delta) _meta))
-         this))
-
-     ILookup
-     (-lookup [this k]
-       (get m k))
-     (-lookup [this k not-found]
-       (get m k not-found))
-
-     ISeqable
-     (-seq [_] (seq m))
-
-     ICounted
-     (-count [_] (count m))
-
-     IMeta
-     (-meta [_] _meta)
-
-     IWithMeta
-     (-with-meta [this new-meta]
-       (DeltaableMap. m deltas new-meta))
-
-     IDeref
-     (-deref [_] m)
-
-     IFn
-     (-invoke [this k]
-       (get m k))
-     (-invoke [this k not-found]
-       (get m k not-found))
-
-     Object
-     (toString [_]
-       (str m))))
-
-(defn deltaable-map
-  "Create a DeltaableMap that tracks all assoc/dissoc operations as deltas (NO deep wrapping).
-
-   Values are stored as-is without wrapping nested collections.
-   Only top-level key operations are tracked as deltas.
-
-   Example:
-     (deltaable-map {:a 1 :b 2})
-     (deltaable-map {:users [{:name \"Alice\"}]})  ; Nested vectors/maps NOT wrapped"
-  [coll]
-  (DeltaableMap. (into {} coll) [] nil))
-
-(defn deltaable-map-with-deltas
-  "Create a DeltaableMap with pre-computed deltas.
-
-   This is used when you've already computed the deltas (e.g., from attribute
-   reconciliation) and want to create a DeltaableMap that carries those deltas.
-
-   Args:
-     m - The map value
-     deltas - Vector of delta maps (or nil for no deltas)
-
-   Example:
-     (deltaable-map-with-deltas {:a 1} [{:delta :update :path [:a] :value 1 :old-value 0}])"
-  [m deltas]
-  (DeltaableMap. (into {} m) (or deltas []) nil))
-
-;; =============================================================================
-;; DeltaableSet - Set with delta tracking
-;; =============================================================================
-
-#?(:clj
-   (deftype DeltaableSet [s deltas _meta]
-     ;; NO nested wrapping - inner values are plain
-
-     PDeltaable
-     (get-deltas [_]
-       "Returns sequence of deltas from this operation"
-       deltas)
-     (deltaable? [_]
-       "DeltaableSet is a deltaable collection"
-       true)
-
-     clojure.lang.IPersistentCollection
-     (cons [this x]
-       "Add element to set (records top-level delta only)"
-       (if (contains? s x)
-         this
-         (let [new-delta {:delta :add
-                         :path [x]
-                         :value x}]
-           (DeltaableSet. (conj s x) (conj deltas new-delta) _meta))))
-
-     (empty [_]
-       "Return empty deltaable set"
-       (DeltaableSet. #{} [] _meta))
-
-     (equiv [this other]
-       "DeltaableSet only equals other DeltaableSet with same value + deltas"
-       (or (identical? this other)
-           (and (instance? DeltaableSet other)
-                (= s (.-s other))
-                (= deltas (.-deltas other)))))
-
-     ;; IPersistentSet
-     clojure.lang.IPersistentSet
-     (disjoin [this x]
-       "Remove element from set (records top-level delta only)"
-       (if (contains? s x)
-         (let [new-delta {:delta :remove
-                         :path [x]
-                         :old-value x}]
-           (DeltaableSet. (disj s x) (conj deltas new-delta) _meta))
-         this))
-
-     (contains [this x]
-       (contains? s x))
-
-     (get [this x]
-       (get s x))
-
-     ;; Seqable
-     clojure.lang.Seqable
-     (seq [_] (seq s))
-
-     ;; Counted
-     clojure.lang.Counted
-     (count [_] (count s))
-
-     ;; IObj
-     clojure.lang.IObj
-     (meta [_] _meta)
-     (withMeta [this new-meta]
-       (DeltaableSet. s deltas new-meta))
-
-     ;; IDeref - convenience for unwrapping
-     clojure.lang.IDeref
-     (deref [_]
-       "Unwrap to plain set"
-       s)
-
-     ;; IFn - enable (set val) syntax
-     clojure.lang.IFn
-     (invoke [this x]
-       (get s x))
-
-     ;; Object
-     Object
-     (toString [_]
-       (str s))
-     (hashCode [_]
-       (.hashCode s))
-     (equals [this other]
-       "DeltaableSet equals other DeltaableSet if both value and deltas match.
-        Use (= plain (->plain deltaable)) for plain collection comparison."
-       (or (identical? this other)
-           (and (instance? DeltaableSet other)
-                (= s (.-s other))
-                (= deltas (.-deltas other))))))
-
-   :cljs
-   (deftype DeltaableSet [s deltas _meta]
-     ;; NO nested wrapping - inner values are plain
-
-     PDeltaable
-     (get-deltas [_]
-       deltas)
-     (deltaable? [_]
-       "DeltaableSet is a deltaable collection"
-       true)
-
-     ICollection
-     (-conj [this x]
-       "Add element to set (records top-level delta only)"
-       (if (contains? s x)
-         this
-         (let [new-delta {:delta :add
-                         :path [x]
-                         :value x}]
-           (DeltaableSet. (conj s x) (conj deltas new-delta) _meta))))
-
-     IEmptyableCollection
-     (-empty [_]
-       (DeltaableSet. #{} [] _meta))
-
-     IEquiv
-     (-equiv [this other]
-       (or (identical? this other)
-           (and (set? other)
-                (= (count s) (count other))
-                (let [other-s (if (instance? DeltaableSet other)
-                                (.-s other)
-                                other)]
-                  (= s other-s)))))
-
-     ISet
-     (-disjoin [this x]
-       "Remove element from set (records top-level delta only)"
-       (if (contains? s x)
-         (let [new-delta {:delta :remove
-                         :path [x]
-                         :old-value x}]
-           (DeltaableSet. (disj s x) (conj deltas new-delta) _meta))
-         this))
-
-     ILookup
-     (-lookup [this x]
-       (get s x))
-     (-lookup [this x not-found]
-       (get s x not-found))
-
-     ISeqable
-     (-seq [_] (seq s))
-
-     ICounted
-     (-count [_] (count s))
-
-     IMeta
-     (-meta [_] _meta)
-
-     IWithMeta
-     (-with-meta [this new-meta]
-       (DeltaableSet. s deltas new-meta))
-
-     IDeref
-     (-deref [_] s)
-
-     IFn
-     (-invoke [this x]
-       (get s x))
-
-     Object
-     (toString [_]
-       (str s))))
-
-(defn deltaable-set
-  "Create a DeltaableSet that tracks all conj/disj operations as deltas (NO deep wrapping).
-
-   Values are stored as-is without wrapping nested collections.
-   Only top-level element operations are tracked as deltas.
-
-   Example:
-     (deltaable-set #{1 2 3})
-     (deltaable-set #{{:name \"Alice\"} {:name \"Bob\"}})  ; Nested maps NOT wrapped"
-  [coll]
-  (DeltaableSet. (into #{} coll) [] nil))
-
-;; =============================================================================
 ;; Print methods - avoid multimethod dispatch ambiguity
 ;; =============================================================================
 
 #?(:clj
    (do
-     (defmethod print-method org.replikativ.spindel.incremental.deltaable.DeltaableVector [dv ^java.io.Writer w]
-       (.write w (str (.-v dv))))
-     (defmethod print-method org.replikativ.spindel.incremental.deltaable.DeltaableMap [dm ^java.io.Writer w]
-       (.write w (str (.-m dm))))
-     (defmethod print-method org.replikativ.spindel.incremental.deltaable.DeltaableSet [ds ^java.io.Writer w]
-       (.write w (str (.-s ds))))))
+     (defmethod print-method DeltaableVector [dv ^java.io.Writer w]
+       (.write w (str (.-v ^DeltaableVector dv))))
+     (defmethod print-method DeltaableMap [dm ^java.io.Writer w]
+       (.write w (str (.-m ^DeltaableMap dm))))
+     (defmethod print-method DeltaableSet [ds ^java.io.Writer w]
+       (.write w (str (.-s ^DeltaableSet ds))))))
 
 ;; =============================================================================
-;; wrap-nested - Recursive wrapping of nested collections
+;; wrap-deltaable - Extend PWrapDeltaable for all types
 ;; =============================================================================
 
-;; Extend IWrapDeltaable for all types
-
-(extend-protocol PWrapDeltaable
+(extend-protocol proto/PWrapDeltaable
   ;; Deltaable collections return themselves unchanged
-  DeltaableVector
+  #?(:clj DeltaableVector :cljs dvec/DeltaableVector)
   (wrap-deltaable [x] x)
 
-  DeltaableMap
+  #?(:clj DeltaableMap :cljs dmap/DeltaableMap)
   (wrap-deltaable [x] x)
 
-  DeltaableSet
+  #?(:clj DeltaableSet :cljs dset/DeltaableSet)
   (wrap-deltaable [x] x)
 
   #?@(:clj
@@ -1077,21 +196,21 @@
       [;; Plain vectors: wrap shallowly (NO nested wrapping)
        cljs.core/PersistentVector
        (wrap-deltaable [x]
-         (DeltaableVector. x [] nil))
+         (dvec/DeltaableVector. x [] nil))
 
        ;; Plain maps: wrap shallowly (NO nested wrapping)
        cljs.core/PersistentArrayMap
        (wrap-deltaable [x]
-         (DeltaableMap. x [] nil))
+         (dmap/DeltaableMap. x [] nil))
 
        cljs.core/PersistentHashMap
        (wrap-deltaable [x]
-         (DeltaableMap. x [] nil))
+         (dmap/DeltaableMap. x [] nil))
 
        ;; Plain sets: wrap shallowly (NO nested wrapping)
        cljs.core/PersistentHashSet
        (wrap-deltaable [x]
-         (DeltaableSet. x [] nil))])
+         (dset/DeltaableSet. x [] nil))])
 
   ;; Default: return unchanged (scalars, records, etc.)
   #?(:clj Object :cljs default)
@@ -1109,7 +228,7 @@
    With shallow wrapping architecture, nested collections are NOT wrapped.
    Only use this if you explicitly want to wrap a value as top-level deltaable."
   [x path]
-  (wrap-deltaable x))
+  (proto/wrap-deltaable x))
 
 (defn clear-deltas
   "Return a copy of deltaable collection with deltas cleared (O(1) operation).
@@ -1119,14 +238,17 @@
    Used by the runtime after propagating deltas to observers."
   [deltaable]
   (cond
-    (instance? #?(:clj DeltaableVector :cljs DeltaableVector) deltaable)
-    (DeltaableVector. (.-v deltaable) [] (.-_meta deltaable))
+    (instance? #?(:clj DeltaableVector :cljs dvec/DeltaableVector) deltaable)
+    #?(:clj  (DeltaableVector. (.-v ^DeltaableVector deltaable) [] (.-_meta ^DeltaableVector deltaable))
+       :cljs (dvec/DeltaableVector. (.-v deltaable) [] (.-_meta deltaable)))
 
-    (instance? #?(:clj DeltaableMap :cljs DeltaableMap) deltaable)
-    (DeltaableMap. (.-m deltaable) [] (.-_meta deltaable))
+    (instance? #?(:clj DeltaableMap :cljs dmap/DeltaableMap) deltaable)
+    #?(:clj  (DeltaableMap. (.-m ^DeltaableMap deltaable) [] (.-_meta ^DeltaableMap deltaable))
+       :cljs (dmap/DeltaableMap. (.-m deltaable) [] (.-_meta deltaable)))
 
-    (instance? #?(:clj DeltaableSet :cljs DeltaableSet) deltaable)
-    (DeltaableSet. (.-s deltaable) [] (.-_meta deltaable))
+    (instance? #?(:clj DeltaableSet :cljs dset/DeltaableSet) deltaable)
+    #?(:clj  (DeltaableSet. (.-s ^DeltaableSet deltaable) [] (.-_meta ^DeltaableSet deltaable))
+       :cljs (dset/DeltaableSet. (.-s deltaable) [] (.-_meta deltaable)))
 
     :else
     deltaable))
@@ -1136,19 +258,19 @@
 ;; =============================================================================
 
 ;; Deltaable collections unwrap recursively
-(extend-protocol PUnwrapDeltaable
-  #?(:clj DeltaableVector :cljs DeltaableVector)
+(extend-protocol proto/PUnwrapDeltaable
+  #?(:clj DeltaableVector :cljs dvec/DeltaableVector)
   (unwrap-deltaable [x]
-    (mapv unwrap-deltaable #?(:clj (.deref x) :cljs (-deref x))))
+    (mapv proto/unwrap-deltaable #?(:clj (.deref x) :cljs (-deref x))))
 
-  #?(:clj DeltaableMap :cljs DeltaableMap)
+  #?(:clj DeltaableMap :cljs dmap/DeltaableMap)
   (unwrap-deltaable [x]
-    (into {} (clojure.core/map (fn [[k v]] [k (unwrap-deltaable v)]))
+    (into {} (clojure.core/map (fn [[k v]] [k (proto/unwrap-deltaable v)]))
           #?(:clj (.deref x) :cljs (-deref x))))
 
-  #?(:clj DeltaableSet :cljs DeltaableSet)
+  #?(:clj DeltaableSet :cljs dset/DeltaableSet)
   (unwrap-deltaable [x]
-    (into #{} (clojure.core/map unwrap-deltaable)
+    (into #{} (clojure.core/map proto/unwrap-deltaable)
           #?(:clj (.deref x) :cljs (-deref x))))
 
   ;; Default: plain values pass through unchanged
@@ -1530,3 +652,29 @@
                 :else
                 (recur (conj result op) rest))))))
       by-path))))
+
+;; =============================================================================
+;; Protocol function re-exports (MUST be after all extend-protocol calls)
+;; =============================================================================
+;; extend-protocol creates new function objects, so re-exports must capture
+;; the final versions. Using wrapper fns ensures dispatch goes through vars.
+
+(defn get-deltas
+  "Returns sequence of deltas. See PDeltaable."
+  [x]
+  (proto/get-deltas x))
+
+(defn deltaable?
+  "Returns true if x is a deltaable collection. See PDeltaable."
+  [x]
+  (proto/deltaable? x))
+
+(defn wrap-deltaable
+  "Wrap x as a deltaable collection. See PWrapDeltaable."
+  [x]
+  (proto/wrap-deltaable x))
+
+(defn unwrap-deltaable
+  "Unwrap deltaable to plain collection. See PUnwrapDeltaable."
+  [x]
+  (proto/unwrap-deltaable x))
