@@ -11,7 +11,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.effects.core :as eff]
+            [org.replikativ.spindel.runtime.effects :as eff]
             [org.replikativ.spindel.effects.track :as track]
             [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.async :as pcps-async])
@@ -240,5 +240,5 @@
 (eff/register-effect-by-symbol!
   'org.replikativ.spindel.effects.await/await
   ::await-handler
-  'org.replikativ.spindel.effects.core/one-arg->awaitable-map
+  'org.replikativ.spindel.runtime.effects/one-arg->awaitable-map
   'org.replikativ.spindel.effects.await/await-handler)

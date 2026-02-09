@@ -10,7 +10,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.node-protocols :as np]
+            [org.replikativ.spindel.runtime.nodes :as nodes]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -310,7 +310,7 @@
 
             ;; Check deps-hash exists
             (let [node (rtp/get-state ctx [:nodes spin-id])
-                  deps-hash (np/get-deps-hash node)]
+                  deps-hash (nodes/get-deps-hash node)]
 
               (is (some? deps-hash) "deps-hash should exist after execution")
 
@@ -320,7 +320,7 @@
 
               ;; Get new deps-hash
               (let [node2 (rtp/get-state ctx [:nodes spin-id])
-                    deps-hash2 (np/get-deps-hash node2)]
+                    deps-hash2 (nodes/get-deps-hash node2)]
 
                 (is (some? deps-hash2) "deps-hash should exist after re-execution")
                 (is (not= deps-hash deps-hash2)

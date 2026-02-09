@@ -10,7 +10,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.node-protocols :as np]
+            [org.replikativ.spindel.runtime.nodes :as nodes]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.state.signal :as sig]
@@ -202,7 +202,7 @@
 
             ;; Verify spin node's deps are cleared
             (let [spin-node (rtp/get-state ctx [:nodes spin-id])
-                  deps (if spin-node (np/get-deps spin-node) nil)]
+                  deps (if spin-node (nodes/get-deps spin-node) nil)]
               (is (or (nil? deps)
                       (and (empty? (:signals deps))
                            (empty? (:spins deps))))
@@ -316,7 +316,7 @@
             ;; Verify parent's deps are empty
             (let [parent-node (rtp/get-state ctx [:nodes parent-id])
                   deps (if parent-node
-                         (np/get-deps parent-node)
+                         (nodes/get-deps parent-node)
                          nil)]
               (is (or (nil? deps)
                       (empty? (:spins deps)))

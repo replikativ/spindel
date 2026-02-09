@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.effects.core
+(ns org.replikativ.spindel.runtime.effects
   "Effect system for extensible continuation handling.
 
   Effects are the extension mechanism for laufzeit's CPS transformation.
@@ -176,4 +176,3 @@
             :expected expected-type
             :actual-type (type actual-value)
             :actual-value actual-value}))
-

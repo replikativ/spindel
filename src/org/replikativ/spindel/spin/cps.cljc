@@ -2,7 +2,7 @@
   "CPS transformation machinery for spin macro"
   (:require [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.addressing :as addressing]
-            [org.replikativ.spindel.effects.core]
+            [org.replikativ.spindel.runtime.effects]
             [org.replikativ.spindel.effects.await]   ;; Load await effect handler
             [org.replikativ.spindel.effects.track]   ;; Load track effect handler
             [is.simm.partial-cps.async :as async]
@@ -51,7 +51,7 @@
      4. This allows users to override await/track before spindel loads while
         keeping direct handler optimization for the default implementation"
      []
-     (let [reg (org.replikativ.spindel.effects.core/get-effect-syntax)
+     (let [reg (org.replikativ.spindel.runtime.effects/get-effect-syntax)
 
            entries (for [[sym {:keys [handler direct-handler-sym]}] reg]
                      (let [ vname (symbol (str "bp__" (name handler)))

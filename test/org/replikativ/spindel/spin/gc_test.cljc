@@ -13,7 +13,7 @@
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
-            [org.replikativ.spindel.runtime.node-protocols :as np]
+            [org.replikativ.spindel.runtime.nodes :as nodes]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -191,7 +191,7 @@
                         (let [nodes (rtp/get-state ctx [:nodes])
                               spin-nodes (filter (fn [[_ node]]
                                                    (and node
-                                                        (= :spin (np/node-type node))))
+                                                        (= :spin (nodes/node-type node))))
                                                  nodes)
                               outputs (rtp/get-state ctx [:spin-outputs])
                               metas (rtp/get-state ctx [:spins-meta])]
@@ -251,7 +251,7 @@
          (let [nodes (rtp/get-state ctx [:nodes])
                spin-nodes (filter (fn [[_ node]]
                                     (and node
-                                         (= :spin (np/node-type node))))
+                                         (= :spin (nodes/node-type node))))
                                   nodes)
                outputs (rtp/get-state ctx [:spin-outputs])
                metas (rtp/get-state ctx [:spins-meta])]

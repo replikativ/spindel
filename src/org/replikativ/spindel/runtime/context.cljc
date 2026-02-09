@@ -20,8 +20,7 @@
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.scheduler :as sched]
             [org.replikativ.spindel.runtime.state-backend :as backend]
-            [org.replikativ.spindel.runtime.node-protocols :as np]
-            [org.replikativ.spindel.runtime.node-types :as nt]
+            [org.replikativ.spindel.runtime.nodes :as nodes]
             [org.replikativ.spindel.runtime.addressing :as addressing]
             [incognito.edn :refer [read-string-safe]])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]
@@ -35,10 +34,10 @@
   "Write handlers for custom record types.
 
   Convert records to plain maps for serialization."
-  (atom {'org.replikativ.spindel.runtime.node_types.SpinNode
+  (atom {'org.replikativ.spindel.runtime.nodes.SpinNode
          (fn [node] (into {} node))
 
-         'org.replikativ.spindel.runtime.node_types.SignalNode
+         'org.replikativ.spindel.runtime.nodes.SignalNode
          (fn [node] (into {} node))
 
          'org.replikativ.spindel.spin.core.Result
@@ -48,11 +47,11 @@
   "Read handlers for custom record types.
 
   Convert plain maps back to records after deserialization."
-  (atom {'org.replikativ.spindel.runtime.node_types.SpinNode
-         nt/map->SpinNode
+  (atom {'org.replikativ.spindel.runtime.nodes.SpinNode
+         nodes/map->SpinNode
 
-         'org.replikativ.spindel.runtime.node_types.SignalNode
-         nt/map->SignalNode
+         'org.replikativ.spindel.runtime.nodes.SignalNode
+         nodes/map->SignalNode
 
          'org.replikativ.spindel.spin.core.Result
          (fn [m] ((requiring-resolve 'org.replikativ.spindel.spin.core/map->Result) m))}))
@@ -630,7 +629,7 @@
                       (assoc :running? false)
                       (assoc :completed? false)
                       (assoc :result nil)
-                      (np/mark-dirty)))  ; Use protocol method to set :status :dirty
+                      (nodes/mark-dirty)))  ; Use protocol method to set :status :dirty
                 ;; Not in-flight - keep as-is
                 (assoc acc tid node)))
             {}

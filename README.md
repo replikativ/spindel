@@ -448,7 +448,7 @@ Build reactive pipelines with fan-out and topic routing:
 Broadcast to multiple consumers:
 
 ```clojure
-(require '[org.replikativ.spindel.pubsub.core :as pubsub])
+(require '[org.replikativ.spindel.pubsub.mult :as pubsub])
 
 ;; Source sequence
 (def source (gen-aseq (yield 1) (yield 2) (yield 3)))
@@ -578,7 +578,7 @@ Effects extend the CPS transformation. Built-in effects:
 Libraries can register custom effects:
 
 ```clojure
-(require '[org.replikativ.spindel.effects.core :as effects])
+(require '[org.replikativ.spindel.runtime.effects :as effects])
 
 (effects/register-effect-by-symbol!
   'my.lib/sample

@@ -1,12 +1,162 @@
-(ns org.replikativ.spindel.runtime.node-types
-  "Node type implementations for unified reactive graph.
+(ns org.replikativ.spindel.runtime.nodes
+  "Protocols and type implementations for unified reactive nodes.
 
-  Defines SignalNode and SpinNode defrecords that implement the
-  node protocols (PNode, PObservable, PDependent, PCacheable).
+  This namespace defines fine-grained protocols for the unified :nodes structure
+  that replaces separate :signals, :spins, :graph, and :spin-observers maps,
+  plus the defrecord implementations (SignalNode, SpinNode) and constructors.
 
-  These replace the old pattern of storing plain maps in separate
-  :signals and :spins structures."
-  (:require [org.replikativ.spindel.runtime.node-protocols :as np]))
+  Following spindel's protocol philosophy:
+  - Fine-grained protocols (not monolithic interfaces)
+  - Composability (not all nodes need all capabilities)
+  - Clear responsibilities (each protocol has focused purpose)
+  - Future-proof (new node types can implement subsets)")
+
+;; =============================================================================
+;; Core Node Protocol
+;; =============================================================================
+
+(defprotocol PNode
+  "Core node identity and value access.
+
+  All nodes in the unified reactive graph implement this protocol.
+  Provides type discrimination and value access."
+
+  (node-type [node]
+    "Returns node type keyword: :signal or :spin.
+
+    This replaces the old pattern of checking map keys like [:type :signal].
+    Protocol dispatch provides type safety and better performance.")
+
+  (get-value [node]
+    "Get current value from the node.
+
+    For signals: returns snapshot (current value)
+    For spins: returns Result record (cached result)"))
+
+;; =============================================================================
+;; Observable Protocol
+;; =============================================================================
+
+(defprotocol PObservable
+  "Nodes can be observed for changes.
+
+  Both signals and spins support observers - spins that depend on them.
+  When a node changes, observers are notified via topological ordering."
+
+  (get-observers [node]
+    "Returns set of observer node IDs.
+
+    Observer IDs are spin-ids of spins that depend on this node.
+    Used by engine for topological notification.")
+
+  (add-observer [node observer-id]
+    "Returns new node with observer added.
+
+    Protocol methods are PURE - return new node, don't mutate.
+    Runtime handles actual state updates via swap-node!.")
+
+  (remove-observer [node observer-id]
+    "Returns new node with observer removed.
+
+    Protocol methods are PURE - return new node, don't mutate.
+    Runtime handles actual state updates via swap-node!."))
+
+;; =============================================================================
+;; Dependent Protocol
+;; =============================================================================
+
+(defprotocol PDependent
+  "Nodes can depend on other nodes.
+
+  Spins have dependencies (signals and other spins they read).
+  Signals have no dependencies (they are sources).
+
+  Dependencies are tracked during spin execution and used for:
+  - Dirty propagation (when signal changes, mark dependent spins dirty)
+  - Content-addressed caching (deps-hash from dependency VALUES)
+  - Topological ordering (ensure correct execution order)"
+
+  (has-deps? [node]
+    "Returns true if node has dependencies.
+
+    Signals always return false (no dependencies).
+    Spins return true if they depend on any signals or spins.")
+
+  (get-deps [node]
+    "Returns dependency map {:signals #{...} :spins #{...}}.
+
+    Signal dependencies: IDs of signals read via (track sig)
+    Spin dependencies: IDs of spins read via (await spin)
+
+    Used by dirty propagation and topological ordering.")
+
+  (set-deps [node deps]
+    "Returns new node with updated dependencies.
+
+    Called by record-deps! after spin execution completes.
+    deps format: {:signals #{sig-id ...} :spins #{spin-id ...}}")
+
+  (get-deps-hash [node]
+    "Returns content hash of dependency values (UUID).
+
+    This is the key to content-addressed caching!
+    Hash is computed from actual VALUES of dependencies, not just IDs.
+
+    Same deps-hash = same dependency values = can reuse cached result.
+    Different deps-hash = different dependency values = must re-execute.")
+
+  (set-deps-hash [node hash]
+    "Returns new node with updated deps-hash.
+
+    Called by record-deps! after computing hash from dependency values.
+    Hash is a UUID from hasch library (collision-resistant).")
+
+  (get-deps-values [node]
+    "Returns captured dependency generations/hashes for identity-based caching.
+
+    Format: {:signal-generations {sig-id generation ...} :spin-hashes {spin-id deps-hash ...}}
+
+    These GENERATIONS are used to compute deps-hash in O(1) time per dependency.
+    Stored for debugging and cache identity verification."))
+
+;; =============================================================================
+;; Cacheable Protocol
+;; =============================================================================
+
+(defprotocol PCacheable
+  "Nodes can cache computation results.
+
+  Spins cache their execution results and track dirty/clean state.
+  Signals don't cache (their snapshot IS the authoritative value).
+
+  Cache invalidation:
+  - When signal changes, mark dependent spins :dirty
+  - Dirty spins re-execute on next access
+  - After re-execution, mark :clean and update cached result"
+
+  (dirty? [node]
+    "Returns true if cached value is stale.
+
+    For spins: true if dependencies changed since last execution
+    For signals: always false (snapshot is always current)")
+
+  (clean? [node]
+    "Returns true if cached value is valid.
+
+    For spins: true if dependencies unchanged, can use cached result
+    For signals: always true (snapshot is always valid)")
+
+  (mark-dirty [node]
+    "Returns new node marked as dirty.
+
+    Called when a dependency changes (signal update or upstream spin completion).
+    Indicates cached result is stale, must re-execute on next access.")
+
+  (mark-clean [node]
+    "Returns new node marked as clean.
+
+    Called after spin execution completes successfully.
+    Indicates cached result is valid, can be reused."))
 
 ;; =============================================================================
 ;; SignalNode - Mutable Reactive Sources
@@ -19,18 +169,18 @@
                        observers         ; Set of observer node IDs
                        generation]       ; Monotonically increasing counter (for O(1) cache identity)
 
-  np/PNode
+  PNode
   (node-type [_] :signal)
   (get-value [_] snapshot)
 
-  np/PObservable
+  PObservable
   (get-observers [_] observers)
   (add-observer [this obs-id]
     (assoc this :observers (conj observers obs-id)))
   (remove-observer [this obs-id]
     (assoc this :observers (disj observers obs-id)))
 
-  np/PDependent
+  PDependent
   ;; Signals have no dependencies - they are sources
   (has-deps? [_] false)
   (get-deps [_] {:signals #{} :spins #{}})
@@ -39,7 +189,7 @@
   (set-deps-hash [this _] this)
   (get-deps-values [_] {:signal-generations {} :spin-hashes {}})
 
-  np/PCacheable
+  PCacheable
   ;; Signals don't have dirty state - snapshot is always authoritative
   (dirty? [_] false)
   (clean? [_] true)   ; Always "clean" (current value is authoritative)
@@ -61,18 +211,18 @@
                      created-by          ; spin-id that created this spin (nil for top-level)
                      created-spins]      ; Set of spin-ids created during this spin's execution
 
-  np/PNode
+  PNode
   (node-type [_] :spin)
   (get-value [_] result)
 
-  np/PObservable
+  PObservable
   (get-observers [_] observers)
   (add-observer [this obs-id]
     (assoc this :observers (conj observers obs-id)))
   (remove-observer [this obs-id]
     (assoc this :observers (disj observers obs-id)))
 
-  np/PDependent
+  PDependent
   (has-deps? [_] (boolean (or (seq (:signals deps)) (seq (:spins deps)))))
   (get-deps [_] deps)
   (set-deps [this new-deps]
@@ -82,7 +232,7 @@
     (assoc this :deps-hash hash))
   (get-deps-values [_] deps-values)
 
-  np/PCacheable
+  PCacheable
   (dirty? [_] (= status :dirty))
   (clean? [_] (= status :clean))
   (mark-dirty [this]

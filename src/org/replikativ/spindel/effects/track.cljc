@@ -19,7 +19,7 @@
             [org.replikativ.spindel.runtime.bindings :as bindings]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.effects.core :as eff]
+            [org.replikativ.spindel.runtime.effects :as eff]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.log :as log])
   #?(:clj (:import [org.replikativ.spindel.state.signal SignalRef])))
@@ -194,5 +194,5 @@
 (eff/register-effect-by-symbol!
   'org.replikativ.spindel.effects.track/track
   ::track-handler
-  'org.replikativ.spindel.effects.core/one-arg->awaitable-map
+  'org.replikativ.spindel.runtime.effects/one-arg->awaitable-map
   'org.replikativ.spindel.effects.track/track-handler)

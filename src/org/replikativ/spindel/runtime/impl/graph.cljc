@@ -4,7 +4,7 @@
   Pure computation over the dependency graph stored in context state.
   Used by signal-change processing to determine the correct order
   for re-executing observer spins (glitch-free updates)."
-  (:require [org.replikativ.spindel.runtime.node-protocols :as np]))
+  (:require [org.replikativ.spindel.runtime.nodes :as nodes]))
 
 (defn collect-transitive-observers
   "Collect all spins transitively dependent on initial-spin-ids.
@@ -23,7 +23,7 @@
       (if (visited tid)
         (recur (rest to-visit) visited)
         (let [node (get-in context [:nodes tid])
-              observers (if node (np/get-observers node) #{})]
+              observers (if node (nodes/get-observers node) #{})]
           (recur (into (rest to-visit) observers) (conj visited tid))))
       visited)))
 
@@ -41,7 +41,7 @@
   [context spin-ids]
   (let [in-degree (reduce (fn [acc tid]
                             (let [node (get-in context [:nodes tid])
-                                  deps (if node (np/get-deps node) {:signals #{} :spins #{}})
+                                  deps (if node (nodes/get-deps node) {:signals #{} :spins #{}})
                                   spin-deps (get deps :spins #{})]
                               (assoc acc tid (count (filter spin-ids spin-deps)))))
                           {}
@@ -51,7 +51,7 @@
       (if-let [tid (first queue)]
         (let [new-result (conj result tid)
               node (get-in context [:nodes tid])
-              dependent-spins (if node (np/get-observers node) #{})
+              dependent-spins (if node (nodes/get-observers node) #{})
               relevant (filter spin-ids dependent-spins)
               new-in-deg (reduce (fn [deg dep]
                                    (update deg dep dec)) in-deg relevant)
@@ -74,7 +74,7 @@
   [context signal-id]
   (let [node (get-in context [:nodes signal-id])
         observers (if node
-                    (np/get-observers node)
+                    (nodes/get-observers node)
                     #{})]
     (if (seq observers)
       (vec (topological-sort context (collect-transitive-observers context observers)))

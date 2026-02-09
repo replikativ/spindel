@@ -1,8 +1,7 @@
 (ns org.replikativ.spindel.state.signal
   "Signal creation and manipulation"
   (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.node-types :as nt]
-            [org.replikativ.spindel.runtime.node-protocols :as np]
+            [org.replikativ.spindel.runtime.nodes :as nodes]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
@@ -149,7 +148,7 @@
         (fn [existing-node]
           (or existing-node
               (let [wrapped (d/wrap-deltaable (:initial-value signal-ref))]
-                (nt/->signal-node wrapped nil nil (d/deltaable? wrapped) #{}))))))
+                (nodes/->signal-node wrapped nil nil (d/deltaable? wrapped) #{}))))))
     nil))
 
 ;; Simple value read helper (non-reactive)
@@ -160,7 +159,7 @@
   (let [id (:id signal-ref)
         node (rtc/get-state [:nodes id])]
     (when node
-      (np/get-value node))))
+      (nodes/get-value node))))
 
 (defn get-signal-state
   "Get full signal state from runtime.
@@ -184,12 +183,12 @@
     (rtc/swap-state! [:nodes id]
       (fn [node]
         (when node
-          (nt/->signal-node
-            (np/get-value node)
+          (nodes/->signal-node
+            (nodes/get-value node)
             (:old-snapshot node)  ; preserve old-snapshot for change detection
             nil                   ; clear deltas only
             (:deltaable? node)
-            (np/get-observers node)))))))
+            (nodes/get-observers node)))))))
 
 ;; =============================================================================
 ;; Signal Interval Helper (replaces SignalDeltaView)
@@ -269,17 +268,17 @@
     (let [new-node (rtc/swap-state! [:nodes id]
                      (fn [old-node]
                        (when old-node
-                         (let [old-value (np/get-value old-node)
+                         (let [old-value (nodes/get-value old-node)
                                new-value (apply f old-value args)
                                deltas (d/get-deltas new-value)
                                clean-value (d/clear-deltas new-value)
                                ;; Increment generation for O(1) identity-based caching
                                old-generation (or (:generation old-node) 0)]
-                           (nt/->signal-node clean-value
+                           (nodes/->signal-node clean-value
                                              old-value
                                              deltas
                                              (:deltaable? old-node)
-                                             (np/get-observers old-node)
+                                             (nodes/get-observers old-node)
                                              (inc old-generation))))))]
 
       ;; Either collect for batch or enqueue immediately
@@ -290,7 +289,7 @@
         (rtc/enqueue-event! {:type :signal-change :id id}))
 
       ;; Return new snapshot
-      (np/get-value new-node))))
+      (nodes/get-value new-node))))
 
 (defn- swap-signal-changed?-explicit
   "Like swap-signal*-explicit, but returns a boolean indicating if the value changed.
@@ -305,18 +304,18 @@
     (rtc/swap-state! [:nodes id]
       (fn [old-node]
         (when old-node
-          (let [old-value (np/get-value old-node)
+          (let [old-value (nodes/get-value old-node)
                 new-value (apply f old-value args)
                 deltas (d/get-deltas new-value)
                 clean-value (d/clear-deltas new-value)
                 ;; Increment generation for O(1) identity-based caching
                 old-generation (or (:generation old-node) 0)]
             (vreset! changed? (not= old-value clean-value))
-            (nt/->signal-node clean-value
+            (nodes/->signal-node clean-value
                               old-value
                               deltas
                               (:deltaable? old-node)
-                              (np/get-observers old-node)
+                              (nodes/get-observers old-node)
                               (inc old-generation))))))
 
     ;; Enqueue engine event

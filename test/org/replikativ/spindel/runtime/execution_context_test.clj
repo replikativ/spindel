@@ -10,7 +10,7 @@
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.runtime.state-backend :as backend]
-            [org.replikativ.spindel.runtime.node-types :as nt]))
+            [org.replikativ.spindel.runtime.nodes :as nodes]))
 
 (deftest test-execution-context-creation
   (testing "ExecutionContext can be created with default options"
@@ -572,7 +572,7 @@
 
           ;; Create snapshot
           (let [snap (ctx/snapshot-context ctx)]
-            ;; In-memory snapshot PRESERVES continuations (for checkpoint/restore)
+            ;; In-memory snapshot PRESERVES continuations (for checkpoinodes/restore)
             (is (= 2 (count (keys (rtp/get-state snap [:continuations])))))
 
             ;; Snapshot should have cleared draining flag
@@ -590,7 +590,7 @@
         (binding [rtc/*execution-context* ctx]
           ;; Create a long-running spin by manually setting running flag
           (rtp/swap-state! ctx [:nodes :test-spin]
-            (constantly (nt/->spin-node
+            (constantly (nodes/->spin-node
                           nil     ; no result
                           :clean  ; status
                           false   ; not completed
@@ -623,7 +623,7 @@
         (binding [rtc/*execution-context* ctx]
           ;; Add in-flight spin
           (rtp/swap-state! ctx [:nodes :test-spin]
-            (constantly (nt/->spin-node nil :clean false true #{} {} nil {} nil #{})))
+            (constantly (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{})))
 
           ;; Snapshot with clean-in-flight? false
           (let [snap-dirty (ctx/snapshot-context ctx :clean-in-flight? false)]

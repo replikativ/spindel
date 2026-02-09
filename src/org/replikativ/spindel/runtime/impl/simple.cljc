@@ -22,8 +22,7 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.bindings :as bindings]
             [org.replikativ.spindel.runtime.cache :as cache]
-            [org.replikativ.spindel.runtime.node-protocols :as np]
-            [org.replikativ.spindel.runtime.node-types :as nt]
+            [org.replikativ.spindel.runtime.nodes :as nodes]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
@@ -293,7 +292,7 @@
         (-> node
             (assoc :completed? false)
             (assoc :running? true)
-            (np/mark-dirty)))))
+            (nodes/mark-dirty)))))
 
   ;; Resume continuation with fresh signal value
   (let [ctx-bindings (:ctx-bindings cont)
@@ -538,8 +537,8 @@
         ;; Failed to claim - either cached or already running
         ;; Check which case to handle appropriately
         (let [node (rtp/get-state context [:nodes tid])
-              cached (when node (np/get-value node))
-              is-clean? (when node (not (np/dirty? node)))]
+              cached (when node (nodes/get-value node))
+              is-clean? (when node (not (nodes/dirty? node)))]
           (if (and cached is-clean?)
             ;; Already cached - deliver result via callbacks without re-executing
             (do
@@ -771,7 +770,7 @@
                         (cache/compute-deps-identity signal-generations spin-hashes nil))
             ;; Get old dependencies from SpinNode in :nodes (Phase 1B)
             spin-node (get-in rt-state [:nodes spin-id])
-            old-deps (if spin-node (np/get-deps spin-node) {:signals #{} :spins #{}})
+            old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
             old-signals (:signals old-deps #{})
             old-spins (:spins old-deps #{})
             removed-signals (set/difference old-signals tracked-signals)
@@ -782,11 +781,11 @@
             (update-in [:nodes spin-id]
               (fn [node]
                 ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                (let [node (or node (nt/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
+                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
                   (-> node
-                      (np/set-deps {:signals tracked-signals
+                      (nodes/set-deps {:signals tracked-signals
                                     :spins tracked-spins})
-                      (np/set-deps-hash deps-hash)
+                      (nodes/set-deps-hash deps-hash)
                       ;; Store generations/hashes instead of values for debugging
                       (assoc :deps-values {:signal-generations signal-generations
                                           :spin-hashes spin-hashes})))))
@@ -796,7 +795,7 @@
               (reduce (fn [s sid]
                         (let [node (get-in s [:nodes sid])]
                           (if node
-                            (update-in s [:nodes sid] #(np/remove-observer % spin-id))
+                            (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
                             s)))
                       state
                       removed-signals))
@@ -806,7 +805,7 @@
               (reduce (fn [s sid]
                         (let [node (get-in s [:nodes sid])]
                           (if node
-                            (update-in s [:nodes sid] #(np/add-observer % spin-id))
+                            (update-in s [:nodes sid] #(nodes/add-observer % spin-id))
                             s)))
                       state
                       tracked-signals))
@@ -816,7 +815,7 @@
               (reduce (fn [s tid]
                         (let [node (get-in s [:nodes tid])]
                           (if node
-                            (update-in s [:nodes tid] #(np/remove-observer % spin-id))
+                            (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
                             s)))
                       state
                       removed-spins))
@@ -827,8 +826,8 @@
                         ;; Create node if it doesn't exist, then add observer
                         (update-in s [:nodes tid]
                           (fn [node]
-                            (let [node (or node (nt/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
-                              (np/add-observer node spin-id)))))
+                            (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
+                              (nodes/add-observer node spin-id)))))
                       state
                       tracked-spins))
 
@@ -855,7 +854,7 @@
     (fn [rt-state]
       ;; Get dependencies from SpinNode in :nodes (Phase 1B)
       (let [spin-node (get-in rt-state [:nodes spin-id])
-            deps (if spin-node (np/get-deps spin-node) {:signals #{} :spins #{}})
+            deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
             signal-deps (:signals deps #{})
             spin-deps (:spins deps #{})]
 
@@ -865,8 +864,8 @@
               (fn [node]
                 (when node
                   (-> node
-                      (np/set-deps {:signals #{} :spins #{}})
-                      (np/set-deps-hash nil)
+                      (nodes/set-deps {:signals #{} :spins #{}})
+                      (nodes/set-deps-hash nil)
                       (assoc :deps-values {:signal-generations {} :spin-hashes {}})))))
 
             ;; Unregister from signal observers in :nodes SignalNode (Phase 1B)
@@ -874,7 +873,7 @@
               (reduce (fn [s sid]
                         (let [node (get-in s [:nodes sid])]
                           (if node
-                            (update-in s [:nodes sid] #(np/remove-observer % spin-id))
+                            (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
                             s)))
                       state
                       signal-deps))
@@ -884,7 +883,7 @@
               (reduce (fn [s tid]
                         (let [node (get-in s [:nodes tid])]
                           (if node
-                            (update-in s [:nodes tid] #(np/remove-observer % spin-id))
+                            (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
                             s)))
                       state
                       spin-deps))
@@ -924,20 +923,20 @@
   (rtp/swap-state! context []
     (fn [state]
       (let [node (get-in state [:nodes spin-id])
-            deps (when node (np/get-deps node))
+            deps (when node (nodes/get-deps node))
             signal-deps (:signals deps #{})
             spin-deps (:spins deps #{})]
         (-> state
             ;; 1. Unregister from signal observers
             (as-> s (reduce (fn [s sid]
                               (if (get-in s [:nodes sid])
-                                (update-in s [:nodes sid] np/remove-observer spin-id)
+                                (update-in s [:nodes sid] nodes/remove-observer spin-id)
                                 s))
                             s signal-deps))
             ;; 2. Unregister from spin observers
             (as-> s (reduce (fn [s tid]
                               (if (get-in s [:nodes tid])
-                                (update-in s [:nodes tid] np/remove-observer spin-id)
+                                (update-in s [:nodes tid] nodes/remove-observer spin-id)
                                 s))
                             s spin-deps))
             ;; 3. Remove the spin node itself
@@ -994,9 +993,9 @@
   [context spin-id]
   (let [node (rtp/get-state context [:nodes spin-id])]
     (when node ;; may already be cleaned
-      (if (empty? (np/get-observers node))
+      (if (empty? (nodes/get-observers node))
         ;; No observers → full cleanup + cascade to dependencies
-        (let [deps (np/get-deps node)
+        (let [deps (nodes/get-deps node)
               dep-spin-ids (:spins deps #{})]
           (full-cleanup-spin! context spin-id)
           ;; Cascade: check if any spin dependency is now cleanable
@@ -1004,7 +1003,7 @@
             (let [dep-node (rtp/get-state context [:nodes dep-id])]
               (when (and dep-node
                          (:orphaned? dep-node)
-                         (empty? (np/get-observers dep-node)))
+                         (empty? (nodes/get-observers dep-node)))
                 (full-cleanup-spin! context dep-id)))))
         ;; Has observers → mark orphaned, defer cleanup
         (rtp/swap-state! context [:nodes spin-id]
@@ -1053,7 +1052,7 @@
   ;; Capture spin deps-hash for identity hashing (Phase 1B: read from :nodes)
   ;; Note: spin-node may be nil if child spin doesn't exist yet (e.g., in tests)
   (let [spin-node (rtp/get-state context [:nodes child-spin-id])
-        spin-deps-hash (when spin-node (np/get-deps-hash spin-node))]
+        spin-deps-hash (when spin-node (nodes/get-deps-hash spin-node))]
     (rtp/swap-state! context []
       (fn [rt-state]
         ;; Store spin deps-hash for identity hashing (set derived from keys in record-deps!)
@@ -1105,7 +1104,7 @@
           ;; Spin already exists - update created-by (closure may have changed)
           (assoc existing-node :created-by creator-id)
           ;; Create new SpinNode with creator tracking
-          (nt/->spin-node nil :clean false false #{} {} nil {} creator-id #{}))))
+          (nodes/->spin-node nil :clean false false #{} {} nil {} creator-id #{}))))
 
     ;; If there's a creator, add this spin to its created-spins set
     (when creator-id
@@ -1147,7 +1146,7 @@
               (if (visited current-id)
                 (recur remaining visited state)
                 (let [spin-node (get-in state [:nodes current-id])
-                      observers (if spin-node (np/get-observers spin-node) #{})
+                      observers (if spin-node (nodes/get-observers spin-node) #{})
                       ;; During batch mode, also include await dependents for full propagation
                       await-parents (when in-batch?
                                      (get-in state [:await-dependents current-id]))
@@ -1160,7 +1159,7 @@
                                     (when node
                                       (-> node
                                           (assoc :completed? false)
-                                          (np/mark-dirty)))))]
+                                          (nodes/mark-dirty)))))]
                   (recur new-to-visit (conj visited current-id) new-state)))))))))
   true)
 
@@ -1360,7 +1359,7 @@
     (fn [rt-state]
       ;; First, get observers of this spin before updating it
       (let [spin-node (get-in rt-state [:nodes spin-id])
-            observers (if spin-node (np/get-observers spin-node) #{})
+            observers (if spin-node (nodes/get-observers spin-node) #{})
             ;; Build the completion event key for this spin
             completion-event-key [:spin/complete spin-id]]
         (-> rt-state
@@ -1368,12 +1367,12 @@
             (update-in [:nodes spin-id]
               (fn [node]
                 ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                (let [node (or node (nt/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
+                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
                   (-> node
                       (assoc :result result)
                       (assoc :completed? true)
                       (assoc :running? false)
-                      (np/mark-clean)))))
+                      (nodes/mark-clean)))))
             ;; Mark all observers dirty (they need to re-execute)
             ;; BUT skip observers that:
             ;; 1. Are currently running (have :running? true)
@@ -1389,7 +1388,7 @@
                                          (not has-completion-cont?))
                                 (-> node
                                     (assoc :completed? false)
-                                    (np/mark-dirty)))))))
+                                    (nodes/mark-dirty)))))))
                       state
                       observers))))))
   true)
@@ -1405,7 +1404,7 @@
   [context spin-id]
   ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
   (when-let [node (get-node context spin-id)]
-    (np/get-value node)))
+    (nodes/get-value node)))
 
 (defn clean?
   "Check if a spin's cached result is clean.
@@ -1418,7 +1417,7 @@
   [context spin-id]
   ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
   (if-let [node (get-node context spin-id)]
-    (np/clean? node)
+    (nodes/clean? node)
     false))
 
 (defn dirty?
@@ -1432,7 +1431,7 @@
   [context spin-id]
   ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
   (if-let [node (get-node context spin-id)]
-    (np/dirty? node)
+    (nodes/dirty? node)
     false))
 
 (defn running?
@@ -1468,7 +1467,7 @@
     (fn [node]
       (if node
         (assoc node :running? true)
-        (nt/->spin-node nil :clean false true #{} {} nil {} nil #{}))))
+        (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{}))))
   true)
 
 (defn ^:no-doc try-claim-execution!
@@ -1494,8 +1493,8 @@
     (rtp/swap-state! context [:nodes spin-id]
       (fn [node]
         (if node
-          (let [cached (np/get-value node)
-                is-clean? (not (np/dirty? node))]
+          (let [cached (nodes/get-value node)
+                is-clean? (not (nodes/dirty? node))]
             (cond
               ;; Already has clean cached result - don't claim
               (and cached is-clean?)
@@ -1517,7 +1516,7 @@
           ;; No node - create and claim
           (do (reset! claimed? true)
               (log/trace! {:event :claim/success-new-node :data {:spin-id spin-id}})
-              (nt/->spin-node nil :clean false true #{} {} nil {} nil #{})))))
+              (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{})))))
     @claimed?))
 
 (defn ^:no-doc mark-not-running!
@@ -1590,7 +1589,7 @@
   [context spin-id]
   ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
   (when-let [node (get-node context spin-id)]
-    (np/get-deps-hash node)))
+    (nodes/get-deps-hash node)))
 
 ;; =============================================================================
 ;; Continuation Management (shared across all context implementations)

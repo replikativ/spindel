@@ -16,7 +16,9 @@
    [org.replikativ.spindel.spin.combinators :as combinators]
    [org.replikativ.spindel.spin.sync :as sync]
    [org.replikativ.spindel.incremental.deltaable :as deltaable]
-   [org.replikativ.spindel.pubsub.core :as pubsub]
+   [org.replikativ.spindel.pubsub.buffer :as pubsub-buf]
+   [org.replikativ.spindel.pubsub.mult :as pubsub-mult]
+   [org.replikativ.spindel.pubsub.pub :as pubsub-pub]
    #?(:clj [org.replikativ.spindel.spin.cps :as spin-cps])
    #?(:clj [org.replikativ.spindel.state.signal :as sig])
    #?(:clj [org.replikativ.spindel.sequence.core :as seq-core]))
@@ -206,27 +208,27 @@
 
 (def mult
   "Create a mult over a source PAsyncSeq for fan-out."
-  pubsub/mult)
+  pubsub-mult/mult)
 
 (def tap
   "Create a tap on a mult. Returns PAsyncSeq receiving all items."
-  pubsub/tap)
+  pubsub-mult/tap)
 
 (def untap
   "Remove a tap from mult."
-  pubsub/untap)
+  pubsub-mult/untap)
 
 (def pub
   "Create a pub over source with topic-based routing."
-  pubsub/pub)
+  pubsub-pub/pub)
 
 (def sub
   "Subscribe to a topic on a pub. Returns PAsyncSeq."
-  pubsub/sub)
+  pubsub-pub/sub)
 
 (def unsub
   "Unsubscribe from a topic."
-  pubsub/unsub)
+  pubsub-pub/unsub)
 
 ;; =============================================================================
 ;; Buffer factories (for pub/sub)
@@ -234,12 +236,12 @@
 
 (def fixed-buffer
   "Create a fixed-size buffer. When full, producer blocks."
-  pubsub/fixed-buffer)
+  pubsub-buf/fixed-buffer)
 
 (def dropping-buffer
   "Create a dropping buffer. Never blocks - drops new items when full."
-  pubsub/dropping-buffer)
+  pubsub-buf/dropping-buffer)
 
 (def sliding-buffer
   "Create a sliding buffer. Never blocks - drops oldest items when full."
-  pubsub/sliding-buffer)
+  pubsub-buf/sliding-buffer)
