@@ -58,8 +58,7 @@
      ;; NOTE: *execution-context* deliberately NOT included - bound by event handlers
      [(resolve 'org.replikativ.spindel.runtime.core/*spin-id*)
       (resolve 'org.replikativ.spindel.runtime.core/*worker-id*)
-      (resolve 'org.replikativ.spindel.runtime.core/*yield-handler*)
-      (resolve 'org.replikativ.spindel.runtime.core/*address-stack*)]
+      (resolve 'org.replikativ.spindel.runtime.core/*yield-handler*)]
      :cljs
      ;; CLJS: Use pre-registered vars
      @registered-vars))

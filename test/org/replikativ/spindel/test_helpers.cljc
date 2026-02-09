@@ -89,7 +89,7 @@
    (defmacro with-ctx
      "Execute body with a fresh test context bound.
 
-     Binds both *execution-context* and *execution-context* for full compatibility.
+     Binds *execution-context* to a fresh context.
      The context is available as a local binding.
      Automatically stops the context's drain thread on exit.
 
@@ -100,8 +100,7 @@
      [[ctx-sym] & body]
      `(let [~ctx-sym (create-test-context)]
         (try
-          (binding [rtc/*execution-context* ~ctx-sym
-                    rtc/*execution-context* ~ctx-sym]
+          (binding [rtc/*execution-context* ~ctx-sym]
             ~@body)
           (finally
             (ctx/stop-context! ~ctx-sym))))))

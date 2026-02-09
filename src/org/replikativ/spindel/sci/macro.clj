@@ -24,6 +24,7 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :as eff-await]
             [org.replikativ.spindel.effects.track :as eff-track]
+            [org.replikativ.spindel.sci.boundary :as boundary]
             [is.simm.partial-cps.async :as async]
             [org.replikativ.spindel.sci.core :as sci-core]))
 
@@ -73,8 +74,7 @@
   (let [;; Wrap all native spins for SCI (BoundaryTask pattern)
         wrapped-natives (into {}
                               (map (fn [[k v]]
-                                     (require 'org.replikativ.spindel.sci.boundary)
-                                     [k ((resolve 'org.replikativ.spindel.sci.boundary/wrap-spin-for-sci) v runtime)])
+                                     [k (boundary/wrap-spin-for-sci v runtime)])
                                    native-spins))
 
         ;; Build namespace map
@@ -96,7 +96,7 @@
                       {'*execution-context* (sci/new-dynamic-var '*execution-context* runtime)
                        '*spin-id* (sci/new-dynamic-var '*spin-id* nil)
                        'current-execution-context rtc/current-execution-context
-                       'with-execution-context (var rtc/with-execution-context)
+                       'with-context (var rtc/with-context)
                        'spin-current-result rtc/spin-current-result
                        'deps-track-spin! rtc/deps-track-spin!}
 

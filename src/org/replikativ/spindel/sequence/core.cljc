@@ -6,20 +6,15 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.spin.combinators :refer [race]]
             [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.async :as async]
-            [is.simm.partial-cps.runtime :as runtime]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.effects.yield :as yield-eff]))
   ;; Make macros available to CLJS via require-macros
   #?(:cljs (:require-macros [org.replikativ.spindel.sequence.core :refer [gen-aseq for]]
                             [org.replikativ.spindel.spin.cps :refer [spin]]))
-  #?(:clj (:require [org.replikativ.spindel.spin.cps :as spin-cps :refer [spin]]))
-  ;; Import Thunk type - in CLJ it's a Java class, in CLJS use refer
-  #?(:clj (:import [is.simm.partial_cps.runtime Thunk])))
+  #?(:clj (:require [org.replikativ.spindel.spin.cps :as spin-cps :refer [spin]])))
 
 ;; =============================================================================
 ;; Extend nil to PAsyncSeq (spin-based anext)

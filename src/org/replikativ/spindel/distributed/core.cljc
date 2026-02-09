@@ -16,13 +16,11 @@
   - Each execution context can be addressed by peer-id + fork-id"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.runtime.core :as rtc]
             [is.simm.partial-cps.async :as pcps-async]
-            #?(:clj [clojure.core.async :as a :refer [go go-loop <! >! put! take! chan close!]]
-               :cljs [cljs.core.async :as a :refer [chan close! put! take!]]))
-  #?(:cljs (:require-macros [cljs.core.async.macros :refer [go go-loop]])))
+            #?(:clj [clojure.core.async :as a :refer [put! take! chan close!]]
+               :cljs [cljs.core.async :as a :refer [chan close! put! take!]])))
 
 ;; =============================================================================
 ;; Sentinel value for nil (core.async doesn't allow nil on channels)

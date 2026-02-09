@@ -55,9 +55,7 @@
   - The mount/unmount callbacks are synchronous
   - Multiple mounts/unmounts may occur if the element is conditionally rendered"
   (:require [org.replikativ.spindel.dom.elements :as el]
-            [org.replikativ.spindel.dom.core :as core]
             [org.replikativ.spindel.dom.addressing :as addr]
-            [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.log :as log]))
 
@@ -72,12 +70,6 @@
   [addr]
   (when rtc/*execution-context*
     (rtc/swap-state! [:dom/foreign addr] (constantly true))))
-
-(defn- foreign?
-  "Check if an address contains a foreign node."
-  [addr]
-  (when rtc/*execution-context*
-    (rtc/get-state [:dom/foreign addr])))
 
 ;; =============================================================================
 ;; Foreign Node Implementation

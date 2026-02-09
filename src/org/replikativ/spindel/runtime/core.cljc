@@ -16,9 +16,7 @@
 	"Dynamically bound execution context for fork-safe computation.
 
 	ExecutionContext wraps runtime state and enables lightweight forking.
-	Bind using `with-context` or `binding` for fork operations.
-
-	Phase 2: Replaces *execution-context* as the primary execution context binding."
+	Bind using `with-context` or `binding` for fork operations."
 	nil)
 
 (def ^:dynamic *spin-id*
@@ -32,20 +30,6 @@
 
 	Bound by gen-aseq to handle yield breakpoints during CPS execution." nil)
 
-(def ^:dynamic *address-stack*
-	"Dynamically bound address stack for deterministic addressing.
-
-	Used by both spins and probabilistic choose sites to generate
-	deterministic, reproducible addresses based on execution path.
-
-	Format: Vector of address keywords, e.g. [:spin-123 :rv-456]
-
-	This enables:
-	- Fork/restore: Same code path = same addresses = state matches
-	- Replay-based checkpointing: Re-execution finds cached results
-	- Trace compatibility: MCMC can replay with modified values"
-	[])
-
 ;; =============================================================================
 ;; CLJS Binding Registration
 ;; =============================================================================
@@ -54,116 +38,15 @@
 ;; be captured/restored across async boundaries (setTimeout callbacks).
 ;; This avoids circular dependencies since bindings can't require core.
 ;;
-;; NOTE: *execution-context* are NOT registered - they're bound
-;; explicitly by event handlers when resuming continuations. Capturing them
+;; NOTE: *execution-context* is NOT registered - it's bound
+;; explicitly by event handlers when resuming continuations. Capturing it
 ;; would create circular references and cause StackOverflow.
 
 #?(:cljs
    (do
-     ;; NOTE: *execution-context* and *execution-context* deliberately NOT registered
      (bindings/register-var! #'*spin-id*)
      (bindings/register-var! #'*worker-id*)
-     (bindings/register-var! #'*yield-handler*)
-     (bindings/register-var! #'*address-stack*)))
-
-;; =============================================================================
-;; Deterministic Address Generation
-;; =============================================================================
-
-(defn source-loc-hash
-  "Generate hash from source location metadata.
-
-  source-loc: Map with :file, :line, :column keys
-  Returns string hash suitable for address generation."
-  [source-loc]
-  (if source-loc
-    (str (hash {:file (:file source-loc)
-                :line (:line source-loc)
-                :column (:column source-loc)}))
-    "unknown"))
-
-(defn address-stack-hash
-  "Generate hash from address stack.
-
-  address-stack: Vector of address keywords in order
-  Returns string hash combining all addresses."
-  [address-stack]
-  (if (empty? address-stack)
-    ""
-    (str "-" (hash (mapv identity address-stack)))))
-
-(defn make-address
-  "Generate unique deterministic address.
-
-  Combines:
-  1. Prefix (e.g. 'spin' or 'rv')
-  2. Source location (file:line:column hash)
-  3. Address stack (hash of parent addresses)
-  4. Optional name (for named variables)
-
-  This ensures:
-  - Same source location + same call stack = same address
-  - Deterministic addresses across executions
-  - Compatible with fork/restore (replay finds same addresses)
-
-  Args:
-  - prefix: String prefix (e.g. 'spin', 'rv')
-  - source-loc: Map with :file, :line, :column (from &env)
-  - opts: Optional map with :name for named entities
-
-  Returns: Keyword address like :spin-12345678-98765432 or :rv-my-var"
-  [prefix source-loc & [opts]]
-  (let [name (:name opts)
-        loc-hash (source-loc-hash source-loc)
-        stack-hash (address-stack-hash *address-stack*)]
-    (if name
-      (keyword (str prefix "-" (clojure.core/name name)))
-      (keyword (str prefix "-" loc-hash stack-hash)))))
-
-(defn current-address-stack
-  "Get the current address stack from dynamic binding.
-  Returns empty vector if not bound."
-  []
-  *address-stack*)
-
-(defn push-address
-  "Return new address stack with address added.
-  Pure function - use with binding or with-address macro."
-  [stack address]
-  (conj (or stack []) address))
-
-(defn pop-address
-  "Return new address stack with last address removed.
-  Pure function - use with binding or with-address macro."
-  [stack]
-  (vec (butlast (or stack []))))
-
-#?(:clj
-   (defmacro with-address
-     "Execute body with address pushed onto the address stack.
-
-     Used for hierarchical addressing - nested calls get unique addresses
-     based on their position in the call tree.
-
-     Example:
-       (with-address :my-spin
-         (choose dist))  ; Gets address relative to :my-spin"
-     [address & body]
-     `(binding [*address-stack* (push-address *address-stack* ~address)]
-        ~@body))
-   :cljs
-   (defn with-address [address f]
-     (binding [*address-stack* (push-address *address-stack* address)]
-       (f))))
-
-#?(:clj
-		 (defmacro with-execution-context [ctx & body]
-			 `(binding [*execution-context* ~ctx]
-					~@body))
-		 :cljs
-		 (defn with-execution-context [ctx f]
-			 (binding [*execution-context* ctx]
-				 (f))))
+     (bindings/register-var! #'*yield-handler*)))
 
 ;; ExecutionContext binding macros
 #?(:clj
@@ -174,6 +57,7 @@
 		 (defn with-context [ctx f]
 			 (binding [*execution-context* ctx]
 				 (f))))
+
 
 
 ;; =============================================================================
@@ -192,8 +76,8 @@
 	Returns: Runtime instance (AtomsRuntime, StmRuntime) or ExecutionContext."
   []
   (or *execution-context*
-      (throw (ex-info "No execution context bound. Use with-context or with-execution-context."
-                      {:hint "Bind *execution-context* using with-context/with-execution-context"}))))
+      (throw (ex-info "No execution context bound. Use with-context."
+                      {:hint "Bind *execution-context* using with-context"}))))
 
 (defn execution-context-bound?
 	"Check if a runtime is currently bound.
@@ -301,18 +185,6 @@
               (= :org.replikativ.spindel.spin.core/spin-cancelled
                  (:type (ex-data error)))))))))
 
-(defn spin-result
-  "Get the cached result of a spin if completed, or nil.
-	Returns map with :ok or :error key, or nil if not completed."
-  [spin-id]
-  (when-let [cached (spin-current-result spin-id)]
-    (when (:completed? cached)
-      (:result cached))))
-
-(defn spin-schedule! [spin-id]
-  (let [ctx (current-execution-context)]
-    (rtp/schedule-spin! ctx spin-id)))
-
 ;; ----------------------------------------------------------------------------
 ;; Continuation facades (PContinuation)
 ;; ----------------------------------------------------------------------------
@@ -344,7 +216,7 @@
 (defn enqueue-event!
   "Enqueue an event into the runtime engine.
 
-  Uses current-execution-context from dynamic binding (*execution-context* or *execution-context*).
+  Uses current-execution-context from dynamic binding (*execution-context*).
 
   Events are processed by the engine's event handler, which dispatches based on :type.
 
@@ -457,49 +329,15 @@
   ([ctx delay-ms spin-fn]
    (rtp/schedule-delayed-execution! ctx delay-ms spin-fn)))
 
-;; ----------------------------------------------------------------------------
-;; Runtime creation (defmulti for extensibility)
-;; ----------------------------------------------------------------------------
-
-(defmulti create-runtime
-	"Create a runtime instance based on :impl key in opts.
-
-	Each implementation registers its constructor by implementing this multimethod.
-	Implementations self-register by adding defmethod in their own namespace.
-
-	Example:
-	  (create-runtime {:impl :atoms :scheduler (immediate-executor)})
-	  (create-runtime {:impl :stm :workers 4})
-
-	Available implementations can be discovered via:
-	  (keys (methods create-runtime))"
-	(fn [opts] (:impl opts)))
-
-(defmethod create-runtime :default [opts]
-	(throw (ex-info "Unknown runtime implementation"
-									{:impl (:impl opts)
-									 :available (vec (keys (methods create-runtime)))})))
-
 ;; =============================================================================
 ;; Event Handler Helpers
 ;; =============================================================================
 
-(defn make-event-handler
+(defn make-handler
   "Create an event handler function that auto-binds the execution context.
 
-  This eliminates the need for explicit `(binding [rtc/*execution-context* ctx] ...)`
-  in every event handler.
-
   Usage:
-    ;; Without wrapper (repetitive):
-    (.addEventListener el \"click\"
-      (fn [e]
-        (binding [rtc/*execution-context* runtime]
-          (handle-click e))))
-
-    ;; With wrapper (concise):
-    (.addEventListener el \"click\"
-      (make-event-handler runtime handle-click))
+    (.addEventListener el \"click\" (make-handler ctx on-click))
 
   Args:
     ctx - ExecutionContext to bind
@@ -511,12 +349,3 @@
     (binding [*execution-context* ctx]
       (handler-fn event))))
 
-(defn make-handler
-  "Create an event handler with pre-bound execution context.
-
-  Shorter alias for make-event-handler.
-
-  Usage:
-    (.addEventListener el \"click\" (make-handler ctx on-click))"
-  [ctx handler-fn]
-  (make-event-handler ctx handler-fn))

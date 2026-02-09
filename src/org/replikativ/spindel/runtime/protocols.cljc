@@ -54,9 +54,7 @@
   (clean? [ctx spin-id]
     "Return true if cached result is clean, false if dirty or uncached.")
   (dirty? [ctx spin-id]
-    "Return true if cached result is dirty, false if clean or uncached.")
-  (schedule-spin! [ctx spin-id]
-    "Schedule a spin for execution on the runtime scheduler."))
+    "Return true if cached result is dirty, false if clean or uncached."))
 
 ;; ----------------------------------------------------------------------------
 ;; Continuations

@@ -38,42 +38,6 @@
 ;; Content Hashing
 ;; =============================================================================
 
-(defn compute-deps-hash
-  "Compute content hash from dependency values.
-
-  DEPRECATED: This function hashes entire VALUES which is O(n) for large collections.
-  Use compute-deps-identity for O(1) generation-based identity instead.
-
-  Args:
-    signal-values - Map of {signal-id value}, e.g. {sig-1 42, sig-2 \"foo\"}
-    spin-values   - Map of {spin-id Result}, e.g. {spin-a {:status :ok :value 100}}
-    effect-ctx-hash - Hash of effect handler config (nil for MVP)
-
-  Returns: UUID-5 derived from content via hasch.core
-
-  Example:
-    (compute-deps-hash {sig-1 42} {spin-a {:status :ok :value 100}} nil)
-    ;=> #uuid \"abc-123...\"
-
-  Property: Same values → same hash (deterministic)
-    (= (compute-deps-hash {sig-1 42} {} nil)
-       (compute-deps-hash {sig-1 42} {} nil))
-    ;=> true
-
-  Property: Different values → different hash
-    (not= (compute-deps-hash {sig-1 42} {} nil)
-          (compute-deps-hash {sig-1 99} {} nil))
-    ;=> true"
-  [signal-values spin-values effect-ctx-hash]
-  (h/content-hash
-    {:signals signal-values
-     ;; Only hash relevant parts of spin results (status + value)
-     :spins (into {}
-              (map (fn [[spin-id result]]
-                     [spin-id (select-keys result [:status :value])])
-                   spin-values))
-     :effect-ctx effect-ctx-hash}))
-
 (defn compute-deps-identity
   "Compute identity hash from dependency generations (O(1) per dependency).
 

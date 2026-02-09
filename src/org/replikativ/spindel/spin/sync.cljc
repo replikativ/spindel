@@ -116,7 +116,7 @@
 
    See ENGINE_AND_EXECUTION_MODEL.md for details."
   [deferred value]
-  ;; Get execution-context from dynamic binding (*execution-context* is available via with-execution-context or binding propagation)
+  ;; Get execution-context from dynamic binding (*execution-context* is available via with-context or binding propagation)
   ;; Enqueue delivery event - caller returns before continuations execute
   (rtc/enqueue-event! {:type :deferred-delivery
                        :deferred deferred

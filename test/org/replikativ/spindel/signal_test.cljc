@@ -5,7 +5,6 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.impl.atoms]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]

@@ -5,8 +5,8 @@
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.protocols :as rtp]
-            [org.replikativ.spindel.runtime.impl.atoms]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
+            [org.replikativ.spindel.runtime.impl.graph :as graph]
             [org.replikativ.spindel.state.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.protocols :as tp]
@@ -90,7 +90,7 @@
 
           ;; Get ordered observers for the signal
           (let [rt-state (rtc/get-state [])
-                observers (simple/ordered-observers rt-state (:id counter))]
+                observers (graph/ordered-observers rt-state (:id counter))]
             ;; All three spins should be in the list
             (is (seq observers))
             ;; spin1 should come before spin2, spin2 before spin3

@@ -5,10 +5,8 @@
             [org.replikativ.spindel.effects.core]
             [org.replikativ.spindel.effects.await]   ;; Load await effect handler
             [org.replikativ.spindel.effects.track]   ;; Load track effect handler
-            [org.replikativ.spindel.spin.continuation :as cont]
             [is.simm.partial-cps.async :as async]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
-            [is.simm.partial-cps.runtime]
             [org.replikativ.spindel.spin.core :as spin-core])
   ;; Make the spin macro available to CLJS via require-macros
   ;; Note: effect is not included here because it's defined in #?(:clj ...) only and
@@ -111,7 +109,7 @@
       This enables fork/restore: re-execution of forked state finds the same spin IDs.
 
   The macro takes only body forms and resolves the execution-context at EVAL time
-  via current-execution-context-atom (use with-execution-context to bind it):
+  via current-execution-context (use with-context to bind it):
   - (spin body ...)
 
   Note: If you want to be explicit about grouping multiple top-level
@@ -133,7 +131,7 @@
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
        `(let [ctx# ~execution-context-expr]
-          (rtc/with-execution-context ctx#
+          (rtc/with-context ctx#
             ;; Generate deterministic spin ID via hash-chain addressing
             (let [spin-id# (addressing/next-address! ctx# "spin" ~source-loc)]
               (spin-core/make-spin ~cps-fn spin-id#))))))
@@ -181,7 +179,7 @@
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
        `(let [ctx# ~execution-context-expr]
-          (rtc/with-execution-context ctx#
+          (rtc/with-context ctx#
             ;; Generate deterministic effect ID via hash-chain addressing
             (let [spin-id# (addressing/next-address! ctx# "effect" ~source-loc)]
               (spin-core/make-spin ~cps-fn spin-id#))))))))

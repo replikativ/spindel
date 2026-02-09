@@ -13,8 +13,7 @@
   - :single - Slot contains one vnode
   - :keyed  - Slot contains KeyedFragment (from ifor-each)"
   (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.dom.core :as core]
-            [org.replikativ.spindel.log :as log]))
+            [org.replikativ.spindel.dom.core :as core]))
 
 ;; Forward declaration for KeyedFragment check
 (declare keyed-fragment?)

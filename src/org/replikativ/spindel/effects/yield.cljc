@@ -2,8 +2,7 @@
   "yield effect - suspend and emit value in async sequence.
 
   Only used within gen-aseq context. Not registered globally."
-  (:require [is.simm.partial-cps.async :as async]
-            [org.replikativ.spindel.runtime.core :as rtc]))
+  (:require [org.replikativ.spindel.runtime.core :as rtc]))
 
 ;; =============================================================================
 ;; Public API Shim

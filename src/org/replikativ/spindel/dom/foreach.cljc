@@ -97,7 +97,6 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.log :as log])

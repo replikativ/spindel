@@ -34,8 +34,7 @@
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
-            [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.log :as log])
+            [org.replikativ.spindel.runtime.core :as rtc])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements])))
 
 ;; =============================================================================

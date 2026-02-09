@@ -78,13 +78,13 @@
                events)))
          @result))))
 
-(defn create-batch-queue
+(defn ^:no-doc create-batch-queue
   "Create a platform-appropriate batch queue."
   []
   #?(:clj (->BlockingBatchQueue (LinkedBlockingQueue.))
      :cljs (->AtomBatchQueue (atom []))))
 
-(defn create-batch
+(defn ^:no-doc create-batch
   "Create a Batch data structure for a signal-change processing cycle.
 
   The batch is stored in context state at :engine/current-batch and coordinates
@@ -114,7 +114,7 @@
 ;; Forward declarations for mutual recursion
 (declare trigger-drain!)
 
-(defn enqueue-completion-event!
+(defn ^:no-doc enqueue-completion-event!
   "Enqueue a spin completion event, respecting batch mode.
 
   If a batch is active in context state (we're in a signal-change batch), routes
@@ -215,43 +215,9 @@
 ;; Engine state wiring
 ;; =============================================================================
 
-(defn init-runtime!
-  "Attach engine state to an existing runtime atom. Idempotent.
-
-  Stores values directly (not nested atoms/refs) and accessed via PState protocol.
-  Works with both atom-based and STM-based runtimes."
-  [rt-atom]
-  (swap! rt-atom
-         (fn [rt]
-           (if (:engine/pending rt)
-             rt
-             (assoc rt
-                    ;; Event queue
-                    :engine/pending []                    ; FIFO of events
-
-                    ;; Event queue draining state
-                    :engine/draining? false              ; CAS lock for draining
-
-                    ;; Delayed spin scheduling (forkable)
-                    :engine/delayed-spins (sorted-map)   ; timestamp -> [{:spin-fn fn :id uuid}]
-                    :engine/virtual-time 0               ; virtual time in ms
-                    :engine/time-mode :real              ; :real or :virtual
-                    :engine/timer-handles {}             ; timer-id -> executor-handle
-
-                    ;; Await dependency graph (ephemeral, cleared at generation boundaries)
-                    ;; Maps child-spin-id to set of parent-spin-ids that await it
-                    ;; When child completes dirty, propagate dirty to all parents
-                    :await-dependents {}))))             ; {child-spin-id #{parent-id ...}}
-  rt-atom)
-
 ;; =============================================================================
 ;; Event Queue Operations
 ;; =============================================================================
-
-(defn schedule-spin!
-  "Legacy no-op. Spins are now scheduled via :spin-execution events, not a ready queue."
-  [_context _spin-id]
-  true)
 
 (defn enqueue-event!
   "Atomically enqueue an event to the pending queue.
@@ -609,7 +575,7 @@
 ;; Forward declaration for mutual recursion
 (declare trigger-drain!)
 
-(defn drain-events!
+(defn ^:no-doc drain-events!
   "Drain all events from the pending queue.
 
   Claims the draining lock (:engine/draining? flag) and processes
@@ -726,7 +692,7 @@
                false)
              true))))))
 
-(defn trigger-drain!
+(defn ^:no-doc trigger-drain!
   "Trigger async draining of the event queue.
 
   Schedules drain-events! to run on the executor AND wakes the background
@@ -762,212 +728,6 @@
       (log/trace! {:event :engine/trigger-drain-no-executor})
       false)))
 
-;; =============================================================================
-;; Delayed spin management (forkable event loop)
-;; =============================================================================
-
-(defn current-time
-  "Get current time (virtual or real) in milliseconds."
-  [context]
-  (let [time-mode (rtp/get-state context [:engine/time-mode])]
-    (if (= time-mode :virtual)
-      (rtp/get-state context [:engine/virtual-time])
-      #?(:clj (System/currentTimeMillis)
-         :cljs (.now js/Date)))))
-
-(defn schedule-delayed-spin!
-  "Schedule a spin to run after delay-ms. Returns spin-id for cancellation.
-
-  Spin is stored in forkable event queue. In :real time mode, also schedules
-  executor timer to trigger processing at the appropriate time."
-  [context delay-ms spin-fn]
-  (let [spin-id (keyword (gensym "delayed-spin-"))
-        fire-time (+ (current-time context) delay-ms)
-        spin-entry {:spin-fn spin-fn :id spin-id}]
-
-    ;; Add to event queue (forkable state) - works for both atoms and STM
-    (rtp/swap-state! context [:engine/delayed-spins]
-                     (fn [queue]
-                       (update queue fire-time (fnil conj []) spin-entry)))
-
-    (log/trace! {:event :engine/schedule-delayed
-                 :data {:spin-id spin-id :delay-ms delay-ms :fire-time fire-time}})
-
-    spin-id))
-
-(defn process-delayed-spins!
-  "Process all delayed spins whose time has come. Returns number of spins executed.
-
-  TRANSACTIONAL: Atomically extracts all ready spins from queue, then executes them
-  outside the transaction to avoid holding the lock during execution."
-  [context executor]
-  (let [now (current-time context)
-        ;; Atomically extract all ready spins and clean up queue + handles
-        ;; swap-state! returns the value at path, we need to return spins from fn
-        ready-spins (atom nil)
-        _ (rtp/swap-state! context []
-            (fn [state]
-              (let [queue (get state :engine/delayed-spins (sorted-map))
-                    ;; Find all entries with fire-time <= now
-                    ready (take-while (fn [[fire-time _]] (<= fire-time now)) queue)
-                    spins (vec (mapcat val ready))
-                    ready-ids (set (map :id spins))
-                    ;; Remove ready entries from queue
-                    remaining (into (sorted-map)
-                                    (drop (count ready) queue))
-                    ;; Clean up timer handles for ready spins
-                    new-handles (apply dissoc
-                                       (get state :engine/timer-handles {})
-                                       ready-ids)]
-                ;; Store spins for execution outside swap
-                (reset! ready-spins spins)
-                ;; Return new state
-                (-> state
-                    (assoc :engine/delayed-spins remaining)
-                    (assoc :engine/timer-handles new-handles)))))]
-
-    ;; Execute spins outside the transaction
-    (doseq [{:keys [spin-fn id fire-time]} @ready-spins]
-      (log/trace! {:event :engine/execute-delayed
-                   :data {:spin-id id :fire-time fire-time :now now}})
-      (when executor
-        (scheduler/execute! executor
-          #(binding [rtc/*execution-context* context]
-             (spin-fn)))))
-
-    (count @ready-spins)))
-
-(defn cancel-delayed-spin!
-  "Cancel a scheduled delayed spin by id. Returns true if cancelled, false if not found."
-  [context spin-id]
-  (let [cancelled? (atom false)]
-
-    ;; Remove from event queue
-    (rtp/swap-state! context [:engine/delayed-spins]
-                     (fn [queue]
-                       (into (sorted-map)
-                             (for [[fire-time spins] queue
-                                   :let [filtered (vec (remove #(= (:id %) spin-id) spins))]]
-                               (do
-                                 (when (not= (count filtered) (count spins))
-                                   (reset! cancelled? true))
-                                 [fire-time filtered])))))
-
-    ;; Clean up timer handle
-    (rtp/swap-state-args! context [:engine/timer-handles] dissoc [spin-id])
-
-    (log/trace! {:event :engine/cancel-delayed
-                 :data {:spin-id spin-id :cancelled? @cancelled?}})
-
-    @cancelled?))
-
-(defn advance-virtual-time!
-  "Advance virtual time to target-time-ms, processing all spins along the way.
-  Only works in :virtual time mode. Returns number of spins executed."
-  [context target-time-ms]
-  (let [time-mode (rtp/get-state context [:engine/time-mode])]
-    (when (not= time-mode :virtual)
-      (throw (ex-info "advance-virtual-time! only works in :virtual time mode"
-                      {:current-mode time-mode})))
-
-    (rtp/swap-state! context [:engine/virtual-time] (constantly target-time-ms))
-
-    ;; Process all spins up to target time
-    (process-delayed-spins! context nil)))
-
-(defn set-time-mode!
-  "Set time mode to :real or :virtual. Returns previous mode."
-  [context mode]
-  (when-not (#{:real :virtual} mode)
-    (throw (ex-info "Time mode must be :real or :virtual" {:mode mode})))
-
-  (let [prev-mode (rtp/get-state context [:engine/time-mode])]
-    (rtp/swap-state! context [:engine/time-mode] (constantly mode))
-    (log/trace! {:event :engine/set-time-mode
-                 :data {:prev-mode prev-mode :new-mode mode}})
-    prev-mode))
-
-;; =============================================================================
-;; Graph Management (shared across all context implementations)
-;; =============================================================================
-
-(defn collect-transitive-observers
-  "Collect all spins transitively dependent on initial-spin-ids.
-
-  Given a set of initial spin IDs, follows the spin-observers graph to find
-  all spins that directly or indirectly observe these spins.
-
-  Args:
-    context - context state map (not the record, the dereferenced state)
-    initial-spin-ids - Collection of spin IDs to start from
-
-  Returns: Set of all transitive observer spin IDs"
-  [context initial-spin-ids]
-  (loop [to-visit (vec initial-spin-ids) visited #{}]
-    (if-let [tid (first to-visit)]
-      (if (visited tid)
-        (recur (rest to-visit) visited)
-        ;; NEW: Read observers from :nodes using protocol (Phase 1B cleanup)
-        (let [node (get-in context [:nodes tid])
-              observers (if node (np/get-observers node) #{})]
-          (recur (into (rest to-visit) observers) (conj visited tid))))
-      visited)))
-
-(defn topological-sort
-  "Sort spin IDs in topological order based on spin dependencies.
-
-  Ensures spins are executed in dependency order (dependencies before dependents).
-  Uses Kahn's algorithm for topological sorting.
-
-  Args:
-    context - context state map (not the record, the dereferenced state)
-    spin-ids - Collection of spin IDs to sort
-
-  Returns: Vector of spin IDs in topological order"
-  [context spin-ids]
-  ;; NEW: Read from :nodes using protocol (Phase 1B cleanup)
-  (let [in-degree (reduce (fn [acc tid]
-                            (let [node (get-in context [:nodes tid])
-                                  deps (if node (np/get-deps node) {:signals #{} :spins #{}})
-                                  spin-deps (get deps :spins #{})]
-                              (assoc acc tid (count (filter spin-ids spin-deps)))))
-                          {}
-                          spin-ids)
-        initial-queue (vec (filter #(zero? (get in-degree % 0)) spin-ids))]
-    (loop [queue initial-queue result [] in-deg in-degree]
-      (if-let [tid (first queue)]
-        (let [new-result (conj result tid)
-              ;; NEW: Read observers from :nodes using protocol (Phase 1B cleanup)
-              node (get-in context [:nodes tid])
-              dependent-spins (if node (np/get-observers node) #{})
-              relevant (filter spin-ids dependent-spins)
-              new-in-deg (reduce (fn [deg dep]
-                                   (update deg dep dec)) in-deg relevant)
-              newly-ready (filter #(zero? (get new-in-deg % 1)) relevant)
-              new-queue (into (vec (rest queue)) newly-ready)]
-          (recur new-queue new-result new-in-deg))
-        result))))
-
-(defn ordered-observers
-  "Get observers of a signal in topological order.
-
-  Combines transitive observer collection with topological sorting to ensure
-  glitch-free updates.
-
-  Args:
-    context - context state map (not the record, the dereferenced state)
-    signal-id - Signal ID to get observers for
-
-  Returns: Vector of spin IDs in topological order"
-  [context signal-id]
-  ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
-  (let [node (get-in context [:nodes signal-id])
-        observers (if node
-                    (np/get-observers node)
-                    #{})]
-    (if (seq observers)
-      (vec (topological-sort context (collect-transitive-observers context observers)))
-      [])))
 
 ;; =============================================================================
 ;; Dependency Tracking (shared across all context implementations)
@@ -1307,67 +1067,13 @@
 ;; Node Access Helpers (Phase 1B - unified :nodes structure)
 ;; =============================================================================
 
-(defn get-node
+(defn ^:no-doc get-node
   "Get a node by ID from the unified :nodes structure.
 
   Returns: Node map or nil if not found"
   [context node-id]
   (rtp/get-state context [:nodes node-id]))
 
-(defn swap-node!
-  "Atomically update a node in the unified :nodes structure.
-
-  Args:
-    context - context record
-    node-id - Node identifier
-    f - Function to apply to node (takes current node, returns new node)
-
-  Returns: Updated node"
-  [context node-id f]
-  (rtp/swap-state! context [:nodes node-id] f))
-
-(defn ensure-node!
-  "Ensure a node exists with the given type and optional initial data.
-
-  If node doesn't exist, creates it with :type and merges init-data.
-  If node exists, does nothing.
-
-  Args:
-    context - context record
-    node-id - Node identifier
-    node-type - :signal or :spin
-    init-data - Optional map to merge into new node
-
-  Returns: Node (existing or newly created)"
-  [context node-id node-type init-data]
-  (rtp/swap-state! context [:nodes node-id]
-    (fn [existing-node]
-      (or existing-node
-          (merge {:type node-type
-                  :observers #{}}
-                 init-data)))))
-
-(defn get-node-type
-  "Get the type of a node (:signal or :spin).
-
-  Returns: :signal, :spin, or nil if node doesn't exist"
-  [context node-id]
-  (when-let [node (get-node context node-id)]
-    (np/node-type node)))
-
-(defn signal-node?
-  "Check if a node is a signal.
-
-  Returns: true if node exists and has :type :signal"
-  [context node-id]
-  (= :signal (get-node-type context node-id)))
-
-(defn spin-node?
-  "Check if a node is a spin.
-
-  Returns: true if node exists and has :type :spin"
-  [context node-id]
-  (= :spin (get-node-type context node-id)))
 
 ;; =============================================================================
 ;; Spin Lifecycle (shared across all context implementations)
@@ -1527,7 +1233,7 @@
                      :data stats}))
       stats)))
 
-(defn record-await-dependency!
+(defn ^:no-doc record-await-dependency!
   "Record that parent-spin awaits child-spin for dirty propagation.
 
   When a spin registers an await continuation for another spin, we record
@@ -1548,7 +1254,7 @@
   (log/trace! {:event :await/record-dependency
                :data {:parent parent-spin-id :child child-spin-id}}))
 
-(defn propagate-await-dirty!
+(defn ^:no-doc propagate-await-dirty!
   "Propagate dirty flag through await dependency graph.
 
   When a spin completes during batch processing (signal change),
@@ -1605,7 +1311,7 @@
             (doseq [parent-id parents-to-dirty]
               (mark-dirty! context parent-id))))))))
 
-(defn invalidate-created-spins!
+(defn ^:no-doc invalidate-created-spins!
   "Invalidate all spins that were created by this spin during previous execution.
 
   When a spin re-executes, any spins it previously created have stale closures
@@ -1748,7 +1454,7 @@
     (:running? node)
     false))
 
-(defn mark-running!
+(defn ^:no-doc mark-running!
   "Mark a spin as currently executing.
 
   Sets the running? flag to true. Called at the start of direct spin execution
@@ -1767,7 +1473,7 @@
         (nt/->spin-node nil :clean false true #{} {} nil {} nil #{}))))
   true)
 
-(defn try-claim-execution!
+(defn ^:no-doc try-claim-execution!
   "Atomically try to claim execution of a spin.
 
   Uses atomic swap to check cached/running? and set running? in one operation.
@@ -1816,7 +1522,7 @@
               (nt/->spin-node nil :clean false true #{} {} nil {} nil #{})))))
     @claimed?))
 
-(defn mark-not-running!
+(defn ^:no-doc mark-not-running!
   "Clear the running? flag for a spin.
 
   Called when a spin yields (returns ::incomplete) to indicate it's no longer
@@ -1834,7 +1540,7 @@
         (assoc node :running? false))))
   true)
 
-(defn add-pending-callback!
+(defn ^:no-doc add-pending-callback!
   "Add a callback to be invoked when a currently-running spin completes.
 
   When multiple :spin-execution events are enqueued for the same spin,
@@ -1853,7 +1559,7 @@
       (conj (or callbacks []) callback)))
   true)
 
-(defn take-pending-callbacks!
+(defn ^:no-doc take-pending-callbacks!
   "Atomically take and clear all pending callbacks for a spin.
 
   Called when a spin completes to get all callbacks that need to be notified.

@@ -27,25 +27,25 @@
   (testing "Global cache starts empty"
     (is (= 0 (:total-entries (cache/stats))))))
 
-(deftest test-compute-deps-hash-deterministic
-  (testing "Same values produce same hash"
-    (let [sig-vals {:sig-1 42 :sig-2 "foo"}
-          spin-vals {:spin-a {:status :ok :value 100}}
-          h1 (cache/compute-deps-hash sig-vals spin-vals nil)
-          h2 (cache/compute-deps-hash sig-vals spin-vals nil)]
+(deftest test-compute-deps-identity-deterministic
+  (testing "Same generations produce same hash"
+    (let [sig-gens {:sig-1 5 :sig-2 12}
+          spin-hashes {:spin-a #uuid "00000000-0000-0000-0000-000000000001"}
+          h1 (cache/compute-deps-identity sig-gens spin-hashes nil)
+          h2 (cache/compute-deps-identity sig-gens spin-hashes nil)]
       (is (= h1 h2))
       (is (uuid? h1)))))
 
-(deftest test-compute-deps-hash-different
-  (testing "Different values produce different hashes"
-    (let [h1 (cache/compute-deps-hash {:sig-1 42} {} nil)
-          h2 (cache/compute-deps-hash {:sig-1 99} {} nil)]
+(deftest test-compute-deps-identity-different
+  (testing "Different generations produce different hashes"
+    (let [h1 (cache/compute-deps-identity {:sig-1 5} {} nil)
+          h2 (cache/compute-deps-identity {:sig-1 6} {} nil)]
       (is (not= h1 h2)))))
 
 (deftest test-cache-store-and-lookup
   (testing "Can store and retrieve from cache"
     (let [spin-id :test-spin
-          deps-hash (cache/compute-deps-hash {:sig-1 42} {} nil)
+          deps-hash (cache/compute-deps-identity {:sig-1 5} {} nil)
           result {:status :ok :value 100 :completed? true}]
 
       ;; Store
@@ -211,8 +211,8 @@
 (deftest test-cache-for-spin
   (testing "Can retrieve all cache entries for a specific spin"
     (let [spin-id :test-spin
-          deps-hash-1 (cache/compute-deps-hash {:sig-1 42} {} nil)
-          deps-hash-2 (cache/compute-deps-hash {:sig-1 99} {} nil)
+          deps-hash-1 (cache/compute-deps-identity {:sig-1 42} {} nil)
+          deps-hash-2 (cache/compute-deps-identity {:sig-1 99} {} nil)
           result-1 {:status :ok :value 100}
           result-2 {:status :ok :value 200}]
 
@@ -227,7 +227,7 @@
 (deftest test-cache-evict
   (testing "Can evict specific cache entry"
     (let [spin-id :test-spin
-          deps-hash (cache/compute-deps-hash {:sig-1 42} {} nil)
+          deps-hash (cache/compute-deps-identity {:sig-1 42} {} nil)
           result {:status :ok :value 100}]
 
       (cache/store! spin-id deps-hash nil result)

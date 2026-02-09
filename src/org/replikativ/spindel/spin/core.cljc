@@ -9,10 +9,7 @@
             [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.runtime])
-  #?(:clj (:import [is.simm.partial_cps.runtime Thunk]
-                    [java.util.concurrent ForkJoinPool]
-                    [java.util.concurrent.locks LockSupport]
-                    [java.lang.ref WeakReference])))
+  #?(:clj (:import [java.lang.ref WeakReference])))
 
 ;; =============================================================================
 ;; Automatic Spin Cleanup via Finalizers
@@ -232,7 +229,7 @@
             (simple/invalidate-created-spins! runtime spin-id)
 
             ;; Execute spin-fn with dynamic bindings
-            ;; Phase 2: Bind both *execution-context* and *execution-context* for compatibility
+            ;; Bind *execution-context* for this scope
             (binding [rtc/*execution-context* runtime
                       rtc/*spin-id* spin-id]
               (let [result (spin-fn

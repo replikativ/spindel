@@ -9,7 +9,6 @@
    For advanced usage, require individual namespaces directly."
   (:refer-clojure :exclude [for])
   (:require
-   [org.replikativ.spindel.runtime.core :as rtc]
    [org.replikativ.spindel.runtime.context :as ctx]
    [org.replikativ.spindel.effects.await :as fx-await]
    [org.replikativ.spindel.effects.track :as fx-track]

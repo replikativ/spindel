@@ -7,19 +7,18 @@
   - SignalRef: error (use track instead)"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.runtime.core :as rtc]
-            [org.replikativ.spindel.runtime.bindings :as bindings]
             [org.replikativ.spindel.runtime.protocols :as rtp]
+            [org.replikativ.spindel.runtime.context :as ctx]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.spin.protocols :as tp]
             [org.replikativ.spindel.spin.continuation :as cont]
             [org.replikativ.spindel.spin.result :as result]
-            [org.replikativ.spindel.spin.core :as spin-core]       ;; For Spin import
-            [org.replikativ.spindel.state.signal :as sig]    ;; For SignalRef import
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.core :as eff]
+            [org.replikativ.spindel.effects.track :as track]
             [org.replikativ.spindel.log :as log]
             [is.simm.partial-cps.async :as pcps-async])
-  #?(:clj (:import [org.replikativ.spindel.spin.core Spin]
-                   [org.replikativ.spindel.state.signal SignalRef])))
+  #?(:clj (:import [org.replikativ.spindel.spin.core Spin])))
 
 ;; =============================================================================
 ;; Public API Shim
@@ -36,12 +35,6 @@
 ;; Direct Handler Implementations
 ;; =============================================================================
 
-(defn- rebuild-mode?
-  "Check if current execution context is in rebuild mode."
-  [context]
-  (when (and context (map? context))
-    (= :rebuild (get-in context [:bindings :execution-mode]))))
-
 (defn- await-spin
   "Direct await handler for Spin.
 
@@ -54,7 +47,7 @@
   (let [awaited-spin-id (tp/spin-id spin-ref)
         noop (fn [& _] nil)
         ctx (rtc/current-execution-context)
-        rebuild? (rebuild-mode? ctx)]
+        rebuild? (ctx/rebuild-mode? ctx)]
 
     ;; Track spin dependency
     (rtc/deps-track-spin! spin-id awaited-spin-id)
@@ -194,11 +187,6 @@
   [x]
   (instance? #?(:clj Spin :cljs spin-core/Spin) x))
 
-(defn signal-ref?
-  "Check if value is a SignalRef. Works across CLJ/CLJS."
-  [x]
-  (instance? #?(:clj SignalRef :cljs sig/SignalRef) x))
-
 (defn await-handler
   "Unified direct await handler - dispatches based on type.
 
@@ -232,7 +220,7 @@
         spin-core/incomplete)
 
       ;; SignalRef is an error
-      (signal-ref? awaitable)
+      (track/signal-ref? awaitable)
       (reject (eff/type-error 'await "Spin or Deferred (use track for signals)" awaitable))
 
       ;; Plain function - treat as async thunk (e.g., from partial-cps async)

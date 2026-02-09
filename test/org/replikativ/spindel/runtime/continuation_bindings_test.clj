@@ -3,7 +3,6 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.impl.atoms]
             [org.replikativ.spindel.runtime.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as spin]
             [org.replikativ.spindel.spin.continuation :as cont]))

@@ -10,7 +10,6 @@
             [org.replikativ.spindel.spin.result :as result]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.incremental.interval :as iv]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 

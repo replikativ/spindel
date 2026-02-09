@@ -7,7 +7,7 @@
   (:require [org.replikativ.spindel.runtime.bindings :as bindings])
   #?(:clj (:import [java.util.concurrent Executors ExecutorService ThreadPoolExecutor
                                          ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
-                                         TimeUnit LinkedBlockingQueue Callable ForkJoinPool ForkJoinPool$ForkJoinWorkerThreadFactory])))
+                                         TimeUnit LinkedBlockingQueue Callable ForkJoinPool])))
 
 (defprotocol PExecutor
   "Protocol for executing spin functions in different contexts.

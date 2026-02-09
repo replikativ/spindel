@@ -15,6 +15,8 @@
   - Shared parent state via OverlayBackend (memory efficient)
   - Fork-local effect handlers (can override behavior per branch)"
   (:require [org.replikativ.spindel.runtime.impl.simple :as simple]
+            [org.replikativ.spindel.runtime.impl.delayed :as delayed]
+            [org.replikativ.spindel.runtime.impl.graph :as graph]
             [org.replikativ.spindel.runtime.protocols :as rtp]
             [org.replikativ.spindel.runtime.scheduler :as sched]
             [org.replikativ.spindel.runtime.state-backend :as backend]
@@ -80,7 +82,7 @@
   (clear-deps! [this spin-id]
     (simple/clear-deps! this spin-id))
   (ordered-observers [this signal-id]
-    (simple/ordered-observers (backend/backend-deref backend) signal-id))
+    (graph/ordered-observers (backend/backend-deref backend) signal-id))
 
   rtp/PDepsTracking
   (track-signal-dep! [this spin-id signal-id]
@@ -101,8 +103,6 @@
     (simple/clean? this spin-id))
   (dirty? [this spin-id]
     (simple/dirty? this spin-id))
-  (schedule-spin! [this spin-id]
-    (simple/schedule-spin! this spin-id))
 
   rtp/PContinuation
   (add-continuation! [this spin-id cont]
@@ -130,7 +130,7 @@
     ;; Two-level scheduling (like AtomsRuntime):
     ;; 1. Add to runtime's forkable event queue
     ;; 2. If in :real time mode, schedule executor timer to trigger processing
-    (let [spin-id (simple/schedule-delayed-spin! this delay-ms spin-fn)
+    (let [spin-id (delayed/schedule-delayed-spin! this delay-ms spin-fn)
           time-mode (rtp/get-state this [:engine/time-mode])]
 
       ;; In real-time mode, schedule executor timer to process the event queue
@@ -139,7 +139,7 @@
           executor
           delay-ms
           ;; Timer just triggers event processing - actual spin-fn is in queue
-          #(simple/process-delayed-spins! this executor)))
+          #(delayed/process-delayed-spins! this executor)))
 
       spin-id))
 
@@ -853,7 +853,7 @@
 
     The macro:
     1. Prepares the context for rebuild (restore, reset chain-head, set mode)
-    2. Binds *execution-context* and *execution-context* to the rebuild context
+    2. Binds *execution-context* to the rebuild context
     3. Executes body (typically @(model-fn))
     4. Finalizes the context (clears mode, drains events)
 
@@ -1005,7 +1005,7 @@
 
   Returns: previous mode"
   [ctx mode]
-  (simple/set-time-mode! ctx mode))
+  (delayed/set-time-mode! ctx mode))
 
 (defn current-time
   "Get current time (virtual or real) in milliseconds.
@@ -1013,7 +1013,7 @@
   In :virtual mode, returns the virtual time set via advance-time!
   In :real mode, returns System/currentTimeMillis or Date.now()"
   [ctx]
-  (simple/current-time ctx))
+  (delayed/current-time ctx))
 
 (defn advance-time!
   "Advance virtual time to target-ms and process all scheduled events.
@@ -1037,5 +1037,5 @@
     ;; Or advance to absolute time
     (advance-time! ctx 1000)  ; Jump to t=1000ms"
   [ctx target-ms]
-  (simple/advance-virtual-time! ctx target-ms))
+  (delayed/advance-virtual-time! ctx target-ms))
 

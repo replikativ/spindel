@@ -25,19 +25,16 @@
     (binding [rtc/*execution-context* :rt-val
               rtc/*spin-id* :spin-val
               rtc/*worker-id* :worker-val
-              rtc/*yield-handler* (fn [v _] v)
-              rtc/*address-stack* [:addr1]]
+              rtc/*yield-handler* (fn [v _] v)]
       (let [captured (bindings/capture-bindings)]
-        (is (= 4 (count captured))
-            "Should capture 4 registered vars (*execution-context* not captured)")
+        (is (= 3 (count captured))
+            "Should capture 3 registered vars (*execution-context* not captured)")
         (is (nil? (get captured #'rtc/*execution-context*))
             "*execution-context* should NOT be captured (circular reference risk)")
         (is (= :spin-val (get captured #'rtc/*spin-id*)))
         (is (= :worker-val (get captured #'rtc/*worker-id*)))
         (is (fn? (get captured #'rtc/*yield-handler*))
-            "Should capture yield-handler function")
-        (is (= [:addr1] (get captured #'rtc/*address-stack*))
-            "Should capture address-stack")))))
+            "Should capture yield-handler function")))))
 
 (deftest restore-bindings-test
   (testing "restores bindings for function execution"

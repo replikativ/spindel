@@ -6,7 +6,6 @@
             [org.replikativ.spindel.pubsub.buffer :as buf]
             [org.replikativ.spindel.runtime.core :as rtc]
             [org.replikativ.spindel.runtime.context :as ctx]
-            [org.replikativ.spindel.runtime.impl.atoms]  ; Register :atoms impl
             [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.spin.combinators :as comb]
