@@ -239,16 +239,16 @@ For streaming delta processing:
 
 ```clojure
 ;; Transform delta values
-(d/map (fn [d] (update d :value str/upper-case)))
+(d/map-delta (fn [d] (update d :value str/upper-case)))
 
 ;; Filter deltas
-(d/filter (fn [d] (= :add (:delta d))))
+(d/filter-delta (fn [d] (= :add (:delta d))))
 
 ;; Remove deltas (inverse of filter)
-(d/remove (fn [d] (= :remove (:delta d))))
+(d/remove-delta (fn [d] (= :remove (:delta d))))
 
 ;; Keep (transform + filter)
-(d/keep (fn [d] (when (= :add (:delta d)) (update d :value inc))))
+(d/keep-delta (fn [d] (when (= :add (:delta d)) (update d :value inc))))
 
 ;; Apply deltas to rebuild a collection
 (reduce d/apply-delta [] deltas)
@@ -264,9 +264,9 @@ For streaming delta processing:
 ### Transduce
 
 ```clojure
-(d/transduce
-  (comp (d/filter #(= :add (:delta %)))
-        (d/map #(update % :value str/upper-case)))
+(d/transduce-deltas
+  (comp (d/filter-delta #(= :add (:delta %)))
+        (d/map-delta #(update % :value str/upper-case)))
   []
   deltas)
 ```

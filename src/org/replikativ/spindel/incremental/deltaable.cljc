@@ -11,9 +11,9 @@
    - Nested collections remain plain (no deep wrapping)
    - For fine-grained tracking, use separate signals
 
-   Note: This namespace defines delta transducer functions (map, filter, etc.)
-   that shadow clojure.core functions. These are intended to transform delta
-   streams, not regular collections. Use with namespace qualification: (d/map f)
+   Note: Delta transducer functions use the `-delta` suffix (map-delta,
+   filter-delta, etc.) to avoid shadowing clojure.core functions and
+   namespace clashes in CLJS. Use with namespace qualification: (d/map-delta f)
 
    Usage:
 
@@ -23,7 +23,6 @@
          (update :users conj \"Alice\"))  ; :update delta for :users (NOT for conj)
      (get-deltas dm))  ; => [{:delta :add :path [:b] :value 2}
                        ;;     {:delta :update :path [:users] :value [\"Alice\"] :old-value []}]"
-  (:refer-clojure :exclude [map filter remove keep transduce])
   (:require [org.replikativ.spindel.incremental.deltaable.protocols :as proto]
             [org.replikativ.spindel.incremental.deltaable.vector :as dvec]
             [org.replikativ.spindel.incremental.deltaable.map :as dmap]
@@ -285,7 +284,7 @@
 ;; Delta Transducers - Transform delta streams
 ;; =============================================================================
 
-(defn map
+(defn map-delta
   "Delta transducer that transforms values in deltas.
 
    Applies f to:
@@ -294,10 +293,10 @@
    - :remove delta: passes through unchanged (no value to transform)
 
    Works with standard transducer composition:
-     (transduce (comp (d/map inc) (d/filter even?)) ...)
+     (transduce (comp (d/map-delta inc) (d/filter-delta even?)) ...)
 
    Example:
-     (d/map inc) transforms:
+     (d/map-delta inc) transforms:
      {:delta :add :path [0] :value 1}
      => {:delta :add :path [0] :value 2}"
   [f]
@@ -314,7 +313,7 @@
                         (update :old-value f))
              :remove delta))))))
 
-(defn filter
+(defn filter-delta
   "Delta transducer that filters deltas with enter/exit semantics.
 
    Uses :old-value to determine if items entered or exited the filter:
@@ -326,7 +325,7 @@
    For :add deltas (no old-value): treat as entering if pred passes
    For :remove deltas: treat as exiting if value would have passed
 
-   Example with (d/filter even?):
+   Example with (d/filter-delta even?):
      {:delta :update :value 4 :old-value 3}
      => {:delta :add :value 4}  ; entered the filter
 
@@ -376,24 +375,24 @@
              :else
              result)))))))
 
-(defn remove
-  "Delta transducer that removes deltas - inverse of filter.
+(defn remove-delta
+  "Delta transducer that removes deltas - inverse of filter-delta.
 
-   Equivalent to (d/filter (complement pred))
+   Equivalent to (d/filter-delta (complement pred))
 
    Example:
-     (d/remove odd?) removes odd numbers from the delta stream"
+     (d/remove-delta odd?) removes odd numbers from the delta stream"
   [pred]
-  (filter (complement pred)))
+  (filter-delta (complement pred)))
 
-(defn keep
+(defn keep-delta
   "Delta transducer that transforms and filters in one step.
 
    Applies f to values, keeps only non-nil results.
-   Similar semantics to filter but with transformation.
+   Similar semantics to filter-delta but with transformation.
 
    Example:
-     (d/keep #(when (even? %) (* 2 %)))
+     (d/keep-delta #(when (even? %) (* 2 %)))
      Keeps only even numbers and doubles them"
   [f]
   (fn [rf]
@@ -550,27 +549,27 @@
       ;; Unknown delta type - return unchanged
       coll))))  ; Close 2-arity body
 
-(defn transduce
+(defn transduce-deltas
   "Transduce deltas through xf and apply to initial collection.
 
    Like clojure.core/transduce but specialized for delta streams:
-   - xf: delta transducer (d/map, d/filter, etc.)
+   - xf: delta transducer (d/map-delta, d/filter-delta, etc.)
    - init: initial collection (plain or deltaable)
    - deltas: sequence of delta maps
 
    Example:
      ;; Process only completed todos
-     (d/transduce (d/filter :completed) [] deltas)
+     (d/transduce-deltas (d/filter-delta :completed) [] deltas)
 
      ;; Transform and filter
-     (d/transduce (comp (d/map inc) (d/filter even?))
-                  []
-                  deltas)"
+     (d/transduce-deltas (comp (d/map-delta inc) (d/filter-delta even?))
+                         []
+                         deltas)"
   ([xf init deltas]
    (clojure.core/transduce xf apply-delta init deltas))
   ([xf init]
    (fn [deltas]
-     (transduce xf init deltas))))
+     (transduce-deltas xf init deltas))))
 
 (defn merge-deltas
   "Merge multiple delta sequences into one.

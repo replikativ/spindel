@@ -461,11 +461,11 @@ Delta-tracking collections. See [Incremental](incremental.md).
 | `(apply-delta coll delta)` | Apply single delta to collection |
 | `(compact-deltas deltas)` | Remove redundant operations |
 | `(merge-deltas & seqs)` | Concatenate delta sequences |
-| `(transduce xf init deltas)` | Transduce deltas |
-| `(map f)` | Delta transducer: transform values |
-| `(filter pred)` | Delta transducer: filter with enter/exit |
-| `(remove pred)` | Delta transducer: inverse filter |
-| `(keep f)` | Delta transducer: transform + filter |
+| `(transduce-deltas xf init deltas)` | Transduce deltas |
+| `(map-delta f)` | Delta transducer: transform values |
+| `(filter-delta pred)` | Delta transducer: filter with enter/exit |
+| `(remove-delta pred)` | Delta transducer: inverse filter |
+| `(keep-delta f)` | Delta transducer: transform + filter |
 
 ---
 

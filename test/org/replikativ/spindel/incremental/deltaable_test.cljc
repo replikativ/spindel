@@ -490,119 +490,119 @@
 ;; =============================================================================
 
 (deftest test-delta-map
-  (testing "d/map transforms :add deltas"
+  (testing "d/map-delta transforms :add deltas"
     (let [delta {:delta :add :path [0] :value 1}
-          xf (d/map inc)
+          xf (d/map-delta inc)
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :add (:delta (first result))))
       (is (= 2 (:value (first result))))))
 
-  (testing "d/map transforms :update deltas (both values)"
+  (testing "d/map-delta transforms :update deltas (both values)"
     (let [delta {:delta :update :path [0] :value 2 :old-value 1}
-          xf (d/map inc)
+          xf (d/map-delta inc)
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :update (:delta (first result))))
       (is (= 3 (:value (first result))))
       (is (= 2 (:old-value (first result))))))
 
-  (testing "d/map passes through :remove deltas unchanged"
+  (testing "d/map-delta passes through :remove deltas unchanged"
     (let [delta {:delta :remove :path [0]}
-          xf (d/map inc)
+          xf (d/map-delta inc)
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= delta (first result))))))
 
 (deftest test-delta-filter
-  (testing "d/filter keeps :add deltas that pass predicate"
+  (testing "d/filter-delta keeps :add deltas that pass predicate"
     (let [delta-pass {:delta :add :path [0] :value 2}
           delta-fail {:delta :add :path [1] :value 1}
-          xf (d/filter even?)
+          xf (d/filter-delta even?)
           result (transduce xf conj [] [delta-pass delta-fail])]
       (is (= 1 (count result)))
       (is (= delta-pass (first result)))))
 
-  (testing "d/filter with :update - both pass"
+  (testing "d/filter-delta with :update - both pass"
     (let [delta {:delta :update :path [0] :value 4 :old-value 2}
-          xf (d/filter even?)
+          xf (d/filter-delta even?)
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :update (:delta (first result))))
       (is (= 4 (:value (first result))))
       (is (= 2 (:old-value (first result))))))
 
-  (testing "d/filter with :update - entered filter (old fail, new pass)"
+  (testing "d/filter-delta with :update - entered filter (old fail, new pass)"
     (let [delta {:delta :update :path [0] :value 4 :old-value 3}
-          xf (d/filter even?)
+          xf (d/filter-delta even?)
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :add (:delta (first result))))
       (is (= 4 (:value (first result))))
       (is (nil? (:old-value (first result))))))
 
-  (testing "d/filter with :update - exited filter (old pass, new fail)"
+  (testing "d/filter-delta with :update - exited filter (old pass, new fail)"
     (let [delta {:delta :update :path [0] :value 3 :old-value 4}
-          xf (d/filter even?)
+          xf (d/filter-delta even?)
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :remove (:delta (first result))))
       (is (nil? (:old-value (first result))))))
 
-  (testing "d/filter with :update - neither pass"
+  (testing "d/filter-delta with :update - neither pass"
     (let [delta {:delta :update :path [0] :value 3 :old-value 1}
-          xf (d/filter even?)
+          xf (d/filter-delta even?)
           result (transduce xf conj [] [delta])]
       (is (empty? result)))))
 
 (deftest test-delta-remove
-  (testing "d/remove filters out matching deltas"
+  (testing "d/remove-delta filters out matching deltas"
     (let [delta-odd {:delta :add :path [0] :value 1}
           delta-even {:delta :add :path [1] :value 2}
-          xf (d/remove odd?)
+          xf (d/remove-delta odd?)
           result (transduce xf conj [] [delta-odd delta-even])]
       (is (= 1 (count result)))
       (is (= 2 (:value (first result)))))))
 
 (deftest test-delta-keep
-  (testing "d/keep transforms and filters :add deltas"
+  (testing "d/keep-delta transforms and filters :add deltas"
     (let [delta-even {:delta :add :path [0] :value 2}
           delta-odd {:delta :add :path [1] :value 3}
-          xf (d/keep #(when (even? %) (* 2 %)))
+          xf (d/keep-delta #(when (even? %) (* 2 %)))
           result (transduce xf conj [] [delta-even delta-odd])]
       (is (= 1 (count result)))
       (is (= 4 (:value (first result))))))
 
-  (testing "d/keep with :update - both some (stay in)"
+  (testing "d/keep-delta with :update - both some (stay in)"
     (let [delta {:delta :update :path [0] :value 4 :old-value 2}
-          xf (d/keep #(when (even? %) (* 2 %)))
+          xf (d/keep-delta #(when (even? %) (* 2 %)))
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :update (:delta (first result))))
       (is (= 8 (:value (first result))))
       (is (= 4 (:old-value (first result))))))
 
-  (testing "d/keep with :update - entered (old nil, new some)"
+  (testing "d/keep-delta with :update - entered (old nil, new some)"
     (let [delta {:delta :update :path [0] :value 4 :old-value 3}
-          xf (d/keep #(when (even? %) (* 2 %)))
+          xf (d/keep-delta #(when (even? %) (* 2 %)))
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :add (:delta (first result))))
       (is (= 8 (:value (first result))))))
 
-  (testing "d/keep with :update - exited (old some, new nil)"
+  (testing "d/keep-delta with :update - exited (old some, new nil)"
     (let [delta {:delta :update :path [0] :value 3 :old-value 4}
-          xf (d/keep #(when (even? %) (* 2 %)))
+          xf (d/keep-delta #(when (even? %) (* 2 %)))
           result (transduce xf conj [] [delta])]
       (is (= 1 (count result)))
       (is (= :remove (:delta (first result)))))))
 
 (deftest test-delta-transducer-composition
-  (testing "Compose d/map and d/filter"
+  (testing "Compose d/map-delta and d/filter-delta"
     (let [deltas [{:delta :add :path [0] :value 1}
                   {:delta :add :path [1] :value 2}
                   {:delta :add :path [2] :value 3}]
-          xf (comp (d/map inc) (d/filter even?))
+          xf (comp (d/map-delta inc) (d/filter-delta even?))
           result (transduce xf conj [] deltas)]
       ;; inc: 1->2, 2->3, 3->4
       ;; filter even?: keep 2 and 4
@@ -610,12 +610,12 @@
       (is (= 2 (:value (nth result 0))))
       (is (= 4 (:value (nth result 1))))))
 
-  (testing "Compose d/filter, d/map, d/remove"
+  (testing "Compose d/filter-delta, d/map-delta, d/remove-delta"
     (let [deltas [{:delta :add :path [0] :value 1}
                   {:delta :add :path [1] :value 2}
                   {:delta :add :path [2] :value 3}
                   {:delta :add :path [3] :value 4}]
-          xf (comp (d/filter even?) (d/map #(* % 2)) (d/remove #(> % 5)))
+          xf (comp (d/filter-delta even?) (d/map-delta #(* % 2)) (d/remove-delta #(> % 5)))
           result (transduce xf conj [] deltas)]
       ;; filter even?: 2, 4
       ;; map * 2: 4, 8
@@ -675,7 +675,7 @@
     (let [deltas [{:delta :add :path [0] :value 1}
                   {:delta :add :path [1] :value 2}
                   {:delta :add :path [2] :value 3}]
-          result (d/transduce (d/map inc) [] deltas)]
+          result (d/transduce-deltas (d/map-delta inc) [] deltas)]
       (is (= [2 3 4] result))))
 
   (testing "Transduce with filtering"
@@ -683,15 +683,15 @@
                   {:delta :add :path [1] :value 2}
                   {:delta :add :path [2] :value 3}
                   {:delta :add :path [3] :value 4}]
-          result (d/transduce (d/filter even?) [] deltas)]
+          result (d/transduce-deltas (d/filter-delta even?) [] deltas)]
       (is (= [2 4] result))))
 
   (testing "Transduce with composition"
     (let [deltas [{:delta :add :path [0] :value 1}
                   {:delta :add :path [1] :value 2}
                   {:delta :add :path [2] :value 3}]
-          xf (comp (d/map inc) (d/filter even?))
-          result (d/transduce xf [] deltas)]
+          xf (comp (d/map-delta inc) (d/filter-delta even?))
+          result (d/transduce-deltas xf [] deltas)]
       (is (= [2 4] result)))))
 
 (deftest test-merge-deltas
