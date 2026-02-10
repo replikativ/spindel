@@ -19,10 +19,11 @@
    [org.replikativ.spindel.pubsub.buffer :as pubsub-buf]
    [org.replikativ.spindel.pubsub.mult :as pubsub-mult]
    [org.replikativ.spindel.pubsub.pub :as pubsub-pub]
+   [org.replikativ.spindel.dom.router :as dom-router]
    #?(:clj [org.replikativ.spindel.spin.cps :as spin-cps])
    #?(:clj [org.replikativ.spindel.signal :as sig])
    #?(:clj [org.replikativ.spindel.seq.core :as seq-core]))
-  #?(:cljs (:require-macros [org.replikativ.spindel.core :refer [spin signal batch gen-aseq for]])))
+  #?(:cljs (:require-macros [org.replikativ.spindel.core :refer [spin signal batch gen-aseq for router link]])))
 
 ;; =============================================================================
 ;; Dynamic Bindings
@@ -245,3 +246,33 @@
 (def sliding-buffer
   "Create a sliding buffer. Never blocks - drops oldest items when full."
   pubsub-buf/sliding-buffer)
+
+;; =============================================================================
+;; Router
+;; =============================================================================
+
+#?(:clj
+   (defmacro router
+     "Create a signal-based router from route definitions.
+      See org.replikativ.spindel.dom.router/router for full docs."
+     [& args]
+     `(dom-router/router ~@args)))
+
+#?(:clj
+   (defmacro link
+     "Render an <a> element with click interception for client-side navigation.
+      See org.replikativ.spindel.dom.router/link for full docs."
+     [& args]
+     `(dom-router/link ~@args)))
+
+(def navigate!
+  "Navigate to a new route (pushState)."
+  dom-router/navigate!)
+
+(def replace-route!
+  "Navigate to a new route (replaceState, no new history entry)."
+  dom-router/replace!)
+
+(def route-href
+  "Generate a path string from route name and params. Pure, no side effects."
+  dom-router/href)
