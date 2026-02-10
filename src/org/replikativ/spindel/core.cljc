@@ -20,6 +20,7 @@
    [org.replikativ.spindel.pubsub.mult :as pubsub-mult]
    [org.replikativ.spindel.pubsub.pub :as pubsub-pub]
    [org.replikativ.spindel.dom.router :as dom-router]
+   [org.replikativ.spindel.dom.ssr :as ssr]
    #?(:clj [org.replikativ.spindel.spin.cps :as spin-cps])
    #?(:clj [org.replikativ.spindel.signal :as sig])
    #?(:clj [org.replikativ.spindel.seq.core :as seq-core]))
@@ -276,3 +277,11 @@
 (def route-href
   "Generate a path string from route name and params. Pure, no side effects."
   dom-router/href)
+
+;; =============================================================================
+;; Server-Side Rendering
+;; =============================================================================
+
+(def render-to-string
+  "Render a vdom tree to an HTML string for SSR."
+  ssr/render-to-string)
