@@ -26,6 +26,7 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
+            #?(:clj [org.replikativ.spindel.test-helpers :refer [with-ctx]])
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -65,169 +66,164 @@
 #?(:clj
    (deftest test-todo-app-initial-render
      (testing "Todo app renders initial empty state"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 todos (sig/signal [])
-                 app-spin (spin
-                            (let [{:keys [new]} (track todos)]
-                              ;; Just pass deltaable directly - stays in deltaable domain
-                              (render-todo-list new)))
-                 container nil]
+       (with-ctx [rt]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               todos (sig/signal [])
+               app-spin (spin
+                          (let [{:keys [new]} (track todos)]
+                            ;; Just pass deltaable directly - stays in deltaable domain
+                            (render-todo-list new)))
+               container nil]
 
-             ;; Initial render
-             (render/render-spin! container app-spin discharge)
-             @app-spin
+           ;; Initial render
+           (render/render-spin! container app-spin discharge)
+           @app-spin
 
-             ;; Verify structure created
-             (is (some #(= :create-element (:op %)) @log)
-                 "Should create elements")
-             (is (some #(and (= :create-element (:op %))
-                             (= :div (:tag %))) @log)
-                 "Should create div container")
-             (is (some #(and (= :create-element (:op %))
-                             (= :h1 (:tag %))) @log)
-                 "Should create h1 header")
-             (is (some #(and (= :create-element (:op %))
-                             (= :ul (:tag %))) @log)
-                 "Should create ul list")))))))
+           ;; Verify structure created
+           (is (some #(= :create-element (:op %)) @log)
+               "Should create elements")
+           (is (some #(and (= :create-element (:op %))
+                           (= :div (:tag %))) @log)
+               "Should create div container")
+           (is (some #(and (= :create-element (:op %))
+                           (= :h1 (:tag %))) @log)
+               "Should create h1 header")
+           (is (some #(and (= :create-element (:op %))
+                           (= :ul (:tag %))) @log)
+               "Should create ul list"))))))
 
 #?(:clj
    (deftest test-todo-app-add-item
      (testing "Adding todo item triggers re-render"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 todos (sig/signal [])
-                 render-count (atom 0)
-                 app-spin (spin
-                            (let [{:keys [new]} (track todos)]
-                              (swap! render-count inc)
-                              (render-todo-list new)))
-                 container nil]
+       (with-ctx [rt]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               todos (sig/signal [])
+               render-count (atom 0)
+               app-spin (spin
+                          (let [{:keys [new]} (track todos)]
+                            (swap! render-count inc)
+                            (render-todo-list new)))
+               container nil]
 
-             ;; Initial render
-             (render/render-spin! container app-spin discharge)
-             @app-spin
-             (is (= 1 @render-count))
+           ;; Initial render
+           (render/render-spin! container app-spin discharge)
+           @app-spin
+           (is (= 1 @render-count))
 
-             ;; Clear log
-             (reset! log [])
+           ;; Clear log
+           (reset! log [])
 
-             ;; Add a todo
-             (swap! todos conj {:id "1" :text "Buy milk" :done false})
-             (await-drain rt)
+           ;; Add a todo
+           (swap! todos conj {:id "1" :text "Buy milk" :done false})
+           (await-drain rt)
 
-             ;; Verify re-render happened
-             (is (= 2 @render-count) "Should re-render after adding todo")))))))
+           ;; Verify re-render happened
+           (is (= 2 @render-count) "Should re-render after adding todo"))))))
 
 #?(:clj
    (deftest test-todo-app-multiple-items
      (testing "Multiple todos render correctly"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge]} (disch/make-mock-discharge)
-                 todos (sig/signal [])
-                 last-item-count (atom 0)
-                 app-spin (spin
-                            (let [{:keys [new]} (track todos)]
-                              ;; Deltaables implement Counted - use directly
-                              (reset! last-item-count (count new))
-                              (render-todo-list new)))
-                 container nil]
+       (with-ctx [rt]
+         (let [{:keys [discharge]} (disch/make-mock-discharge)
+               todos (sig/signal [])
+               last-item-count (atom 0)
+               app-spin (spin
+                          (let [{:keys [new]} (track todos)]
+                            ;; Deltaables implement Counted - use directly
+                            (reset! last-item-count (count new))
+                            (render-todo-list new)))
+               container nil]
 
-             ;; Initial render
-             (render/render-spin! container app-spin discharge)
-             @app-spin
-             (is (= 0 @last-item-count))
+           ;; Initial render
+           (render/render-spin! container app-spin discharge)
+           @app-spin
+           (is (= 0 @last-item-count))
 
-             ;; Add first todo
-             (swap! todos conj {:id "1" :text "Buy milk" :done false})
-             (await-drain rt)
-             @app-spin
-             (is (= 1 @last-item-count))
+           ;; Add first todo
+           (swap! todos conj {:id "1" :text "Buy milk" :done false})
+           (await-drain rt)
+           @app-spin
+           (is (= 1 @last-item-count))
 
-             ;; Add second todo
-             (swap! todos conj {:id "2" :text "Walk dog" :done false})
-             (await-drain rt)
-             @app-spin
-             (is (= 2 @last-item-count))
+           ;; Add second todo
+           (swap! todos conj {:id "2" :text "Walk dog" :done false})
+           (await-drain rt)
+           @app-spin
+           (is (= 2 @last-item-count))
 
-             ;; Add third todo
-             (swap! todos conj {:id "3" :text "Write code" :done true})
-             (await-drain rt)
-             @app-spin
-             (is (= 3 @last-item-count))))))))
+           ;; Add third todo
+           (swap! todos conj {:id "3" :text "Write code" :done true})
+           (await-drain rt)
+           @app-spin
+           (is (= 3 @last-item-count)))))))
 
 #?(:clj
    (deftest test-todo-app-update-item
      (testing "Updating todo triggers re-render with new state"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge]} (disch/make-mock-discharge)
-                 todos (sig/signal [{:id "1" :text "Buy milk" :done false}])
-                 last-done-status (atom nil)
-                 app-spin (spin
-                            (let [{:keys [new]} (track todos)]
-                              ;; Deltaables implement Seqable - first works directly
-                              (reset! last-done-status (:done (first new)))
-                              (render-todo-list new)))
-                 container nil]
+       (with-ctx [rt]
+         (let [{:keys [discharge]} (disch/make-mock-discharge)
+               todos (sig/signal [{:id "1" :text "Buy milk" :done false}])
+               last-done-status (atom nil)
+               app-spin (spin
+                          (let [{:keys [new]} (track todos)]
+                            ;; Deltaables implement Seqable - first works directly
+                            (reset! last-done-status (:done (first new)))
+                            (render-todo-list new)))
+               container nil]
 
-             ;; Initial render
-             (render/render-spin! container app-spin discharge)
-             @app-spin
-             (is (= false @last-done-status))
+           ;; Initial render
+           (render/render-spin! container app-spin discharge)
+           @app-spin
+           (is (= false @last-done-status))
 
-             ;; Toggle done status - use assoc on deltaable vector directly
-             ;; This produces proper :update deltas
-             (swap! todos
-                    (fn [v]
-                      ;; Find the index and update in place
-                      (let [idx (first (keep-indexed #(when (= (:id %2) "1") %1) v))]
-                        (when idx
-                          (assoc v idx (update (nth v idx) :done not))))))
-             (await-drain rt)
+           ;; Toggle done status - use assoc on deltaable vector directly
+           ;; This produces proper :update deltas
+           (swap! todos
+                  (fn [v]
+                    ;; Find the index and update in place
+                    (let [idx (first (keep-indexed #(when (= (:id %2) "1") %1) v))]
+                      (when idx
+                        (assoc v idx (update (nth v idx) :done not))))))
+           (await-drain rt)
 
-             ;; Verify re-render with new status
-             (is (= true @last-done-status) "Should show done status after toggle")))))))
+           ;; Verify re-render with new status
+           (is (= true @last-done-status) "Should show done status after toggle"))))))
 
 #?(:clj
    (deftest test-todo-app-stats-update
      (testing "Stats update correctly when items change"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge]} (disch/make-mock-discharge)
-                 todos (sig/signal [])
-                 last-stats (atom {:total 0 :done 0})
-                 app-spin (spin
-                            (let [{:keys [new]} (track todos)]
-                              ;; Deltaables implement Seqable/Counted - use directly
-                              (reset! last-stats
-                                      {:total (count new)
-                                       :done (count (filter :done new))})
-                              (render-todo-list new)))
-                 container nil]
+       (with-ctx [rt]
+         (let [{:keys [discharge]} (disch/make-mock-discharge)
+               todos (sig/signal [])
+               last-stats (atom {:total 0 :done 0})
+               app-spin (spin
+                          (let [{:keys [new]} (track todos)]
+                            ;; Deltaables implement Seqable/Counted - use directly
+                            (reset! last-stats
+                                    {:total (count new)
+                                     :done (count (filter :done new))})
+                            (render-todo-list new)))
+               container nil]
 
-             ;; Initial render
-             (render/render-spin! container app-spin discharge)
-             @app-spin
-             (is (= {:total 0 :done 0} @last-stats))
+           ;; Initial render
+           (render/render-spin! container app-spin discharge)
+           @app-spin
+           (is (= {:total 0 :done 0} @last-stats))
 
-             ;; Add pending todo
-             (swap! todos conj {:id "1" :text "Task 1" :done false})
-             (await-drain rt)
-             (is (= {:total 1 :done 0} @last-stats))
+           ;; Add pending todo
+           (swap! todos conj {:id "1" :text "Task 1" :done false})
+           (await-drain rt)
+           (is (= {:total 1 :done 0} @last-stats))
 
-             ;; Add done todo
-             (swap! todos conj {:id "2" :text "Task 2" :done true})
-             (await-drain rt)
-             (is (= {:total 2 :done 1} @last-stats))
+           ;; Add done todo
+           (swap! todos conj {:id "2" :text "Task 2" :done true})
+           (await-drain rt)
+           (is (= {:total 2 :done 1} @last-stats))
 
-             ;; Add another pending
-             (swap! todos conj {:id "3" :text "Task 3" :done false})
-             (await-drain rt)
-             (is (= {:total 3 :done 1} @last-stats))))))))
+           ;; Add another pending
+           (swap! todos conj {:id "3" :text "Task 3" :done false})
+           (await-drain rt)
+           (is (= {:total 3 :done 1} @last-stats)))))))
 
 ;; =============================================================================
 ;; KeyedFragment Tests
@@ -236,13 +232,12 @@
 #?(:clj
    (deftest test-ifor-each-returns-keyed-fragment
      (testing "ifor-each returns KeyedFragment"
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [items [{:id "1" :text "A"} {:id "2" :text "B"}]
-                 render-fn (fn [item] (el/li (:text item)))
-                 result (foreach/ifor-each :id items render-fn)]
-             (is (frag/keyed-fragment? result) "Should return KeyedFragment")
-             (is (= 2 (count (frag/fragment-items result))) "Should have 2 items")))))))
+       (with-ctx [ctx]
+         (let [items [{:id "1" :text "A"} {:id "2" :text "B"}]
+               render-fn (fn [item] (el/li (:text item)))
+               result (foreach/ifor-each :id items render-fn)]
+           (is (frag/keyed-fragment? result) "Should return KeyedFragment")
+           (is (= 2 (count (frag/fragment-items result))) "Should have 2 items"))))))
 
 #?(:clj
    (deftest test-keyed-fragment-in-parent

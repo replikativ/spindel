@@ -26,37 +26,35 @@
 
 (defn- make-promise
   "Create a simple promise that can be delivered once and read multiple times.
-   Uses a standard Clojure atom - no runtime dependency."
+   Uses a standard Clojure atom - no runtime dependency.
+   Uses compare-and-set! instead of swap! to avoid side effects inside retry-able swap fns."
   []
   (let [state (atom {:delivered? false :value nil :watchers []})]
     {:state state
      :deliver! (fn [value]
-                 (let [watchers-to-notify (atom nil)]
-                   (swap! state (fn [s]
-                                  (if (:delivered? s)
-                                    s
-                                    (do
-                                      (reset! watchers-to-notify (:watchers s))
-                                      {:delivered? true :value value :watchers []}))))
-                   ;; Notify watchers
-                   (doseq [w @watchers-to-notify]
-                     (w value)))
-                 value)
+                 (loop []
+                   (let [s @state]
+                     (if (:delivered? s)
+                       value  ;; Already delivered - no-op
+                       (if (compare-and-set! state s {:delivered? true :value value :watchers []})
+                         ;; CAS succeeded - notify watchers from the state we replaced
+                         (do (doseq [w (:watchers s)]
+                               (w value))
+                             value)
+                         ;; CAS failed (concurrent modification) - retry
+                         (recur))))))
      :await-spin (fn []
                    (spin-core/make-spin
                     (fn [resolve _reject]
-                      (let [s @state]
-                        (if (:delivered? s)
-                          (resolve (:value s))
-                          ;; Add watcher - but check again in case delivered concurrently
-                          (let [already-delivered? (atom false)]
-                            (swap! state (fn [s]
-                                           (if (:delivered? s)
-                                             (do (reset! already-delivered? true) s)
-                                             (update s :watchers conj resolve))))
-                            (when @already-delivered?
-                              (resolve (:value @state)))))
-                        spin-core/incomplete))))}))
+                      (loop []
+                        (let [s @state]
+                          (if (:delivered? s)
+                            (resolve (:value s))
+                            ;; Try to add watcher via CAS
+                            (when-not (compare-and-set! state s (update s :watchers conj resolve))
+                              ;; CAS failed - retry (will re-check delivered? on next iteration)
+                              (recur)))))
+                      spin-core/incomplete)))}))
 
 (defn- deliver-promise! [p value]
   ((:deliver! p) value))

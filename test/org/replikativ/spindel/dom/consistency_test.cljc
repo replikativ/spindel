@@ -47,6 +47,7 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
+            #?(:clj [org.replikativ.spindel.test-helpers :refer [with-ctx]])
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -228,41 +229,44 @@
   (let [final-state (mutation-fn initial-state)]
     ;; Both paths need execution context for ifor-each
     (let [rt (ctx/create-execution-context)]
-      (binding [ec/*execution-context* rt]
-        ;; Direct path: render final state to fresh DOM (needs context for ifor-each)
-        (let [direct-vdom (render-fn final-state)
-              direct-structure (vdom-to-structure direct-vdom)]
+      (try
+        (binding [ec/*execution-context* rt]
+          ;; Direct path: render final state to fresh DOM (needs context for ifor-each)
+          (let [direct-vdom (render-fn final-state)
+                direct-structure (vdom-to-structure direct-vdom)]
 
-          ;; Incremental path: use signal + spin with delta-producing mutation
-          (let [{:keys [discharge]} (disch/make-mock-discharge)
-                ;; Create signal with initial state
-                state-sig (sig/signal initial-state)
-                captured-deltas (atom nil)
-                ;; Create spin that tracks signal and renders
-                app-spin (spin
-                           (let [state-iv (track state-sig)
-                                 current @state-iv
-                                 deltas (iv/get-deltas state-iv)]
-                             (reset! captured-deltas deltas)
-                             (render-fn current)))]
+            ;; Incremental path: use signal + spin with delta-producing mutation
+            (let [{:keys [discharge]} (disch/make-mock-discharge)
+                  ;; Create signal with initial state
+                  state-sig (sig/signal initial-state)
+                  captured-deltas (atom nil)
+                  ;; Create spin that tracks signal and renders
+                  app-spin (spin
+                             (let [state-iv (track state-sig)
+                                   current @state-iv
+                                   deltas (iv/get-deltas state-iv)]
+                               (reset! captured-deltas deltas)
+                               (render-fn current)))]
 
-            ;; Initial render
-            (render/render-spin! nil app-spin discharge)
-            @app-spin
+              ;; Initial render
+              (render/render-spin! nil app-spin discharge)
+              @app-spin
 
-            ;; Mutate signal using swap! - this preserves deltas!
-            (swap! state-sig mutation-fn)
-            (#?(:clj org.replikativ.spindel.test-async/await-drain
-                :cljs identity) rt)
+              ;; Mutate signal using swap! - this preserves deltas!
+              (swap! state-sig mutation-fn)
+              (#?(:clj org.replikativ.spindel.test-async/await-drain
+                  :cljs identity) rt)
 
-            ;; Get final vdom from spin — deref waits for re-execution when dirty
-            (let [incremental-vdom @app-spin
-                  incremental-structure (vdom-to-structure incremental-vdom)]
+              ;; Get final vdom from spin — deref waits for re-execution when dirty
+              (let [incremental-vdom @app-spin
+                    incremental-structure (vdom-to-structure incremental-vdom)]
 
-              {:equal? (dom-structure-equal? incremental-structure direct-structure)
-               :incremental incremental-structure
-               :direct direct-structure
-               :deltas @captured-deltas})))))))
+                {:equal? (dom-structure-equal? incremental-structure direct-structure)
+                 :incremental incremental-structure
+                 :direct direct-structure
+                 :deltas @captured-deltas}))))
+        (finally
+          (ctx/stop-context! rt))))))
 
 ;; =============================================================================
 ;; Simple Element Tests
@@ -525,106 +529,103 @@
 #?(:clj
    (deftest test-signal-based-list-add
      (testing "Signal-based list addition produces correct deltas"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 items (sig/signal [])
-                 render-count (atom 0)
-                 captured-deltas (atom nil)
+       (with-ctx [rt]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               items (sig/signal [])
+               render-count (atom 0)
+               captured-deltas (atom nil)
 
-                 app-spin (spin
-                            (let [items-iv (track items)
-                                  current @items-iv
-                                  deltas (iv/get-deltas items-iv)]
-                              (swap! render-count inc)
-                              (reset! captured-deltas deltas)
-                              (el/ul {:class "list"}
-                                (foreach/ifor-each :id current
-                                  (fn [item] (el/li {:key (:id item)} (:text item)))))))]
+               app-spin (spin
+                          (let [items-iv (track items)
+                                current @items-iv
+                                deltas (iv/get-deltas items-iv)]
+                            (swap! render-count inc)
+                            (reset! captured-deltas deltas)
+                            (el/ul {:class "list"}
+                              (foreach/ifor-each :id current
+                                (fn [item] (el/li {:key (:id item)} (:text item)))))))]
 
-             ;; Initial render
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
-             (is (= 1 @render-count))
+           ;; Initial render
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
+           (is (= 1 @render-count))
 
-             ;; Add first item
-             (reset! log [])
-             (swap! items conj {:id "1" :text "A"})
-             (await-drain rt)
+           ;; Add first item
+           (reset! log [])
+           (swap! items conj {:id "1" :text "A"})
+           (await-drain rt)
 
-             (is (= 2 @render-count))
-             ;; Verify deltas were captured
-             (is (seq @captured-deltas) "Should have captured deltas")
-             (is (= :add (:delta (first @captured-deltas))))
-             ;; Verify delta path and value
-             (is (= [0] (:path (first @captured-deltas))))
-             (is (= {:id "1" :text "A"} (:value (first @captured-deltas))))))))))
+           (is (= 2 @render-count))
+           ;; Verify deltas were captured
+           (is (seq @captured-deltas) "Should have captured deltas")
+           (is (= :add (:delta (first @captured-deltas))))
+           ;; Verify delta path and value
+           (is (= [0] (:path (first @captured-deltas))))
+           (is (= {:id "1" :text "A"} (:value (first @captured-deltas)))))))))
 
 #?(:clj
    (deftest test-signal-based-list-remove
      (testing "Signal-based list removal produces correct deltas"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 items (sig/signal [{:id "1" :text "A"}
-                                    {:id "2" :text "B"}])
-                 captured-deltas (atom nil)
+       (with-ctx [rt]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               items (sig/signal [{:id "1" :text "A"}
+                                  {:id "2" :text "B"}])
+               captured-deltas (atom nil)
 
-                 app-spin (spin
-                            (let [items-iv (track items)
-                                  current @items-iv
-                                  deltas (iv/get-deltas items-iv)]
-                              (reset! captured-deltas deltas)
-                              (el/ul {:class "list"}
-                                (foreach/ifor-each :id current
-                                  (fn [item] (el/li {:key (:id item)} (:text item)))))))]
+               app-spin (spin
+                          (let [items-iv (track items)
+                                current @items-iv
+                                deltas (iv/get-deltas items-iv)]
+                            (reset! captured-deltas deltas)
+                            (el/ul {:class "list"}
+                              (foreach/ifor-each :id current
+                                (fn [item] (el/li {:key (:id item)} (:text item)))))))]
 
-             ;; Initial render
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
+           ;; Initial render
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
 
-             ;; Remove second item using d/remove-at
-             (reset! log [])
-             (swap! items d/remove-at 1)
-             (await-drain rt)
+           ;; Remove second item using d/remove-at
+           (reset! log [])
+           (swap! items d/remove-at 1)
+           (await-drain rt)
 
-             ;; Verify deltas
-             (is (seq @captured-deltas) "Should have captured deltas")
-             (is (= :remove (:delta (first @captured-deltas))))
-             (is (= [1] (:path (first @captured-deltas))))))))))
+           ;; Verify deltas
+           (is (seq @captured-deltas) "Should have captured deltas")
+           (is (= :remove (:delta (first @captured-deltas))))
+           (is (= [1] (:path (first @captured-deltas)))))))))
 
 #?(:clj
    (deftest test-signal-based-list-update
      (testing "Signal-based list update produces correct deltas"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 items (sig/signal [{:id "1" :text "A"}
-                                    {:id "2" :text "B"}])
-                 captured-deltas (atom nil)
+       (with-ctx [rt]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               items (sig/signal [{:id "1" :text "A"}
+                                  {:id "2" :text "B"}])
+               captured-deltas (atom nil)
 
-                 app-spin (spin
-                            (let [items-iv (track items)
-                                  current @items-iv
-                                  deltas (iv/get-deltas items-iv)]
-                              (reset! captured-deltas deltas)
-                              (el/ul {:class "list"}
-                                (foreach/ifor-each :id current
-                                  (fn [item] (el/li {:key (:id item)} (:text item)))))))]
+               app-spin (spin
+                          (let [items-iv (track items)
+                                current @items-iv
+                                deltas (iv/get-deltas items-iv)]
+                            (reset! captured-deltas deltas)
+                            (el/ul {:class "list"}
+                              (foreach/ifor-each :id current
+                                (fn [item] (el/li {:key (:id item)} (:text item)))))))]
 
-             ;; Initial render
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
+           ;; Initial render
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
 
-             ;; Update first item
-             (reset! log [])
-             (swap! items assoc 0 {:id "1" :text "A-updated"})
-             (await-drain rt)
+           ;; Update first item
+           (reset! log [])
+           (swap! items assoc 0 {:id "1" :text "A-updated"})
+           (await-drain rt)
 
-             ;; Verify deltas
-             (is (seq @captured-deltas) "Should have captured deltas")
-             (is (= :update (:delta (first @captured-deltas))))
-             (is (= [0] (:path (first @captured-deltas))))))))))
+           ;; Verify deltas
+           (is (seq @captured-deltas) "Should have captured deltas")
+           (is (= :update (:delta (first @captured-deltas))))
+           (is (= [0] (:path (first @captured-deltas)))))))))
 
 ;; =============================================================================
 ;; Delta-Aware Consistency Tests

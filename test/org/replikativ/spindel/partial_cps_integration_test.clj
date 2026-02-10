@@ -30,7 +30,8 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.await :refer [await]]
-            [is.simm.partial-cps.async :as pcps :refer [async]]))
+            [is.simm.partial-cps.async :as pcps :refer [async]]
+            [org.replikativ.spindel.test-helpers :as th]))
 
 ;; =============================================================================
 ;; Test Helpers
@@ -89,43 +90,39 @@
 
 (deftest test-sync-async-passthrough
   (testing "Synchronous async block passes through correctly"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async (+ 1 2 3)))))]
-      (is (= 6 (run-spin ctx t))
-          "async block returning immediate value should work")))
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async (+ 1 2 3))))]
+        (is (= 6 (run-spin ctx t))
+            "async block returning immediate value should work"))))
 
   (testing "Nested sync async blocks"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              (let [a (pcps/await (async 10))
                                    b (pcps/await (async 20))]
-                               (+ a b))))))]
-      (is (= 30 (run-spin ctx t))
-          "nested pcps/await inside async should work"))))
+                               (+ a b)))))]
+        (is (= 30 (run-spin ctx t))
+            "nested pcps/await inside async should work")))))
 
 (deftest test-async-with-deferred-delivery
   (testing "Async block with deferred-delivery event"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              (pcps/await (async-sleep 10 :slept))
-                             :done))))]
-      (is (= :done (run-spin ctx t 500))
-          "async block should suspend and resume via deferred-delivery"))))
+                             :done)))]
+        (is (= :done (run-spin ctx t 500))
+            "async block should suspend and resume via deferred-delivery")))))
 
 (deftest test-spin-inside-async
   (testing "Creating spindel spin inside async block"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              ;; Create a spindel spin inside async
                              ;; and await it via pcps/await (treats it as IFn)
                              (let [inner (spin (* 7 8))]
-                               (pcps/await inner))))))]
-      (is (= 56 (run-spin ctx t))
-          "spindel spin created inside async should be awaitable"))))
+                               (pcps/await inner)))))]
+        (is (= 56 (run-spin ctx t))
+            "spindel spin created inside async should be awaitable")))))
 
 ;; =============================================================================
 ;; Sequential Async Operations
@@ -133,27 +130,25 @@
 
 (deftest test-sequential-async-awaits
   (testing "Multiple sequential pcps/await calls"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              (let [a (pcps/await (async 10))
                                    b (pcps/await (async 20))
                                    c (pcps/await (async 30))]
-                               (+ a b c))))))]
-      (is (= 60 (run-spin ctx t))
-          "sequential awaits should accumulate correctly")))
+                               (+ a b c)))))]
+        (is (= 60 (run-spin ctx t))
+            "sequential awaits should accumulate correctly"))))
 
   (testing "Loop with pcps/await"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              (loop [i 0 sum 0]
                                (if (< i 5)
                                  (let [v (pcps/await (async i))]
                                    (recur (inc i) (+ sum v)))
-                                 sum))))))]
-      (is (= 10 (run-spin ctx t))  ; 0+1+2+3+4 = 10
-          "loop with pcps/await should work"))))
+                                 sum)))))]
+        (is (= 10 (run-spin ctx t))  ; 0+1+2+3+4 = 10
+            "loop with pcps/await should work")))))
 
 ;; =============================================================================
 ;; Error Handling
@@ -161,25 +156,23 @@
 
 (deftest test-error-propagation
   (testing "Error in async block propagates to spin"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
-                             (throw (ex-info "test error" {:code 42}))))))
-          result (run-spin ctx t)]
-      (is (vector? result) "Should return error vector")
-      (is (= :error (first result)) "First element should be :error")
-      (is (= 42 (-> result second ex-data :code))
-          "Error data should be preserved")))
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
+                             (throw (ex-info "test error" {:code 42})))))
+            result (run-spin ctx t)]
+        (is (vector? result) "Should return error vector")
+        (is (= :error (first result)) "First element should be :error")
+        (is (= 42 (-> result second ex-data :code))
+            "Error data should be preserved"))))
 
   (testing "Error in nested async propagates"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              (pcps/await (async
-                                           (throw (ex-info "nested error" {}))))))))
-          result (run-spin ctx t)]
-      (is (= :error (first result))
-          "Nested error should propagate"))))
+                                           (throw (ex-info "nested error" {})))))))
+            result (run-spin ctx t)]
+        (is (= :error (first result))
+            "Nested error should propagate")))))
 
 ;; =============================================================================
 ;; Mixed Spin and Async
@@ -187,31 +180,29 @@
 
 (deftest test-mixed-spin-async
   (testing "Alternating spin and async awaits"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin
+    (th/with-ctx [ctx]
+      (let [t (spin
                 (let [;; await a spin
                       a (await (spin 10))
                       ;; await an async block
                       b (await (async (+ a 5)))
                       ;; await another spin using result from async
                       c (await (spin (* b 2)))]
-                  c)))]
-      (is (= 30 (run-spin ctx t))  ; (10 + 5) * 2 = 30
-          "Mixed spin/async should work correctly")))
+                  c))]
+        (is (= 30 (run-spin ctx t))  ; (10 + 5) * 2 = 30
+            "Mixed spin/async should work correctly"))))
 
   (testing "Async block creating multiple spins"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              (let [t1 (spin 10)
                                    t2 (spin 20)
                                    ;; await both spins
                                    v1 (pcps/await t1)
                                    v2 (pcps/await t2)]
-                               (+ v1 v2))))))]
-      (is (= 30 (run-spin ctx t))
-          "async block can create and await multiple spins"))))
+                               (+ v1 v2)))))]
+        (is (= 30 (run-spin ctx t))
+            "async block can create and await multiple spins")))))
 
 ;; =============================================================================
 ;; Passthrough Behavior Tests
@@ -219,22 +210,20 @@
 
 (deftest test-ifn-passthrough
   (testing "Plain IFn thunk is passed through"
-    (let [ctx (ctx/create-execution-context)
-          ;; Create a simple thunk that resolves immediately
-          thunk (fn [resolve _reject] (resolve 42))
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await thunk)))]
-      (is (= 42 (run-spin ctx t))
-          "Plain IFn should be passed through and called")))
+    (th/with-ctx [ctx]
+      (let [;; Create a simple thunk that resolves immediately
+            thunk (fn [resolve _reject] (resolve 42))
+            t (spin (await thunk))]
+        (is (= 42 (run-spin ctx t))
+            "Plain IFn should be passed through and called"))))
 
   (testing "Async macro produces IFn that passes through"
-    (let [ctx (ctx/create-execution-context)
-          ;; async macro returns an IFn
-          async-thunk (async (* 6 7))
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await async-thunk)))]
-      (is (= 42 (run-spin ctx t))
-          "async thunk should pass through await"))))
+    (th/with-ctx [ctx]
+      (let [;; async macro returns an IFn
+            async-thunk (async (* 6 7))
+            t (spin (await async-thunk))]
+        (is (= 42 (run-spin ctx t))
+            "async thunk should pass through await")))))
 
 ;; =============================================================================
 ;; Context Availability Tests
@@ -242,22 +231,20 @@
 
 (deftest test-runtime-context-in-async
   (testing "Runtime context available inside async block"
-    (let [ctx (ctx/create-execution-context)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [t (spin (await (async
                              ;; Check that runtime is accessible
                              (let [ctx (ec/current-execution-context)]
-                               (if ctx :has-runtime :no-runtime))))))]
-      (is (= :has-runtime (run-spin ctx t))
-          "Runtime should be accessible inside async via dynamic binding")))
+                               (if ctx :has-runtime :no-runtime)))))]
+        (is (= :has-runtime (run-spin ctx t))
+            "Runtime should be accessible inside async via dynamic binding"))))
 
   (testing "Spin ID available in async block"
-    (let [ctx (ctx/create-execution-context)
-          captured-id (atom nil)
-          t (binding [ec/*execution-context* ctx ec/*execution-context* ctx]
-              (spin (await (async
+    (th/with-ctx [ctx]
+      (let [captured-id (atom nil)
+            t (spin (await (async
                              (reset! captured-id ec/*spin-id*)
-                             :done))))]
-      (run-spin ctx t)
-      (is (some? @captured-id)
-          "*spin-id* should be bound inside async block"))))
+                             :done)))]
+        (run-spin ctx t)
+        (is (some? @captured-id)
+            "*spin-id* should be bound inside async block")))))

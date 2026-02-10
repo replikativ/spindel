@@ -220,44 +220,50 @@
      (testing "GC of Spin object triggers cleanup of runtime state (JVM)"
        (let [ctx (ctx/create-execution-context)
              spin-id-holder (atom nil)]
-         (binding [ec/*execution-context* ctx]
-           ;; Create a spin in a local scope so it can be GC'd
-           (let [s (spin 42)]
-             (reset! spin-id-holder (spin-core/spin-id s))
-             @s)
-           ;; s is now out of scope - verify state exists
-           (is (some? (rtp/get-state ctx [:nodes @spin-id-holder])) "State should exist before GC"))
-         ;; Force GC (outside binding scope to ensure cleanup uses WeakRef)
-         (System/gc)
-         (Thread/sleep 500)
-         ;; Verify state is cleaned up
-         (is (nil? (rtp/get-state ctx [:nodes @spin-id-holder])) "Node should be cleaned after GC")
-         (is (nil? (rtp/get-state ctx [:spins-meta @spin-id-holder])) "Meta should be cleaned after GC")
-         (is (nil? (rtp/get-state ctx [:spin-outputs @spin-id-holder])) "Output should be cleaned after GC")))))
+         (try
+           (binding [ec/*execution-context* ctx]
+             ;; Create a spin in a local scope so it can be GC'd
+             (let [s (spin 42)]
+               (reset! spin-id-holder (spin-core/spin-id s))
+               @s)
+             ;; s is now out of scope - verify state exists
+             (is (some? (rtp/get-state ctx [:nodes @spin-id-holder])) "State should exist before GC"))
+           ;; Force GC (outside binding scope to ensure cleanup uses WeakRef)
+           (System/gc)
+           (Thread/sleep 500)
+           ;; Verify state is cleaned up
+           (is (nil? (rtp/get-state ctx [:nodes @spin-id-holder])) "Node should be cleaned after GC")
+           (is (nil? (rtp/get-state ctx [:spins-meta @spin-id-holder])) "Meta should be cleaned after GC")
+           (is (nil? (rtp/get-state ctx [:spin-outputs @spin-id-holder])) "Output should be cleaned after GC")
+           (finally
+             (ctx/stop-context! ctx)))))))
 
 #?(:clj
    (deftest test-no-residual-after-bulk-gc-jvm
      (testing "No residual spin state after creating and GC'ing many spins (JVM)"
        (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           ;; Create and deref 100 spins
-           (dotimes [i 100]
-             @(spin (+ i 1))))
-         ;; Force GC multiple rounds to ensure cleanup
-         (dotimes [_ 3]
-           (System/gc)
-           (Thread/sleep 200))
-         ;; Check runtime state - should have no spin nodes left
-         (let [nodes (rtp/get-state ctx [:nodes])
-               spin-nodes (filter (fn [[_ node]]
-                                    (and node
-                                         (= :spin (nodes/node-type node))))
-                                  nodes)
-               outputs (rtp/get-state ctx [:spin-outputs])
-               metas (rtp/get-state ctx [:spins-meta])]
-           (is (zero? (count spin-nodes)) (str "Should have 0 spin nodes, found: " (count spin-nodes)))
-           (is (zero? (count outputs)) (str "Should have 0 spin outputs, found: " (count outputs)))
-           (is (zero? (count metas)) (str "Should have 0 spins-meta, found: " (count metas))))))))
+         (try
+           (binding [ec/*execution-context* ctx]
+             ;; Create and deref 100 spins
+             (dotimes [i 100]
+               @(spin (+ i 1))))
+           ;; Force GC multiple rounds to ensure cleanup
+           (dotimes [_ 3]
+             (System/gc)
+             (Thread/sleep 200))
+           ;; Check runtime state - should have no spin nodes left
+           (let [nodes (rtp/get-state ctx [:nodes])
+                 spin-nodes (filter (fn [[_ node]]
+                                      (and node
+                                           (= :spin (nodes/node-type node))))
+                                    nodes)
+                 outputs (rtp/get-state ctx [:spin-outputs])
+                 metas (rtp/get-state ctx [:spins-meta])]
+             (is (zero? (count spin-nodes)) (str "Should have 0 spin nodes, found: " (count spin-nodes)))
+             (is (zero? (count outputs)) (str "Should have 0 spin outputs, found: " (count outputs)))
+             (is (zero? (count metas)) (str "Should have 0 spins-meta, found: " (count metas))))
+           (finally
+             (ctx/stop-context! ctx)))))))
 
 #?(:clj
    (deftest test-gc-safe-when-context-collected
@@ -265,10 +271,13 @@
        (let [spin-id-holder (atom nil)]
          ;; Create context and spin in a scope that lets them be GC'd
          (let [ctx (ctx/create-execution-context)]
-           (binding [ec/*execution-context* ctx]
-             (let [s (spin 42)]
-               (reset! spin-id-holder (spin-core/spin-id s))
-               @s)))
+           (try
+             (binding [ec/*execution-context* ctx]
+               (let [s (spin 42)]
+                 (reset! spin-id-holder (spin-core/spin-id s))
+                 @s))
+             (finally
+               (ctx/stop-context! ctx))))
          ;; Both ctx and spin are out of scope - force GC
          ;; This should be safe (no NPE, no errors)
          (System/gc)

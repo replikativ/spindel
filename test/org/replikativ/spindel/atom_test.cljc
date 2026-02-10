@@ -93,8 +93,9 @@
    (deftest test-atom-watchers
      (testing "Runtime atoms support watchers"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [ec/*execution-context* exec-ctx]
-           (let [my-atom (ratom/create-atom 0)
+         (try
+           (binding [ec/*execution-context* exec-ctx]
+             (let [my-atom (ratom/create-atom 0)
                  watch-calls (atom [])]
 
              ;; Add watcher
@@ -118,52 +119,57 @@
              (swap! my-atom inc)
              (Thread/sleep 10)
 
-             (is (= 1 (count @watch-calls)))))))))
+               (is (= 1 (count @watch-calls)))))
+           (finally
+             (ctx/stop-context! exec-ctx)))))))
 
 #?(:clj
    (deftest test-atom-forking
      (testing "Runtime atoms fork correctly with ExecutionContext"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-         (binding [ec/*execution-context* exec-ctx]
-           (let [my-atom (ratom/create-atom [1 2 3])]
+         (try
+           (binding [ec/*execution-context* exec-ctx]
+             (let [my-atom (ratom/create-atom [1 2 3])]
 
-             ;; Original has [1 2 3]
-             (is (= [1 2 3] @my-atom))
-
-             ;; Fork the execution context
-             (let [forked-ctx (ctx/fork-context exec-ctx)
-                   atom-id (.-id my-atom)
-                   forked-atom (ratom/->RuntimeAtom atom-id)]
-
-               ;; Forked atom has same initial value (reads from parent backend)
-               (binding [ec/*execution-context* forked-ctx]
-                 (is (= [1 2 3] @forked-atom))
-
-                 ;; Modify forked atom
-                 (swap! forked-atom conj 4)
-
-                 ;; Forked atom changed
-                 (is (= [1 2 3 4] @forked-atom)))
-
-               ;; Original atom unchanged (rebind to original context)
+               ;; Original has [1 2 3]
                (is (= [1 2 3] @my-atom))
 
-               ;; Modify original atom
-               (swap! my-atom conj 5)
+               ;; Fork the execution context
+               (let [forked-ctx (ctx/fork-context exec-ctx)
+                     atom-id (.-id my-atom)
+                     forked-atom (ratom/->RuntimeAtom atom-id)]
 
-               ;; Original changed
-               (is (= [1 2 3 5] @my-atom))
+                 ;; Forked atom has same initial value (reads from parent backend)
+                 (binding [ec/*execution-context* forked-ctx]
+                   (is (= [1 2 3] @forked-atom))
 
-               ;; Forked unchanged (copy-on-write)
-               (binding [ec/*execution-context* forked-ctx]
-                 (is (= [1 2 3 4] @forked-atom))))))))))
+                   ;; Modify forked atom
+                   (swap! forked-atom conj 4)
+
+                   ;; Forked atom changed
+                   (is (= [1 2 3 4] @forked-atom)))
+
+                 ;; Original atom unchanged (rebind to original context)
+                 (is (= [1 2 3] @my-atom))
+
+                 ;; Modify original atom
+                 (swap! my-atom conj 5)
+
+                 ;; Original changed
+                 (is (= [1 2 3 5] @my-atom))
+
+                 ;; Forked unchanged (copy-on-write)
+                 (binding [ec/*execution-context* forked-ctx]
+                   (is (= [1 2 3 4] @forked-atom))))))
+           (finally
+             (ctx/stop-context! exec-ctx)))))))
 
 #?(:clj
    (deftest test-atom-execution-context
      (testing "Runtime atoms work with ExecutionContext (not old runtime structure)"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-
-         ;; Verify ExecutionContext structure
+         (try
+           ;; Verify ExecutionContext structure
          (is (some? (:backend exec-ctx)))
          (is (= :atom (backend/backend-type (:backend exec-ctx))))
 
@@ -191,15 +197,17 @@
                ;; Watcher should have fired
                (is (= 1 (count @watch-calls)))
                (is (= 42 (:old (first @watch-calls))))
-               (is (= 43 (:new (first @watch-calls)))))))))))
+               (is (= 43 (:new (first @watch-calls)))))))
+           (finally
+             (ctx/stop-context! exec-ctx)))))))
 
 #?(:clj
    (deftest test-atom-backend-abstraction
      (testing "Atom watcher installation delegates to backend protocol"
        (let [exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
-
-         ;; Create multiple atoms - watcher should be installed once per backend (idempotent)
-         (binding [ec/*execution-context* exec-ctx]
+         (try
+           ;; Create multiple atoms - watcher should be installed once per backend (idempotent)
+           (binding [ec/*execution-context* exec-ctx]
            (let [atom1 (ratom/create-atom 1)
                  atom2 (ratom/create-atom 2)
                  atom3 (ratom/create-atom 3)]
@@ -226,4 +234,6 @@
 
                (is (= 1 (count @watch-calls-1)))
                (is (= 1 (count @watch-calls-2)))
-               (is (= 1 (count @watch-calls-3))))))))))
+               (is (= 1 (count @watch-calls-3))))))
+           (finally
+             (ctx/stop-context! exec-ctx)))))))

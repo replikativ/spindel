@@ -15,7 +15,8 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.signal :as sig]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
-            [org.replikativ.spindel.effects.track :refer [track]])
+            [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.test-helpers :as th])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
@@ -25,10 +26,8 @@
 #?(:clj
    (deftest test-fifo-event-ordering-via-signals
      (testing "Events are processed in FIFO order"
-       (let [ctx (ctx/create-execution-context)
-             processing-order (atom [])]
-
-         (binding [ec/*execution-context* ctx]
+       (let [processing-order (atom [])]
+         (th/with-ctx [ctx]
            ;; Create 10 signals
            (let [signals (mapv (fn [i] (sig/signal i)) (range 10))
                  ;; Create tracking spin that records order
@@ -64,12 +63,10 @@
 #?(:clj
    (deftest test-concurrent-enqueue-no-lost-events
      (testing "Concurrent enqueues from multiple threads don't lose events"
-       (let [ctx (ctx/create-execution-context)
-             n-threads 50
+       (let [n-threads 50
              n-changes-per-thread 100
              change-count (atom 0)]
-
-         (binding [ec/*execution-context* ctx]
+         (th/with-ctx [ctx]
            ;; Create signal and tracking spin
            (let [test-sig (sig/signal 0)
                  tracker (spin
@@ -107,12 +104,10 @@
 #?(:clj
    (deftest test-concurrent-enqueue-all-processed
      (testing "All concurrently enqueued events eventually processed"
-       (let [ctx (ctx/create-execution-context)
-             n-threads 20
+       (let [n-threads 20
              n-signals-per-thread 5
              all-signals (atom [])]
-
-         (binding [ec/*execution-context* ctx]
+         (th/with-ctx [ctx]
            ;; Each thread creates its own signals
            (let [futures (repeatedly n-threads
                            (fn []
@@ -149,10 +144,8 @@
 #?(:clj
    (deftest test-await-drain-with-no-events
      (testing "await-drain returns immediately when no events"
-       (let [ctx (ctx/create-execution-context)
-             start (System/currentTimeMillis)]
-
-         (binding [ec/*execution-context* ctx]
+       (let [start (System/currentTimeMillis)]
+         (th/with-ctx [ctx]
            ;; No events enqueued
            (let [result (simple/await-drain-complete! ctx :timeout-ms 1000)
                  elapsed (- (System/currentTimeMillis) start)]
@@ -163,10 +156,8 @@
 #?(:clj
    (deftest test-await-drain-waits-for-events
      (testing "await-drain waits for enqueued events to process"
-       (let [ctx (ctx/create-execution-context)
-             processed (atom false)]
-
-         (binding [ec/*execution-context* ctx]
+       (let [processed (atom false)]
+         (th/with-ctx [ctx]
            ;; Create signal that will trigger processing
            (let [sig (sig/signal 0)
                  tracker (spin
@@ -192,53 +183,59 @@
 (deftest test-event-queue-enqueue-dequeue
   (testing "Basic enqueue and dequeue operations"
     (let [ctx (ctx/create-execution-context)]
+      (try
+        ;; Queue should be empty initially
+        (is (empty? (rtp/get-state ctx [:engine/pending])))
 
-      ;; Queue should be empty initially
-      (is (empty? (rtp/get-state ctx [:engine/pending])))
+        ;; Enqueue event
+        (simple/enqueue-event! ctx {:type :test :id 1})
 
-      ;; Enqueue event
-      (simple/enqueue-event! ctx {:type :test :id 1})
+        ;; Queue should have one event
+        (let [pending (rtp/get-state ctx [:engine/pending])]
+          (is (= 1 (count pending)))
+          (is (= :test (:type (first pending)))))
 
-      ;; Queue should have one event
-      (let [pending (rtp/get-state ctx [:engine/pending])]
-        (is (= 1 (count pending)))
-        (is (= :test (:type (first pending)))))
+        ;; Dequeue event
+        (let [event (simple/dequeue-event! ctx)]
+          (is (= :test (:type event)))
+          (is (= 1 (:id event))))
 
-      ;; Dequeue event
-      (let [event (simple/dequeue-event! ctx)]
-        (is (= :test (:type event)))
-        (is (= 1 (:id event))))
-
-      ;; Queue should be empty again
-      (is (empty? (rtp/get-state ctx [:engine/pending]))))))
+        ;; Queue should be empty again
+        (is (empty? (rtp/get-state ctx [:engine/pending])))
+        (finally
+          (ctx/stop-context! ctx))))))
 
 (deftest test-event-queue-fifo-order
   (testing "Multiple enqueues preserve FIFO order"
     (let [ctx (ctx/create-execution-context)]
+      (try
+        ;; Enqueue 5 events
+        (doseq [i (range 5)]
+          (simple/enqueue-event! ctx {:type :test :id i}))
 
-      ;; Enqueue 5 events
-      (doseq [i (range 5)]
-        (simple/enqueue-event! ctx {:type :test :id i}))
-
-      ;; Dequeue in order
-      (let [dequeued (repeatedly 5 #(simple/dequeue-event! ctx))
-            ids (map :id dequeued)]
-        (is (= (range 5) ids) "Events should be dequeued in FIFO order")))))
+        ;; Dequeue in order
+        (let [dequeued (repeatedly 5 #(simple/dequeue-event! ctx))
+              ids (map :id dequeued)]
+          (is (= (range 5) ids) "Events should be dequeued in FIFO order"))
+        (finally
+          (ctx/stop-context! ctx))))))
 
 (deftest test-draining-flag
   (testing "Draining flag is managed correctly"
     (let [ctx (ctx/create-execution-context)]
+      (try
+        ;; Initially not draining
+        (is (false? (rtp/get-state ctx [:engine/draining?])))
 
-      ;; Initially not draining
-      (is (false? (rtp/get-state ctx [:engine/draining?])))
+        ;; CAS to true should succeed
+        (is (true? (rtp/cas-state! ctx [:engine/draining?] false true)))
+        (is (true? (rtp/get-state ctx [:engine/draining?])))
 
-      ;; CAS to true should succeed
-      (is (true? (rtp/cas-state! ctx [:engine/draining?] false true)))
-      (is (true? (rtp/get-state ctx [:engine/draining?])))
+        ;; CAS to true again should fail (already true)
+        (is (false? (rtp/cas-state! ctx [:engine/draining?] false true)))
 
-      ;; CAS to true again should fail (already true)
-      (is (false? (rtp/cas-state! ctx [:engine/draining?] false true)))
-
-      ;; Set back to false
-      (rtp/swap-state! ctx [:engine/draining?] (constantly false))
-      (is (false? (rtp/get-state ctx [:engine/draining?]))))))
+        ;; Set back to false
+        (rtp/swap-state! ctx [:engine/draining?] (constantly false))
+        (is (false? (rtp/get-state ctx [:engine/draining?])))
+        (finally
+          (ctx/stop-context! ctx))))))

@@ -607,7 +607,22 @@
             (if-let [event (dequeue-event! context)]
               (do
                 ;; Process event (may enqueue more events)
-                (process-event! context event)
+                ;; CRITICAL: Catch exceptions per-event so one bad event doesn't abort the
+                ;; entire drain session (which would silently lose all remaining queued events).
+                ;; For :spin-execution events, call reject-fn to unblock any waiting deref.
+                (try
+                  (process-event! context event)
+                  (catch #?(:clj Throwable :cljs js/Error) e
+                    (log/error! {:event :engine/event-processing-error
+                                 :data {:event-type (:type event)
+                                        :event-id (:id event)
+                                        :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))}})
+                    ;; For spin-execution events, deliver the error to the deref promise
+                    ;; so the calling thread unblocks with an exception instead of hanging
+                    (when (= (:type event) :spin-execution)
+                      (when-let [reject-fn (:reject-fn event)]
+                        (try (reject-fn e)
+                             (catch #?(:clj Throwable :cljs js/Error) _))))))
                 (swap! event-count inc)
                 ;; Continue draining
                 (recur))

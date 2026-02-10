@@ -31,6 +31,7 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
+            #?(:clj [org.replikativ.spindel.test-helpers :refer [with-ctx]])
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]]
@@ -256,171 +257,166 @@
    (deftest test-ifor-each-initial-render
      (testing "ifor-each renders initial blocks"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [b1 (make-block "Block 1" nil 0)
-                 b2 (make-block "Block 2" nil 1)
-                 blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
+       (with-ctx [ctx]
+         (let [b1 (make-block "Block 1" nil 0)
+               b2 (make-block "Block 2" nil 1)
+               blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
 
-                 render-count (atom 0)
+               render-count (atom 0)
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (swap! render-count inc)
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (render-block block (block-depth new block) false))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (swap! render-count inc)
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (render-block block (block-depth new block) false))))))]
 
-             ;; Initial render
-             (let [vdom @app-spin]
-               (is (= :div (:tag vdom)))
-               (is (= 1 @render-count))
-               ;; KeyedFragment items are flattened into parent children
-               (let [children (:children vdom)]
-                 (is (= 2 (count children)) "Should have 2 block children")
-                 (is (= :div (:tag (first children))) "First child is a div")))))))))
+           ;; Initial render
+           (let [vdom @app-spin]
+             (is (= :div (:tag vdom)))
+             (is (= 1 @render-count))
+             ;; KeyedFragment items are flattened into parent children
+             (let [children (:children vdom)]
+               (is (= 2 (count children)) "Should have 2 block children")
+               (is (= :div (:tag (first children))) "First child is a div"))))))))
 
 #?(:clj
    (deftest test-ifor-each-incremental-add
      (testing "Adding block produces :add delta"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [b1 (make-block "Block 1" nil 0)
-                 blocks-sig (sig/signal (d/deltaable-vector [b1]))
+       (with-ctx [ctx]
+         (let [b1 (make-block "Block 1" nil 0)
+               blocks-sig (sig/signal (d/deltaable-vector [b1]))
 
-                 render-count (atom 0)
+               render-count (atom 0)
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (swap! render-count inc)
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (render-block block 0 false))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (swap! render-count inc)
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (render-block block 0 false))))))]
 
-             ;; Initial render
-             @app-spin
-             (is (= 1 @render-count))
-             (is (= 1 (count (:children @app-spin))))
+           ;; Initial render
+           @app-spin
+           (is (= 1 @render-count))
+           (is (= 1 (count (:children @app-spin))))
 
-             ;; Add a block
-             (swap! blocks-sig (fn [blocks]
-                                 (first (add-block-after blocks (:id b1) "Block 2"))))
-             (await-drain ctx)
+           ;; Add a block
+           (swap! blocks-sig (fn [blocks]
+                               (first (add-block-after blocks (:id b1) "Block 2"))))
+           (await-drain ctx)
 
-             ;; Should have re-rendered
-             (let [vdom @app-spin]
-               (is (= 2 @render-count))
-               (is (= 2 (count (:children vdom))) "Should have 2 children now"))))))))
+           ;; Should have re-rendered
+           (let [vdom @app-spin]
+             (is (= 2 @render-count))
+             (is (= 2 (count (:children vdom))) "Should have 2 children now")))))))
 
 #?(:clj
    (deftest test-ifor-each-incremental-update
      (testing "Updating block content produces :update delta"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [b1 (make-block "Original" nil 0)
-                 blocks-sig (sig/signal (d/deltaable-vector [b1]))
+       (with-ctx [ctx]
+         (let [b1 (make-block "Original" nil 0)
+               blocks-sig (sig/signal (d/deltaable-vector [b1]))
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (el/div {:data-id (:id block)}
-                             (:content block)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (el/div {:data-id (:id block)}
+                           (:content block)))))))]
 
-             ;; Initial render
-             @app-spin
+           ;; Initial render
+           @app-spin
 
-             ;; Update content
-             (swap! blocks-sig #(update-block-content % (:id b1) "Updated"))
-             (await-drain ctx)
+           ;; Update content
+           (swap! blocks-sig #(update-block-content % (:id b1) "Updated"))
+           (await-drain ctx)
 
-             (let [vdom @app-spin
-                   children (:children vdom)
-                   block-div (first children)
-                   text-node (first (:children block-div))]
-               (is (= "Updated" (:content text-node))))))))))
+           (let [vdom @app-spin
+                 children (:children vdom)
+                 block-div (first children)
+                 text-node (first (:children block-div))]
+             (is (= "Updated" (:content text-node)))))))))
 
 #?(:clj
    (deftest test-ifor-each-incremental-delete
      (testing "Deleting block produces :remove delta"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [b1 (make-block "Block 1" nil 0)
-                 b2 (make-block "Block 2" nil 1)
-                 blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
+       (with-ctx [ctx]
+         (let [b1 (make-block "Block 1" nil 0)
+               b2 (make-block "Block 2" nil 1)
+               blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (el/div {:data-id (:id block)}
-                             (:content block)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (el/div {:data-id (:id block)}
+                           (:content block)))))))]
 
-             ;; Initial render - 2 blocks
-             @app-spin
-             (is (= 2 (count (:children @app-spin))))
+           ;; Initial render - 2 blocks
+           @app-spin
+           (is (= 2 (count (:children @app-spin))))
 
-             ;; Delete b1
-             (swap! blocks-sig #(delete-block % (:id b1)))
-             (await-drain ctx)
+           ;; Delete b1
+           (swap! blocks-sig #(delete-block % (:id b1)))
+           (await-drain ctx)
 
-             ;; Should have 1 block
-             (let [vdom @app-spin]
-               (is (= 1 (count (:children vdom)))))))))))
+           ;; Should have 1 block
+           (let [vdom @app-spin]
+             (is (= 1 (count (:children vdom))))))))))
 
 #?(:clj
    (deftest test-ifor-each-move-delta
      (testing "Move operation produces :move delta"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [;; Use DeltaableVector directly with move-to
-                 items-sig (sig/signal (d/deltaable-vector [:a :b :c :d]))
+       (with-ctx [ctx]
+         (let [;; Use DeltaableVector directly with move-to
+               items-sig (sig/signal (d/deltaable-vector [:a :b :c :d]))
 
-                 move-delta-seen (atom nil)
+               move-delta-seen (atom nil)
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new deltas]} (track items-sig)]
-                     ;; Capture deltas for inspection
-                     (when (seq deltas)
-                       (reset! move-delta-seen deltas))
-                     (el/div {:class "list"}
-                       (foreach/ifor-each identity new
-                         (fn [item]
-                           (el/span {} (name item)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new deltas]} (track items-sig)]
+                   ;; Capture deltas for inspection
+                   (when (seq deltas)
+                     (reset! move-delta-seen deltas))
+                   (el/div {:class "list"}
+                     (foreach/ifor-each identity new
+                       (fn [item]
+                         (el/span {} (name item)))))))]
 
-             ;; Initial render
-             @app-spin
+           ;; Initial render
+           @app-spin
 
-             ;; Move :a from position 0 to position 2
-             (swap! items-sig #(d/move-to % 0 2))
-             (await-drain ctx)
+           ;; Move :a from position 0 to position 2
+           (swap! items-sig #(d/move-to % 0 2))
+           (await-drain ctx)
 
-             ;; Check the delta was a :move
-             (is (some? @move-delta-seen))
-             (let [delta (first @move-delta-seen)]
-               (is (= :move (:delta delta)))
-               (is (= [0] (:from-path delta)))
-               (is (= [2] (:to-path delta))))
+           ;; Check the delta was a :move
+           (is (some? @move-delta-seen))
+           (let [delta (first @move-delta-seen)]
+             (is (= :move (:delta delta)))
+             (is (= [0] (:from-path delta)))
+             (is (= [2] (:to-path delta))))
 
-             ;; Verify order changed
-             (is (= [:b :c :a :d] (vec @items-sig)))))))))
+           ;; Verify order changed
+           (is (= [:b :c :a :d] (vec @items-sig))))))))
 
 ;; =============================================================================
 ;; Tests: Realistic Document Editing (matching block_editor_demo.cljs)
@@ -430,178 +426,175 @@
    (deftest test-realistic-document-structure
      (testing "Create document like block_editor_demo.cljs init-sample-data!"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           ;; Create structure matching block_editor_demo.cljs
-           (let [block1 (make-block "Welcome to Spindel Block Editor" nil 0)
-                 block2 (make-block "Features" nil 1)
-                 block3 (make-block "Getting Started" nil 2)
-                 ;; Children of block2
-                 block2a (make-block "Incremental DOM updates" (:id block2) 0)
-                 block2b (make-block "Hierarchical structure" (:id block2) 1)
-                 block2c (make-block "Keyboard navigation" (:id block2) 2)
-                 ;; Children of block2b
-                 block2b1 (make-block "Parent/child relationships" (:id block2b) 0)
-                 block2b2 (make-block "Indent/outdent with Tab" (:id block2b) 1)
-                 ;; Children of block3
-                 block3a (make-block "Click on any block to edit" (:id block3) 0)
-                 block3b (make-block "Press Enter to create new blocks" (:id block3) 1)
+       (with-ctx [ctx]
+         ;; Create structure matching block_editor_demo.cljs
+         (let [block1 (make-block "Welcome to Spindel Block Editor" nil 0)
+               block2 (make-block "Features" nil 1)
+               block3 (make-block "Getting Started" nil 2)
+               ;; Children of block2
+               block2a (make-block "Incremental DOM updates" (:id block2) 0)
+               block2b (make-block "Hierarchical structure" (:id block2) 1)
+               block2c (make-block "Keyboard navigation" (:id block2) 2)
+               ;; Children of block2b
+               block2b1 (make-block "Parent/child relationships" (:id block2b) 0)
+               block2b2 (make-block "Indent/outdent with Tab" (:id block2b) 1)
+               ;; Children of block3
+               block3a (make-block "Click on any block to edit" (:id block3) 0)
+               block3b (make-block "Press Enter to create new blocks" (:id block3) 1)
 
-                 blocks-sig (sig/signal
-                              (d/deltaable-vector [block1 block2 block3
-                                                   block2a block2b block2c
-                                                   block2b1 block2b2
-                                                   block3a block3b]))
+               blocks-sig (sig/signal
+                            (d/deltaable-vector [block1 block2 block3
+                                                 block2a block2b block2c
+                                                 block2b1 block2b2
+                                                 block3a block3b]))
 
-                 render-count (atom 0)
+               render-count (atom 0)
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (swap! render-count inc)
-                     (el/div {:class "block-editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (let [depth (block-depth new block)]
-                             (render-block block depth false)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (swap! render-count inc)
+                   (el/div {:class "block-editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (let [depth (block-depth new block)]
+                           (render-block block depth false)))))))]
 
-             ;; Initial render - should have all 10 blocks in DFS order
-             (let [vdom @app-spin
-                   children (:children vdom)]
-               (is (= 10 (count children)))
-               (is (= 1 @render-count)))
+           ;; Initial render - should have all 10 blocks in DFS order
+           (let [vdom @app-spin
+                 children (:children vdom)]
+             (is (= 10 (count children)))
+             (is (= 1 @render-count)))
 
-             ;; Verify DFS order
-             (let [visible (visible-blocks @blocks-sig)]
-               (is (= [(:id block1) (:id block2) (:id block2a) (:id block2b)
-                       (:id block2b1) (:id block2b2) (:id block2c)
-                       (:id block3) (:id block3a) (:id block3b)]
-                      (mapv :id visible))))))))))
+           ;; Verify DFS order
+           (let [visible (visible-blocks @blocks-sig)]
+             (is (= [(:id block1) (:id block2) (:id block2a) (:id block2b)
+                     (:id block2b1) (:id block2b2) (:id block2c)
+                     (:id block3) (:id block3a) (:id block3b)]
+                    (mapv :id visible)))))))))
 
 #?(:clj
    (deftest test-realistic-editing-workflow
      (testing "Edit document: add, update, indent, outdent, delete"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           ;; Start with simple 3-block structure
-           (let [block1 (make-block "Introduction" nil 0)
-                 block2 (make-block "Main Content" nil 1)
-                 block3 (make-block "Conclusion" nil 2)
+       (with-ctx [ctx]
+         ;; Start with simple 3-block structure
+         (let [block1 (make-block "Introduction" nil 0)
+               block2 (make-block "Main Content" nil 1)
+               block3 (make-block "Conclusion" nil 2)
 
-                 blocks-sig (sig/signal (d/deltaable-vector [block1 block2 block3]))
-                 render-count (atom 0)
+               blocks-sig (sig/signal (d/deltaable-vector [block1 block2 block3]))
+               render-count (atom 0)
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (swap! render-count inc)
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (render-block block (block-depth new block) false))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (swap! render-count inc)
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (render-block block (block-depth new block) false))))))]
 
-             ;; 1. Initial render
-             @app-spin
-             (is (= 3 (count (:children @app-spin))))
-             (is (= 1 @render-count))
+           ;; 1. Initial render
+           @app-spin
+           (is (= 3 (count (:children @app-spin))))
+           (is (= 1 @render-count))
 
-             ;; 2. Add sub-item under "Main Content"
-             (let [new-id (atom nil)]
-               (swap! blocks-sig (fn [blocks]
-                                   (let [[new-blocks id] (add-block-after blocks (:id block2) "Sub-item 1")]
-                                     (reset! new-id id)
-                                     new-blocks)))
-               (await-drain ctx)
-
-               ;; Now indent the new block under block2
-               (swap! blocks-sig #(indent-block % @new-id))
-               (await-drain ctx)
-
-               (let [visible (visible-blocks @blocks-sig)]
-                 (is (= 4 (count visible)))
-                 (is (= (:id block2) (:parent-id (get-block-by-id @blocks-sig @new-id)))
-                     "New block is child of block2")))
-
-             ;; 3. Add another sub-item
-             (let [sub-item-1-id (-> @blocks-sig visible-blocks (nth 2) :id)
-                   new-id (atom nil)]
-               (swap! blocks-sig (fn [blocks]
-                                   (let [[new-blocks id] (add-block-after blocks sub-item-1-id "Sub-item 2")]
-                                     (reset! new-id id)
-                                     new-blocks)))
-               (await-drain ctx)
-
-               (is (= 5 (count (visible-blocks @blocks-sig)))))
-
-             ;; 4. Update content
-             (swap! blocks-sig #(update-block-content % (:id block1) "Updated Introduction"))
+           ;; 2. Add sub-item under "Main Content"
+           (let [new-id (atom nil)]
+             (swap! blocks-sig (fn [blocks]
+                                 (let [[new-blocks id] (add-block-after blocks (:id block2) "Sub-item 1")]
+                                   (reset! new-id id)
+                                   new-blocks)))
              (await-drain ctx)
 
-             (is (= "Updated Introduction"
-                    (:content (get-block-by-id @blocks-sig (:id block1)))))
-
-             ;; 5. Delete block3 (Conclusion)
-             (swap! blocks-sig #(delete-block % (:id block3)))
+             ;; Now indent the new block under block2
+             (swap! blocks-sig #(indent-block % @new-id))
              (await-drain ctx)
 
-             (is (= 4 (count (visible-blocks @blocks-sig))))
-             (is (nil? (get-block-by-id @blocks-sig (:id block3))))
+             (let [visible (visible-blocks @blocks-sig)]
+               (is (= 4 (count visible)))
+               (is (= (:id block2) (:parent-id (get-block-by-id @blocks-sig @new-id)))
+                   "New block is child of block2")))
 
-             ;; Verify final structure renders correctly
-             (let [vdom @app-spin]
-               (is (= 4 (count (:children vdom)))))))))))
+           ;; 3. Add another sub-item
+           (let [sub-item-1-id (-> @blocks-sig visible-blocks (nth 2) :id)
+                 new-id (atom nil)]
+             (swap! blocks-sig (fn [blocks]
+                                 (let [[new-blocks id] (add-block-after blocks sub-item-1-id "Sub-item 2")]
+                                   (reset! new-id id)
+                                   new-blocks)))
+             (await-drain ctx)
+
+             (is (= 5 (count (visible-blocks @blocks-sig)))))
+
+           ;; 4. Update content
+           (swap! blocks-sig #(update-block-content % (:id block1) "Updated Introduction"))
+           (await-drain ctx)
+
+           (is (= "Updated Introduction"
+                  (:content (get-block-by-id @blocks-sig (:id block1)))))
+
+           ;; 5. Delete block3 (Conclusion)
+           (swap! blocks-sig #(delete-block % (:id block3)))
+           (await-drain ctx)
+
+           (is (= 4 (count (visible-blocks @blocks-sig))))
+           (is (nil? (get-block-by-id @blocks-sig (:id block3))))
+
+           ;; Verify final structure renders correctly
+           (let [vdom @app-spin]
+             (is (= 4 (count (:children vdom))))))))))
 
 #?(:clj
    (deftest test-deep-nesting-operations
      (testing "Indent/outdent with deep nesting"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [;; Create 4-level deep structure
-                 root (make-block "Root" nil 0)
-                 l1 (make-block "Level 1" (:id root) 0)
-                 l2 (make-block "Level 2" (:id l1) 0)
-                 l3 (make-block "Level 3" (:id l2) 0)
+       (with-ctx [ctx]
+         (let [;; Create 4-level deep structure
+               root (make-block "Root" nil 0)
+               l1 (make-block "Level 1" (:id root) 0)
+               l2 (make-block "Level 2" (:id l1) 0)
+               l3 (make-block "Level 3" (:id l2) 0)
 
-                 blocks-sig (sig/signal (d/deltaable-vector [root l1 l2 l3]))
+               blocks-sig (sig/signal (d/deltaable-vector [root l1 l2 l3]))
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)
-                         visible (visible-blocks new)]
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id visible
-                         (fn [block]
-                           (el/div {:data-depth (block-depth new block)}
-                             (:content block)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)
+                       visible (visible-blocks new)]
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id visible
+                       (fn [block]
+                         (el/div {:data-depth (block-depth new block)}
+                           (:content block)))))))]
 
-             ;; Initial - verify depths
-             @app-spin
-             (is (= 0 (block-depth @blocks-sig root)))
-             (is (= 1 (block-depth @blocks-sig l1)))
-             (is (= 2 (block-depth @blocks-sig l2)))
-             (is (= 3 (block-depth @blocks-sig l3)))
+           ;; Initial - verify depths
+           @app-spin
+           (is (= 0 (block-depth @blocks-sig root)))
+           (is (= 1 (block-depth @blocks-sig l1)))
+           (is (= 2 (block-depth @blocks-sig l2)))
+           (is (= 3 (block-depth @blocks-sig l3)))
 
-             ;; Outdent l3 - should become sibling of l2 (child of l1)
-             (swap! blocks-sig #(outdent-block % (:id l3)))
-             (await-drain ctx)
+           ;; Outdent l3 - should become sibling of l2 (child of l1)
+           (swap! blocks-sig #(outdent-block % (:id l3)))
+           (await-drain ctx)
 
-             (is (= (:id l1) (:parent-id (get-block-by-id @blocks-sig (:id l3))))
-                 "L3 is now child of L1")
-             (is (= 2 (block-depth @blocks-sig (get-block-by-id @blocks-sig (:id l3))))
-                 "L3 depth is now 2")
+           (is (= (:id l1) (:parent-id (get-block-by-id @blocks-sig (:id l3))))
+               "L3 is now child of L1")
+           (is (= 2 (block-depth @blocks-sig (get-block-by-id @blocks-sig (:id l3))))
+               "L3 depth is now 2")
 
-             ;; Outdent l3 again - should become child of root
-             (swap! blocks-sig #(outdent-block % (:id l3)))
-             (await-drain ctx)
+           ;; Outdent l3 again - should become child of root
+           (swap! blocks-sig #(outdent-block % (:id l3)))
+           (await-drain ctx)
 
-             (is (= (:id root) (:parent-id (get-block-by-id @blocks-sig (:id l3))))
-                 "L3 is now child of root")
-             (is (= 1 (block-depth @blocks-sig (get-block-by-id @blocks-sig (:id l3))))
-                 "L3 depth is now 1")))))))
+           (is (= (:id root) (:parent-id (get-block-by-id @blocks-sig (:id l3))))
+               "L3 is now child of root")
+           (is (= 1 (block-depth @blocks-sig (get-block-by-id @blocks-sig (:id l3))))
+               "L3 depth is now 1"))))))
 
 #?(:clj
    (deftest test-ifor-each-with-render-to-dom
@@ -615,81 +608,80 @@
        ;; visible-blocks would need to use interval/delta-aware filtering
        ;; to propagate deltas through the tree traversal.
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 b1 {:id 1 :content "Block 1"}
-                 b2 {:id 2 :content "Block 2"}
-                 ;; Use flat list - pass deltaable directly to ifor-each
-                 blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
+       (with-ctx [ctx]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               b1 {:id 1 :content "Block 1"}
+               b2 {:id 2 :content "Block 2"}
+               ;; Use flat list - pass deltaable directly to ifor-each
+               blocks-sig (sig/signal (d/deltaable-vector [b1 b2]))
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new]} (track blocks-sig)]
-                     ;; Pass deltaable directly - no transformation that loses deltas
-                     (el/div {:class "editor"}
-                       (foreach/ifor-each :id new
-                         (fn [block]
-                           (el/div {:data-id (:id block)}
-                             (:content block)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new]} (track blocks-sig)]
+                   ;; Pass deltaable directly - no transformation that loses deltas
+                   (el/div {:class "editor"}
+                     (foreach/ifor-each :id new
+                       (fn [block]
+                         (el/div {:data-id (:id block)}
+                           (:content block)))))))]
 
-             ;; Initial render through discharge
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
+           ;; Initial render through discharge
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
 
-             ;; Count initial create-element operations
-             (let [initial-creates (count (filter #(= :create-element (:op %)) @log))]
-               ;; Should create: 1 outer div + 2 block divs = 3 elements
-               ;; Text nodes are created via create-text!, not create-element!
-               (is (= 3 initial-creates) "Initial render creates 3 elements"))
+           ;; Count initial create-element operations
+           (let [initial-creates (count (filter #(= :create-element (:op %)) @log))]
+             ;; Should create: 1 outer div + 2 block divs = 3 elements
+             ;; Text nodes are created via create-text!, not create-element!
+             (is (= 3 initial-creates) "Initial render creates 3 elements"))
 
-             ;; Verify initial structure - 2 block children in outer div
-             ;; KeyedFragment items are spliced into parent's children
-             (let [vdom @app-spin
-                   outer-children @(:children vdom)]
-               (is (= 2 (count outer-children)) "Outer div has 2 block children")
-               ;; Verify content of first block
-               (let [first-block (first outer-children)]
-                 (is (= :div (:tag first-block)))
-                 (is (= 1 (get-in first-block [:attrs :data-id])))))
+           ;; Verify initial structure - 2 block children in outer div
+           ;; KeyedFragment items are spliced into parent's children
+           (let [vdom @app-spin
+                 outer-children @(:children vdom)]
+             (is (= 2 (count outer-children)) "Outer div has 2 block children")
+             ;; Verify content of first block
+             (let [first-block (first outer-children)]
+               (is (= :div (:tag first-block)))
+               (is (= 1 (get-in first-block [:attrs :data-id])))))
 
-             ;; Add a block - use conj to produce :add delta
-             (reset! log [])
-             (swap! blocks-sig conj {:id 3 :content "Block 3"})
-             (await-drain ctx)
-             @app-spin
+           ;; Add a block - use conj to produce :add delta
+           (reset! log [])
+           (swap! blocks-sig conj {:id 3 :content "Block 3"})
+           (await-drain ctx)
+           @app-spin
 
-             ;; Verify INCREMENTAL update - should only create new block elements
-             (let [add-creates (count (filter #(= :create-element (:op %)) @log))]
-               ;; Should only create 1 new div for the added block
-               (is (<= add-creates 3) "Incremental add creates minimal elements"))
+           ;; Verify INCREMENTAL update - should only create new block elements
+           (let [add-creates (count (filter #(= :create-element (:op %)) @log))]
+             ;; Should only create 1 new div for the added block
+             (is (<= add-creates 3) "Incremental add creates minimal elements"))
 
-             ;; Verify updated structure - now 3 blocks
-             (let [vdom @app-spin
-                   outer-children @(:children vdom)]
-               (is (= 3 (count outer-children)) "Outer div has 3 blocks after add"))
+           ;; Verify updated structure - now 3 blocks
+           (let [vdom @app-spin
+                 outer-children @(:children vdom)]
+             (is (= 3 (count outer-children)) "Outer div has 3 blocks after add"))
 
-             ;; Update a block's content using assoc (produces :update delta)
-             (reset! log [])
-             (swap! blocks-sig assoc 0 {:id 1 :content "Block 1 Updated"})
-             (await-drain ctx)
-             @app-spin
+           ;; Update a block's content using assoc (produces :update delta)
+           (reset! log [])
+           (swap! blocks-sig assoc 0 {:id 1 :content "Block 1 Updated"})
+           (await-drain ctx)
+           @app-spin
 
-             ;; Should see minimal operations for update
-             (let [update-creates (count (filter #(= :create-element (:op %)) @log))]
-               ;; Update should not recreate all elements
-               (is (<= update-creates 3) "Update doesn't recreate all elements"))
+           ;; Should see minimal operations for update
+           (let [update-creates (count (filter #(= :create-element (:op %)) @log))]
+             ;; Update should not recreate all elements
+             (is (<= update-creates 3) "Update doesn't recreate all elements"))
 
-             ;; Delete a block using filter (produces :remove delta)
-             (reset! log [])
-             (swap! blocks-sig (fn [dv] (d/filter-vec #(not= (:id %) 2) dv)))
-             (await-drain ctx)
-             @app-spin
+           ;; Delete a block using filter (produces :remove delta)
+           (reset! log [])
+           (swap! blocks-sig (fn [dv] (d/filter-vec #(not= (:id %) 2) dv)))
+           (await-drain ctx)
+           @app-spin
 
-             ;; Verify final structure - back to 2 blocks
-             (let [vdom @app-spin
-                   outer-children @(:children vdom)]
-               (is (= 2 (count outer-children)) "Outer div has 2 blocks after delete"))))))))
+           ;; Verify final structure - back to 2 blocks
+           (let [vdom @app-spin
+                 outer-children @(:children vdom)]
+             (is (= 2 (count outer-children)) "Outer div has 2 blocks after delete")))))))
 
 #?(:clj
    (deftest test-ifor-each-delta-pipeline
@@ -697,78 +689,77 @@
        ;; This test explicitly checks that deltas are properly propagated
        ;; through the full reactive pipeline: signal -> track -> ifor-each
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [;; Create signal with deltaable vector
-                 items-sig (sig/signal (d/deltaable-vector [{:id 1 :text "A"}
-                                                            {:id 2 :text "B"}]))
-                 ;; Track what deltas ifor-each actually receives
-                 received-deltas (atom [])
+       (with-ctx [ctx]
+         (let [;; Create signal with deltaable vector
+               items-sig (sig/signal (d/deltaable-vector [{:id 1 :text "A"}
+                                                          {:id 2 :text "B"}]))
+               ;; Track what deltas ifor-each actually receives
+               received-deltas (atom [])
 
-                 app-spin
-                 (spin
-                   (let [{:keys [new old deltas] :as interval} (track items-sig)]
-                     ;; Capture deltas for inspection
-                     (swap! received-deltas conj {:old old :new new :deltas deltas})
-                     ;; Simple render
-                     (el/div
-                       (foreach/ifor-each :id new
-                         (fn [item]
-                           (el/span (:text item)))))))]
+               app-spin
+               (spin
+                 (let [{:keys [new old deltas] :as interval} (track items-sig)]
+                   ;; Capture deltas for inspection
+                   (swap! received-deltas conj {:old old :new new :deltas deltas})
+                   ;; Simple render
+                   (el/div
+                     (foreach/ifor-each :id new
+                       (fn [item]
+                         (el/span (:text item)))))))]
 
-             ;; Initial execution
-             @app-spin
+           ;; Initial execution
+           @app-spin
 
-             ;; Check initial state - should have nil deltas (first render)
-             (let [initial @received-deltas]
-               (is (= 1 (count initial)))
-               (is (nil? (:deltas (first initial))) "First render has no deltas"))
+           ;; Check initial state - should have nil deltas (first render)
+           (let [initial @received-deltas]
+             (is (= 1 (count initial)))
+             (is (nil? (:deltas (first initial))) "First render has no deltas"))
 
-             ;; Clear for next operation
-             (reset! received-deltas [])
+           ;; Clear for next operation
+           (reset! received-deltas [])
 
-             ;; Add item using conj (produces :add delta)
-             (swap! items-sig conj {:id 3 :text "C"})
-             (await-drain ctx)
-             @app-spin
+           ;; Add item using conj (produces :add delta)
+           (swap! items-sig conj {:id 3 :text "C"})
+           (await-drain ctx)
+           @app-spin
 
-             ;; Verify :add delta was received
-             (let [after-add @received-deltas]
-               (is (= 1 (count after-add)) "One re-execution after add")
-               (let [{:keys [deltas]} (first after-add)]
-                 (is (seq deltas) "Should have deltas")
-                 (is (= :add (:delta (first deltas))) "Delta should be :add")
-                 (is (= {:id 3 :text "C"} (:value (first deltas))) "Delta value should be new item")))
+           ;; Verify :add delta was received
+           (let [after-add @received-deltas]
+             (is (= 1 (count after-add)) "One re-execution after add")
+             (let [{:keys [deltas]} (first after-add)]
+               (is (seq deltas) "Should have deltas")
+               (is (= :add (:delta (first deltas))) "Delta should be :add")
+               (is (= {:id 3 :text "C"} (:value (first deltas))) "Delta value should be new item")))
 
-             ;; Clear for update test
-             (reset! received-deltas [])
+           ;; Clear for update test
+           (reset! received-deltas [])
 
-             ;; Update item using assoc (produces :update delta)
-             (swap! items-sig assoc 0 {:id 1 :text "A-updated"})
-             (await-drain ctx)
-             @app-spin
+           ;; Update item using assoc (produces :update delta)
+           (swap! items-sig assoc 0 {:id 1 :text "A-updated"})
+           (await-drain ctx)
+           @app-spin
 
-             ;; Verify :update delta
-             (let [after-update @received-deltas]
-               (is (= 1 (count after-update)) "One re-execution after update")
-               (let [{:keys [deltas]} (first after-update)]
-                 (is (seq deltas) "Should have deltas")
-                 (is (= :update (:delta (first deltas))) "Delta should be :update")))
+           ;; Verify :update delta
+           (let [after-update @received-deltas]
+             (is (= 1 (count after-update)) "One re-execution after update")
+             (let [{:keys [deltas]} (first after-update)]
+               (is (seq deltas) "Should have deltas")
+               (is (= :update (:delta (first deltas))) "Delta should be :update")))
 
-             ;; Clear for remove test
-             (reset! received-deltas [])
+           ;; Clear for remove test
+           (reset! received-deltas [])
 
-             ;; Remove item using dissoc-by-key (produces :remove delta)
-             (swap! items-sig (fn [dv] (d/filter-vec #(not= (:id %) 2) dv)))
-             (await-drain ctx)
-             @app-spin
+           ;; Remove item using dissoc-by-key (produces :remove delta)
+           (swap! items-sig (fn [dv] (d/filter-vec #(not= (:id %) 2) dv)))
+           (await-drain ctx)
+           @app-spin
 
-             ;; Verify :remove delta
-             (let [after-remove @received-deltas]
-               (is (= 1 (count after-remove)) "One re-execution after remove")
-               (let [{:keys [deltas]} (first after-remove)]
-                 (is (seq deltas) "Should have deltas")
-                 (is (= :remove (:delta (first deltas))) "Delta should be :remove")))))))))
+           ;; Verify :remove delta
+           (let [after-remove @received-deltas]
+             (is (= 1 (count after-remove)) "One re-execution after remove")
+             (let [{:keys [deltas]} (first after-remove)]
+               (is (seq deltas) "Should have deltas")
+               (is (= :remove (:delta (first deltas))) "Delta should be :remove"))))))))
 
 #?(:clj
    (deftest test-ifor-each-with-interval-vs-new
@@ -781,67 +772,66 @@
        ;; So passing (:new interval) loses deltas!
        ;; Must pass the full interval for incremental updates.
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [items-sig (sig/signal (d/deltaable-vector [{:id 1 :text "A"}]))
-                 ;; Track which code path for-each* takes
-                 incremental-path-taken (atom {:correct 0 :wrong 0})
+       (with-ctx [ctx]
+         (let [items-sig (sig/signal (d/deltaable-vector [{:id 1 :text "A"}]))
+               ;; Track which code path for-each* takes
+               incremental-path-taken (atom {:correct 0 :wrong 0})
 
-                 ;; Test 1: Pass full interval (correct)
-                 app-spin-correct
-                 (spin
-                   (let [items-iv (track items-sig)
-                         ;; Check what as-interval would see
-                         coerced (iv/as-interval items-iv)
-                         has-deltas? (seq (iv/get-deltas coerced))]
-                     (when has-deltas?
-                       (swap! incremental-path-taken update :correct inc))
-                     ;; Pass INTERVAL - ifor-each sees deltas via as-interval
-                     (el/div
-                       (foreach/ifor-each :id items-iv
-                         (fn [item]
-                           (el/span (:text item)))))))
+               ;; Test 1: Pass full interval (correct)
+               app-spin-correct
+               (spin
+                 (let [items-iv (track items-sig)
+                       ;; Check what as-interval would see
+                       coerced (iv/as-interval items-iv)
+                       has-deltas? (seq (iv/get-deltas coerced))]
+                   (when has-deltas?
+                     (swap! incremental-path-taken update :correct inc))
+                   ;; Pass INTERVAL - ifor-each sees deltas via as-interval
+                   (el/div
+                     (foreach/ifor-each :id items-iv
+                       (fn [item]
+                         (el/span (:text item)))))))
 
-                 ;; Test 2: Pass just :new (wrong - loses deltas)
-                 app-spin-wrong
-                 (spin
-                   (let [{:keys [new]} (track items-sig)
-                         ;; Check what as-interval would see with just :new
-                         coerced (iv/as-interval new)
-                         has-deltas? (seq (iv/get-deltas coerced))]
-                     (when has-deltas?
-                       (swap! incremental-path-taken update :wrong inc))
-                     ;; Pass just :new - a DeltaableVector with cleared deltas
-                     (el/div
-                       (foreach/ifor-each :id new
-                         (fn [item]
-                           (el/span (:text item)))))))]
+               ;; Test 2: Pass just :new (wrong - loses deltas)
+               app-spin-wrong
+               (spin
+                 (let [{:keys [new]} (track items-sig)
+                       ;; Check what as-interval would see with just :new
+                       coerced (iv/as-interval new)
+                       has-deltas? (seq (iv/get-deltas coerced))]
+                   (when has-deltas?
+                     (swap! incremental-path-taken update :wrong inc))
+                   ;; Pass just :new - a DeltaableVector with cleared deltas
+                   (el/div
+                     (foreach/ifor-each :id new
+                       (fn [item]
+                         (el/span (:text item)))))))]
 
-             ;; Initial execution
-             @app-spin-correct
-             @app-spin-wrong
+           ;; Initial execution
+           @app-spin-correct
+           @app-spin-wrong
 
-             ;; Both should work initially - no deltas on first render
-             (is (= 1 (count @(:children @app-spin-correct))))
-             (is (= 1 (count @(:children @app-spin-wrong))))
-             (is (= {:correct 0 :wrong 0} @incremental-path-taken)
-                 "No deltas on initial render")
+           ;; Both should work initially - no deltas on first render
+           (is (= 1 (count @(:children @app-spin-correct))))
+           (is (= 1 (count @(:children @app-spin-wrong))))
+           (is (= {:correct 0 :wrong 0} @incremental-path-taken)
+               "No deltas on initial render")
 
-             ;; Now add an item
-             (swap! items-sig conj {:id 2 :text "B"})
-             (await-drain ctx)
-             @app-spin-correct
-             @app-spin-wrong
+           ;; Now add an item
+           (swap! items-sig conj {:id 2 :text "B"})
+           (await-drain ctx)
+           @app-spin-correct
+           @app-spin-wrong
 
-             ;; Both should have 2 items (functional correctness)
-             (is (= 2 (count @(:children @app-spin-correct))) "Correct: 2 items")
-             (is (= 2 (count @(:children @app-spin-wrong))) "Wrong also works functionally")
+           ;; Both should have 2 items (functional correctness)
+           (is (= 2 (count @(:children @app-spin-correct))) "Correct: 2 items")
+           (is (= 2 (count @(:children @app-spin-wrong))) "Wrong also works functionally")
 
-             ;; KEY ASSERTION: Only the correct approach sees deltas
-             (is (= 1 (:correct @incremental-path-taken))
-                 "Correct approach: interval has deltas")
-             (is (= 0 (:wrong @incremental-path-taken))
-                 "Wrong approach: :new has NO deltas (cleared by signal)")))))))
+           ;; KEY ASSERTION: Only the correct approach sees deltas
+           (is (= 1 (:correct @incremental-path-taken))
+               "Correct approach: interval has deltas")
+           (is (= 0 (:wrong @incremental-path-taken))
+               "Wrong approach: :new has NO deltas (cleared by signal)"))))))
 
 #?(:clj
    (deftest test-dom-operations-comparison
@@ -849,30 +839,29 @@
        ;; This test renders the same UI with both approaches and compares
        ;; the DOM operations logged by MockDischarge
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           ;; Setup for CORRECT approach (pass interval)
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 items-sig-correct (sig/signal (d/deltaable-vector
-                                                 [{:id 1 :text "Item A"}
-                                                  {:id 2 :text "Item B"}]))
-                 spin-correct
-                 (spin
-                   (let [items-iv (track items-sig-correct)]
-                     (el/ul {:class "list"}
-                       (foreach/ifor-each :id items-iv
-                         (fn [item]
-                           (el/li {:key (:id item)} (:text item)))))))]
+       (with-ctx [ctx]
+         ;; Setup for CORRECT approach (pass interval)
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               items-sig-correct (sig/signal (d/deltaable-vector
+                                               [{:id 1 :text "Item A"}
+                                                {:id 2 :text "Item B"}]))
+               spin-correct
+               (spin
+                 (let [items-iv (track items-sig-correct)]
+                   (el/ul {:class "list"}
+                     (foreach/ifor-each :id items-iv
+                       (fn [item]
+                         (el/li {:key (:id item)} (:text item)))))))]
 
-             ;; Initial render
-             (render/render-spin! nil spin-correct discharge)
-             @spin-correct
+           ;; Initial render
+           (render/render-spin! nil spin-correct discharge)
+           @spin-correct
 
-             ;; Clear and add item
-             (reset! log [])
-             (swap! items-sig-correct conj {:id 3 :text "Item C"})
-             (await-drain ctx)
-             @spin-correct
+           ;; Clear and add item
+           (reset! log [])
+           (swap! items-sig-correct conj {:id 3 :text "Item C"})
+           (await-drain ctx)
+           @spin-correct
 
            ;; Setup for WRONG approach (pass :new)
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
@@ -895,16 +884,15 @@
              (reset! log [])
              (swap! items-sig-wrong conj {:id 3 :text "Item C"})
              (await-drain ctx)
-             @spin-wrong))))))
+             @spin-wrong)))))
 
 #?(:clj
    (deftest test-dom-operations-move-and-indent
      (testing "DOM operations for move and indent with depth changes"
        (reset-id-counter!)
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           
-           ;; ============ TEST 1: MOVE (reorder) ============
+       (with-ctx [ctx]
+
+         ;; ============ TEST 1: MOVE (reorder) ============
            ;; Setup with interval approach
            (let [{:keys [discharge log]} (disch/make-mock-discharge)
                  ;; Simple flat list for move testing
@@ -1007,4 +995,4 @@
              ;; Use update-by-key same as interval version
              (swap! blocks-sig d/update-by-key :id 2 assoc :depth 1)
              (await-drain ctx)
-             @render-spin)))))))
+             @render-spin))))))

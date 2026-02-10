@@ -26,41 +26,39 @@
 
 #?(:clj
    (deftest smoke-test-basic-workflow-clj
-     (testing "End-to-end: runtime → signal → spin → execution"
-       (let [ctx (ctx/create-execution-context)]
+     (testing "End-to-end: runtime \u2192 signal \u2192 spin \u2192 execution"
+       (with-ctx [ctx]
          (is (some? ctx) "Context should be created")
-         (binding [ec/*execution-context* ctx]
-           (let [counter (sig/signal 0)]
-             (is (some? counter) "Signal should be created")
-             (is (= 0 @counter) "Signal initial value should be 0")
-             (let [doubled (spin
-                             (let [{:keys [new]} (track counter)]
-                               (* 2 new)))]
-               (is (some? doubled) "Spin should be created")
-               (is (= 0 @doubled) "Spin should return 0 (2 * 0)")
-               (swap! counter inc)
-               (await-drain ctx)
-               (is (= 1 @counter) "Signal should be updated to 1")
-               (is (= 2 @doubled) "Spin should re-execute and return 2 (2 * 1)"))))))))
+         (let [counter (sig/signal 0)]
+           (is (some? counter) "Signal should be created")
+           (is (= 0 @counter) "Signal initial value should be 0")
+           (let [doubled (spin
+                           (let [{:keys [new]} (track counter)]
+                             (* 2 new)))]
+             (is (some? doubled) "Spin should be created")
+             (is (= 0 @doubled) "Spin should return 0 (2 * 0)")
+             (swap! counter inc)
+             (await-drain ctx)
+             (is (= 1 @counter) "Signal should be updated to 1")
+             (is (= 2 @doubled) "Spin should re-execute and return 2 (2 * 1)")))))))
 
 #?(:clj
    (deftest smoke-test-multiple-signals-clj
      (testing "Spin can depend on multiple signals"
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [x (sig/signal 10)
-                 y (sig/signal 20)
-                 sum-spin (spin
-                            (let [{x-val :new} (track x)
-                                  {y-val :new} (track y)]
-                              (+ x-val y-val)))]
-             (is (= 30 @sum-spin) "Spin should sum both signals")
-             (swap! x + 5)
-             (await-drain ctx)
-             (is (= 35 @sum-spin) "Spin should re-execute with new x value")
-             (swap! y + 10)
-             (await-drain ctx)
-             (is (= 45 @sum-spin) "Spin should re-execute with new y value")))))))
+       (with-ctx [ctx]
+         (let [x (sig/signal 10)
+               y (sig/signal 20)
+               sum-spin (spin
+                          (let [{x-val :new} (track x)
+                                {y-val :new} (track y)]
+                            (+ x-val y-val)))]
+           (is (= 30 @sum-spin) "Spin should sum both signals")
+           (swap! x + 5)
+           (await-drain ctx)
+           (is (= 35 @sum-spin) "Spin should re-execute with new x value")
+           (swap! y + 10)
+           (await-drain ctx)
+           (is (= 45 @sum-spin) "Spin should re-execute with new y value"))))))
 
 ;; =============================================================================
 ;; Cross-platform tests (use async/done pattern)

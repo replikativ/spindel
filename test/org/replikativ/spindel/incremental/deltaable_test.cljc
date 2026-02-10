@@ -7,7 +7,8 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.signal :as sig]))
+            [org.replikativ.spindel.signal :as sig]
+            #?(:clj [org.replikativ.spindel.test-helpers :as th])))
 
 ;; =============================================================================
 ;; Interval Tests (formerly SignalValue/SignalDeltaView)
@@ -125,10 +126,8 @@
 #?(:clj
    (deftest test-signal-integration
      (testing "Signal integration with dual perspective"
-       (let [ctx (ctx/create-execution-context)]
-
-         (binding [ec/*execution-context* ctx]
-           (let [counter (sig/signal 0)]
+       (th/with-ctx [ctx]
+         (let [counter (sig/signal 0)]
            ;; Initial state
            (let [[new old deltas] (sig/get-signal-detailed counter)]
              (is (= 0 new) "Initial value is 0")
@@ -145,7 +144,7 @@
 
            ;; Deref returns current value
            (is (= 1 @(sig/get-signal-detailed counter))
-               "Dereferencing SignalValue returns current value")))))))
+               "Dereferencing SignalValue returns current value"))))))
 
 ;; =============================================================================
 ;; DeltaableVector Tests

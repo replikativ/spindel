@@ -204,37 +204,35 @@
 #?(:clj
    (deftest test-signal-tracking
      (testing "Spins can track signals with ExecutionContext"
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [counter (sig/signal 0)
-                 doubled (spin
-                           (let [{:keys [new]} (track counter)]
-                             (* 2 new)))]
-             ;; Initial execution
-             (is (= 0 @doubled))
-             ;; Update signal
-             (swap! counter inc)
-             ;; Wait for events to be processed
-             (await-drain ctx)
-             ;; Spin should re-execute
-             (is (= 2 @doubled))))))))
+       (with-ctx [ctx]
+         (let [counter (sig/signal 0)
+               doubled (spin
+                         (let [{:keys [new]} (track counter)]
+                           (* 2 new)))]
+           ;; Initial execution
+           (is (= 0 @doubled))
+           ;; Update signal
+           (swap! counter inc)
+           ;; Wait for events to be processed
+           (await-drain ctx)
+           ;; Spin should re-execute
+           (is (= 2 @doubled)))))))
 
 #?(:clj
    (deftest test-dependency-tracking
      (testing "Dependency graph is correctly maintained"
-       (let [ctx (ctx/create-execution-context)]
-         (binding [ec/*execution-context* ctx]
-           (let [counter (sig/signal 10)
-                 doubled (spin
-                           (let [{:keys [new]} (track counter)]
-                             (* 2 new)))
-                 tripled (spin (* 3 (await doubled)))]
-             ;; Execute both spins
-             (is (= 20 @doubled))
-             (is (= 60 @tripled))
-             ;; Update signal - both should re-execute
-             (swap! counter + 5)
-             ;; Wait for events to be processed
-             (await-drain ctx)
-             (is (= 30 @doubled))
-             (is (= 90 @tripled))))))))
+       (with-ctx [ctx]
+         (let [counter (sig/signal 10)
+               doubled (spin
+                         (let [{:keys [new]} (track counter)]
+                           (* 2 new)))
+               tripled (spin (* 3 (await doubled)))]
+           ;; Execute both spins
+           (is (= 20 @doubled))
+           (is (= 60 @tripled))
+           ;; Update signal - both should re-execute
+           (swap! counter + 5)
+           ;; Wait for events to be processed
+           (await-drain ctx)
+           (is (= 30 @doubled))
+           (is (= 90 @tripled)))))))

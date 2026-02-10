@@ -32,18 +32,6 @@
   :repl {:extra-deps {nrepl/nrepl {:mvn/version "1.1.2"}
                       cider/cider-nrepl {:mvn/version "0.49.3"}}}
 
-  :repl-mcp {:main-opts ["-m" "org.replikativ.repl-mcp"]
-             :extra-paths ["test"]
-             :jvm-opts ["-Djdk.attach.allowAttachSelf"
-                        "-XX:+UnlockDiagnosticVMOptions"
-                        "-XX:+DebugNonSafepoints"
-                        "-XX:+EnableDynamicAgentLoading"
-                        "--enable-native-access=ALL-UNNAMED"]
-             :extra-deps {org.replikativ/repl-mcp {:git/url "https://github.com/simm-is/repl-mcp"
-                                            :git/sha "0df37a453d5747fa3b239c3c45f66741a3aa81b8"}
-                          org.slf4j/slf4j-api {:mvn/version "2.0.17"}
-                          org.slf4j/slf4j-simple {:mvn/version "2.0.17"}}}
-
   :dev {:extra-paths ["test"]
         :extra-deps {org.clojure/tools.namespace {:mvn/version "1.5.0"}}}
 

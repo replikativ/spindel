@@ -6,7 +6,8 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
-            [org.replikativ.spindel.effects.track :refer [track]]))
+            [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.test-helpers :as th]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -63,10 +64,8 @@
 
 (deftest test-spin-without-dependencies-no-cache
   (testing "Spin without dependencies doesn't use global cache"
-    (let [ctx (ctx/create-execution-context)
-          executed (atom 0)]
-
-      (binding [ec/*execution-context* ctx]
+    (let [executed (atom 0)]
+      (th/with-ctx [ctx]
         (let [my-spin (spin
                         (do
                           (swap! executed inc)
@@ -85,10 +84,8 @@
 
 (deftest test-spin-with-signal-dependency-uses-cache
   (testing "Spin with signal dependency stores in global cache"
-    (let [ctx (ctx/create-execution-context)
-          executed (atom 0)]
-
-      (binding [ec/*execution-context* ctx]
+    (let [executed (atom 0)]
+      (th/with-ctx [ctx]
         (let [sig (sig/signal 42)
               my-spin (spin
                         (let [{:keys [new]} (track sig)]
@@ -111,35 +108,33 @@
 
 (deftest test-different-signal-values-different-cache-entries
   (testing "Different signal values create different cache entries"
-    (let [ctx (ctx/create-execution-context)]
+    (th/with-ctx [ctx]
+      (let [sig-1 (sig/signal 42)
+            executed-1 (atom 0)
+            spin-1 (spin
+                     (let [{:keys [new]} (track sig-1)]
+                       (swap! executed-1 inc)
+                       (+ new 1)))]
 
-      (binding [ec/*execution-context* ctx]
-        (let [sig-1 (sig/signal 42)
-              executed-1 (atom 0)
-              spin-1 (spin
-                       (let [{:keys [new]} (track sig-1)]
-                         (swap! executed-1 inc)
+        ;; First spin execution with sig=42
+        (is (= 43 @spin-1))
+        (is (= 1 @executed-1))
+        (is (= 1 (:total-entries (cache/stats))))
+
+        ;; Create second spin with DIFFERENT signal value
+        (let [sig-2 (sig/signal 99)
+              executed-2 (atom 0)
+              spin-2 (spin
+                       (let [{:keys [new]} (track sig-2)]
+                         (swap! executed-2 inc)
                          (+ new 1)))]
 
-          ;; First spin execution with sig=42
-          (is (= 43 @spin-1))
-          (is (= 1 @executed-1))
-          (is (= 1 (:total-entries (cache/stats))))
+          ;; Second spin execution with sig=99
+          (is (= 100 @spin-2))
+          (is (= 1 @executed-2))
 
-          ;; Create second spin with DIFFERENT signal value
-          (let [sig-2 (sig/signal 99)
-                executed-2 (atom 0)
-                spin-2 (spin
-                         (let [{:keys [new]} (track sig-2)]
-                           (swap! executed-2 inc)
-                           (+ new 1)))]
-
-            ;; Second spin execution with sig=99
-            (is (= 100 @spin-2))
-            (is (= 1 @executed-2))
-
-            ;; Should have TWO cache entries now (different signal values)
-            (is (= 2 (:total-entries (cache/stats))))))))))
+          ;; Should have TWO cache entries now (different signal values)
+          (is (= 2 (:total-entries (cache/stats)))))))))
 
 ;; =============================================================================
 ;; Cache Isolation and Reuse Tests
@@ -147,11 +142,9 @@
 
 (deftest test-cache-per-spin-id-isolation
   (testing "Different spin instances have separate cache entries (per-spin-id isolation)"
-    (let [ctx (ctx/create-execution-context)
-          executed-1 (atom 0)
+    (let [executed-1 (atom 0)
           executed-2 (atom 0)]
-
-      (binding [ec/*execution-context* ctx]
+      (th/with-ctx [ctx]
         (let [sig (sig/signal 42)]
         ;; Create first spin that depends on signal
         (let [spin-1 (spin
@@ -182,10 +175,8 @@
 
 (deftest test-same-spin-same-deps-uses-cache
   (testing "Same spin instance with same dependencies uses cache"
-    (let [ctx (ctx/create-execution-context)
-          executed (atom 0)]
-
-      (binding [ec/*execution-context* ctx]
+    (let [executed (atom 0)]
+      (th/with-ctx [ctx]
         (let [sig (sig/signal 10)]
         (let [my-spin (spin
                         (let [{:keys [new]} (track sig)]

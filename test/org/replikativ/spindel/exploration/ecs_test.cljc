@@ -27,7 +27,8 @@
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.dom.foreach :as foreach]
-            #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
+            #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]])
+            #?(:clj [org.replikativ.spindel.test-helpers :as th]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
 
@@ -182,57 +183,55 @@
 #?(:clj
    (deftest test-signal-world-tracking
      (testing "World signal tracks changes via spin"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [world-sig (sig/signal (make-world [(make-entity "e1" :health 100)]))
-                 captured-deltas (atom nil)
-                 captured-tick (atom nil)
+       (th/with-ctx [rt]
+         (let [world-sig (sig/signal (make-world [(make-entity "e1" :health 100)]))
+               captured-deltas (atom nil)
+               captured-tick (atom nil)
 
-                 observer-spin (spin
-                                 (let [world-iv (track world-sig)
-                                       world @world-iv
-                                       deltas (iv/get-deltas world-iv)]
-                                   (reset! captured-deltas deltas)
-                                   (reset! captured-tick (:tick world))
-                                   world))]
+               observer-spin (spin
+                               (let [world-iv (track world-sig)
+                                     world @world-iv
+                                     deltas (iv/get-deltas world-iv)]
+                                 (reset! captured-deltas deltas)
+                                 (reset! captured-tick (:tick world))
+                                 world))]
 
-             ;; Initial
-             @observer-spin
-             (is (= 0 @captured-tick))
+           ;; Initial
+           @observer-spin
+           (is (= 0 @captured-tick))
 
-             ;; Tick the world
-             (swap! world-sig tick-world)
-             (await-drain rt)
+           ;; Tick the world
+           (swap! world-sig tick-world)
+           (await-drain rt)
 
-             (is (= 1 @captured-tick) "Should see updated tick")
-             (is (seq @captured-deltas) "Should have deltas from tick")))))))
+           (is (= 1 @captured-tick) "Should see updated tick")
+           (is (seq @captured-deltas) "Should have deltas from tick"))))))
 
 #?(:clj
    (deftest test-derived-view-entities-with-health
      (testing "Derived view filters entities incrementally"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
-                                                     (make-entity "e2" :health 0)   ; Dead
-                                                     (make-entity "e3" :health 50)]))
-                 alive-count (atom 0)
+       (th/with-ctx [rt]
+         (let [world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
+                                                   (make-entity "e2" :health 0)   ; Dead
+                                                   (make-entity "e3" :health 50)]))
+               alive-count (atom 0)
 
-                 ;; Spin that computes alive entities
-                 alive-spin (spin
-                              (let [world-iv (track world-sig)
-                                    entities (:entities @world-iv)
-                                    alive (filter #(pos? (:health (val %))) entities)]
-                                (reset! alive-count (count alive))
-                                (count alive)))]
+               ;; Spin that computes alive entities
+               alive-spin (spin
+                            (let [world-iv (track world-sig)
+                                  entities (:entities @world-iv)
+                                  alive (filter #(pos? (:health (val %))) entities)]
+                              (reset! alive-count (count alive))
+                              (count alive)))]
 
-             @alive-spin
-             (is (= 2 @alive-count) "Should have 2 alive entities")
+           @alive-spin
+           (is (= 2 @alive-count) "Should have 2 alive entities")
 
-             ;; Kill e1
-             (swap! world-sig update-entity "e1" :health 0)
-             (await-drain rt)
+           ;; Kill e1
+           (swap! world-sig update-entity "e1" :health 0)
+           (await-drain rt)
 
-             (is (= 1 @alive-count) "Should now have 1 alive entity")))))))
+           (is (= 1 @alive-count) "Should now have 1 alive entity"))))))
 
 ;; =============================================================================
 ;; Performance Exploration
@@ -304,109 +303,105 @@
 #?(:clj
    (deftest test-fork-evaluates-without-mutation
      (testing "Forked context allows evaluation without mutating parent"
-       (let [rt-main (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt-main]
-           (let [world-sig (sig/signal (make-world [(make-entity "player" :health 100)
-                                                     (make-entity "enemy" :health 50)]))]
-             ;; Initial score
-             (is (= 150 (evaluate-world @world-sig)))
+       (th/with-ctx [rt-main]
+         (let [world-sig (sig/signal (make-world [(make-entity "player" :health 100)
+                                                   (make-entity "enemy" :health 50)]))]
+           ;; Initial score
+           (is (= 150 (evaluate-world @world-sig)))
 
-             ;; Fork and simulate damage in fork
-             (let [rt-fork (ctx/fork-context rt-main)]
-               (binding [ec/*execution-context* rt-fork]
-                 ;; Apply damage in fork
-                 (swap! world-sig apply-action {:type :attack
-                                                :attacker-id "enemy"
-                                                :target-id "player"
-                                                :damage 30})
-                 ;; Fork sees damage
-                 (is (= 120 (evaluate-world @world-sig)) "Fork should see damage")))
+           ;; Fork and simulate damage in fork
+           (let [rt-fork (ctx/fork-context rt-main)]
+             (binding [ec/*execution-context* rt-fork]
+               ;; Apply damage in fork
+               (swap! world-sig apply-action {:type :attack
+                                              :attacker-id "enemy"
+                                              :target-id "player"
+                                              :damage 30})
+               ;; Fork sees damage
+               (is (= 120 (evaluate-world @world-sig)) "Fork should see damage")))
 
-             ;; Parent unchanged!
-             (is (= 150 (evaluate-world @world-sig)) "Parent should be unchanged")))))))
+           ;; Parent unchanged!
+           (is (= 150 (evaluate-world @world-sig)) "Parent should be unchanged"))))))
 
 #?(:clj
    (deftest test-fork-compare-strategies
      (testing "Fork enables comparing multiple AI strategies"
-       (let [rt-main (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt-main]
-           (let [initial-world (make-world [(make-entity "ai" :health 50 :velocity [1 0])
-                                            (make-entity "target" :health 100)])
-                 world-sig (sig/signal initial-world)
+       (th/with-ctx [rt-main]
+         (let [initial-world (make-world [(make-entity "ai" :health 50 :velocity [1 0])
+                                          (make-entity "target" :health 100)])
+               world-sig (sig/signal initial-world)
 
-                 ;; Strategy A: Attack
-                 score-attack (let [rt-fork (ctx/fork-context rt-main)]
-                                (binding [ec/*execution-context* rt-fork]
-                                  (swap! world-sig apply-action {:type :attack
-                                                                  :attacker-id "ai"
-                                                                  :target-id "target"
-                                                                  :damage 20})
-                                  (evaluate-world @world-sig)))
-
-                 ;; Strategy B: Heal self
-                 score-heal (let [rt-fork (ctx/fork-context rt-main)]
+               ;; Strategy A: Attack
+               score-attack (let [rt-fork (ctx/fork-context rt-main)]
                               (binding [ec/*execution-context* rt-fork]
-                                (swap! world-sig apply-action {:type :heal
-                                                                :entity-id "ai"
-                                                                :amount 30})
-                                (evaluate-world @world-sig)))]
+                                (swap! world-sig apply-action {:type :attack
+                                                                :attacker-id "ai"
+                                                                :target-id "target"
+                                                                :damage 20})
+                                (evaluate-world @world-sig)))
 
-             ;; Compare strategies
-             (is (= 130 score-attack) "Attack reduces target health: 50 + 80 = 130")
-             (is (= 180 score-heal) "Heal increases AI health: 80 + 100 = 180")
+               ;; Strategy B: Heal self
+               score-heal (let [rt-fork (ctx/fork-context rt-main)]
+                            (binding [ec/*execution-context* rt-fork]
+                              (swap! world-sig apply-action {:type :heal
+                                                              :entity-id "ai"
+                                                              :amount 30})
+                              (evaluate-world @world-sig)))]
 
-             ;; Parent world unchanged through all evaluations
-             (is (= 150 (evaluate-world @world-sig)) "Original world unchanged")))))))
+           ;; Compare strategies
+           (is (= 130 score-attack) "Attack reduces target health: 50 + 80 = 130")
+           (is (= 180 score-heal) "Heal increases AI health: 80 + 100 = 180")
+
+           ;; Parent world unchanged through all evaluations
+           (is (= 150 (evaluate-world @world-sig)) "Original world unchanged"))))))
 
 #?(:clj
    (deftest test-fork-lookahead-simulation
      (testing "Fork enables multi-step lookahead"
-       (let [rt-main (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt-main]
-           (let [;; World where entity moves right each tick
-                 initial-world (make-world [(make-entity "mover" :position [0 0] :velocity [10 0])])
-                 world-sig (sig/signal initial-world)]
+       (th/with-ctx [rt-main]
+         (let [;; World where entity moves right each tick
+               initial-world (make-world [(make-entity "mover" :position [0 0] :velocity [10 0])])
+               world-sig (sig/signal initial-world)]
 
-             ;; Simulate 5 ticks in a fork
-             (let [rt-fork (ctx/fork-context rt-main)
-                   future-pos (binding [ec/*execution-context* rt-fork]
-                                ;; Tick 5 times
-                                (dotimes [_ 5]
-                                  (swap! world-sig tick-world))
-                                (get-in @world-sig [:entities "mover" :position]))]
+           ;; Simulate 5 ticks in a fork
+           (let [rt-fork (ctx/fork-context rt-main)
+                 future-pos (binding [ec/*execution-context* rt-fork]
+                              ;; Tick 5 times
+                              (dotimes [_ 5]
+                                (swap! world-sig tick-world))
+                              (get-in @world-sig [:entities "mover" :position]))]
 
-               ;; Fork shows future position
-               (is (= [50 0] future-pos) "After 5 ticks at velocity [10,0], position should be [50,0]"))
+             ;; Fork shows future position
+             (is (= [50 0] future-pos) "After 5 ticks at velocity [10,0], position should be [50,0]"))
 
-             ;; Parent still at initial position
-             (is (= [0 0] (get-in @world-sig [:entities "mover" :position]))
-                 "Parent world unchanged")))))))
+           ;; Parent still at initial position
+           (is (= [0 0] (get-in @world-sig [:entities "mover" :position]))
+               "Parent world unchanged"))))))
 
 #?(:clj
    (deftest test-fork-is-lightweight
      (testing "Creating many forks is efficient"
-       (let [rt-main (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt-main]
-           (let [world-sig (sig/signal (make-world
-                                         (for [i (range 100)]
-                                           (make-entity (str "e" i) :health (rand-int 100)))))]
+       (th/with-ctx [rt-main]
+         (let [world-sig (sig/signal (make-world
+                                       (for [i (range 100)]
+                                         (make-entity (str "e" i) :health (rand-int 100)))))]
 
-             ;; Create 100 forks and evaluate each
-             (let [start-time (System/nanoTime)
-                   scores (doall
-                            (for [_ (range 100)]
-                              (let [rt-fork (ctx/fork-context rt-main)]
-                                (binding [ec/*execution-context* rt-fork]
-                                  ;; Do some work in each fork - increment health
-                                  (let [current (get-in @world-sig [:entities "e0" :health])]
-                                    (swap! world-sig update-entity "e0" :health (inc current)))
-                                  (evaluate-world @world-sig)))))
-                   elapsed-ms (/ (- (System/nanoTime) start-time) 1e6)]
+           ;; Create 100 forks and evaluate each
+           (let [start-time (System/nanoTime)
+                 scores (doall
+                          (for [_ (range 100)]
+                            (let [rt-fork (ctx/fork-context rt-main)]
+                              (binding [ec/*execution-context* rt-fork]
+                                ;; Do some work in each fork - increment health
+                                (let [current (get-in @world-sig [:entities "e0" :health])]
+                                  (swap! world-sig update-entity "e0" :health (inc current)))
+                                (evaluate-world @world-sig)))))
+                 elapsed-ms (/ (- (System/nanoTime) start-time) 1e6)]
 
-               ;; Should complete quickly (< 1 second for 100 forks)
-               (is (< elapsed-ms 1000) (str "100 forks should be fast, took " elapsed-ms "ms"))
-               ;; Each fork should produce a score
-               (is (= 100 (count scores)) "Should have 100 scores"))))))))
+             ;; Should complete quickly (< 1 second for 100 forks)
+             (is (< elapsed-ms 1000) (str "100 forks should be fast, took " elapsed-ms "ms"))
+             ;; Each fork should produce a score
+             (is (= 100 (count scores)) "Should have 100 scores")))))))
 
 ;; =============================================================================
 ;; Render Integration Tests
@@ -445,121 +440,117 @@
 #?(:clj
    (deftest test-world-render-with-signal
      (testing "World renders correctly through signal + spin"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge log]} (disch/make-mock-discharge)
-                 world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
-                                                     (make-entity "e2" :health 50)]))
-                 render-count (atom 0)
+       (th/with-ctx [rt]
+         (let [{:keys [discharge log]} (disch/make-mock-discharge)
+               world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
+                                                   (make-entity "e2" :health 50)]))
+               render-count (atom 0)
 
-                 app-spin (spin
-                            (let [world-iv (track world-sig)
-                                  entities (:entities @world-iv)]
-                              (swap! render-count inc)
-                              (render-world-view entities)))]
+               app-spin (spin
+                          (let [world-iv (track world-sig)
+                                entities (:entities @world-iv)]
+                            (swap! render-count inc)
+                            (render-world-view entities)))]
 
-             ;; Initial render
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
-             (is (= 1 @render-count))
+           ;; Initial render
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
+           (is (= 1 @render-count))
 
-             ;; Verify elements created
-             (is (some #(= :div (:tag %)) @log) "Should create div elements")
+           ;; Verify elements created
+           (is (some #(= :div (:tag %)) @log) "Should create div elements")
 
-             ;; Update one entity
-             (reset! log [])
-             (swap! world-sig update-entity "e1" :health 80)
-             (await-drain rt)
+           ;; Update one entity
+           (reset! log [])
+           (swap! world-sig update-entity "e1" :health 80)
+           (await-drain rt)
 
-             ;; Should have re-rendered
-             (is (= 2 @render-count) "Should re-render after entity update")))))))
+           ;; Should have re-rendered
+           (is (= 2 @render-count) "Should re-render after entity update"))))))
 
 #?(:clj
    (deftest test-add-entity-triggers-render
      (testing "Adding entity triggers re-render"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge]} (disch/make-mock-discharge)
-                 world-sig (sig/signal (make-world [(make-entity "e1" :health 100)]))
-                 entity-counts (atom [])
+       (th/with-ctx [rt]
+         (let [{:keys [discharge]} (disch/make-mock-discharge)
+               world-sig (sig/signal (make-world [(make-entity "e1" :health 100)]))
+               entity-counts (atom [])
 
-                 app-spin (spin
-                            (let [world-iv (track world-sig)
-                                  entities (:entities @world-iv)]
-                              (swap! entity-counts conj (count entities))
-                              (render-world-view entities)))]
+               app-spin (spin
+                          (let [world-iv (track world-sig)
+                                entities (:entities @world-iv)]
+                            (swap! entity-counts conj (count entities))
+                            (render-world-view entities)))]
 
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
-             (is (= [1] @entity-counts))
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
+           (is (= [1] @entity-counts))
 
-             ;; Add entity
-             (swap! world-sig add-entity (make-entity "e2" :health 50))
-             (await-drain rt)
+           ;; Add entity
+           (swap! world-sig add-entity (make-entity "e2" :health 50))
+           (await-drain rt)
 
-             (is (= [1 2] @entity-counts) "Should render with 2 entities")
+           (is (= [1 2] @entity-counts) "Should render with 2 entities")
 
-             ;; Add another
-             (swap! world-sig add-entity (make-entity "e3" :health 75))
-             (await-drain rt)
+           ;; Add another
+           (swap! world-sig add-entity (make-entity "e3" :health 75))
+           (await-drain rt)
 
-             (is (= [1 2 3] @entity-counts) "Should render with 3 entities")))))))
+           (is (= [1 2 3] @entity-counts) "Should render with 3 entities"))))))
 
 #?(:clj
    (deftest test-remove-entity-triggers-render
      (testing "Removing entity triggers re-render"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge]} (disch/make-mock-discharge)
-                 world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
-                                                     (make-entity "e2" :health 50)
-                                                     (make-entity "e3" :health 75)]))
-                 entity-counts (atom [])
+       (th/with-ctx [rt]
+         (let [{:keys [discharge]} (disch/make-mock-discharge)
+               world-sig (sig/signal (make-world [(make-entity "e1" :health 100)
+                                                   (make-entity "e2" :health 50)
+                                                   (make-entity "e3" :health 75)]))
+               entity-counts (atom [])
 
-                 app-spin (spin
-                            (let [world-iv (track world-sig)
-                                  entities (:entities @world-iv)]
-                              (swap! entity-counts conj (count entities))
-                              (render-world-view entities)))]
+               app-spin (spin
+                          (let [world-iv (track world-sig)
+                                entities (:entities @world-iv)]
+                            (swap! entity-counts conj (count entities))
+                            (render-world-view entities)))]
 
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
-             (is (= [3] @entity-counts))
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
+           (is (= [3] @entity-counts))
 
-             ;; Remove entity
-             (swap! world-sig remove-entity "e2")
-             (await-drain rt)
+           ;; Remove entity
+           (swap! world-sig remove-entity "e2")
+           (await-drain rt)
 
-             (is (= [3 2] @entity-counts) "Should render with 2 entities")))))))
+           (is (= [3 2] @entity-counts) "Should render with 2 entities"))))))
 
 #?(:clj
    (deftest test-sparse-updates-efficient
      (testing "Updating 1 of 100 entities only re-renders once"
-       (let [rt (ctx/create-execution-context)]
-         (binding [ec/*execution-context* rt]
-           (let [{:keys [discharge]} (disch/make-mock-discharge)
-                 ;; Create world with 100 entities
-                 initial-entities (for [i (range 100)]
-                                    (make-entity (str "e" i) :health 100))
-                 world-sig (sig/signal (make-world initial-entities))
-                 render-count (atom 0)
+       (th/with-ctx [rt]
+         (let [{:keys [discharge]} (disch/make-mock-discharge)
+               ;; Create world with 100 entities
+               initial-entities (for [i (range 100)]
+                                  (make-entity (str "e" i) :health 100))
+               world-sig (sig/signal (make-world initial-entities))
+               render-count (atom 0)
 
-                 app-spin (spin
-                            (let [world-iv (track world-sig)
-                                  entities (:entities @world-iv)]
-                              (swap! render-count inc)
-                              (render-world-view entities)))]
+               app-spin (spin
+                          (let [world-iv (track world-sig)
+                                entities (:entities @world-iv)]
+                            (swap! render-count inc)
+                            (render-world-view entities)))]
 
-             (render/render-spin! nil app-spin discharge)
-             @app-spin
-             (is (= 1 @render-count))
+           (render/render-spin! nil app-spin discharge)
+           @app-spin
+           (is (= 1 @render-count))
 
-             ;; Update just ONE entity
-             (swap! world-sig update-entity "e50" :health 80)
-             (await-drain rt)
+           ;; Update just ONE entity
+           (swap! world-sig update-entity "e50" :health 80)
+           (await-drain rt)
 
-             ;; Should only have rendered twice total (initial + one update)
-             (is (= 2 @render-count) "Should only render once for single entity update")))))))
+           ;; Should only have rendered twice total (initial + one update)
+           (is (= 2 @render-count) "Should only render once for single entity update"))))))
 
 ;; =============================================================================
 ;; Exploration Results & Findings

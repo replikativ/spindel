@@ -22,19 +22,10 @@
                [org.replikativ.spindel.effects.track :refer [track]]
                [org.replikativ.spindel.incremental.interval :as iv]
                [org.replikativ.spindel.incremental.combinators :as ic]
-               [org.replikativ.spindel.incremental.deltaable :as d])
+               [org.replikativ.spindel.incremental.deltaable :as d]
+               [org.replikativ.spindel.test-helpers :as th])
      :cljs
      (:require [cljs.test :refer-macros [deftest is testing]])))
-
-;; =============================================================================
-;; Helper: Create test context
-;; =============================================================================
-
-#?(:clj
-   (defmacro with-test-context [& body]
-     `(let [exec-ctx# (ctx/create-execution-context :executor (sched/default-executor))]
-        (binding [ec/*execution-context* exec-ctx#]
-          ~@body))))
 
 ;; =============================================================================
 ;; Basic Slicing Tests
@@ -43,7 +34,7 @@
 #?(:clj
    (deftest test-slice-initial
      (testing "Slice returns correct range on initial call"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                result (ic/slice* {:file "test" :line 1 :column 0}
                                  {:start 10 :end 20}
@@ -55,7 +46,7 @@
 #?(:clj
    (deftest test-slice-empty-window
      (testing "Empty window returns empty vector"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                result (ic/slice* {:file "test" :line 2 :column 0}
                                  {:start 50 :end 50}
@@ -65,7 +56,7 @@
 #?(:clj
    (deftest test-slice-bounds-clamping
      (testing "Window bounds are clamped to source length"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 10))
                ;; Window extends beyond source
                result (ic/slice* {:file "test" :line 3 :column 0}
@@ -76,7 +67,7 @@
 #?(:clj
    (deftest test-slice-negative-start-clamped
      (testing "Negative start is clamped to 0"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 10))
                result (ic/slice* {:file "test" :line 4 :column 0}
                                  {:start -5 :end 5}
@@ -90,7 +81,7 @@
 #?(:clj
    (deftest test-window-slide-right
      (testing "Sliding window right produces correct deltas"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "slide" :line 10 :column 0}
 
@@ -126,7 +117,7 @@
 #?(:clj
    (deftest test-window-slide-left
      (testing "Sliding window left produces correct deltas"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "slide-left" :line 20 :column 0}
 
@@ -155,7 +146,7 @@
 #?(:clj
    (deftest test-window-jump-no-overlap
      (testing "Window jump with no overlap produces full replace"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "jump" :line 30 :column 0}
 
@@ -179,7 +170,7 @@
 #?(:clj
    (deftest test-window-expand
      (testing "Window expanding produces add deltas"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "expand" :line 40 :column 0}
 
@@ -202,7 +193,7 @@
 #?(:clj
    (deftest test-window-shrink
      (testing "Window shrinking produces remove deltas"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "shrink" :line 50 :column 0}
 
@@ -225,7 +216,7 @@
 #?(:clj
    (deftest test-window-no-change
      (testing "Same window produces no deltas"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "no-change" :line 60 :column 0}
 
@@ -242,7 +233,7 @@
 #?(:clj
    (deftest test-source-update-in-window
      (testing "Source update within window produces update delta"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source-loc {:file "update" :line 70 :column 0}
                source1 [{:id 1 :text "a"} {:id 2 :text "b"} {:id 3 :text "c"}]
                window {:start 0 :end 3}
@@ -268,7 +259,7 @@
 #?(:clj
    (deftest test-source-update-outside-window
      (testing "Source update outside window produces no delta"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source-loc {:file "update-outside" :line 80 :column 0}
                source1 (vec (range 100))
                window {:start 10 :end 20}
@@ -296,7 +287,7 @@
 #?(:clj
    (deftest test-delta-application-correctness
      (testing "Applying deltas to old produces new"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                source-loc {:file "correctness" :line 90 :column 0}
 
@@ -312,38 +303,41 @@
 
            (doseq [{:keys [old-window new-window]} test-cases]
              ;; Reset context for each test case
-             (let [ctx (ctx/create-execution-context :executor (sched/default-executor))]
-               (binding [ec/*execution-context* ctx]
-                 (let [loc {:file (str "correctness-" (:start old-window))
-                            :line (:start new-window)
-                            :column 0}
-                       result1 (ic/slice* loc old-window source)
-                       old-output (iv/get-new result1)
+             (let [inner-ctx (ctx/create-execution-context :executor (sched/default-executor))]
+               (try
+                 (binding [ec/*execution-context* inner-ctx]
+                   (let [loc {:file (str "correctness-" (:start old-window))
+                              :line (:start new-window)
+                              :column 0}
+                         result1 (ic/slice* loc old-window source)
+                         old-output (iv/get-new result1)
 
-                       result2 (ic/slice* loc new-window source)
-                       new-output (iv/get-new result2)
-                       deltas (iv/get-deltas result2)
+                         result2 (ic/slice* loc new-window source)
+                         new-output (iv/get-new result2)
+                         deltas (iv/get-deltas result2)
 
-                       ;; Apply deltas to old to verify correctness
-                       applied (clojure.core/reduce
-                                 (fn [acc delta]
-                                   (case (:delta delta)
-                                     :remove
-                                     (let [idx (first (:path delta))]
-                                       (vec (concat (subvec acc 0 idx)
-                                                    (subvec acc (inc idx)))))
-                                     :add
-                                     (let [idx (first (:path delta))
-                                           val (:value delta)]
-                                       (vec (concat (subvec acc 0 idx)
-                                                    [val]
-                                                    (subvec acc idx))))
-                                     acc))
-                                 old-output
-                                 deltas)]
-                   (is (= new-output applied)
-                       (str "Applying deltas should produce new output for "
-                            old-window " -> " new-window)))))))))))
+                         ;; Apply deltas to old to verify correctness
+                         applied (clojure.core/reduce
+                                   (fn [acc delta]
+                                     (case (:delta delta)
+                                       :remove
+                                       (let [idx (first (:path delta))]
+                                         (vec (concat (subvec acc 0 idx)
+                                                      (subvec acc (inc idx)))))
+                                       :add
+                                       (let [idx (first (:path delta))
+                                             val (:value delta)]
+                                         (vec (concat (subvec acc 0 idx)
+                                                      [val]
+                                                      (subvec acc idx))))
+                                       acc))
+                                   old-output
+                                   deltas)]
+                     (is (= new-output applied)
+                         (str "Applying deltas should produce new output for "
+                              old-window " -> " new-window))))
+                 (finally
+                   (ctx/stop-context! inner-ctx))))))))))
 
 ;; =============================================================================
 ;; Integration with Signals
@@ -352,7 +346,7 @@
 #?(:clj
    (deftest test-slice-with-signal
      (testing "Slice works with tracked signal"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [results (atom [])
                items-signal (sig/signal (d/deltaable-vector (vec (range 100))))
                window-signal (sig/signal {:start 0 :end 10})
@@ -394,7 +388,7 @@
 #?(:clj
    (deftest test-slice-performance-characteristics
      (testing "Slice is O(delta) not O(n) for window slides"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [;; Large source - 1 million items
                source (vec (range 1000000))
                source-loc {:file "perf" :line 200 :column 0}
@@ -419,7 +413,7 @@
 #?(:clj
    (deftest test-slice-memory-efficiency
      (testing "Slice output shares structure with source via subvec"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 10000))
                source-loc {:file "memory" :line 210 :column 0}
 
@@ -442,45 +436,47 @@
       Returns: Map with timing results"
      [source-size window-size num-slides slide-delta]
      (let [source (vec (range source-size))
-           exec-ctx (ctx/create-execution-context :executor (sched/default-executor))
+           exec-ctx (ctx/create-execution-context :executor (sched/default-executor))]
+       (try
+         (let [;; Naive approach: just subvec each time (no deltas)
+               naive-times
+               (binding [ec/*execution-context* exec-ctx]
+                 (doall
+                   (for [i (range num-slides)]
+                     (let [start (* i slide-delta)
+                           end (+ start window-size)
+                           t0 (System/nanoTime)
+                           _ (subvec source start (min end source-size))
+                           t1 (System/nanoTime)]
+                       (- t1 t0)))))
 
-           ;; Naive approach: just subvec each time (no deltas)
-           naive-times
-           (binding [ec/*execution-context* exec-ctx]
-             (doall
-               (for [i (range num-slides)]
-                 (let [start (* i slide-delta)
-                       end (+ start window-size)
-                       t0 (System/nanoTime)
-                       _ (subvec source start (min end source-size))
-                       t1 (System/nanoTime)]
-                   (- t1 t0)))))
+               ;; Incremental approach with islice
+               incremental-times
+               (binding [ec/*execution-context* exec-ctx]
+                 (let [source-loc {:file "bench" :line 1 :column 0}]
+                   (doall
+                     (for [i (range num-slides)]
+                       (let [start (* i slide-delta)
+                             end (+ start window-size)
+                             t0 (System/nanoTime)
+                             _ (ic/slice* source-loc {:start start :end end} source)
+                             t1 (System/nanoTime)]
+                         (- t1 t0))))))]
 
-           ;; Incremental approach with islice
-           incremental-times
-           (binding [ec/*execution-context* exec-ctx]
-             (let [source-loc {:file "bench" :line 1 :column 0}]
-               (doall
-                 (for [i (range num-slides)]
-                   (let [start (* i slide-delta)
-                         end (+ start window-size)
-                         t0 (System/nanoTime)
-                         _ (ic/slice* source-loc {:start start :end end} source)
-                         t1 (System/nanoTime)]
-                     (- t1 t0))))))]
-
-       {:source-size source-size
-        :window-size window-size
-        :num-slides num-slides
-        :slide-delta slide-delta
-        :naive-total-ns (clojure.core/reduce + naive-times)
-        :naive-avg-ns (/ (clojure.core/reduce + naive-times) num-slides)
-        :incremental-total-ns (clojure.core/reduce + incremental-times)
-        :incremental-avg-ns (/ (clojure.core/reduce + incremental-times) num-slides)
-        ;; Skip first (init) for incremental steady-state
-        :incremental-steady-avg-ns (when (> num-slides 1)
-                                     (/ (clojure.core/reduce + (rest incremental-times))
-                                        (dec num-slides)))})))
+           {:source-size source-size
+            :window-size window-size
+            :num-slides num-slides
+            :slide-delta slide-delta
+            :naive-total-ns (clojure.core/reduce + naive-times)
+            :naive-avg-ns (/ (clojure.core/reduce + naive-times) num-slides)
+            :incremental-total-ns (clojure.core/reduce + incremental-times)
+            :incremental-avg-ns (/ (clojure.core/reduce + incremental-times) num-slides)
+            ;; Skip first (init) for incremental steady-state
+            :incremental-steady-avg-ns (when (> num-slides 1)
+                                         (/ (clojure.core/reduce + (rest incremental-times))
+                                            (dec num-slides)))})
+         (finally
+           (ctx/stop-context! exec-ctx))))))
 
 #?(:clj
    (deftest test-benchmark-islice
@@ -503,7 +499,7 @@
 #?(:clj
    (deftest test-empty-source
      (testing "Slice handles empty source"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [result (ic/slice* {:file "empty" :line 1 :column 0}
                                  {:start 0 :end 10}
                                  [])]
@@ -512,7 +508,7 @@
 #?(:clj
    (deftest test-window-larger-than-source
      (testing "Window larger than source returns full source"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source [1 2 3]
                result (ic/slice* {:file "larger" :line 1 :column 0}
                                  {:start 0 :end 100}
@@ -522,7 +518,7 @@
 #?(:clj
    (deftest test-window-completely-past-source
      (testing "Window past source returns empty"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 10))
                result (ic/slice* {:file "past" :line 1 :column 0}
                                  {:start 100 :end 200}
@@ -532,7 +528,7 @@
 #?(:clj
    (deftest test-reversed-window-bounds
      (testing "Reversed bounds (start > end) handled gracefully"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source (vec (range 100))
                ;; start > end should be treated as empty
                result (ic/slice* {:file "reversed" :line 1 :column 0}
@@ -558,7 +554,7 @@
              slide-delta 5
              window-size 50]
 
-         (with-test-context
+         (th/with-ctx [ctx]
            ;; Test with small source
            (let [loc1 {:file "scaling-small" :line 1 :column 0}
                  _ (ic/slice* loc1 {:start 0 :end window-size} small-source)
@@ -580,7 +576,7 @@
 #?(:clj
    (deftest test-incremental-vs-full-ops-count
      (testing "Incremental approach produces O(delta) DOM operations vs O(n)"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [source-size 10000
                window-size 100
                num-slides 50
@@ -616,7 +612,7 @@
 #?(:clj
    (deftest test-slice-with-foreach-integration
      (testing "islice deltas work with ifor-each for DOM rendering"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [;; Simulate a list of items with ids
                items (vec (for [i (range 100)]
                            {:id i :text (str "Item " i)}))
@@ -665,7 +661,7 @@
 #?(:clj
    (deftest test-full-infinite-scroll-simulation
      (testing "Simulate full infinite scroll scenario"
-       (with-test-context
+       (th/with-ctx [ctx]
          (let [;; Large list - simulating fetched data
                total-items 10000
                items (vec (for [i (range total-items)]
