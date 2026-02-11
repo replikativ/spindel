@@ -191,13 +191,20 @@
               (let [same-tag? (= (:tag prev-value) (:tag new-result))
                     prev-key (:key prev-value)
                     new-key (:key new-result)
-                    ;; Key-based identity check:
+                    ;; Identity check:
                     ;; - If both have explicit keys, they must match
-                    ;; - If neither has keys, rely on tag match (backward compatible)
+                    ;; - If neither has keys, compare addresses (different source = different element)
                     ;; - If one has key and other doesn't, they're different elements
                     same-identity? (cond
                                      (and prev-key new-key) (= prev-key new-key)
-                                     (and (nil? prev-key) (nil? new-key)) true
+                                     (and (nil? prev-key) (nil? new-key))
+                                     (let [prev-addr (:addr prev-value)
+                                           new-addr (:addr new-result)]
+                                       ;; If both have addresses, they must match
+                                       ;; If either is missing addr (legacy), fall back to same
+                                       (if (and prev-addr new-addr)
+                                         (= prev-addr new-addr)
+                                         true))
                                      :else false)]
                 (and same-tag? same-identity?))
 

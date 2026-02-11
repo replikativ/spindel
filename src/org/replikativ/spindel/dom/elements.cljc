@@ -108,9 +108,16 @@
 
   Returns: VNode with :deltas if any changes detected"
   [tag my-addr attrs children]
-  (let [;; Get previous caches
-        prev-slot-cache (cache/get-slot-cache my-addr)
-        prev-attrs (cache/get-attr-cache my-addr)
+  (let [;; When element has a :key, derive a unique cache address so that
+        ;; multiple keyed elements at the same source location (e.g. in map)
+        ;; get independent DOM caches instead of overwriting each other
+        effective-addr (if-let [k (:key attrs)]
+                         (addr/keyed-child-address my-addr k)
+                         my-addr)
+
+        ;; Get previous caches
+        prev-slot-cache (cache/get-slot-cache effective-addr)
+        prev-attrs (cache/get-attr-cache effective-addr)
 
         ;; Clean attrs (remove :key and :ref which are handled separately)
         attrs-clean (dissoc attrs :key :ref)
@@ -119,7 +126,7 @@
         attr-deltas (cache/reconcile-attrs prev-attrs attrs-clean)
 
         ;; Update attr cache
-        _ (cache/set-attr-cache! my-addr attrs-clean)
+        _ (cache/set-attr-cache! effective-addr attrs-clean)
 
         ;; Normalize children (handle text, nil, sequences)
         normalized-children (flatten-and-normalize children)
@@ -128,7 +135,7 @@
         {:keys [slots deltas]} (cache/reconcile-children prev-slot-cache normalized-children)
 
         ;; Update slot cache
-        _ (cache/set-slot-cache! my-addr slots)
+        _ (cache/set-slot-cache! effective-addr slots)
 
         ;; Flatten slots to final children vector
         final-children (cache/flatten-slots slots)
@@ -143,6 +150,7 @@
         attrs-with-deltas (org.replikativ.spindel.incremental.deltaable/deltaable-map-with-deltas
                             attrs-clean attr-deltas)
         vnode (cond-> {:tag tag
+                       :addr effective-addr
                        :attrs attrs-with-deltas
                        :children (org.replikativ.spindel.incremental.deltaable/deltaable-vector
                                    (vec final-children))}

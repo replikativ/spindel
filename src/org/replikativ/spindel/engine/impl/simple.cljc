@@ -254,6 +254,7 @@
 
 (declare try-claim-execution!)
 (declare propagate-await-dirty!)
+(declare invalidate-created-spins!)
 
 (defn- resume-single-observer!
   "Resume a single observer's track continuation during Phase 1 of signal-change.
@@ -294,6 +295,12 @@
             (assoc :running? true)
             (nodes/mark-dirty)))))
 
+  ;; Invalidate child spins created during previous execution
+  ;; Their closures captured values from the old run - now stale
+  ;; This is the missing call site: spin/core.cljc only calls this during invoke,
+  ;; but track resumption also re-executes the spin body from a continuation point
+  (invalidate-created-spins! context spin-id)
+
   ;; Resume continuation with fresh signal value
   (let [ctx-bindings (:ctx-bindings cont)
         ctx-with-bindings (if ctx-bindings
@@ -306,6 +313,21 @@
        context spin-id cont
        (fn [signal-value]
          (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
+
+(defn- compute-descendant-observers
+  "Given observer spin-ids, find those that are descendants of other observers.
+  These will be re-created by their parent and should not fire independently."
+  [context observer-id-set]
+  (loop [to-check observer-id-set
+         descendants #{}]
+    (if (empty? to-check)
+      descendants
+      (let [children (into #{}
+                      (comp (mapcat #(get (rtp/get-state context [:nodes %]) :created-spins #{}))
+                            (filter observer-id-set))
+                      to-check)
+            new-desc (set/difference children descendants)]
+        (recur new-desc (into descendants children))))))
 
 (defn process-event!
   "Process a single event.
@@ -351,20 +373,31 @@
                                              (when-let [cont (rtp/earliest-continuation context spin-id sid)]
                                                [spin-id cont]))
                                            observers))
+            ;; Filter out descendant observers - they will be re-created by their parent
+            ;; and should not fire independently in this drain cycle
+            observer-id-set (set (map first observers-with-conts))
+            descendant-set (compute-descendant-observers context observer-id-set)
+            independent-observers (vec (remove (fn [[sid _]] (descendant-set sid))
+                                               observers-with-conts))
             do-resume! (fn [[spin-id cont]]
                          (swap! resumed-observers conj spin-id)
                          (resume-single-observer! context spin-id sid cont))]
 
+        (when (seq descendant-set)
+          (log/debug! {:event :engine/filtered-descendant-observers
+                       :data {:descendants descendant-set
+                              :independent (map first independent-observers)}}))
+
         ;; Dispatch: sequential for 0-1 observers, parallel for >1
         #?(:clj
-           (if (<= (count observers-with-conts) 1)
+           (if (<= (count independent-observers) 1)
              ;; Sequential path (no overhead)
-             (doseq [obs observers-with-conts]
+             (doseq [obs independent-observers]
                (do-resume! obs))
              ;; Parallel path: dispatch to executor, wait via managedBlock
              (let [executor (:executor context)
-                   latch (CountDownLatch. (count observers-with-conts))]
-               (doseq [obs observers-with-conts]
+                   latch (CountDownLatch. (count independent-observers))]
+               (doseq [obs independent-observers]
                  (scheduler/execute! executor
                    (fn []
                      (try
@@ -381,7 +414,7 @@
                      (zero? (.getCount latch)))))))
            :cljs
            ;; CLJS: always sequential (single-threaded)
-           (doseq [obs observers-with-conts]
+           (doseq [obs independent-observers]
              (do-resume! obs)))
 
         ;; Update batch observers to only include actually-resumed observers
@@ -1343,9 +1376,14 @@
     (when (seq created-spins)
       (log/debug! {:event :spin/invalidate-created
                    :data {:spin-id spin-id :created-spins created-spins}})
-      ;; Mark each created spin as dirty
+      ;; Mark each created spin as dirty and fully clean up dependencies
+      ;; clear-deps! removes track continuations, subscriptions, and signal observer
+      ;; registrations so old children can't fire on future signal changes
       (doseq [child-id created-spins]
-        (mark-dirty! context child-id))
+        (mark-dirty! context child-id)
+        (clear-deps! context child-id)
+        ;; Recursively invalidate grandchildren
+        (invalidate-created-spins! context child-id))
       ;; Clear the created-spins set (they'll be re-registered during execution)
       (rtp/swap-state! context [:nodes spin-id]
         (fn [node]
