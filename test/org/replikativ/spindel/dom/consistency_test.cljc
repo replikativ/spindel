@@ -32,8 +32,8 @@
   - Applying deltas produces the same result as re-rendering
   - No drift between incremental and direct paths"
   (:refer-clojure :exclude [await])
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
-               :cljs [cljs.test :refer-macros [deftest is testing]])
+  (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
+               :cljs [cljs.test :refer-macros [deftest is testing use-fixtures]])
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
@@ -51,6 +51,15 @@
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
+
+(use-fixtures :each
+  (fn [f]
+    (let [test-ctx (ctx/create-execution-context)]
+      (try
+        (binding [ec/*execution-context* test-ctx]
+          (f))
+        (finally
+          (ctx/stop-context! test-ctx))))))
 
 ;; =============================================================================
 ;; DOM Simulator

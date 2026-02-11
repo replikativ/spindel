@@ -101,14 +101,12 @@
      This is a MACRO that expands to a `binding` form, which partial-cps
      handles specially. Bindings are captured/restored across await points.
 
-     Used by element macros to set context before evaluating children."
+     Used by element macros to set context before evaluating children.
+     Requires an execution context to be bound."
      [parent-addr & body]
-     `(if-let [ctx# ec/*execution-context*]
-        (let [new-ctx# (assoc-in ctx# [:bindings :dom/parent-addr] ~parent-addr)]
-          (binding [ec/*execution-context* new-ctx#]
-            ~@body))
-        ;; No context - just run body (for testing without runtime)
-        (do ~@body))))
+     `(let [new-ctx# (assoc-in ec/*execution-context* [:bindings :dom/parent-addr] ~parent-addr)]
+        (binding [ec/*execution-context* new-ctx#]
+          ~@body))))
 
 #?(:clj
    (defmacro with-slot
@@ -117,14 +115,12 @@
      This is a MACRO that expands to a `binding` form, which partial-cps
      handles specially. Bindings are captured/restored across await points.
 
-     Used by element macros for each child position."
+     Used by element macros for each child position.
+     Requires an execution context to be bound."
      [slot-index & body]
-     `(if-let [ctx# ec/*execution-context*]
-        (let [new-ctx# (assoc-in ctx# [:bindings :dom/current-slot] ~slot-index)]
-          (binding [ec/*execution-context* new-ctx#]
-            ~@body))
-        ;; No context - just run body
-        (do ~@body))))
+     `(let [new-ctx# (assoc-in ec/*execution-context* [:bindings :dom/current-slot] ~slot-index)]
+        (binding [ec/*execution-context* new-ctx#]
+          ~@body))))
 
 #?(:clj
    (defmacro with-dom-context

@@ -14,8 +14,8 @@
   - Performance with N entities
   - Correctness of incremental updates"
   (:refer-clojure :exclude [await])
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
-               :cljs [cljs.test :refer-macros [deftest is testing]])
+  (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
+               :cljs [cljs.test :refer-macros [deftest is testing use-fixtures]])
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.signal :as sig]
@@ -31,6 +31,15 @@
             #?(:clj [org.replikativ.spindel.test-helpers :as th]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
+
+(use-fixtures :each
+  (fn [f]
+    (let [test-ctx (ctx/create-execution-context)]
+      (try
+        (binding [ec/*execution-context* test-ctx]
+          (f))
+        (finally
+          (ctx/stop-context! test-ctx))))))
 
 ;; =============================================================================
 ;; Entity Helpers

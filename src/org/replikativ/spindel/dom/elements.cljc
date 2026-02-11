@@ -216,6 +216,11 @@
      This enables `await` to work inside element children because
      partial-cps CPS-transforms let-bindings and handles binding forms.
 
+     Always emits the context-aware form. Requires an execution context
+     (i.e. must be called inside a spin body or with-execution-context).
+     For creating vnodes without context (tests, SSR), use `simple-element`
+     or `element*` directly.
+
      Expansion:
        (div {:class \"x\"} child1 child2)
        =>
@@ -234,29 +239,19 @@
                                      (not (:tag (first args))))
                               [(first args) (rest args)]
                               [nil args])
-           attrs-form (or attrs {})
-           ;; Generate symbols for each child
-           child-syms (mapv (fn [_] (gensym "child-")) children)
-           ;; Create let-bindings with slot context
-           child-bindings (vec (mapcat
-                                 (fn [idx sym child-expr]
-                                   [sym `(addr/with-slot ~idx ~child-expr)])
-                                 (range) child-syms children))]
+           attrs-form (or attrs {})]
        (if (seq children)
-         ;; With children: use let-binding approach
-         `(if ec/*execution-context*
-            ;; With context: use CPS-aware caching element
-            (let [my-addr# (addr/current-element-address ~source-loc)]
+         (let [child-syms (mapv (fn [_] (gensym "child-")) children)
+               child-bindings (vec (mapcat
+                                     (fn [idx sym child-expr]
+                                       [sym `(addr/with-slot ~idx ~child-expr)])
+                                     (range) child-syms children))]
+           `(let [my-addr# (addr/current-element-address ~source-loc)]
               (addr/with-parent-addr my-addr#
                 (let [~@child-bindings]
-                  (build-element ~tag my-addr# ~attrs-form [~@child-syms]))))
-            ;; Without context: simple element (no caching)
-            (simple-element ~tag ~attrs-form [~@children]))
-         ;; No children: simpler expansion
-         `(if ec/*execution-context*
-            (let [my-addr# (addr/current-element-address ~source-loc)]
-              (build-element ~tag my-addr# ~attrs-form []))
-            (simple-element ~tag ~attrs-form []))))))
+                  (build-element ~tag my-addr# ~attrs-form [~@child-syms])))))
+         `(let [my-addr# (addr/current-element-address ~source-loc)]
+            (build-element ~tag my-addr# ~attrs-form []))))))
 
 ;; =============================================================================
 ;; Block Elements
@@ -408,20 +403,16 @@
                                      (not (:tag (first args))))
                               [(first args) (rest args)]
                               [nil args])
-           attrs-form (or attrs {})
-           child-syms (mapv (fn [_] (gensym "child-")) children)
-           child-bindings (vec (mapcat
-                                 (fn [idx sym child-expr]
-                                   [sym `(addr/with-slot ~idx ~child-expr)])
-                                 (range) child-syms children))]
+           attrs-form (or attrs {})]
        (if (seq children)
-         `(if ec/*execution-context*
-            (let [my-addr# (addr/current-element-address ~source-loc)]
+         (let [child-syms (mapv (fn [_] (gensym "child-")) children)
+               child-bindings (vec (mapcat
+                                     (fn [idx sym child-expr]
+                                       [sym `(addr/with-slot ~idx ~child-expr)])
+                                     (range) child-syms children))]
+           `(let [my-addr# (addr/current-element-address ~source-loc)]
               (addr/with-parent-addr my-addr#
                 (let [~@child-bindings]
-                  (build-element ~tag my-addr# ~attrs-form [~@child-syms]))))
-            (simple-element ~tag ~attrs-form [~@children]))
-         `(if ec/*execution-context*
-            (let [my-addr# (addr/current-element-address ~source-loc)]
-              (build-element ~tag my-addr# ~attrs-form []))
-            (simple-element ~tag ~attrs-form []))))))
+                  (build-element ~tag my-addr# ~attrs-form [~@child-syms])))))
+         `(let [my-addr# (addr/current-element-address ~source-loc)]
+            (build-element ~tag my-addr# ~attrs-form []))))))

@@ -1,10 +1,21 @@
 (ns org.replikativ.spindel.dom.core-test
-  (:require #?(:clj [clojure.test :refer [deftest is testing]]
-               :cljs [cljs.test :refer-macros [deftest is testing]])
+  (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
+               :cljs [cljs.test :refer-macros [deftest is testing use-fixtures]])
             [org.replikativ.spindel.dom.core :as dom]
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
-            [org.replikativ.spindel.incremental.deltaable :as d]))
+            [org.replikativ.spindel.incremental.deltaable :as d]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]))
+
+(use-fixtures :each
+  (fn [f]
+    (let [test-ctx (ctx/create-execution-context)]
+      (try
+        (binding [ec/*execution-context* test-ctx]
+          (f))
+        (finally
+          (ctx/stop-context! test-ctx))))))
 
 ;; =============================================================================
 ;; VNode Creation Tests

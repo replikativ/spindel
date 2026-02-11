@@ -117,7 +117,7 @@
   IMPORTANT: Per-observer generation tracking ensures deltas are delivered
   exactly once per observer. Each continuation captures the signal's current
   generation, and on resume only returns deltas if the generation advanced."
-  [signal-ref spin-id source-loc resolve]
+  [signal-ref spin-id source-loc resolve reject]
   ;; Ensure signal is initialized
   (sig/ensure-signal-initialized! signal-ref)
 
@@ -142,6 +142,7 @@
                                     (:bindings ctx))
             cont {:event-key [:signal signal-id]
                   :resolve-fn resolve
+                  :reject-fn reject
                   :source-loc source-loc
                   :signal-id signal-id
                   :bindings captured-bindings
@@ -179,7 +180,7 @@
     ;; Type check
     (cond
       (signal-ref? trackable)
-      (track-signal trackable spin-id source-loc resolve)
+      (track-signal trackable spin-id source-loc resolve reject)
 
       :else
       (reject (eff/type-error 'track "SignalRef (not spins)" trackable)))
