@@ -48,6 +48,14 @@
         (= attr-name :class)
         (.setAttribute el "class" value-str)
 
+        ;; Handle value/checked properties (for input, select, textarea)
+        ;; These must be set as DOM properties, not HTML attributes
+        (= attr-name :value)
+        (set! (.-value el) value-str)
+
+        (= attr-name :checked)
+        (set! (.-checked el) (boolean attr-value))
+
         ;; Handle boolean attributes
         (boolean? attr-value)
         (if attr-value
@@ -109,11 +117,11 @@
   (set-text-content! [_ el text]
     (set! (.-textContent el) text))
 
-  (get-element [_ vnode]
-    (get @elements vnode))
+  (get-element [_ addr]
+    (get @elements addr))
 
-  (set-element! [_ vnode el]
-    (swap! elements assoc vnode el)))
+  (set-element! [_ addr el]
+    (swap! elements assoc addr el)))
 
 ;; =============================================================================
 ;; Constructor

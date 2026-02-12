@@ -90,7 +90,7 @@
           mounted (render/initial-mount! state v1)
           _ (reset! log [])
           v2 (el/div {:class "same"})
-          _updated (render/update-render-with-transfer! mounted v2)]
+          _updated (render/update-render! mounted v2)]
       ;; With context-aware addressing, vnodes at different source locations
       ;; get different addresses, so transfer may re-apply attrs.
       ;; At most one set-attr for the unchanged class.
@@ -134,17 +134,22 @@
         (is (= 2 (count (filter #(= :create-text (:op %)) ops))))))))
 
 ;; =============================================================================
-;; Element Reference Transfer Tests
+;; Address-Based Element Reference Tests
 ;; =============================================================================
 
-(deftest test-transfer-element-refs
-  (testing "Element references are transferred between vdom trees"
+(deftest test-address-based-element-refs
+  (testing "Element references are stored and found by address"
     (let [{:keys [discharge]} (disch/make-mock-discharge)
           v1 (el/div {:class "test"} (el/span "Hello"))
-          _ (disch/render-initial! discharge v1)
-          v2 (el/div {:class "test"} (el/span "Hello"))]
-      (render/transfer-element-refs! discharge v1 v2)
-      (is (some? (disch/get-element discharge v2))))))
+          _ (disch/render-initial! discharge v1)]
+      ;; Element should be findable by its address
+      (is (some? (disch/get-element discharge (:addr v1))))
+      ;; After clear-deltas-deep, new objects carry same :addr
+      (let [cleared (disch/clear-deltas-deep v1)]
+        (is (= (:addr v1) (:addr cleared))
+            "Cleared vdom should preserve address")
+        ;; Element should still be findable via the cleared vdom's address
+        (is (some? (disch/get-element discharge (:addr cleared))))))))
 
 ;; =============================================================================
 ;; Delta-Direct Rendering Tests (CLJ only - requires await-drain)

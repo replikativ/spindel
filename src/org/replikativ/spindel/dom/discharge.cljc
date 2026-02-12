@@ -82,11 +82,11 @@
   (set-text-content! [this el text]
     "Set text content of a text node.")
 
-  (get-element [this vnode]
-    "Get the target element for a vnode (from element map).")
+  (get-element [this addr]
+    "Get the target element by address keyword (from element map).")
 
-  (set-element! [this vnode el]
-    "Store element reference for vnode.")
+  (set-element! [this addr el]
+    "Store element reference by address keyword.")
 
   (remove-children-range! [this parent start-idx count]
     "Remove multiple children starting at index. Default: call remove-child! in loop.")
@@ -326,7 +326,7 @@
                           :child-delta-count (count (:deltas vnode))
                           :rendered-set-size (when *rendered-vnodes* (count @*rendered-vnodes*))}})
       (when-not is-rendered?
-        (let [el (get-element discharge vnode)]
+        (let [el (get-element discharge (:addr vnode))]
           (when el
             ;; Apply attribute deltas
             (apply-attr-deltas! discharge el vnode)
@@ -480,7 +480,8 @@
 
     (core/text-node? vnode)
     (let [el (create-text! discharge (:content vnode))]
-      (set-element! discharge vnode el)
+      ;; Text nodes don't have :addr — skip storing ref since they're
+      ;; always replaced wholesale and never looked up by address
       (mark-rendered! vnode)
       el)
 
@@ -501,25 +502,32 @@
     (let [el (create-element! discharge vnode)
           children (when-let [ch (:children vnode)]
                      (if (d/deltaable? ch) @ch ch))]
-      ;; Store element reference
-      (set-element! discharge vnode el)
+      ;; Store element reference by stable address
+      (set-element! discharge (:addr vnode) el)
       ;; Mark as rendered to prevent double delta application
       (mark-rendered! vnode)
 
-      ;; Set all attributes
-      (when-let [attrs (:attrs vnode)]
-        (doseq [[k v] (if (d/deltaable? attrs) @attrs attrs)]
-          (set-attribute! discharge el k v)))
+      ;; Set all attributes (defer :value until after children for <select>)
+      (let [raw-attrs (when-let [attrs (:attrs vnode)]
+                        (if (d/deltaable? attrs) @attrs attrs))
+            deferred-value (get raw-attrs :value)]
+        (doseq [[k v] raw-attrs]
+          (when (not= k :value)
+            (set-attribute! discharge el k v)))
 
-      ;; Render and append children
-      (doseq [child children]
-        (let [child-el (render-initial! discharge child)]
-          (when child-el
-            (if (vector? child-el)
-              ;; Fragment or KeyedFragment children
-              (doseq [c child-el]
-                (append-child! discharge el c))
-              (append-child! discharge el child-el)))))
+        ;; Render and append children
+        (doseq [child children]
+          (let [child-el (render-initial! discharge child)]
+            (when child-el
+              (if (vector? child-el)
+                ;; Fragment or KeyedFragment children
+                (doseq [c child-el]
+                  (append-child! discharge el c))
+                (append-child! discharge el child-el)))))
+
+        ;; Set :value after children are in DOM (required for <select>)
+        (when deferred-value
+          (set-attribute! discharge el :value deferred-value)))
 
       ;; Call ref callback with element after fully rendered
       (call-ref! vnode el)
@@ -570,11 +578,11 @@
   (set-text-content! [_ el text]
     (swap! log conj {:op :set-text :el el :text text}))
 
-  (get-element [_ vnode]
-    (get @elements vnode))
+  (get-element [_ addr]
+    (get @elements addr))
 
-  (set-element! [_ vnode el]
-    (swap! elements assoc vnode el))
+  (set-element! [_ addr el]
+    (swap! elements assoc addr el))
 
   (remove-children-range! [this parent start-idx n]
     (default-remove-children-range! this parent start-idx n))

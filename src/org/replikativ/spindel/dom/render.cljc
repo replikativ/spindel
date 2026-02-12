@@ -26,8 +26,7 @@
 
   The spin re-runs whenever tracked signals change. Element macros
   produce vnodes with deltas attached that are discharged to the DOM."
-  (:require [org.replikativ.spindel.dom.core :as dom]
-            [org.replikativ.spindel.dom.discharge :as disch]
+  (:require [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.log :as log]))
 
@@ -40,9 +39,6 @@
    discharge       ; Discharge implementation
    current-vdom    ; Current vdom tree (with deltas cleared)
    mounted?])      ; Whether initial mount has happened
-
-;; Forward declarations
-(declare transfer-element-refs!)
 
 ;; =============================================================================
 ;; Render Cycle
@@ -62,11 +58,8 @@
     ;; Append to container
     (when (and container root-el)
       (.appendChild container root-el))
-    ;; Transfer element refs from original vdom to cleared vdom
-    ;; This is needed because clear-deltas-deep creates new objects
-    ;; but discharge stores refs keyed by object identity
-    (transfer-element-refs! discharge vdom cleared-vdom)
-    ;; Return updated state with cleared vdom
+    ;; No transfer needed — address-based refs work with cleared vdom
+    ;; (clear-deltas-deep preserves :addr fields)
     (assoc render-state
            :current-vdom cleared-vdom
            :mounted? true)))
@@ -86,22 +79,14 @@
   nodes-with-deltas list (because it had deltas from element* reconciliation
   against empty cache), discharge-vnode! will skip it to prevent double-rendering.
 
-  The discharge function handles transferring element references
-  from old vdom to new vdom based on stable addresses."
+  DOM refs are stored by stable address (:addr on vnodes), so no transfer
+  is needed between old and new vdom objects."
   [render-state new-vdom]
-  (let [{:keys [discharge current-vdom]} render-state]
-    (if (and current-vdom new-vdom)
-      ;; Transfer element references from old vdom to new vdom
-      ;; This is needed because discharge stores element refs by vnode object
-      (let [;; Transfer root element reference
-            root-el (disch/get-element discharge current-vdom)]
-        (when root-el
-          (disch/set-element! discharge new-vdom root-el))
-
+  (let [{:keys [discharge]} render-state]
+    (if new-vdom
+      (do
         ;; Discharge deltas directly - no diffing needed
-        ;; The deltas come from element* slot reconciliation
-        ;; Bind *rendered-vnodes* to track vnodes rendered via render-initial!
-        ;; to prevent double-application of deltas
+        ;; DOM refs found by address, no transfer needed
         (binding [disch/*rendered-vnodes* (atom #{})]
           (let [nodes-with-deltas (disch/collect-nodes-with-deltas new-vdom)]
             (when (seq nodes-with-deltas)
@@ -110,151 +95,12 @@
               (doseq [node nodes-with-deltas]
                 (disch/discharge-vnode! discharge node)))))
 
-        ;; Clear deltas and transfer refs to cleared vdom
+        ;; Clear deltas for next render cycle
+        ;; No ref transfer needed — cleared vnodes carry same :addr values
         (let [cleared-vdom (disch/clear-deltas-deep new-vdom)]
-          ;; Transfer refs to cleared vdom since clear-deltas-deep creates new objects
-          (transfer-element-refs! discharge new-vdom cleared-vdom)
           (assoc render-state :current-vdom cleared-vdom)))
 
-      ;; No current vdom - this shouldn't happen after mount
-      render-state)))
-
-;; =============================================================================
-;; Element Reference Transfer
-;; =============================================================================
-
-(defn- find-matching-old-child
-  "Find an old child that matches a new child by key or tag.
-
-  Matching rules:
-  1. If both have keys, they must match
-  2. If new has no key, match by tag at same position
-  3. Text nodes match text nodes"
-  [new-child old-children-by-key unkeyed-old-at-index]
-  (let [new-key (:key new-child)]
-    (cond
-      ;; New child has key - look up in keyed map
-      new-key
-      (get old-children-by-key new-key)
-
-      ;; Text nodes - try positional unkeyed match
-      (dom/text-node? new-child)
-      (when (and unkeyed-old-at-index (dom/text-node? unkeyed-old-at-index))
-        unkeyed-old-at-index)
-
-      ;; Element nodes without key - positional match by tag
-      (dom/element-node? new-child)
-      (when (and unkeyed-old-at-index
-                 (dom/element-node? unkeyed-old-at-index)
-                 (nil? (:key unkeyed-old-at-index))
-                 (= (:tag new-child) (:tag unkeyed-old-at-index)))
-        unkeyed-old-at-index)
-
-      :else nil)))
-
-(defn transfer-element-refs!
-  "Transfer element references from old vdom tree to new vdom tree.
-
-  This is needed because:
-  1. Discharge stores element refs keyed by vnode object identity
-  2. Each render produces new vnode objects
-  3. We need to connect new vnodes to their existing DOM elements
-
-  In the delta-direct model, elements have stable addresses, but we
-  still need to transfer refs because we use vnode object identity
-  for the element map (simpler than maintaining address->element map).
-
-  Handles child count changes by using :key attributes for matching
-  when available, falling back to positional matching by tag."
-  [discharge old-vdom new-vdom]
-  (when (and old-vdom new-vdom)
-    (cond
-      ;; Both are regular element nodes with same tag
-      (and (dom/element-node? old-vdom)
-           (dom/element-node? new-vdom)
-           (= (:tag old-vdom) (:tag new-vdom)))
-      (do
-        ;; Transfer element reference
-        (when-let [el (disch/get-element discharge old-vdom)]
-          (disch/set-element! discharge new-vdom el))
-        ;; Recursively transfer children with key-aware matching
-        (let [old-children (when-let [ch (:children old-vdom)] @ch)
-              new-children (when-let [ch (:children new-vdom)] @ch)
-              ;; Build index of keyed old children
-              old-by-key (reduce (fn [acc child]
-                                   (if-let [k (:key child)]
-                                     (assoc acc k child)
-                                     acc))
-                                 {}
-                                 old-children)]
-          ;; For each new child, find matching old child
-          (doseq [[idx new-child] (map-indexed vector new-children)]
-            (when new-child
-              (let [unkeyed-old-at-idx (get old-children idx)
-                    old-child (find-matching-old-child
-                               new-child old-by-key unkeyed-old-at-idx)]
-                (when old-child
-                  (transfer-element-refs! discharge old-child new-child)))))))
-
-      ;; Both are text nodes - transfer ref
-      (and (dom/text-node? old-vdom) (dom/text-node? new-vdom))
-      (when-let [el (disch/get-element discharge old-vdom)]
-        (disch/set-element! discharge new-vdom el))
-
-      ;; Both are fragments - just recurse on children with key-aware matching
-      (and (dom/fragment? old-vdom) (dom/fragment? new-vdom))
-      (let [old-children (when-let [ch (:children old-vdom)] @ch)
-            new-children (when-let [ch (:children new-vdom)] @ch)
-            old-by-key (reduce (fn [acc child]
-                                 (if-let [k (:key child)]
-                                   (assoc acc k child)
-                                   acc))
-                               {}
-                               old-children)]
-        (doseq [[idx new-child] (map-indexed vector new-children)]
-          (when new-child
-            (let [unkeyed-old-at-idx (get old-children idx)
-                  old-child (find-matching-old-child
-                             new-child old-by-key unkeyed-old-at-idx)]
-              (when old-child
-                (transfer-element-refs! discharge old-child new-child))))))
-
-      ;; Types don't match - can't transfer
-      :else nil)))
-
-(defn update-render-with-transfer!
-  "Update render with element reference transfer.
-
-  This version properly transfers element references before discharge.
-  Uses *rendered-vnodes* to prevent double-application of deltas."
-  [render-state new-vdom]
-  (let [{:keys [discharge current-vdom]} render-state]
-    (if (and current-vdom new-vdom)
-      (do
-        ;; Transfer element references from old to new vdom
-        (transfer-element-refs! discharge current-vdom new-vdom)
-
-        ;; Discharge deltas directly
-        ;; Bind *rendered-vnodes* to track vnodes rendered via render-initial!
-        ;; to prevent double-application of deltas
-        (binding [disch/*rendered-vnodes* (atom #{})]
-          (let [nodes-with-deltas (disch/collect-nodes-with-deltas new-vdom)]
-            (log/debug! {:event ::update-render-with-transfer
-                         :data {:nodes-with-deltas-count (count nodes-with-deltas)
-                                :nodes-summary (mapv (fn [n] {:tag (:tag n)
-                                                              :deltas-count (count (:deltas n))
-                                                              :deltas (:deltas n)}) nodes-with-deltas)}})
-            (when (seq nodes-with-deltas)
-              (doseq [node nodes-with-deltas]
-                (disch/discharge-vnode! discharge node)))))
-
-        ;; Clear deltas and transfer refs to cleared vdom
-        (let [cleared-vdom (disch/clear-deltas-deep new-vdom)]
-          ;; Transfer refs to cleared vdom since clear-deltas-deep creates new objects
-          (transfer-element-refs! discharge new-vdom cleared-vdom)
-          (assoc render-state :current-vdom cleared-vdom)))
-
-      ;; No current vdom
+      ;; No new vdom
       render-state)))
 
 ;; =============================================================================
@@ -301,7 +147,7 @@
                               :vdom-deltas (:deltas vdom)}})
           (if (:mounted? state)
             ;; Update with delta-direct rendering
-            (swap! state-atom update-render-with-transfer! vdom)
+            (swap! state-atom update-render! vdom)
             ;; Initial mount
             (reset! state-atom (initial-mount! state vdom))))))))
 

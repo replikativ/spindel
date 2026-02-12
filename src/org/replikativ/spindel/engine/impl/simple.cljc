@@ -318,12 +318,9 @@
 (defn- re-execute-dirty-parent!
   "Re-execute a parent/ancestor spin by resuming its earliest track continuation.
 
-  Used in two scenarios:
-  1. Escalation (Phase 1): A child observer has an await parent chain. Instead
-     of executing the child (which would cause double-execution), we re-execute
-     the root ancestor. The root re-creates children fresh, avoiding stale cache.
-  2. Dirty propagation (propagate-await-dirty!): After a child completes during
-     batch processing, its non-running parent is marked dirty and re-executed.
+  Used by propagate-await-dirty! after a child completes during batch processing
+  to re-execute its non-running parent. The parent re-runs from its track point,
+  awaits the child (getting fresh cached result), and produces updated output.
 
   Before re-executing, we invalidate created spins — old children retain stale
   signal registrations that would cause double-executions if not cleaned up.
@@ -362,9 +359,6 @@
             (nodes/mark-dirty)))))
 
   ;; Invalidate child spins created during previous execution.
-  ;; Their closures captured values from the old run and their signal registrations
-  ;; are stale — without cleanup they would fire independently on future signal
-  ;; changes, causing double-execution problems.
   (invalidate-created-spins! context spin-id)
 
   ;; Resume continuation with current signal value
@@ -655,7 +649,7 @@
                                              (pcps-async/invoke-continuation (:reject-fn cont) (:payload child-result))))))]
                     resume-result)))))))
 
-      ;; Propagate dirty flag through await dependency graph (Design 1)
+      ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
       nil)
 
@@ -1400,9 +1394,6 @@
     ;; Await dependencies must persist through batch processing for dirty propagation.
     ;; When a child completes during batch, propagate-await-dirty! needs these dependencies
     ;; to mark parent spins dirty. Dependencies are naturally overwritten as spins re-execute.
-    ;;
-    ;; Previous code cleared dependencies here, preventing multi-level await chains from
-    ;; propagating invalidation (t1 → t2 → t3 would only update t1, not t2 or t3).
 
     (let [stats @result]
       (when (pos? (:continuations-cleared stats))
@@ -1451,28 +1442,16 @@
     spin-id - spin that just completed"
   [context spin-id]
   ;; Only propagate during batch processing (when in signal-change handling)
-  ;; This is when re-execution happens due to reactive dependencies.
-  ;; Outside batch mode, normal await completion handles value propagation.
   (when-let [batch (rtp/get-state context [:engine/current-batch])]
     (let [awaiting-parents (rtp/get-state context [:await-dependents spin-id])]
       (when (seq awaiting-parents)
-        (let [;; Check which parents have continuations registered for this spin's completion
-              ;; These parents will be notified via continuation resume (not dirty re-execution)
-              completion-event-key [:spin/complete spin-id]
+        (let [completion-event-key [:spin/complete spin-id]
               processed @(:processed batch)
               parents-to-dirty (filter
                                  (fn [parent-id]
                                    (let [parent-node (rtp/get-state context [:nodes parent-id])
-                                         ;; Check if parent has a continuation registered for our completion
                                          has-completion-continuation
                                          (seq (rtp/get-state context [:subscriptions completion-event-key parent-id]))]
-                                     ;; Only mark dirty if:
-                                     ;; 1. Parent node exists
-                                     ;; 2. Parent is not currently running
-                                     ;; 3. Parent does NOT have a continuation for our completion
-                                     ;;    (continuations handle notification via resume, not re-execution)
-                                     ;; 4. Parent was NOT already processed in this batch
-                                     ;;    (inline await already consumed fresh value)
                                      (and parent-node
                                           (not (:running? parent-node))
                                           (not has-completion-continuation)
@@ -1484,16 +1463,8 @@
                                 :to-parents parents-to-dirty
                                 :count (count parents-to-dirty)
                                 :skipped (- (count awaiting-parents) (count parents-to-dirty))}})
-            ;; Mark each parent dirty and re-execute if they have track continuations.
-            ;; Without re-execution, dirty parents would sit idle until the next
-            ;; signal change they directly track, never integrating the child's
-            ;; fresh vdom into the DOM.
             (doseq [parent-id parents-to-dirty]
               (mark-dirty! context parent-id)
-              ;; If parent has track continuations (for any signal), resume the
-              ;; earliest one to trigger re-execution. The parent will re-run from
-              ;; its track point, await the child (getting fresh cached result),
-              ;; and produce updated vdom for the render system.
               (when-let [conts (seq (vals (rtp/get-state context [:continuations parent-id])))]
                 (let [earliest (first (sort-by :order conts))
                       sid (:signal-id earliest)]
