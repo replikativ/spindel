@@ -257,21 +257,32 @@
      "Initialize browser routing. Reads current URL, sets signal, installs popstate listener.
       Returns a stop function that removes the listener.
 
-      (def stop-router! (router/start! my-router))"
-     [router]
-     (let [current-path (str js/window.location.pathname js/window.location.search)
-           initial-route (match-route (:routes router) current-path)
-           handler (fn [_event]
-                     (let [path (str js/window.location.pathname js/window.location.search)
-                           route-data (match-route (:routes router) path)]
-                       (reset! (:signal router) route-data)))]
-       ;; Set initial route from current URL
-       (reset! (:signal router) initial-route)
-       ;; Listen for back/forward navigation
-       (.addEventListener js/window "popstate" handler)
-       ;; Return stop function
-       (fn stop! []
-         (.removeEventListener js/window "popstate" handler)))))
+      Optionally accepts an execution context that will be bound when handling
+      popstate events (browser back/forward), ensuring reactive propagation works.
+
+      (def stop-router! (router/start! my-router))
+      (def stop-router! (router/start! my-router my-context))"
+     ([router] (start! router nil))
+     ([router ctx]
+      (let [do-reset! (if ctx
+                        (fn [route-data]
+                          (binding [ec/*execution-context* ctx]
+                            (reset! (:signal router) route-data)))
+                        (fn [route-data]
+                          (reset! (:signal router) route-data)))
+            current-path (str js/window.location.pathname js/window.location.search)
+            initial-route (match-route (:routes router) current-path)
+            handler (fn [_event]
+                      (let [path (str js/window.location.pathname js/window.location.search)
+                            route-data (match-route (:routes router) path)]
+                        (do-reset! route-data)))]
+        ;; Set initial route from current URL
+        (do-reset! initial-route)
+        ;; Listen for back/forward navigation
+        (.addEventListener js/window "popstate" handler)
+        ;; Return stop function
+        (fn stop! []
+          (.removeEventListener js/window "popstate" handler))))))
 
 ;; =============================================================================
 ;; Link Component
