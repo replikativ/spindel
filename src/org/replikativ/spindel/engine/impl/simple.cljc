@@ -95,7 +95,9 @@
     :resumed-conts  - atom tracking [parent child gen] dedup triples
     :processed      - atom tracking spins with fresh cache in this batch
     :processed-events - atom for event deduplication
-    :events         - PBatchQueue for completion events"
+    :events         - PBatchQueue for completion events
+    :dom-cache-snapshot     - snapshot of [:dom/cache] at batch start
+    :dom-attr-cache-snapshot - snapshot of [:dom/attr-cache] at batch start"
   [context signal-id observers]
   (let [gen (rtp/swap-state! context [:engine/batch-generation]
               (fn [gen] (inc (or gen 0))))]
@@ -106,7 +108,14 @@
      :resumed-conts (atom #{})
      :processed (atom #{})
      :processed-events (atom #{})
-     :events (create-batch-queue)}))
+     :events (create-batch-queue)
+     ;; Snapshot DOM element caches at batch start.
+     ;; When a child spin executes as a direct signal observer, it updates the
+     ;; shared element cache. If the parent then re-executes (via propagate-await-dirty!),
+     ;; its new child would find the cache already up-to-date and produce 0 deltas.
+     ;; Restoring from this snapshot before parent re-execution ensures correct deltas.
+     :dom-cache-snapshot (rtp/get-state context [:dom/cache])
+     :dom-attr-cache-snapshot (rtp/get-state context [:dom/attr-cache])}))
 
 ;; Forward declarations for mutual recursion
 (declare trigger-drain!)
@@ -302,6 +311,84 @@
   (invalidate-created-spins! context spin-id)
 
   ;; Resume continuation with fresh signal value
+  (let [ctx-bindings (:ctx-bindings cont)
+        ctx-with-bindings (if ctx-bindings
+                            (update context :bindings merge ctx-bindings)
+                            context)]
+    (binding [ec/*execution-context* ctx-with-bindings
+              ec/*spin-id* spin-id
+              pcps-async/*in-trampoline* false]
+      (rtp/resume-continuation!
+       context spin-id cont
+       (fn [signal-value]
+         (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
+
+(defn- re-execute-dirty-parent!
+  "Re-execute a parent spin that was marked dirty by propagate-await-dirty!.
+
+  When a child spin re-runs due to a signal change, its parent is marked dirty
+  but has no track continuation for the changed signal. This function resumes
+  the parent's earliest track continuation (for a DIFFERENT signal) to trigger
+  re-execution so the parent can integrate the child's fresh vdom.
+
+  CRITICAL: Before re-executing, we must:
+  1. Restore DOM element caches to their pre-batch state. The child spin that
+     triggered this already executed and updated the shared element cache. Without
+     restoring, the parent's new child spins would find the cache already up-to-date
+     and produce 0 deltas, leaving the DOM unchanged.
+  2. Invalidate created spins — old children retain stale signal registrations
+     that would cause future double-executions if not cleaned up.
+
+  Args:
+    context - execution context
+    spin-id - parent spin to re-execute
+    signal-id - signal ID of the parent's earliest track continuation
+    cont - the earliest continuation for this parent"
+  [context spin-id signal-id cont]
+  (log/debug! {:event :engine/re-execute-dirty-parent
+               :data {:spin-id spin-id :signal-id signal-id}})
+
+  ;; Remove stale continuations (order > resumed continuation's order)
+  (let [cont-order (:order cont)
+        all-conts (rtp/get-state context [:continuations spin-id])
+        skipped-signal-ids (->> (vals all-conts)
+                                (filter #(< (:order %) cont-order))
+                                (keep :signal-id))]
+    (rtp/swap-state! context [:continuations spin-id]
+      (fn [conts]
+        (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
+    (doseq [skipped-sid skipped-signal-ids]
+      (track-signal-dep! context spin-id skipped-sid)))
+
+  ;; Re-track the resumed signal dependency
+  (track-signal-dep! context spin-id signal-id)
+
+  ;; Mark spin as not completed, dirty, AND running
+  (rtp/swap-state! context [:nodes spin-id]
+    (fn [node]
+      (when node
+        (-> node
+            (assoc :completed? false)
+            (assoc :running? true)
+            (nodes/mark-dirty)))))
+
+  ;; Restore DOM element caches to pre-batch state.
+  ;; The child spin already executed as a direct signal observer and updated the
+  ;; shared cache. Without restoring, the parent's new children would find the cache
+  ;; already matching the new values and produce 0 deltas (no DOM update).
+  (when-let [batch (rtp/get-state context [:engine/current-batch])]
+    (when-let [snapshot (:dom-cache-snapshot batch)]
+      (rtp/swap-state! context [:dom/cache] (constantly snapshot)))
+    (when-let [snapshot (:dom-attr-cache-snapshot batch)]
+      (rtp/swap-state! context [:dom/attr-cache] (constantly snapshot))))
+
+  ;; Invalidate child spins created during previous execution.
+  ;; Their closures captured values from the old run and their signal registrations
+  ;; are stale — without cleanup they would fire independently on future signal
+  ;; changes, causing double-execution problems.
+  (invalidate-created-spins! context spin-id)
+
+  ;; Resume continuation with current signal value
   (let [ctx-bindings (:ctx-bindings cont)
         ctx-with-bindings (if ctx-bindings
                             (update context :bindings merge ctx-bindings)
@@ -1352,9 +1439,21 @@
                                 :to-parents parents-to-dirty
                                 :count (count parents-to-dirty)
                                 :skipped (- (count awaiting-parents) (count parents-to-dirty))}})
-            ;; Mark each parent dirty (those without completion continuations)
+            ;; Mark each parent dirty and re-execute if they have track continuations.
+            ;; Without re-execution, dirty parents would sit idle until the next
+            ;; signal change they directly track, never integrating the child's
+            ;; fresh vdom into the DOM.
             (doseq [parent-id parents-to-dirty]
-              (mark-dirty! context parent-id))))))))
+              (mark-dirty! context parent-id)
+              ;; If parent has track continuations (for any signal), resume the
+              ;; earliest one to trigger re-execution. The parent will re-run from
+              ;; its track point, await the child (getting fresh cached result),
+              ;; and produce updated vdom for the render system.
+              (when-let [conts (seq (vals (rtp/get-state context [:continuations parent-id])))]
+                (let [earliest (first (sort-by :order conts))
+                      sid (:signal-id earliest)]
+                  (when sid
+                    (re-execute-dirty-parent! context parent-id sid earliest)))))))))))
 
 (defn ^:no-doc invalidate-created-spins!
   "Invalidate all spins that were created by this spin during previous execution.
