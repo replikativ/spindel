@@ -96,8 +96,7 @@
     :processed      - atom tracking spins with fresh cache in this batch
     :processed-events - atom for event deduplication
     :events         - PBatchQueue for completion events
-    :dom-cache-snapshot     - snapshot of [:dom/cache] at batch start
-    :dom-attr-cache-snapshot - snapshot of [:dom/attr-cache] at batch start"
+"
   [context signal-id observers]
   (let [gen (rtp/swap-state! context [:engine/batch-generation]
               (fn [gen] (inc (or gen 0))))]
@@ -108,14 +107,7 @@
      :resumed-conts (atom #{})
      :processed (atom #{})
      :processed-events (atom #{})
-     :events (create-batch-queue)
-     ;; Snapshot DOM element caches at batch start.
-     ;; When a child spin executes as a direct signal observer, it updates the
-     ;; shared element cache. If the parent then re-executes (via propagate-await-dirty!),
-     ;; its new child would find the cache already up-to-date and produce 0 deltas.
-     ;; Restoring from this snapshot before parent re-execution ensures correct deltas.
-     :dom-cache-snapshot (rtp/get-state context [:dom/cache])
-     :dom-attr-cache-snapshot (rtp/get-state context [:dom/attr-cache])}))
+     :events (create-batch-queue)}))
 
 ;; Forward declarations for mutual recursion
 (declare trigger-drain!)
@@ -324,20 +316,17 @@
          (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
 
 (defn- re-execute-dirty-parent!
-  "Re-execute a parent spin that was marked dirty by propagate-await-dirty!.
+  "Re-execute a parent/ancestor spin by resuming its earliest track continuation.
 
-  When a child spin re-runs due to a signal change, its parent is marked dirty
-  but has no track continuation for the changed signal. This function resumes
-  the parent's earliest track continuation (for a DIFFERENT signal) to trigger
-  re-execution so the parent can integrate the child's fresh vdom.
+  Used in two scenarios:
+  1. Escalation (Phase 1): A child observer has an await parent chain. Instead
+     of executing the child (which would cause double-execution), we re-execute
+     the root ancestor. The root re-creates children fresh, avoiding stale cache.
+  2. Dirty propagation (propagate-await-dirty!): After a child completes during
+     batch processing, its non-running parent is marked dirty and re-executed.
 
-  CRITICAL: Before re-executing, we must:
-  1. Restore DOM element caches to their pre-batch state. The child spin that
-     triggered this already executed and updated the shared element cache. Without
-     restoring, the parent's new child spins would find the cache already up-to-date
-     and produce 0 deltas, leaving the DOM unchanged.
-  2. Invalidate created spins — old children retain stale signal registrations
-     that would cause future double-executions if not cleaned up.
+  Before re-executing, we invalidate created spins — old children retain stale
+  signal registrations that would cause double-executions if not cleaned up.
 
   Args:
     context - execution context
@@ -372,16 +361,6 @@
             (assoc :running? true)
             (nodes/mark-dirty)))))
 
-  ;; Restore DOM element caches to pre-batch state.
-  ;; The child spin already executed as a direct signal observer and updated the
-  ;; shared cache. Without restoring, the parent's new children would find the cache
-  ;; already matching the new values and produce 0 deltas (no DOM update).
-  (when-let [batch (rtp/get-state context [:engine/current-batch])]
-    (when-let [snapshot (:dom-cache-snapshot batch)]
-      (rtp/swap-state! context [:dom/cache] (constantly snapshot)))
-    (when-let [snapshot (:dom-attr-cache-snapshot batch)]
-      (rtp/swap-state! context [:dom/attr-cache] (constantly snapshot))))
-
   ;; Invalidate child spins created during previous execution.
   ;; Their closures captured values from the old run and their signal registrations
   ;; are stale — without cleanup they would fire independently on future signal
@@ -415,6 +394,27 @@
                       to-check)
             new-desc (set/difference children descendants)]
         (recur new-desc (into descendants children))))))
+
+(defn- find-root-await-ancestor
+  "Walk await-dependents upward from spin-id to find the topmost ancestor.
+
+  When a child spin is an observer of a changed signal and has an await parent,
+  we escalate execution to the root ancestor instead. This prevents double-execution:
+  child fires → updates cache → parent re-fires → finds stale cache → 0 deltas.
+
+  Returns the root spin-id if the spin has an await parent chain,
+  or nil if the spin has no await parent."
+  [context spin-id]
+  (let [parents (rtp/get-state context [:await-dependents spin-id])]
+    (when (seq parents)
+      (loop [current (first parents)
+             visited #{spin-id}]
+        (if (visited current)
+          current ;; cycle detected, return current as root
+          (let [grandparents (rtp/get-state context [:await-dependents current])]
+            (if (seq grandparents)
+              (recur (first grandparents) (conj visited current))
+              current)))))))
 
 (defn process-event!
   "Process a single event.
@@ -466,25 +466,66 @@
             descendant-set (compute-descendant-observers context observer-id-set)
             independent-observers (vec (remove (fn [[sid _]] (descendant-set sid))
                                                observers-with-conts))
+
+            ;; Escalation: children with await parents should not fire independently.
+            ;; Instead, escalate to their root ancestor which re-creates the child fresh.
+            ;; This prevents double-execution (child fires + parent re-fires → stale cache).
+            escalation-targets
+            (into {}
+              (keep (fn [[spin-id _cont]]
+                      (when-let [root-id (find-root-await-ancestor context spin-id)]
+                        ;; Check root has track continuations we can resume
+                        (when-let [root-conts (seq (vals (rtp/get-state context [:continuations root-id])))]
+                          (let [earliest (first (sort-by :order root-conts))]
+                            (when (:signal-id earliest)
+                              [spin-id {:root-id root-id :cont earliest}]))))))
+              independent-observers)
+
+            ;; Direct observers: those NOT being escalated
+            direct-observers (if (seq escalation-targets)
+                               (vec (remove (fn [[sid _]] (contains? escalation-targets sid))
+                                            independent-observers))
+                               independent-observers)
+
+            ;; Unique roots to re-execute (deduped — multiple children may share a root)
+            roots-to-execute (when (seq escalation-targets)
+                               (into {} (map (fn [{:keys [root-id cont]}] [root-id cont]))
+                                     (vals escalation-targets)))
+
             do-resume! (fn [[spin-id cont]]
                          (swap! resumed-observers conj spin-id)
-                         (resume-single-observer! context spin-id sid cont))]
+                         (resume-single-observer! context spin-id sid cont))
+            do-escalate! (fn [[root-id cont]]
+                           (swap! resumed-observers conj root-id)
+                           (re-execute-dirty-parent! context root-id (:signal-id cont) cont))]
 
         (when (seq descendant-set)
           (log/debug! {:event :engine/filtered-descendant-observers
                        :data {:descendants descendant-set
                               :independent (map first independent-observers)}}))
 
-        ;; Dispatch: sequential for 0-1 observers, parallel for >1
+        (when (seq escalation-targets)
+          (log/debug! {:event :engine/escalating-to-root-ancestors
+                       :data {:escalated (keys escalation-targets)
+                              :roots (keys roots-to-execute)}}))
+
+        ;; Add escalated roots to batch observers so their completion is tracked
+        (when (seq roots-to-execute)
+          (rtp/swap-state! context [:engine/current-batch]
+            (fn [batch]
+              (when batch
+                (update batch :observers into (keys roots-to-execute))))))
+
+        ;; Dispatch direct observers: sequential for 0-1, parallel for >1
         #?(:clj
-           (if (<= (count independent-observers) 1)
+           (if (<= (count direct-observers) 1)
              ;; Sequential path (no overhead)
-             (doseq [obs independent-observers]
+             (doseq [obs direct-observers]
                (do-resume! obs))
              ;; Parallel path: dispatch to executor, wait via managedBlock
              (let [executor (:executor context)
-                   latch (CountDownLatch. (count independent-observers))]
-               (doseq [obs independent-observers]
+                   latch (CountDownLatch. (count direct-observers))]
+               (doseq [obs direct-observers]
                  (scheduler/execute! executor
                    (fn []
                      (try
@@ -501,8 +542,12 @@
                      (zero? (.getCount latch)))))))
            :cljs
            ;; CLJS: always sequential (single-threaded)
-           (doseq [obs independent-observers]
+           (doseq [obs direct-observers]
              (do-resume! obs)))
+
+        ;; Escalate to root ancestors (always sequential — modifies shared state)
+        (doseq [obs roots-to-execute]
+          (do-escalate! obs))
 
         ;; Update batch observers to only include actually-resumed observers
         ;; Observers without continuations won't produce completion events
