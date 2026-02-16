@@ -10,6 +10,7 @@
   (:refer-clojure :exclude [for])
   (:require
    [org.replikativ.spindel.engine.context :as ctx]
+   [org.replikativ.spindel.engine.effects :as eff]
    [org.replikativ.spindel.effects.await :as fx-await]
    [org.replikativ.spindel.effects.track :as fx-track]
    [org.replikativ.spindel.effects.yield :as fx-yield]
@@ -91,6 +92,23 @@
 (def yield
   "Emit a value in an async sequence generator (gen-aseq)."
   fx-yield/yield)
+
+;; Register re-exported effect symbols so the CPS transformer recognizes them
+;; when users require await/track from this namespace instead of the original.
+(eff/register-effect-by-symbol!
+  'org.replikativ.spindel.core/await
+  :org.replikativ.spindel.effects.await/await-handler
+  'org.replikativ.spindel.engine.effects/one-arg->awaitable-map
+  'org.replikativ.spindel.effects.await/await-handler)
+
+(eff/register-effect-by-symbol!
+  'org.replikativ.spindel.core/track
+  :org.replikativ.spindel.effects.track/track-handler
+  'org.replikativ.spindel.engine.effects/one-arg->awaitable-map
+  'org.replikativ.spindel.effects.track/track-handler)
+
+;; NOTE: yield is not registered globally - it's added per gen-aseq invocation.
+;; gen-aseq registers both seq.core/yield and core/yield breakpoints.
 
 ;; =============================================================================
 ;; Runtime / Execution Context

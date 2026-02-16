@@ -138,6 +138,10 @@
        (-reset! [this newval]
          (swap-signal*-explicit this (constantly newval)))]))
 
+;; Resolve print-method dispatch ambiguity: SignalRef is both IRecord and IDeref.
+;; Prefer IRecord so records print in their default map form.
+#?(:clj (prefer-method print-method clojure.lang.IRecord clojure.lang.IDeref))
+
 ;; Ensure a signal has an initialized entry in the runtime state
 (defn ensure-signal-initialized!
   [^SignalRef signal-ref]

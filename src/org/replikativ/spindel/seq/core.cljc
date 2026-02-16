@@ -227,8 +227,11 @@
            yield-bp-var (symbol (str *ns*) (name yield-bp-vname))
 
            ;; Merge spin breakpoints with yield breakpoint
+           ;; Register both the original and re-exported symbol so yield works
+           ;; whether required from seq.core or spindel.core
            breakpoints-map (assoc spin-breakpoints
-                                  `org.replikativ.spindel.seq.core/yield yield-bp-var)
+                                  `org.replikativ.spindel.seq.core/yield yield-bp-var
+                                  'org.replikativ.spindel.core/yield yield-bp-var)
 
            ;; CPS-transform the body using partial-cps machinery
            ;; ioc/invert handles macro expansion internally via expand-macro
