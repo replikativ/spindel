@@ -361,6 +361,74 @@
      nil))
 
 ;; =============================================================================
+;; Merge From Parent (Parent → Child sync)
+;; =============================================================================
+
+#?(:clj
+   (defn merge-from-parent!
+     "Merge parent's current state into child context.
+
+      This is the inverse of merge-to-parent! — it pulls parent changes
+      INTO the child. Useful for long-lived agent branches that need to
+      stay in sync with the parent (e.g., when the parent has merged
+      other children's work).
+
+      After merge, the child has all parent's latest changes plus its
+      own work. Conflicts are resolved per system's merge strategy.
+
+      Permission model: Called from within the child context.
+
+      Args:
+        child-ctx - The child ExecutionContext to update
+        opts      - Optional merge opts (passed to yggdrasil merge!)
+                    {:strategy :ours|:theirs|:union|fn
+                     :message \"merge message\"}
+
+      Returns: nil
+
+      Example:
+        (binding [rtc/*execution-context* child-ctx]
+          (merge-from-parent! child-ctx)
+          ;; child now has parent's latest changes
+          )"
+     ([child-ctx] (merge-from-parent! child-ctx {}))
+     ([child-ctx opts]
+      (when-let [parent-ctx (:parent-ctx child-ctx)]
+        (let [child-systems (rtp/get-state child-ctx [:external-refs])
+              parent-systems (rtp/get-state parent-ctx [:external-refs])]
+
+          (doseq [[sys-id child-sys] child-systems
+                  :when (and (satisfies? ygg/Branchable child-sys)
+                             (satisfies? ygg/Mergeable child-sys))
+                  :let [parent-sys (get parent-systems sys-id)
+                        child-branch (ygg/current-branch child-sys)
+                        parent-branch (ygg/current-branch parent-sys)]]
+            ;; Merge parent branch into child branch (opposite of merge-to-parent!)
+            (let [merged-sys (-> child-sys
+                                  (ygg/checkout child-branch)
+                                  (ygg/merge! parent-branch
+                                    (merge {:message (str "Merge from " (name parent-branch))}
+                                           opts)))]
+              ;; Update child context with merged system
+              (rtp/swap-state! child-ctx [:external-refs sys-id] (constantly merged-sys))))))
+      nil)))
+
+#?(:clj
+   (defn merge-fork-from-parent!
+     "Merge parent's current state into a fork.
+
+      ForkHandle variant of merge-from-parent! for explicit control.
+
+      Args:
+        fork-handle - ForkHandle from fork!
+        opts        - Optional merge opts
+
+      Returns: nil"
+     ([fork-handle] (merge-fork-from-parent! fork-handle {}))
+     ([fork-handle opts]
+      (merge-from-parent! (:child-ctx fork-handle) opts))))
+
+;; =============================================================================
 ;; Accessors
 ;; =============================================================================
 
@@ -382,6 +450,36 @@
            parent-ctx (:parent-ctx ctx)]
        (when parent-ctx
          (rtp/get-state parent-ctx [:external-refs sys-id])))))
+
+;; =============================================================================
+;; Context Diff (diff all systems between child and parent)
+;; =============================================================================
+
+#?(:clj
+   (defn context-diff
+     "Diff all yggdrasil systems between a child context and its parent.
+
+      Iterates over all external-refs in the child context that implement
+      Mergeable, and computes a diff between the parent's branch and the
+      child's branch for each system.
+
+      Returns map of {system-id -> {:type :git/:datahike, :diff ...}}
+      Returns nil if child has no parent."
+     [child-ctx]
+     (when-let [parent-ctx (:parent-ctx child-ctx)]
+       (let [child-systems (rtp/get-state child-ctx [:external-refs])
+             parent-systems (rtp/get-state parent-ctx [:external-refs])]
+         (into {}
+           (for [[sys-id child-sys] child-systems
+                 :when (satisfies? ygg/Mergeable child-sys)
+                 :let [parent-sys (get parent-systems sys-id)
+                       child-branch (ygg/current-branch child-sys)
+                       parent-branch (when parent-sys (ygg/current-branch parent-sys))]
+                 :when parent-sys]
+             [sys-id {:type (ygg/system-type child-sys)
+                      :child-branch child-branch
+                      :parent-branch parent-branch
+                      :diff (ygg/diff parent-sys parent-branch child-branch)}]))))))
 
 ;; =============================================================================
 ;; Optional Helpers (for datahike double-deref ergonomics)
