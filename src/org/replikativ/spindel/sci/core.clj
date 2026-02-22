@@ -23,10 +23,9 @@
 
   See: SCI_INTEGRATION_FINDINGS.md"
   [sci-ctx]
-  (let [partial-cps-root "../partial-cps/src/is/simm/partial_cps"
-        runtime-src (slurp (str partial-cps-root "/runtime.cljc"))
-        ioc-src (slurp (str partial-cps-root "/ioc.clj"))
-        async-src (slurp (str partial-cps-root "/async.cljc"))]
+  (let [runtime-src (slurp (clojure.java.io/resource "is/simm/partial_cps/runtime.cljc"))
+        ioc-src (slurp (clojure.java.io/resource "is/simm/partial_cps/ioc.clj"))
+        async-src (slurp (clojure.java.io/resource "is/simm/partial_cps/async.cljc"))]
 
     (sci/eval-string* sci-ctx runtime-src)
     (sci/eval-string* sci-ctx ioc-src)
