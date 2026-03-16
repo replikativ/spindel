@@ -8,7 +8,9 @@
         is.simm/partial-cps {:local/root "../partial-cps"}
         org.replikativ/yggdrasil {:mvn/version "0.1.6"}
         org.replikativ/hasch {:mvn/version "0.3.97"}
-        org.clojure/core.async {:mvn/version "1.6.681"}}
+        org.clojure/core.async {:mvn/version "1.6.681"}
+        is.simm/anglican {:local/root "../anglican"}
+        io.replikativ/kabel {:local/root "../kabel"}}
 
  :aliases
  {:test {:extra-paths ["test"]
