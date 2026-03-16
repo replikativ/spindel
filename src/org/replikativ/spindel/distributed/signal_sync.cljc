@@ -26,11 +26,13 @@
   proto/PSyncStrategy
 
   (-init-client-state [_]
-    ;; Client sends its current value hash (or nil if fresh)
+    ;; Client sends its current value hash, or closes channel if no state
     (let [ch (chan 1)
           current @signal-atom]
-      (put! ch (when current {:hash (hash current)}))
-      (close! ch)
+      (if (some? current)
+        (do (put! ch {:hash (hash current)})
+            (close! ch))
+        (close! ch))
       ch))
 
   (-handshake-items [_ client-state]
