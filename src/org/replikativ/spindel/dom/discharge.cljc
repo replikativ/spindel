@@ -327,6 +327,10 @@
                           :rendered-set-size (when *rendered-vnodes* (count @*rendered-vnodes*))}})
       (when-not is-rendered?
         (let [el (get-element discharge (:addr vnode))]
+          (when-not el
+            (log/debug! {:event ::element-not-found
+                         :data {:addr (:addr vnode) :tag (:tag vnode)
+                                :delta-count (count (:deltas vnode))}}))
           (when el
             ;; Apply attribute deltas
             (apply-attr-deltas! discharge el vnode)

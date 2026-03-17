@@ -38,6 +38,32 @@
            ;; Direct call to handler, bypassing dispatch
            (~direct-fn-sym ~@args current-spin-id# ~current-ns resolve# reject#))))))
 
+;; Factory: create a breakpoint handler that dispatches via symbol-call dispatch
+(defn- make-symbol-call-breakpoint ^:private [sym]
+  (fn [{:keys [spin-id env]} r e]
+    (let [current-ns (str *ns*)]
+      (fn [args]
+        `(let [resolve# (fn [value#]
+                          (try
+                            (async/invoke-continuation ~r value#)
+                            (catch ~(if (:js-globals env) :default `Throwable) t#
+                              (async/invoke-continuation ~e t#))))
+               reject# (fn [error#]
+                         (try
+                           (async/invoke-continuation ~e error#)
+                           (catch ~(if (:js-globals env) :default `Throwable) t#
+                             (async/invoke-continuation ~e t#))))
+               current-spin-id# ec/*spin-id*]
+           ;; Dispatch via symbol-call dispatch (adapter + handler from registry)
+           (org.replikativ.spindel.engine.effects/dispatch-symbol-call
+             ec/*execution-context*
+             '~sym
+             [~@args]
+             current-spin-id#
+             ~current-ns
+             resolve#
+             reject#))))))
+
 #?(:clj
    (defn ^:no-doc build-breakpoints
      "Build breakpoints for spin macro - symbol call-forms, built from effects registry.
@@ -54,8 +80,10 @@
      (let [reg (org.replikativ.spindel.engine.effects/get-effect-syntax)
 
            entries (for [[sym {:keys [handler direct-handler-sym]}] reg]
-                     (let [ vname (symbol (str "bp__" (name handler)))
-                           breakpoint-fn (make-direct-breakpoint direct-handler-sym)
+                     (let [vname (symbol (str "bp__" (munge (str sym))))
+                           breakpoint-fn (if direct-handler-sym
+                                           (make-direct-breakpoint direct-handler-sym)
+                                           (make-symbol-call-breakpoint sym))
                            _ (intern *ns* vname breakpoint-fn)
                            var-sym (symbol (str *ns*) (name vname))]
                        [sym var-sym]))]

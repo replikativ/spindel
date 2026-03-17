@@ -29,6 +29,15 @@
                     [java.util.concurrent.locks LockSupport])))
 
 ;; =============================================================================
+;; Drain Context Detection
+;; =============================================================================
+
+(def ^:dynamic *in-drain?*
+  "True when the current thread is inside drain-events! processing.
+   Used by deref-spin to detect re-entrant @(spin ...) which would deadlock."
+  false)
+
+;; =============================================================================
 ;; Forward declarations
 ;; =============================================================================
 
@@ -303,10 +312,18 @@
   (invalidate-created-spins! context spin-id)
 
   ;; Resume continuation with fresh signal value
+  ;; CRITICAL: Clear DOM context bindings before resuming. DOM state
+  ;; (:dom/parent-addr, :dom/current-slot) is ephemeral rendering state
+  ;; that must not leak from a previous render pass into a re-execution.
+  ;; Element macros will re-set these correctly during the new render.
   (let [ctx-bindings (:ctx-bindings cont)
-        ctx-with-bindings (if ctx-bindings
-                            (update context :bindings merge ctx-bindings)
-                            context)]
+        merged-bindings (if ctx-bindings
+                          (-> (:bindings context)
+                              (merge ctx-bindings)
+                              (dissoc :dom/parent-addr :dom/current-slot))
+                          (-> (:bindings context)
+                              (dissoc :dom/parent-addr :dom/current-slot)))
+        ctx-with-bindings (assoc context :bindings merged-bindings)]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
@@ -440,6 +457,7 @@
       (log/trace! {:event :engine/signal-change
                    :data {:signal-id sid :observers observers :generation (:generation batch)}})
 
+
       ;; CRITICAL: Clear await continuations at generation boundary (Design 1)
       ;; Must happen BEFORE track continuations resume to prevent old await
       ;; continuations from being resumed during batch processing
@@ -492,6 +510,7 @@
             do-escalate! (fn [[root-id cont]]
                            (swap! resumed-observers conj root-id)
                            (re-execute-dirty-parent! context root-id (:signal-id cont) cont))]
+
 
         (when (seq descendant-set)
           (log/debug! {:event :engine/filtered-descendant-observers
@@ -760,6 +779,7 @@
       ;; We claimed the lock - drain to completion
       (try
         (log/trace! {:event :engine/drain-start})
+        (binding [*in-drain?* true]
         (let [event-count (atom 0)]
           ;; Drain loop
           (loop []
@@ -776,12 +796,29 @@
                                  :data {:event-type (:type event)
                                         :event-id (:id event)
                                         :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))}})
-                    ;; For spin-execution events, deliver the error to the deref promise
-                    ;; so the calling thread unblocks with an exception instead of hanging
-                    (when (= (:type event) :spin-execution)
+                    (case (:type event)
+                      ;; For spin-execution events, deliver the error to the deref promise
+                      ;; so the calling thread unblocks with an exception instead of hanging
+                      :spin-execution
                       (when-let [reject-fn (:reject-fn event)]
                         (try (reject-fn e)
-                             (catch #?(:clj Throwable :cljs js/Error) _))))))
+                             (catch #?(:clj Throwable :cljs :default) _)))
+
+                      ;; For spin-completion events, the parent spin's continuation threw.
+                      ;; Cache the error in the parent so its awaiters also see the failure.
+                      :spin-completion
+                      (let [parent-ids (keys (rtp/get-state context
+                                               [:subscriptions [:spin/complete (:id event)]]))]
+                        (doseq [pid parent-ids]
+                          (try
+                            (rtp/swap-state! context [:nodes pid]
+                              (fn [node]
+                                (when node
+                                  (assoc node :result {:variant :error :payload e}))))
+                            (catch #?(:clj Throwable :cljs :default) _))))
+
+                      ;; Other event types: already logged, no additional action
+                      nil)))
                 (swap! event-count inc)
                 ;; Continue draining
                 (recur))
@@ -789,7 +826,7 @@
               (do
                 (log/trace! {:event :engine/drain-complete
                              :data {:events-processed @event-count}})
-                @event-count))))
+                @event-count)))))
         (finally
           ;; Always release draining lock
           (rtp/swap-state! context [:engine/draining?] (constantly false))

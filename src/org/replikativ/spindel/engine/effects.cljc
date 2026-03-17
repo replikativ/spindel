@@ -60,6 +60,60 @@
 ;; removed in favor of explicit symbol-based registration and dispatch.
 
 ;; =============================================================================
+;; Utility: Synchronous Effect Helper
+;; =============================================================================
+
+(defn sync-effect
+  "Helper for creating synchronous effect handlers.
+
+  Takes a function (fn [context args] value-or-error) and wraps it
+  in PEffectHandler protocol, calling resolve/reject appropriately.
+
+  Catches exceptions and passes them to reject.
+
+  Example:
+    (sync-effect
+      (fn [context {:keys [signal-ref]}]
+        (binding [ec/*execution-context* context]
+          (sig/get-signal-value signal-ref))))"
+  [effect-fn]
+  (reify PEffectHandler
+    (handle-effect [_ context args resolve reject]
+      (try
+        (let [result (effect-fn context args)]
+          (resolve result))
+        (catch #?(:clj Exception :cljs js/Error) e
+          (reject e))))))
+
+;; =============================================================================
+;; Utility: Async Effect Helper
+;; =============================================================================
+
+(defn async-effect
+  "Helper for creating asynchronous effect handlers.
+
+  Takes a function (fn [context args resolve reject] ...) that is
+  responsible for calling resolve or reject at some future point.
+
+  The function should:
+  1. Set up async operation (use ec/*execution-context* binding for state access)
+  2. Register callbacks that will call resolve/reject
+  3. Return nil
+
+  Example:
+    (async-effect
+      (fn [context {:keys [spin-ref]} resolve reject]
+        (binding [ec/*execution-context* context]
+          (register-spin-observer! spin-ref
+            (fn [value] (resolve value))
+            (fn [error] (reject error))))))"
+  [effect-fn]
+  (reify PEffectHandler
+    (handle-effect [_ context args resolve reject]
+      (effect-fn context args resolve reject)
+      nil)))
+
+;; =============================================================================
 ;; Symbol-based syntax registry for direct CPS interception
 ;; =============================================================================
 

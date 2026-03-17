@@ -145,6 +145,9 @@
      timeout-ms: 0 means block indefinitely, >0 means timeout after that many ms.
      timeout-val: value returned on timeout (only used when timeout-ms > 0)."
      [this spin-id spin-fn timeout-ms timeout-val]
+     (when simple/*in-drain?*
+       (throw (ex-info "Cannot deref @(spin ...) from inside a drain context (would deadlock). Use spawn! for fire-and-forget or await for spin-to-spin coordination."
+                       {:spin-id spin-id})))
      (let [cached (ec/spin-current-result spin-id)
            runtime (ec/current-execution-context)
            rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
@@ -510,9 +513,15 @@
      err - The error/exception that caused the abortion"
   [spin-id err]
   (ec/spin-cache-result! spin-id (error err))
-  ;; TODO: Propagate to observers via PGraph/ordered-observers protocol
-  ;; For now, observers are handled by engine events
-  )
+  ;; Propagate error to track observers: mark them dirty so they re-execute
+  ;; and discover the error via their track continuation.
+  ;; NOTE: We only mark OBSERVERS dirty, not the failed spin itself.
+  ;; The caller (reject continuation or cancel-spin!) handles the spin's own
+  ;; completion event and cache state.
+  (let [ctx (ec/current-execution-context)
+        observers (ec/get-state [:observers spin-id])]
+    (doseq [observer-id observers]
+      (simple/mark-dirty! ctx observer-id))))
 
 ;; Export the ::spin-cancelled constant for use by other namespaces
 (def spin-cancelled ::spin-cancelled)

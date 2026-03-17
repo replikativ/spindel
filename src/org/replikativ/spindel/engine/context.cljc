@@ -300,8 +300,8 @@
                                       ;; Block until signaled or 1s timeout (zero CPU while waiting)
                                       (.poll drain-signal 1 TimeUnit/SECONDS)
                                       (simple/drain-events! ctx executor)
-                                      (catch Exception e
-                                        ;; Log but don't crash drain thread
+                                      (catch Throwable e
+                                        ;; Log but don't crash drain thread on Error (e.g. StackOverflowError)
                                         (println "ERROR in background drain thread:" e))))))
                           (.setDaemon true)
                           (.start))

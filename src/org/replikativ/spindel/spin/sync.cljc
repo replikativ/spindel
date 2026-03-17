@@ -356,3 +356,26 @@
     (create-mailbox execution-context)
     (throw (ex-info "mailbox called outside spin context"
                     {:hint "Use create-mailbox with explicit execution-context, or call from within a spin"}))))
+
+;; ============================================================================
+;; Spawn
+;; ============================================================================
+
+(defn spawn!
+  "Start a spin as fire-and-forget. The spin runs asynchronously;
+   errors are passed to `on-error` (default: prints to stderr).
+
+   Works both inside and outside spins. Does not block.
+
+   Usage:
+     (spawn! (spin (do-work)))
+     (spawn! (spin (do-work)) {:on-error my-handler})
+
+   Returns nil."
+  ([s] (spawn! s {}))
+  ([s {:keys [on-error]
+       :or {on-error (fn [e] (binding [#?(:clj *out* :cljs *print-fn*)
+                                       #?(:clj *err* :cljs *print-err-fn*)]
+                               (println "Error in spawned spin:" e)))}}]
+   (s (fn [_]) on-error)
+   nil))

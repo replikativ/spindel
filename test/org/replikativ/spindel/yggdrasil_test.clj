@@ -258,6 +258,109 @@
         (ygg/discard-fork! fork-handle)))))
 
 ;; =============================================================================
+;; Merge From Parent Tests
+;; =============================================================================
+
+(deftest test-merge-from-parent
+  (testing "merge-from-parent! pulls parent changes into child"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            fork-handle (ygg/fork!)
+            child-ctx (:child-ctx fork-handle)]
+
+        ;; Make a change in the parent (simulates another agent's merged work)
+        (let [repo-path (:repo-path @yref)
+              parent-file (str repo-path "/parent-change.txt")]
+          (spit parent-file "Added by parent after fork")
+          (sh "git" "add" "parent-change.txt" :dir repo-path)
+          (sh "git" "commit" "-m" "Parent commit after fork" :dir repo-path))
+
+        ;; Before merge, child should NOT have the parent file
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                worktrees-dir (:worktrees-dir @yref)
+                wt-path (str worktrees-dir "/" branch-name)]
+            (is (not (.exists (io/file (str wt-path "/parent-change.txt"))))
+                "Child does NOT have parent's file before merge")))
+
+        ;; Merge: pull parent's changes into child
+        (ygg/merge-from-parent! child-ctx)
+
+        ;; After merge, child SHOULD have the parent file
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                worktrees-dir (:worktrees-dir @yref)
+                wt-path (str worktrees-dir "/" branch-name)]
+            (is (.exists (io/file (str wt-path "/parent-change.txt")))
+                "Child HAS parent's file after merge")))
+
+        (ygg/discard-fork! fork-handle)))))
+
+(deftest test-merge-from-parent-preserves-child-work
+  (testing "merge-from-parent! preserves child's own changes"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            fork-handle (ygg/fork!)
+            child-ctx (:child-ctx fork-handle)]
+
+        ;; Make a change in the fork first
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                worktrees-dir (:worktrees-dir @yref)
+                wt-path (str worktrees-dir "/" branch-name)
+                child-file (str wt-path "/child-work.txt")]
+            (spit child-file "Work done in child")
+            (sh "git" "add" "child-work.txt" :dir wt-path)
+            (sh "git" "commit" "-m" "Child commit" :dir wt-path)))
+
+        ;; Make a change in the parent
+        (let [repo-path (:repo-path @yref)
+              parent-file (str repo-path "/parent-update.txt")]
+          (spit parent-file "Parent update")
+          (sh "git" "add" "parent-update.txt" :dir repo-path)
+          (sh "git" "commit" "-m" "Parent update" :dir repo-path))
+
+        ;; Merge from parent
+        (ygg/merge-from-parent! child-ctx)
+
+        ;; After merge, child should have BOTH files
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                worktrees-dir (:worktrees-dir @yref)
+                wt-path (str worktrees-dir "/" branch-name)]
+            (is (.exists (io/file (str wt-path "/child-work.txt")))
+                "Child's own work preserved after merge")
+            (is (.exists (io/file (str wt-path "/parent-update.txt")))
+                "Parent's update pulled in after merge")))
+
+        (ygg/discard-fork! fork-handle)))))
+
+(deftest test-merge-fork-from-parent
+  (testing "merge-fork-from-parent! works with ForkHandle"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            fork-handle (ygg/fork!)]
+
+        ;; Add file in parent
+        (let [repo-path (:repo-path @yref)]
+          (spit (str repo-path "/via-handle.txt") "handle test")
+          (sh "git" "add" "via-handle.txt" :dir repo-path)
+          (sh "git" "commit" "-m" "For handle test" :dir repo-path))
+
+        ;; Merge from parent via fork handle
+        (ygg/merge-fork-from-parent! fork-handle)
+
+        ;; Verify
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                worktrees-dir (:worktrees-dir @yref)
+                wt-path (str worktrees-dir "/" branch-name)]
+            (is (.exists (io/file (str wt-path "/via-handle.txt")))
+                "File present after merge-fork-from-parent!")))
+
+        (ygg/discard-fork! fork-handle)))))
+
+;; =============================================================================
 ;; Multiple Systems Tests
 ;; =============================================================================
 
