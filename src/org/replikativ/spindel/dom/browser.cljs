@@ -12,6 +12,24 @@
             [org.replikativ.spindel.dom.discharge :as disch]))
 
 ;; =============================================================================
+;; SVG namespace support
+;; =============================================================================
+
+(def ^:private svg-ns "http://www.w3.org/2000/svg")
+
+;; Tags that must be created in the SVG namespace to render correctly.
+;; Using document.createElement for these produces HTML elements without SVG rendering.
+(def ^:private svg-tags
+  #{"svg" "g" "path" "circle" "rect" "line" "ellipse" "polyline" "polygon"
+    "text" "tspan" "defs" "use" "symbol" "clipPath" "linearGradient"
+    "radialGradient" "stop" "animate" "filter" "foreignObject" "image"
+    "marker" "mask" "pattern" "switch" "textPath" "view" "desc" "title"
+    "metadata" "feBlend" "feColorMatrix" "feComposite" "feConvolveMatrix"
+    "feDiffuseLighting" "feDisplacementMap" "feFlood" "feGaussianBlur"
+    "feImage" "feMerge" "feMorphology" "feOffset" "feSpecularLighting"
+    "feTile" "feTurbulence"})
+
+;; =============================================================================
 ;; DOM Discharge Implementation
 ;; =============================================================================
 
@@ -20,7 +38,9 @@
 
   (create-element! [_ vnode]
     (let [tag-name (name (:tag vnode))
-          el (.createElement document tag-name)]
+          el (if (contains? svg-tags tag-name)
+               (.createElementNS document svg-ns tag-name)
+               (.createElement document tag-name))]
       el))
 
   (create-text! [_ text-content]
