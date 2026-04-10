@@ -296,6 +296,9 @@
 #?(:clj (defmacro code [& args] (make-element-macro :code args &form)))
 #?(:clj (defmacro blockquote [& args] (make-element-macro :blockquote args &form)))
 
+#?(:clj (defmacro details [& args] (make-element-macro :details args &form)))
+#?(:clj (defmacro summary [& args] (make-element-macro :summary args &form)))
+
 #?(:clj (defmacro hr [& args] (make-element-macro :hr args &form)))
 #?(:clj (defmacro br [& args] (make-element-macro :br args &form)))
 
