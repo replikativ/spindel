@@ -68,6 +68,10 @@
         (= attr-name :class)
         (.setAttribute el "class" value-str)
 
+        ;; Handle innerHTML (raw HTML injection — use with trusted content only)
+        (= attr-name :innerHTML)
+        (set! (.-innerHTML el) attr-value)
+
         ;; Handle value/checked properties (for input, select, textarea)
         ;; These must be set as DOM properties, not HTML attributes
         (= attr-name :value)
@@ -94,6 +98,10 @@
              (str/starts-with? attr-str "on-"))
         (let [event-name (subs attr-str 3)]
           (aset el (str "on" event-name) nil))
+
+        ;; innerHTML removal
+        (= attr-name :innerHTML)
+        (set! (.-innerHTML el) "")
 
         ;; Standard attribute removal
         :else
