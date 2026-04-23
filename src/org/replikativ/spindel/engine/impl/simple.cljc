@@ -21,7 +21,6 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
-            [org.replikativ.spindel.engine.cache :as cache]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
@@ -945,10 +944,8 @@
   "Record dependencies tracked during spin execution into the dependency graph.
 
   Takes the temporary tracking data from [:spin-tracking spin-id] and commits
-  it to the permanent [:graph spin-id] structure, updating observer registrations.
-
-  Now also computes identity hash (deps-hash) from dependency GENERATIONS for
-  O(1) identity-based caching.
+  it to the permanent dependency sets on the SpinNode, updating observer
+  registrations on signals and spins.
 
   This is called after a spin completes execution to finalize its dependencies.
 
@@ -968,38 +965,23 @@
         ;; This ensures idempotency when record-deps! is called multiple times
         (if-not tracked-deps
           rt-state  ; Return state unchanged
-          (let [
-            ;; Extract captured generations/hashes for identity hashing (O(1))
-            signal-generations (:signal-generations tracked-deps {})
-            spin-hashes (:spin-hashes tracked-deps {})
-            ;; Derive dependency sets from map keys
-            tracked-signals (set (keys signal-generations))
-            tracked-spins (set (keys spin-hashes))
-            ;; Compute identity hash from GENERATIONS (O(1) per dependency)
-            ;; This replaces the slow content hashing that was O(n) for large collections
-            deps-hash (when (or (seq signal-generations) (seq spin-hashes))
-                        (cache/compute-deps-identity signal-generations spin-hashes nil))
-            ;; Get old dependencies from SpinNode in :nodes (Phase 1B)
-            spin-node (get-in rt-state [:nodes spin-id])
-            old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
-            old-signals (:signals old-deps #{})
-            old-spins (:spins old-deps #{})
-            removed-signals (set/difference old-signals tracked-signals)
-            removed-spins (set/difference old-spins tracked-spins)]
+          (let [tracked-signals (:signals tracked-deps #{})
+                tracked-spins   (:spins tracked-deps #{})
+                spin-node (get-in rt-state [:nodes spin-id])
+                old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
+                old-signals (:signals old-deps #{})
+                old-spins (:spins old-deps #{})
+                removed-signals (set/difference old-signals tracked-signals)
+                removed-spins (set/difference old-spins tracked-spins)]
 
         (-> rt-state
             ;; Update SpinNode in :nodes with dependencies (Phase 1B)
             (update-in [:nodes spin-id]
               (fn [node]
                 ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
-                  (-> node
-                      (nodes/set-deps {:signals tracked-signals
-                                    :spins tracked-spins})
-                      (nodes/set-deps-hash deps-hash)
-                      ;; Store generations/hashes instead of values for debugging
-                      (assoc :deps-values {:signal-generations signal-generations
-                                          :spin-hashes spin-hashes})))))
+                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
+                  (nodes/set-deps node {:signals tracked-signals
+                                        :spins tracked-spins}))))
 
             ;; Remove spin from old signal observers in :nodes SignalNode (Phase 1B)
             (as-> state
@@ -1037,7 +1019,7 @@
                         ;; Create node if it doesn't exist, then add observer
                         (update-in s [:nodes tid]
                           (fn [node]
-                            (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
+                            (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
                               (nodes/add-observer node spin-id)))))
                       state
                       tracked-spins))
@@ -1074,10 +1056,7 @@
             (update-in [:nodes spin-id]
               (fn [node]
                 (when node
-                  (-> node
-                      (nodes/set-deps {:signals #{} :spins #{}})
-                      (nodes/set-deps-hash nil)
-                      (assoc :deps-values {:signal-generations {} :spin-hashes {}})))))
+                  (nodes/set-deps node {:signals #{} :spins #{}}))))
 
             ;; Unregister from signal observers in :nodes SignalNode (Phase 1B)
             (as-> state
@@ -1223,10 +1202,8 @@
 (defn track-signal-dep!
   "Track that a spin depends on a signal (during execution).
 
-  Captures signal GENERATION for identity-based caching (O(1) instead of hashing entire value).
-  The generation is a monotonically increasing counter that changes whenever the signal is updated.
-
-  This will be committed to the graph when record-deps! is called.
+  Records signal-id in the spin's pending tracking set. Committed to the
+  SpinNode's :deps when record-deps! runs.
 
   Args:
     context - context record (implements PState protocol)
@@ -1235,23 +1212,17 @@
 
   Returns: true"
   [context spin-id signal-id]
-  ;; Capture signal generation for identity hashing (Phase 1B: read from :nodes)
-  (let [signal-node (rtp/get-state context [:nodes signal-id])
-        signal-generation (or (:generation signal-node) 0)]
-    (rtp/swap-state! context []
-      (fn [rt-state]
-        ;; Store signal generation for identity hashing (set derived from keys in record-deps!)
-        (assoc-in rt-state [:spin-tracking spin-id :signal-generations signal-id]
-                  signal-generation))))
+  (rtp/swap-state! context []
+    (fn [rt-state]
+      (update-in rt-state [:spin-tracking spin-id :signals]
+                 (fnil conj #{}) signal-id)))
   true)
 
 (defn track-spin-dep!
   "Track that a parent spin depends on a child spin (during execution).
 
-  Captures spin's deps-hash for identity-based caching. The deps-hash uniquely identifies
-  the spin's computation state based on its dependencies' generations.
-
-  This will be committed to the graph when record-deps! is called.
+  Records child-spin-id in the parent's pending tracking set. Committed to
+  the parent's :deps when record-deps! runs.
 
   Args:
     context - context record (implements PState protocol)
@@ -1260,15 +1231,10 @@
 
   Returns: true"
   [context parent-spin-id child-spin-id]
-  ;; Capture spin deps-hash for identity hashing (Phase 1B: read from :nodes)
-  ;; Note: spin-node may be nil if child spin doesn't exist yet (e.g., in tests)
-  (let [spin-node (rtp/get-state context [:nodes child-spin-id])
-        spin-deps-hash (when spin-node (nodes/get-deps-hash spin-node))]
-    (rtp/swap-state! context []
-      (fn [rt-state]
-        ;; Store spin deps-hash for identity hashing (set derived from keys in record-deps!)
-        (assoc-in rt-state [:spin-tracking parent-spin-id :spin-hashes child-spin-id]
-                  spin-deps-hash))))
+  (rtp/swap-state! context []
+    (fn [rt-state]
+      (update-in rt-state [:spin-tracking parent-spin-id :spins]
+                 (fnil conj #{}) child-spin-id)))
   true)
 
 ;; =============================================================================
@@ -1315,7 +1281,7 @@
           ;; Spin already exists - update created-by (closure may have changed)
           (assoc existing-node :created-by creator-id)
           ;; Create new SpinNode with creator tracking
-          (nodes/->spin-node nil :clean false false #{} {} nil {} creator-id #{}))))
+          (nodes/->spin-node nil :clean false false #{} {} creator-id #{}))))
 
     ;; If there's a creator, add this spin to its created-spins set
     (when creator-id
@@ -1572,7 +1538,7 @@
             (update-in [:nodes spin-id]
               (fn [node]
                 ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{}))]
+                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
                   (-> node
                       (assoc :result result)
                       (assoc :completed? true)
@@ -1672,7 +1638,7 @@
     (fn [node]
       (if node
         (assoc node :running? true)
-        (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{}))))
+        (nodes/->spin-node nil :clean false true #{} {} nil #{}))))
   true)
 
 (defn ^:no-doc try-claim-execution!
@@ -1721,7 +1687,7 @@
           ;; No node - create and claim
           (do (reset! claimed? true)
               (log/trace! {:event :claim/success-new-node :data {:spin-id spin-id}})
-              (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{})))))
+              (nodes/->spin-node nil :clean false true #{} {} nil #{})))))
     @claimed?))
 
 (defn ^:no-doc mark-not-running!
@@ -1778,23 +1744,6 @@
         (reset! result callbacks)
         nil))  ; Clear after taking
     (or @result [])))
-
-(defn get-deps-hash
-  "Get the content hash of a spin's dependencies.
-
-  This hash is computed from the VALUES of dependencies (not IDs) and is
-  used for content-addressed caching. Returns nil if spin has no dependencies
-  or dependencies haven't been recorded yet.
-
-  Args:
-    context - context record (implements PState protocol)
-    spin-id - ID of spin to get deps-hash for
-
-  Returns: UUID deps-hash or nil"
-  [context spin-id]
-  ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
-  (when-let [node (get-node context spin-id)]
-    (nodes/get-deps-hash node)))
 
 ;; =============================================================================
 ;; Continuation Management (shared across all context implementations)

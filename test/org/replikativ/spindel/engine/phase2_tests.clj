@@ -287,8 +287,8 @@
         (finally
           (ctx/stop-context! ctx))))))
 
-(deftest test-deps-hash-exists-after-execution
-  (testing "Spins have deps-hash after execution for caching"
+(deftest test-deps-recorded-after-execution
+  (testing "Spins have :deps recorded after execution for dirty propagation"
     (let [ctx (ctx/create-execution-context)]
       (try
         (binding [ec/*execution-context* ctx]
@@ -308,22 +308,13 @@
             ;; Initial execution
             @observer
 
-            ;; Check deps-hash exists
+            ;; Check deps recorded on the SpinNode
             (let [node (rtp/get-state ctx [:nodes spin-id])
-                  deps-hash (nodes/get-deps-hash node)]
+                  deps (nodes/get-deps node)]
 
-              (is (some? deps-hash) "deps-hash should exist after execution")
-
-              ;; Update signal
-              (reset! sig-a :a2)
-              (await-drain ctx)
-
-              ;; Get new deps-hash
-              (let [node2 (rtp/get-state ctx [:nodes spin-id])
-                    deps-hash2 (nodes/get-deps-hash node2)]
-
-                (is (some? deps-hash2) "deps-hash should exist after re-execution")
-                (is (not= deps-hash deps-hash2)
-                    "deps-hash should change when dependencies change")))))
+              (is (contains? (:signals deps) (:id sig-a))
+                  "sig-a should be in :deps after execution")
+              (is (contains? (:signals deps) (:id sig-b))
+                  "sig-b should be in :deps after execution"))))
         (finally
           (ctx/stop-context! ctx))))))

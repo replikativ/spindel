@@ -110,10 +110,10 @@
         ;; Track signal dependency
         (rtp/track-signal-dep! ctx spin-id (:id signal1))
 
-        ;; Verify tracking state (stored in :signal-generations map)
+        ;; Verify tracking state
         (let [tracked (ec/get-state [:spin-tracking spin-id])]
           (is (some? tracked))
-          (is (contains? (:signal-generations tracked) (:id signal1))))))))
+          (is (contains? (:signals tracked) (:id signal1))))))))
 
 (deftest test-pdeps-tracking-spin
   (testing "track-spin-dep! records spin dependencies"
@@ -124,10 +124,10 @@
         ;; Track spin dependency
         (rtp/track-spin-dep! ctx parent-id child-id)
 
-        ;; Verify tracking state (stored in :spin-hashes map)
+        ;; Verify tracking state
         (let [tracked (ec/get-state [:spin-tracking parent-id])]
           (is (some? tracked))
-          (is (contains? (:spin-hashes tracked) child-id)))))))
+          (is (contains? (:spins tracked) child-id)))))))
 
 (deftest test-pdeps-tracking-multiple
   (testing "Multiple dependencies can be tracked"
@@ -142,10 +142,10 @@
         (rtp/track-signal-dep! ctx spin-id (:id sig2))
         (rtp/track-spin-dep! ctx spin-id child-id)
 
-        ;; Verify all tracked (stored in :signal-generations and :spin-hashes maps)
+        ;; Verify all tracked
         (let [tracked (ec/get-state [:spin-tracking spin-id])]
-          (is (= 2 (count (:signal-generations tracked))))
-          (is (= 1 (count (:spin-hashes tracked)))))))))
+          (is (= 2 (count (:signals tracked))))
+          (is (= 1 (count (:spins tracked)))))))))
 
 ;; =============================================================================
 ;; PSpinLifecycle Protocol Tests - Spin Lifecycle Management

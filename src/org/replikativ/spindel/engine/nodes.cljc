@@ -73,7 +73,6 @@
 
   Dependencies are tracked during spin execution and used for:
   - Dirty propagation (when signal changes, mark dependent spins dirty)
-  - Content-addressed caching (deps-hash from dependency VALUES)
   - Topological ordering (ensure correct execution order)"
 
   (has-deps? [node]
@@ -94,30 +93,7 @@
     "Returns new node with updated dependencies.
 
     Called by record-deps! after spin execution completes.
-    deps format: {:signals #{sig-id ...} :spins #{spin-id ...}}")
-
-  (get-deps-hash [node]
-    "Returns content hash of dependency values (UUID).
-
-    This is the key to content-addressed caching!
-    Hash is computed from actual VALUES of dependencies, not just IDs.
-
-    Same deps-hash = same dependency values = can reuse cached result.
-    Different deps-hash = different dependency values = must re-execute.")
-
-  (set-deps-hash [node hash]
-    "Returns new node with updated deps-hash.
-
-    Called by record-deps! after computing hash from dependency values.
-    Hash is a UUID from hasch library (collision-resistant).")
-
-  (get-deps-values [node]
-    "Returns captured dependency generations/hashes for identity-based caching.
-
-    Format: {:signal-generations {sig-id generation ...} :spin-hashes {spin-id deps-hash ...}}
-
-    These GENERATIONS are used to compute deps-hash in O(1) time per dependency.
-    Stored for debugging and cache identity verification."))
+    deps format: {:signals #{sig-id ...} :spins #{spin-id ...}}"))
 
 ;; =============================================================================
 ;; Cacheable Protocol
@@ -185,9 +161,6 @@
   (has-deps? [_] false)
   (get-deps [_] {:signals #{} :spins #{}})
   (set-deps [this _] this)  ; No-op for signals
-  (get-deps-hash [_] nil)
-  (set-deps-hash [this _] this)
-  (get-deps-values [_] {:signal-generations {} :spin-hashes {}})
 
   PCacheable
   ;; Signals don't have dirty state - snapshot is always authoritative
@@ -206,8 +179,6 @@
                      running?            ; Is spin executing?
                      observers           ; Set of observer node IDs
                      deps                ; {:signals #{...} :spins #{...}}
-                     deps-hash           ; Identity hash from dependency GENERATIONS (O(1))
-                     deps-values         ; {:signal-generations {...} :spin-hashes {...}}
                      created-by          ; spin-id that created this spin (nil for top-level)
                      created-spins]      ; Set of spin-ids created during this spin's execution
 
@@ -227,10 +198,6 @@
   (get-deps [_] deps)
   (set-deps [this new-deps]
     (assoc this :deps new-deps))
-  (get-deps-hash [_] deps-hash)
-  (set-deps-hash [this hash]
-    (assoc this :deps-hash hash))
-  (get-deps-values [_] deps-values)
 
   PCacheable
   (dirty? [_] (= status :dirty))
@@ -275,31 +242,21 @@
   - running?: Is spin executing?
   - observers: Set of observer node IDs
   - deps: {:signals #{...} :spins #{...}} (normalized to proper structure)
-  - deps-hash: Identity hash from dependency GENERATIONS (UUID)
-  - deps-values: {:signal-generations {...} :spin-hashes {...}} (normalized to proper structure)
   - created-by: spin-id that created this spin (nil for top-level)
   - created-spins: Set of spin-ids created during this spin's execution
 
   Example:
-    (->spin-node nil :clean false false #{} {} nil {} nil #{})
+    (->spin-node nil :clean false false #{} {} nil #{})
     (->spin-node (result/ok 42) :clean true false #{:spin-2}
                  {:signals #{:sig-1} :spins #{}}
-                 #uuid \"...\"
-                 {:signal-generations {:sig-1 5} :spin-hashes {:spin-2 #uuid \"...\"}}
                  :parent-spin #{:child-1 :child-2})"
-  [result status completed? running? observers deps deps-hash deps-values created-by created-spins]
+  [result status completed? running? observers deps created-by created-spins]
   (let [;; Normalize deps to ensure proper structure
         normalized-deps (if (and (map? deps)
                                  (or (contains? deps :signals)
                                      (contains? deps :spins)))
                           deps
-                          {:signals #{} :spins #{}})
-        ;; Normalize deps-values to ensure proper structure
-        normalized-deps-values (if (and (map? deps-values)
-                                        (or (contains? deps-values :signal-generations)
-                                            (contains? deps-values :spin-hashes)))
-                                 deps-values
-                                 {:signal-generations {} :spin-hashes {}})]
+                          {:signals #{} :spins #{}})]
     (->SpinNode result status completed? running? observers
-                normalized-deps deps-hash normalized-deps-values
+                normalized-deps
                 created-by (or created-spins #{}))))

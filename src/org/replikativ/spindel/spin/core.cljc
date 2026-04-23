@@ -4,7 +4,6 @@
   Includes spin protocols, result types, continuation helpers,
   lifecycle management, and error combinators."
   (:require [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.cache :as cache]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.log :as log]
@@ -213,10 +212,6 @@
     ;; Runtime and spin-id obtained from dynamic bindings
     (let [runtime (ec/current-execution-context)
           local-cached (ec/spin-current-result spin-id)
-          ;; NEW: Check global content-addressed cache
-          deps-hash (simple/get-deps-hash runtime spin-id)
-          global-cached (when deps-hash
-                          (cache/lookup spin-id deps-hash nil))
           ;; Check if we're in rebuild mode
           rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
                              (ctx/rebuild-mode? runtime))]
@@ -242,7 +237,9 @@
                 (when-not (= ::spin-cancelled (:type (ex-data error)))
                   (throw error)))))
 
-          ;; Case 1b: Local cache hit (normal mode) - resolve from local cache (fastest!)
+          ;; Case 1b: Local cache hit (normal mode) - resolve from local cache.
+          ;; SpinNode :result is the single-slot cache for "deps unchanged since last run."
+          ;; Dirty propagation + topological re-execution handle invalidation.
           (and local-cached (ec/spin-result-clean? spin-id))
           (do
             (log/trace! {:event :cache/local-hit :data {:spin-id spin-id}})
@@ -265,26 +262,7 @@
                 (when-not (= ::spin-cancelled (:type (ex-data error)))
                   (throw error)))))
 
-          ;; Case 2: Global cache hit - only if no local cache (first execution)
-          ;; If local cache exists but is dirty, skip to re-execution
-          (and (not local-cached) global-cached)
-          (do
-            (log/debug! {:event :cache/global-hit
-                         :data {:spin-id spin-id :deps-hash deps-hash}})
-            ;; Update local cache from global cache
-            (ec/spin-cache-result! spin-id global-cached)
-            (match global-cached
-              ;; Success case
-              (fn [value]
-                (resume resolve value)
-                value)
-              ;; Error case
-              (fn [error]
-                (resume reject error)
-                (when-not (= ::spin-cancelled (:type (ex-data error)))
-                  (throw error)))))
-
-          ;; Case 3: Cache miss - execute spin
+          ;; Case 2: Cache miss - execute spin
           :else
           (let [;; Local execution state (ephemeral, not in runtime)
                 callbacks-atom (atom [{:resolve resolve :reject reject}])
@@ -314,15 +292,8 @@
                                 ;; Store for non-blocking await
                                 (ec/swap-state! [:spin-outputs spin-id] (constantly value))
 
-                                ;; Record dependencies (computes deps-hash)
+                                ;; Record dependencies on the SpinNode
                                 (ec/graph-commit-deps! spin-id)
-
-                                ;; NEW: Store in global content-addressed cache
-                                (let [deps-hash (simple/get-deps-hash current-rt spin-id)]
-                                  (when deps-hash
-                                    (cache/store! spin-id deps-hash nil (ok value))
-                                    (log/debug! {:event :cache/global-store
-                                                 :data {:spin-id spin-id :deps-hash deps-hash}})))
 
                                 ;; Emit spin-completion event for engine
                                 ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching

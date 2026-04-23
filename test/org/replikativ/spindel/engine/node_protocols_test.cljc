@@ -46,16 +46,10 @@
     (let [node (nodes/->signal-node 42 nil [] false #{})]
       (is (false? (nodes/has-deps? node)))
       (is (= {:signals #{} :spins #{}} (nodes/get-deps node)))
-      (is (nil? (nodes/get-deps-hash node)))
-      (is (= {:signal-generations {} :spin-hashes {}} (nodes/get-deps-values node)))
 
       ;; set-deps is a no-op for signals
       (let [node' (nodes/set-deps node {:signals #{:sig-1} :spins #{:spin-1}})]
-        (is (= {:signals #{} :spins #{}} (nodes/get-deps node'))))
-
-      ;; set-deps-hash is a no-op for signals
-      (let [node' (nodes/set-deps-hash node #uuid "550e8400-e29b-41d4-a716-446655440000")]
-        (is (nil? (nodes/get-deps-hash node')))))))
+        (is (= {:signals #{} :spins #{}} (nodes/get-deps node')))))))
 
 (deftest test-signal-node-always-clean
   (testing "SignalNode is always clean (PCacheable)"
@@ -80,14 +74,14 @@
 (deftest test-spin-node-creation
   (testing "SpinNode creation and PNode protocol"
     (let [result {:status :ok :value 42}
-          node (nodes/->spin-node result :clean false false #{} {} nil {} nil #{})]
+          node (nodes/->spin-node result :clean false false #{} {} nil #{})]
       (is (= :spin (nodes/node-type node)))
       (is (= result (nodes/get-value node)))
       (is (= #{} (nodes/get-observers node))))))
 
 (deftest test-spin-node-observers
   (testing "SpinNode observer management (PObservable)"
-    (let [node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{})
+    (let [node (nodes/->spin-node nil :clean false false #{} {} nil #{})
           node' (nodes/add-observer node :spin-2)]
 
       (is (= #{:spin-2} (nodes/get-observers node')))
@@ -101,34 +95,22 @@
 
 (deftest test-spin-node-dependencies
   (testing "SpinNode dependency management (PDependent)"
-    (let [node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{})
+    (let [node (nodes/->spin-node nil :clean false false #{} {} nil #{})
           deps {:signals #{:sig-1} :spins #{:spin-0}}
           node' (nodes/set-deps node deps)]
 
       (is (true? (nodes/has-deps? node')))
-      (is (= deps (nodes/get-deps node')))
-
-      ;; Test deps-hash
-      (let [hash #uuid "550e8400-e29b-41d4-a716-446655440000"
-            node'' (nodes/set-deps-hash node' hash)]
-        (is (= hash (nodes/get-deps-hash node'')))
-
-        ;; Test deps-values (now stores generations/hashes, not full values)
-        (let [deps-vals {:signal-generations {:sig-1 5} :spin-hashes {:spin-0 #uuid "550e8400-e29b-41d4-a716-446655440000"}}
-              node''' (assoc node'' :deps-values deps-vals)]
-          (is (= deps-vals (nodes/get-deps-values node'''))))))))
+      (is (= deps (nodes/get-deps node'))))))
 
 (deftest test-spin-node-no-dependencies
   (testing "SpinNode with no dependencies"
-    (let [node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{})]
+    (let [node (nodes/->spin-node nil :clean false false #{} {} nil #{})]
       (is (false? (nodes/has-deps? node)))
-      (is (= {:signals #{} :spins #{}} (nodes/get-deps node)))
-      (is (nil? (nodes/get-deps-hash node)))
-      (is (= {:signal-generations {} :spin-hashes {}} (nodes/get-deps-values node))))))
+      (is (= {:signals #{} :spins #{}} (nodes/get-deps node))))))
 
 (deftest test-spin-node-caching
   (testing "SpinNode dirty/clean state (PCacheable)"
-    (let [node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{})
+    (let [node (nodes/->spin-node nil :clean false false #{} {} nil #{})
           dirty-node (nodes/mark-dirty node)]
 
       (is (true? (nodes/clean? node)))
@@ -143,13 +125,13 @@
 
 (deftest test-spin-node-initially-clean
   (testing "SpinNode created with :clean status"
-    (let [node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{})]
+    (let [node (nodes/->spin-node nil :clean false false #{} {} nil #{})]
       (is (true? (nodes/clean? node)))
       (is (false? (nodes/dirty? node))))))
 
 (deftest test-spin-node-initially-dirty
   (testing "SpinNode created with :dirty status"
-    (let [node (nodes/->spin-node nil :dirty false false #{} {} nil {} nil #{})]
+    (let [node (nodes/->spin-node nil :dirty false false #{} {} nil #{})]
       (is (false? (nodes/clean? node)))
       (is (true? (nodes/dirty? node))))))
 
@@ -160,7 +142,7 @@
 (deftest test-protocol-methods-are-pure
   (testing "All protocol methods return new nodes, don't mutate"
     (let [sig-node (nodes/->signal-node 42 nil [] false #{})
-          spin-node (nodes/->spin-node nil :clean false false #{} {} nil {} nil #{})]
+          spin-node (nodes/->spin-node nil :clean false false #{} {} nil #{})]
 
       ;; add-observer doesn't mutate
       (let [sig-node' (nodes/add-observer sig-node :spin-1)]

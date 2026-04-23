@@ -597,8 +597,6 @@
                           true    ; running!
                           #{}     ; observers
                           {}      ; deps
-                          nil     ; deps-hash
-                          {}      ; deps-values
                           nil     ; created-by
                           #{})))  ; created-spins
 
@@ -623,7 +621,7 @@
         (binding [ec/*execution-context* ctx]
           ;; Add in-flight spin
           (rtp/swap-state! ctx [:nodes :test-spin]
-            (constantly (nodes/->spin-node nil :clean false true #{} {} nil {} nil #{})))
+            (constantly (nodes/->spin-node nil :clean false true #{} {} nil #{})))
 
           ;; Snapshot with clean-in-flight? false
           (let [snap-dirty (ctx/snapshot-context ctx :clean-in-flight? false)]
