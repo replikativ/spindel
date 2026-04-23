@@ -17,8 +17,41 @@
   frame on the stack, and frames are properly cleaned up in LIFO order.")
 
 ;; =============================================================================
-;; Binding Registry
+;; Ephemeral Binding Keys
 ;; =============================================================================
+;;
+;; The ExecutionContext's :bindings map carries fork-scoped values that
+;; propagate to child spins and continuations (see engine.context). Most
+;; entries are persistent — set at context/fork creation, inherited across
+;; every continuation resume.
+;;
+;; A few entries represent *per-render-pass* scope: values set by element
+;; macros (e.g. :dom/parent-addr, :dom/current-slot) that should NOT survive
+;; across a track continuation resume, because a track resume marks the start
+;; of a new render pass where the surrounding scope re-establishes them.
+;; They SHOULD survive await resumes, since those resume mid-body within
+;; the same render pass.
+;;
+;; Libraries that introduce such keys register them here at ns load. The
+;; engine consults the registry when resuming track continuations (see
+;; engine.impl.simple/resume-single-observer!).
+
+(defonce ^:private ephemeral-keys-atom (atom #{}))
+
+(defn register-ephemeral-binding-key!
+  "Register a key in the ExecutionContext's :bindings map as ephemeral.
+
+  Ephemeral keys are cleared when a track continuation resumes (new render
+  pass). Persistent keys survive all continuation resumes, as does every
+  unregistered key."
+  [k]
+  (swap! ephemeral-keys-atom conj k)
+  nil)
+
+(defn ephemeral-binding-keys
+  "Return the current set of registered ephemeral binding keys."
+  []
+  @ephemeral-keys-atom)
 
 ;; =============================================================================
 ;; CLJS Var Registry

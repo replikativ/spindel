@@ -28,8 +28,20 @@
       (let [child-result (await some-spin)]
         (build-element ...)))"
   (:require [org.replikativ.spindel.engine.hash :as h]
-            [org.replikativ.spindel.engine.core :as ec])
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.bindings :as bindings])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.addressing])))
+
+;; =============================================================================
+;; Ephemeral key registration
+;; =============================================================================
+;;
+;; DOM parent-addr and current-slot are per-render-pass scope. They must be
+;; cleared when a track continuation resumes (= start of a new render pass),
+;; but preserved across await resumes (= resuming mid-body in the same pass).
+
+(bindings/register-ephemeral-binding-key! :dom/parent-addr)
+(bindings/register-ephemeral-binding-key! :dom/current-slot)
 
 ;; =============================================================================
 ;; Tree Address Computation

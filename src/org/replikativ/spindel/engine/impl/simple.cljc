@@ -311,18 +311,18 @@
   ;; but track resumption also re-executes the spin body from a continuation point
   (invalidate-created-spins! context spin-id)
 
-  ;; Resume continuation with fresh signal value
-  ;; CRITICAL: Clear DOM context bindings before resuming. DOM state
-  ;; (:dom/parent-addr, :dom/current-slot) is ephemeral rendering state
-  ;; that must not leak from a previous render pass into a re-execution.
-  ;; Element macros will re-set these correctly during the new render.
+  ;; Resume continuation with fresh signal value.
+  ;; Ephemeral bindings (registered via bindings/register-ephemeral-binding-key!)
+  ;; are cleared here because a track resume starts a new render pass; the
+  ;; surrounding scope will re-establish them. Persistent bindings (http client,
+  ;; execution-mode, app config, ...) are preserved.
   (let [ctx-bindings (:ctx-bindings cont)
-        merged-bindings (if ctx-bindings
-                          (-> (:bindings context)
-                              (merge ctx-bindings)
-                              (dissoc :dom/parent-addr :dom/current-slot))
-                          (-> (:bindings context)
-                              (dissoc :dom/parent-addr :dom/current-slot)))
+        ephemeral-keys (bindings/ephemeral-binding-keys)
+        merged-bindings (apply dissoc
+                               (if ctx-bindings
+                                 (merge (:bindings context) ctx-bindings)
+                                 (:bindings context))
+                               ephemeral-keys)
         ctx-with-bindings (assoc context :bindings merged-bindings)]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id

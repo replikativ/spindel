@@ -545,7 +545,22 @@
 (defn get-bindings
   "Get fork-local bindings from context.
 
-  Spins can read these via (:bindings *execution-context*).
+  Spins read these via (:bindings *execution-context*). The :bindings map is
+  fork-scoped: inherited by children, propagated across continuations, and
+  preserved by snapshots.
+
+  Most keys are persistent — set at context/fork creation, unchanged for the
+  context's lifetime, survive every continuation resume. Examples: :http-client,
+  :rng, app config. This is analogous to how Clojure's dynamic vars (*out*,
+  *print-length*, ...) carry per-thread config.
+
+  A key can also be registered as **ephemeral** via
+  engine.bindings/register-ephemeral-binding-key!. Ephemeral keys represent
+  per-render-pass scope: they're cleared when a track continuation resumes
+  (start of a new render pass) but preserved when an await continuation
+  resumes (mid-body, same pass). DOM addressing (:dom/parent-addr,
+  :dom/current-slot) uses this.
+
   Returns map of keys to values."
   [ctx]
   (:bindings ctx))
