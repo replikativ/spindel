@@ -91,11 +91,19 @@
                                @topic-closed-atom
                                nil
 
-                               ;; No items - wait for notification
+                               ;; No items - wait for notification.
+                               ;; Check-act-recheck: capture waiter BEFORE
+                               ;; re-checking items/closed, so a producer
+                               ;; that delivers the OLD promise and installs
+                               ;; a NEW one between our checks doesn't strand
+                               ;; us awaiting the (undelivered) NEW promise.
                                :else
-                               (do
-                                 (await (promise-spin @topic-waiter-atom))
-                                 (await (anext this)))))))
+                               (let [waiter @topic-waiter-atom]
+                                 (if (or (seq @topic-items-atom)
+                                         @topic-closed-atom)
+                                   (await (anext this))
+                                   (do (await (promise-spin waiter))
+                                       (await (anext this)))))))))
 
             ;; Create mult over the topic seq
             topic-mult (mult/mult topic-aseq)

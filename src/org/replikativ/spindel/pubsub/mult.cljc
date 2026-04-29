@@ -145,13 +145,33 @@
               (signal-space-available! tap-state-atom)
               [item this])
 
-            ;; Buffer empty (or rendezvous with no item) - wait for item
+            ;; Buffer empty (or rendezvous with no item) - wait for item.
+            ;;
+            ;; Check-act-recheck: capture the waiter promise BEFORE
+            ;; re-reading state. A producer racing between our cond
+            ;; check above and our waiter read would deliver the OLD
+            ;; promise (currently in item-available-atom) and install
+            ;; a NEW one. Without the recheck we'd capture the NEW
+            ;; (undelivered) promise and hang forever. By capturing
+            ;; first then re-checking, we either notice progress and
+            ;; recur, or await the same promise the producer would
+            ;; deliver to.
             :else
-            (do
-              ;; Wait for item-available signal
-              (await (promise-spin @item-available-atom))
-              ;; Retry (state may have changed)
-              (recur))))))))
+            (let [waiter @item-available-atom
+                  state' @tap-state-atom]
+              (cond
+                (and (:error state') @(:error state'))
+                (throw @(:error state'))
+                (and (:closed? state') @(:closed? state'))
+                (recur)
+                (and (nil? (:buffer state'))
+                     (contains? state' :rendezvous-item))
+                (recur)
+                (and (:buffer state') (pos? (count (:buffer state'))))
+                (recur)
+                :else
+                (do (await (promise-spin waiter))
+                    (recur))))))))))
 
 (defn- close-tap!
   "Close a tap, optionally with error."
@@ -207,22 +227,31 @@
                 {:keys [buffer closed? space-available-atom]} @tap-state-atom]
             (when-not @closed?
               (if (nil? buffer)
-                ;; Rendezvous: signal item, wait for consumer to take
-                ;; For rendezvous, we put the item in a temporary holder
-                ;; and wait for consumer to acknowledge
+                ;; Rendezvous: signal item, wait for consumer to take.
+                ;; Capture the space-available waiter BEFORE signaling
+                ;; item-available, otherwise a fast consumer can take the
+                ;; rendezvous-item and signal space-available before we
+                ;; read the waiter, leaving us awaiting the (undelivered)
+                ;; new waiter forever.
                 (do
-                  ;; Store item for rendezvous pickup
                   (swap! tap-state-atom assoc :rendezvous-item item)
-                  (signal-item-available! tap-state-atom)
-                  ;; Wait for space (consumer took item)
-                  (await (promise-spin @space-available-atom)))
+                  (let [waiter @space-available-atom]
+                    (signal-item-available! tap-state-atom)
+                    ;; Recheck: if consumer already took the item before
+                    ;; we awaited, we'd see no :rendezvous-item and need
+                    ;; not wait. Otherwise wait on the captured waiter.
+                    (when (contains? @tap-state-atom :rendezvous-item)
+                      (await (promise-spin waiter)))))
 
                 ;; Buffered: add to buffer, signal if was empty
                 (do
-                  ;; Wait for space if buffer is full (blocking buffers only)
+                  ;; Wait for space if buffer is full (blocking buffers only).
+                  ;; Same check-act-recheck pattern as on the consumer side.
                   (when (and (not (buf/unblocking? buffer))
                              (buf/full? buffer))
-                    (await (promise-spin @space-available-atom)))
+                    (let [waiter @space-available-atom]
+                      (when (buf/full? buffer)
+                        (await (promise-spin waiter)))))
                   ;; Add to buffer
                   (buf/add! buffer item)
                   ;; Signal item available

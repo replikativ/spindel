@@ -106,11 +106,27 @@
           @(:closed-atom psrc)
           nil
 
-          ;; Wait for notification
+          ;; Wait for notification.
+          ;;
+          ;; Check-act-recheck: capture the waiter promise BEFORE re-checking
+          ;; items/closed. If a producer raced with the cond above and pushed
+          ;; an item between our items-check and our waiter-atom read, the
+          ;; producer would deliver the OLD promise (the one currently in
+          ;; waiter-atom) and install a NEW one. Without the recheck we'd
+          ;; capture the NEW (undelivered) promise after the producer
+          ;; installed it, await it, and hang forever even though items is
+          ;; non-empty.
+          ;;
+          ;; By capturing waiter first and re-checking items/closed before
+          ;; awaiting, we either notice the new state and recur, or await
+          ;; the same waiter the producer would deliver to — both safe.
           :else
-          (do
-            (await (promise-spin @(:waiter-atom psrc)))
-            (recur)))))))
+          (let [waiter @(:waiter-atom psrc)]
+            (if (or (seq @(:items-atom psrc))
+                    @(:closed-atom psrc))
+              (recur)
+              (do (await (promise-spin waiter))
+                  (recur)))))))))
 
 ;; =============================================================================
 ;; Partitioned Record
