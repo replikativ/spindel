@@ -1150,16 +1150,20 @@
                                  (let [m' (dissoc m spin-id)]
                                    (if (seq m') (assoc! acc ek m') acc)))
                                (transient {}) subs)))))
-            ;; 10. Clean await-dependents (remove this spin as parent)
+            ;; 10. Clean await-dependents:
+            ;;     - Remove this spin's own entry (it can no longer be a child)
+            ;;     - Remove this spin as a parent in every other entry
             (update :await-dependents
               (fn [deps]
                 (when deps
                   (persistent!
                     (reduce-kv (fn [m child-id parents]
-                                 (let [parents' (disj parents spin-id)]
-                                   (if (seq parents')
-                                     (assoc! m child-id parents')
-                                     m)))
+                                 (if (= child-id spin-id)
+                                   m  ; drop this spin's own entry
+                                   (let [parents' (disj parents spin-id)]
+                                     (if (seq parents')
+                                       (assoc! m child-id parents')
+                                       m))))
                                (transient {}) deps)))))))))
   true)
 

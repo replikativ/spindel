@@ -612,12 +612,16 @@
 ;; =============================================================================
 
 (defn clean-in-flight-spins
-  "Mark in-flight spins as dirty and clear running flags.
+  "Mark in-flight spins as dirty and strip per-render-pass DOM cache state.
 
   In-flight spins are those with :running? true and :completed? false.
   After cleaning, they'll re-execute on next access.
 
-  Also resets engine draining flag.
+  Also:
+  - Resets engine draining flag.
+  - Drops :dom/cache and :dom/attr-cache, since slot/attribute reconciliation
+    state belongs to the previous render pass and would mismatch the DOM the
+    restored context renders into.
 
   NOTE: Continuations are preserved for in-memory snapshot/restore.
   They will be dropped during serialization (since closures can't be serialized).
@@ -630,6 +634,9 @@
   (-> state
       ;; Reset engine draining flag
       (assoc :engine/draining? false)
+
+      ;; Drop render-pass-specific DOM caches; restored context re-renders.
+      (dissoc :dom/cache :dom/attr-cache)
 
       ;; Mark in-flight spins as dirty
       (update :nodes

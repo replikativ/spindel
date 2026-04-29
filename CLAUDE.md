@@ -573,9 +573,7 @@ Spindel automatically tracks dependencies at runtime for incremental reactivity:
 
 1. **Incremental Reactivity:** When signal changes, only re-execute dependent spins
 2. **Glitch Prevention:** Execute observers in dependency order
-3. **Content-Addressed Caching:** (Planned) Use dependency values for deduplication across forks
-
-See [FORKING_DESIGN.md](FORKING_DESIGN.md) for how dependency tracking enables cross-fork computation sharing and [CODE_DEDUPLICATION_DESIGN.md](CODE_DEDUPLICATION_DESIGN.md) for multi-level content-addressed caching with JIT compilation support.
+3. **Cross-fork dedup:** Forks reuse parent SpinNode `:result` via overlay read-through; no separate cache needed.
 
 ## Directory Structure
 
@@ -600,7 +598,6 @@ src/org/replikativ/spindel/
 │   ├── state_backend.cljc      # State backend abstraction
 │   ├── addressing.cljc         # Deterministic addressing
 │   ├── bindings.cljc           # Dynamic binding management
-│   ├── cache.cljc              # Content-addressed caching
 │   ├── hash.cljc               # Fast murmur3 hashing
 │   ├── nodes.cljc              # Node protocols + SpinNode, SignalNode records
 │   ├── effects.cljc            # PEffectHandler protocol + registration
@@ -654,9 +651,7 @@ src/org/replikativ/spindel/
 
 ### ❌ Not Yet Implemented
 
-- **Content-addressed spin caching** (for cross-fork deduplication)
 - **Benchmarks** (need to create)
-- Some combinators (race, timeout partially done)
 
 ## Distributed Computing
 
@@ -1056,14 +1051,6 @@ See README.md for full usage examples. Quick reference:
 
 ## Key Files to Reference
 
-**For architecture understanding**:
-- [CODEBASE_ANALYSIS.md](CODEBASE_ANALYSIS.md) - Comprehensive analysis
-- [FORKING_DESIGN.md](FORKING_DESIGN.md) - Runtime forking and cross-fork deduplication design
-- [CODE_DEDUPLICATION_DESIGN.md](CODE_DEDUPLICATION_DESIGN.md) - Content-addressed code caching and JIT compilation
-- [UNISON_COMPARISON.md](UNISON_COMPARISON.md) - Comparison with Unison language runtime
-- [laufzeit/CLAUDE.md](laufzeit/CLAUDE.md) - Previous implementation guidance
-- [laufzeit/DESIGN.md](laufzeit/DESIGN.md) - Design rationale
-
 **For implementation**:
 - [src/org/replikativ/spindel/spin/core.cljc](src/org/replikativ/spindel/spin/core.cljc) - Spin
 - [src/org/replikativ/spindel/engine/protocols.cljc](src/org/replikativ/spindel/engine/protocols.cljc) - Protocol definitions
@@ -1142,10 +1129,6 @@ Look for: main thread blocked on `Object.wait()`, pool threads in `WAITING`, loc
    - User-facing guide
    - API reference
    - Tutorial examples
-
-6. **Content-addressed caching**
-   - Cross-fork computation deduplication
-   - JIT compilation support
 
 ## Contact Points in Code
 

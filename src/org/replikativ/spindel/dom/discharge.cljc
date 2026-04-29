@@ -40,6 +40,7 @@
   - StringDischarge (string.cljc) - renders to HTML string for SSR
   - MockDischarge (for testing) - logs operations"
   (:require [org.replikativ.spindel.dom.core :as core]
+            [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.log :as log]))
@@ -440,12 +441,15 @@
                             :error (str e)}})))))
 
 (defn- call-refs-on-unmount!
-  "Recursively call ref callbacks with nil for a vnode and its descendants."
+  "Recursively call ref callbacks with nil and evict per-element cache state
+  for a vnode and its descendants. Called on every unmount path so the
+  [:dom/cache addr] / [:dom/attr-cache addr] entries do not accumulate for
+  the lifetime of the context."
   [vnode]
   (when vnode
     (cond
       (core/text-node? vnode)
-      nil  ; Text nodes don't have refs
+      nil  ; Text nodes have no :addr and no refs
 
       (frag/keyed-fragment? vnode)
       (doseq [item (frag/fragment-items vnode)]
@@ -454,6 +458,7 @@
       (core/vnode? vnode)
       (do
         (call-ref! vnode nil)
+        (cache/evict-cache! (:addr vnode))
         (when-let [children (:children vnode)]
           (let [child-vec (if (d/deltaable? children) @children children)]
             (doseq [child child-vec]

@@ -17,6 +17,20 @@
      Uses Java 9+ Cleaner API."
      (delay (java.lang.ref.Cleaner/create))))
 
+#?(:cljs
+   (def ^:private atom-finalization-registry
+     "Global FinalizationRegistry for automatic atom cleanup when GC'd.
+     Available in modern browsers and Node 14.6+. Held value is the
+     {:atom-id :runtime} pair so the cleanup callback can dissoc the
+     entry from the originating runtime's :atoms map."
+     (when (exists? js/FinalizationRegistry)
+       (js/FinalizationRegistry.
+         (fn [held-value]
+           (let [{:keys [atom-id runtime]} held-value]
+             (binding [ec/*execution-context* runtime]
+               (ec/swap-state! [:atoms]
+                                (fn [atoms] (dissoc atoms atom-id))))))))))
+
 ;; =============================================================================
 ;; Rebuilt file to resolve prior parse NPE.
 ;; Global Watcher - Dispatches to Individual Atom Watchers
@@ -179,8 +193,15 @@
                         (ec/swap-state! [:atoms]
                                          (fn [atoms] (dissoc atoms atom-id)))))))
        :cljs
-       ;; CLJS cleanup would use FinalizationRegistry when available; no-op.
-       nil)
+       ;; Register with FinalizationRegistry when available so the
+       ;; runtime's :atoms entry is reclaimed once nothing references the
+       ;; RuntimeAtom anymore. On runtimes without FinalizationRegistry
+       ;; (older browsers) this is a no-op and the entry persists for the
+       ;; lifetime of the context.
+       (when atom-finalization-registry
+         (.register atom-finalization-registry
+                    runtime-atom-obj
+                    {:atom-id atom-id :runtime runtime})))
 
     runtime-atom-obj))
 
