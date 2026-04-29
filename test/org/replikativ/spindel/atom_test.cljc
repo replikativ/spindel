@@ -5,7 +5,7 @@
                [org.replikativ.spindel.atom :as ratom]
                [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.engine.core :as ec]
-               [org.replikativ.spindel.engine.scheduler :as sched]
+               [org.replikativ.spindel.engine.executor :as sched]
                [org.replikativ.spindel.engine.state-backend :as backend]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])

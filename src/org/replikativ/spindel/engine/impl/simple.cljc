@@ -17,7 +17,7 @@
   "
   (:refer-clojure :exclude [node])
   (:require [org.replikativ.spindel.log :as log]
-            [org.replikativ.spindel.engine.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.executor :as scheduler]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]

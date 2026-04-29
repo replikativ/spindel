@@ -23,6 +23,7 @@
   (:refer-clojure :exclude [])
   (:require [org.replikativ.spindel.spin.core :as spin]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]))
 
 ;; =============================================================================
@@ -164,8 +165,8 @@
             (if (ec/cas-state! path old-state new-state)
               (do
                 ;; Successfully dequeued - schedule waiter to run on executor
-                (rtp/schedule-spin-execution! ec/*execution-context*
-                                              #(spin/resume (:resolve waiter) :acquired))
+                (executor/execute! (:executor ec/*execution-context*)
+                                   #(spin/resume (:resolve waiter) :acquired))
                 :released)
               ;; CAS failed - retry
               (recur)))

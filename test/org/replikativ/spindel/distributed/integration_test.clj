@@ -12,7 +12,7 @@
             [is.simm.distributed-scope :as ds]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.executor :as scheduler]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [kabel.peer :as peer]

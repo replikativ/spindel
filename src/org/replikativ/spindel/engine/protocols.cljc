@@ -83,43 +83,6 @@
      {:type :spin-completion :id t}. Should be non-blocking."))
 
 ;; ----------------------------------------------------------------------------
-;; Scheduling (runtime-level control over spin execution)
-;; ----------------------------------------------------------------------------
-
-(defprotocol PScheduler
-  "Runtime-level scheduling control.
-
-  The runtime controls WHEN and WHAT to execute (scheduling strategy), while
-  executors (PExecutor) control WHERE code runs (thread pool, event loop, etc.).
-
-  This separation allows the runtime to implement different scheduling strategies
-  (topological order, priority queues, etc.) while keeping executor abstraction simple."
-
-  (get-executor [rt]
-    "Get the executor used by this runtime for running spin functions.
-
-     Returns an object implementing PExecutor (from runtime.scheduler namespace).")
-
-  (schedule-spin-execution! [ctx spin-fn]
-    "Schedule a spin function for execution using this runtime's strategy.
-
-     The runtime may:
-     - Execute immediately
-     - Queue for later batch execution
-     - Apply priority/topological ordering
-     - Use the executor to determine execution context (thread pool, etc.)
-
-     Returns implementation-specific handle (or nil).")
-
-  (schedule-delayed-execution! [ctx delay-ms spin-fn]
-    "Schedule a spin function to execute after delay-ms milliseconds.
-
-     Used by sleep, timeout, and other time-based operations.
-     Delegates to the executor's execute-after! method.
-
-     Returns implementation-specific handle (or nil)."))
-
-;; ----------------------------------------------------------------------------
 ;; General state management with CAS semantics
 ;; ----------------------------------------------------------------------------
 

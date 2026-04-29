@@ -3,6 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
+            [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -147,10 +149,10 @@
              ;; Invoke child spin via execution-context scheduling to enable parallelism
              ;; Must explicitly bind *execution-context* because CLJS capture-bindings excludes it
              ;; to avoid circular references
-             (ec/schedule-spin-execution! execution-context
-                                           (fn []
-                                             (binding [ec/*execution-context* execution-context]
-                                               (child-spin on-ok on-err))))))
+             (executor/execute! (:executor execution-context)
+                                (fn []
+                                  (binding [ec/*execution-context* execution-context]
+                                    (child-spin on-ok on-err))))))
 
          ;; Async coordination; parent suspends
          spin-core/incomplete)
@@ -180,10 +182,12 @@
     (binding [ec/*execution-context* execution-context]
        (spin-core/make-spin
         (fn [resolve _]
-          ;; Non-blocking delay via execution-context scheduling
-          ;; Event loop will establish binding when spin executes
-          (ec/schedule-delayed-execution! execution-context duration
-                                           #(spin-core/resume resolve value))
+          ;; Non-blocking delay via the engine's delayed-spin scheduler.
+          ;; In real-time mode it also schedules an executor timer so the
+          ;; queued spin actually fires; in virtual time it sleeps until
+          ;; advance-time! processes it.
+          (delayed/schedule-delayed! execution-context duration
+                                     #(spin-core/resume resolve value))
           spin-core/incomplete))))))
 
 ;; =============================================================================
@@ -256,10 +260,10 @@
                               (when (compare-and-set! done? false true)
                                 (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
-               (ec/schedule-spin-execution! execution-context
-                                             (fn []
-                                               (binding [ec/*execution-context* execution-context]
-                                                 (t on-ok on-err))))))
+               (executor/execute! (:executor execution-context)
+                                  (fn []
+                                    (binding [ec/*execution-context* execution-context]
+                                      (t on-ok on-err))))))
            spin-core/incomplete))))))
 
 ;; =============================================================================

@@ -5,7 +5,7 @@
             [org.replikativ.spindel.distributed.core :as dist]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.scheduler :as scheduler]
+            [org.replikativ.spindel.engine.executor :as scheduler]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]]
             #?(:clj [clojure.core.async :as a :refer [go <! >! chan close! put! take!]]

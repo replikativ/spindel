@@ -18,7 +18,7 @@
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.engine.impl.graph :as graph]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.scheduler :as sched]
+            [org.replikativ.spindel.engine.executor :as sched]
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.addressing :as addressing]
@@ -118,28 +118,6 @@
     (simple/enqueue-event! this event)
     ;; Trigger drain - the CAS in drain-events! will skip if already draining
     (simple/trigger-drain! this executor))
-
-  rtp/PScheduler
-  (get-executor [this]
-    executor)
-  (schedule-spin-execution! [this spin-fn]
-    (sched/execute! executor spin-fn))
-  (schedule-delayed-execution! [this delay-ms spin-fn]
-    ;; Two-level scheduling (like AtomsRuntime):
-    ;; 1. Add to runtime's forkable event queue
-    ;; 2. If in :real time mode, schedule executor timer to trigger processing
-    (let [spin-id (delayed/schedule-delayed-spin! this delay-ms spin-fn)
-          time-mode (rtp/get-state this [:engine/time-mode])]
-
-      ;; In real-time mode, schedule executor timer to process the event queue
-      (when (and (= time-mode :real) executor)
-        (sched/execute-after!
-          executor
-          delay-ms
-          ;; Timer just triggers event processing - actual spin-fn is in queue
-          #(delayed/process-delayed-spins! this executor)))
-
-      spin-id))
 
   rtp/PState
   (swap-state! [_ path f]

@@ -35,7 +35,6 @@
         (is (satisfies? rtp/PSpinLifecycle ctx))
         (is (satisfies? rtp/PContinuation ctx))
         (is (satisfies? rtp/PEngine ctx))
-        (is (satisfies? rtp/PScheduler ctx))
         (is (satisfies? rtp/PState ctx))
         (finally
           (ctx/stop-context! ctx))))))

@@ -6,6 +6,7 @@
   (:require [org.replikativ.spindel.spin.core :as spin]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [is.simm.partial-cps.async :as async]))
 
 (defn async-fetch
@@ -41,7 +42,7 @@
           ;; CRITICAL: Bind *execution-context* to captured runtime when callback fires.
           ;; The callback runs on a thread pool thread with NO bindings, so we must
           ;; restore the context that was active when async-fetch was called.
-          (ec/schedule-delayed-execution! runtime delay-ms
+          (delayed/schedule-delayed! runtime delay-ms
             #(binding [ec/*execution-context* runtime
                        async/*in-trampoline* false]
                (spin/resume resolve value)))
@@ -71,7 +72,7 @@
     (fn [resolve reject]
       (let [runtime (ec/current-execution-context)]
         ;; Use runtime's delayed execution mechanism (same as sleep combinator)
-        (ec/schedule-delayed-execution! runtime delay-ms
+        (delayed/schedule-delayed! runtime delay-ms
           #(binding [async/*in-trampoline* false]
              (spin/resume reject (ex-info error-msg {}))))
         ;; Return incomplete - continuation will be invoked later via scheduled execution

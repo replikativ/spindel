@@ -5,7 +5,7 @@
      (:require [clojure.test :refer [deftest is testing use-fixtures]]
                [org.replikativ.spindel.engine.core :as ec]
                [org.replikativ.spindel.engine.context :as ctx]
-               [org.replikativ.spindel.engine.scheduler :as sched]
+               [org.replikativ.spindel.engine.executor :as sched]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.combinators :refer [debounce throttle sample relieve timeout sleep race accumulate]]
                [org.replikativ.spindel.spin.cps :refer [spin]]

@@ -10,7 +10,9 @@
   (:require [org.replikativ.spindel.log :as log]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.scheduler :as scheduler]))
+            [org.replikativ.spindel.engine.executor :as executor]))
+
+(declare process-delayed-spins!)
 
 (defn current-time
   "Get current time (virtual or real) in milliseconds."
@@ -39,6 +41,28 @@
     (log/trace! {:event :engine/schedule-delayed
                  :data {:spin-id spin-id :delay-ms delay-ms :fire-time fire-time}})
 
+    spin-id))
+
+(defn schedule-delayed!
+  "Schedule a spin function to fire after delay-ms, integrating with both
+  virtual-time and real-time modes.
+
+  Two-level scheduling:
+  1. Always queue the entry into [:engine/delayed-spins] (forkable state),
+     so virtual-time advance can fire it deterministically and so it's
+     visible to forks.
+  2. In :real time mode, also schedule an executor timer that wakes the
+     processor at the appropriate wall-clock time.
+
+  This used to live on the dropped PScheduler protocol. It's a plain
+  function now since the engine has only one implementation."
+  [context delay-ms spin-fn]
+  (let [spin-id (schedule-delayed-spin! context delay-ms spin-fn)
+        time-mode (rtp/get-state context [:engine/time-mode])
+        executor  (:executor context)]
+    (when (and (= time-mode :real) executor)
+      (executor/execute-after! executor delay-ms
+                               #(process-delayed-spins! context executor)))
     spin-id))
 
 (defn process-delayed-spins!
@@ -76,7 +100,7 @@
       (log/trace! {:event :engine/execute-delayed
                    :data {:spin-id id :fire-time fire-time :now now}})
       (when executor
-        (scheduler/execute! executor
+        (executor/execute! executor
           #(binding [ec/*execution-context* context]
              (spin-fn)))))
 

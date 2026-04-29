@@ -290,44 +290,18 @@
     (rtp/cas-state! ctx path old-val new-val)))
 
 ;; ----------------------------------------------------------------------------
-;; PScheduler facades - Runtime-level scheduling control
+;; Executor accessor
 ;; ----------------------------------------------------------------------------
 
-(defn ^:no-doc get-executor
-  "Get the executor used by this runtime for running spin functions.
+(defn get-executor
+  "Get the executor for a context (where spin functions actually run).
 
-	The executor determines WHERE code runs (thread pool, event loop, immediate).
-	Returns an object implementing PExecutor from runtime.scheduler namespace.
-
-	Uses current-execution-context if no runtime provided."
+  Uses current-execution-context if no context provided. Returns an object
+  implementing PExecutor (see engine.executor)."
   ([]
    (get-executor (current-execution-context)))
-  ([rt]
-   (rtp/get-executor rt)))
-
-(defn ^:no-doc schedule-spin-execution!
-  "Schedule a spin function for execution using this runtime's strategy.
-
-	The runtime controls WHEN and WHAT to execute (scheduling strategy), while
-	the executor controls WHERE it runs (thread pool, event loop, etc.).
-
-	Uses current-execution-context if no runtime provided."
-  ([spin-fn]
-   (schedule-spin-execution! (current-execution-context) spin-fn))
-  ([ctx spin-fn]
-   (rtp/schedule-spin-execution! ctx spin-fn)))
-
-(defn ^:no-doc schedule-delayed-execution!
-  "Schedule a spin function to execute after delay-ms milliseconds.
-
-	Used by sleep, timeout, and other time-based operations.
-	Delegates to the executor's execute-after! method.
-
-	Uses current-execution-context if no runtime provided."
-  ([delay-ms spin-fn]
-   (schedule-delayed-execution! (current-execution-context) delay-ms spin-fn))
-  ([ctx delay-ms spin-fn]
-   (rtp/schedule-delayed-execution! ctx delay-ms spin-fn)))
+  ([ctx]
+   (:executor ctx)))
 
 ;; =============================================================================
 ;; Event Handler Helpers

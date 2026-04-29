@@ -1,9 +1,14 @@
-(ns org.replikativ.spindel.engine.scheduler
+(ns org.replikativ.spindel.engine.executor
   "Executors for running spin functions.
 
-  Executors provide the execution context (thread pool, event loop, etc.) where
-  spin functions run. The runtime uses executors to run spins, but maintains
-  control over scheduling strategy (when/what to execute) via PScheduler protocol."
+  Execution mechanism — *where* code runs (thread pool, event loop, immediate).
+  This layer is polymorphic because the platform demands it: JVM has multiple
+  options (virtual threads, ForkJoinPool, custom thread pools), CLJS has the
+  event loop, tests want a synchronous executor.
+
+  Scheduling policy — *when* and *in what order* to run things (topological
+  observer notification, batch coordination, drain ordering) — lives in the
+  engine implementation (`engine.impl.simple`), not in this namespace."
   (:require [org.replikativ.spindel.engine.bindings :as bindings])
   #?(:clj (:import [java.util.concurrent Executors ExecutorService ThreadPoolExecutor
                                          ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
@@ -137,10 +142,18 @@
 
 #?(:clj
    (do
-     (defn thread-pool-executor
-       "Create an executor that runs spins on a fixed thread pool with unbounded queue.
+     (defn ^:no-doc thread-pool-executor
+       "Create an executor backed by a fixed-size ThreadPoolExecutor with an
+        unbounded LinkedBlockingQueue.
 
-        Kept for backward compatibility. Prefer fork-join-executor for new code.
+        ⚠️ This pool can deadlock when spins block on awaits because, unlike
+        ForkJoinPool, it does not create compensating threads via managedBlock.
+        Prefer `fork-join-executor` (or `default-executor`, which picks
+        virtual threads on JVM 21+, FJ otherwise) for production use.
+
+        Kept for niche cases where the caller wants explicit thread-pool
+        semantics. Marked ^:no-doc so it does not surface in user-facing
+        docs.
 
         Options:
           :threads - Number of threads (default: available processors)
