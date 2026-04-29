@@ -850,11 +850,17 @@
   instead of Thread/sleep (1ms). 10x lower latency, and managedBlock tells
   ForkJoinPool to create compensating threads if this is a pool thread.
 
+  CLJS: A synchronous wait on the JS thread cannot observe setTimeout
+  callbacks fire, so this returns the current state (true when already
+  drained, false otherwise) without blocking. Use the async-test patterns
+  (run-spin! callbacks, async done) to observe drain completion in CLJS.
+
   Args:
     context - context record
-    timeout-ms - Max time to wait (default 5000ms)
+    timeout-ms - Max time to wait (default 5000ms; unused on CLJS)
 
-  Returns: true if drain completed, false if timeout"
+  Returns: true if drain completed, false if timeout (or false on CLJS
+           when not yet complete)"
   [context & {:keys [timeout-ms] :or {timeout-ms 5000}}]
   #?(:clj
      (let [start (System/currentTimeMillis)
@@ -885,19 +891,18 @@
                    :else false))))
            @result)))
      :cljs
-     ;; CLJS: busy wait (use promises/async in real impl)
-     (let [start (.now js/Date)
-           deadline (+ start timeout-ms)]
-       (loop []
-         (let [draining? (rtp/get-state context [:engine/draining?])
-               pending (rtp/get-state context [:engine/pending])
-               nodes (rtp/get-state context [:nodes])
-               running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
-           (if (or draining? (seq pending) (seq running-spins))
-             (if (< (.now js/Date) deadline)
-               (recur)
-               false)
-             true))))))
+     ;; CLJS cannot truly await: a synchronous loop on the JS thread cannot
+     ;; observe setTimeout-driven workers complete, so a busy-wait would burn
+     ;; CPU until the deadline and never see progress. Instead we report the
+     ;; current drain status and let the caller use async/await patterns
+     ;; (run-spin! callbacks, async done) to observe completion. timeout-ms
+     ;; is accepted for cross-platform call-site compatibility but unused.
+     (let [_ timeout-ms
+           draining? (rtp/get-state context [:engine/draining?])
+           pending (rtp/get-state context [:engine/pending])
+           nodes (rtp/get-state context [:nodes])
+           running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
+       (and (not draining?) (empty? pending) (empty? running-spins)))))
 
 (defn ^:no-doc trigger-drain!
   "Trigger async draining of the event queue.

@@ -72,7 +72,7 @@
 ;; Filter Combinator
 ;; =============================================================================
 
-(defn filter*
+(defn ^:no-doc filter*
   "Internal filter implementation.
 
    Takes source-loc for addressing, predicate, and source interval."
@@ -166,7 +166,7 @@
           ;; Use expected-filtered which was already computed
           (iv/->Interval our-old expected-filtered nil))))))
 
-(defn filter
+(defn ^:no-doc filter
   "Incremental filter using interval abstraction.
 
    Takes a predicate and a source (any value, coerced to interval).
@@ -192,7 +192,7 @@
 ;; Map Combinator
 ;; =============================================================================
 
-(defn map*
+(defn ^:no-doc map*
   "Internal map implementation."
   [source-loc f source]
   (with-incremental-cache source-loc
@@ -243,7 +243,7 @@
           (let [mapped (mapv map-fn source-new)]
             (iv/->Interval our-old mapped nil)))))))
 
-(defn map
+(defn ^:no-doc map
   "Incremental map using interval abstraction.
 
    Takes a function and a source interval.
@@ -263,7 +263,7 @@
 ;; Reduce Combinator (Terminal)
 ;; =============================================================================
 
-(defn reduce*
+(defn ^:no-doc reduce*
   "Internal reduce implementation."
   [source-loc rf init enter-fn exit-fn source]
   (with-incremental-cache source-loc
@@ -296,7 +296,7 @@
           (let [result (clojure.core/reduce rf init source-new)]
             (iv/->Interval nil result nil)))))))
 
-(defn reduce
+(defn ^:no-doc reduce
   "Incremental reduce using interval abstraction.
 
    Takes a reducing function, initial value, and source interval.
@@ -325,7 +325,7 @@
 ;; For-Each Combinator (Keyed transformation)
 ;; =============================================================================
 
-(defn for-each*
+(defn ^:no-doc for-each*
   "Internal for-each implementation."
   [source-loc key-fn transform-fn source]
   (with-incremental-cache source-loc
@@ -392,7 +392,7 @@
           (let [transformed (mapv transform-fn source-new)]
             (iv/->Interval our-old transformed nil)))))))
 
-(defn for-each
+(defn ^:no-doc for-each
   "Incremental for-each using interval abstraction.
 
    Like map, but maintains a cache keyed by key-fn for efficient updates.
@@ -537,7 +537,7 @@
         (when (seq update-deltas)
           (vec update-deltas))))))
 
-(defn slice*
+(defn ^:no-doc slice*
   "Internal slice implementation for window-based positional filtering.
 
   Takes a window {:start n :end m} and a source collection.
@@ -614,7 +614,7 @@
       :else
       (iv/->Interval prev-output new-slice nil))))
 
-(defn slice
+(defn ^:no-doc slice
   "Incremental slice for window-based filtering.
 
   Returns items from source in the range [start, end).

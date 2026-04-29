@@ -93,19 +93,19 @@
 ;; Graph operation helpers (dispatch to protocol when available)
 ;; ----------------------------------------------------------------------------
 
-(defn graph-commit-deps!
+(defn ^:no-doc graph-commit-deps!
   "Commit tracked dependencies for spin-id using the bound runtime via PGraph."
   [spin-id]
   (let [ctx (current-execution-context)]
     (rtp/record-deps! ctx spin-id)))
 
-(defn graph-clear-deps!
+(defn ^:no-doc graph-clear-deps!
   "Clear spin-id from graph using the bound runtime via PGraph."
   [spin-id]
   (let [ctx (current-execution-context)]
     (rtp/clear-deps! ctx spin-id)))
 
-(defn graph-ordered-observers
+(defn ^:no-doc graph-ordered-observers
   "Return ordered observer spin-ids for a signal-id via PGraph."
   [signal-id]
   (let [ctx (current-execution-context)]
@@ -115,13 +115,13 @@
 ;; Transient dependency tracking (PDepsTracking)
 ;; ----------------------------------------------------------------------------
 
-(defn deps-track-signal!
+(defn ^:no-doc deps-track-signal!
   "Record that the current spin observed signal-id during this turn."
   [spin-id signal-id]
   (let [ctx (current-execution-context)]
     (rtp/track-signal-dep! ctx spin-id signal-id)))
 
-(defn deps-track-spin!
+(defn ^:no-doc deps-track-spin!
   "Record that parent spin observed child spin during this turn."
   [parent-spin-id child-spin-id]
   (let [ctx (current-execution-context)]
@@ -131,30 +131,30 @@
 ;; Spin operation facades (PSpin protocol)
 ;; ----------------------------------------------------------------------------
 
-(defn spin-register! [spin-id spin-meta]
+(defn ^:no-doc spin-register! [spin-id spin-meta]
   (let [ctx (current-execution-context)]
     (rtp/register-spin! ctx spin-id spin-meta)))
 
-(defn spin-mark-dirty! [spin-id]
+(defn ^:no-doc spin-mark-dirty! [spin-id]
   (let [ctx (current-execution-context)]
     (rtp/mark-dirty! ctx spin-id)))
 
-(defn spin-cache-result! [spin-id result]
+(defn ^:no-doc spin-cache-result! [spin-id result]
   (let [ctx (current-execution-context)]
     (rtp/cache-result! ctx spin-id result)))
 
-(defn spin-current-result [spin-id]
+(defn ^:no-doc spin-current-result [spin-id]
   (let [ctx (current-execution-context)]
     (rtp/current-result ctx spin-id)))
 
-(defn spin-result-clean?
+(defn ^:no-doc spin-result-clean?
   "Check if a spin's cached result is clean.
 	Returns true if clean, false if dirty or uncached."
   [spin-id]
   (let [ctx (current-execution-context)]
     (rtp/clean? ctx spin-id)))
 
-(defn spin-result-dirty?
+(defn ^:no-doc spin-result-dirty?
   "Check if a spin's cached result is dirty.
 	Returns true if dirty, false if clean or uncached."
   [spin-id]
@@ -189,22 +189,22 @@
 ;; Continuation facades (PContinuation)
 ;; ----------------------------------------------------------------------------
 
-(defn continuation-add! [spin-id cont]
+(defn ^:no-doc continuation-add! [spin-id cont]
   (let [ctx (current-execution-context)
         ;; Auto-capture bindings when adding continuation
         captured-bindings (bindings/capture-bindings)
         cont-with-bindings (assoc cont :bindings captured-bindings)]
     (rtp/add-continuation! ctx spin-id cont-with-bindings)))
 
-(defn continuation-remove! [spin-id cont-id]
+(defn ^:no-doc continuation-remove! [spin-id cont-id]
   (let [ctx (current-execution-context)]
     (rtp/remove-continuation! ctx spin-id cont-id)))
 
-(defn continuation-earliest [spin-id signal-id]
+(defn ^:no-doc continuation-earliest [spin-id signal-id]
   (let [ctx (current-execution-context)]
     (rtp/earliest-continuation ctx spin-id signal-id)))
 
-(defn continuation-resume! [spin-id cont resume-fn]
+(defn ^:no-doc continuation-resume! [spin-id cont resume-fn]
   (let [ctx (current-execution-context)]
     (rtp/resume-continuation! ctx spin-id cont resume-fn)))
 
@@ -213,7 +213,7 @@
 ;; ----------------------------------------------------------------------------
 
 ;; Alias for ergonomics
-(defn enqueue-event!
+(defn ^:no-doc enqueue-event!
   "Enqueue an event into the runtime engine.
 
   Uses current-execution-context from dynamic binding (*execution-context*).
@@ -293,7 +293,7 @@
 ;; PScheduler facades - Runtime-level scheduling control
 ;; ----------------------------------------------------------------------------
 
-(defn get-executor
+(defn ^:no-doc get-executor
   "Get the executor used by this runtime for running spin functions.
 
 	The executor determines WHERE code runs (thread pool, event loop, immediate).
@@ -305,7 +305,7 @@
   ([rt]
    (rtp/get-executor rt)))
 
-(defn schedule-spin-execution!
+(defn ^:no-doc schedule-spin-execution!
   "Schedule a spin function for execution using this runtime's strategy.
 
 	The runtime controls WHEN and WHAT to execute (scheduling strategy), while
@@ -317,7 +317,7 @@
   ([ctx spin-fn]
    (rtp/schedule-spin-execution! ctx spin-fn)))
 
-(defn schedule-delayed-execution!
+(defn ^:no-doc schedule-delayed-execution!
   "Schedule a spin function to execute after delay-ms milliseconds.
 
 	Used by sleep, timeout, and other time-based operations.

@@ -90,29 +90,29 @@
 ;; VNode Utilities
 ;; =============================================================================
 
-(defn get-key
+(defn ^:no-doc get-key
   "Get the key of a vnode, or nil if not keyed."
   [vnode]
   (:key vnode))
 
-(defn keyed?
+(defn ^:no-doc keyed?
   "Check if a vnode has a key."
   [vnode]
   (some? (get-key vnode)))
 
-(defn same-key?
+(defn ^:no-doc same-key?
   "Check if two vnodes have the same key."
   [a b]
   (let [ka (get-key a)
         kb (get-key b)]
     (and (some? ka) (= ka kb))))
 
-(defn same-tag?
+(defn ^:no-doc same-tag?
   "Check if two vnodes have the same tag."
   [a b]
   (= (:tag a) (:tag b)))
 
-(defn compatible?
+(defn ^:no-doc compatible?
   "Check if two vnodes are compatible for update (same tag and key)."
   [a b]
   (and (same-tag? a b)
@@ -123,7 +123,7 @@
 ;; Immutable VNode Updates (return new vnodes)
 ;; =============================================================================
 
-(defn update-attrs
+(defn ^:no-doc update-attrs
   "Return a new vnode with updated attributes.
 
   The deltaable-map tracks which attrs were added/removed/updated.
@@ -151,21 +151,21 @@
                       (keys current-attrs))]
     (assoc vnode :attrs final-attrs)))
 
-(defn append-child
+(defn ^:no-doc append-child
   "Return a new vnode with child appended.
 
   The deltaable-vector tracks the :add delta."
   [vnode child]
   (update vnode :children conj child))
 
-(defn update-child
+(defn ^:no-doc update-child
   "Return a new vnode with child at index updated.
 
   The deltaable-vector tracks the :update delta."
   [vnode index new-child]
   (update vnode :children assoc index new-child))
 
-(defn remove-child-at
+(defn ^:no-doc remove-child-at
   "Return a new vnode with child at index removed.
 
   Note: This rebuilds the vector (loses fine-grained delta).
@@ -179,7 +179,7 @@
         (assoc vnode :children (d/deltaable-vector new-children)))
       vnode)))
 
-(defn set-children
+(defn ^:no-doc set-children
   "Return a new vnode with children replaced.
 
   Used when children are completely recomputed."
@@ -190,7 +190,7 @@
 ;; Path-Based Updates (for deep tree modifications)
 ;; =============================================================================
 
-(defn get-in-vdom
+(defn ^:no-doc get-in-vdom
   "Get vnode at path in vdom tree.
 
   Path is a sequence of child indices."
@@ -202,7 +202,7 @@
     vdom
     path))
 
-(defn update-in-vdom
+(defn ^:no-doc update-in-vdom
   "Update vnode at path in vdom tree.
 
   Path is a sequence of child indices.
@@ -218,7 +218,7 @@
           (update vdom :children assoc idx new-child))
         vdom))))
 
-(defn assoc-in-vdom
+(defn ^:no-doc assoc-in-vdom
   "Set vnode at path in vdom tree.
 
   Path is a sequence of child indices."
@@ -229,7 +229,7 @@
 ;; Addressing for Element Identity
 ;; =============================================================================
 
-(defn keyed-address
+(defn ^:no-doc keyed-address
   "Compute address for a keyed element.
 
   Combines base address with content key for stable identity
@@ -237,7 +237,7 @@
   [base-addr key]
   (keyword (str "keyed-" (h/content-hash [base-addr :keyed key]))))
 
-(defn derive-child-chain
+(defn ^:no-doc derive-child-chain
   "Derive a child chain head from parent address.
 
   Used for subtree isolation - changes inside a subtree
@@ -245,7 +245,7 @@
   [parent-addr]
   (keyword (str "child-" (h/content-hash [parent-addr :child-chain]))))
 
-(defn next-address
+(defn ^:no-doc next-address
   "Generate next deterministic address from chain head and source location.
 
   Returns [new-address new-chain-head]."
@@ -258,12 +258,12 @@
 ;; Delta Extraction (for discharge to real DOM)
 ;; =============================================================================
 
-(defn get-attr-deltas
+(defn ^:no-doc get-attr-deltas
   "Get attribute deltas from vnode."
   [vnode]
   (d/get-deltas (:attrs vnode)))
 
-(defn get-children-deltas
+(defn ^:no-doc get-children-deltas
   "Get children deltas from vnode."
   [vnode]
   (d/get-deltas (:children vnode)))
@@ -274,7 +274,7 @@
   (or (d/has-deltas? (:attrs vnode))
       (d/has-deltas? (:children vnode))))
 
-(defn clear-deltas
+(defn ^:no-doc clear-deltas
   "Return a new vnode with deltas cleared.
 
   Used after discharge to prepare for next render cycle.
@@ -286,7 +286,7 @@
     (:children vnode) (update :children d/clear-deltas)
     (:deltas vnode) (dissoc :deltas)))
 
-(defn clear-deltas-deep
+(defn ^:no-doc clear-deltas-deep
   "Recursively clear deltas from vnode and all descendants."
   [vnode]
   (if (or (text-node? vnode) (nil? vnode))
@@ -303,7 +303,7 @@
 ;; VNode Comparison (for reconciliation)
 ;; =============================================================================
 
-(defn children-by-key
+(defn ^:no-doc children-by-key
   "Index keyed children by their keys.
 
   Returns {:by-key {key {:child vnode :index idx}}, :unkeyed [vnodes...]}"
@@ -316,7 +316,7 @@
     {:by-key {} :unkeyed []}
     (map-indexed vector children)))
 
-(defn reconcile-children
+(defn ^:no-doc reconcile-children
   "Reconcile old children with new children, producing deltas.
 
   Uses keys for stable identity when available.

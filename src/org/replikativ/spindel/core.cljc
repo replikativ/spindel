@@ -7,8 +7,9 @@
      (require '[org.replikativ.spindel.core :as s :refer [spin signal await track]])
 
    For advanced usage, require individual namespaces directly."
-  (:refer-clojure :exclude [for])
+  (:refer-clojure :exclude [for atom])
   (:require
+   [org.replikativ.spindel.engine.core :as ec]
    [org.replikativ.spindel.engine.context :as ctx]
    [org.replikativ.spindel.engine.effects :as eff]
    [org.replikativ.spindel.effects.await :as fx-await]
@@ -16,10 +17,14 @@
    [org.replikativ.spindel.effects.yield :as fx-yield]
    [org.replikativ.spindel.spin.combinators :as combinators]
    [org.replikativ.spindel.spin.sync :as sync]
+   [org.replikativ.spindel.spin.supervisor :as supervisor]
+   [org.replikativ.spindel.atom :as ratom]
+   [org.replikativ.spindel.semaphore :as semaphore]
    [org.replikativ.spindel.incremental.deltaable :as deltaable]
    [org.replikativ.spindel.pubsub.buffer :as pubsub-buf]
    [org.replikativ.spindel.pubsub.mult :as pubsub-mult]
    [org.replikativ.spindel.pubsub.pub :as pubsub-pub]
+   [org.replikativ.spindel.pubsub.partitioned :as pubsub-partitioned]
    [org.replikativ.spindel.dom.router :as dom-router]
    [org.replikativ.spindel.dom.ssr :as ssr]
    #?(:clj [org.replikativ.spindel.spin.cps :as spin-cps])
@@ -114,6 +119,17 @@
 ;; Runtime / Execution Context
 ;; =============================================================================
 
+(def current-execution-context
+  "Return the dynamically bound *execution-context*. Throws if none is bound."
+  ec/current-execution-context)
+
+#?(:clj
+   (defmacro with-context
+     "Run body with *execution-context* bound to ctx.
+      See org.replikativ.spindel.engine.core/with-context."
+     [ctx & body]
+     `(ec/with-context ~ctx ~@body)))
+
 (def create-execution-context
   "Create a new root execution context."
   ctx/create-execution-context)
@@ -206,6 +222,56 @@
   "Create a spin that never completes."
   sync/never)
 
+(def spawn!
+  "Fire-and-forget execution of a spin. Returns nil. Errors are reported via
+  the optional :on-error handler (defaults to logging)."
+  sync/spawn!)
+
+;; =============================================================================
+;; Fork-safe Atoms
+;; =============================================================================
+
+(def atom
+  "Create a fork-safe runtime atom (lives in :atoms on the context).
+  100% compatible with clojure.core/atom semantics. See
+  org.replikativ.spindel.atom/atom for full docs."
+  ratom/atom)
+
+(def create-atom
+  "Create a fork-safe runtime atom with explicit options."
+  ratom/create-atom)
+
+;; =============================================================================
+;; Semaphore (advanced sync primitive)
+;; =============================================================================
+
+(def semaphore
+  "Create a permit-based semaphore.
+  See org.replikativ.spindel.semaphore/semaphore for full docs."
+  semaphore/semaphore)
+
+(def acquire
+  "Acquire a permit from a semaphore (blocks via continuation if none available)."
+  semaphore/acquire)
+
+(def release
+  "Release a permit back to a semaphore."
+  semaphore/release)
+
+(def holding
+  "Execute a spin while holding a permit (try/finally style)."
+  semaphore/holding)
+
+;; =============================================================================
+;; Supervisor (Erlang-style restart strategies)
+;; =============================================================================
+
+(def supervisor
+  "Create a supervisor spin that runs and restarts child specs.
+  Supports :one-for-one, :one-for-all, :rest-for-one strategies.
+  See org.replikativ.spindel.spin.supervisor/supervisor for full docs."
+  supervisor/supervisor)
+
 ;; =============================================================================
 ;; Deltaable Collections
 ;; =============================================================================
@@ -249,6 +315,19 @@
 (def unsub
   "Unsubscribe from a topic."
   pubsub-pub/unsub)
+
+(def partitioned
+  "Create a hash-partitioned fan-out from source to N (power-of-2) partitions.
+  See org.replikativ.spindel.pubsub.partitioned/partitioned for full docs."
+  pubsub-partitioned/partitioned)
+
+(def tap-partition
+  "Subscribe to a specific partition of a partitioned fan-out."
+  pubsub-partitioned/tap-partition)
+
+(def tap-all
+  "Subscribe to all partitions; returns a vector of taps."
+  pubsub-partitioned/tap-all)
 
 ;; =============================================================================
 ;; Buffer factories (for pub/sub)
