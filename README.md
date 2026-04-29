@@ -717,6 +717,53 @@ src/org/replikativ/spindel/
 
 `@` is only for REPL convenience outside spins. Inside spins it blocks the thread and breaks the continuation chain.
 
+## CPS Limitations Inside Spin Bodies
+
+The `spin` macro CPS-transforms only the code it can see *lexically*. It cannot
+see into closures or lazy-sequence state machines, so **effects (`await`,
+`track`, `yield`) do not work inside these constructs**:
+
+- ❌ `for` — list comprehension; lazy state machine, opaque to the macro.
+- ❌ `doseq` — same reason.
+- ❌ `map`, `filter`, `reduce` and other higher-order functions — the
+  function argument is a closure the macro cannot transform.
+- ❌ Any user-defined function called from a spin body if that function uses
+  `await`/`track`/`yield`.
+
+This is the same constraint as `core.async`'s `go` macro.
+
+What **does** work:
+
+- ✅ `loop` / `recur` directly inside the spin body.
+- ✅ `let`, `if`, `do`, `try`/`catch`, `binding` directly inside the spin
+  body, all CPS-transformed across effect breakpoints.
+- ✅ Nested `spin` calls — each new `spin` block re-enters the CPS world
+  with its own scope.
+- ✅ CPS-aware combinators in `org.replikativ.spindel.spin.combinators`
+  (parallel, race, timeout, debounce, etc.), in `seq.combinators`
+  (incremental list ops), and in pub/sub (mult, pub, partitioned).
+
+```clojure
+;; ❌ WRONG — effects inside `for` will throw at runtime.
+(spin
+  (for [x data]
+    (await (process x))))
+
+;; ✅ Use loop/recur instead:
+(spin
+  (loop [remaining data results []]
+    (if (empty? remaining)
+      results
+      (let [r (await (process (first remaining)))]
+        (recur (rest remaining) (conj results r))))))
+
+;; ✅ Or nest a fresh spin per element and parallel them:
+(spin (parallel (mapv (fn [x] (spin (await (process x)))) data)))
+```
+
+If you find yourself reaching for `for` or `map` with effects, reach for
+`loop`/`recur`, a sequence combinator, or a nested `spin`.
+
 ## Running Tests
 
 ```bash
@@ -810,16 +857,18 @@ npm run watch:all
 **Guides**:
 - [Getting Started](docs/getting-started.md) — Step-by-step tutorial from zero to working reactive system
 - [Concepts](docs/concepts.md) — Mental model: spins, signals, effects, and how they fit together
-- [Effects](docs/effects.md) — `await`, `track`, `yield`, async sequences, and custom effects
+- [Effects](docs/effects.md) — `await`, `track`, `yield`, async sequences
+- [Custom Effects](docs/custom-effects.md) — Register your own CPS effects (advanced)
 - [Combinators](docs/combinators.md) — `parallel`, `race`, `timeout`, rate control, error handling
 - [Incremental](docs/incremental.md) — Delta-tracking collections, intervals, and incremental combinators
 - [Pub/Sub](docs/pubsub.md) — Fan-out broadcasting and topic-based routing with backpressure
 - [Forking](docs/forking.md) — Copy-on-write context forking, snapshots, and serialization
+- [Atoms](docs/atoms.md) — Fork-safe runtime atoms
 - [SCI Integration](docs/sci-integration.md) — Sandboxed execution with SCI for agent isolation
 
 **Reference**:
 - [API Reference](docs/api-reference.md) — Namespace-by-namespace function listing
-- [CLAUDE.md](CLAUDE.md) — Development guide
+- [CLAUDE.md](CLAUDE.md) — Contributor / engine internals guide
 
 ## License
 

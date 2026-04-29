@@ -1,6 +1,15 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with the **Spindel** codebase.
+> **Audience:** This file is the contributor / AI-assistant guide to the
+> Spindel codebase. It documents internal architecture, protocol surface,
+> CPS limitations, and engine invariants needed to *modify* Spindel.
+>
+> If you are looking for *user-facing* documentation — how to write a Spindel
+> app, the public API, or examples — start with [README.md](README.md) and
+> the guides in [docs/](docs/).
+
+This file provides guidance to Claude Code (and other AI assistants) when
+working with the **Spindel** codebase.
 
 ## Project Overview
 

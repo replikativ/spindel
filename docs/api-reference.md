@@ -35,6 +35,8 @@ Convenience re-export namespace. All functions below are also available from the
 | `(stop-context! ctx)` | Stop background drain thread |
 | `(serialize-context ctx)` | Serialize to EDN |
 | `(deserialize-context edn executor)` | Deserialize from EDN |
+| `(with-context ctx & body)` | Bind `*execution-context*` for body (CLJ macro) |
+| `(current-execution-context)` | Return bound context (throws if none) |
 
 ### Combinators
 
@@ -59,6 +61,29 @@ Convenience re-export namespace. All functions below are also available from the
 | `(mailbox)` | Create FIFO message queue |
 | `(post! mbx msg)` | Post message from external context |
 | `(never)` | Spin that never completes |
+| `(spawn! spin)` / `(spawn! spin :on-error f)` | Fire-and-forget spin |
+
+### Fork-Safe Atoms
+
+| Function | Description |
+|----------|-------------|
+| `(atom initial)` / `(atom initial :meta m)` | Create runtime atom (uses `*execution-context*`) |
+| `(create-atom initial & opts)` | Create with explicit options |
+
+### Semaphore
+
+| Function | Description |
+|----------|-------------|
+| `(semaphore n)` | Create permit-based semaphore (uses `*execution-context*`) |
+| `(acquire sem)` | Spin completing on permit acquisition |
+| `(release sem)` | Release a permit |
+| `(holding sem spin)` | Run `spin` with permit held (try/finally) |
+
+### Supervisor
+
+| Function | Description |
+|----------|-------------|
+| `(supervisor child-specs opts)` | Erlang-style supervisor spin (`:one-for-one`, `:one-for-all`, `:rest-for-one`) |
 
 ### Deltaable
 
@@ -78,6 +103,9 @@ Convenience re-export namespace. All functions below are also available from the
 | `(pub source topic-fn)` | Create topic-routed pub |
 | `(sub pub topic & opts)` | Subscribe to topic |
 | `(unsub pub topic sub)` | Unsubscribe |
+| `(partitioned n source partition-fn & opts)` | Hash-partitioned fan-out (n = power of 2) |
+| `(tap-partition p idx)` | Subscribe to one partition |
+| `(tap-all p)` | Subscribe to all partitions; returns vector |
 | `(fixed-buffer n)` | Fixed-size buffer |
 | `(dropping-buffer n)` | Dropping buffer |
 | `(sliding-buffer n)` | Sliding buffer |
@@ -375,6 +403,29 @@ Synchronization primitives.
 | `(create-mailbox ctx)` | Create with explicit context |
 | `(post! mbx msg)` | Post from external context |
 | `(never)` | Spin that never completes |
+| `(spawn! spin)` / `(spawn! spin :on-error f)` | Fire-and-forget execution |
+
+---
+
+## `spindel.spin.supervisor`
+
+Erlang-style supervision for spawned spins.
+
+| Function | Description |
+|----------|-------------|
+| `(supervisor child-specs opts)` | Returns a spin that supervises children |
+
+`child-specs` is a vector of `{:id keyword :start (fn []) ...}` maps where
+`:start` returns a fresh spin on each restart.
+
+`opts` keys:
+
+| Key | Description |
+|-----|-------------|
+| `:strategy` | `:one-for-one`, `:one-for-all`, or `:rest-for-one` |
+| `:max-restarts` | Max restart budget per window (default 3) |
+| `:window-ms` | Window for the restart budget (default 60000) |
+| `:on-fatal` | Callback `(fn [reason])` when budget is exhausted |
 
 ---
 
@@ -537,6 +588,30 @@ Topic-based routing.
 | `(unsub pub topic tap)` | Unsubscribe |
 | `(unsub-all pub)` | Unsubscribe all topics |
 | `(pub-closed? pub)` | True if source exhausted |
+
+---
+
+## `spindel.pubsub.partitioned`
+
+Hash-partitioned fan-out (Rama-style). The source is routed to one of N
+partitions (N must be a power of two) using a partition-fn that extracts a
+routing key. Each partition has its own buffer; consumers tap individual
+partitions for parallel downstream processing.
+
+| Function | Description |
+|----------|-------------|
+| `(partitioned n source partition-fn & opts)` | Create with N partitions |
+| `(tap-partition p idx)` / `(tap-partition p idx buffer)` | Subscribe to one partition |
+| `(tap-all p)` | Subscribe to every partition; returns a vector of taps |
+| `(partition-post! p idx item)` | Post directly to a partition (e.g. for chained pipelines) |
+| `(close! p)` | Close all partitions |
+| `(closed? p)` | True if closed |
+
+`opts`:
+
+| Key | Description |
+|-----|-------------|
+| `:buf-fn` | `(fn [partition-idx] buffer)` factory; default fixed-buffer 64 |
 
 ---
 

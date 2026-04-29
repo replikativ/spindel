@@ -65,6 +65,43 @@ Forked contexts use an **overlay backend** that:
 
 The fork itself is O(1) — only the overlay structure is created. State is copied lazily on first write to each key.
 
+## What forks share with their parent
+
+A fork is fully isolated for *state*, but a few resources are shared with
+the parent context for performance:
+
+- **Executor**: Both parent and fork submit work to the same executor
+  (thread pool on JVM, event loop on CLJS). Concurrent forks compete for
+  the same workers. If you need an isolated executor, create a fresh root
+  context instead.
+- **Drain thread / drain signal** (JVM): One background thread drains
+  events for the parent and all of its forks.
+- **External side effects**: HTTP requests, file I/O, console output,
+  etc. are not isolated. Spins that observably do something to the
+  outside world will do it from every fork that runs them.
+
+If you need an external resource to fork along with the context, register
+it under `[:external-refs]` and implement the `PForkable` protocol so
+`fork-context` can ask it to copy itself.
+
+## Fork and the spin cache
+
+Spin results live on each `SpinNode` in the unified `:nodes` map. A fork:
+
+- **Inherits the parent's cached results** through overlay read-through.
+  If the parent has a clean `:result` for spin X, the fork sees the same
+  result on first read — no re-execution.
+- **Invalidates the fork's local copy** when a dependency is mutated
+  inside the fork. Dirty propagation walks observers in the fork's
+  overlay, leaving the parent's SpinNode untouched.
+- **Recomputes on the fork's view** the next time the spin is invoked
+  in the fork.
+
+The parent's cache is never observed to be stale by the fork: either the
+fork reads the parent's value (because the dependency is unchanged in the
+fork too), or the fork has its own copy (because the dependency moved in
+the fork).
+
 ## Snapshots
 
 Snapshots create an immutable copy of a context's state. Unlike forks, snapshots are completely independent (no parent reference).
