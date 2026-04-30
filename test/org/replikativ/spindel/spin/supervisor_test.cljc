@@ -1,6 +1,6 @@
 (ns org.replikativ.spindel.spin.supervisor-test
   "Tests for supervisor spin implementation."
-  (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [org.replikativ.spindel.spin.supervisor :as sup]
             [org.replikativ.spindel.spin.sync :as sync :refer [spawn!]]
@@ -11,22 +11,7 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.test-helpers :as th])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
-                            [cljs.test :refer [use-fixtures]]
                             [org.replikativ.spindel.test-helpers :refer [async with-ctx]])))
-
-;; =============================================================================
-;; Test Fixtures
-;; =============================================================================
-
-(defn with-execution-context [f]
-  (let [c (ctx/create-execution-context)]
-    (try
-      (binding [ec/*execution-context* c]
-        (f))
-      (finally
-        (ctx/stop-context! c)))))
-
-(use-fixtures :each with-execution-context)
 
 ;; =============================================================================
 ;; Tests
