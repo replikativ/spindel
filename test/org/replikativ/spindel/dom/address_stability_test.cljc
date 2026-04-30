@@ -75,9 +75,17 @@
             the-spin (spin
                        (let [data-iv (track sig)
                              data (iv/get-new data-iv)
-                             rid (swap! render-count inc)]
-                         (swap! results assoc rid (render-fn data))
-                         (render-fn data)))]
+                             rendered (render-fn data)
+                             ;; CRITICAL: write the result into `results` BEFORE
+                             ;; bumping render-count. await-renders polls render-count
+                             ;; and fires on-done the moment it sees the expected
+                             ;; value — if we increment first and then assoc, the
+                             ;; poller can wedge between those two ops and read a
+                             ;; results map that's missing this render's entry.
+                             rid (inc @render-count)
+                             _ (swap! results assoc rid rendered)
+                             _ (swap! render-count inc)]
+                         rendered))]
         (the-spin
           (fn [_] (when (= 1 @render-count)
                     (reset! sig new-value)))
@@ -165,14 +173,19 @@
                 the-spin (spin
                            (let [data-iv (track sig)
                                  data (iv/get-new data-iv)
-                                 rid (swap! render-count inc)
                                  inner (spin
                                          (el/div {:class "wrapper"}
                                            (el/nav {} (el/span {} "Menu"))
                                            (el/main {}
                                              (el/p {} (or data "empty")))))
-                                 vdom (await inner)]
-                             (swap! addresses assoc rid (collect-addresses vdom))
+                                 vdom (await inner)
+                                 ;; Same ordering rule as with-signal-change:
+                                 ;; populate `addresses` BEFORE bumping
+                                 ;; render-count, otherwise the poller can
+                                 ;; observe count=2 and read a stale map.
+                                 rid (inc @render-count)
+                                 _ (swap! addresses assoc rid (collect-addresses vdom))
+                                 _ (swap! render-count inc)]
                              vdom))]
             (the-spin
               (fn [_] (when (= 1 @render-count)
