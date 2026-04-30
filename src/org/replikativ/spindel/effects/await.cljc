@@ -95,79 +95,85 @@
                 (ex-info "No cached result for child in rebuild mode"
                          {:parent-id spin-id :child-id awaited-spin-id})))))
 
-        ;; Normal slow path: Start child, check if completed synchronously
+        ;; Normal slow path: Start child, check if completed synchronously.
+        ;;
+        ;; Race fix: register the continuation BEFORE invoking the child.
+        ;; The previous order (invoke → check completed? → register) had a
+        ;; window between the check and the registration: if the child fired
+        ;; asynchronously in that window, child-resolve enqueued a
+        ;; :spin-completion event, drain processed it with no subscribers,
+        ;; and the continuation we then registered would never fire — the
+        ;; parent hung forever. Reproduced as a 4–7 % flake on cold JVMs in
+        ;; test-gen-aseq-empty (and others using race / parallel).
+        ;;
+        ;; Registering first is safe because:
+        ;; - synchronous completion still resumes the parent inline below
+        ;;   (sync path bypasses the event queue, in-sync-phase suppresses
+        ;;    enqueue-completion-event!, so the registered continuation is
+        ;;    simply unused for the sync resume),
+        ;; - asynchronous completions go through the event queue and find the
+        ;;   subscription that is already in place,
+        ;; - reactive spins (parallel etc.) that re-complete on signal changes
+        ;;   keep using the same continuation across multiple drain dispatches.
         :else
-        (do
-          ;; Try DIRECT execution of child's spin-fn (bypasses invoke overhead).
-          ;; This avoids the full invoke machinery: cache writes, deps tracking,
-          ;; enqueue-completion-event!, and trigger-drain! — none of which are needed
-          ;; when the value is consumed inline by the parent.
-          ;;
-          ;; CRITICAL: Bind *in-trampoline* to false so the child's CPS function
-          ;; creates its own trampoline and runs to completion.
-          ;;
-          ;; The resolve/reject callbacks handle BOTH sync and async completion:
-          ;; - Always cache the result
-          ;; - In async mode (after sync phase ends), also fire completion events
-          ;;   so the parent's continuation gets resumed via the event queue
-          (let [child-spin-fn (.-spin-fn ^Spin spin-ref)
-                child-value (volatile! nil)
-                child-error (volatile! nil)
-                child-completed? (volatile! false)
-                in-sync-phase (volatile! true)
-                child-resolve (fn [v]
-                                (vreset! child-value v)
-                                (vreset! child-completed? true)
-                                (ec/spin-cache-result! awaited-spin-id (spin-core/ok v))
-                                ;; Commit deps so child registers as signal observer
-                                (ec/graph-commit-deps! awaited-spin-id)
-                                (when-not @in-sync-phase
-                                  ;; Async completion: fire event so parent continuation resumes
-                                  (simple/enqueue-completion-event! ctx awaited-spin-id))
-                                v)
-                child-reject (fn [e]
-                               (vreset! child-error e)
-                               (vreset! child-completed? true)
-                               (ec/spin-cache-result! awaited-spin-id (spin-core/error e))
-                               (ec/graph-commit-deps! awaited-spin-id)
-                               (when-not @in-sync-phase
-                                 (simple/enqueue-completion-event! ctx awaited-spin-id))
-                               nil)
-                _raw-result (binding [ec/*spin-id* awaited-spin-id
-                                      pcps-async/*in-trampoline* false]
-                              (child-spin-fn child-resolve child-reject))]
-            ;; End sync phase — any future callback invocation is async
-            (vreset! in-sync-phase false)
-            (cond
-              ;; Synchronous completion — resume parent directly.
-              ;; Cache already written by child-resolve/child-reject above.
-              ;; Skip events/deps/drain (parent consumes value inline).
-              @child-completed?
-              (do
-                (simple/record-await-dependency! ctx spin-id awaited-spin-id)
-                (if @child-error
-                  (spin-core/resume reject @child-error)
-                  (spin-core/resume resolve @child-value)))
+        (let [child-spin-fn (.-spin-fn ^Spin spin-ref)
+              child-value (volatile! nil)
+              child-error (volatile! nil)
+              child-completed? (volatile! false)
+              in-sync-phase (volatile! true)
+              child-resolve (fn [v]
+                              (vreset! child-value v)
+                              (vreset! child-completed? true)
+                              (ec/spin-cache-result! awaited-spin-id (spin-core/ok v))
+                              ;; Commit deps so child registers as signal observer
+                              (ec/graph-commit-deps! awaited-spin-id)
+                              (when-not @in-sync-phase
+                                ;; Async completion: fire event so parent continuation resumes
+                                (simple/enqueue-completion-event! ctx awaited-spin-id))
+                              v)
+              child-reject (fn [e]
+                             (vreset! child-error e)
+                             (vreset! child-completed? true)
+                             (ec/spin-cache-result! awaited-spin-id (spin-core/error e))
+                             (ec/graph-commit-deps! awaited-spin-id)
+                             (when-not @in-sync-phase
+                               (simple/enqueue-completion-event! ctx awaited-spin-id))
+                             nil)
+              is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
+              cont-map {:event-key [:spin/complete awaited-spin-id]
+                        :resolve-fn resolve
+                        :reject-fn reject
+                        :source-loc source-loc
+                        :ephemeral-await? (not is-reactive-spin)
+                        :on-resume (fn [_rt]
+                                     (let [res (ec/spin-current-result awaited-spin-id)]
+                                       (spin-core/match res identity identity)))}
+              ;; Pre-register so any async completion has a subscriber.
+              _ (ec/continuation-add! spin-id cont-map)
+              _ (log/debug! {:event :await/registered-continuation
+                             :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+              _ (simple/record-await-dependency! ctx spin-id awaited-spin-id)
+              _raw-result (binding [ec/*spin-id* awaited-spin-id
+                                    pcps-async/*in-trampoline* false]
+                            (child-spin-fn child-resolve child-reject))]
+          ;; End sync phase — any future callback invocation is async.
+          (vreset! in-sync-phase false)
+          (cond
+            ;; Synchronous completion — resume parent directly.
+            ;; Cache already written by child-resolve/child-reject above.
+            ;; The pre-registered continuation is unused for this resume
+            ;; (in-sync-phase suppressed the enqueue), but stays in place to
+            ;; receive any future re-completions for reactive spins.
+            @child-completed?
+            (if @child-error
+              (spin-core/resume reject @child-error)
+              (spin-core/resume resolve @child-value))
 
-              ;; Async — child returned ::incomplete. Don't call invoke (would
-              ;; double-execute). child-resolve/child-reject will fire completion
-              ;; events when the child eventually completes.
-              :else
-              (do
-                (let [is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
-                      cont-map {:event-key [:spin/complete awaited-spin-id]
-                                :resolve-fn resolve
-                                :reject-fn reject
-                                :source-loc source-loc
-                                :ephemeral-await? (not is-reactive-spin)
-                                :on-resume (fn [_rt]
-                                             (let [res (ec/spin-current-result awaited-spin-id)]
-                                               (spin-core/match res identity identity)))}]
-                  (ec/continuation-add! spin-id cont-map)
-                  (log/debug! {:event :await/registered-continuation
-                               :data {:parent-id spin-id :awaited-id awaited-spin-id}})
-                  (simple/record-await-dependency! ctx spin-id awaited-spin-id))
-                spin-core/incomplete))))))))
+            ;; Async — child returned ::incomplete. The continuation is already
+            ;; registered above; drain will fire it once child-resolve/reject
+            ;; eventually enqueue the :spin-completion event.
+            :else
+            spin-core/incomplete))))))
 
 (defn- await-deferred
   "Direct await handler for Deferred.

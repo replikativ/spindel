@@ -429,6 +429,16 @@
             (is (= 100 @spin-1))
             (is (= 1 @count-1))
 
+            ;; Stop the original context's background drain thread BEFORE the
+            ;; manual enqueue. Otherwise the drain thread (which falls through
+            ;; its 1s poll regardless of any signal) can fire between the
+            ;; swap-state! below and snapshot-context, processing the event
+            ;; in the original ctx — and then the restored ctx's drain
+            ;; processes it AGAIN, double-incrementing count-1.
+            ;; stop-context! is non-destructive: the state atom remains
+            ;; readable for the snapshot.
+            (ctx/stop-context! ctx)
+
             ;; Change signal - manually enqueue event WITHOUT triggering drain
             ;; (bypass swap! to avoid auto-drain)
             (let [sig-id (:id sig)]
