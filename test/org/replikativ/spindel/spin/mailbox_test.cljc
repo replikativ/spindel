@@ -156,21 +156,26 @@
      (testing "External post! from future works correctly"
        (binding [ec/*execution-context* (ctx/create-execution-context)]
          (let [mbx (sync/mailbox)
-               result-promise (promise)]
+               started (promise)
+               result-promise (promise)
+               ctx (ec/current-execution-context)]
 
-           ;; Start consumer
+           ;; Start consumer; signal `started` once we've built the spin so
+           ;; the test thread can post *after* the future is poised to deref.
            (future
-             (binding [ec/*execution-context* (ec/current-execution-context)]
-               (let [msg @(spin (await mbx))]
-                 (deliver result-promise msg))))
+             (binding [ec/*execution-context* ctx]
+               (let [reader (spin (await mbx))]
+                 (deliver started :ready)
+                 (deliver result-promise @reader))))
 
-           ;; Give consumer time to block
-           (Thread/sleep 10)
+           (is (= :ready (deref started 1000 :timeout)))
 
-           ;; Post from external context
+           ;; post! enqueues a :mailbox-post event; if the consumer is still
+           ;; building/dereffing, the message lands on the queue and is
+           ;; delivered to the next take, so the order is irrelevant for
+           ;; correctness.
            (sync/post! mbx :external-msg)
 
-           ;; Consumer should wake up
            (is (= :external-msg (deref result-promise 1000 :timeout))
                "Consumer should receive externally posted message"))))))
 
@@ -232,9 +237,12 @@
                (let [msg @(spin (await mbx))]
                  (deliver message-received msg))))
 
-           ;; Wait for consumer to be waiting
+           ;; Wait for consumer to be waiting. There's a small window between
+           ;; (deliver consumer-ready ...) and the future actually invoking
+           ;; @reader, but mailbox semantics handle either ordering: if the
+           ;; producer posts first, the message queues and is delivered when
+           ;; the consumer takes.
            (is (= :ready (deref consumer-ready 1000 :timeout)))
-           (Thread/sleep 10)
 
            ;; Producer posts
            (mbx :rendezvous-msg)

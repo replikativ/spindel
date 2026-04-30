@@ -69,11 +69,10 @@
     (let [remote-fn (get @ds/remote-fn-registry
                          (symbol this-ns "spin-remote-simple-double-0"))
           ch (remote-fn {:x 21})
-          result-atom (atom nil)]
-      ;; Take result from channel
-      (a/take! ch (fn [v] (reset! result-atom v)))
-      (Thread/sleep 50)
-      (is (= 42 @result-atom)))))
+          ;; Take result from channel via promise — deterministic, no Thread/sleep guess
+          p (promise)]
+      (a/take! ch (fn [v] (deliver p v)))
+      (is (= 42 (deref p 1000 :timeout))))))
 
 ;; Test with multiple args
 (defn-spin-remote add-numbers [server-id a b c]
@@ -85,10 +84,9 @@
     (let [remote-fn (get @ds/remote-fn-registry
                          (symbol this-ns "spin-remote-add-numbers-0"))
           ch (remote-fn {:a 1 :b 2 :c 3})
-          result-atom (atom nil)]
-      (a/take! ch (fn [v] (reset! result-atom v)))
-      (Thread/sleep 50)
-      (is (= 6 @result-atom)))))
+          p (promise)]
+      (a/take! ch (fn [v] (deliver p v)))
+      (is (= 6 (deref p 1000 :timeout))))))
 
 ;; Test error handling in remote body
 (defn-spin-remote error-thrower [server-id msg]
@@ -100,11 +98,11 @@
     (let [remote-fn (get @ds/remote-fn-registry
                          (symbol this-ns "spin-remote-error-thrower-0"))
           ch (remote-fn {:msg "boom"})
-          result-atom (atom nil)]
-      (a/take! ch (fn [v] (reset! result-atom v)))
-      (Thread/sleep 50)
-      (is (instance? Throwable @result-atom))
-      (is (= "boom" (ex-message @result-atom))))))
+          p (promise)]
+      (a/take! ch (fn [v] (deliver p v)))
+      (let [v (deref p 1000 :timeout)]
+        (is (instance? Throwable v))
+        (is (= "boom" (ex-message v)))))))
 
 ;; =============================================================================
 ;; Free Variable Validation Tests

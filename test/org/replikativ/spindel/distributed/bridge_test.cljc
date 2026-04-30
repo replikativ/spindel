@@ -39,45 +39,53 @@
 ;; spin->chan Tests
 ;; =============================================================================
 
+;; Helper: take from a channel into a promise so the test can deterministically
+;; wait for the value to land instead of guessing at a Thread/sleep duration.
+;; Cross-platform: on JVM we use a Clojure promise; on JS we use cljs.test/async
+;; in the call sites that need it.
+(defn- chan->promise [ch]
+  #?(:clj  (let [p (promise)]
+             (take! ch (fn [v] (deliver p v)))
+             p)
+     :cljs (let [p (atom nil)]
+             (take! ch (fn [v] (reset! p v)))
+             p)))
+
 (deftest test-spin->chan-success
   (testing "spin->chan delivers success value to channel"
     (let [t (spin 42)
           ch (dist/spin->chan t)
-          result-atom (atom nil)]
-      ;; Take from channel
-      (take! ch (fn [v] (reset! result-atom v)))
-      ;; Give async a moment to complete
-      #?(:clj (Thread/sleep 50))
-      (is (= 42 @result-atom)))))
+          p (chan->promise ch)]
+      #?(:clj (is (= 42 (deref p 1000 :timeout)))
+         :cljs (is (= 42 @p))))))
 
 (deftest test-spin->chan-nil-value
   (testing "spin->chan handles nil values via sentinel"
     (let [t (spin nil)
           ch (dist/spin->chan t)
-          result-atom (atom ::not-set)]
-      (take! ch (fn [v] (reset! result-atom v)))
-      #?(:clj (Thread/sleep 50))
-      ;; Should be wrapped as sentinel
-      (is (= :org.replikativ.spindel.distributed.core/nil-value @result-atom)))))
+          p (chan->promise ch)]
+      #?(:clj (is (= :org.replikativ.spindel.distributed.core/nil-value
+                     (deref p 1000 :timeout)))
+         :cljs (is (= :org.replikativ.spindel.distributed.core/nil-value @p))))))
 
 (deftest test-spin->chan-error
   (testing "spin->chan delivers errors to channel"
     (let [t (spin (throw (ex-info "test error" {:code 123})))
           ch (dist/spin->chan t)
-          result-atom (atom nil)]
-      (take! ch (fn [v] (reset! result-atom v)))
-      #?(:clj (Thread/sleep 50))
-      (is (instance? #?(:clj Throwable :cljs js/Error) @result-atom))
-      (is (= "test error" (ex-message @result-atom))))))
+          p (chan->promise ch)]
+      #?(:clj (let [v (deref p 1000 :timeout)]
+                (is (instance? Throwable v))
+                (is (= "test error" (ex-message v))))
+         :cljs (do (is (instance? js/Error @p))
+                   (is (= "test error" (ex-message @p))))))))
 
 (deftest test-spin->chan-computed-value
   (testing "spin->chan works with computed values"
     (let [t (spin (+ 1 2 3 4 5))
           ch (dist/spin->chan t)
-          result-atom (atom nil)]
-      (take! ch (fn [v] (reset! result-atom v)))
-      #?(:clj (Thread/sleep 50))
-      (is (= 15 @result-atom)))))
+          p (chan->promise ch)]
+      #?(:clj (is (= 15 (deref p 1000 :timeout)))
+         :cljs (is (= 15 @p))))))
 
 ;; =============================================================================
 ;; chan->spin Tests (CLJ only - requires blocking deref)

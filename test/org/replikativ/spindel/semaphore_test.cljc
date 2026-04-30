@@ -96,15 +96,25 @@
          (is (= 0 @s) "No permits available")
 
          ;; Second spin should wait
-         (future
-           (binding [ec/*execution-context* ec/*execution-context*]
-             (deliver waiter-started :started)
-             (let [result @(spin (await (sem/acquire s)))]
-               (deliver waiter-completed result))))
+         (let [ctx ec/*execution-context*
+               sem-id (.-id s)]
+           (future
+             (binding [ec/*execution-context* ctx]
+               (deliver waiter-started :started)
+               (let [result @(spin (await (sem/acquire s)))]
+                 (deliver waiter-completed result))))
 
-         ;; Give waiter time to start and queue
-         (deref waiter-started 1000 :timeout)
-         (Thread/sleep 50)
+           ;; Wait for the waiter to actually enqueue itself in the
+           ;; semaphore's waiting-queue. Polling on the queue is
+           ;; deterministic — no wall-clock guesses.
+           (deref waiter-started 1000 :timeout)
+           (let [deadline (+ (System/currentTimeMillis) 1000)]
+             (loop []
+               (let [queued (count (ec/get-state [:semaphores sem-id :waiting-queue]))]
+                 (cond
+                   (pos? queued) :enqueued
+                   (>= (System/currentTimeMillis) deadline) :timeout
+                   :else (do (Thread/yield) (recur)))))))
 
          ;; Waiter should not complete yet
          (is (not (realized? waiter-completed)) "Waiter should be blocked")
@@ -135,17 +145,34 @@
                      (await (sem/acquire s))
                      (swap! results conj i)
                      (sem/release s)
-                     i)))]
+                     i)))
+               sem-id (.-id s)
+               ctx ec/*execution-context*
+               ;; Kick off each spin on its own thread so the body runs and
+               ;; registers an await on the semaphore. We deref these futures
+               ;; later, so each spin runs on exactly one thread.
+               waiter-futures
+               (doall
+                 (for [ws waiter-spins]
+                   (future (binding [ec/*execution-context* ctx] @ws))))]
 
-           ;; Give waiters time to queue
-           (Thread/sleep 100)
+           ;; Wait until all waiters have actually enqueued — polling the
+           ;; semaphore's waiting-queue is deterministic, no wall-clock guess.
+           (let [deadline (+ (System/currentTimeMillis) 2000)]
+             (loop []
+               (let [queued (count (ec/get-state [:semaphores sem-id :waiting-queue]))]
+                 (cond
+                   (= queued n-waiters) :all-queued
+                   (>= (System/currentTimeMillis) deadline)
+                   (throw (ex-info "Waiters never queued"
+                                   {:queued queued :expected n-waiters}))
+                   :else (do (Thread/yield) (recur))))))
 
            ;; Release initial permit - this should wake first waiter
            (sem/release s)
 
-           ;; Wait for all waiters to complete
-           (doseq [ws waiter-spins]
-             (deref ws 5000 :timeout))
+           ;; Wait for the futures we kicked off (one per waiter spin).
+           (doseq [f waiter-futures] (deref f 5000 :timeout))
 
            ;; Should see all three results (order may vary due to scheduling)
            (is (= n-waiters (count @results)) "All waiters should complete")

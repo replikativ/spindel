@@ -17,6 +17,7 @@
                [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.engine.core :as ec]
                [org.replikativ.spindel.engine.executor :as sched]
+               [org.replikativ.spindel.engine.impl.simple :as simple]
                [org.replikativ.spindel.signal :as sig]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.track :refer [track]]
@@ -365,7 +366,7 @@
 
            ;; Initial execution
            (scroll-spin (fn [_] nil) (fn [e] (throw e)))
-           (Thread/sleep 100)
+           (simple/await-drain-complete! ctx)
 
            (is (= 1 (count @results)))
            (is (= (vec (range 0 10)) (:slice (first @results))))
@@ -373,7 +374,7 @@
 
            ;; Simulate scroll - change window
            (reset! window-signal {:start 5 :end 15})
-           (Thread/sleep 100)
+           (simple/await-drain-complete! ctx)
 
            (is (= 2 (count @results)))
            (is (= (vec (range 5 15)) (:slice (second @results))))

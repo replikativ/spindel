@@ -106,8 +106,6 @@
              ;; Modify atom - watcher should fire
              (swap! my-atom inc)
 
-             ;; Give watcher a moment to fire
-             (Thread/sleep 10)
 
              (is (= 1 (count @watch-calls)))
              (is (= {:key :test-watcher :old 0 :new 1} (first @watch-calls)))
@@ -117,7 +115,6 @@
 
              ;; Modify again - watcher should not fire
              (swap! my-atom inc)
-             (Thread/sleep 10)
 
                (is (= 1 (count @watch-calls)))))
            (finally
@@ -188,13 +185,11 @@
                  (fn [k _ref old new]
                    (swap! watch-calls conj {:key k :old old :new new})))
 
-               ;; Modify atom
+               ;; Modify atom — atom watchers fire synchronously from the
+               ;; backing state-atom's add-watch, so by the time swap! returns
+               ;; the watcher has already been called.
                (swap! my-atom inc)
 
-               ;; Give watcher a moment
-               (Thread/sleep 10)
-
-               ;; Watcher should have fired
                (is (= 1 (count @watch-calls)))
                (is (= 42 (:old (first @watch-calls))))
                (is (= 43 (:new (first @watch-calls)))))))
@@ -229,8 +224,6 @@
                (swap! atom1 inc)
                (swap! atom2 inc)
                (swap! atom3 inc)
-
-               (Thread/sleep 10)
 
                (is (= 1 (count @watch-calls-1)))
                (is (= 1 (count @watch-calls-2)))

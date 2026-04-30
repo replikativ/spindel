@@ -7,6 +7,7 @@
                [org.replikativ.spindel.engine.protocols :as rtp]
                [org.replikativ.spindel.engine.executor :as sched]
                [org.replikativ.spindel.engine.context :as ctx]
+               [org.replikativ.spindel.engine.impl.simple :as simple]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.core :as spin-core]
                [org.replikativ.spindel.spin.combinators :refer [parallel]]
@@ -26,7 +27,12 @@
                [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
-;; CLJ-only fixture
+;; CLJ-only fixture. Uses close-context! (rather than stop-context!) so the
+;; thread-pool-executor created here is shut down after each test. With
+;; stop-context! the pool's 4 daemon threads would leak per test, which on
+;; this 20+ test namespace pushes JVM thread count past 200 and starts
+;; preventing newly-submitted executor tasks from running — causing the
+;; tail of the namespace to flake regardless of test logic.
 #?(:clj
    (use-fixtures :each
      (fn [f]
@@ -35,7 +41,7 @@
            (binding [ec/*execution-context* execution-ctx]
              (f))
            (finally
-             (ctx/stop-context! execution-ctx)))))))
+             (ctx/close-context! execution-ctx)))))))
 
 ;; =============================================================================
 ;; Cross-platform basic parallel tests (async pattern)
@@ -146,82 +152,101 @@
 ;; CLJ-only tests: require Thread/sleep, future, promise, thread-pool-executor
 ;; =============================================================================
 
+;; These tests use deterministic synchronization via a poll-until helper that
+;; blocks until either an expected condition is true or a hard timeout fires.
+;; The previous Thread/sleep approach assumed a fixed delay was always enough
+;; for the engine to settle; that turns flaky on cold JVMs and busy CI runners.
+;; await-drain-complete! alone is not enough here because parallel submits
+;; child invocations to the executor — those tasks aren't tracked in the
+;; engine's :pending queue or :nodes :running? flag, so the drain check can
+;; return while children are still queued on the pool.
+(defn- wait-until!
+  "Block (up to timeout-ms) until pred returns truthy."
+  ([pred] (wait-until! pred 5000))
+  ([pred timeout-ms]
+   (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+     (loop []
+       (cond
+         (pred) true
+         (>= (System/currentTimeMillis) deadline) false
+         :else (do (java.util.concurrent.locks.LockSupport/parkNanos (* 100 1000))
+                   (recur)))))))
+
 #?(:clj
    (deftest test-parallel-with-deferreds
      (testing "Parallel waits for all deferreds to complete"
-       (let [d1 (sync/deferred)
+       (let [ctx ec/*execution-context*
+             d1 (sync/deferred)
              d2 (sync/deferred)
              par-spin (parallel d1 d2)
-             result (promise)]
+             result (atom :pending)]
 
-         ;; Start awaiting result in background
-         (future
-           (deliver result @par-spin))
+         ;; Invoke parallel directly so its body runs and registers child awaits.
+         (par-spin
+           (fn [v] (reset! result [:ok v]))
+           (fn [e] (reset! result [:err e])))
 
-         ;; Let some time pass
-         (Thread/sleep 10)
+         ;; Wait briefly to give children a chance to start, then verify still pending.
+         (simple/await-drain-complete! ctx)
+         (is (= :pending @result) "Should not complete before any deferred")
 
-         ;; Result should not be ready yet
-         (is (not (realized? result)) "Should not complete before deferreds")
-
-         ;; Deliver first deferred
+         ;; Deliver first; still pending (waiting for d2).
          (d1 :first)
-         (Thread/sleep 10)
-         (is (not (realized? result)) "Should not complete with only one deferred")
+         (simple/await-drain-complete! ctx)
+         (is (= :pending @result) "Should not complete with only one deferred")
 
-         ;; Deliver second deferred
+         ;; Deliver second; wait until result is delivered.
          (d2 :second)
-         (Thread/sleep 50)
-
-         ;; Now result should be ready
-         (is (realized? result) "Should complete after both deferreds")
-         (is (= [:first :second] @result) "Should combine results")))))
+         (is (wait-until! #(not= :pending @result)) "parallel should complete")
+         (is (= [:ok [:first :second]] @result) "Should combine results")))))
 
 #?(:clj
    (deftest test-parallel-with-deferreds-three
      (testing "Parallel waits for all deferreds"
-       (let [d1 (sync/deferred)
+       (let [ctx ec/*execution-context*
+             d1 (sync/deferred)
              d2 (sync/deferred)
              d3 (sync/deferred)
              parallel-spin (parallel d1 d2 d3)
-             result (promise)]
+             result (atom :pending)]
 
-         ;; Start awaiting
-         (future
-           (deliver result @parallel-spin))
+         (parallel-spin
+           (fn [v] (reset! result [:ok v]))
+           (fn [e] (reset! result [:err e])))
 
-         ;; Deliver in reverse order
          (d3 :third)
-         (Thread/sleep 10)
-         (d2 :second)
-         (Thread/sleep 10)
-         (d1 :first)
-         (Thread/sleep 50)
+         (simple/await-drain-complete! ctx)
+         (is (= :pending @result))
 
-         ;; Should complete with results in original order
-         (is (realized? result) "Should complete after all deferreds")
-         (is (= [:first :second :third] @result) "Should maintain order")))))
+         (d2 :second)
+         (simple/await-drain-complete! ctx)
+         (is (= :pending @result))
+
+         (d1 :first)
+         (is (wait-until! #(not= :pending @result)) "parallel should complete")
+         (is (= [:ok [:first :second :third]] @result) "Should maintain order")))))
 
 #?(:clj
    (deftest test-parallel-mixed-immediate-deferred
      (testing "Parallel with mix of immediate spins and deferreds"
-       (let [immediate (spin :immediate)
+       (let [ctx ec/*execution-context*
+             immediate (spin :immediate)
              d (sync/deferred)
              par-spin (parallel immediate d)
-             result (promise)]
+             result (atom :pending)]
 
-         (future
-           (deliver result @par-spin))
+         (par-spin
+           (fn [v] (reset! result [:ok v]))
+           (fn [e] (reset! result [:err e])))
 
-         (Thread/sleep 10)
-         ;; Should not complete yet (waiting for deferred)
-         (is (not (realized? result)) "Should wait for deferred")
+         ;; After drain, the immediate child is done but parallel still waits
+         ;; on the deferred.
+         (simple/await-drain-complete! ctx)
+         (is (= :pending @result) "Should wait for deferred")
 
          (d :deferred)
-         (Thread/sleep 50)
-
-         (is (realized? result) "Should complete after deferred")
-         (is (= [:immediate :deferred] @result) "Should combine results")))))
+         (is (wait-until! #(not= :pending @result)) "parallel should complete")
+         (is (= [:ok [:immediate :deferred]] @result) "Should combine results")))))
 
 #?(:clj
    (deftest test-parallel-first-error-fails

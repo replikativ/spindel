@@ -775,22 +775,45 @@
 
   Returns: Number of events processed"
   [context executor]
-  ;; Try to claim draining lock (CAS operation)
-  (let [cas-result (rtp/cas-state! context [:engine/draining?] false true)]
-    (if-not cas-result
-      ;; Another thread is already draining
-      (do
-        (log/trace! {:event :engine/drain-skipped :data {:reason :already-draining}})
-        0)
+  (let [running (:running context)]
+    (cond
+      ;; Context has been stopped — drop this drain. The executor isn't
+      ;; shut down by stop-context!, so trigger-drain! callbacks scheduled
+      ;; before stop can otherwise fire after, draining events the user
+      ;; injected for snapshot/replay purposes (see test-pending-events-
+      ;; after-restore). Snapshot/restored contexts have :running=nil and
+      ;; are explicitly drained from restore-snapshot, so they fall
+      ;; through.
+      (and running (not @running))
+      (do (log/trace! {:event :engine/drain-skipped :data {:reason :context-stopped}})
+          0)
 
-      ;; We claimed the lock - drain to completion
-      (try
+      :else
+      ;; Try to claim draining lock (CAS operation)
+      (let [cas-result (rtp/cas-state! context [:engine/draining?] false true)]
+        (if-not cas-result
+          ;; Another thread is already draining
+          (do
+            (log/trace! {:event :engine/drain-skipped :data {:reason :already-draining}})
+            0)
+
+          ;; We claimed the lock - drain to completion
+          (try
         (log/trace! {:event :engine/drain-start})
         (binding [*in-drain?* true]
         (let [event-count (atom 0)]
-          ;; Drain loop
+          ;; Drain loop. The (and running (not @running)) check inside the
+          ;; loop is critical: stop-context! sets running=false but does not
+          ;; abort an in-flight drain. Without this check the drain would
+          ;; keep pulling events that the user appended *after* stop-context!
+          ;; (e.g. for snapshot/replay scenarios), processing them on a
+          ;; supposedly-dormant context. Snapshot/restored contexts have
+          ;; :running=nil; they fall through and drain normally.
           (loop []
-            (if-let [event (dequeue-event! context)]
+            (if (and running (not @running))
+              (do (log/trace! {:event :engine/drain-aborted-stopped})
+                  @event-count)
+              (if-let [event (dequeue-event! context)]
               (do
                 ;; Process event (may enqueue more events)
                 ;; CRITICAL: Catch exceptions per-event so one bad event doesn't abort the
@@ -833,7 +856,7 @@
               (do
                 (log/trace! {:event :engine/drain-complete
                              :data {:events-processed @event-count}})
-                @event-count)))))
+                @event-count))))))
         (finally
           ;; Always release draining lock
           (rtp/swap-state! context [:engine/draining?] (constantly false))
@@ -842,9 +865,18 @@
           ;; If events were enqueued during the gap between our last dequeue and
           ;; releasing the lock, we need to trigger another drain cycle.
           ;; Without this, events can get stuck waiting forever.
-          (let [pending (rtp/get-state context [:engine/pending])]
-            (when (seq pending)
-              (trigger-drain! context executor))))))))
+          ;;
+          ;; BUT: skip the re-trigger if the context has been stopped. Otherwise
+          ;; we revive a stopped context — the subsequent executor-scheduled
+          ;; drain runs on a context the caller believes is dormant, processes
+          ;; events the caller injected for snapshot/replay purposes, and
+          ;; double-counts work in tests like test-pending-events-after-restore.
+          ;; A live context that needs a re-trigger will have :running=true.
+          (let [running-atom (:running context)
+                still-alive? (or (nil? running-atom) @running-atom)
+                pending (rtp/get-state context [:engine/pending])]
+            (when (and still-alive? (seq pending))
+              (trigger-drain! context executor))))))))))
 
 (defn await-drain-complete!
   "Wait for event queue to drain AND all spins to complete execution.

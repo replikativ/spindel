@@ -12,6 +12,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.protocols :as rtp]))
@@ -21,9 +22,12 @@
 ;; =============================================================================
 
 (defn wait-for-completion
-  "Wait for events to complete processing."
+  "Wait for events to complete processing.
+
+  Deterministic: blocks until the engine's pending queue is empty, no drain
+  is in progress, and no spin has :running? true."
   [ctx]
-  (Thread/sleep 50))
+  (simple/await-drain-complete! ctx))
 
 ;; =============================================================================
 ;; Execution Mode Tests
