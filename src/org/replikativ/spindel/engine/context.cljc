@@ -24,7 +24,7 @@
             [org.replikativ.spindel.engine.addressing :as addressing]
             [incognito.edn :refer [read-string-safe]])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]
-                    [java.lang.ref Cleaner])))
+                    [java.lang.ref Cleaner WeakReference])))
 
 ;; =============================================================================
 ;; Incognito Handlers for Serialization
@@ -276,7 +276,16 @@
         ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
         ;; Wakes instantly when trigger-drain! calls .offer(:drain)
         ;; Uses daemon thread so leaked contexts don't prevent JVM exit
-        ;; or accumulate thread overhead in tests
+        ;; or accumulate thread overhead in tests.
+        ;;
+        ;; IMPORTANT: hold ctx via WeakReference, not as a strong capture. A
+        ;; daemon thread is a GC root, so a strong reference would keep ctx
+        ;; reachable forever, defeating the Cleaner registered below and
+        ;; leaking the context. With a WeakReference, when the user drops
+        ;; their last strong ref, the Cleaner fires, which flips :running
+        ;; and signals the queue — the drain thread observes the weak ref
+        ;; cleared and exits.
+        ctx-ref #?(:clj (WeakReference. ctx) :cljs nil)
         drain-thread #?(:clj
                         (doto (Thread.
                                 (fn []
@@ -284,7 +293,8 @@
                                     (try
                                       ;; Block until signaled or 1s timeout (zero CPU while waiting)
                                       (.poll drain-signal 1 TimeUnit/SECONDS)
-                                      (simple/drain-events! ctx executor)
+                                      (when-let [c (.get ^WeakReference ctx-ref)]
+                                        (simple/drain-events! c executor))
                                       (catch Throwable e
                                         ;; Log but don't crash drain thread on Error (e.g. StackOverflowError)
                                         (println "ERROR in background drain thread:" e))))))
