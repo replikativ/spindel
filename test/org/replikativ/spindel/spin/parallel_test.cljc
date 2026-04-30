@@ -160,17 +160,19 @@
 ;; child invocations to the executor — those tasks aren't tracked in the
 ;; engine's :pending queue or :nodes :running? flag, so the drain check can
 ;; return while children are still queued on the pool.
-(defn- wait-until!
-  "Block (up to timeout-ms) until pred returns truthy."
-  ([pred] (wait-until! pred 5000))
-  ([pred timeout-ms]
-   (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
-     (loop []
-       (cond
-         (pred) true
-         (>= (System/currentTimeMillis) deadline) false
-         :else (do (java.util.concurrent.locks.LockSupport/parkNanos (* 100 1000))
-                   (recur)))))))
+#?(:clj
+   (defn- wait-until!
+     "Block (up to timeout-ms) until pred returns truthy. CLJ-only — these
+     tests sit inside #?(:clj …) blocks; CLJS uses cljs.test/async + done."
+     ([pred] (wait-until! pred 5000))
+     ([pred timeout-ms]
+      (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+        (loop []
+          (cond
+            (pred) true
+            (>= (System/currentTimeMillis) deadline) false
+            :else (do (java.util.concurrent.locks.LockSupport/parkNanos (* 100 1000))
+                      (recur))))))))
 
 #?(:clj
    (deftest test-parallel-with-deferreds
