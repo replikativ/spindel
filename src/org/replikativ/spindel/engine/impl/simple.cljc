@@ -1292,8 +1292,12 @@
           ;; Create new SpinNode with creator tracking
           (nodes/->spin-node nil :clean false false #{} {} creator-id #{}))))
 
-    ;; If there's a creator, add this spin to its created-spins set
-    (when creator-id
+    ;; If there's a creator (other than ourselves), add this spin to its
+    ;; created-spins set. Self-add would happen on re-registration where
+    ;; ec/*spin-id* still points at the just-registered spin; that's a
+    ;; no-op semantically and would cause invalidate-created-spins! to
+    ;; recurse infinitely.
+    (when (and creator-id (not= creator-id spin-id))
       (rtp/swap-state! context [:nodes creator-id]
         (fn [creator-node]
           (when creator-node
@@ -1505,8 +1509,11 @@
                    :data {:spin-id spin-id :created-spins created-spins}})
       ;; Mark each created spin as dirty and fully clean up dependencies
       ;; clear-deps! removes track continuations, subscriptions, and signal observer
-      ;; registrations so old children can't fire on future signal changes
-      (doseq [child-id created-spins]
+      ;; registrations so old children can't fire on future signal changes.
+      ;; Skip self-references defensively — register-spin! also prevents
+      ;; them, but a stale state map could still contain one.
+      (doseq [child-id created-spins
+              :when (not= child-id spin-id)]
         (mark-dirty! context child-id)
         (clear-deps! context child-id)
         ;; Recursively invalidate grandchildren

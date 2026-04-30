@@ -14,6 +14,32 @@
                             [org.replikativ.spindel.test-helpers :refer [async with-ctx]])))
 
 ;; =============================================================================
+;; Async wait helper
+;; =============================================================================
+
+(defn- wait-until
+  "Poll `pred` (a 0-arg fn) until it returns truthy or `timeout-ms` elapses,
+  then call `on-ready`. Cross-platform: blocks via Thread/sleep on JVM,
+  uses setTimeout on CLJS so the JS event loop is free to run scheduler
+  callbacks (executor setTimeout 0, etc.)."
+  [pred timeout-ms on-ready]
+  #?(:clj
+     (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+       (loop []
+         (cond
+           (pred) (on-ready)
+           (>= (System/currentTimeMillis) deadline) (on-ready)
+           :else (do (Thread/sleep 20) (recur)))))
+     :cljs
+     (let [deadline (+ (.now js/Date) timeout-ms)
+           tick (fn tick []
+                  (cond
+                    (pred) (on-ready)
+                    (>= (.now js/Date) deadline) (on-ready)
+                    :else (js/setTimeout tick 20)))]
+       (tick))))
+
+;; =============================================================================
 ;; Tests
 ;; =============================================================================
 
@@ -37,12 +63,11 @@
                          {:strategy :one-for-one
                           :max-restarts 3})]
           (spawn! sup-spin)
-          ;; Wait for children to complete
-          (simple/await-drain-complete! (ec/current-execution-context) :timeout-ms 5000)
-          #?(:clj (Thread/sleep 100))  ;; Small delay for async completion
-          (is (contains? @started :child-1))
-          (is (contains? @started :child-2))
-          (done))))))
+          (wait-until #(= 2 @children-done) 5000
+            (fn []
+              (is (contains? @started :child-1))
+              (is (contains? @started :child-2))
+              (done))))))))
 
 (deftest test-supervisor-one-for-one-restart
   (testing "Supervisor restarts failed child with :one-for-one strategy"
@@ -62,11 +87,10 @@
                           :max-restarts 5
                           :window-ms 60000})]
           (spawn! sup-spin)
-          ;; Wait for restarts to complete
-          (simple/await-drain-complete! (ec/current-execution-context) :timeout-ms 5000)
-          #?(:clj (Thread/sleep 500))  ;; Allow restart cycles
-          (is (>= @attempt-count 3) "Should have attempted at least 3 times")
-          (done))))))
+          (wait-until #(>= @attempt-count 3) 5000
+            (fn []
+              (is (>= @attempt-count 3) "Should have attempted at least 3 times")
+              (done))))))))
 
 (deftest test-supervisor-max-restarts-exceeded
   (testing "Supervisor calls on-fatal when max restarts exceeded"
@@ -83,8 +107,7 @@
                           :on-fatal (fn [_e]
                                       (reset! fatal-called true))})]
           (spawn! sup-spin)
-          ;; Wait for all restarts to exhaust
-          (simple/await-drain-complete! (ec/current-execution-context) :timeout-ms 5000)
-          #?(:clj (Thread/sleep 1000))  ;; Allow restart cycles + fatal
-          (is @fatal-called "on-fatal should have been called")
-          (done))))))
+          (wait-until #(deref fatal-called) 5000
+            (fn []
+              (is @fatal-called "on-fatal should have been called")
+              (done))))))))

@@ -6,6 +6,7 @@
             [org.replikativ.spindel.effects.await]   ;; Load await effect handler
             [org.replikativ.spindel.effects.track]   ;; Load track effect handler
             [is.simm.partial-cps.async :as async]
+            [is.simm.partial-cps.runtime]            ;; Loads Thunk into the runtime ns
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             [org.replikativ.spindel.spin.core :as spin-core])
   ;; Make the spin macro available to CLJS via require-macros
@@ -107,7 +108,22 @@
            params {:r r :e e :env env :breakpoints breakpoints}
            ;; ioc/invert handles macro expansion internally via expand-macro
            ;; Don't use macroexpand-all as it introduces CLJ-specific code for CLJS targets
-           expanded (cons 'do body)]
+           expanded (cons 'do body)
+           ;; Detect target platform at macroexpansion time. A reader
+           ;; conditional in the syntax-quoted body wouldn't help: the
+           ;; macro's source is read once (in CLJ), so #?(:clj … :cljs …)
+           ;; resolves to the :clj branch even when expanding for CLJS.
+           is-cljs?  (some? (:js-globals env))
+           ;; Thunk class reference per platform:
+           ;; - CLJ: Java FQCN (dots). No Var named Thunk exists.
+           ;; - CLJS: namespaced symbol (slash). The dotted form would be
+           ;;   parsed as nested property access on a symbol called `is`,
+           ;;   which CLJS resolves as a local — and thus shadows when the
+           ;;   user namespace :refers `cljs.test/is`, producing the bogus
+           ;;   `cljs.test.is.simm.partial_cps.runtime.Thunk`.
+           thunk-sym (if is-cljs?
+                       'is.simm.partial-cps.runtime/Thunk
+                       'is.simm.partial_cps.runtime.Thunk)]
        `(fn [~r ~e]
           (try
             ;; Execute CPS body with trampoline support
@@ -117,10 +133,10 @@
               ~(ioc/invert params expanded)
               (binding [async/*in-trampoline* true]
                 (loop [result# ~(ioc/invert params expanded)]
-                  (if (instance? is.simm.partial_cps.runtime.Thunk result#)
-                    (recur ((.-f ^is.simm.partial_cps.runtime.Thunk result#)))
+                  (if (instance? ~thunk-sym result#)
+                    (recur ((.-f result#)))
                     result#))))
-            (catch ~(if (:js-globals env) :default `Throwable) t# (~e t#)))))))
+            (catch ~(if is-cljs? :default `Throwable) t# (~e t#)))))))
 
 #?(:clj
    (defmacro spin

@@ -20,8 +20,11 @@
      :cljs (js/encodeURIComponent (str s))))
 
 (defn- url-decode [s]
+  ;; application/x-www-form-urlencoded: '+' decodes to space.
+  ;; JVM's URLDecoder handles this; JS decodeURIComponent does not, so we
+  ;; preprocess for parity.
   #?(:clj  (java.net.URLDecoder/decode (str s) "UTF-8")
-     :cljs (js/decodeURIComponent (str s))))
+     :cljs (js/decodeURIComponent (str/replace (str s) "+" " "))))
 
 (defn parse-query-string
   "Parse query string into a map of keyword keys to string values.

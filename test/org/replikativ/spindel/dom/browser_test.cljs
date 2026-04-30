@@ -1,11 +1,29 @@
 (ns org.replikativ.spindel.dom.browser-test
   "Tests for browser DOM discharge using jsdom."
-  (:require [cljs.test :refer-macros [deftest is testing]]
+  (:require [cljs.test :refer-macros [deftest is testing use-fixtures]]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.dom.core :as dom]
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.browser :as browser]
             ["jsdom" :refer [JSDOM]]))
+
+;; Element macros (el/div, el/span, ...) write into the bound execution
+;; context's :bindings to compute DOM addresses and slot caches. Without
+;; a context they assoc-in into nil, producing a plain map that subsequent
+;; protocol calls reject. Each test gets a fresh context so addresses and
+;; caches don't bleed across tests.
+(def ^:private current-test-ctx (atom nil))
+
+(use-fixtures :each
+  {:before (fn [] (let [c (ctx/create-execution-context)]
+                    (reset! current-test-ctx c)
+                    (set! ec/*execution-context* c)))
+   :after  (fn [] (when-let [c @current-test-ctx]
+                    (ctx/stop-context! c)
+                    (set! ec/*execution-context* nil)
+                    (reset! current-test-ctx nil)))})
 
 ;; =============================================================================
 ;; Test Helpers
