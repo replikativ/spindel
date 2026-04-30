@@ -130,7 +130,7 @@
              (keep (fn [v]
                      ;; v might be nil if registration failed
                      ;; Check if var exists and has a val thunk
-                     (when (and v (.-val v))
+                     (when (and v (.-val ^js v))
                        (try
                          [v @v]
                          (catch :default _
@@ -172,17 +172,19 @@
      [bindings f]
      (if (empty? bindings)
        (f)
-       ;; Save current thunks (the .-val functions themselves)
+       ;; Save current thunks (the .-val functions themselves).
+       ;; ^js hint suppresses :infer-warning on the field access; CLJS
+       ;; vars are JS objects with a mutable .-val property.
        (let [saved-thunks (into {}
                                (map (fn [[v _]]
-                                      [v (.-val v)])
+                                      [v (.-val ^js v)])
                                     bindings))]
          ;; Set new thunks that return captured values
          (doseq [[v val] bindings]
-           (set! (.-val v) (fn [] val)))
+           (set! (.-val ^js v) (fn [] val)))
          (try
            (f)
            (finally
              ;; Restore old thunks
              (doseq [[v old-thunk] saved-thunks]
-               (set! (.-val v) old-thunk))))))))
+               (set! (.-val ^js v) old-thunk))))))))

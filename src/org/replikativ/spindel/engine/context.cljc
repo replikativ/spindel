@@ -54,7 +54,14 @@
          nodes/map->SignalNode
 
          'org.replikativ.spindel.spin.core.Result
-         (fn [m] ((requiring-resolve 'org.replikativ.spindel.spin.core/map->Result) m))}))
+         ;; requiring-resolve is JVM-only. Serialization round-trip is
+         ;; only exercised on JVM in practice (drain threads / executor
+         ;; references don't survive an EDN trip), so the CLJS branch
+         ;; intentionally returns the input map unchanged. We avoid
+         ;; statically referencing spin.core here because spin.core
+         ;; requires engine.context (cycle).
+         (fn [m] #?(:clj  ((requiring-resolve 'org.replikativ.spindel.spin.core/map->Result) m)
+                    :cljs m))}))
 
 ;; =============================================================================
 ;; ExecutionContext Record

@@ -674,7 +674,12 @@
     :deferred-delivery
     (let [deferred (:deferred event)
           value (:value event)
-          state-atom (.-state-atom deferred)]  ; Access deftype field
+          ;; Direct deftype field access. ^js (CLJS-only) suppresses the
+          ;; :infer-warning. JVM doesn't need a hint here — the access
+          ;; goes through reflection, which is acceptable on a path
+          ;; that's already heading into atom mutation.
+          state-atom #?(:clj  (.-state-atom deferred)
+                        :cljs (.-state-atom ^js deferred))]
       (log/trace! {:event :engine/deferred-delivery
                    :data {:deferred deferred :value value}})
       ;; Deliver inline - we're already on executor thread, queue broke the call stack
@@ -689,7 +694,9 @@
     :mailbox-post
     (let [mailbox (:mailbox event)
           msg (:msg event)
-          state-atom (.-state-atom mailbox)]  ; Access deftype field
+          ;; Same per-platform hint pattern as :deferred-delivery.
+          state-atom #?(:clj  (.-state-atom mailbox)
+                        :cljs (.-state-atom ^js mailbox))]
       (log/trace! {:event :engine/mailbox-post
                    :data {:mailbox mailbox :msg msg}})
       ;; Post inline - we're already on executor thread, queue broke the call stack

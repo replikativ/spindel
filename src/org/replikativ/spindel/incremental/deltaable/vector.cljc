@@ -263,7 +263,8 @@
    Example:
      (remove-at dv 2)  ; Remove element at index 2"
   [dv idx]
-  (let [v (.-v dv)
+  (let [^DeltaableVector dv dv
+        v (.-v dv)
         deltas (.-deltas dv)
         meta-val (.-_meta dv)]
     (if (and (>= idx 0) (< idx (count v)))
@@ -296,7 +297,8 @@
       :path [idx]
       :value element}"
   [dv idx value]
-  (let [v (.-v dv)
+  (let [^DeltaableVector dv dv
+        v (.-v dv)
         deltas (.-deltas dv)
         meta-val (.-_meta dv)
         n (count v)]
@@ -334,7 +336,8 @@
       :to-path [to-idx]
       :value element}"
   [dv from-idx to-idx]
-  (let [v (.-v dv)
+  (let [^DeltaableVector dv dv
+        v (.-v dv)
         deltas (.-deltas dv)
         meta-val (.-_meta dv)
         n (count v)]
@@ -363,7 +366,8 @@
    Example:
      (filter-vec #(not (:done %)) todos)  ; Remove completed todos"
   [pred dv]
-  (let [v (.-v dv)
+  (let [^DeltaableVector dv dv
+        v (.-v dv)
         deltas (.-deltas dv)
         meta-val (.-_meta dv)
         ;; Collect indices to remove (in reverse order to maintain correct indices)

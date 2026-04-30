@@ -106,12 +106,15 @@
        (js/FinalizationRegistry.
         (fn [held-value]
           (try
-            (if-let [cleanup-fn (.-cleanup_fn held-value)]
+            ;; ^js suppresses :infer-warning on direct property access;
+            ;; held-value is the JS object passed to .register at the
+            ;; registration site below.
+            (if-let [cleanup-fn (.-cleanup_fn ^js held-value)]
               ;; Generic cleanup callback (from register-cleanup!)
               (cleanup-fn)
               ;; Spin-specific cleanup via WeakRef to context
-              (let [spin-id (.-spin_id held-value)
-                    weak-ctx (.-weak_ctx held-value)]
+              (let [spin-id (.-spin_id ^js held-value)
+                    weak-ctx (.-weak_ctx ^js held-value)]
                 (when-let [ctx (and weak-ctx (.deref weak-ctx))]
                   (simple/try-gc-cleanup-spin! ctx spin-id))))
             (catch :default _
