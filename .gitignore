@@ -27,8 +27,9 @@ pom.xml.asc
 .clj-kondo/.cache/
 .clj-kondo/
 
-# REPL logs
+# REPL logs (and rotated/compressed variants like foo.log.1, foo.log-2025-…gz)
 *.log
+*.log.*
 
 # Claude Code
 .claude/
