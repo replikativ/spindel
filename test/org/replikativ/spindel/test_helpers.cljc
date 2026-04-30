@@ -33,6 +33,15 @@
                :cljs [cljs.test :as ct]))
   #?(:cljs (:require-macros [org.replikativ.spindel.test-helpers])))
 
+;; Cleanup queue used by the `async` macro to defer `stop-context!` for any
+;; `with-ctx` nested inside it. Without this, with-ctx's finally fires the
+;; moment the synchronous body returns — *before* the async work has
+;; completed — and `executor/alive-fn` (CLJS) or any future stop-aware path
+;; would then drop the very callbacks the test is waiting on. When this var
+;; holds an atom-of-vec, with-ctx pushes its cleanup onto it instead of
+;; running it inline, and `async` runs everything after `done` resolves.
+(def ^:dynamic *async-cleanups* nil)
+
 ;; =============================================================================
 ;; Cross-Platform Async Macro
 ;; =============================================================================
@@ -57,22 +66,36 @@
                (done)))))"
      [done-sym & body]
      (if (:js-globals &env)
-       ;; CLJS - use cljs.test/async (must be fully qualified for macro expansion)
-       `(cljs.test/async ~done-sym ~@body)
-       ;; CLJ - use promise-based blocking
+       ;; CLJS - use cljs.test/async, with cleanup atom so nested with-ctx
+       ;; can defer stop-context! until after `done` fires.
+       `(let [cleanups# (atom [])]
+          (cljs.test/async raw-done#
+            (binding [*async-cleanups* cleanups#]
+              (let [~done-sym (fn []
+                                (doseq [c# @cleanups#]
+                                  (try (c#) (catch :default _#)))
+                                (raw-done#))]
+                ~@body))))
+       ;; CLJ - use promise-based blocking, with cleanups deferred until
+       ;; after the deref so any with-ctx inside body keeps its context
+       ;; alive while async work completes.
        `(let [p# (promise)
+              cleanups# (atom [])
               ~done-sym (fn []
                           (when-not (realized? p#)
                             (deliver p# :done)))]
-          (try
-            ~@body
-            (let [result# (deref p# 15000 :timeout)]
-              (when (= result# :timeout)
-                (throw (ex-info "Async test timed out after 15 seconds" {}))))
-            (catch Throwable t#
-              ;; Ensure promise is delivered on error to prevent deadlock
-              (deliver p# :error)
-              (throw t#)))))))
+          (binding [*async-cleanups* cleanups#]
+            (try
+              ~@body
+              (let [result# (deref p# 15000 :timeout)]
+                (when (= result# :timeout)
+                  (throw (ex-info "Async test timed out after 15 seconds" {}))))
+              (catch Throwable t#
+                (deliver p# :error)
+                (throw t#))
+              (finally
+                (doseq [c# @cleanups#]
+                  (try (c#) (catch Throwable _#))))))))))
 
 ;; =============================================================================
 ;; Context Helpers
@@ -98,12 +121,21 @@
          (let [t (spin (+ 1 2))]
            ...))"
      [[ctx-sym] & body]
-     `(let [~ctx-sym (create-test-context)]
-        (try
-          (binding [ec/*execution-context* ~ctx-sym]
-            ~@body)
-          (finally
-            (ctx/stop-context! ~ctx-sym))))))
+     `(let [~ctx-sym (create-test-context)
+            cleanups# *async-cleanups*]
+        (if cleanups#
+          ;; Inside async: defer stop-context! to run after `done` fires,
+          ;; so async work isn't truncated by an early teardown.
+          (do
+            (swap! cleanups# conj #(ctx/stop-context! ~ctx-sym))
+            (binding [ec/*execution-context* ~ctx-sym]
+              ~@body))
+          ;; Standalone (sync test): stop on body return, as before.
+          (try
+            (binding [ec/*execution-context* ~ctx-sym]
+              ~@body)
+            (finally
+              (ctx/stop-context! ~ctx-sym)))))))
 
 ;; =============================================================================
 ;; Spin Execution Helpers

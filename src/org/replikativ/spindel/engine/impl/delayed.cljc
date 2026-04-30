@@ -62,7 +62,8 @@
         executor  (:executor context)]
     (when (and (= time-mode :real) executor)
       (executor/execute-after! executor delay-ms
-                               #(process-delayed-spins! context executor)))
+                               (executor/alive-fn context
+                                 #(process-delayed-spins! context executor))))
     spin-id))
 
 (defn process-delayed-spins!
@@ -101,8 +102,9 @@
                    :data {:spin-id id :fire-time fire-time :now now}})
       (when executor
         (executor/execute! executor
-          #(binding [ec/*execution-context* context]
-             (spin-fn)))))
+          (executor/alive-fn context
+            #(binding [ec/*execution-context* context]
+               (spin-fn))))))
 
     (count @ready-spins)))
 

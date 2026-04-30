@@ -17,7 +17,7 @@
   "
   (:refer-clojure :exclude [node])
   (:require [org.replikativ.spindel.log :as log]
-            [org.replikativ.spindel.engine.executor :as scheduler]
+            [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
@@ -538,12 +538,13 @@
              (let [executor (:executor context)
                    latch (CountDownLatch. (count direct-observers))]
                (doseq [obs direct-observers]
-                 (scheduler/execute! executor
-                   (fn []
-                     (try
-                       (do-resume! obs)
-                       (finally
-                         (.countDown latch))))))
+                 (executor/execute! executor
+                   (executor/alive-fn context
+                     (fn []
+                       (try
+                         (do-resume! obs)
+                         (finally
+                           (.countDown latch)))))))
                ;; Wait for all observers via managedBlock (creates compensating threads)
                (ForkJoinPool/managedBlock
                  (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
@@ -939,8 +940,9 @@
        (.offer ^java.util.concurrent.LinkedBlockingQueue ds :drain)))
   (if executor
     (do
-      (scheduler/execute! executor
-        #(drain-events! context executor))
+      (executor/execute! executor
+        (executor/alive-fn context
+          #(drain-events! context executor)))
       (log/trace! {:event :engine/trigger-drain})
       true)
     (do
@@ -1300,10 +1302,13 @@
           (nodes/->spin-node nil :clean false false #{} {} creator-id #{}))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
-    ;; created-spins set. Self-add would happen on re-registration where
-    ;; ec/*spin-id* still points at the just-registered spin; that's a
-    ;; no-op semantically and would cause invalidate-created-spins! to
-    ;; recurse infinitely.
+    ;; created-spins set. Self-add could occur on CLJS if a stale async
+    ;; callback from a stopped context restores *spin-id* to a value
+    ;; that deterministic addressing then re-issues to a different
+    ;; spin in a fresh context. The primary defense is executor/alive-fn,
+    ;; which drops scheduled callbacks whose context has been stopped,
+    ;; so the binding-leak path can't fire. This guard remains as a
+    ;; final invariant: a spin literally cannot be its own creator.
     (when (and creator-id (not= creator-id spin-id))
       (rtp/swap-state! context [:nodes creator-id]
         (fn [creator-node]

@@ -14,6 +14,32 @@
                                          ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
                                          TimeUnit LinkedBlockingQueue Callable ForkJoinPool])))
 
+(defn alive-fn
+  "Wrap `spin-fn` so it no-ops if `ctx` has been stopped (its :running
+  atom is false) by the time the wrapped fn fires.
+
+  Use at every async-schedule site that takes a context — the wrapper
+  drops stale callbacks queued before stop-context! ran, which matters
+  on JS where setTimeout callbacks can't be cancelled by reference and
+  would otherwise restore stale dynamic bindings (especially *spin-id*)
+  into the next reactive tick or the next test.
+
+  Forks share the parent's :running atom, so stopping a root drops
+  every fork's pending work for free. Contexts without a :running atom
+  (e.g. an immutable snapshot mid-restore) are treated as alive.
+
+  On the JVM this is a passthrough: PoolExecutor / ForkJoinPoolExecutor
+  capture and restore the dynamic bindings explicitly via with-bindings,
+  so stale callbacks cannot pollute *spin-id* in a fresh test. The leak
+  is JS-specific (setTimeout callbacks resume against whatever the
+  global binding box happens to hold at fire time)."
+  [ctx spin-fn]
+  #?(:clj spin-fn
+     :cljs (let [running (:running ctx)]
+             (if running
+               (fn [] (when @running (spin-fn)))
+               spin-fn))))
+
 (defprotocol PExecutor
   "Protocol for executing spin functions in different contexts.
 

@@ -164,9 +164,14 @@
                 new-state (update old-state :waiting-queue pop)]
             (if (ec/cas-state! path old-state new-state)
               (do
-                ;; Successfully dequeued - schedule waiter to run on executor
-                (executor/execute! (:executor ec/*execution-context*)
-                                   #(spin/resume (:resolve waiter) :acquired))
+                ;; Successfully dequeued - schedule waiter to run on executor.
+                ;; alive-fn drops the callback if the context is stopped before
+                ;; setTimeout fires (CLJS) — prevents stale resumes from
+                ;; bleeding into a freshly-created context.
+                (let [ctx ec/*execution-context*]
+                  (executor/execute! (:executor ctx)
+                                     (executor/alive-fn ctx
+                                       #(spin/resume (:resolve waiter) :acquired))))
                 :released)
               ;; CAS failed - retry
               (recur)))
