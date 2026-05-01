@@ -339,7 +339,15 @@
     #?(:clj
        (when-let [ds (:drain-signal context)]
          (.offer ^LinkedBlockingQueue ds :stop)))
-    ;; Wait briefly for drain thread to exit
+    ;; Wait for the drain thread to fully exit before returning. If a
+    ;; drain were still active when we return, its in-flight loop would
+    ;; keep dequeuing events the caller appends after stop-context!
+    ;; (e.g. for snapshot/replay) and process them on a context the
+    ;; caller believes is dormant. The 200ms timeout is a safety valve:
+    ;; a deadlocked spin body can prevent the drain from exiting, and we
+    ;; don't want stop-context! to inherit that deadlock. Drain-events!
+    ;; observes :running=false at its function-entry guard, so a
+    ;; legitimately-running drain typically exits in <1ms.
     #?(:clj
        (when-let [^Thread drain-thread (:drain-thread context)]
          (try

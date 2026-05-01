@@ -802,18 +802,15 @@
         (log/trace! {:event :engine/drain-start})
         (binding [*in-drain?* true]
         (let [event-count (atom 0)]
-          ;; Drain loop. The (and running (not @running)) check inside the
-          ;; loop is critical: stop-context! sets running=false but does not
-          ;; abort an in-flight drain. Without this check the drain would
-          ;; keep pulling events that the user appended *after* stop-context!
-          ;; (e.g. for snapshot/replay scenarios), processing them on a
-          ;; supposedly-dormant context. Snapshot/restored contexts have
-          ;; :running=nil; they fall through and drain normally.
+          ;; Drain loop. We don't check :running mid-loop here — aborting
+          ;; an in-flight drain would leave events stuck in :pending that
+          ;; nothing else will ever pull, breaking tests that rely on the
+          ;; drain processing everything it claimed. The function-entry
+          ;; check above (drops new drain calls when :running=false) is
+          ;; sufficient to keep stopped contexts from being woken by stale
+          ;; trigger-drain! callbacks.
           (loop []
-            (if (and running (not @running))
-              (do (log/trace! {:event :engine/drain-aborted-stopped})
-                  @event-count)
-              (if-let [event (dequeue-event! context)]
+            (if-let [event (dequeue-event! context)]
               (do
                 ;; Process event (may enqueue more events)
                 ;; CRITICAL: Catch exceptions per-event so one bad event doesn't abort the
@@ -856,7 +853,7 @@
               (do
                 (log/trace! {:event :engine/drain-complete
                              :data {:events-processed @event-count}})
-                @event-count))))))
+                @event-count)))))
         (finally
           ;; Always release draining lock
           (rtp/swap-state! context [:engine/draining?] (constantly false))
