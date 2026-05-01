@@ -22,6 +22,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.nodes :as nodes]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
@@ -775,105 +776,116 @@
 
   Returns: Number of events processed"
   [context executor]
-  (let [running (:running context)]
+  (let [running       (:running context)
+        drain-active  (:drain-active context)]
     (cond
-      ;; Context has been stopped — drop this drain. The executor isn't
-      ;; shut down by stop-context!, so trigger-drain! callbacks scheduled
-      ;; before stop can otherwise fire after, draining events the user
-      ;; injected for snapshot/replay purposes (see test-pending-events-
-      ;; after-restore). Snapshot/restored contexts have :running=nil and
-      ;; are explicitly drained from restore-snapshot, so they fall
-      ;; through.
+      ;; Function-entry guard: drop drains on a stopped context. New drain
+      ;; calls scheduled before stop-context! ran (e.g. lingering executor
+      ;; tasks from trigger-drain!) observe :running=false here and bail
+      ;; before incrementing the active counter — they're invisible to
+      ;; stop-context!. Snapshot/restored contexts have :running=nil and
+      ;; fall through (restore-snapshot drives drain-events! directly).
       (and running (not @running))
       (do (log/trace! {:event :engine/drain-skipped :data {:reason :context-stopped}})
           0)
 
       :else
-      ;; Try to claim draining lock (CAS operation)
-      (let [cas-result (rtp/cas-state! context [:engine/draining?] false true)]
-        (if-not cas-result
-          ;; Another thread is already draining
-          (do
-            (log/trace! {:event :engine/drain-skipped :data {:reason :already-draining}})
-            0)
+      (do
+        ;; Mark this drain active. stop-context! polls drain-active down
+        ;; to 0 before returning, which gives it a deterministic "no drain
+        ;; will run on this context after I return" guarantee — bounded by
+        ;; the longest single-event processing time, not by a wall-clock
+        ;; .join timeout. Snapshot/restored contexts have no drain-active
+        ;; atom; we just skip the bookkeeping for them.
+        (when drain-active (swap! drain-active inc))
+        (try
+          (let [cas-result (rtp/cas-state! context [:engine/draining?] false true)]
+            (if-not cas-result
+              ;; Another drain holds the lock. We bumped the counter, so
+              ;; the finally below decrements it. No work to do here.
+              (do (log/trace! {:event :engine/drain-skipped :data {:reason :already-draining}})
+                  0)
 
-          ;; We claimed the lock - drain to completion
-          (try
-        (log/trace! {:event :engine/drain-start})
-        (binding [*in-drain?* true]
-        (let [event-count (atom 0)]
-          ;; Drain loop. We don't check :running mid-loop here — aborting
-          ;; an in-flight drain would leave events stuck in :pending that
-          ;; nothing else will ever pull, breaking tests that rely on the
-          ;; drain processing everything it claimed. The function-entry
-          ;; check above (drops new drain calls when :running=false) is
-          ;; sufficient to keep stopped contexts from being woken by stale
-          ;; trigger-drain! callbacks.
-          (loop []
-            (if-let [event (dequeue-event! context)]
-              (do
-                ;; Process event (may enqueue more events)
-                ;; CRITICAL: Catch exceptions per-event so one bad event doesn't abort the
-                ;; entire drain session (which would silently lose all remaining queued events).
-                ;; For :spin-execution events, call reject-fn to unblock any waiting deref.
-                (try
-                  (process-event! context event)
-                  (catch #?(:clj Throwable :cljs js/Error) e
-                    (log/error! {:event :engine/event-processing-error
-                                 :data {:event-type (:type event)
-                                        :event-id (:id event)
-                                        :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))}})
-                    (case (:type event)
-                      ;; For spin-execution events, deliver the error to the deref promise
-                      ;; so the calling thread unblocks with an exception instead of hanging
-                      :spin-execution
-                      (when-let [reject-fn (:reject-fn event)]
-                        (try (reject-fn e)
-                             (catch #?(:clj Throwable :cljs :default) _)))
+              ;; We claimed the lock — drain to completion.
+              (try
+                (log/trace! {:event :engine/drain-start})
+                (binding [*in-drain?* true]
+                  (let [event-count (atom 0)]
+                    ;; Drain loop with intra-loop running check. If
+                    ;; stop-context! flips :running=false while we're
+                    ;; mid-drain, exit at the next iteration boundary
+                    ;; instead of continuing to dequeue. Without this,
+                    ;; stop-context! cannot bound how many of the user's
+                    ;; subsequently-appended events the drain processes
+                    ;; (the function-entry guard only catches drains that
+                    ;; haven't started yet). We exit cleanly between
+                    ;; events; whatever's still in :pending stays there
+                    ;; for the next legitimate drain (e.g. restore-snapshot)
+                    ;; to pick up.
+                    (loop []
+                      (cond
+                        (and running (not @running))
+                        (do (log/trace! {:event :engine/drain-aborted-stopped
+                                         :data {:events-processed @event-count}})
+                            @event-count)
 
-                      ;; For spin-completion events, the parent spin's continuation threw.
-                      ;; Cache the error in the parent so its awaiters also see the failure.
-                      :spin-completion
-                      (let [parent-ids (keys (rtp/get-state context
-                                               [:subscriptions [:spin/complete (:id event)]]))]
-                        (doseq [pid parent-ids]
-                          (try
-                            (rtp/swap-state! context [:nodes pid]
-                              (fn [node]
-                                (when node
-                                  (assoc node :result {:variant :error :payload e}))))
-                            (catch #?(:clj Throwable :cljs :default) _))))
+                        :else
+                        (if-let [event (dequeue-event! context)]
+                          (do
+                            ;; Process event (may enqueue more events).
+                            ;; CRITICAL: per-event try/catch so one bad event doesn't
+                            ;; abort the entire drain session.
+                            (try
+                              (process-event! context event)
+                              (catch #?(:clj Throwable :cljs js/Error) e
+                                (log/error! {:event :engine/event-processing-error
+                                             :data {:event-type (:type event)
+                                                    :event-id (:id event)
+                                                    :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))}})
+                                (case (:type event)
+                                  :spin-execution
+                                  (when-let [reject-fn (:reject-fn event)]
+                                    (try (reject-fn e)
+                                         (catch #?(:clj Throwable :cljs :default) _)))
 
-                      ;; Other event types: already logged, no additional action
-                      nil)))
-                (swap! event-count inc)
-                ;; Continue draining
-                (recur))
-              ;; Queue empty - done
-              (do
-                (log/trace! {:event :engine/drain-complete
-                             :data {:events-processed @event-count}})
-                @event-count)))))
-        (finally
-          ;; Always release draining lock
-          (rtp/swap-state! context [:engine/draining?] (constantly false))
+                                  :spin-completion
+                                  (let [parent-ids (keys (rtp/get-state context
+                                                           [:subscriptions [:spin/complete (:id event)]]))]
+                                    (doseq [pid parent-ids]
+                                      (try
+                                        (rtp/swap-state! context [:nodes pid]
+                                          (fn [node]
+                                            (when node
+                                              (assoc node :result {:variant :error :payload e}))))
+                                        (catch #?(:clj Throwable :cljs :default) _))))
 
-          ;; CRITICAL: Check queue after releasing lock to handle race condition
-          ;; If events were enqueued during the gap between our last dequeue and
-          ;; releasing the lock, we need to trigger another drain cycle.
-          ;; Without this, events can get stuck waiting forever.
-          ;;
-          ;; BUT: skip the re-trigger if the context has been stopped. Otherwise
-          ;; we revive a stopped context — the subsequent executor-scheduled
-          ;; drain runs on a context the caller believes is dormant, processes
-          ;; events the caller injected for snapshot/replay purposes, and
-          ;; double-counts work in tests like test-pending-events-after-restore.
-          ;; A live context that needs a re-trigger will have :running=true.
-          (let [running-atom (:running context)
-                still-alive? (or (nil? running-atom) @running-atom)
-                pending (rtp/get-state context [:engine/pending])]
-            (when (and still-alive? (seq pending))
-              (trigger-drain! context executor))))))))))
+                                  nil)))
+                            (swap! event-count inc)
+                            (recur))
+                          ;; Queue empty — drain complete.
+                          (do
+                            (log/trace! {:event :engine/drain-complete
+                                         :data {:events-processed @event-count}})
+                            @event-count))))))
+                (finally
+                  ;; Always release draining lock.
+                  (rtp/swap-state! context [:engine/draining?] (constantly false))
+
+                  ;; Re-trigger handling: if events landed in :pending during
+                  ;; the gap between our last dequeue and the lock release,
+                  ;; schedule another drain so they don't get stranded. But
+                  ;; skip the re-trigger if the context has been stopped —
+                  ;; otherwise we'd hand work to a context the caller
+                  ;; believes is dormant. Snapshot contexts (:running=nil)
+                  ;; fall through and re-trigger normally.
+                  (let [running-atom (:running context)
+                        still-alive? (or (nil? running-atom) @running-atom)
+                        pending      (rtp/get-state context [:engine/pending])]
+                    (when (and still-alive? (seq pending))
+                      (trigger-drain! context executor)))))))
+          (finally
+            ;; Decrement the active counter so stop-context! can complete.
+            (when drain-active (swap! drain-active dec))))))))
 
 (defn await-drain-complete!
   "Wait for event queue to drain AND all spins to complete execution.
@@ -899,47 +911,61 @@
   Returns: true if drain completed, false if timeout (or false on CLJS
            when not yet complete)"
   [context & {:keys [timeout-ms] :or {timeout-ms 5000}}]
-  #?(:clj
-     (let [start (System/currentTimeMillis)
-           deadline (+ start timeout-ms)
-           done? (fn []
-                   (let [draining? (rtp/get-state context [:engine/draining?])
-                         pending (rtp/get-state context [:engine/pending])
-                         nodes (rtp/get-state context [:nodes])
-                         running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
-                     (and (not draining?) (empty? pending) (empty? running-spins))))]
-       (if (done?)
-         true
-         ;; Use managedBlock so ForkJoinPool creates compensating threads
-         (let [result (volatile! false)]
-           (ForkJoinPool/managedBlock
-             (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
-               (block [_]
-                 (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
-                 (let [d (done?)]
-                   (when d (vreset! result true))
-                   (or d (>= (System/currentTimeMillis) deadline))))
-               (isReleasable [_]
-                 (cond
-                   (done?)
-                   (do (vreset! result true) true)
-                   (>= (System/currentTimeMillis) deadline)
-                   true ; timeout - result stays false
-                   :else false))))
-           @result)))
-     :cljs
-     ;; CLJS cannot truly await: a synchronous loop on the JS thread cannot
-     ;; observe setTimeout-driven workers complete, so a busy-wait would burn
-     ;; CPU until the deadline and never see progress. Instead we report the
-     ;; current drain status and let the caller use async/await patterns
-     ;; (run-spin! callbacks, async done) to observe completion. timeout-ms
-     ;; is accepted for cross-platform call-site compatibility but unused.
-     (let [_ timeout-ms
-           draining? (rtp/get-state context [:engine/draining?])
-           pending (rtp/get-state context [:engine/pending])
-           nodes (rtp/get-state context [:nodes])
-           running-spins (filter (fn [[_id node]] (:running? node)) nodes)]
-       (and (not draining?) (empty? pending) (empty? running-spins)))))
+  ;; The three "is the engine idle?" predicates must be evaluated against a
+  ;; single consistent snapshot of the state. Reading them with three
+  ;; separate (rtp/get-state) calls is racy: a drain can start between the
+  ;; :engine/draining? read and the :engine/pending read, leaving us to
+  ;; conclude "idle" while a drain is genuinely in flight. Read the whole
+  ;; backend once and inspect the resulting map.
+  ;;
+  ;; Also include drain-active in the predicate. drain-events! increments
+  ;; that counter the moment it passes the function-entry guard — which is
+  ;; before it CAS's :engine/draining?. There's a small window where a
+  ;; drain has been entered but not yet acquired the lock, and it would be
+  ;; invisible to a check that only looked at :engine/draining?. Counting
+  ;; the entry catches it.
+  (let [drain-active (:drain-active context)
+        idle? (fn []
+                (let [state    (backend/backend-deref (:backend context))
+                      draining (get state :engine/draining?)
+                      pending  (get state :engine/pending)
+                      nodes    (get state :nodes)
+                      running? (some (fn [[_id n]] (:running? n)) nodes)
+                      active   (when drain-active @drain-active)]
+                  (and (not draining)
+                       (empty? pending)
+                       (not running?)
+                       (or (nil? active) (zero? active)))))]
+    #?(:clj
+       (let [start (System/currentTimeMillis)
+             deadline (+ start timeout-ms)]
+         (if (idle?)
+           true
+           (let [result (volatile! false)]
+             (ForkJoinPool/managedBlock
+               (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
+                 (block [_]
+                   (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
+                   (let [d (idle?)]
+                     (when d (vreset! result true))
+                     (or d (>= (System/currentTimeMillis) deadline))))
+                 (isReleasable [_]
+                   (cond
+                     (idle?)
+                     (do (vreset! result true) true)
+                     (>= (System/currentTimeMillis) deadline)
+                     true ; timeout - result stays false
+                     :else false))))
+             @result)))
+       :cljs
+       ;; CLJS cannot truly await: a synchronous loop on the JS thread cannot
+       ;; observe setTimeout-driven workers complete, so a busy-wait would burn
+       ;; CPU until the deadline and never see progress. Instead we report the
+       ;; current drain status and let the caller use async/await patterns
+       ;; (run-spin! callbacks, async done) to observe completion. timeout-ms
+       ;; is accepted for cross-platform call-site compatibility but unused.
+       (let [_ timeout-ms]
+         (idle?)))))
 
 (defn ^:no-doc trigger-drain!
   "Trigger async draining of the event queue.

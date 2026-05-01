@@ -68,15 +68,18 @@
 ;; =============================================================================
 
 (defrecord ExecutionContext
-  [fork-id       ; Unique ID for this fork (keyword)
-   backend       ; PStateBackend implementation (AtomBackend, OverlayBackend, etc.)
-   parent-ctx    ; Parent ExecutionContext (nil for root)
-   executor      ; Executor for scheduling (shared across forks for now)
-   bindings      ; Fork-local configuration (map for spin access via *execution-context*)
-   metadata      ; User-defined fork metadata (e.g., {:particle-id 123})
-   running       ; Atom controlling background drain thread lifecycle
-   drain-thread  ; Background thread that continuously drains event queue
-   drain-signal] ; LinkedBlockingQueue for waking drain thread (nil for forks)
+  [fork-id        ; Unique ID for this fork (keyword)
+   backend        ; PStateBackend implementation (AtomBackend, OverlayBackend, etc.)
+   parent-ctx     ; Parent ExecutionContext (nil for root)
+   executor       ; Executor for scheduling (shared across forks for now)
+   bindings       ; Fork-local configuration (map for spin access via *execution-context*)
+   metadata       ; User-defined fork metadata (e.g., {:particle-id 123})
+   running        ; Atom controlling background drain thread lifecycle
+   drain-thread   ; Background thread that continuously drains event queue
+   drain-signal   ; LinkedBlockingQueue for waking drain thread (nil for forks)
+   drain-active]  ; Atom counting drain-events! calls past the running guard.
+                  ; stop-context! waits for this to reach 0 before returning,
+                  ; so no further drain on this context can mutate state.
 
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
@@ -261,6 +264,9 @@
         running (atom true)
         ;; Notification queue for waking drain thread (zero-polling)
         drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
+        ;; Counter of drains currently past the function-entry guard.
+        ;; stop-context! polls this down to 0 before returning.
+        drain-active (atom 0)
         ;; Create the execution context first (needed for drain thread)
         ctx (->ExecutionContext
               fork-id
@@ -271,7 +277,8 @@
               metadata
               running
               nil    ; drain-thread - will be set below
-              drain-signal)
+              drain-signal
+              drain-active)
         ;; Start background drain thread (zero-polling via LinkedBlockingQueue)
         ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
         ;; Wakes instantly when trigger-drain! calls .offer(:drain)
@@ -339,15 +346,40 @@
     #?(:clj
        (when-let [ds (:drain-signal context)]
          (.offer ^LinkedBlockingQueue ds :stop)))
-    ;; Wait for the drain thread to fully exit before returning. If a
-    ;; drain were still active when we return, its in-flight loop would
-    ;; keep dequeuing events the caller appends after stop-context!
-    ;; (e.g. for snapshot/replay) and process them on a context the
-    ;; caller believes is dormant. The 200ms timeout is a safety valve:
-    ;; a deadlocked spin body can prevent the drain from exiting, and we
-    ;; don't want stop-context! to inherit that deadlock. Drain-events!
-    ;; observes :running=false at its function-entry guard, so a
-    ;; legitimately-running drain typically exits in <1ms.
+
+    ;; Deterministic shutdown contract: wait until no drain-events!
+    ;; call is past the function-entry guard for this context. Once
+    ;; this returns, the function-entry guard will reject any new
+    ;; drain (drain-events! sees :running=false and exits before
+    ;; touching state), so no further mutation can happen on this
+    ;; context.
+    ;;
+    ;; In-flight drains observe :running=false at the top of each
+    ;; loop iteration and exit with whatever's still in :pending
+    ;; left for the next legitimate drain (e.g. restore-snapshot)
+    ;; to pick up. This bounds our wait to a single event's
+    ;; processing time per active drain, not the whole queue.
+    ;;
+    ;; The 5s outer timeout is a safety valve for a deadlocked spin
+    ;; body. Reaching it indicates a real bug worth investigating;
+    ;; we'd rather return and let the caller see weirdness than
+    ;; hang forever.
+    #?(:clj
+       (when-let [drain-active (:drain-active context)]
+         (let [deadline (+ (System/currentTimeMillis) 5000)]
+           (loop []
+             (when (and (pos? @drain-active)
+                        (< (System/currentTimeMillis) deadline))
+               (java.util.concurrent.locks.LockSupport/parkNanos 100000) ; 100us
+               (recur))))))
+
+    ;; Now also join the drain thread itself so its `while @running`
+    ;; loop has actually exited. drain-active=0 only proves no drain
+    ;; is past the guard *right now*; the drain thread might still be
+    ;; in its outer .poll waiting for the next signal. The signal we
+    ;; sent above wakes it, it observes :running=false, and exits.
+    ;; 200ms is fine here — the thread isn't holding any drain work
+    ;; once drain-active hit 0.
     #?(:clj
        (when-let [^Thread drain-thread (:drain-thread context)]
          (try
@@ -507,6 +539,7 @@
       (:running parent-ctx)       ; Share parent's drain thread control
       (:drain-thread parent-ctx)  ; Share parent's drain thread
       (:drain-signal parent-ctx)  ; Share parent's drain signal
+      (:drain-active parent-ctx)  ; Share parent's drain-active counter
       )))
 
 ;; =============================================================================
@@ -719,9 +752,10 @@
       (:executor ctx)  ; Share executor
       (:bindings ctx)  ; Copy bindings
       (assoc (:metadata ctx) :snapshot? true)
+      nil   ; No :running atom — drain-events! treats this as always-allowed
       nil   ; No drain thread - snapshot is immutable
-      nil   ; No drain thread - snapshot is immutable
-      nil)  ; No drain signal - snapshot is immutable
+      nil   ; No drain signal - snapshot is immutable
+      nil)  ; No drain-active counter — no stop-context! to wait on
     ))
 
 (defn restore-snapshot
@@ -795,7 +829,8 @@
       ;; Mutable backend - create drain thread with notification-based wakeup
       (let [running (atom true)
             drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
-            ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil drain-signal)
+            drain-active (atom 0)
+            ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil drain-signal drain-active)
             drain-thread #?(:clj
                             (doto (Thread.
                                     (fn []
@@ -810,7 +845,7 @@
                             :cljs nil)]
         (assoc ctx-temp :drain-thread drain-thread))
       ;; Immutable backend - no drain thread
-      (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil nil))))
+      (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil nil nil))))
 
 ;; =============================================================================
 ;; Rebuild Execution State
