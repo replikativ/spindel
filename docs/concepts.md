@@ -220,3 +220,4 @@ This avoids unnecessary work when intermediate computations are dirty but never 
 - [Getting Started](getting-started.md) — Hands-on tutorial
 - [Effects](effects.md) — How `await`, `track`, and `yield` work in detail
 - [Forking](forking.md) — Copy-on-write execution contexts
+- [Scheduling](scheduling.md) — Event queue, drain loop, glitch-free propagation, and executors
