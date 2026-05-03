@@ -267,7 +267,44 @@
         ;; Counter of drains currently past the function-entry guard.
         ;; stop-context! polls this down to 0 before returning.
         drain-active (atom 0)
-        ;; Create the execution context first (needed for drain thread)
+        ;; Hold a weak ref slot the drain thread reads each tick. We populate
+        ;; it with the FINAL ctx record (the one returned to the caller) so
+        ;; the Cleaner observes the same object the user holds. Holding the
+        ;; pre-assoc record A would let A become GC-eligible immediately
+        ;; (since assoc returns a new record B), causing the Cleaner to fire
+        ;; mid-execution and kill the drain thread.
+        ctx-holder #?(:clj (java.util.concurrent.atomic.AtomicReference.) :cljs nil)
+        ;; Start background drain thread (zero-polling via LinkedBlockingQueue)
+        ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
+        ;; Wakes instantly when trigger-drain! calls .offer(:drain)
+        ;; Uses daemon thread so leaked contexts don't prevent JVM exit
+        ;; or accumulate thread overhead in tests.
+        ;;
+        ;; IMPORTANT: hold ctx via WeakReference (set after construction
+        ;; below), not as a strong capture. A daemon thread is a GC root, so
+        ;; a strong reference would keep ctx reachable forever, defeating the
+        ;; Cleaner registered below and leaking the context.
+        drain-thread #?(:clj
+                        (doto (Thread.
+                                (fn []
+                                  (while @running
+                                    (try
+                                      ;; Block until signaled or 1s timeout (zero CPU while waiting)
+                                      (.poll drain-signal 1 TimeUnit/SECONDS)
+                                      (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
+                                        (when-let [c (.get wref)]
+                                          (simple/drain-events! c executor)))
+                                      (catch Throwable e
+                                        ;; Log but don't crash drain thread on Error (e.g. StackOverflowError)
+                                        (println "ERROR in background drain thread:" e))))))
+                          (.setDaemon true)
+                          (.start))
+                        :cljs nil)
+        ;; Build the FINAL context record (the one we return to the caller).
+        ;; Both the WeakReference and the Cleaner registration MUST target
+        ;; this object — otherwise the pre-assoc record becomes GC-eligible
+        ;; the moment we return, the Cleaner fires, and the drain thread
+        ;; dies mid-test (even though the user still holds the returned ctx).
         ctx (->ExecutionContext
               fork-id
               atom-backend
@@ -276,49 +313,21 @@
               bindings
               metadata
               running
-              nil    ; drain-thread - will be set below
+              drain-thread
               drain-signal
-              drain-active)
-        ;; Start background drain thread (zero-polling via LinkedBlockingQueue)
-        ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
-        ;; Wakes instantly when trigger-drain! calls .offer(:drain)
-        ;; Uses daemon thread so leaked contexts don't prevent JVM exit
-        ;; or accumulate thread overhead in tests.
-        ;;
-        ;; IMPORTANT: hold ctx via WeakReference, not as a strong capture. A
-        ;; daemon thread is a GC root, so a strong reference would keep ctx
-        ;; reachable forever, defeating the Cleaner registered below and
-        ;; leaking the context. With a WeakReference, when the user drops
-        ;; their last strong ref, the Cleaner fires, which flips :running
-        ;; and signals the queue — the drain thread observes the weak ref
-        ;; cleared and exits.
-        ctx-ref #?(:clj (WeakReference. ctx) :cljs nil)
-        drain-thread #?(:clj
-                        (doto (Thread.
-                                (fn []
-                                  (while @running
-                                    (try
-                                      ;; Block until signaled or 1s timeout (zero CPU while waiting)
-                                      (.poll drain-signal 1 TimeUnit/SECONDS)
-                                      (when-let [c (.get ^WeakReference ctx-ref)]
-                                        (simple/drain-events! c executor))
-                                      (catch Throwable e
-                                        ;; Log but don't crash drain thread on Error (e.g. StackOverflowError)
-                                        (println "ERROR in background drain thread:" e))))))
-                          (.setDaemon true)
-                          (.start))
-                        :cljs nil)]
-    ;; Register GC cleaner to stop drain thread if context is abandoned.
-    ;; IMPORTANT: The Runnable must NOT capture `ctx` — only the primitives
-    ;; needed to stop the drain thread, otherwise the Cleaner prevents GC.
+              drain-active)]
     #?(:clj
-       (.register context-cleaner ctx
-                  (reify Runnable
-                    (run [_]
-                      (reset! running false)
-                      (.offer ^LinkedBlockingQueue drain-signal :stop)))))
-    ;; Update context with drain-thread reference
-    (assoc ctx :drain-thread drain-thread)))
+       (do
+         (.set ^java.util.concurrent.atomic.AtomicReference ctx-holder (WeakReference. ctx))
+         ;; Register GC cleaner on the SAME object the user holds. The
+         ;; Runnable must NOT capture `ctx` — only the primitives needed to
+         ;; stop the drain thread, otherwise the Cleaner prevents GC.
+         (.register context-cleaner ctx
+                    (reify Runnable
+                      (run [_]
+                        (reset! running false)
+                        (.offer ^LinkedBlockingQueue drain-signal :stop))))))
+    ctx))
 
 (defn stop-context!
   "Stop an execution context's background drain thread.
@@ -826,24 +835,32 @@
         backend-type (backend/backend-type backend-obj)
         mutable? (or (= backend-type :atom) (= backend-type :overlay))]
     (if mutable?
-      ;; Mutable backend - create drain thread with notification-based wakeup
+      ;; Mutable backend - create drain thread with notification-based wakeup.
+      ;; Same pattern as create-execution-context: build the drain thread
+      ;; with a holder slot, populate it with the FINAL ctx record, so the
+      ;; drain thread observes the same object the user holds (avoids the
+      ;; pre-assoc record going GC-eligible and orphaning pending events).
       (let [running (atom true)
             drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
             drain-active (atom 0)
-            ctx-temp (->ExecutionContext fork-id backend-obj nil executor bindings metadata running nil drain-signal drain-active)
+            ctx-holder #?(:clj (java.util.concurrent.atomic.AtomicReference.) :cljs nil)
             drain-thread #?(:clj
                             (doto (Thread.
                                     (fn []
                                       (while @running
                                         (try
                                           (.poll drain-signal 1 TimeUnit/SECONDS)
-                                          (simple/drain-events! ctx-temp executor)
+                                          (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
+                                            (when-let [c (.get wref)]
+                                              (simple/drain-events! c executor)))
                                           (catch Exception e
                                             (println "ERROR in background drain thread:" e))))))
                               (.setDaemon true)
                               (.start))
-                            :cljs nil)]
-        (assoc ctx-temp :drain-thread drain-thread))
+                            :cljs nil)
+            ctx (->ExecutionContext fork-id backend-obj nil executor bindings metadata running drain-thread drain-signal drain-active)]
+        #?(:clj (.set ^java.util.concurrent.atomic.AtomicReference ctx-holder (WeakReference. ctx)))
+        ctx)
       ;; Immutable backend - no drain thread
       (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil nil nil))))
 
