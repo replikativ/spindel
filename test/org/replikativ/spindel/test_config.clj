@@ -7,7 +7,8 @@
   - Set env var SPINDEL_TEST_LOG=true for all logging
   - Set env var SPINDEL_TEST_LOG=ns1,ns2 for specific namespaces
   - Call (enable-test-logging!) from REPL"
-  (:require [org.replikativ.spindel.log :as log]))
+  (:require [taoensso.trove :as trove]
+            [taoensso.trove.console :as trove.console]))
 
 (def ^:private test-log-config
   "Parse SPINDEL_TEST_LOG environment variable.
@@ -17,17 +18,20 @@
       :all
       (set (map symbol (clojure.string/split v #","))))))
 
+(defn- set-log-level! [min-level]
+  (trove/set-log-fn! (trove.console/get-log-fn {:min-level min-level})))
+
 (defn enable-test-logging!
   "Enable logging during tests.
   Optional min-level defaults to :debug."
   ([] (enable-test-logging! :debug))
   ([min-level]
-   (log/configure! {:min-level min-level})))
+   (set-log-level! min-level)))
 
 (defn disable-test-logging!
   "Disable logging during tests (set to :fatal level)."
   []
-  (log/configure! {:min-level :fatal}))
+  (set-log-level! :fatal))
 
 ;; Initialize logging based on environment
 (if test-log-config

@@ -6,7 +6,7 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.log :as log]
+            [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
   #?(:clj (:import [java.lang.ref WeakReference])))
@@ -165,7 +165,7 @@
          ;; Rebuild mode with cache hit - execute body but return cached value
          (and cached (ec/spin-result-clean? spin-id) rebuild-mode?)
          (do
-           (log/debug! {:event :deref/rebuild-mode :data {:spin-id spin-id}})
+           (log/debug :deref/rebuild-mode {:spin-id spin-id})
            (binding [ec/*execution-context* runtime
                      ec/*spin-id* spin-id]
              (spin-fn (fn [_] nil) (fn [_] nil)))
@@ -180,7 +180,7 @@
          (if (simple/running? runtime spin-id)
            ;; Spin is executing or suspended - wait for completion via promise callback
            (do
-             (log/trace! {:event :spin/deref-wait-running :data {:spin-id spin-id}})
+             (log/trace :spin/deref-wait-running {:spin-id spin-id})
              (let [result-promise (promise)]
                (simple/add-pending-callback! runtime spin-id
                  {:resolve (fn [v] (deliver result-promise (ok v)))
@@ -190,11 +190,11 @@
                  (if (and cached-now (ec/spin-result-clean? spin-id))
                    (unwrap cached-now)
                    (do
-                     (log/trace! {:event :spin/deref-done-wait :data {:spin-id spin-id}})
+                     (log/trace :spin/deref-done-wait {:spin-id spin-id})
                      (wait-on-promise result-promise))))))
            ;; Not running - enqueue spin execution
            (let [result-promise (promise)]
-             (log/trace! {:event :spin/deref-start :data {:spin-id spin-id}})
+             (log/trace :spin/deref-start {:spin-id spin-id})
              (ec/enqueue-event! {:type :spin-execution
                                   :id spin-id
                                   :spin this
@@ -202,7 +202,7 @@
                                                 (deliver result-promise (ok value)))
                                   :reject-fn (fn [e]
                                                (deliver result-promise (error e)))})
-             (log/trace! {:event :spin/deref-done :data {:spin-id spin-id}})
+             (log/trace :spin/deref-done {:spin-id spin-id})
              (wait-on-promise result-promise)))))))
 
 (deftype Spin [spin-id spin-fn]
@@ -224,7 +224,7 @@
           ;; re-register continuations, while returning the previously cached values.
           (and local-cached (ec/spin-result-clean? spin-id) rebuild-mode?)
           (do
-            (log/debug! {:event :cache/rebuild-mode :data {:spin-id spin-id}})
+            (log/debug :cache/rebuild-mode {:spin-id spin-id})
             ;; Execute spin body for side effects (nested spin creation, continuation registration)
             (binding [ec/*execution-context* runtime
                       ec/*spin-id* spin-id]
@@ -245,7 +245,7 @@
           ;; Dirty propagation + topological re-execution handle invalidation.
           (and local-cached (ec/spin-result-clean? spin-id))
           (do
-            (log/trace! {:event :cache/local-hit :data {:spin-id spin-id}})
+            (log/trace :cache/local-hit {:spin-id spin-id})
             ;; CRITICAL: Enqueue completion event even for cache hits
             ;; This ensures awaiting spins' continuations are resumed
             (simple/enqueue-completion-event! runtime spin-id)
@@ -271,8 +271,8 @@
                 callbacks-atom (atom [{:resolve resolve :reject reject}])
                 executing? (atom true)]
 
-            (log/debug! {:event :spin/start :data {:spin-id spin-id}})
-            (log/trace! {:event :spin/executing-body :data {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")}})
+            (log/debug :spin/start {:spin-id spin-id})
+            (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
 
             ;; CRITICAL: Invalidate spins created during previous execution
             ;; Their closures captured values from the old run - now stale
@@ -301,8 +301,7 @@
                                 ;; Emit spin-completion event for engine
                                 ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
                                 (simple/enqueue-completion-event! current-rt spin-id)
-                                (log/debug! {:event :spin/completed
-                                             :data {:spin-id spin-id :enqueued :spin-completion}})
+                                (log/debug :spin/completed {:spin-id spin-id :enqueued :spin-completion})
 
                                 ;; Call all pending callbacks from local state
                                 (let [callbacks @callbacks-atom]
@@ -314,8 +313,7 @@
                                 ;; These are from duplicate :spin-execution events that were skipped
                                 (let [pending (simple/take-pending-callbacks! current-rt spin-id)]
                                   (when (seq pending)
-                                    (log/trace! {:event :spin/pending-callbacks
-                                                 :data {:spin-id spin-id :count (count pending)}})
+                                    (log/trace :spin/pending-callbacks {:spin-id spin-id :count (count pending)})
                                     (doseq [{:keys [resolve]} pending]
                                       (resolve value))))  ; Direct call, not resume
 
@@ -340,8 +338,7 @@
                                 ;; Notify dependents just like success path
                                 ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
                                 (simple/enqueue-completion-event! _current-rt spin-id)
-                                (log/debug! {:event :spin/errored
-                                             :data {:spin-id spin-id :enqueued :spin-completion}})
+                                (log/debug :spin/errored {:spin-id spin-id :enqueued :spin-completion})
 
                                 ;; Abort downstream spins
                                 (abort-spin-chain! spin-id err)
@@ -357,8 +354,7 @@
                                 (let [current-rt (ec/current-execution-context)
                                       pending (simple/take-pending-callbacks! current-rt spin-id)]
                                   (when (seq pending)
-                                    (log/trace! {:event :spin/pending-callbacks-error
-                                                 :data {:spin-id spin-id :count (count pending)}})
+                                    (log/trace :spin/pending-callbacks-error {:spin-id spin-id :count (count pending)})
                                     (doseq [{:keys [reject]} pending]
                                       (reject err))))  ; Direct call, not resume
 

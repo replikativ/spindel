@@ -43,7 +43,7 @@
             [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.log :as log]))
+            [replikativ.logging :as log]))
 
 ;; =============================================================================
 ;; Discharge Protocol
@@ -320,18 +320,16 @@
     ;; Skip if this vnode was already fully rendered via render-initial!
     ;; This prevents double-application of deltas for newly added elements
     (let [is-rendered? (and *rendered-vnodes* (contains? @*rendered-vnodes* vnode))]
-      (log/debug! {:event ::discharge-vnode
-                   :data {:tag (:tag vnode)
+      (log/debug ::discharge-vnode {:tag (:tag vnode)
                           :is-rendered? is-rendered?
                           :has-child-deltas (boolean (seq (:deltas vnode)))
                           :child-delta-count (count (:deltas vnode))
-                          :rendered-set-size (when *rendered-vnodes* (count @*rendered-vnodes*))}})
+                          :rendered-set-size (when *rendered-vnodes* (count @*rendered-vnodes*))})
       (when-not is-rendered?
         (let [el (get-element discharge (:addr vnode))]
           (when-not el
-            (log/debug! {:event ::element-not-found
-                         :data {:addr (:addr vnode) :tag (:tag vnode)
-                                :delta-count (count (:deltas vnode))}}))
+            (log/debug ::element-not-found {:addr (:addr vnode) :tag (:tag vnode)
+                                :delta-count (count (:deltas vnode))}))
           (when el
             ;; Apply attribute deltas
             (apply-attr-deltas! discharge el vnode)
@@ -359,10 +357,9 @@
                      (if (d/deltaable? ch) @ch ch))
           child-results (mapcat collect-nodes-with-deltas children)]
       (when has-deltas?
-        (log/debug! {:event ::collected-node-with-deltas
-                     :data {:tag (:tag vnode)
+        (log/debug ::collected-node-with-deltas {:tag (:tag vnode)
                             :child-delta-count (count (:deltas vnode))
-                            :deltas (mapv #(select-keys % [:delta :path]) (:deltas vnode))}}))
+                            :deltas (mapv #(select-keys % [:delta :path]) (:deltas vnode))}))
       (if has-deltas?
         (cons vnode child-results)
         child-results))))
@@ -383,9 +380,8 @@
   [discharge vdom]
   (binding [*rendered-vnodes* (atom #{})]
     (let [nodes (collect-nodes-with-deltas vdom)]
-      (log/debug! {:event ::discharge-all
-                   :data {:nodes-count (count nodes)
-                          :nodes-with-deltas (mapv (fn [n] {:tag (:tag n) :deltas (:deltas n)}) nodes)}})
+      (log/debug ::discharge-all {:nodes-count (count nodes)
+                          :nodes-with-deltas (mapv (fn [n] {:tag (:tag n) :deltas (:deltas n)}) nodes)})
       (doseq [node nodes]
         (discharge-vnode! discharge node))
       (clear-deltas-deep vdom))))
@@ -435,10 +431,9 @@
     (try
       (ref-fn el)
       (catch #?(:clj Exception :cljs :default) e
-        (log/error! {:event ::ref-callback-error
-                     :data {:tag (:tag vnode)
+        (log/error ::ref-callback-error {:tag (:tag vnode)
                             :el el
-                            :error (str e)}})))))
+                            :error (str e)})))))
 
 (defn- call-refs-on-unmount!
   "Recursively call ref callbacks with nil and evict per-element cache state

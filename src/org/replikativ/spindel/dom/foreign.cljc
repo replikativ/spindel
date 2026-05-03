@@ -57,7 +57,7 @@
   (:require [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.log :as log]))
+            [replikativ.logging :as log]))
 
 ;; =============================================================================
 ;; Foreign Node Marker
@@ -103,24 +103,20 @@
                  (if el
                    ;; Mount
                    (do
-                     (log/debug! {:event ::foreign-node-mount
-                                  :data {:addr my-addr :tag tag}})
+                     (log/debug ::foreign-node-mount {:addr my-addr :tag tag})
                      (when on-mount
                        (try
                          (on-mount el)
                          (catch #?(:clj Exception :cljs :default) e
-                           (log/error! {:event ::foreign-node-mount-error
-                                        :data {:addr my-addr :error (str e)}})))))
+                           (log/error ::foreign-node-mount-error {:addr my-addr :error (str e)})))))
                    ;; Unmount
                    (do
-                     (log/debug! {:event ::foreign-node-unmount
-                                  :data {:addr my-addr :tag tag}})
+                     (log/debug ::foreign-node-unmount {:addr my-addr :tag tag})
                      (when on-unmount
                        (try
                          (on-unmount nil)
                          (catch #?(:clj Exception :cljs :default) e
-                           (log/error! {:event ::foreign-node-unmount-error
-                                        :data {:addr my-addr :error (str e)}})))))))
+                           (log/error ::foreign-node-unmount-error {:addr my-addr :error (str e)})))))))
 
         ;; Merge ref into attrs
         attrs-with-ref (assoc attrs :ref ref-fn)]

@@ -13,7 +13,7 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.effects.track :as track]
-            [org.replikativ.spindel.log :as log]
+            [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async])
   #?(:clj (:import [org.replikativ.spindel.spin.core Spin])))
 
@@ -82,8 +82,7 @@
         (do
           ;; Execute child spin for side effects
           (spin-ref noop noop)
-          (log/debug! {:event :await/rebuild-child-executed
-                       :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+          (log/debug :await/rebuild-child-executed {:parent-id spin-id :awaited-id awaited-spin-id})
           ;; Get cached result (should exist after child execution)
           (let [child-cached (ec/spin-current-result awaited-spin-id)]
             (if child-cached
@@ -150,8 +149,7 @@
                                        (spin-core/match res identity identity)))}
               ;; Pre-register so any async completion has a subscriber.
               _ (ec/continuation-add! spin-id cont-map)
-              _ (log/debug! {:event :await/registered-continuation
-                             :data {:parent-id spin-id :awaited-id awaited-spin-id}})
+              _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
               _ (simple/record-await-dependency! ctx spin-id awaited-spin-id)
               _raw-result (binding [ec/*spin-id* awaited-spin-id
                                     pcps-async/*in-trampoline* false]

@@ -16,7 +16,7 @@
   - Single drainer at a time via CAS lock (but draining can cascade new events)
   "
   (:refer-clojure :exclude [node])
-  (:require [org.replikativ.spindel.log :as log]
+  (:require [replikativ.logging :as log]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
@@ -143,16 +143,14 @@
       ;; Mark as processed early so propagate-await-dirty! knows this spin
       ;; already has a fresh cache (e.g., completed via inline await in Phase 1)
       (swap! (:processed batch) conj spin-id)
-      (log/trace! {:event :engine/batch-completion-deferred
-                   :data {:spin-id spin-id}}))
+      (log/trace :engine/batch-completion-deferred {:spin-id spin-id}))
     ;; Not in batch - enqueue immediately and trigger drain
     ;; CRITICAL: Must trigger drain for contexts without background drain thread
     ;; (e.g., restored snapshots, forked contexts)
     (do
       (rtp/swap-state-args! context [:engine/pending] conj
                            [{:type :spin-completion :id spin-id}])
-      (log/trace! {:event :engine/enqueue-event
-                   :data {:event {:type :spin-completion :id spin-id}}})
+      (log/trace :engine/enqueue-event {:event {:type :spin-completion :id spin-id}})
       (trigger-drain! context (:executor context)))))
 
 ;; Forward declaration for generation boundary cleanup
@@ -239,7 +237,7 @@
   Returns: true"
   [context event]
   (rtp/swap-state-args! context [:engine/pending] conj [event])
-  (log/trace! {:event :engine/enqueue-event :data {:event event}})
+  (log/trace :engine/enqueue-event {:event event})
   true)
 
 (defn dequeue-event!
@@ -278,8 +276,7 @@
     sid - signal that changed
     cont - the earliest continuation for this observer"
   [context spin-id sid cont]
-  (log/debug! {:event :engine/resuming-track-continuation
-               :data {:spin-id spin-id :signal-id sid}})
+  (log/debug :engine/resuming-track-continuation {:spin-id spin-id :signal-id sid})
 
   ;; Remove stale continuations (order > resumed continuation's order)
   (let [cont-order (:order cont)
@@ -348,8 +345,7 @@
     signal-id - signal ID of the parent's earliest track continuation
     cont - the earliest continuation for this parent"
   [context spin-id signal-id cont]
-  (log/debug! {:event :engine/re-execute-dirty-parent
-               :data {:spin-id spin-id :signal-id signal-id}})
+  (log/debug :engine/re-execute-dirty-parent {:spin-id spin-id :signal-id signal-id})
 
   ;; Remove stale continuations (order > resumed continuation's order)
   (let [cont-order (:order cont)
@@ -442,7 +438,7 @@
     context - context record
     event - Event map with :type key"
   [context event]
-  (log/trace! {:event :engine/process-event :data {:event event}})
+  (log/trace :engine/process-event {:event event})
 
   (case (:type event)
     :signal-change
@@ -454,8 +450,7 @@
           batch (create-batch context sid observers)]
       (rtp/swap-state! context [:engine/current-batch] (constantly batch))
 
-      (log/trace! {:event :engine/signal-change
-                   :data {:signal-id sid :observers observers :generation (:generation batch)}})
+      (log/trace :engine/signal-change {:signal-id sid :observers observers :generation (:generation batch)})
 
 
       ;; CRITICAL: Clear await continuations at generation boundary (Design 1)
@@ -513,14 +508,12 @@
 
 
         (when (seq descendant-set)
-          (log/debug! {:event :engine/filtered-descendant-observers
-                       :data {:descendants descendant-set
-                              :independent (map first independent-observers)}}))
+          (log/debug :engine/filtered-descendant-observers {:descendants descendant-set
+                              :independent (map first independent-observers)}))
 
         (when (seq escalation-targets)
-          (log/debug! {:event :engine/escalating-to-root-ancestors
-                       :data {:escalated (keys escalation-targets)
-                              :roots (keys roots-to-execute)}}))
+          (log/debug :engine/escalating-to-root-ancestors {:escalated (keys escalation-targets)
+                              :roots (keys roots-to-execute)}))
 
         ;; Add escalated roots to batch observers so their completion is tracked
         (when (seq roots-to-execute)
@@ -582,8 +575,7 @@
                (when-not (contains? @(:processed-events batch) eid)
                  (swap! (:processed-events batch) conj eid)
                  (swap! (:processed batch) conj eid)
-                 (log/debug! {:event :engine/processing-batched-completions
-                              :data {:spin-id eid :generation (:generation batch)}})
+                 (log/debug :engine/processing-batched-completions {:spin-id eid :generation (:generation batch)})
                  (process-event! context comp-event))
                ;; Drain any additional available events (non-blocking)
                (loop []
@@ -629,8 +621,7 @@
                                    [:subscriptions [:spin/complete tid]]))
           ;; Read batch from context state (nil when not in batch mode)
           batch (rtp/get-state context [:engine/current-batch])]
-      (log/trace! {:event :engine/spin-completion
-                   :data {:spin-id tid :parent-spin-ids parent-spin-ids}})
+      (log/trace :engine/spin-completion {:spin-id tid :parent-spin-ids parent-spin-ids})
 
       ;; Resume continuations for spins that are waiting on this spin
       (doseq [parent-id parent-spin-ids]
@@ -649,9 +640,8 @@
                 ;; Mark [parent child generation] as resumed
                 (when (and generation batch)
                   (swap! (:resumed-conts batch) conj dedup-key))
-                (log/debug! {:event :engine/resuming-await-continuation
-                             :data {:parent-id parent-id :cont-id cont-id :child-id tid
-                                    :generation generation}})
+                (log/debug :engine/resuming-await-continuation {:parent-id parent-id :cont-id cont-id :child-id tid
+                                    :generation generation})
                 ;; Resume continuation
                 (binding [ec/*execution-context* context
                           ec/*spin-id* parent-id
@@ -682,8 +672,7 @@
           ;; that's already heading into atom mutation.
           state-atom #?(:clj  (.-state-atom deferred)
                         :cljs (.-state-atom ^js deferred))]
-      (log/trace! {:event :engine/deferred-delivery
-                   :data {:deferred deferred :value value}})
+      (log/trace :engine/deferred-delivery {:deferred deferred :value value})
       ;; Deliver inline - we're already on executor thread, queue broke the call stack
       ;; CRITICAL: Bind *execution-context* and *in-trampoline* when delivering deferred value
       ;; The deferred function will resume continuations which need context access
@@ -699,8 +688,7 @@
           ;; Same per-platform hint pattern as :deferred-delivery.
           state-atom #?(:clj  (.-state-atom mailbox)
                         :cljs (.-state-atom ^js mailbox))]
-      (log/trace! {:event :engine/mailbox-post
-                   :data {:mailbox mailbox :msg msg}})
+      (log/trace :engine/mailbox-post {:mailbox mailbox :msg msg})
       ;; Post inline - we're already on executor thread, queue broke the call stack
       ;; CRITICAL: Bind *execution-context* and *in-trampoline* when posting to mailbox
       ;; The mailbox function will resume continuations which need context access
@@ -715,8 +703,7 @@
           resolve-fn (:resolve-fn event)
           reject-fn (:reject-fn event)
           execution-context (:execution-context event)]  ; May be nil for normal spins
-      (log/trace! {:event :engine/spin-execution
-                   :data {:spin-id tid}})
+      (log/trace :engine/spin-execution {:spin-id tid})
       ;; Try to atomically claim execution
       ;; This checks cache AND running? atomically to prevent duplicate execution
       (if-not (try-claim-execution! context tid)
@@ -728,15 +715,13 @@
           (if (and cached is-clean?)
             ;; Already cached - deliver result via callbacks without re-executing
             (do
-              (log/trace! {:event :engine/spin-execution-cached
-                           :data {:spin-id tid}})
+              (log/trace :engine/spin-execution-cached {:spin-id tid})
               (if (= (:variant cached) :ok)
                 (resolve-fn (:payload cached))
                 (reject-fn (:payload cached))))
             ;; Not cached - must be running, add callbacks to pending
             (do
-              (log/trace! {:event :engine/spin-execution-skip-running
-                           :data {:spin-id tid}})
+              (log/trace :engine/spin-execution-skip-running {:spin-id tid})
               (add-pending-callback! context tid {:resolve resolve-fn :reject reject-fn}))))
         ;; Successfully claimed - proceed with execution
         ;; Execute spin on executor thread with provided callbacks
@@ -752,7 +737,7 @@
 
     ;; Unknown event type
     (do
-      (log/trace! {:event :engine/unknown-event :data {:event event}})
+      (log/trace :engine/unknown-event {:event event})
       nil)))
 
 ;; Forward declaration for mutual recursion
@@ -786,7 +771,7 @@
       ;; stop-context!. Snapshot/restored contexts have :running=nil and
       ;; fall through (restore-snapshot drives drain-events! directly).
       (and running (not @running))
-      (do (log/trace! {:event :engine/drain-skipped :data {:reason :context-stopped}})
+      (do (log/trace :engine/drain-skipped {:reason :context-stopped})
           0)
 
       :else
@@ -803,12 +788,12 @@
             (if-not cas-result
               ;; Another drain holds the lock. We bumped the counter, so
               ;; the finally below decrements it. No work to do here.
-              (do (log/trace! {:event :engine/drain-skipped :data {:reason :already-draining}})
+              (do (log/trace :engine/drain-skipped {:reason :already-draining})
                   0)
 
               ;; We claimed the lock — drain to completion.
               (try
-                (log/trace! {:event :engine/drain-start})
+                (log/trace :engine/drain-start)
                 (binding [*in-drain?* true]
                   (let [event-count (atom 0)]
                     ;; Drain loop with intra-loop running check. If
@@ -825,8 +810,7 @@
                     (loop []
                       (cond
                         (and running (not @running))
-                        (do (log/trace! {:event :engine/drain-aborted-stopped
-                                         :data {:events-processed @event-count}})
+                        (do (log/trace :engine/drain-aborted-stopped {:events-processed @event-count})
                             @event-count)
 
                         :else
@@ -838,10 +822,9 @@
                             (try
                               (process-event! context event)
                               (catch #?(:clj Throwable :cljs js/Error) e
-                                (log/error! {:event :engine/event-processing-error
-                                             :data {:event-type (:type event)
+                                (log/error :engine/event-processing-error {:event-type (:type event)
                                                     :event-id (:id event)
-                                                    :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))}})
+                                                    :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})
                                 (case (:type event)
                                   :spin-execution
                                   (when-let [reject-fn (:reject-fn event)]
@@ -864,8 +847,7 @@
                             (recur))
                           ;; Queue empty — drain complete.
                           (do
-                            (log/trace! {:event :engine/drain-complete
-                                         :data {:events-processed @event-count}})
+                            (log/trace :engine/drain-complete {:events-processed @event-count})
                             @event-count))))))
                 (finally
                   ;; Always release draining lock.
@@ -998,10 +980,10 @@
       (executor/execute! executor
         (executor/alive-fn context
           #(drain-events! context executor)))
-      (log/trace! {:event :engine/trigger-drain})
+      (log/trace :engine/trigger-drain)
       true)
     (do
-      (log/trace! {:event :engine/trigger-drain-no-executor})
+      (log/trace :engine/trigger-drain-no-executor)
       false)))
 
 
@@ -1480,8 +1462,7 @@
 
     (let [stats @result]
       (when (pos? (:continuations-cleared stats))
-        (log/debug! {:event :generation/clear-await-continuations
-                     :data stats}))
+        (log/debug :generation/clear-await-continuations stats))
       stats)))
 
 (defn ^:no-doc record-await-dependency!
@@ -1502,8 +1483,7 @@
   (rtp/swap-state! context [:await-dependents child-spin-id]
     (fn [parents]
       (conj (or parents #{}) parent-spin-id)))
-  (log/trace! {:event :await/record-dependency
-               :data {:parent parent-spin-id :child child-spin-id}}))
+  (log/trace :await/record-dependency {:parent parent-spin-id :child child-spin-id}))
 
 (defn ^:no-doc propagate-await-dirty!
   "Propagate dirty flag through await dependency graph.
@@ -1541,11 +1521,10 @@
                                           (not (contains? processed parent-id)))))
                                  awaiting-parents)]
           (when (seq parents-to-dirty)
-            (log/debug! {:event :engine/propagate-await-dirty
-                         :data {:from-spin spin-id
+            (log/debug :engine/propagate-await-dirty {:from-spin spin-id
                                 :to-parents parents-to-dirty
                                 :count (count parents-to-dirty)
-                                :skipped (- (count awaiting-parents) (count parents-to-dirty))}})
+                                :skipped (- (count awaiting-parents) (count parents-to-dirty))})
             (doseq [parent-id parents-to-dirty]
               (mark-dirty! context parent-id)
               (when-let [conts (seq (vals (rtp/get-state context [:continuations parent-id])))]
@@ -1572,8 +1551,7 @@
   [context spin-id]
   (let [created-spins (rtp/get-state context [:nodes spin-id :created-spins])]
     (when (seq created-spins)
-      (log/debug! {:event :spin/invalidate-created
-                   :data {:spin-id spin-id :created-spins created-spins}})
+      (log/debug :spin/invalidate-created {:spin-id spin-id :created-spins created-spins})
       ;; Mark each created spin as dirty and fully clean up dependencies
       ;; clear-deps! removes track continuations, subscriptions, and signal observer
       ;; registrations so old children can't fire on future signal changes.
@@ -1753,23 +1731,23 @@
               ;; Already has clean cached result - don't claim
               (and cached is-clean?)
               (do (reset! claimed? false)
-                  (log/trace! {:event :claim/failed-already-cached :data {:spin-id spin-id}})
+                  (log/trace :claim/failed-already-cached {:spin-id spin-id})
                   node)
 
               ;; Already running - don't claim
               (:running? node)
               (do (reset! claimed? false)
-                  (log/trace! {:event :claim/failed-already-running :data {:spin-id spin-id}})
+                  (log/trace :claim/failed-already-running {:spin-id spin-id})
                   node)
 
               ;; Not running and not cached - claim it
               :else
               (do (reset! claimed? true)
-                  (log/trace! {:event :claim/success-from-existing :data {:spin-id spin-id}})
+                  (log/trace :claim/success-from-existing {:spin-id spin-id})
                   (assoc node :running? true))))
           ;; No node - create and claim
           (do (reset! claimed? true)
-              (log/trace! {:event :claim/success-new-node :data {:spin-id spin-id}})
+              (log/trace :claim/success-new-node {:spin-id spin-id})
               (nodes/->spin-node nil :clean false true #{} {} nil #{})))))
     @claimed?))
 

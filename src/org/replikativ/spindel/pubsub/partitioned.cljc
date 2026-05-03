@@ -20,7 +20,7 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.log :as log]
+            [replikativ.logging :as log]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
@@ -196,8 +196,7 @@
                            :execution-context ctx
                            :resolve-fn (fn [_] nil)
                            :reject-fn (fn [e]
-                                        (log/error! {:event :partitioned/pump-error
-                                                     :data {:error e}}))}))
+                                        (log/error :partitioned/pump-error {:error e}))}))
     partitioned))
 
 (defn tap-partition

@@ -23,7 +23,7 @@
   3. **Runtime swapping**: Forked runtimes can replace handlers if desired
   4. **Continuation**: Handlers call resolve/reject to resume execution"
   (:require [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.log :as log]))
+            [replikativ.logging :as log]))
 
 ;; =============================================================================
 ;; Effect Handler Protocol
@@ -201,10 +201,9 @@
           args (assoc base-args :spin-id spin-id :source-loc source-loc)]
       ;; Debug instrumentation to trace effect dispatch context for awaits
       (when (= sym 'org.replikativ.spindel.effects.await/await)
-        (log/trace! {:event :effects/dispatch-await
-                     :data {:spin-id spin-id
+        (log/trace :effects/dispatch-await {:spin-id spin-id
                             :source-loc source-loc
-                            :args-count (count argsv)}}))
+                            :args-count (count argsv)}))
       (handle-effect handler context args resolve reject))))
 
 ;; =============================================================================

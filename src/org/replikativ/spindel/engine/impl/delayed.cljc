@@ -7,7 +7,7 @@
 
   All state is stored in the execution context at :engine/delayed-spins,
   :engine/virtual-time, :engine/time-mode, :engine/timer-handles."
-  (:require [org.replikativ.spindel.log :as log]
+  (:require [replikativ.logging :as log]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.executor :as executor]))
@@ -38,8 +38,7 @@
                      (fn [queue]
                        (update queue fire-time (fnil conj []) spin-entry)))
 
-    (log/trace! {:event :engine/schedule-delayed
-                 :data {:spin-id spin-id :delay-ms delay-ms :fire-time fire-time}})
+    (log/trace :engine/schedule-delayed {:spin-id spin-id :delay-ms delay-ms :fire-time fire-time})
 
     spin-id))
 
@@ -98,8 +97,7 @@
 
     ;; Execute spins outside the transaction
     (doseq [{:keys [spin-fn id fire-time]} @ready-spins]
-      (log/trace! {:event :engine/execute-delayed
-                   :data {:spin-id id :fire-time fire-time :now now}})
+      (log/trace :engine/execute-delayed {:spin-id id :fire-time fire-time :now now})
       (when executor
         (executor/execute! executor
           (executor/alive-fn context
@@ -127,8 +125,7 @@
     ;; Clean up timer handle
     (rtp/swap-state-args! context [:engine/timer-handles] dissoc [spin-id])
 
-    (log/trace! {:event :engine/cancel-delayed
-                 :data {:spin-id spin-id :cancelled? @cancelled?}})
+    (log/trace :engine/cancel-delayed {:spin-id spin-id :cancelled? @cancelled?})
 
     @cancelled?))
 
@@ -154,6 +151,5 @@
 
   (let [prev-mode (rtp/get-state context [:engine/time-mode])]
     (rtp/swap-state! context [:engine/time-mode] (constantly mode))
-    (log/trace! {:event :engine/set-time-mode
-                 :data {:prev-mode prev-mode :new-mode mode}})
+    (log/trace :engine/set-time-mode {:prev-mode prev-mode :new-mode mode})
     prev-mode))

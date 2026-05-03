@@ -99,7 +99,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.log :as log])
+            [replikativ.logging :as log])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
@@ -320,11 +320,8 @@
         _ (when (and (d/deltaable? source)
                      (not (instance? #?(:clj org.replikativ.spindel.incremental.interval.Interval
                                         :cljs iv/Interval) source)))
-            (log/log! {:level :warn
-                       :id ::ifor-each-without-interval
-                       :msg "ifor-each received deltaable without interval wrapper. Pass the interval from track directly for O(delta) updates."
-                       :data {:source-type (type source)
-                              :has-deltas? (boolean (seq (d/get-deltas source)))}}))
+            (log/warn ::ifor-each-without-interval "ifor-each received deltaable without interval wrapper. Pass the interval from track directly for O(delta) updates." {:source-type (type source)
+                              :has-deltas? (boolean (seq (d/get-deltas source)))}))
 
         ;; Coerce source to interval
         source-iv (iv/as-interval source)

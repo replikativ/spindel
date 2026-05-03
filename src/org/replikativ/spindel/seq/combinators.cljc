@@ -4,7 +4,7 @@
             [org.replikativ.spindel.spin :as spin]
             [org.replikativ.spindel.seq.core :as core]
             [org.replikativ.spindel.effects.reactive :refer [await]]
-            [org.replikativ.spindel.log :as log]))
+            [replikativ.logging :as log]))
 
 ;; =============================================================================
 ;; Core Operations
@@ -51,21 +51,20 @@
             seq aseq]
        (if seq
          (do
-           (log/trace! {:event :seq/reduce-anext :data {:seq-type (type seq)}})
+           (log/trace :seq/reduce-anext {:seq-type (type seq)})
            (let [pair (await (anext seq))]
              (if pair
                (let [value (clojure.core/first pair)
                      rest-seq (clojure.core/second pair)
                      acc' (rf acc value)]
-                 (log/trace! {:event :seq/reduce-got
-                              :data {:value value :has-rest (some? rest-seq)}})
+                 (log/trace :seq/reduce-got {:value value :has-rest (some? rest-seq)})
                  (if (reduced? acc')
                    @acc'
                    (do
-                     (log/trace! {:event :seq/reduce-recur :data {:rest-type (type rest-seq)}})
+                     (log/trace :seq/reduce-recur {:rest-type (type rest-seq)})
                      (recur acc' rest-seq))))
                (do
-                 (log/trace! {:event :seq/reduce-end})
+                 (log/trace :seq/reduce-end)
                  acc))))
          acc))))
   ([rf aseq]
@@ -128,8 +127,7 @@
     (reify PAsyncSeq
       (anext [_]
         (spin/spin
-          (log/trace! {:event :seq/from-coll-emit
-                       :data {:value (clojure.core/first coll)}})
+          (log/trace :seq/from-coll-emit {:value (clojure.core/first coll)})
           [(clojure.core/first coll)
            (from-coll (clojure.core/rest coll))])))))
 
@@ -157,8 +155,7 @@
   (core/gen-aseq
     (loop [state init-state]
       (let [{:keys [value next-state done?]} (await (f state))]
-        (log/trace! {:event :seq/iterate-async-step
-                     :data {:value value :done? done? :next-state next-state}})
+        (log/trace :seq/iterate-async-step {:value value :done? done? :next-state next-state})
         (core/yield value)
         (when-not done?
           (recur next-state))))))

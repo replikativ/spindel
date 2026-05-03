@@ -28,7 +28,7 @@
   produce vnodes with deltas attached that are discharged to the DOM."
   (:require [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.spin.core :as spin-core]
-            [org.replikativ.spindel.log :as log]))
+            [replikativ.logging :as log]))
 
 ;; =============================================================================
 ;; Render State
@@ -90,8 +90,7 @@
         (binding [disch/*rendered-vnodes* (atom #{})]
           (let [nodes-with-deltas (disch/collect-nodes-with-deltas new-vdom)]
             (when (seq nodes-with-deltas)
-              (log/trace! {:event :render/delta-update
-                           :data {:nodes-with-deltas (count nodes-with-deltas)}})
+              (log/trace :render/delta-update {:nodes-with-deltas (count nodes-with-deltas)})
               (doseq [node nodes-with-deltas]
                 (disch/discharge-vnode! discharge node)))))
 
@@ -140,11 +139,10 @@
       (when vdom
         (let [state @state-atom
               has-deltas? (seq (:deltas vdom))]
-          (log/debug! {:event ::render-effect-callback
-                       :data {:mounted? (:mounted? state)
+          (log/debug ::render-effect-callback {:mounted? (:mounted? state)
                               :vdom-tag (:tag vdom)
                               :vdom-has-deltas? has-deltas?
-                              :vdom-deltas (:deltas vdom)}})
+                              :vdom-deltas (:deltas vdom)})
           (if (:mounted? state)
             ;; Update with delta-direct rendering
             (swap! state-atom update-render! vdom)
@@ -178,26 +176,22 @@
   (let [render-effect (create-render-effect container discharge)
         spin-id (spin-core/spin-id the-spin)]
 
-    (log/debug! {:event :render/start
-                 :data {:spin-id spin-id}})
+    (log/debug :render/start {:spin-id spin-id})
 
     ;; Execute the spin - it will re-run when signals change
     ;; The completion callback renders the vdom
     (the-spin
       ;; resolve callback
       (fn [vdom]
-        (log/trace! {:event :render/vdom-received
-                     :data {:spin-id spin-id :has-vdom (some? vdom)}})
+        (log/trace :render/vdom-received {:spin-id spin-id :has-vdom (some? vdom)})
         (render-effect vdom))
       ;; reject callback
       (fn [error]
-        (log/error! {:event :render/error
-                     :data {:spin-id spin-id :error error}})))
+        (log/error :render/error {:spin-id spin-id :error error})))
 
     ;; Return control map
     {:spin-id spin-id
      :stop! (fn []
-              (log/debug! {:event :render/stop
-                           :data {:spin-id spin-id}})
+              (log/debug :render/stop {:spin-id spin-id})
               ;; TODO: Implement cancellation
               nil)}))

@@ -21,7 +21,7 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.incremental.interval :as iv]
-            [org.replikativ.spindel.log :as log])
+            [replikativ.logging :as log])
   #?(:clj (:import [org.replikativ.spindel.signal SignalRef])))
 
 (defn signal-ref?
@@ -89,17 +89,15 @@
     (if (> current-generation consumed-generation)
       ;; Signal has new changes since we last consumed - return with deltas
       (do
-        (log/trace! {:event :track/returning-fresh-deltas
-                     :data {:current-gen current-generation
+        (log/trace :track/returning-fresh-deltas {:current-gen current-generation
                             :consumed-gen consumed-generation
-                            :delta-count (count deltas)}})
+                            :delta-count (count deltas)})
         (iv/->Interval old-snapshot snapshot deltas))
       ;; Stale - signal hasn't changed since our last consume
       ;; Return current value but WITHOUT deltas to prevent re-processing
       (do
-        (log/trace! {:event :track/skipping-stale-deltas
-                     :data {:current-gen current-generation
-                            :consumed-gen consumed-generation}})
+        (log/trace :track/skipping-stale-deltas {:current-gen current-generation
+                            :consumed-gen consumed-generation})
         (iv/->Interval snapshot snapshot nil)))))
 
 (defn- track-signal
@@ -156,10 +154,9 @@
                                (get-track-value-if-newer signal-ref current-generation))}]
         (ec/continuation-add! spin-id cont)
         (ec/deps-track-signal! spin-id signal-id)
-        (log/debug! {:event :track/registered
-                     :data {:spin-id spin-id
+        (log/debug :track/registered {:spin-id spin-id
                             :signal-id signal-id
-                            :consumed-generation current-generation}})))
+                            :consumed-generation current-generation})))
 
     ;; Return value via resolve continuation (synchronous on first call)
     ;; CRITICAL: Must call spin-core/resume like await does, not return value directly

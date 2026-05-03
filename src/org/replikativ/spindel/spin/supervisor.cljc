@@ -16,12 +16,12 @@
        {:strategy :one-for-one
         :max-restarts 5
         :window-ms 60000
-        :on-fatal (fn [e] (log/error! \"Fatal: supervisor giving up\"))})"
+        :on-fatal (fn [e] (log/error :supervisor/fatal {:error e}))})"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.spin.sync :as sync :refer [spawn! mailbox]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.log :as log]
+            [replikativ.logging :as log]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
@@ -57,9 +57,8 @@
   (let [child-spin ((:start child-spec))]
     (spawn! child-spin
             {:on-error (fn [e]
-                         (log/debug! {:event :supervisor/child-failed
-                                      :data {:child-id (:id child-spec)
-                                             :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))}})
+                         (log/debug :supervisor/child-failed {:child-id (:id child-spec)
+                                             :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})
                          (sup-mbx {:type :child-failed
                                    :id (:id child-spec)
                                    :error e}))})
@@ -113,8 +112,7 @@
                      max-restarts 5
                      window-ms 60000
                      on-fatal (fn [e]
-                                (log/error! {:event :supervisor/fatal
-                                             :data {:error e}}))}}]]
+                                (log/error :supervisor/fatal {:error e}))}}]]
   (let [child-specs-by-id (into {} (map (juxt :id identity)) children)]
     (spin
       (let [sup-mbx (mailbox)
@@ -145,22 +143,20 @@
 
                           :rest-for-one
                           (restart-rest! active-children failed-id children sup-mbx child-specs-by-id))]
-                    (log/debug! {:event :supervisor/restarted
-                                 :data {:strategy strategy
+                    (log/debug :supervisor/restarted {:strategy strategy
                                         :failed-id failed-id
-                                        :restarts-in-window (count new-log)}})
+                                        :restarts-in-window (count new-log)})
                     (recur new-children new-log))
 
                   ;; Budget exceeded — fatal
                   (do
-                    (log/error! {:event :supervisor/max-restarts-exceeded
-                                 :data {:failed-id failed-id
+                    (log/error :supervisor/max-restarts-exceeded {:failed-id failed-id
                                         :max-restarts max-restarts
-                                        :window-ms window-ms}})
+                                        :window-ms window-ms})
                     (on-fatal error))))
 
               :shutdown
-              (log/debug! {:event :supervisor/shutdown})
+              (log/debug :supervisor/shutdown)
 
               ;; Unknown message — ignore
               (recur active-children restart-log))))))))
