@@ -183,7 +183,10 @@
   This function clears:
   - :deltas field on the vnode itself
   - Recursively clears children's deltas
-  - Clears deltas from DeltaableMap attrs"
+  - Clears deltas from DeltaableMap attrs
+  - Recursively clears deltas inside KeyedFragment children (built by
+    nested ifor-each), whose :deltas field would otherwise survive into
+    the discharge tree-walk and cause double-application."
   [vnode]
   (when vnode
     (cond
@@ -206,6 +209,11 @@
                    (d/deltaable-vector
                      (mapv clear-stale-deltas child-vec))))
           cleared))
+
+      ;; KeyedFragment - clear fragment's :deltas and recurse into its items
+      (frag/keyed-fragment? vnode)
+      (frag/keyed-fragment (mapv clear-stale-deltas (frag/fragment-items vnode))
+                           nil)
 
       ;; Not a vnode - return as-is
       :else vnode)))
@@ -267,9 +275,25 @@
 (defn- build-fragment-result
   "Build the KeyedFragment result from resolved items.
 
+  Each resolved-item is `{:key k :vnode v}` and may optionally carry an
+  `:item` field (the source value). When present, the item values are
+  captured in :items-by-key so the next render's full-recompute can
+  decide whether to memo-hit on a cached vnode. The incremental path
+  (where deltas explicitly say what changed) bypasses this and drops
+  the items-by-key map.
+
+  was-sync? marks whether ifor-each's outer return is a KeyedFragment
+  (true) or a Spin (false). Stored in cache so the next full-recompute
+  knows whether memoization is safe — it isn't when the result type
+  flips between renders.
+
   Shared logic between sync and async paths for full recompute."
-  [my-addr resolved-items prev-by-key prev-order]
+  [my-addr resolved-items prev-by-key prev-order & [was-sync?]]
   (let [by-key (into {} (map (juxt :key :vnode) resolved-items))
+        items-by-key (into {} (keep (fn [r]
+                                      (when (contains? r :item)
+                                        [(:key r) (:item r)])))
+                           resolved-items)
         order (mapv :key resolved-items)
         items (mapv :vnode resolved-items)
 
@@ -318,8 +342,11 @@
                    (when (seq update-deltas)
                      (vec update-deltas))))]
 
-    ;; Update cache
-    (set-keyed-cache! my-addr {:by-key by-key :order order})
+    ;; Update cache. items-by-key + was-sync? are only populated when called
+    ;; from full-recompute (which threads :item through resolved-items).
+    (set-keyed-cache! my-addr (cond-> {:by-key by-key :order order}
+                                (seq items-by-key) (assoc :items-by-key items-by-key
+                                                          :was-sync? (boolean was-sync?))))
 
     ;; Return KeyedFragment
     (frag/keyed-fragment items deltas)))
@@ -546,35 +573,60 @@
           (:deltas result)
           (:has-spins result)))
 
-      ;; Full recompute: render all items
-      (let [items-with-keys
+      ;; Full recompute: render items, but memoize render-fn output by item value
+      ;; for keys whose previously-cached vnode was a "plain element vnode"
+      ;; (not a Spin or KeyedFragment — those require re-running render-fn for
+      ;; correctness). When the source item is `=` to the cached one we reuse
+      ;; the cached vnode; clear-stale-deltas ensures the discharge tree-walk
+      ;; does NOT re-apply this vnode's prior deltas (which would otherwise
+      ;; double-mount its children). Closures captured inside the cached vnode
+      ;; (event handlers etc.) persist — eliminating the closure-churn that
+      ;; drives :update-cascade re-mounts in keyed lists.
+      ;; Full recompute with item-value memoization. Memoization is only
+      ;; applied when the previous render's path was sync (`was-sync?`) — if
+      ;; render-fn is producing spins, the ifor-each return type is a Spin
+      ;; (not a KeyedFragment), and substituting cached vnodes would flip
+      ;; the result type and break callers like `(await (ifor-each ...))`.
+      ;; render-fn is called once per item-mount and once per item-value
+      ;; change. Closures captured inside the cached vnode persist across
+      ;; parent re-renders — eliminating the closure-churn → :update →
+      ;; re-mount cascade for keyed lists.
+      (let [prev-items-by-key (or (:items-by-key prev-cache) {})
+            prev-was-sync? (:was-sync? prev-cache false)
+            plain-element-vnode? (fn [v]
+                                   (and (map? v)
+                                        (contains? v :tag)
+                                        (not (spin? v))
+                                        (not (frag/keyed-fragment? v))))
+            items-with-keys
             (mapv (fn [item]
                     (let [k (key-fn item)
-                          ;; Use function version for runtime call
-                          vnode (addr/with-keyed-context-fn my-addr k
-                                  #(render-fn item))]
-                      {:key k :vnode vnode}))
+                          cached-item (get prev-items-by-key k ::miss)
+                          cached-vnode (get prev-by-key k)
+                          memo-hit? (and prev-was-sync?
+                                         (not= ::miss cached-item)
+                                         (= cached-item item)
+                                         (plain-element-vnode? cached-vnode))
+                          vnode (if memo-hit?
+                                  (clear-stale-deltas cached-vnode)
+                                  (addr/with-keyed-context-fn my-addr k
+                                    #(render-fn item)))]
+                      {:key k :vnode vnode :item item}))
                   source-new)
-
-            ;; Check if any results are spins
             has-spins? (some #(spin? (:vnode %)) items-with-keys)]
-
         (if has-spins?
-          ;; Return a spin that awaits all child spins using loop/recur
-          ;; This pattern is CPS-safe because partial-cps handles loop/recur correctly
           (spin
             (loop [remaining items-with-keys
                    resolved []]
               (if (empty? remaining)
-                ;; All resolved - build cache and fragment
-                (build-fragment-result my-addr resolved prev-by-key prev-order)
-                ;; Process next item
-                (let [{:keys [key vnode]} (first remaining)
+                ;; was-sync? = false: ifor-each's outer return value is a Spin
+                (build-fragment-result my-addr resolved prev-by-key prev-order false)
+                (let [{:keys [key vnode item]} (first remaining)
                       resolved-vnode (if (spin? vnode) (await vnode) vnode)]
                   (recur (rest remaining)
-                         (conj resolved {:key key :vnode resolved-vnode}))))))
-          ;; Sync path - no spins, proceed normally
-          (build-fragment-result my-addr items-with-keys prev-by-key prev-order)))))))
+                         (conj resolved {:key key :vnode resolved-vnode :item item}))))))
+          ;; was-sync? = true: ifor-each result is a KeyedFragment, memo is safe
+          (build-fragment-result my-addr items-with-keys prev-by-key prev-order true)))))))
 
 ;; =============================================================================
 ;; Macro: ifor-each
