@@ -29,6 +29,7 @@
         (build-element ...)))"
   (:require [org.replikativ.spindel.engine.hash :as h]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.addressing :as eaddr]
             [org.replikativ.spindel.engine.bindings :as bindings])
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.addressing])))
 
@@ -187,12 +188,29 @@
   "Function version of with-keyed-context for runtime/programmatic use.
 
   Executes thunk with keyed child context. Use the macro version in element
-  macros for CPS/await support."
+  macros for CPS/await support.
+
+  In addition to the DOM bindings, this also forks the addressing chain-head
+  by hashing the item-key into it for the duration of the thunk. That makes
+  any spin or runtime address generated INSIDE thunk item-keyed (stable
+  across reorderings of the surrounding collection) rather than position-
+  keyed off the global sequential chain. Element addresses already use
+  keyed-child-address; this aligns spin addresses with the same identity."
   [parent-addr item-key thunk]
-  (let [keyed-addr (keyed-child-address parent-addr item-key)]
-    (with-parent-addr-fn keyed-addr
-      (fn []
-        (with-slot-fn 0 thunk)))))
+  (let [keyed-addr (keyed-child-address parent-addr item-key)
+        ctx (ec/current-execution-context)
+        prev-head (when ctx (eaddr/get-chain-head ctx))
+        ;; Match next-address!'s keyword form so subsequent hashing is identical
+        item-head (when ctx
+                    (keyword (str "keyed-"
+                                  (eaddr/chain-hash {:keyed item-key} prev-head))))]
+    (when ctx (eaddr/set-chain-head! ctx item-head))
+    (try
+      (with-parent-addr-fn keyed-addr
+        (fn []
+          (with-slot-fn 0 thunk)))
+      (finally
+        (when ctx (eaddr/set-chain-head! ctx prev-head))))))
 
 ;; =============================================================================
 ;; Address for Current Element
