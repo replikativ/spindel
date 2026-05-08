@@ -214,6 +214,56 @@
 ;; For-Each Implementation
 ;; =============================================================================
 
+(defn- compute-fine-grained-deltas
+  "When the new order differs from prev-order but common keys preserve
+  their relative order, emit per-item :update / :remove / :add deltas
+  rather than a brutal :replace-all.
+
+  Returns nil if relative order of common keys changed (caller should
+  fall back to :replace-all). The discharge layer applies the deltas
+  in emission order, so we emit:
+    1. :update deltas first (paths in OLD positions; updates don't shift)
+    2. :remove deltas in reverse-idx order (paths in OLD positions)
+    3. :add deltas in forward-idx order (paths in NEW positions)
+  This sequence keeps each delta's index valid against the live state
+  as the parent applies them."
+  [order prev-order by-key prev-by-key]
+  (let [old-keyset (set prev-order)
+        new-keyset (set order)
+        added-keys (clojure.set/difference new-keyset old-keyset)
+        removed-keys (clojure.set/difference old-keyset new-keyset)
+        common-keys (clojure.set/intersection old-keyset new-keyset)
+        common-in-old (filterv common-keys prev-order)
+        common-in-new (filterv common-keys order)
+        order-preserved? (= common-in-old common-in-new)]
+    (when order-preserved?
+      (let [old-positions (zipmap prev-order (range))
+            new-positions (zipmap order (range))
+            update-deltas (->> common-keys
+                               (keep (fn [k]
+                                       (let [old-vn (get prev-by-key k)
+                                             new-vn (get by-key k)]
+                                         (when-not (vnode-value-equal? old-vn new-vn)
+                                           {:delta :update
+                                            :path [(old-positions k)]
+                                            :old-value old-vn
+                                            :value new-vn}))))
+                               vec)
+            remove-deltas (->> removed-keys
+                               (map (fn [k] {:delta :remove
+                                             :path [(old-positions k)]
+                                             :old-value (get prev-by-key k)}))
+                               (sort-by #(- (first (:path %))))
+                               vec)
+            add-deltas (->> added-keys
+                            (map (fn [k] {:delta :add
+                                          :path [(new-positions k)]
+                                          :value (get by-key k)}))
+                            (sort-by #(first (:path %)))
+                            vec)
+            all (vec (concat update-deltas remove-deltas add-deltas))]
+        (when (seq all) all)))))
+
 (defn- build-fragment-result
   "Build the KeyedFragment result from resolved items.
 
@@ -238,11 +288,16 @@
                    ;; Empty - no deltas
                    nil)
 
-                 ;; Order changed - need structural update
+                 ;; Order changed - try fine-grained add/remove/update before
+                 ;; falling back to a wholesale :replace-all. The fine-grained
+                 ;; path emits O(diff) deltas; :replace-all unmounts and remounts
+                 ;; every keyed item which is O(n) DOM work for any single change.
                  (not= order prev-order)
-                 [{:delta :replace-all
-                   :old-items (mapv #(get prev-by-key %) prev-order)
-                   :items items}]
+                 (or (compute-fine-grained-deltas order prev-order by-key prev-by-key)
+                     ;; Common keys reordered relative to each other — bail out.
+                     [{:delta :replace-all
+                       :old-items (mapv #(get prev-by-key %) prev-order)
+                       :items items}])
 
                  ;; Same order - check if any items changed by comparing vnodes
                  :else
