@@ -1,44 +1,22 @@
 (ns org.replikativ.spindel.engine.first-run-signal-gap-test
-  "Documents the 'first-run signal-change gap' in spindel's reactive
-  graph. This test PASSES on the current (buggy) behavior — it is a
-  fingerprint of an open design bug we have characterized but not yet
-  closed. Update the assertions when the bug is fixed.
+  "Regression test for the FIRST-RUN SIGNAL-CHANGE GAP.
 
-  The gap: a spin's body has `(track A)` early then `(await
-  some-deferred)` which suspends. The body has NOT yet called its outer
-  resolve, so `record-deps!` has NOT yet committed. The track-cont for
-  signal A exists in `:continuations` and `:subscriptions[[:signal sid]]`,
-  but the spin is NOT yet in `:nodes[A]:observers`.
+  Scenario: a spin's body has `(track A)` early then `(await some-deferred)`
+  which suspends. The body has NOT yet called its outer resolve, so under
+  the old (two-stage) design, `record-deps!` would NOT have committed and
+  the spin was NOT yet in `:nodes[A]:observers`. The signal-change
+  handler reads observers, so the change was silently dropped — when the
+  await later resolved and the body completed, the body would see the
+  signal value at TRACK time, not the value at body-completion time.
 
-  `process-event!` for `:signal-change` reads `:nodes[sid]:observers`
-  ONLY (via `ordered-observers`, graph.cljc:75) and then iterates that
-  set in `observers-with-conts` (simple.cljc:495). A spin not in
-  observers never has its cont consulted, so the signal change is
-  effectively dropped for this spin's track cont.
+  Under the UNIFIED-SUBSCRIPTION design (this experiment branch),
+  observer registration is EAGER: `track-signal-dep!` adds the spin to
+  `signal.observers` at the moment of the `(track ...)` call. The gap
+  closes: a signal change during a first-run suspend resumes the cont
+  and the body completes with the FRESH value.
 
-  Symptom: when the await later resolves and the body completes, the
-  spin's :result reflects the SIGNAL VALUE AT TRACK TIME, not the value
-  at body-completion time. The spin's observer registration is now in
-  place (record-deps! ran), so SUBSEQUENT signal changes propagate —
-  but the change during the first suspend is silently lost.
-
-  An earlier fix attempt (union :subscriptions into signal-change
-  observers) revealed a separate Phase 2 deadlock: `process-event!`
-  :signal-change blocks on `batch-take!` until every resumed observer
-  produces a :spin-completion event. If a resumed observer's body
-  suspends on a Deferred, no completion event arrives during the
-  current drain — the subsequent :deferred-delivery sits in
-  :engine/pending which Phase 2 doesn't poll, and the drain hangs.
-  This is a latent issue for ANY observer (committed or not) that
-  suspends on a Deferred during a signal-change resume, not just for
-  first-run spins. Closing the gap will require addressing this too —
-  candidate paths: (a) don't add subscription-only spins to
-  resumed-observers so Phase 2 doesn't wait on them; (b) make Phase 2
-  pump :engine/pending events while it waits; (c) abandon the
-  subscriptions-union approach in favor of a body-completion
-  generation-check (at record-deps!, if any tracked signal advanced
-  since track time, re-enqueue :signal-change so the now-registered
-  cont fires)."
+  This test asserts the post-fix behavior. If you ever revert eager
+  observer registration, these assertions will catch it."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
@@ -56,14 +34,10 @@
         node (ec/get-state [:nodes id])]
     (or (when node (nodes/get-observers node)) #{})))
 
-(deftest ^{:doc "Fingerprints the first-run signal-change gap. Asserts
-                CURRENT (buggy) behavior, NOT desired behavior. When
-                the gap is closed, change `:initial` to
-                `:changed-during-suspend`."}
-  first-run-signal-change-during-await-suspend
-  (testing "Demonstrates that a signal change during a body's first-run
-            suspend is silently dropped — body completes with stale
-            tracked value."
+(deftest first-run-signal-change-during-await-suspend
+  (testing "Signal change during a body's first-run suspend reaches
+            the spin via eager observer registration; body completes
+            with the fresh signal value."
     (let [ctx-root (ctx/create-execution-context)
           hold (atom [])]
       (try
@@ -80,9 +54,11 @@
                 tid (spin-core/spin-id obs)]
             ;; Kick off the body — it tracks s, then suspends on gate.
             (obs identity identity)
-            (is (nil? @seen) "body suspended before reset!")
-            (is (not (contains? (signal-observers s) tid))
-                "spin NOT in :observers yet — record-deps! has not fired")
+            (is (nil? @seen) "body suspended before any external change")
+            ;; UNIFIED-SUBSCRIPTION: spin is in observers immediately,
+            ;; without waiting for body completion.
+            (is (contains? (signal-observers s) tid)
+                "spin IS in :observers after (track s) — eager registration")
 
             ;; Change the signal during the first-run suspend.
             (reset! s :changed-during-suspend)
@@ -92,18 +68,13 @@
             (sync/deliver! gate :gate-released)
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)
 
-            ;; CURRENT BEHAVIOR (the gap): body completes with the
-            ;; signal value captured at track time, NOT the value the
-            ;; signal has when the body resumes. Change to
-            ;; `:changed-during-suspend` once the bug is fixed.
-            (is (= :initial @seen)
-                "GAP DEMO: body sees stale signal value because no fix
-                yet for the first-run signal-change drop")
+            ;; Post-fix: body completes with the value the signal had
+            ;; when it advanced (not the value at track time).
+            (is (= :changed-during-suspend @seen)
+                "body sees FRESH signal value — gap closed")
 
-            ;; After body completion, the observer IS now registered,
-            ;; so future changes propagate normally.
             (is (contains? (signal-observers s) tid)
-                "spin is observer of s after first body completion")
+                "spin remains observer of s after first body completion")
 
             (reset! s :after-completion)
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)

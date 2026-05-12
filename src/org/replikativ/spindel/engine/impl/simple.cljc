@@ -974,16 +974,27 @@
 ;; =============================================================================
 
 (defn record-deps!
-  "Record dependencies tracked during spin execution into the dependency graph.
+  "Commit a body's tracked dependencies to the spin's permanent deps and
+  prune any observer registrations from signals/spins that were tracked
+  in a previous run but not in this one.
 
-  Takes the temporary tracking data from [:spin-tracking spin-id] and commits
-  it to the permanent dependency sets on the SpinNode, updating observer
-  registrations on signals and spins.
+  Under the unified-subscription design, observer registration happens
+  EAGERLY at `track-signal-dep!` / `track-spin-dep!` — at the moment the
+  body calls `(track sig)` / `(await child)`. So `record-deps!` does
+  NOT add observers; that would be redundant. Its responsibility is:
 
-  This is called after a spin completes execution to finalize its dependencies.
+  1. Snapshot the transient tracking into `spin.deps` (used as the diff
+     baseline for the next run).
+  2. Compute REMOVED deps (signals/spins in old spin.deps but not in
+     current spin-tracking) and unregister the spin from their observer
+     lists. This catches signals tracked in a previous run that the
+     current run skipped (conditional tracking).
+  3. Clear the transient `:spin-tracking[spin-id]` entry.
 
-  TRANSACTIONAL: All state changes happen atomically in a single swap-state! to
-  ensure context consistency for snapshotting.
+  Called from the body's outer `resolve` callback (spin/core.cljc).
+
+  TRANSACTIONAL: all state changes happen atomically in a single
+  swap-state! to keep the snapshot consistent.
 
   Args:
     context - context record (implements PState protocol)
@@ -994,10 +1005,9 @@
   (rtp/swap-state! context []
     (fn [rt-state]
       (let [tracked-deps (get-in rt-state [:spin-tracking spin-id])]
-        ;; Guard: Skip if already recorded (tracking data cleared)
-        ;; This ensures idempotency when record-deps! is called multiple times
+        ;; Idempotency guard: if tracking already cleared, no-op.
         (if-not tracked-deps
-          rt-state  ; Return state unchanged
+          rt-state
           (let [tracked-signals (:signals tracked-deps #{})
                 tracked-spins   (:spins tracked-deps #{})
                 spin-node (get-in rt-state [:nodes spin-id])
@@ -1006,59 +1016,49 @@
                 old-spins (:spins old-deps #{})
                 removed-signals (set/difference old-signals tracked-signals)
                 removed-spins (set/difference old-spins tracked-spins)]
+            (-> rt-state
+                ;; Snapshot tracked deps as the new spin.deps baseline.
+                (update-in [:nodes spin-id]
+                  (fn [node]
+                    (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
+                      (nodes/set-deps node {:signals tracked-signals
+                                            :spins tracked-spins}))))
 
-        (-> rt-state
-            ;; Update SpinNode in :nodes with dependencies (Phase 1B)
-            (update-in [:nodes spin-id]
-              (fn [node]
-                ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                  (nodes/set-deps node {:signals tracked-signals
-                                        :spins tracked-spins}))))
+                ;; Remove spin from observer lists of signals it stopped
+                ;; tracking this run. (Adds are already in place from
+                ;; eager registration at track time.)
+                (as-> state
+                  (reduce (fn [s sid]
+                            (let [node (get-in s [:nodes sid])]
+                              (if node
+                                (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
+                                s)))
+                          state
+                          removed-signals))
 
-            ;; Remove spin from old signal observers in :nodes SignalNode (Phase 1B)
-            (as-> state
-              (reduce (fn [s sid]
-                        (let [node (get-in s [:nodes sid])]
-                          (if node
-                            (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
-                            s)))
-                      state
-                      removed-signals))
+                ;; Spin observers (parents awaiting this child) remain on
+                ;; the two-stage commit for now — Stage 3 will unify them
+                ;; with eager registration analogous to signals. Until
+                ;; then, record-deps! handles add+remove for spin obs.
+                (as-> state
+                  (reduce (fn [s tid]
+                            (let [node (get-in s [:nodes tid])]
+                              (if node
+                                (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
+                                s)))
+                          state
+                          removed-spins))
+                (as-> state
+                  (reduce (fn [s tid]
+                            (update-in s [:nodes tid]
+                              (fn [node]
+                                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
+                                  (nodes/add-observer node spin-id)))))
+                          state
+                          tracked-spins))
 
-            ;; Add spin to new signal observers in :nodes SignalNode (Phase 1B)
-            (as-> state
-              (reduce (fn [s sid]
-                        (let [node (get-in s [:nodes sid])]
-                          (if node
-                            (update-in s [:nodes sid] #(nodes/add-observer % spin-id))
-                            s)))
-                      state
-                      tracked-signals))
-
-            ;; Remove spin from old spin observers in :nodes SpinNode (Phase 1B)
-            (as-> state
-              (reduce (fn [s tid]
-                        (let [node (get-in s [:nodes tid])]
-                          (if node
-                            (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
-                            s)))
-                      state
-                      removed-spins))
-
-            ;; Add spin to new spin observers in :nodes SpinNode (Phase 1B)
-            (as-> state
-              (reduce (fn [s tid]
-                        ;; Create node if it doesn't exist, then add observer
-                        (update-in s [:nodes tid]
-                          (fn [node]
-                            (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                              (nodes/add-observer node spin-id)))))
-                      state
-                      tracked-spins))
-
-            ;; Clear tracking data
-            (update :spin-tracking dissoc spin-id)))))))
+                ;; Clear transient tracking.
+                (update :spin-tracking dissoc spin-id)))))))
   true)
 
 (defn clear-deps!
@@ -1078,20 +1078,27 @@
   [context spin-id]
   (rtp/swap-state! context []
     (fn [rt-state]
-      ;; Get dependencies from SpinNode in :nodes (Phase 1B)
+      ;; To safely clear observers, take the UNION of `spin.deps` (the
+      ;; last completed run's deps) and `spin.tracking` (the in-flight
+      ;; run's eager registrations). Under the unified-subscription
+      ;; design, the in-flight body may have eagerly registered as an
+      ;; observer of signals that aren't yet in spin.deps (record-deps!
+      ;; hasn't committed). Skipping those would leak observer entries.
       (let [spin-node (get-in rt-state [:nodes spin-id])
             deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
-            signal-deps (:signals deps #{})
-            spin-deps (:spins deps #{})]
-
+            tracking (get-in rt-state [:spin-tracking spin-id])
+            signal-deps (set/union (:signals deps #{})
+                                            (:signals tracking #{}))
+            spin-deps (set/union (:spins deps #{})
+                                          (:spins tracking #{}))]
         (-> rt-state
-            ;; Clear dependencies in SpinNode (Phase 1B)
+            ;; Clear committed deps on the SpinNode.
             (update-in [:nodes spin-id]
               (fn [node]
                 (when node
                   (nodes/set-deps node {:signals #{} :spins #{}}))))
 
-            ;; Unregister from signal observers in :nodes SignalNode (Phase 1B)
+            ;; Unregister from signal observers (committed + eager).
             (as-> state
               (reduce (fn [s sid]
                         (let [node (get-in s [:nodes sid])]
@@ -1101,7 +1108,8 @@
                       state
                       signal-deps))
 
-            ;; Unregister from spin observers in :nodes SpinNode (Phase 1B)
+            ;; Unregister from spin observers (committed only; spin obs
+            ;; aren't eagerly registered yet — Stage 3 will unify them).
             (as-> state
               (reduce (fn [s tid]
                         (let [node (get-in s [:nodes tid])]
@@ -1111,10 +1119,12 @@
                       state
                       spin-deps))
 
-            ;; Clear continuations
+            ;; Clear continuations + transient tracking.
             (update :continuations dissoc spin-id)
+            (update :spin-tracking dissoc spin-id)
 
-            ;; Clean up subscriptions (remove spin-id from all event keys, remove empty event keys)
+            ;; Clean up subscriptions (remove spin-id from all event keys,
+            ;; drop empty event keys).
             (update :subscriptions
                     (fn [subs]
                       (reduce-kv
@@ -1122,7 +1132,7 @@
                           (let [m' (dissoc m spin-id)]
                             (if (seq m')
                               (assoc acc ek m')
-                              acc)))  ; Don't include empty event keys
+                              acc)))
                         {}
                         subs)))))))
   true)
@@ -1237,10 +1247,35 @@
           #(when % (assoc % :orphaned? true)))))))
 
 (defn track-signal-dep!
-  "Track that a spin depends on a signal (during execution).
+  "Track that a spin depends on a signal — eagerly registers the spin
+  as an observer of the signal.
 
-  Records signal-id in the spin's pending tracking set. Committed to the
-  SpinNode's :deps when record-deps! runs.
+  Unified-subscription design: a spin observes a signal from the moment
+  it calls `(track ...)`, not from body-completion time. Doing so:
+
+  1. Closes the first-run signal-change gap. If the spin's body suspends
+     (e.g., on an await) before its outer resolve fires, signal changes
+     during that suspend still reach the spin via the live observer
+     registration. Pre-unification, observer registration was deferred
+     until `record-deps!`, leaving a window where the cont existed but
+     the dispatch handler couldn't find it.
+
+  2. Unifies the two parallel indexes — `:nodes[sid]:observers` (forward
+     dispatch) and `:subscriptions[[:signal sid]]` (reverse cont lookup)
+     are now kept in sync at every state transition.
+
+  Atomic single swap-state! updates both:
+    - `:spin-tracking[spin-id][:signals]` — transient accumulator used
+      by `record-deps!` for diff at body completion.
+    - `:nodes[signal-id]:observers` — forward index used by
+      `signal-change` dispatch.
+
+  Cleanup contracts:
+    - `record-deps!` (body resolve) — commits tracking → spin.deps and
+      removes spin from observers of signals previously in deps but
+      not re-tracked this run.
+    - `clear-deps!` (invalidate/full-cleanup) — removes spin from
+      observers of (spin.deps ∪ spin.tracking).signals.
 
   Args:
     context - context record (implements PState protocol)
@@ -1251,8 +1286,15 @@
   [context spin-id signal-id]
   (rtp/swap-state! context []
     (fn [rt-state]
-      (update-in rt-state [:spin-tracking spin-id :signals]
-                 (fnil conj #{}) signal-id)))
+      (-> rt-state
+          ;; Transient accumulator for diff at body completion.
+          (update-in [:spin-tracking spin-id :signals]
+                     (fnil conj #{}) signal-id)
+          ;; Eager observer registration on the signal node.
+          (update-in [:nodes signal-id]
+                     (fn [signal-node]
+                       (when signal-node
+                         (nodes/add-observer signal-node spin-id)))))))
   true)
 
 (defn track-spin-dep!
