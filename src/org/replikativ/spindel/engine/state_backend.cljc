@@ -103,8 +103,7 @@
 
   Shared state (falls back to parent):
   - :nodes - Signal and spin nodes (shared observer graph for reactive invalidation)
-  - :spin-outputs - Cached spin results (forks can use parent's cache)
-  - :spin-tracking - Dependency tracking
+  - :spin-tracking - Dependency tracking (transient accumulator)
   - :subscriptions - Event subscriptions
   - :atoms - Runtime atoms"
   #{:continuations :engine/pending :engine/draining?

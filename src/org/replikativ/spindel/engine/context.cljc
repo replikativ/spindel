@@ -248,8 +248,7 @@
                               :nodes {}              ; Unified nodes (SignalNode + SpinNode)
                               :spin-tracking {}      ; Transient dependency tracking
                               :continuations {}      ; Spin continuations
-                              :subscriptions {}      ; Event subscriptions
-                              :spin-outputs {}       ; Spin output values (for non-blocking await)
+                              :subscriptions {}      ; Event subscriptions (reverse index of :continuations)
                               :atoms {}              ; Fork-safe execution context atoms
                               ;; Engine state
                               :engine/pending []

@@ -41,13 +41,13 @@
               ;; Verify state exists before cleanup
               (is (some? (rtp/get-state ctx [:nodes sid])) "Node should exist before cleanup")
               (is (some? (rtp/get-state ctx [:spins-meta sid])) "Meta should exist before cleanup")
-              (is (some? (rtp/get-state ctx [:spin-outputs sid])) "Output should exist before cleanup")
+              ;; Note: :spin-outputs was dropped in the unified-subscription
+              ;; cleanup — the spin's result lives on :nodes[sid]:result.
               ;; Run full cleanup
               (simple/full-cleanup-spin! ctx sid)
               ;; Verify all state is gone
               (is (nil? (rtp/get-state ctx [:nodes sid])) "Node should be removed")
               (is (nil? (rtp/get-state ctx [:spins-meta sid])) "Meta should be removed")
-              (is (nil? (rtp/get-state ctx [:spin-outputs sid])) "Output should be removed")
               (is (nil? (rtp/get-state ctx [:continuations sid])) "Continuations should be removed")
               (done))
             (fn [e] (is false (str "Spin failed: " e)) (done))))))))

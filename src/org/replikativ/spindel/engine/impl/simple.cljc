@@ -421,18 +421,26 @@
   child fires → updates cache → parent re-fires → finds stale cache → 0 deltas.
 
   Returns the root spin-id if the spin has an await parent chain,
-  or nil if the spin has no await parent."
+  or nil if the spin has no await parent.
+
+  Reads parent set from `:nodes[spin-id]:observers` — under the unified-
+  subscription design (stage 3), spin observers includes every parent
+  currently awaiting this child, eagerly registered by track-spin-dep!.
+  This replaces the separate `:await-dependents` index."
   [context spin-id]
-  (let [parents (rtp/get-state context [:await-dependents spin-id])]
-    (when (seq parents)
-      (loop [current (first parents)
-             visited #{spin-id}]
-        (if (visited current)
-          current ;; cycle detected, return current as root
-          (let [grandparents (rtp/get-state context [:await-dependents current])]
-            (if (seq grandparents)
-              (recur (first grandparents) (conj visited current))
-              current)))))))
+  (letfn [(parents-of [tid]
+            (when-let [node (rtp/get-state context [:nodes tid])]
+              (nodes/get-observers node)))]
+    (let [parents (parents-of spin-id)]
+      (when (seq parents)
+        (loop [current (first parents)
+               visited #{spin-id}]
+          (if (visited current)
+            current ;; cycle detected, return current as root
+            (let [grandparents (parents-of current)]
+              (if (seq grandparents)
+                (recur (first grandparents) (conj visited current))
+                current))))))))
 
 (defn process-event!
   "Process a single event.
@@ -1168,13 +1176,11 @@
             (update :nodes dissoc spin-id)
             ;; 4. Remove metadata
             (update :spins-meta dissoc spin-id)
-            ;; 5. Remove cached output
-            (update :spin-outputs dissoc spin-id)
-            ;; 6. Remove continuations
+            ;; 5. Remove continuations
             (update :continuations dissoc spin-id)
-            ;; 7. Remove pending callbacks
+            ;; 6. Remove pending callbacks
             (update :pending-callbacks dissoc spin-id)
-            ;; 8. Remove tracking data
+            ;; 7. Remove tracking data
             (update :spin-tracking dissoc spin-id)
             ;; 9. Clean subscriptions (remove spin-id from all event keys)
             (update :subscriptions
@@ -1185,21 +1191,10 @@
                                  (let [m' (dissoc m spin-id)]
                                    (if (seq m') (assoc! acc ek m') acc)))
                                (transient {}) subs)))))
-            ;; 10. Clean await-dependents:
-            ;;     - Remove this spin's own entry (it can no longer be a child)
-            ;;     - Remove this spin as a parent in every other entry
-            (update :await-dependents
-              (fn [deps]
-                (when deps
-                  (persistent!
-                    (reduce-kv (fn [m child-id parents]
-                                 (if (= child-id spin-id)
-                                   m  ; drop this spin's own entry
-                                   (let [parents' (disj parents spin-id)]
-                                     (if (seq parents')
-                                       (assoc! m child-id parents')
-                                       m))))
-                               (transient {}) deps)))))))))
+            ;; Note: await-parent relations live on :nodes :observers
+            ;; now; signal observers (above) and the :subscriptions clean
+            ;; (above) cover those. No separate :await-dependents map.
+            ))))
   true)
 
 (defn try-gc-cleanup-spin!
@@ -1409,12 +1404,13 @@
   [context spin-id]
   (rtp/swap-state! context []
     (fn [rt-state]
-      ;; Collect all nodes to mark dirty using breadth-first traversal
-      ;; This ensures we mark the full transitive closure of dependents
-      (let [in-batch? (some? (get rt-state :engine/current-batch))]
-        (loop [to-visit #{spin-id}
-               visited #{}
-               state rt-state]
+      ;; Collect all nodes to mark dirty using breadth-first traversal.
+      ;; All observer relations live on spin-node :observers now, so a
+      ;; single BFS through that field covers both track-dependents and
+      ;; await-parents.
+      (loop [to-visit #{spin-id}
+             visited #{}
+             state rt-state]
           (if (empty? to-visit)
             state
             (let [current-id (first to-visit)
@@ -1423,10 +1419,11 @@
                 (recur remaining visited state)
                 (let [spin-node (get-in state [:nodes current-id])
                       observers (if spin-node (nodes/get-observers spin-node) #{})
-                      ;; During batch mode, also include await dependents for full propagation
-                      await-parents (when in-batch?
-                                     (get-in state [:await-dependents current-id]))
-                      next-to-mark (into (or observers #{}) (or await-parents #{}))
+                      ;; spin-node.observers already includes both committed
+                      ;; await-parents AND eagerly-registered ones (Stage 3),
+                      ;; so the separate `:await-dependents` walk in batch
+                      ;; mode is no longer needed.
+                      next-to-mark (or observers #{})
                       ;; Filter out already visited to avoid infinite loops
                       new-to-visit (into remaining (remove visited next-to-mark))
                       ;; Mark current node dirty
@@ -1436,7 +1433,7 @@
                                       (-> node
                                           (assoc :completed? false)
                                           (nodes/mark-dirty)))))]
-                  (recur new-to-visit (conj visited current-id) new-state)))))))))
+                  (recur new-to-visit (conj visited current-id) new-state))))))))
   true)
 
 (defn clear-all-await-continuations!
@@ -1492,10 +1489,8 @@
                     rt-state
                     await-conts))))))))
 
-    ;; CRITICAL: Do NOT clear :await-dependents here!
-    ;; Await dependencies must persist through batch processing for dirty propagation.
-    ;; When a child completes during batch, propagate-await-dirty! needs these dependencies
-    ;; to mark parent spins dirty. Dependencies are naturally overwritten as spins re-execute.
+    ;; Spin observers (parent set) live on `:nodes[child-id]:observers`;
+    ;; there is no separate `:await-dependents` index any longer.
 
     (let [stats @result]
       (when (pos? (:continuations-cleared stats))
@@ -1503,24 +1498,13 @@
       stats)))
 
 (defn ^:no-doc record-await-dependency!
-  "Record that parent-spin awaits child-spin for dirty propagation.
-
-  When a spin registers an await continuation for another spin, we record
-  this dependency relationship. Later, when the child completes dirty,
-  we can propagate the dirty flag to all parents that await it.
-
-  This is the core mechanism for ephemeral await semantics - dependencies
-  are recorded during execution but cleared at generation boundaries.
-
-  Args:
-    context - runtime context
-    parent-spin-id - spin that is awaiting
-    child-spin-id - spin being awaited"
-  [context parent-spin-id child-spin-id]
-  (rtp/swap-state! context [:await-dependents child-spin-id]
-    (fn [parents]
-      (conj (or parents #{}) parent-spin-id)))
-  (log/trace :await/record-dependency {:parent parent-spin-id :child child-spin-id}))
+  "Compatibility shim — under the unified-subscription design, the parent
+  is already added to `child.observers` eagerly by `track-spin-dep!`
+  (called from await-handler before this). Kept as a no-op for callers
+  that still invoke it; can be removed once those call sites are
+  audited."
+  [_context _parent-spin-id _child-spin-id]
+  nil)
 
 (defn ^:no-doc propagate-await-dirty!
   "Propagate dirty flag through await dependency graph.
@@ -1537,13 +1521,17 @@
   suspended on this await, it will get the fresh value when it resumes -
   no need to mark it dirty.
 
+  Reads parent set from `:nodes[spin-id]:observers` (unified-subscription
+  design, stage 3). Previously read from `:await-dependents`.
+
   Args:
     context - runtime context
     spin-id - spin that just completed"
   [context spin-id]
   ;; Only propagate during batch processing (when in signal-change handling)
   (when-let [batch (rtp/get-state context [:engine/current-batch])]
-    (let [awaiting-parents (rtp/get-state context [:await-dependents spin-id])]
+    (let [child-node (rtp/get-state context [:nodes spin-id])
+          awaiting-parents (when child-node (nodes/get-observers child-node))]
       (when (seq awaiting-parents)
         (let [completion-event-key [:spin/complete spin-id]
               processed @(:processed batch)

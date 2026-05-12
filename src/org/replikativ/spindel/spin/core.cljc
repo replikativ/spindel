@@ -134,7 +134,9 @@
 ;; - Implements IDeref for backward compat: @spin blocks until complete
 ;;   IMPORTANT: Never call @spin internally! Always use IFn interface (pure CPS, non-blocking)
 ;; - Returns ::incomplete when spin is running (for trampoline suspension)
-;; - Populates :spin-outputs for non-blocking spin-to-spin await
+;;   (Note: :spin-outputs top-level state was previously written here but
+;;   never read; removed in the unified-subscription cleanup. The spin's
+;;   result lives on the SpinNode in :nodes[spin-id]:result.)
 
 ;; Forward declaration for error handling
 (declare abort-spin-chain!)
@@ -309,9 +311,6 @@
                                 ;; Cache result via protocol (uses current-rt via dynamic binding)
                                 (ec/spin-cache-result! spin-id (ok value))
 
-                                ;; Store for non-blocking await
-                                (ec/swap-state! [:spin-outputs spin-id] (constantly value))
-
                                 ;; Record dependencies on the SpinNode
                                 (ec/graph-commit-deps! spin-id)
 
@@ -345,9 +344,6 @@
                               (let [_current-rt (ec/current-execution-context)]
                                 ;; Cache error via protocol (uses current-rt via dynamic binding)
                                 (ec/spin-cache-result! spin-id (error err))
-
-                                ;; Store error marker for non-blocking await
-                                (ec/swap-state! [:spin-outputs spin-id] (constantly [:error err]))
 
                                 ;; Record dependencies even on error
                                 (ec/graph-commit-deps! spin-id)
