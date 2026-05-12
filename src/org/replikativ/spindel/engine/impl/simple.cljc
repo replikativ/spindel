@@ -1036,10 +1036,10 @@
                           state
                           removed-signals))
 
-                ;; Spin observers (parents awaiting this child) remain on
-                ;; the two-stage commit for now — Stage 3 will unify them
-                ;; with eager registration analogous to signals. Until
-                ;; then, record-deps! handles add+remove for spin obs.
+                ;; Spin observers (parents awaiting children) are also
+                ;; eagerly registered now (Stage 3, via track-spin-dep!).
+                ;; record-deps! only needs to prune observers from spins
+                ;; the parent stopped awaiting between runs.
                 (as-> state
                   (reduce (fn [s tid]
                             (let [node (get-in s [:nodes tid])]
@@ -1048,14 +1048,6 @@
                                 s)))
                           state
                           removed-spins))
-                (as-> state
-                  (reduce (fn [s tid]
-                            (update-in s [:nodes tid]
-                              (fn [node]
-                                (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                                  (nodes/add-observer node spin-id)))))
-                          state
-                          tracked-spins))
 
                 ;; Clear transient tracking.
                 (update :spin-tracking dissoc spin-id)))))))
@@ -1108,8 +1100,8 @@
                       state
                       signal-deps))
 
-            ;; Unregister from spin observers (committed only; spin obs
-            ;; aren't eagerly registered yet — Stage 3 will unify them).
+            ;; Unregister from spin observers (committed + eager —
+            ;; same union semantics as signals after Stage 3).
             (as-> state
               (reduce (fn [s tid]
                         (let [node (get-in s [:nodes tid])]
@@ -1298,10 +1290,21 @@
   true)
 
 (defn track-spin-dep!
-  "Track that a parent spin depends on a child spin (during execution).
+  "Track that a parent spin depends on a child spin — eagerly registers
+  the parent as an observer of the child's spin-completion event.
 
-  Records child-spin-id in the parent's pending tracking set. Committed to
-  the parent's :deps when record-deps! runs.
+  Symmetric with `track-signal-dep!` (Stage 2 of the unified-
+  subscription design). At the moment a body calls `(await child)`,
+  the parent becomes part of the child's observer set so future
+  re-completions of the child propagate to the parent without waiting
+  for the parent's body to resolve.
+
+  Atomic single swap-state! updates both:
+    - `:spin-tracking[parent-id][:spins]` — transient accumulator used
+      by `record-deps!` for diff at body completion.
+    - `:nodes[child-id]:observers` — forward index used by
+      `cache-result!`'s dirty-marking + `process-event! :spin-completion`
+      dispatch.
 
   Args:
     context - context record (implements PState protocol)
@@ -1312,8 +1315,18 @@
   [context parent-spin-id child-spin-id]
   (rtp/swap-state! context []
     (fn [rt-state]
-      (update-in rt-state [:spin-tracking parent-spin-id :spins]
-                 (fnil conj #{}) child-spin-id)))
+      (-> rt-state
+          ;; Transient accumulator for diff at parent body completion.
+          (update-in [:spin-tracking parent-spin-id :spins]
+                     (fnil conj #{}) child-spin-id)
+          ;; Eager observer registration on the child spin node. Create
+          ;; the child node if it doesn't exist yet — the parent may be
+          ;; awaiting a child whose own register-spin! hasn't fired
+          ;; (e.g. a chan->spin freshly minted).
+          (update-in [:nodes child-spin-id]
+                     (fn [node]
+                       (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
+                         (nodes/add-observer node parent-spin-id)))))))
   true)
 
 ;; =============================================================================
