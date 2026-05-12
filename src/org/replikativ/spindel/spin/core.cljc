@@ -6,6 +6,8 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
@@ -167,7 +169,8 @@
          (do
            (log/debug :deref/rebuild-mode {:spin-id spin-id})
            (binding [ec/*execution-context* runtime
-                     ec/*spin-id* spin-id]
+                     ec/*spin-id* spin-id
+                     ec/*chain-head* (atom (addressing/body-start-chain-head spin-id))]
              (spin-fn (fn [_] nil) (fn [_] nil)))
            (unwrap cached))
 
@@ -225,9 +228,12 @@
           (and local-cached (ec/spin-result-clean? spin-id) rebuild-mode?)
           (do
             (log/debug :cache/rebuild-mode {:spin-id spin-id})
-            ;; Execute spin body for side effects (nested spin creation, continuation registration)
+            ;; Execute spin body for side effects (nested spin creation, continuation registration).
+            ;; Fresh chain-head atom = nested spin minting reproduces the same id
+            ;; sequence as the original run (rebuild's whole purpose).
             (binding [ec/*execution-context* runtime
-                      ec/*spin-id* spin-id]
+                      ec/*spin-id* spin-id
+                      ec/*chain-head* (atom (addressing/body-start-chain-head spin-id))]
               ;; Execute with dummy callbacks - we'll use cached value anyway
               (spin-fn (fn [_] nil) (fn [_] nil)))
             ;; Return cached value
@@ -278,10 +284,12 @@
             ;; Their closures captured values from the old run - now stale
             (simple/invalidate-created-spins! runtime spin-id)
 
-            ;; Execute spin-fn with dynamic bindings
-            ;; Bind *execution-context* for this scope
+            ;; Execute spin-fn with dynamic bindings.
+            ;; Fresh `*chain-head*` atom (seeded with body-start) gives this
+            ;; body slice its own thread-local cursor — see addressing.cljc.
             (binding [ec/*execution-context* runtime
-                      ec/*spin-id* spin-id]
+                      ec/*spin-id* spin-id
+                      ec/*chain-head* (atom (addressing/body-start-chain-head spin-id))]
               (let [result (spin-fn
                             ;; Resolve continuation
                             (fn [value]
@@ -412,6 +420,22 @@
 
      ;; Register spin with runtime via protocol (uses dynamic *execution-context*)
      (ec/spin-register! spin-id {:provides #{}})
+
+     ;; Snapshot DOM ephemeral bindings (:dom/parent-addr, :dom/current-slot)
+     ;; from the construction-time execution context, and store them on this
+     ;; spin's node. The engine re-applies them on every continuation entry
+     ;; (see resume-single-observer! in engine/impl/simple.cljc). This gives
+     ;; spins closure semantics over their lexical DOM scope: an inner spin
+     ;; constructed under a keyed/scoped context restores that scope on each
+     ;; track/await resume, even though the engine strips ephemeral keys.
+     ;; Root spins (no surrounding element macro at construction) capture an
+     ;; empty scope, so this is a no-op there.
+     (when-let [ctx (ec/current-execution-context)]
+       (let [dom-scope (select-keys (:bindings ctx)
+                                    [:dom/parent-addr :dom/current-slot])]
+         (when (seq dom-scope)
+           (rtp/swap-state! ctx [:nodes spin-id :dom-scope]
+                            (constantly dom-scope)))))
 
      ;; Register automatic cleanup when spin is GC'd
      ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup

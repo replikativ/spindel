@@ -180,12 +180,14 @@
 
   Returns: VNode with :deltas if any changes detected"
   [tag source-loc attrs child-thunks]
-  (let [;; Compute this element's address
-        my-addr (addr/current-element-address source-loc)
-
-        ;; Evaluate each child thunk with proper slot context (using function versions)
+  (let [my-addr (addr/current-element-address source-loc)
+        ;; Match the macro's behavior: when :key is present, children see the
+        ;; effective (keyed) address as their parent, scoping descendants.
+        eff-addr (if-let [k (:key attrs)]
+                   (addr/keyed-child-address my-addr k)
+                   my-addr)
         new-children
-        (addr/with-parent-addr-fn my-addr
+        (addr/with-parent-addr-fn eff-addr
           (fn []
             (vec (map-indexed
                    (fn [idx thunk]
@@ -193,8 +195,6 @@
                        (fn []
                          (thunk))))
                    child-thunks))))]
-
-    ;; Delegate to build-element
     (build-element tag my-addr attrs new-children)))
 
 ;; =============================================================================
@@ -254,10 +254,20 @@
                                      (fn [idx sym child-expr]
                                        [sym `(addr/with-slot ~idx ~child-expr)])
                                      (range) child-syms children))]
-           `(let [my-addr# (addr/current-element-address ~source-loc)]
-              (addr/with-parent-addr my-addr#
+           ;; Children see the element's *effective* address as their parent —
+           ;; i.e. (keyed-child-address my-addr :key) when :key is present,
+           ;; otherwise my-addr. This makes :key scope the addressing of all
+           ;; descendants, so siblings from (for [x xs] (el/div {:key id} ...))
+           ;; get distinct addrs all the way down, not just at the keyed
+           ;; element itself.
+           `(let [my-addr#  (addr/current-element-address ~source-loc)
+                  attrs#    ~attrs-form
+                  eff-addr# (if-let [k# (:key attrs#)]
+                              (addr/keyed-child-address my-addr# k#)
+                              my-addr#)]
+              (addr/with-parent-addr eff-addr#
                 (let [~@child-bindings]
-                  (build-element ~tag my-addr# ~attrs-form [~@child-syms])))))
+                  (build-element ~tag my-addr# attrs# [~@child-syms])))))
          `(let [my-addr# (addr/current-element-address ~source-loc)]
             (build-element ~tag my-addr# ~attrs-form []))))))
 
@@ -421,9 +431,19 @@
                                      (fn [idx sym child-expr]
                                        [sym `(addr/with-slot ~idx ~child-expr)])
                                      (range) child-syms children))]
-           `(let [my-addr# (addr/current-element-address ~source-loc)]
-              (addr/with-parent-addr my-addr#
+           ;; Children see the element's *effective* address as their parent —
+           ;; i.e. (keyed-child-address my-addr :key) when :key is present,
+           ;; otherwise my-addr. This makes :key scope the addressing of all
+           ;; descendants, so siblings from (for [x xs] (el/div {:key id} ...))
+           ;; get distinct addrs all the way down, not just at the keyed
+           ;; element itself.
+           `(let [my-addr#  (addr/current-element-address ~source-loc)
+                  attrs#    ~attrs-form
+                  eff-addr# (if-let [k# (:key attrs#)]
+                              (addr/keyed-child-address my-addr# k#)
+                              my-addr#)]
+              (addr/with-parent-addr eff-addr#
                 (let [~@child-bindings]
-                  (build-element ~tag my-addr# ~attrs-form [~@child-syms])))))
+                  (build-element ~tag my-addr# attrs# [~@child-syms])))))
          `(let [my-addr# (addr/current-element-address ~source-loc)]
             (build-element ~tag my-addr# ~attrs-form []))))))

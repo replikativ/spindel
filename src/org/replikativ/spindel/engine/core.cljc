@@ -30,6 +30,24 @@
 
 	Bound by gen-aseq to handle yield breakpoints during CPS execution." nil)
 
+(def ^:dynamic *chain-head*
+	"Per-body-execution chain-head cursor (an atom containing the latest
+	address minted by `next-address!`).
+
+	Bound by the engine at the start of every cache-miss / rebuild / resume
+	body invocation, so the cursor is **thread-local to the body's execution
+	slice**. Two threads concurrently running different code paths under the
+	same `*spin-id*` (e.g. a stale completion callback colliding with an
+	in-flight resume) see independent atoms and cannot race on the cursor.
+
+	At suspend, the cursor's value is snapshotted into the cont-map; at
+	resume, the engine binds a fresh atom containing the snapshot so the
+	resumed body slice continues from the same hash chain that the
+	pre-suspend slice left off at.
+
+	When unbound (top-level code outside any spin body), `next-address!`
+	falls back to a context-global slot for compatibility." nil)
+
 ;; =============================================================================
 ;; CLJS Binding Registration
 ;; =============================================================================
@@ -46,7 +64,8 @@
    (do
      (bindings/register-var! #'*spin-id*)
      (bindings/register-var! #'*worker-id*)
-     (bindings/register-var! #'*yield-handler*)))
+     (bindings/register-var! #'*yield-handler*)
+     (bindings/register-var! #'*chain-head*)))
 
 ;; ExecutionContext binding macros
 #?(:clj

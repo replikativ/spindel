@@ -125,6 +125,70 @@
 ;; These should not have their deltas applied again.
 (def ^:dynamic *rendered-vnodes* nil)
 
+;; Tracks vnode objects whose :deltas have already been applied by
+;; discharge-vnode! at some point in the render-effect's lifetime.
+;;
+;; Unlike *rendered-vnodes* which is per-cycle, this set is bound by the
+;; render effect once and persists across re-render cycles. It exists to
+;; deal with the cross-spin reuse case: a cached spin result (an aside
+;; vnode) carries its initial-reconciliation :deltas forever; without
+;; this set, every time a parent re-emits and embeds the cached child
+;; vnode, the same :deltas fire again, duplicating children in the DOM.
+;;
+;; Identity comparison (`identical?` via a Java IdentityHashMap-backed
+;; set, or a regular Clojure set when the vnodes are persistent values)
+;; is the right granularity: a *new* vnode at the same addr with new
+;; deltas (e.g. a rebuild because the spin re-ran) is a different object
+;; and gets its deltas applied normally.
+(def ^:dynamic *applied-vnodes* nil)
+
+;; Track addresses claimed during the current render pass. If two different
+;; vnodes try to claim the same :addr we have an addressing collision —
+;; classic symptom is `(for [x xs] (vnode-fn x))` instead of `ifor-each`,
+;; where siblings share source-loc + parent-addr + slot-index. The collision
+;; silently corrupts the DOM (later child deltas resolve to whichever vnode
+;; won set-element! last), so we error loudly when it happens.
+(def ^:dynamic *rendered-addrs* nil)
+
+(defn- vnode-fingerprint
+  "Return a small, log-friendly summary of a vnode to help locate collisions."
+  [vnode]
+  (let [attrs (when-let [a (:attrs vnode)]
+                (if (d/deltaable? a) @a a))
+        children (when-let [c (:children vnode)]
+                   (if (d/deltaable? c) @c c))
+        text-content (some (fn [c]
+                             (when (and (map? c) (= :text (:tag c)))
+                               (:content c)))
+                           children)]
+    (cond-> {:tag (:tag vnode) :key (:key vnode)}
+      (:class attrs)        (assoc :class (:class attrs))
+      (:id attrs)           (assoc :id (:id attrs))
+      (:data-type attrs)    (assoc :data-type (:data-type attrs))
+      text-content          (assoc :text (subs text-content 0 (min 60 (count text-content)))))))
+
+(defonce ^:private logged-collisions (atom #{}))
+
+(defn register-addr!
+  "Register an address as claimed during this render pass.
+  Logs an error the first time we see a given collision address (across the
+  process lifetime); thereafter the same colliding address is silent so the
+  console isn't flooded by per-render repeats."
+  [vnode]
+  (when (and *rendered-addrs* (:addr vnode))
+    (let [addr (:addr vnode)
+          seen (get @*rendered-addrs* addr)]
+      (if seen
+        (when (and (not (identical? seen vnode))
+                   (not (contains? @logged-collisions addr)))
+          (swap! logged-collisions conj addr)
+          (log/error ::addr-collision
+                     {:addr addr
+                      :prior (vnode-fingerprint seen)
+                      :new (vnode-fingerprint vnode)
+                      :hint "Two vnodes claim the same :addr in one render pass. Use ifor-each for cardinality-variable lists, or split the call site so each sibling has a distinct source-loc. (Logged once per process — see logged-collisions atom.)"}))
+        (swap! *rendered-addrs* assoc addr vnode)))))
+
 ;; =============================================================================
 ;; Attribute Delta Application
 ;; =============================================================================
@@ -314,18 +378,24 @@
   2. Child deltas (from slot reconciliation :deltas field)
 
   Skips vnodes that were already fully rendered via render-initial! during
-  this discharge cycle (tracked in *rendered-vnodes*)."
+  this discharge cycle (tracked in *rendered-vnodes*), AND vnodes whose
+  deltas have already been applied earlier in this render-effect's
+  lifetime (tracked in *applied-vnodes*, set up by create-render-effect).
+  The latter protects against cross-spin reuse: a cached spin result's
+  vnode carries its initial-reconciliation :deltas; without this guard,
+  every parent re-emission that embeds the same vnode object would
+  re-apply those deltas, duplicating children in the DOM."
   [discharge vnode]
   (when vnode
-    ;; Skip if this vnode was already fully rendered via render-initial!
-    ;; This prevents double-application of deltas for newly added elements
-    (let [is-rendered? (and *rendered-vnodes* (contains? @*rendered-vnodes* vnode))]
+    (let [is-rendered? (and *rendered-vnodes* (contains? @*rendered-vnodes* vnode))
+          is-applied?  (and *applied-vnodes*  (contains? @*applied-vnodes* vnode))]
       (log/debug ::discharge-vnode {:tag (:tag vnode)
                           :is-rendered? is-rendered?
+                          :is-applied? is-applied?
                           :has-child-deltas (boolean (seq (:deltas vnode)))
                           :child-delta-count (count (:deltas vnode))
                           :rendered-set-size (when *rendered-vnodes* (count @*rendered-vnodes*))})
-      (when-not is-rendered?
+      (when-not (or is-rendered? is-applied?)
         (let [el (get-element discharge (:addr vnode))]
           (when-not el
             (log/debug ::element-not-found {:addr (:addr vnode) :tag (:tag vnode)
@@ -335,7 +405,13 @@
             (apply-attr-deltas! discharge el vnode)
 
             ;; Apply child deltas (from new delta-direct system)
-            (apply-child-deltas! discharge el vnode)))))))
+            (apply-child-deltas! discharge el vnode)
+
+            ;; Mark this vnode object as applied so future render cycles
+            ;; that encounter the SAME vnode (e.g. a cached spin result
+            ;; embedded by a re-emitting parent) skip re-applying.
+            (when *applied-vnodes*
+              (swap! *applied-vnodes* conj vnode))))))))
 
 ;; =============================================================================
 ;; Tree Walking
@@ -378,7 +454,8 @@
 
   Returns the vdom with deltas cleared."
   [discharge vdom]
-  (binding [*rendered-vnodes* (atom #{})]
+  (binding [*rendered-vnodes* (atom #{})
+            *rendered-addrs* (atom {})]
     (let [nodes (collect-nodes-with-deltas vdom)]
       (log/debug ::discharge-all {:nodes-count (count nodes)
                           :nodes-with-deltas (mapv (fn [n] {:tag (:tag n) :deltas (:deltas n)}) nodes)})
@@ -466,10 +543,22 @@
 ;; =============================================================================
 
 (defn- mark-rendered!
-  "Mark a vnode as rendered in *rendered-vnodes* if tracking is active."
+  "Mark a vnode as rendered in *rendered-vnodes* if tracking is active.
+
+  Also marks it as 'applied' in the long-lived `*applied-vnodes*` set if
+  bound. `render-initial!` walks a vnode's :children list directly to
+  create the DOM tree, which effectively consumes the equivalent of its
+  initial-reconciliation :deltas. Without registering the vnode as
+  applied, the next discharge cycle would walk the SAME vnode (when a
+  parent re-emits with this cached child) and re-apply those deltas to
+  the existing DOM element, duplicating children — the cross-spin reuse
+  bug."
   [vnode]
-  (when (and *rendered-vnodes* vnode)
-    (swap! *rendered-vnodes* conj vnode)))
+  (when vnode
+    (when *rendered-vnodes*
+      (swap! *rendered-vnodes* conj vnode))
+    (when *applied-vnodes*
+      (swap! *applied-vnodes* conj vnode))))
 
 (defn render-initial!
   "Render entire vdom tree to target for initial mount.
@@ -508,6 +597,8 @@
                      (if (d/deltaable? ch) @ch ch))]
       ;; Store element reference by stable address
       (set-element! discharge (:addr vnode) el)
+      ;; Detect duplicate :addr claims (e.g., siblings from `for` instead of ifor-each)
+      (register-addr! vnode)
       ;; Mark as rendered to prevent double delta application
       (mark-rendered! vnode)
 

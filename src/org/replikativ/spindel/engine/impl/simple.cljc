@@ -23,6 +23,7 @@
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.state-backend :as backend]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
@@ -308,21 +309,38 @@
   ;; but track resumption also re-executes the spin body from a continuation point
   (invalidate-created-spins! context spin-id)
 
-  ;; Resume continuation with fresh signal value.
-  ;; Ephemeral bindings (registered via bindings/register-ephemeral-binding-key!)
-  ;; are cleared here because a track resume starts a new render pass; the
-  ;; surrounding scope will re-establish them. Persistent bindings (http client,
-  ;; execution-mode, app config, ...) are preserved.
+  ;; Restore the parent's transient deps tracking from the snapshot captured
+  ;; at suspend time. Without this, the body slice that resumes after the
+  ;; track point starts with empty tracking — the deps it accumulated in the
+  ;; pre-suspend slice are gone. record-deps! at body completion would then
+  ;; commit only the post-resume deps and tear down observer relations for
+  ;; everything tracked in the pre-suspend slice (e.g. nav-spin in a body
+  ;; that awaited nav-spin then columns-spin, resuming from the cols await).
+  (when-let [snap (:tracking-snap cont)]
+    (rtp/swap-state! context [:spin-tracking spin-id] (constantly snap)))
+
+  ;; Resume with the bindings that were active at suspend time. The cont's
+  ;; :ctx-bindings is a snapshot of (:bindings ctx) at the suspension point,
+  ;; so it already carries whatever scope the body had pushed (DOM
+  ;; parent-addr, slot, keys, etc.). Merge with current context bindings to
+  ;; pick up any persistent additions (e.g. middleware-set values) that
+  ;; arrived between suspend and resume; cont values win where they overlap.
+  ;;
+  ;; The `*chain-head*` atom is seeded with the cont's `:chain-head-snap`
+  ;; (the cursor value captured at suspend) so the post-resume slice mints
+  ;; `(spin …)` / `(effect …)` ids deterministically continuing from where
+  ;; the pre-suspend slice left off. The atom is fresh per resume — no
+  ;; shared state across threads.
   (let [ctx-bindings (:ctx-bindings cont)
-        ephemeral-keys (bindings/ephemeral-binding-keys)
-        merged-bindings (apply dissoc
-                               (if ctx-bindings
-                                 (merge (:bindings context) ctx-bindings)
-                                 (:bindings context))
-                               ephemeral-keys)
-        ctx-with-bindings (assoc context :bindings merged-bindings)]
+        merged-bindings (if ctx-bindings
+                          (merge (:bindings context) ctx-bindings)
+                          (:bindings context))
+        ctx-with-bindings (assoc context :bindings merged-bindings)
+        chain-head-start (or (:chain-head-snap cont)
+                             (addressing/body-start-chain-head spin-id))]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
+              ec/*chain-head* (atom chain-head-start)
               pcps-async/*in-trampoline* false]
       (rtp/resume-continuation!
        context spin-id cont
@@ -374,13 +392,24 @@
   ;; Invalidate child spins created during previous execution.
   (invalidate-created-spins! context spin-id)
 
-  ;; Resume continuation with current signal value
+  ;; Restore tracking snapshot from the suspension point so the body's
+  ;; deps tracking continues from there rather than restarting empty.
+  ;; See resume-single-observer! for the rationale.
+  (when-let [snap (:tracking-snap cont)]
+    (rtp/swap-state! context [:spin-tracking spin-id] (constantly snap)))
+
+  ;; Resume continuation with current signal value. cont's :ctx-bindings is
+  ;; the suspend-time scope, merged onto current context bindings so any
+  ;; intervening persistent additions are kept.
+  ;; See resume-single-observer! for the chain-head atom seeding rationale.
   (let [ctx-bindings (:ctx-bindings cont)
-        ctx-with-bindings (if ctx-bindings
-                            (update context :bindings merge ctx-bindings)
-                            context)]
+        ctx-with-bindings (cond-> context
+                            ctx-bindings  (update :bindings merge ctx-bindings))
+        chain-head-start (or (:chain-head-snap cont)
+                             (addressing/body-start-chain-head spin-id))]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
+              ec/*chain-head* (atom chain-head-start)
               pcps-async/*in-trampoline* false]
       (rtp/resume-continuation!
        context spin-id cont
@@ -642,22 +671,34 @@
                   (swap! (:resumed-conts batch) conj dedup-key))
                 (log/debug :engine/resuming-await-continuation {:parent-id parent-id :cont-id cont-id :child-id tid
                                     :generation generation})
-                ;; Resume continuation
-                (binding [ec/*execution-context* context
-                          ec/*spin-id* parent-id
-                          pcps-async/*in-trampoline* false]
-                  (let [resume-result (rtp/resume-continuation!
-                                       context
-                                       parent-id
-                                       cont
-                                       (fn [_child-value-from-on-resume]
-                                         ;; Get child's result from :nodes SpinNode
-                                         (let [spin-node (rtp/get-state context [:nodes tid])
-                                               child-result (when spin-node (:result spin-node))]
-                                           (if (= (:variant child-result) :ok)
-                                             (pcps-async/invoke-continuation (:resolve-fn cont) (:payload child-result))
-                                             (pcps-async/invoke-continuation (:reject-fn cont) (:payload child-result))))))]
-                    resume-result)))))))
+                ;; Restore the parent's transient deps tracking captured at the
+                ;; await suspend point. See resume-single-observer! for rationale.
+                (when-let [snap (:tracking-snap cont)]
+                  (rtp/swap-state! context [:spin-tracking parent-id] (constantly snap)))
+                ;; Resume with the suspend-time bindings (cont's :ctx-bindings)
+                ;; merged onto the current context bindings.
+                ;; See resume-single-observer! for the chain-head atom rationale.
+                (let [ctx-bindings (:ctx-bindings cont)
+                      ctx-for-resume (cond-> context
+                                       ctx-bindings (update :bindings merge ctx-bindings))
+                      chain-head-start (or (:chain-head-snap cont)
+                                           (addressing/body-start-chain-head parent-id))]
+                  (binding [ec/*execution-context* ctx-for-resume
+                            ec/*spin-id* parent-id
+                            ec/*chain-head* (atom chain-head-start)
+                            pcps-async/*in-trampoline* false]
+                    (let [resume-result (rtp/resume-continuation!
+                                         context
+                                         parent-id
+                                         cont
+                                         (fn [_child-value-from-on-resume]
+                                           ;; Get child's result from :nodes SpinNode
+                                           (let [spin-node (rtp/get-state context [:nodes tid])
+                                                 child-result (when spin-node (:result spin-node))]
+                                             (if (= (:variant child-result) :ok)
+                                               (pcps-async/invoke-continuation (:resolve-fn cont) (:payload child-result))
+                                               (pcps-async/invoke-continuation (:reject-fn cont) (:payload child-result))))))]
+                      resume-result))))))))
 
       ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -728,12 +769,22 @@
         ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
         ;; This ensures invoke-continuation establishes a new trampoline loop
         ;; If execution-context is provided (e.g., from SMC), bind it; otherwise use context
-        (binding [ec/*execution-context* (or execution-context context)
-                  ec/*spin-id* tid
-                  pcps-async/*in-trampoline* false]
-          ;; Invoke spin (Spin implements IFn)
-          (let [result (spin resolve-fn reject-fn)]
-            nil))))
+        ;; Apply this spin's captured DOM scope (see make-spin in spin/core.cljc)
+        ;; on top of the chosen context's bindings, so the body's initial
+        ;; synchronous code (before any track/await) sees the spin's lexical
+        ;; DOM scope. Without this, only continuation resumes restore scope —
+        ;; elements built before the first effect would use runtime bindings.
+        (let [base-ctx (or execution-context context)
+              spin-dom-scope (rtp/get-state context [:nodes tid :dom-scope])
+              effective-ctx (if (seq spin-dom-scope)
+                              (update base-ctx :bindings merge spin-dom-scope)
+                              base-ctx)]
+          (binding [ec/*execution-context* effective-ctx
+                    ec/*spin-id* tid
+                    pcps-async/*in-trampoline* false]
+            ;; Invoke spin (Spin implements IFn)
+            (let [result (spin resolve-fn reject-fn)]
+              nil)))))
 
     ;; Unknown event type
     (do
@@ -1615,12 +1666,19 @@
                         (let [has-completion-cont? (seq (get-in s [:subscriptions completion-event-key observer-id]))]
                           (update-in s [:nodes observer-id]
                             (fn [node]
-                              (when (and node
-                                         (not (:running? node))
-                                         (not has-completion-cont?))
+                              (if (and node
+                                       (not (:running? node))
+                                       (not has-completion-cont?))
                                 (-> node
                                     (assoc :completed? false)
-                                    (nodes/mark-dirty)))))))
+                                    (nodes/mark-dirty))
+                                ;; Skipped — return the node unchanged. (Previously
+                                ;; used `when`, which returned nil and `update-in`
+                                ;; then erased the observer's node entirely — a
+                                ;; latent bug only visible once node-resident fields
+                                ;; beyond :result/:observers are read across this
+                                ;; transition.)
+                                node)))))
                       state
                       observers))))))
   true)

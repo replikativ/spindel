@@ -1,10 +1,14 @@
 (ns org.replikativ.spindel.engine.ephemeral-bindings-test
-  "Tests for ephemeral binding keys.
+  "Tests for the historical ephemeral binding keys mechanism.
 
-  Keys registered via engine.bindings/register-ephemeral-binding-key! are
-  cleared when a track continuation resumes (= new render pass) but preserved
-  across an await continuation resume (= mid-body, same render pass).
-  Unregistered keys behave persistently in all cases."
+  This mechanism is being phased out: continuations now snapshot full
+  :bindings at suspend time and restore them at resume time, so the
+  per-key ephemerality category is no longer needed. Keys registered via
+  register-ephemeral-binding-key! are now preserved across both track and
+  await resumes — the suspend-time scope is what the body sees on resume,
+  the same way lexical bindings flow into a continuation's closure.
+
+  These tests document the post-snapshot behavior."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
@@ -25,8 +29,8 @@
     {:ephemeral  (get b ::ephemeral)
      :persistent (get b ::persistent)}))
 
-(deftest ephemeral-key-cleared-on-track-resume
-  (testing "Ephemeral key is cleared on track resume; persistent key survives"
+(deftest ephemeral-key-preserved-on-track-resume
+  (testing "Ephemeral key is preserved on track resume (new snapshot model)"
     (let [ctx-root (ctx/create-execution-context
                     :bindings {::ephemeral  :set
                                ::persistent :set})]
@@ -42,7 +46,8 @@
             (is (= 0 @s))
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)
 
-            ;; Second pass — signal change forces track resume.
+            ;; Second pass — signal change forces track resume. Body resumes
+            ;; with the bindings that were active at the track suspend point.
             (swap! counter inc)
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)
 
@@ -50,7 +55,7 @@
             (let [[p1 p2] @observed]
               (is (= :set (:ephemeral p1))  "pass 1: ephemeral visible")
               (is (= :set (:persistent p1)) "pass 1: persistent visible")
-              (is (nil? (:ephemeral p2))    "pass 2 (track resume): ephemeral cleared")
+              (is (= :set (:ephemeral p2))  "pass 2 (track resume): ephemeral preserved via snapshot")
               (is (= :set (:persistent p2)) "pass 2 (track resume): persistent preserved"))))
         (finally
           (ctx/stop-context! ctx-root))))))

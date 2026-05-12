@@ -16,6 +16,7 @@
       (let [todos-iv (track todos)]
         (->> todos-iv (ifilter :active) (imap :hours) (ireduce + 0))))"
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -135,9 +136,31 @@
     ;; These are stored in ExecutionContext's :bindings field, not as dynamic vars
     (when spin-id
       (let [captured-bindings (bindings/capture-bindings)
+            ctx (ec/current-execution-context)
             ;; Capture context bindings for DOM addressing
-            captured-ctx-bindings (when-let [ctx (ec/current-execution-context)]
-                                    (:bindings ctx))
+            captured-ctx-bindings (when ctx (:bindings ctx))
+            ;; Capture transient deps tracking so resumed body slice continues
+            ;; from the pre-suspend accumulator rather than empty (which would
+            ;; cause record-deps! to wrongly remove the pre-suspend slice's deps).
+            ;; IMPORTANT: Include THIS signal-id in the snap. The track effect
+            ;; advances :spin-tracking by adding `signal-id` (via deps-track-signal!
+            ;; below). On resume from this cont, the body slice continues from
+            ;; AFTER the (track ...) call — so the body won't re-track this
+            ;; signal during the slice. Without including it here, the restored
+            ;; tracking would be missing this signal, and the eventual
+            ;; record-deps! would commit a deps set that excludes it — leaving
+            ;; the signal with no observer and no future resumes.
+            base-snap (when ctx (rtp/get-state ctx [:spin-tracking spin-id]))
+            tracking-snap (-> (or base-snap {})
+                              (update :signals (fnil conj #{}) signal-id))
+            ;; Capture this spin's per-spin addressing chain-head so any
+            ;; `(spin …)` / `(effect …)` minted in the post-resume body slice
+            ;; produce the same ids on every re-run. Under per-spin scoping
+            ;; (see engine/addressing.cljc) the chain-head lives on this
+            ;; spin's node and is never modified by other spins running
+            ;; during the suspend interval — so this snapshot is safe to
+            ;; restore and cannot collide across distinct spins.
+            chain-head-snap (when-let [a ec/*chain-head*] @a)
             cont {:event-key [:signal signal-id]
                   :resolve-fn resolve
                   :reject-fn reject
@@ -145,6 +168,8 @@
                   :signal-id signal-id
                   :bindings captured-bindings
                   :ctx-bindings captured-ctx-bindings
+                  :tracking-snap tracking-snap
+                  :chain-head-snap chain-head-snap
                   ;; Capture generation at continuation creation time
                   ;; On resume, we only return deltas if signal generation > this value
                   :consumed-generation current-generation

@@ -52,7 +52,8 @@
         _ (when container
             (set! (.-innerHTML container) ""))
         ;; Render initial vdom
-        root-el (disch/render-initial! discharge vdom)
+        root-el (binding [disch/*rendered-addrs* (atom {})]
+                  (disch/render-initial! discharge vdom))
         ;; Clear deltas for next render cycle
         cleared-vdom (disch/clear-deltas-deep vdom)]
     ;; Append to container
@@ -87,7 +88,8 @@
       (do
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
-        (binding [disch/*rendered-vnodes* (atom #{})]
+        (binding [disch/*rendered-vnodes* (atom #{})
+                  disch/*rendered-addrs* (atom {})]
           (let [nodes-with-deltas (disch/collect-nodes-with-deltas new-vdom)]
             (when (seq nodes-with-deltas)
               (log/trace :render/delta-update {:nodes-with-deltas (count nodes-with-deltas)})
@@ -132,9 +134,27 @@
   - On first call: mounts vdom to container
   - On subsequent calls: discharges deltas to DOM (no diffing)
 
-  The returned function should be called with the vdom result."
+  The returned function should be called with the vdom result.
+
+  Each render effect carries a long-lived `*applied-vnodes*` atom that
+  tracks vnode objects whose deltas have already been applied. This is
+  what makes cached spin results safe to embed in a re-emitting parent:
+  the same vnode object encountered in a later cycle is recognized and
+  its deltas are not re-applied (which would duplicate children — the
+  cross-spin reuse bug).
+
+  TODO: `applied-atom` holds strong references. When a spin re-runs and
+  produces a fresh cached result, the OLD vnode is no longer referenced
+  via the spin's :result cache, but remains pinned by this set. For a
+  long-running app with frequent re-runs this accumulates. Replace with
+  a weak collection (CLJ: `Collections/newSetFromMap` over WeakHashMap;
+  CLJS: js/WeakSet) once the leak is observed in practice. A WeakSet
+  is appropriate here because we only need 'have I seen THIS object?'
+  semantics — when the vnode becomes otherwise unreachable, dropping
+  it from the set is harmless."
   [container discharge]
-  (let [state-atom (atom (->RenderState container discharge nil false))]
+  (let [state-atom    (atom (->RenderState container discharge nil false))
+        applied-atom  (atom #{})]
     (fn [vdom]
       (when vdom
         (let [state @state-atom
@@ -143,11 +163,12 @@
                               :vdom-tag (:tag vdom)
                               :vdom-has-deltas? has-deltas?
                               :vdom-deltas (:deltas vdom)})
-          (if (:mounted? state)
-            ;; Update with delta-direct rendering
-            (swap! state-atom update-render! vdom)
-            ;; Initial mount
-            (reset! state-atom (initial-mount! state vdom))))))))
+          (binding [disch/*applied-vnodes* applied-atom]
+            (if (:mounted? state)
+              ;; Update with delta-direct rendering
+              (swap! state-atom update-render! vdom)
+              ;; Initial mount
+              (reset! state-atom (initial-mount! state vdom)))))))))
 
 ;; =============================================================================
 ;; Integration with Spin System

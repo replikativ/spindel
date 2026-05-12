@@ -174,7 +174,8 @@
   [container vdom]
   (let [doc (.-ownerDocument container)
         discharge (make-dom-discharge doc)
-        root-el (disch/render-initial! discharge vdom)]
+        root-el (binding [disch/*rendered-addrs* (atom {})]
+                  (disch/render-initial! discharge vdom))]
     (when root-el
       (.appendChild container root-el))
     discharge))
