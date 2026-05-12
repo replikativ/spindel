@@ -278,6 +278,15 @@
                 executing? (atom true)]
 
             (log/debug :spin/start {:spin-id spin-id})
+
+            ;; Mark in-flight. With the unified-queue design, :running? denotes
+            ;; "body invocation has begun but has not yet resolved" — covering
+            ;; both actively-executing slices and suspensions on async resources
+            ;; (Deferred, Mailbox, executor tasks). It is cleared only when
+            ;; cache-result! fires (body resolved). This lets `running?` /
+            ;; `await-drain-complete` / `deref` correctly detect in-flight work
+            ;; without requiring a special Phase 2 wait.
+            (simple/mark-running! runtime spin-id)
             (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
 
             ;; CRITICAL: Invalidate spins created during previous execution
@@ -370,10 +379,11 @@
                                 ;; Don't re-throw! Error already recorded in spin state.
                                 nil)))]  ; Return nil instead of throwing
 
-                ;; CRITICAL: If spin returned incomplete (suspended awaiting deferred),
-                ;; clear running? flag so deref doesn't poll-wait forever
-                (when (= result :org.replikativ.spindel.spin/incomplete)
-                  (simple/mark-not-running! runtime spin-id))
+                ;; Body suspended (returned ::incomplete). We do NOT clear
+                ;; :running? here — the body is still in-flight, just waiting
+                ;; on an async resource (Deferred, executor task, etc.). It
+                ;; will be cleared when the body resolves via cache-result!.
+                ;; See `mark-running!` call above for rationale.
 
                 ;; Return result (could be value or ::incomplete from nested await)
                 result))))))
