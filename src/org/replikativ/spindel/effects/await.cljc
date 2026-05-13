@@ -278,8 +278,8 @@
             spin-core/incomplete))))))
 
 (defn- cancellable-external-pair
-  "Wrap (resolve, reject) into a cancellation-aware pair and register an
-  engine continuation for the wait.
+  "Wrap (resolve, reject) into a fork-safe cancellation-aware pair and
+  register an engine continuation for the wait.
 
   Background: when the engine resumes a parent's earlier track-cont via
   `resume-single-observer!`/`re-execute-dirty-parent!`, it truncates all
@@ -293,19 +293,36 @@
   slices to completion. Pure bodies waste work; bodies with side effects
   fire those side effects twice.
 
-  The fix: every external-await wraps its resolve/reject with a
-  cancellation gate (a volatile checked before forwarding). The
-  associated engine cont owns the gate via `:cancel!`. The engine's
-  cont-removal sites (resume-single-observer's truncation,
-  clear-all-await-continuations!, clear-deps!, full-cleanup-spin!) call
-  `:cancel!` on every removed cont before dissociating it. After
-  cancellation, the wrapped closures become no-ops; the external
-  resource fires harmlessly.
+  Fork-safe cancellation design (Option A from the design discussion):
 
-  Returns: [wrapped-resolve wrapped-reject]. The engine cont is added to
-  `:continuations[spin-id]` with `:ephemeral-await? true` so that
-  `clear-all-await-continuations!` reaps it at generation boundaries
-  (analogous to the existing ephemeral-spin-await conts).
+  We use a **cancel-token** stored in engine state at
+  `:engine/cancelled-tokens` (a set, shared/overlaid like the rest of
+  context state). The wrapped resolve/reject closures resolve the
+  current execution context dynamically (`ec/current-execution-context`)
+  and read the set from THAT context's state.
+
+  When a fork is created, its overlay falls through to parent for unread
+  keys, so fork's view of cancelled-tokens initially matches parent's.
+  Fork's first cancellation write triggers copy-on-write semantics —
+  parent and fork's sets then diverge cleanly. The wrapped closure,
+  invoked by the fork's drain (which binds `*execution-context*` to the
+  fork's context), reads the fork's set, not the parent's.
+
+  Compare to a `volatile!` captured in the closure: the volatile is a
+  single mutable object shared by every fork that inherits the cont,
+  defeating fork isolation. Cancellation by one fork would silently
+  disable the same await in the parent / sibling forks.
+
+  Trade-off: the `:engine/cancelled-tokens` set grows monotonically
+  over a context's lifetime — one entry per cancellation forever. For
+  long-running contexts this is a slow leak, documented as an open
+  follow-up. The leak is bounded by total cancellation count, not
+  by concurrent in-flight awaits, so a long-lived app sees the set
+  grow O(rate-of-cancellations × uptime).
+
+  The engine cont is added to `:continuations[spin-id]` with
+  `:ephemeral-await? true` so `clear-all-await-continuations!` reaps it
+  at generation boundaries.
 
   Args:
     spin-id   - parent spin that is doing the await
@@ -313,32 +330,55 @@
     ext-tag   - opaque identifier for the external resource (used to
                 deterministically derive a cont-id so repeated awaits at
                 the same call site overwrite rather than accumulate)
-    source-loc - source location of the await call (for cont id)"
+    source-loc - source location of the await call (for cont id)
+
+  Returns: [wrapped-resolve wrapped-reject]"
   [spin-id resolve reject ext-tag source-loc]
-  (let [cancelled? (volatile! false)
-        ;; Deterministic cont-id so repeated awaits at the same source
-        ;; location on the same external resource overwrite a previous
-        ;; orphaned entry — but the volatile is per-call, so cancellation
-        ;; only kills the CURRENT instance, not a future re-await.
+  (let [;; The cancel-token is a fresh UUID per call. Repeated awaits at
+        ;; the same source-loc on the same resource get DIFFERENT
+        ;; tokens, but the cont-id is deterministic — `add-continuation!`
+        ;; calls the displaced cont's `:cancel!` before overwriting
+        ;; (closes the orphaned-by-re-await loop).
+        cancel-token (keyword "external-await-cancel" (str (random-uuid)))
         cont-id (keyword (str "external-await-"
                               (h/content-hash [spin-id ext-tag source-loc])))
+        cancelled-now?
+        (fn []
+          ;; Resolve the CURRENT execution context dynamically. If
+          ;; *execution-context* is unbound (we're being called from a
+          ;; truly external thread that hasn't entered the engine yet),
+          ;; we can't check fork-local cancellation state — default to
+          ;; "not cancelled" since the engine would have wrapped any
+          ;; later resume in its own context binding.
+          (when-let [ctx (try (ec/current-execution-context)
+                              (catch #?(:clj Throwable :cljs :default) _ nil))]
+            (let [cancelled (rtp/get-state ctx [:engine/cancelled-tokens])]
+              (boolean (and cancelled (contains? cancelled cancel-token))))))
         wrapped-resolve (fn [v]
-                          (when-not @cancelled?
+                          (when-not (cancelled-now?)
                             (resolve v)))
         wrapped-reject  (fn [e]
-                          (when-not @cancelled?
+                          (when-not (cancelled-now?)
                             (reject e)))
         cont {:id cont-id
               ;; Event-key is informational — no handler reads
-              ;; `[:external-await …]`. Keeping a key makes the
-              ;; cont uniform with the rest of the registry and
-              ;; lets `:subscriptions` cleanup (clear-deps! etc.)
-              ;; work without special-casing.
+              ;; `[:external-await …]`. Keeping a key makes the cont
+              ;; uniform with the rest of the registry and lets the
+              ;; `:subscriptions` cleanup in clear-all-await-
+              ;; continuations! / clear-deps! work without special-
+              ;; casing.
               :event-key [:external-await ext-tag]
               :source-loc source-loc
               :ephemeral-await? true
-              :cancelled?-atom cancelled?
-              :cancel! (fn [] (vreset! cancelled? true))
+              :cancel-token cancel-token
+              ;; `:cancel!` takes the engine context to record the
+              ;; cancellation in. Engine truncation sites pass the
+              ;; context they're operating on, which is what makes
+              ;; this fork-safe: fork's truncation records into
+              ;; fork's overlay, parent's into parent's.
+              :cancel! (fn [ctx]
+                         (rtp/swap-state! ctx [:engine/cancelled-tokens]
+                                          (fn [s] (conj (or s #{}) cancel-token))))
               :resolve-fn wrapped-resolve
               :reject-fn wrapped-reject
               ;; on-resume is required for the cont protocol but

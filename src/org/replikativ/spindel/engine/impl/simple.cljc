@@ -278,9 +278,13 @@
                                 (keep :signal-id))
         cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
     ;; Fire cancellation hooks BEFORE state mutation so orphaned closures
-    ;; observe @cancelled?=true the moment the external resource calls them.
+    ;; observe cancellation the moment the external resource calls them.
+    ;; Pass the current context — under Option A (state-backed cancel
+    ;; tokens), each context's cancellation set is fork-isolated, so the
+    ;; cancellation only affects this context (parent / sibling forks
+    ;; see their own state).
     (doseq [c cancelled-conts]
-      (when-let [cancel! (:cancel! c)] (cancel!)))
+      (when-let [cancel! (:cancel! c)] (cancel! context)))
     (rtp/swap-state! context [:continuations spin-id]
       (fn [conts]
         (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
@@ -371,7 +375,7 @@
                                 (keep :signal-id))
         cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
     (doseq [c cancelled-conts]
-      (when-let [cancel! (:cancel! c)] (cancel!)))
+      (when-let [cancel! (:cancel! c)] (cancel! context)))
     (rtp/swap-state! context [:continuations spin-id]
       (fn [conts]
         (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
@@ -1101,7 +1105,7 @@
   ;; See `effects/await.cljc::cancellable-external-pair`.
   (when-let [all-conts (rtp/get-state context [:continuations spin-id])]
     (doseq [[_ c] all-conts]
-      (when-let [cancel! (:cancel! c)] (cancel!))))
+      (when-let [cancel! (:cancel! c)] (cancel! context))))
   (rtp/swap-state! context []
     (fn [rt-state]
       ;; To safely clear observers, take the UNION of `spin.deps` (the
@@ -1182,7 +1186,7 @@
   ;; Cancellation hooks first — same rationale as `clear-deps!`.
   (when-let [all-conts (rtp/get-state context [:continuations spin-id])]
     (doseq [[_ c] all-conts]
-      (when-let [cancel! (:cancel! c)] (cancel!))))
+      (when-let [cancel! (:cancel! c)] (cancel! context))))
   (rtp/swap-state! context []
     (fn [state]
       (let [node (get-in state [:nodes spin-id])
@@ -1505,7 +1509,7 @@
               ;; resolve closures become no-ops. See
               ;; `effects/await.cljc::cancellable-external-pair`.
               (doseq [[_ cont] await-conts]
-                (when-let [cancel! (:cancel! cont)] (cancel!)))
+                (when-let [cancel! (:cancel! cont)] (cancel! context)))
 
               ;; Remove await continuations and their subscriptions atomically.
               ;; The event-key shape depends on cont type:
@@ -1933,10 +1937,10 @@
               ;; Register subscription
               (update-in [:subscriptions event-key spin-id]
                          (fn [s] (conj (or s #{}) cont-id)))))))
-    ;; Fire displaced cont's cancel hook after the swap completes. The
-    ;; gate flip is idempotent under swap-retry; calling it twice is
-    ;; harmless.
-    (when-let [c! @displaced-cancel-atom] (c!))
+    ;; Fire displaced cont's cancel hook after the swap completes,
+    ;; passing the engine context so the cancellation is recorded
+    ;; fork-locally (Option A — state-backed cancel tokens).
+    (when-let [c! @displaced-cancel-atom] (c! context))
     @cont-atom))
 
 (defn remove-continuation!

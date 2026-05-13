@@ -180,18 +180,53 @@ outer-resolves. Pure-functional bodies are merely wasteful; bodies
 with side effects (DOM mutations, message dispatch, atom swaps)
 fire those side effects twice.
 
-**Fix** (stage 4, landed): `effects/await.cljc::cancellable-external-pair`
-wraps the parent body's resolve/reject in a cancellation gate — a
-`volatile!` checked before delegating. The associated engine cont
-owns the gate via `:cancel!`. Every cont-removal site in
-`engine/impl/simple.cljc` calls `:cancel!` on every removed cont
-before dissociating:
+**Fix** (stage 4, landed with the Option A redesign):
+`effects/await.cljc::cancellable-external-pair` wraps the parent body's
+resolve/reject in a cancellation gate. Each call mints a fresh
+`cancel-token` (UUID); the wrapped closure resolves
+`(ec/current-execution-context)` *at call time* and checks whether
+the token is in that context's `:engine/cancelled-tokens` set. The
+associated engine cont owns the token via `:cancel!`, which takes
+the engine context as a parameter and `swap-state!`'s the token
+into that context's set.
+
+**Why this is fork-safe:** `:engine/cancelled-tokens` is regular
+context state, not a closure-captured volatile. Fork creation's
+overlay starts empty; reads fall through to parent (so a fork
+inherits parent's cancellations — correct). Fork's first write to
+the set triggers copy-on-write and the parent / fork sets diverge.
+The wrapped closure, invoked by a drain in fork's context (which
+binds `*execution-context*` to fork's context), reads fork's set.
+The same closure, invoked by parent's drain, reads parent's set.
+Cancellations in one fork do **not** leak across fork boundaries.
+
+Compare to a `volatile!` captured in the closure (the original
+stage-4 design): the volatile is a single mutable object shared by
+every fork that inherits the cont, defeating fork isolation —
+cancellation by one fork silently disables the same await in the
+parent and sibling forks. The state-backed token approach removes
+the shared mutable.
+
+**Trade-off — slow leak:** `:engine/cancelled-tokens` grows
+monotonically over a context's lifetime; one entry per cancellation
+forever. For a long-running app this is a slow memory leak bounded
+by total cancellation count (not by concurrent in-flight awaits).
+Documented as an open follow-up below. A future improvement could
+pair token lifetime with cont lifetime by removing the token when
+the cont is removed.
+
+Every cont-removal site in `engine/impl/simple.cljc` calls
+`:cancel!` on every removed cont before dissociating, passing the
+engine context:
 
 - `resume-single-observer!`            — truncates conts with order > resumed
 - `re-execute-dirty-parent!`           — same truncation pattern
 - `clear-all-await-continuations!`     — generation boundary cleanup
 - `clear-deps!`                        — invalidation
 - `full-cleanup-spin!`                 — GC
+- `add-continuation!`                  — cancels a cont being displaced
+                                         by a re-await at the same
+                                         deterministic cont-id
 
 Awaits on a Spin (slow path) do not need this treatment: the child's
 completion enqueues a `:spin-completion` event whose dispatch looks up
@@ -200,43 +235,49 @@ cont has been removed, the lookup returns nil and the dispatch is a
 no-op. The cancellation infrastructure exists only for external
 resources that hold raw resolve closures (no engine indirection).
 
-Test: `engine/cont_cancellation_test.cljc` — a body that has
-`(track A) → (await deferred) → swap! counter inc`. Change A
-mid-suspend, deliver the deferred, assert counter incremented exactly
-once. Verified with a temporary revert (comment-out the
-resume-single-observer cancel-loop) that the test reproduces the bug
-(counter=2) without the fix.
+Tests in `engine/cont_cancellation_test.cljc`:
+- `no-double-side-effect-after-track-resume-mid-deferred-await` —
+  pins the original orphaned-callback fix.
+- `fork-isolated-cancellation` — pins the Option A fork-isolation
+  guarantee. Forks the context after the parent suspended on
+  `(await gate)`, cancels in the fork (via signal change), delivers
+  the gate in BOTH parent and fork, asserts the body's side effect
+  fired exactly once in each — proving the cancellation didn't bleed
+  across fork boundaries.
 
 ## Open follow-ups
 
+- **Cancel-token leak.** `:engine/cancelled-tokens` is append-only —
+  one entry per cancellation, forever, for the context's lifetime.
+  A long-running context accumulates the set indefinitely. Bound by
+  total cancellations, not by in-flight count. Mitigation: pair token
+  lifetime with cont lifetime by removing the token from the set when
+  the cont is finally removed from `:continuations`. The subtlety: if
+  the wrapped closure fires *after* the cont is removed AND the token
+  is removed, the closure must default to "cancelled" (otherwise an
+  arbitrarily-delayed external callback could resurrect a dead body
+  slice). Safest design is to flip the predicate: track *active*
+  (uncancelled) tokens, default unknown tokens to cancelled.
+
 - **Mailbox waiter consumption hole.** Stage 4's cancellation gate
-  makes the wrapped resolve a no-op, but the orphaned waiter is still
-  in `mailbox.state-atom.waiters`. `post-inline!` consumes the message
-  by invoking the (now no-op) wrapped resolve, then returns. The next
-  legitimate waiter (registered by the parent's re-run body slice)
-  waits for a new message. Net effect on Mailbox: silent message loss
-  after a track-resume mid-await. Fix paths: (a) have
-  `:cancel!` actively remove the waiter from `state-atom`; (b) have
-  the wrapped resolve return a "cancelled" sentinel that
-  `post-inline!` interprets as "re-queue the message". This requires
-  a `cancellable-external-pair` extension for resource-specific
-  teardown.
+  makes the wrapped resolve a no-op when invoked, but the orphaned
+  waiter is still in `mailbox.state-atom.waiters`. `post-inline!`
+  consumes the message by invoking the (now no-op) wrapped resolve,
+  then returns. The next legitimate waiter (registered by the
+  parent's re-run body slice) waits for a new message. Net effect on
+  Mailbox: silent message loss after a track-resume mid-await. Fix
+  paths: (a) `:cancel!` actively removes the waiter from
+  `state-atom`; (b) `post-inline!` reads `:engine/cancelled-tokens`
+  for a token stored on the waiter struct and re-queues the message
+  when the wrapped resolve was cancelled; (c) the wrapped resolve
+  returns a sentinel. All three require coupling Mailbox internals
+  to the await wrap. Deferred to a follow-up branch.
 
-- **Fork-shared cancellation atoms.** `fork-context` copies
-  `:continuations` by reference, so the cont closures (and their
-  `volatile! cancelled?`) are shared between parent and fork. If the
-  parent cancels a cont, the fork's view is also cancelled (same
-  atom). Awaits started before fork are at risk. Mitigation paths:
-  deep-copy conts at fork (re-wrapping with fresh volatiles), or
-  document the limitation. Until then, awaits should be started
-  AFTER fork creation if cancellation independence matters.
-
-- **`add-continuation!` cancel-on-overwrite is correct but slightly
-  non-idiomatic.** It calls `:cancel!` outside the `swap-state!` retry
-  loop using an atom passed in. The gate flip is idempotent so this
-  is safe under retry; consider moving inside the swap-fn (the cancel
-  is a side effect on a volatile, not on engine state — should be
-  safe to repeat).
+- **`add-continuation!` cancel-on-overwrite ordering.** Currently
+  fires `:cancel!` outside the atomic `swap-state!` (captured via
+  an outer atom). The cancel is idempotent under swap-retry so this
+  is safe; moving it inside the swap-fn for stylistic consistency
+  is a minor cleanup.
 
 - `mark-not-running!` is now unreferenced by production code (only the
   snapshot-restore in `context.cljc` still resets `:running?` to false

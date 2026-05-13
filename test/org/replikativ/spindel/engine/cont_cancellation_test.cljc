@@ -76,3 +76,97 @@
         (finally
           (reset! hold [])
           (ctx/close-context! ctx-root))))))
+
+(deftest fork-isolated-cancellation
+  (testing "Cancellation in a fork does NOT cancel the same orphaned
+            cont in the parent context — and vice versa.
+
+            Setup: parent body does (track s) → (await gate), suspends.
+            Fork the context. Both contexts now have a cont referencing
+            the SAME wrapped closure (added to gate.:pending before
+            fork). Fork-side: change s, which triggers fork's resume-
+            single-observer to truncate and cancel the cont (recording
+            the cancel-token in fork's :engine/cancelled-tokens
+            overlay).
+
+            With Option A's state-backed cancel tokens, fork's
+            cancellation set diverges from parent's via copy-on-write.
+            Parent's context still has the original (no-cancellation)
+            view. When parent delivers the gate, parent's drain binds
+            its context, the wrapped resolve reads parent's set (empty
+            for this token), and parent's body advances normally.
+
+            With the prior volatile-in-closure approach, parent's
+            wrapped resolve would see the shared volatile flipped by
+            fork and stay no-op — silently disabling reactivity in the
+            parent. This test pins the fork-isolation guarantee."
+    (let [parent-ctx (ctx/create-execution-context)
+          hold (atom [])]
+      (try
+        (let [s (binding [ec/*execution-context* parent-ctx] (sig/signal :initial))
+              gate (binding [ec/*execution-context* parent-ctx] (sync/deferred))
+              parent-side-effects (atom 0)
+              fork-side-effects (atom 0)
+              ;; Distinct atoms so each context's body increments its own counter.
+              ;; We use (binding) to choose which counter the body sees at
+              ;; spin construction time — but the body code is shared by
+              ;; reference between parent and fork, so we use a single
+              ;; counter and check the totals.
+              total-side-effects (atom 0)
+              obs (binding [ec/*execution-context* parent-ctx]
+                    (spin
+                      (let [{tracked :new} (track s)
+                            _ (await gate)]
+                        (swap! total-side-effects inc)
+                        tracked)))
+              _ (swap! hold conj obs)]
+          ;; Start the body in parent — it suspends on gate.
+          (binding [ec/*execution-context* parent-ctx]
+            (obs identity identity)
+            (simple/await-drain-complete! parent-ctx :timeout-ms 1000))
+          (is (zero? @total-side-effects) "neither context has run the body yet")
+
+          ;; Fork the context. Fork inherits parent's :continuations
+          ;; (including the await-gate cont) plus parent's Deferred
+          ;; state (gate.:pending containing the wrapped resolve).
+          (let [fork-ctx (ctx/fork-context parent-ctx)]
+            ;; In the FORK only: change s, then deliver gate.
+            (binding [ec/*execution-context* fork-ctx]
+              (reset! s :changed-in-fork)
+              (simple/await-drain-complete! fork-ctx :timeout-ms 1000)
+              ;; Body re-runs in fork, suspends on new (await gate).
+              ;; Fork's :engine/cancelled-tokens now has the OLD cont's
+              ;; token. Parent's set does NOT (fork's overlay diverged
+              ;; on first write).
+              (sync/deliver! gate :gate-released)
+              (simple/await-drain-complete! fork-ctx :timeout-ms 2000))
+
+            ;; In the fork, exactly one side effect fired (the new
+            ;; body slice's swap!, with tracked = :changed-in-fork).
+            (is (= 1 @total-side-effects)
+                "fork ran the body exactly once with :changed-in-fork")
+
+            ;; CRITICAL FORK ISOLATION CHECK:
+            ;; The original wrapped resolve closure is shared between
+            ;; parent and fork (both saw it in gate.:pending at fork
+            ;; time). Fork cancelled the cont's token — but ONLY in
+            ;; fork's overlay. Parent's :engine/cancelled-tokens is
+            ;; still empty for that token. When parent delivers, the
+            ;; closure reads parent's context's set and DOES fire.
+            ;;
+            ;; (We test this by delivering the gate in parent. Note:
+            ;; the gate state-atom is fork-safe, so parent and fork
+            ;; have independent :pending lists — fork's delivery did
+            ;; NOT touch parent's pending. Parent still has the
+            ;; original wrapped resolve in its view of gate.:pending.)
+            (binding [ec/*execution-context* parent-ctx]
+              (sync/deliver! gate :gate-released-in-parent)
+              (simple/await-drain-complete! parent-ctx :timeout-ms 2000))
+
+            (is (= 2 @total-side-effects)
+                "parent also ran the body once with :initial — fork's
+                 cancellation did NOT bleed into parent's view")
+            (ctx/close-context! fork-ctx)))
+        (finally
+          (reset! hold [])
+          (ctx/close-context! parent-ctx))))))
