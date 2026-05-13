@@ -209,6 +209,35 @@ resume-single-observer cancel-loop) that the test reproduces the bug
 
 ## Open follow-ups
 
+- **Mailbox waiter consumption hole.** Stage 4's cancellation gate
+  makes the wrapped resolve a no-op, but the orphaned waiter is still
+  in `mailbox.state-atom.waiters`. `post-inline!` consumes the message
+  by invoking the (now no-op) wrapped resolve, then returns. The next
+  legitimate waiter (registered by the parent's re-run body slice)
+  waits for a new message. Net effect on Mailbox: silent message loss
+  after a track-resume mid-await. Fix paths: (a) have
+  `:cancel!` actively remove the waiter from `state-atom`; (b) have
+  the wrapped resolve return a "cancelled" sentinel that
+  `post-inline!` interprets as "re-queue the message". This requires
+  a `cancellable-external-pair` extension for resource-specific
+  teardown.
+
+- **Fork-shared cancellation atoms.** `fork-context` copies
+  `:continuations` by reference, so the cont closures (and their
+  `volatile! cancelled?`) are shared between parent and fork. If the
+  parent cancels a cont, the fork's view is also cancelled (same
+  atom). Awaits started before fork are at risk. Mitigation paths:
+  deep-copy conts at fork (re-wrapping with fresh volatiles), or
+  document the limitation. Until then, awaits should be started
+  AFTER fork creation if cancellation independence matters.
+
+- **`add-continuation!` cancel-on-overwrite is correct but slightly
+  non-idiomatic.** It calls `:cancel!` outside the `swap-state!` retry
+  loop using an atom passed in. The gate flip is idempotent so this
+  is safe under retry; consider moving inside the swap-fn (the cancel
+  is a side effect on a volatile, not on engine state — should be
+  safe to repeat).
+
 - `mark-not-running!` is now unreferenced by production code (only the
   snapshot-restore in `context.cljc` still resets `:running?` to false
   on in-flight spins after a snapshot is restored, which is unrelated).

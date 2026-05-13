@@ -1507,22 +1507,24 @@
               (doseq [[_ cont] await-conts]
                 (when-let [cancel! (:cancel! cont)] (cancel!)))
 
-              ;; Remove await continuations and their subscriptions atomically
+              ;; Remove await continuations and their subscriptions atomically.
+              ;; The event-key shape depends on cont type:
+              ;;   [:spin/complete child-id]  — Spin awaits
+              ;;   [:external-await ext-tag]  — Deferred / Mailbox / plain-fn
+              ;; We clean the corresponding subscription path. Without the
+              ;; explicit dispatch, external-await conts leave a stale
+              ;; `:subscriptions [:external-await ext-tag]` entry behind.
               (rtp/swap-state! context []
                 (fn [rt-state]
                   (reduce
                     (fn [state [cont-id cont]]
-                      (let [[_event-type child-id] (:event-key cont)
-                            ;; Remove continuation
+                      (let [event-key (:event-key cont)
                             state' (update-in state [:continuations spin-id] dissoc cont-id)
-                            ;; Remove subscription
-                            spin-subs (get-in state' [:subscriptions [:spin/complete child-id] spin-id])
+                            spin-subs (get-in state' [:subscriptions event-key spin-id])
                             spin-subs' (disj (or spin-subs #{}) cont-id)]
                         (if (seq spin-subs')
-                          ;; Still have subscriptions
-                          (assoc-in state' [:subscriptions [:spin/complete child-id] spin-id] spin-subs')
-                          ;; No more subscriptions for this spin - remove entry
-                          (update-in state' [:subscriptions [:spin/complete child-id]] dissoc spin-id))))
+                          (assoc-in state' [:subscriptions event-key spin-id] spin-subs')
+                          (update-in state' [:subscriptions event-key] dissoc spin-id))))
                     rt-state
                     await-conts))))))))
 
@@ -1900,12 +1902,26 @@
 
   Returns: Continuation with :id and :order added"
   [context spin-id cont]
-  (let [cont-atom (atom nil)]
+  (let [cont-atom (atom nil)
+        displaced-cancel-atom (atom nil)]
     (rtp/swap-state! context []
       (fn [rt-state]
         (let [conts (get-in rt-state [:continuations spin-id])
               order (inc (count conts))
               cont-id (or (:id cont) (keyword (str "cont-" (random-uuid))))
+              ;; If a cont with the same deterministic id already exists
+              ;; (e.g. a loop that re-awaits the same Deferred at the same
+              ;; source-loc), the assoc-in below will overwrite it. The
+              ;; OLD cont's `:cancel!` hook must fire — otherwise its
+              ;; wrapped resolve/reject closures stay ungated in the
+              ;; external resource's pending list and re-introduce the
+              ;; orphaned-callback double-execution bug Stage 4 closes.
+              ;; Capture the displaced cancel hook to call AFTER the swap
+              ;; (calling it inside the swap-fn would tangle with the
+              ;; atomic swap's retry semantics).
+              displaced-cont (get conts cont-id)
+              _ (when-let [c! (:cancel! displaced-cont)]
+                  (reset! displaced-cancel-atom c!))
               cont' (-> cont (assoc :id cont-id :order order))
               event-key (:event-key cont')]
           ;; Store cont' for return value
@@ -1917,6 +1933,10 @@
               ;; Register subscription
               (update-in [:subscriptions event-key spin-id]
                          (fn [s] (conj (or s #{}) cont-id)))))))
+    ;; Fire displaced cont's cancel hook after the swap completes. The
+    ;; gate flip is idempotent under swap-retry; calling it twice is
+    ;; harmless.
+    (when-let [c! @displaced-cancel-atom] (c!))
     @cont-atom))
 
 (defn remove-continuation!

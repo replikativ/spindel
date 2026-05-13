@@ -419,11 +419,18 @@
       ;; Effect handlers inside async are responsible for registering with the
       ;; spindel runtime if they need to suspend. Wrap resolve/reject in a
       ;; cancellation gate for the same orphaned-callback reason as Deferred.
+      ;;
+      ;; The thunk's return value is propagated up the CPS chain (matching
+      ;; pre-stage-4 behavior). Synchronously-resolving thunks call wr
+      ;; before returning; their return value is whatever spin-core/resume
+      ;; produced (typically `incomplete` when the resolve was itself an
+      ;; engine-level suspend, or the value otherwise). Forcing `incomplete`
+      ;; here would short-circuit sync-resolving partial-cps async blocks.
       (ifn? awaitable)
       (let [[wr wj] (cancellable-external-pair
                       spin-id resolve reject
                       [::ifn #?(:clj (System/identityHashCode awaitable)
-                                :cljs (.-id awaitable))]
+                                :cljs (or (.-name awaitable) (str awaitable)))]
                       source-loc)]
         (awaitable wr wj))
 
