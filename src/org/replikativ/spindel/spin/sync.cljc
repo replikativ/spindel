@@ -201,11 +201,17 @@
    nil)
 
   ;; 2-arity: Take message (CONSUMER - blocking until available)
-  ;; Works like Deferred: call spin-core/resume if value available, always return incomplete
-  ;; Stores spin-id with waiter so cancelled spins can be skipped
+  ;; Works like Deferred: call spin-core/resume if value available, always return incomplete.
+  ;; Stores spin-id and (optional) :cancel-token with waiter so cancelled
+  ;; spins / cancelled await-conts can be skipped by post-inline! WITHOUT
+  ;; consuming the message. The cancel-token is set by
+  ;; effects/await.cljc::await-handler's Mailbox dispatch branch via the
+  ;; `ec/*external-await-cancel-token*` dynamic var; outside that branch
+  ;; the var is nil and the waiter is checked only by :spin-id cancellation.
   (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
    ;; ATOMIC check-and-take or add-to-waiters
    (let [current-spin-id ec/*spin-id*
+         current-cancel-token ec/*external-await-cancel-token*
          msg-to-resolve (atom ::not-found)
          _result (swap! state-atom
                        (fn [state]
@@ -215,8 +221,9 @@
                              (reset! msg-to-resolve (peek (:queue state)))
                              ;; Remove front element
                              (update state :queue pop))
-                           ;; Queue empty - add to waiters with spin-id
+                           ;; Queue empty - add to waiters with spin-id + cancel-token
                            (update state :waiters conj {:spin-id current-spin-id
+                                                        :cancel-token current-cancel-token
                                                         :resolve resolve}))))]
 
      (if (not= ::not-found @msg-to-resolve)

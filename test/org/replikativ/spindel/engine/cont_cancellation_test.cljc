@@ -77,6 +77,53 @@
           (reset! hold [])
           (ctx/close-context! ctx-root))))))
 
+(deftest no-mailbox-message-loss-after-track-resume-mid-mailbox-await
+  (testing "When a parent body's track-cont is resumed mid `(await mailbox)`,
+            and a producer later posts a message, the message is NOT
+            consumed by the orphaned waiter — `post-inline!` skips the
+            cancelled waiter (via the per-cont :cancel-token check)
+            and the NEW body slice's waiter receives the message."
+    (let [ctx-root (ctx/create-execution-context)
+          hold (atom [])]
+      (try
+        (binding [ec/*execution-context* ctx-root]
+          (let [s (sig/signal :initial)
+                mbx (sync/mailbox)
+                ;; Record every value the body sees from the mailbox.
+                received (atom [])
+                obs (spin
+                      (let [{tracked :new} (track s)
+                            msg (await mbx)]
+                        (swap! received conj [tracked msg])
+                        msg))
+                _ (swap! hold conj obs)]
+            ;; First run suspends at (await mbx).
+            (obs identity identity)
+            (is (empty? @received) "no message consumed yet")
+
+            ;; Change signal mid-suspend. resume-single-observer truncates
+            ;; the await cont, which fires :cancel! → adds the cancel-token
+            ;; to :engine/cancelled-tokens.
+            (reset! s :changed)
+            (simple/await-drain-complete! ctx-root :timeout-ms 2000)
+            ;; Body re-runs, new (await mbx), new cancel-token. Mailbox
+            ;; :waiters now has TWO entries: orphaned + new.
+            (is (empty? @received) "still waiting; no message posted")
+
+            ;; Producer posts ONE message. post-inline! takes the FIRST
+            ;; waiter (the orphaned one), sees its cancel-token is in
+            ;; the cancelled set, recurs. Takes the SECOND waiter
+            ;; (legitimate), delivers the message.
+            (mbx :hello)
+            (simple/await-drain-complete! ctx-root :timeout-ms 2000)
+
+            (is (= [[:changed :hello]] @received)
+                "the legitimate (post-resume) waiter received :hello;
+                 the orphaned waiter did NOT consume it")))
+        (finally
+          (reset! hold [])
+          (ctx/close-context! ctx-root))))))
+
 (deftest fork-isolated-cancellation
   (testing "Cancellation in a fork does NOT cancel the same orphaned
             cont in the parent context — and vice versa.

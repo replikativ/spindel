@@ -30,6 +30,35 @@
 
 	Bound by gen-aseq to handle yield breakpoints during CPS execution." nil)
 
+(def ^:dynamic *external-await-cancel-token*
+  "Per-await-call cancellation token, threaded from
+  `effects/await.cljc::cancellable-external-pair` into a resource's
+  await implementation when the resource's dispatch path consumes a
+  waiter WITHOUT going through the wrapped resolve closure.
+
+  Background: for Deferreds the wrap is sufficient — every closure in
+  `:pending` is invoked on delivery and orphaned ones simply no-op via
+  the cancellation gate. For Mailbox, the producer consumes exactly
+  ONE waiter per post; if the consumed waiter is orphaned, the gate
+  makes the resolve a no-op but the MESSAGE was already popped from
+  the queue (silent loss).
+
+  Fix: Mailbox's 2-arity reads this dynamic var when adding a waiter
+  to `state-atom.waiters` and stores it on the waiter struct.
+  `post-inline!` checks `(:engine/cancelled-tokens)` for the waiter's
+  token before invoking; cancelled waiters are skipped and the loop
+  recurs with the same `msg` to try the next waiter (or `:queue` push
+  if no more waiters). Mailbox stays cancellation-aware without
+  introducing message loss.
+
+  The await-handler binds this var inside the Mailbox dispatch branch
+  before invoking the mailbox, and leaves it nil elsewhere. Resources
+  that don't need it (Deferred, plain-fn) ignore the binding.
+
+  Lives in engine.core to avoid a require cycle from spin/sync.cljc
+  to effects/await.cljc."
+  nil)
+
 (def ^:dynamic *chain-head*
 	"Per-body-execution chain-head cursor (an atom containing the latest
 	address minted by `next-address!`).
@@ -65,7 +94,8 @@
      (bindings/register-var! #'*spin-id*)
      (bindings/register-var! #'*worker-id*)
      (bindings/register-var! #'*yield-handler*)
-     (bindings/register-var! #'*chain-head*)))
+     (bindings/register-var! #'*chain-head*)
+     (bindings/register-var! #'*external-await-cancel-token*)))
 
 ;; ExecutionContext binding macros
 #?(:clj

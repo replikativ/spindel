@@ -29,6 +29,10 @@
   [& _]
   (throw (ex-info "await called outside of spin context (should be CPS-transformed)" {})))
 
+;; *external-await-cancel-token* lives in engine.core so resource
+;; implementations (Mailbox in spin/sync.cljc) can read it without
+;; depending on effects/await.cljc.
+
 ;; =============================================================================
 ;; Direct Handler Implementations
 ;; =============================================================================
@@ -332,7 +336,15 @@
                 the same call site overwrite rather than accumulate)
     source-loc - source location of the await call (for cont id)
 
-  Returns: [wrapped-resolve wrapped-reject]"
+  Returns: [wrapped-resolve wrapped-reject cancel-token]
+
+  The cancel-token is returned so that resources whose dispatch happens
+  *outside* the wrapped closure (e.g. Mailbox's `post-inline!` consumes
+  a waiter from `state-atom.waiters` and calls its resolve) can check
+  the engine's cancellation set BEFORE invoking, and skip cancelled
+  waiters without losing the message. The Deferred path doesn't need
+  the token (its `:pending` callbacks all receive the same value, and
+  the cancellation gate makes orphaned ones harmlessly no-op)."
   [spin-id resolve reject ext-tag source-loc]
   (let [;; The cancel-token is a fresh UUID per call. Repeated awaits at
         ;; the same source-loc on the same resource get DIFFERENT
@@ -386,7 +398,7 @@
               ;; doesn't dispatch on :external-await events.
               :on-resume (fn [_rt] nil)}]
     (ec/continuation-add! spin-id cont)
-    [wrapped-resolve wrapped-reject]))
+    [wrapped-resolve wrapped-reject cancel-token]))
 
 (defn- await-deferred
   "Direct await handler for Deferred.
@@ -400,11 +412,12 @@
   and only the NEW body slice (registered by the parent's re-run)
   advances. See `cancellable-external-pair` for the design rationale."
   [deferred spin-id source-loc resolve reject]
-  (let [[wr wj] (cancellable-external-pair
-                  spin-id resolve reject
-                  [::deferred #?(:clj (System/identityHashCode deferred)
-                                 :cljs (.-id deferred))]
-                  source-loc)]
+  (let [[wr wj _cancel-token]
+        (cancellable-external-pair
+          spin-id resolve reject
+          [::deferred #?(:clj (System/identityHashCode deferred)
+                         :cljs (.-id deferred))]
+          source-loc)]
     (deferred wr wj))
   spin-core/incomplete)
 
@@ -435,20 +448,28 @@
                  :cljs (.-name (type awaitable)))))
       (await-deferred awaitable spin-id source-loc resolve reject)
 
-      ;; Check Mailbox by class name (avoids circular dependency)
-      ;; Works like Deferred: mailbox calls cont/resume internally if message available.
-      ;; Wrapped in a cancellation gate for the same orphaned-callback reason as
-      ;; Deferred — see `cancellable-external-pair`.
+      ;; Check Mailbox by class name (avoids circular dependency).
+      ;;
+      ;; Mailbox is wrapped in the cancellation gate like Deferred, AND in
+      ;; addition we thread the cancel-token into the Mailbox's 2-arity
+      ;; via `*external-await-cancel-token*`. The Mailbox 2-arity reads
+      ;; the var and stores the token on the waiter struct, so
+      ;; `post-inline!` can skip cancelled waiters BEFORE consuming the
+      ;; message — without this, an orphaned cancelled waiter would
+      ;; silently absorb a producer's post (the gate makes the resolve
+      ;; a no-op, but the message was already popped from the queue).
       (and awaitable
            (= "org.replikativ.spindel.spin.sync.Mailbox"
               #?(:clj (.getName (class awaitable))
                  :cljs (.-name (type awaitable)))))
-      (let [[wr wj] (cancellable-external-pair
-                      spin-id resolve reject
-                      [::mailbox #?(:clj (System/identityHashCode awaitable)
-                                    :cljs (.-id awaitable))]
-                      source-loc)]
-        (awaitable wr wj)
+      (let [[wr wj cancel-token]
+            (cancellable-external-pair
+              spin-id resolve reject
+              [::mailbox #?(:clj (System/identityHashCode awaitable)
+                            :cljs (.-id awaitable))]
+              source-loc)]
+        (binding [ec/*external-await-cancel-token* cancel-token]
+          (awaitable wr wj))
         spin-core/incomplete)
 
       ;; SignalRef is an error
@@ -467,7 +488,8 @@
       ;; engine-level suspend, or the value otherwise). Forcing `incomplete`
       ;; here would short-circuit sync-resolving partial-cps async blocks.
       (ifn? awaitable)
-      (let [[wr wj] (cancellable-external-pair
+      (let [[wr wj _cancel-token]
+            (cancellable-external-pair
                       spin-id resolve reject
                       [::ifn #?(:clj (System/identityHashCode awaitable)
                                 :cljs (or (.-name awaitable) (str awaitable)))]

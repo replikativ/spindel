@@ -238,12 +238,64 @@ resources that hold raw resolve closures (no engine indirection).
 Tests in `engine/cont_cancellation_test.cljc`:
 - `no-double-side-effect-after-track-resume-mid-deferred-await` —
   pins the original orphaned-callback fix.
+- `no-mailbox-message-loss-after-track-resume-mid-mailbox-await` —
+  pins the Mailbox cancellation fix below.
 - `fork-isolated-cancellation` — pins the Option A fork-isolation
   guarantee. Forks the context after the parent suspended on
   `(await gate)`, cancels in the fork (via signal change), delivers
   the gate in BOTH parent and fork, asserts the body's side effect
   fired exactly once in each — proving the cancellation didn't bleed
   across fork boundaries.
+
+## Mailbox cancellation (D1-A)
+
+The cancellation gate alone is sufficient for Deferred: a Deferred
+delivers a single value to ALL pending resolves, so an orphaned
+gate-no-op'd closure is harmless — the new closure (registered by
+the parent's re-run) also receives the value and the body advances
+correctly.
+
+Mailbox is different. A producer's `post-inline!` consumes EXACTLY
+ONE waiter per `post` from `state-atom.waiters`. If the consumed
+waiter's wrapped resolve is cancelled (gate flipped), it no-ops —
+but the message is gone from the queue. The next legitimate waiter
+(registered by the parent's re-run) waits forever. Silent message
+loss.
+
+**Fix (D1-A from the design discussion, landed):**
+
+1. `cancellable-external-pair` now returns the cancel-token as a
+   third return value: `[wr wj cancel-token]`.
+
+2. New dynamic var `engine/core.cljc::*external-await-cancel-token*`
+   carries the token from `await-handler`'s Mailbox dispatch branch
+   into the Mailbox 2-arity call site. The dispatch branch binds
+   the var:
+   ```
+   (binding [ec/*external-await-cancel-token* cancel-token]
+     (awaitable wr wj))
+   ```
+
+3. Mailbox 2-arity (`spin/sync.cljc`) reads the var when adding a
+   waiter to `state-atom.waiters` and stores it on the waiter
+   struct: `{:spin-id … :cancel-token … :resolve …}`.
+
+4. `post-inline!` (`engine/impl/simple.cljc`) reads
+   `:engine/cancelled-tokens` once per call from the current
+   context, and adds a `cond` branch to its skip-cancelled-waiter
+   loop: if the waiter's `:cancel-token` is in the set, recur with
+   the same `msg` to try the next waiter (or push to `:queue` if no
+   more waiters). The message is NOT consumed.
+
+The dynamic var lives in `engine.core` rather than `effects.await`
+to avoid a require cycle from `spin/sync.cljc` to
+`effects/await.cljc`. Sync.cljc already requires engine.core for
+`*spin-id*`.
+
+Deferred and plain-fn awaits ignore the var (don't bind it; nil
+default). They don't need it because their resource semantics
+deliver to all pending closures (Deferred) or don't pop from a
+waiter list at all (plain-fn).
 
 ## Open follow-ups
 
@@ -259,19 +311,6 @@ Tests in `engine/cont_cancellation_test.cljc`:
   slice). Safest design is to flip the predicate: track *active*
   (uncancelled) tokens, default unknown tokens to cancelled.
 
-- **Mailbox waiter consumption hole.** Stage 4's cancellation gate
-  makes the wrapped resolve a no-op when invoked, but the orphaned
-  waiter is still in `mailbox.state-atom.waiters`. `post-inline!`
-  consumes the message by invoking the (now no-op) wrapped resolve,
-  then returns. The next legitimate waiter (registered by the
-  parent's re-run body slice) waits for a new message. Net effect on
-  Mailbox: silent message loss after a track-resume mid-await. Fix
-  paths: (a) `:cancel!` actively removes the waiter from
-  `state-atom`; (b) `post-inline!` reads `:engine/cancelled-tokens`
-  for a token stored on the waiter struct and re-queues the message
-  when the wrapped resolve was cancelled; (c) the wrapped resolve
-  returns a sentinel. All three require coupling Mailbox internals
-  to the await wrap. Deferred to a follow-up branch.
 
 - **`add-continuation!` cancel-on-overwrite ordering.** Currently
   fires `:cancel!` outside the atomic `swap-state!` (captured via

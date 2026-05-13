@@ -172,32 +172,56 @@
     (:value @state-atom)))
 
 (defn- post-inline!
-  "INTERNAL: Post message inline to mailbox, resuming waiters directly."
+  "INTERNAL: Post message inline to mailbox, resuming waiters directly.
+
+  The loop skips two flavors of cancelled waiter without consuming the
+  message:
+
+  1. Whole-spin cancellation (`ec/spin-is-cancelled?`) — the spin owning
+     the waiter was explicitly cancelled by the user.
+
+  2. Per-cont cancellation (the waiter's `:cancel-token` is in the
+     current context's `:engine/cancelled-tokens`) — the await cont
+     that registered this waiter was truncated by the engine
+     (resume-single-observer, clear-deps, etc.). The wrapped resolve
+     would no-op via the gate, but consuming the message and invoking
+     a no-op would silently lose the message. See
+     `effects/await.cljc::cancellable-external-pair` and
+     `ec/*external-await-cancel-token*`.
+
+  When a cancelled waiter is found, the loop recurs with the SAME `msg`
+  — the swap-state above only popped a waiter and didn't put the msg
+  anywhere; the next iteration finds the next waiter (or pushes the msg
+  to `:queue` if no more waiters)."
   [mailbox msg state-atom]
-  ;; Loop to find first non-cancelled waiter
-  (loop []
-    (let [waiter-to-try (atom nil)
-          _result (swap! state-atom
-                        (fn [state]
-                          (if (seq (:waiters state))
-                            ;; Has waiters - take first one to try
-                            (do
-                              (reset! waiter-to-try (first (:waiters state)))
-                              (update state :waiters #(vec (rest %))))
-                            ;; No waiters - add to queue
-                            (update state :queue conj msg))))]
-      (if-let [{:keys [spin-id resolve]} @waiter-to-try]
-        ;; Got a waiter - check if cancelled (outside swap, context available)
-        (if (and spin-id (ec/spin-is-cancelled? spin-id))
-          ;; Cancelled - try next waiter
-          (recur)
-          ;; Valid waiter - resume it
-          ;; Event handler already bound *in-trampoline* false
-          (do
-            (pcps-async/invoke-continuation resolve msg)
-            nil))
-        ;; No waiter, message queued
-        nil))))
+  (let [cancelled-tokens (when-let [ctx (try (ec/current-execution-context)
+                                             (catch #?(:clj Throwable :cljs :default) _ nil))]
+                           (rtp/get-state ctx [:engine/cancelled-tokens]))]
+    (loop []
+      (let [waiter-to-try (atom nil)
+            _result (swap! state-atom
+                          (fn [state]
+                            (if (seq (:waiters state))
+                              ;; Has waiters - take first one to try
+                              (do
+                                (reset! waiter-to-try (first (:waiters state)))
+                                (update state :waiters #(vec (rest %))))
+                              ;; No waiters - add to queue
+                              (update state :queue conj msg))))]
+        (if-let [{:keys [spin-id cancel-token resolve]} @waiter-to-try]
+          (cond
+            (and spin-id (ec/spin-is-cancelled? spin-id))
+            (recur)
+
+            (and cancel-token cancelled-tokens (contains? cancelled-tokens cancel-token))
+            (recur)
+
+            :else
+            (do
+              (pcps-async/invoke-continuation resolve msg)
+              nil))
+          ;; No waiter, message queued
+          nil)))))
 
 ;; =============================================================================
 ;; Engine state wiring
