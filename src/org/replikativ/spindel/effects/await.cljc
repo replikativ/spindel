@@ -277,15 +277,95 @@
             :else
             spin-core/incomplete))))))
 
+(defn- cancellable-external-pair
+  "Wrap (resolve, reject) into a cancellation-aware pair and register an
+  engine continuation for the wait.
+
+  Background: when the engine resumes a parent's earlier track-cont via
+  `resume-single-observer!`/`re-execute-dirty-parent!`, it truncates all
+  conts with `:order` strictly greater than the resumed cont. The
+  engine's own resolve callbacks for those conts then never fire (their
+  cont entries no longer exist). But external resources — Deferred's
+  `:pending` list, Mailbox waiters, plain-fn callback registrations —
+  hold the *raw* resolve/reject closures directly. When the resource
+  later fires, both the OLD orphaned closure and the NEW one (registered
+  by the parent's re-run body slice) advance their respective body
+  slices to completion. Pure bodies waste work; bodies with side effects
+  fire those side effects twice.
+
+  The fix: every external-await wraps its resolve/reject with a
+  cancellation gate (a volatile checked before forwarding). The
+  associated engine cont owns the gate via `:cancel!`. The engine's
+  cont-removal sites (resume-single-observer's truncation,
+  clear-all-await-continuations!, clear-deps!, full-cleanup-spin!) call
+  `:cancel!` on every removed cont before dissociating it. After
+  cancellation, the wrapped closures become no-ops; the external
+  resource fires harmlessly.
+
+  Returns: [wrapped-resolve wrapped-reject]. The engine cont is added to
+  `:continuations[spin-id]` with `:ephemeral-await? true` so that
+  `clear-all-await-continuations!` reaps it at generation boundaries
+  (analogous to the existing ephemeral-spin-await conts).
+
+  Args:
+    spin-id   - parent spin that is doing the await
+    resolve, reject - the parent body's CPS continuations
+    ext-tag   - opaque identifier for the external resource (used to
+                deterministically derive a cont-id so repeated awaits at
+                the same call site overwrite rather than accumulate)
+    source-loc - source location of the await call (for cont id)"
+  [spin-id resolve reject ext-tag source-loc]
+  (let [cancelled? (volatile! false)
+        ;; Deterministic cont-id so repeated awaits at the same source
+        ;; location on the same external resource overwrite a previous
+        ;; orphaned entry — but the volatile is per-call, so cancellation
+        ;; only kills the CURRENT instance, not a future re-await.
+        cont-id (keyword (str "external-await-"
+                              (h/content-hash [spin-id ext-tag source-loc])))
+        wrapped-resolve (fn [v]
+                          (when-not @cancelled?
+                            (resolve v)))
+        wrapped-reject  (fn [e]
+                          (when-not @cancelled?
+                            (reject e)))
+        cont {:id cont-id
+              ;; Event-key is informational — no handler reads
+              ;; `[:external-await …]`. Keeping a key makes the
+              ;; cont uniform with the rest of the registry and
+              ;; lets `:subscriptions` cleanup (clear-deps! etc.)
+              ;; work without special-casing.
+              :event-key [:external-await ext-tag]
+              :source-loc source-loc
+              :ephemeral-await? true
+              :cancelled?-atom cancelled?
+              :cancel! (fn [] (vreset! cancelled? true))
+              :resolve-fn wrapped-resolve
+              :reject-fn wrapped-reject
+              ;; on-resume is required for the cont protocol but
+              ;; never fires for external-await conts — the engine
+              ;; doesn't dispatch on :external-await events.
+              :on-resume (fn [_rt] nil)}]
+    (ec/continuation-add! spin-id cont)
+    [wrapped-resolve wrapped-reject]))
+
 (defn- await-deferred
   "Direct await handler for Deferred.
 
   Deferred implements IFn with 2-arity: (deferred resolve reject)
-  Returns ::incomplete to suspend parent until deferred resolves."
-  [deferred _spin-id _source-loc resolve reject]
-  ;; Call the deferred, it will invoke resolve/reject when ready
-  (deferred resolve reject)
-  ;; Suspend parent
+  Returns ::incomplete to suspend parent until deferred resolves.
+
+  Wraps resolve/reject in a cancellation gate so that if the parent's
+  earlier track-cont resumes mid-await (truncating this await),
+  the deferred's eventual delivery is a no-op on the orphaned closure
+  and only the NEW body slice (registered by the parent's re-run)
+  advances. See `cancellable-external-pair` for the design rationale."
+  [deferred spin-id source-loc resolve reject]
+  (let [[wr wj] (cancellable-external-pair
+                  spin-id resolve reject
+                  [::deferred #?(:clj (System/identityHashCode deferred)
+                                 :cljs (.-id deferred))]
+                  source-loc)]
+    (deferred wr wj))
   spin-core/incomplete)
 
 (defn reactive-spin?
@@ -316,24 +396,36 @@
       (await-deferred awaitable spin-id source-loc resolve reject)
 
       ;; Check Mailbox by class name (avoids circular dependency)
-      ;; Works like Deferred: mailbox calls cont/resume internally if message available
+      ;; Works like Deferred: mailbox calls cont/resume internally if message available.
+      ;; Wrapped in a cancellation gate for the same orphaned-callback reason as
+      ;; Deferred — see `cancellable-external-pair`.
       (and awaitable
            (= "org.replikativ.spindel.spin.sync.Mailbox"
               #?(:clj (.getName (class awaitable))
                  :cljs (.-name (type awaitable)))))
-      (do
-        (awaitable resolve reject)
+      (let [[wr wj] (cancellable-external-pair
+                      spin-id resolve reject
+                      [::mailbox #?(:clj (System/identityHashCode awaitable)
+                                    :cljs (.-id awaitable))]
+                      source-loc)]
+        (awaitable wr wj)
         spin-core/incomplete)
 
       ;; SignalRef is an error
       (track/signal-ref? awaitable)
       (reject (eff/type-error 'await "Spin or Deferred (use track for signals)" awaitable))
 
-      ;; Plain function - treat as async thunk (e.g., from partial-cps async)
-      ;; Simple passthrough - effect handlers inside async are responsible for
-      ;; registering with spindel runtime if they need to suspend
+      ;; Plain function - treat as async thunk (e.g., from partial-cps async).
+      ;; Effect handlers inside async are responsible for registering with the
+      ;; spindel runtime if they need to suspend. Wrap resolve/reject in a
+      ;; cancellation gate for the same orphaned-callback reason as Deferred.
       (ifn? awaitable)
-      (awaitable resolve reject)
+      (let [[wr wj] (cancellable-external-pair
+                      spin-id resolve reject
+                      [::ifn #?(:clj (System/identityHashCode awaitable)
+                                :cljs (.-id awaitable))]
+                      source-loc)]
+        (awaitable wr wj))
 
       :else
       (reject (eff/type-error 'await "Spin, Deferred, or async thunk" awaitable)))

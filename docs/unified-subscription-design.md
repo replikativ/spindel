@@ -168,27 +168,47 @@ to "wait queue doesn't pump the other queue" deadlocks.
   so the test harness's drain wait sees the work as pending until the
   Deferred resolves and the body completes.
 
-## What this does NOT yet fix
+## Cont cancellation (orphaned external callbacks)
 
-**Orphaned external callbacks** — when `resume-single-observer!`
-truncates conts whose `:resolve-fn` had been passed into an external
-resource (Deferred's `:pending`, Mailbox's waiters, chan-spin's channel
-listeners), those resolve closures are still held by the resource.
-When the resource fires, both the OLD body slice and the NEW body slice
-advance to their respective outer-resolves. Pure-functional bodies are
-merely wasteful; bodies with side effects (DOM mutations, message
-dispatch, atom swaps) fire side effects twice.
+When `resume-single-observer!` (or `re-execute-dirty-parent!`) truncates
+conts whose `:resolve-fn` had been passed into an external resource —
+Deferred's `:pending`, Mailbox's waiters, plain-fn callback registrations
+— those resolve closures are still held by the resource. When the
+resource later fires, both the OLD body slice and the NEW body slice
+(registered by the parent re-run) advance to their respective
+outer-resolves. Pure-functional bodies are merely wasteful; bodies
+with side effects (DOM mutations, message dispatch, atom swaps)
+fire those side effects twice.
 
-Fix path (deferred to a follow-up branch): every cont gets a
-`:cancelled?` volatile. External-facing resolve/reject closures are
-wrapped to check the flag before delegating. `resume-single-observer!`
-sets the flag on truncated conts. This requires touching `await-deferred`,
-`await-mailbox`, and any plain-function awaitable path in
-`effects/await.cljc`, plus the cont-removal sites in `engine/impl/simple.cljc`.
+**Fix** (stage 4, landed): `effects/await.cljc::cancellable-external-pair`
+wraps the parent body's resolve/reject in a cancellation gate — a
+`volatile!` checked before delegating. The associated engine cont
+owns the gate via `:cancel!`. Every cont-removal site in
+`engine/impl/simple.cljc` calls `:cancel!` on every removed cont
+before dissociating:
+
+- `resume-single-observer!`            — truncates conts with order > resumed
+- `re-execute-dirty-parent!`           — same truncation pattern
+- `clear-all-await-continuations!`     — generation boundary cleanup
+- `clear-deps!`                        — invalidation
+- `full-cleanup-spin!`                 — GC
+
+Awaits on a Spin (slow path) do not need this treatment: the child's
+completion enqueues a `:spin-completion` event whose dispatch looks up
+the parent cont in `:subscriptions[[:spin/complete child-id]]`; if the
+cont has been removed, the lookup returns nil and the dispatch is a
+no-op. The cancellation infrastructure exists only for external
+resources that hold raw resolve closures (no engine indirection).
+
+Test: `engine/cont_cancellation_test.cljc` — a body that has
+`(track A) → (await deferred) → swap! counter inc`. Change A
+mid-suspend, deliver the deferred, assert counter incremented exactly
+once. Verified with a temporary revert (comment-out the
+resume-single-observer cancel-loop) that the test reproduces the bug
+(counter=2) without the fix.
 
 ## Open follow-ups
 
-- Orphaned-cont cancellation (above).
 - `mark-not-running!` is now unreferenced by production code (only the
   snapshot-restore in `context.cljc` still resets `:running?` to false
   on in-flight spins after a snapshot is restored, which is unrelated).

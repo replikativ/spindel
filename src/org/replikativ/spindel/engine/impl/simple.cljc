@@ -262,11 +262,25 @@
   (log/debug :engine/resuming-track-continuation {:spin-id spin-id :signal-id sid})
 
   ;; Remove stale continuations (order > resumed continuation's order)
+  ;;
+  ;; Before dissociating each removed cont, call its `:cancel!` hook if
+  ;; any. External-await wrappers (Deferred / Mailbox / plain-fn) install
+  ;; a cancellation gate so that when the resource later fires, the
+  ;; orphaned resolve closure is a no-op. Without this, both the OLD
+  ;; (orphaned) and NEW (registered by the parent re-run) body slices
+  ;; would advance to outer-resolve, causing double cache-result, double
+  ;; record-deps, and double side effects. See
+  ;; `effects/await.cljc::cancellable-external-pair`.
   (let [cont-order (:order cont)
         all-conts (rtp/get-state context [:continuations spin-id])
         skipped-signal-ids (->> (vals all-conts)
                                 (filter #(< (:order %) cont-order))
-                                (keep :signal-id))]
+                                (keep :signal-id))
+        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
+    ;; Fire cancellation hooks BEFORE state mutation so orphaned closures
+    ;; observe @cancelled?=true the moment the external resource calls them.
+    (doseq [c cancelled-conts]
+      (when-let [cancel! (:cancel! c)] (cancel!)))
     (rtp/swap-state! context [:continuations spin-id]
       (fn [conts]
         (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
@@ -347,12 +361,17 @@
   [context spin-id signal-id cont]
   (log/debug :engine/re-execute-dirty-parent {:spin-id spin-id :signal-id signal-id})
 
-  ;; Remove stale continuations (order > resumed continuation's order)
+  ;; Remove stale continuations (order > resumed continuation's order).
+  ;; See `resume-single-observer!` for the cancellation-hook rationale —
+  ;; same orphaned-callback risk here when re-executing a dirty parent.
   (let [cont-order (:order cont)
         all-conts (rtp/get-state context [:continuations spin-id])
         skipped-signal-ids (->> (vals all-conts)
                                 (filter #(< (:order %) cont-order))
-                                (keep :signal-id))]
+                                (keep :signal-id))
+        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
+    (doseq [c cancelled-conts]
+      (when-let [cancel! (:cancel! c)] (cancel!)))
     (rtp/swap-state! context [:continuations spin-id]
       (fn [conts]
         (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
@@ -1076,6 +1095,13 @@
 
   Returns: true"
   [context spin-id]
+  ;; Fire cancellation hooks on all conts BEFORE the atomic state mutation
+  ;; below. External-await conts (Deferred / Mailbox / plain-fn wrappers)
+  ;; use these to no-op the orphaned resolve closures held by the resource.
+  ;; See `effects/await.cljc::cancellable-external-pair`.
+  (when-let [all-conts (rtp/get-state context [:continuations spin-id])]
+    (doseq [[_ c] all-conts]
+      (when-let [cancel! (:cancel! c)] (cancel!))))
   (rtp/swap-state! context []
     (fn [rt-state]
       ;; To safely clear observers, take the UNION of `spin.deps` (the
@@ -1153,6 +1179,10 @@
 
   Returns: true"
   [context spin-id]
+  ;; Cancellation hooks first — same rationale as `clear-deps!`.
+  (when-let [all-conts (rtp/get-state context [:continuations spin-id])]
+    (doseq [[_ c] all-conts]
+      (when-let [cancel! (:cancel! c)] (cancel!))))
   (rtp/swap-state! context []
     (fn [state]
       (let [node (get-in state [:nodes spin-id])
@@ -1469,6 +1499,13 @@
             (when (seq await-conts)
               (swap! result update :spins-affected inc)
               (swap! result update :continuations-cleared + (count await-conts))
+
+              ;; Fire cancellation hooks for any external-await conts among
+              ;; the cleared set, so orphaned Deferred/Mailbox/plain-fn
+              ;; resolve closures become no-ops. See
+              ;; `effects/await.cljc::cancellable-external-pair`.
+              (doseq [[_ cont] await-conts]
+                (when-let [cancel! (:cancel! cont)] (cancel!)))
 
               ;; Remove await continuations and their subscriptions atomically
               (rtp/swap-state! context []
