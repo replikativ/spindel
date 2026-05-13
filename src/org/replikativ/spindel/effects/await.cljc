@@ -133,8 +133,10 @@
         ;; Fast path: Spin has result AND (not in batch OR spin already processed)
         allow-fast-path?
         (let [is-reactive-spin (satisfies? spin-core/PSpin spin-ref)]
-          ;; Record await dependency even on fast-path so dirty propagation works.
-          (simple/record-await-dependency! ctx spin-id awaited-spin-id)
+          ;; Note: parent-as-child-observer registration was already done at
+          ;; the top of await-spin via `(ec/deps-track-spin! spin-id awaited-spin-id)`
+          ;; under the unified-subscription design — no separate
+          ;; record-await-dependency! call needed.
           ;; Register a persistent :spin/complete subscription for reactive Spins.
           ;; Without this, the cached value resolves immediately but the parent
           ;; never gets notified when the child re-completes in a future batch
@@ -238,7 +240,9 @@
               ;; Pre-register so any async completion has a subscriber.
               _ (ec/continuation-add! spin-id cont-map)
               _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
-              _ (simple/record-await-dependency! ctx spin-id awaited-spin-id)
+              ;; (Observer registration of parent in child.observers was done
+              ;; at await-spin entry via `(ec/deps-track-spin! ...)` — see
+              ;; the fast-path branch comment above.)
               ;; Re-apply the awaited spin's captured DOM scope (snapshotted
               ;; at construction in spin/core.cljc::make-spin). Without this,
               ;; the child body would inherit the parent's *execution-context*

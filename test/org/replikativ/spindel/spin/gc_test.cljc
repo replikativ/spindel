@@ -187,18 +187,16 @@
                       (do
                         (doseq [sid @spin-ids]
                           (simple/full-cleanup-spin! ctx sid))
-                        ;; Check no residual spin state
+                        ;; Check no residual spin state. (:spin-outputs was
+                        ;; removed in the unified-subscription cleanup.)
                         (let [nodes (rtp/get-state ctx [:nodes])
                               spin-nodes (filter (fn [[_ node]]
                                                    (and node
                                                         (= :spin (nodes/node-type node))))
                                                  nodes)
-                              outputs (rtp/get-state ctx [:spin-outputs])
                               metas (rtp/get-state ctx [:spins-meta])]
                           (is (zero? (count spin-nodes))
                               (str "Should have 0 spin nodes, found: " (count spin-nodes)))
-                          (is (zero? (count outputs))
-                              (str "Should have 0 spin outputs, found: " (count outputs)))
                           (is (zero? (count metas))
                               (str "Should have 0 spins-meta, found: " (count metas))))
                         (done))
@@ -234,7 +232,6 @@
            ;; Verify state is cleaned up
            (is (nil? (rtp/get-state ctx [:nodes @spin-id-holder])) "Node should be cleaned after GC")
            (is (nil? (rtp/get-state ctx [:spins-meta @spin-id-holder])) "Meta should be cleaned after GC")
-           (is (nil? (rtp/get-state ctx [:spin-outputs @spin-id-holder])) "Output should be cleaned after GC")
            (finally
              (ctx/stop-context! ctx)))))))
 
@@ -257,10 +254,8 @@
                                       (and node
                                            (= :spin (nodes/node-type node))))
                                     nodes)
-                 outputs (rtp/get-state ctx [:spin-outputs])
                  metas (rtp/get-state ctx [:spins-meta])]
              (is (zero? (count spin-nodes)) (str "Should have 0 spin nodes, found: " (count spin-nodes)))
-             (is (zero? (count outputs)) (str "Should have 0 spin outputs, found: " (count outputs)))
              (is (zero? (count metas)) (str "Should have 0 spins-meta, found: " (count metas))))
            (finally
              (ctx/stop-context! ctx)))))))

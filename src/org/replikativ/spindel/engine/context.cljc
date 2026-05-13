@@ -462,7 +462,7 @@
   - Fork creation is O(1) with OverlayBackend
   - Overlay stores only modifications (memory efficient)
   - Reads fall through to parent (shared observer graph)
-  - Fork-local state (continuations, spin-outputs) doesn't fall back
+  - Fork-local state (continuations, engine queue/timers) doesn't fall back
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
   [parent-ctx & {:keys [state-updates bindings metadata process-id]

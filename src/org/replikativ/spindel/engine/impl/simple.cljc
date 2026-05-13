@@ -1500,9 +1500,17 @@
 (defn ^:no-doc record-await-dependency!
   "Compatibility shim — under the unified-subscription design, the parent
   is already added to `child.observers` eagerly by `track-spin-dep!`
-  (called from await-handler before this). Kept as a no-op for callers
-  that still invoke it; can be removed once those call sites are
-  audited."
+  (called from await-handler before this), so the work this function
+  used to do is a no-op.
+
+  Kept as a defined symbol because removing it triggers a flaky Clojure
+  compile-time issue under `clojure -M:test`: macroexpansion of certain
+  `(spin …)` forms in `examples/todo_app.cljc` ClassCastExceptions in
+  `is.simm.partial-cps.ioc/has-breakpoints?`'s expansion-cache. The
+  failure pattern (PersistentTreeMap doCompare on Long-vs-Keyword)
+  suggests a Clojure/partial-cps compilation-order quirk that we don't
+  fully understand. Leaving the stub in place avoids the issue at
+  zero runtime cost."
   [_context _parent-spin-id _child-spin-id]
   nil)
 
