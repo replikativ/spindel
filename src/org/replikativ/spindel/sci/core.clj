@@ -13,24 +13,38 @@
 ;; =============================================================================
 
 (defn load-partial-cps!
-  "Load partial-cps source files into SCI context.
+  "Load partial-cps into a SCI context.
 
-  Required for CPS transformation to work inside SCI. Without this,
-  await/track effects won't be recognized as breakpoints.
+  Required for CPS transformation to work inside SCI: without this,
+  await/track/sample/observe effects won't be recognized as breakpoints.
 
-  The partial-cps runtime must run entirely inside SCI for symbol
-  resolution to work correctly during macro expansion.
+  `ioc.clj` and `async.cljc` ARE interpreted inside SCI — they carry the
+  CPS-transform machinery (`invert`, the `async` macro) that must expand
+  against SCI's symbol environment.
+
+  `runtime.cljc` is NOT interpreted — it is injected as a NATIVE namespace
+  using the compiled `Thunk`/`->thunk`/`bound-fn`. Interpreting it would
+  run `(deftype Thunk [f])` inside SCI, producing a `sci.impl.deftype.SciType`
+  rather than the compiled `is.simm.partial_cps.runtime.Thunk` class. The
+  trampoline — both the SCI-expanded `spin` macro wrapper and the compiled
+  `invoke-continuation` — checks `(instance? is.simm.partial_cps.runtime.Thunk x)`
+  against the *compiled* class. A `SciType` is never an instance of it, so the
+  trampoline silently never bounces and any `recur` after a breakpoint inside
+  a loop/dotimes hangs forever. Keeping one canonical compiled `Thunk` class
+  fixes that.
 
   See: SCI_INTEGRATION_FINDINGS.md"
   [sci-ctx]
-  (let [runtime-src (slurp (clojure.java.io/resource "is/simm/partial_cps/runtime.cljc"))
-        ioc-src (slurp (clojure.java.io/resource "is/simm/partial_cps/ioc.clj"))
+  (require 'is.simm.partial-cps.runtime)
+  ;; Native runtime namespace — one canonical compiled Thunk class.
+  (sci/add-namespace! sci-ctx 'is.simm.partial-cps.runtime
+    {'bound-fn @(resolve 'is.simm.partial-cps.runtime/bound-fn)
+     '->thunk  @(resolve 'is.simm.partial-cps.runtime/->thunk)
+     '->Thunk  @(resolve 'is.simm.partial-cps.runtime/->Thunk)})
+  (let [ioc-src (slurp (clojure.java.io/resource "is/simm/partial_cps/ioc.clj"))
         async-src (slurp (clojure.java.io/resource "is/simm/partial_cps/async.cljc"))]
-
-    (sci/eval-string* sci-ctx runtime-src)
     (sci/eval-string* sci-ctx ioc-src)
     (sci/eval-string* sci-ctx async-src)
-
     sci-ctx))
 
 ;; =============================================================================
