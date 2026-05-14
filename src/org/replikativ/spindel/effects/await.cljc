@@ -11,6 +11,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.hash :as h]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.effects.track :as track]
@@ -258,8 +259,21 @@
               child-ctx (if (seq spin-dom-scope)
                           (update ctx :bindings merge spin-dom-scope)
                           ctx)
+              ;; Seed a fresh per-spin *chain-head* cursor for the child's
+              ;; body, seeded from its own spin-id — exactly what `Spin`'s
+              ;; `-invoke` Case 2 does. The slow path runs the child by
+              ;; calling `.-spin-fn` directly (to inject child-resolve/
+              ;; child-reject), which bypasses `-invoke` and therefore its
+              ;; chain-head seeding. Without this, the child body inherits
+              ;; the PARENT's chain-head cursor, so the child's vnode
+              ;; addresses depend on where the `(await …)` sits in the
+              ;; parent's body — and shift whenever the parent re-runs from
+              ;; a different track continuation. Unstable addresses break
+              ;; the discharge's by-address element lookup (DISCH-NOTFOUND
+              ;; for the whole re-rendered subtree).
               _raw-result (binding [ec/*execution-context* child-ctx
                                     ec/*spin-id* awaited-spin-id
+                                    ec/*chain-head* (atom (addressing/body-start-chain-head awaited-spin-id))
                                     pcps-async/*in-trampoline* false]
                             (child-spin-fn child-resolve child-reject))]
           ;; End sync phase — any future callback invocation is async.
