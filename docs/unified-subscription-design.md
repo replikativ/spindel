@@ -207,26 +207,37 @@ cancellation by one fork silently disables the same await in the
 parent and sibling forks. The state-backed token approach removes
 the shared mutable.
 
-**Trade-off — slow leak:** `:engine/cancelled-tokens` grows
-monotonically over a context's lifetime; one entry per cancellation
-forever. For a long-running app this is a slow memory leak bounded
-by total cancellation count (not by concurrent in-flight awaits).
-Documented as an open follow-up below. A future improvement could
-pair token lifetime with cont lifetime by removing the token when
-the cont is removed.
+**Self-cleaning:** the wrapped closure / `post-inline!`
+skip-cancelled-waiter path drops their own token from
+`:engine/cancelled-tokens` after firing (or after being skipped).
+External resources deliver each consumer's closure at most once,
+so once a closure has been dispatched the token has no other
+firing path. The set's steady-state size is bounded by the count
+of cancelled closures that *never* get delivered (e.g. an
+abandoned Deferred) — a tiny constant in practice.
 
-Every cont-removal site in `engine/impl/simple.cljc` calls
-`:cancel!` on every removed cont before dissociating, passing the
-engine context:
+**Where `:cancel!` fires:** only at TRUNCATION sites, where the
+spin stays alive and re-runs (so a new cont may race with the
+orphaned external closure). Teardown sites *removed* `:cancel!`
+after a regression hunt — the JVM Cleaner thread invoking
+`full-cleanup-spin!` was firing `:cancel!` on legitimate
+in-flight resolves whose Spin object was GC'd by the test before
+the deferred delivered, silently silencing the resolve and
+producing a ~27% flake rate in async tests.
 
-- `resume-single-observer!`            — truncates conts with order > resumed
-- `re-execute-dirty-parent!`           — same truncation pattern
-- `clear-all-await-continuations!`     — generation boundary cleanup
-- `clear-deps!`                        — invalidation
-- `full-cleanup-spin!`                 — GC
-- `add-continuation!`                  — cancels a cont being displaced
-                                         by a re-await at the same
-                                         deterministic cont-id
+Active sites:
+- `resume-single-observer!`  — truncates conts with order > resumed
+- `re-execute-dirty-parent!` — same truncation pattern
+- `add-continuation!`        — cancels a cont being displaced by a
+                               re-await at the same deterministic
+                               cont-id
+
+Removed (no longer fire `:cancel!`):
+- `clear-all-await-continuations!` — generation boundary cleanup; the
+                                     spin is already completed and not
+                                     running, no new cont will compete
+- `clear-deps!`                    — invalidation; teardown path
+- `full-cleanup-spin!`             — GC; teardown path
 
 Awaits on a Spin (slow path) do not need this treatment: the child's
 completion enqueues a `:spin-completion` event whose dispatch looks up
@@ -299,17 +310,19 @@ waiter list at all (plain-fn).
 
 ## Open follow-ups
 
-- **Cancel-token leak.** `:engine/cancelled-tokens` is append-only —
-  one entry per cancellation, forever, for the context's lifetime.
-  A long-running context accumulates the set indefinitely. Bound by
-  total cancellations, not by in-flight count. Mitigation: pair token
-  lifetime with cont lifetime by removing the token from the set when
-  the cont is finally removed from `:continuations`. The subtlety: if
-  the wrapped closure fires *after* the cont is removed AND the token
-  is removed, the closure must default to "cancelled" (otherwise an
-  arbitrarily-delayed external callback could resurrect a dead body
-  slice). Safest design is to flip the predicate: track *active*
-  (uncancelled) tokens, default unknown tokens to cancelled.
+- **Fork-isolation gap for parent-cancels-after-fork.** The
+  `fork-isolated-cancellation` test pins fork→parent isolation (fork
+  cancels, parent must still fire). The opposite direction
+  (parent→fork: parent cancels after fork was created, fork must still
+  fire) is not tested. Because `:engine/cancelled-tokens` is a
+  shared-state path (not in `fork-local-paths`), a fork's read falls
+  through to parent until fork writes — so parent's late cancellation
+  would silence fork's wrapped resolve. Whether this matters depends
+  on whether parents truncate after handing forks live conts.
+  Options: add a test + make the key fork-local with copy-on-fork; or
+  switch to nonce-checked cont presence with a tombstone (Leak-N
+  design from the discussion) which gives fork isolation in both
+  directions for free.
 
 
 - **`add-continuation!` cancel-on-overwrite ordering.** Currently

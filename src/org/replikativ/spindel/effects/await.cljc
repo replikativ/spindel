@@ -317,12 +317,15 @@
   defeating fork isolation. Cancellation by one fork would silently
   disable the same await in the parent / sibling forks.
 
-  Trade-off: the `:engine/cancelled-tokens` set grows monotonically
-  over a context's lifetime — one entry per cancellation forever. For
-  long-running contexts this is a slow leak, documented as an open
-  follow-up. The leak is bounded by total cancellation count, not
-  by concurrent in-flight awaits, so a long-lived app sees the set
-  grow O(rate-of-cancellations × uptime).
+  Self-cleaning: the wrapped resolve / wrapped reject closures and
+  `post-inline!`'s skip-cancelled-waiter loop drop their own token
+  from `:engine/cancelled-tokens` after firing (or after being
+  skipped by the Mailbox loop). External resources deliver each
+  consumer's closure at most once, so the token is no longer
+  reachable from any other firing path after that point. The set's
+  steady-state size is bounded by the number of cancelled closures
+  that never get delivered (e.g. a Deferred that's abandoned without
+  being delivered) — a tiny constant in practice.
 
   The engine cont is added to `:continuations[spin-id]` with
   `:ephemeral-await? true` so `clear-all-await-continuations!` reaps it
@@ -354,23 +357,36 @@
         cancel-token (keyword "external-await-cancel" (str (random-uuid)))
         cont-id (keyword (str "external-await-"
                               (h/content-hash [spin-id ext-tag source-loc])))
-        cancelled-now?
+        ;; Resolve the CURRENT execution context dynamically. If
+        ;; *execution-context* is unbound (we're being called from a
+        ;; truly external thread that hasn't entered the engine yet),
+        ;; we can't check fork-local cancellation state — default to
+        ;; "not cancelled" since the engine would have wrapped any
+        ;; later resume in its own context binding.
+        ;;
+        ;; Returns the resolved context (or nil) along with the result
+        ;; so the caller can reuse it for the self-cleanup disj below.
+        check-and-clean!
         (fn []
-          ;; Resolve the CURRENT execution context dynamically. If
-          ;; *execution-context* is unbound (we're being called from a
-          ;; truly external thread that hasn't entered the engine yet),
-          ;; we can't check fork-local cancellation state — default to
-          ;; "not cancelled" since the engine would have wrapped any
-          ;; later resume in its own context binding.
-          (when-let [ctx (try (ec/current-execution-context)
-                              (catch #?(:clj Throwable :cljs :default) _ nil))]
-            (let [cancelled (rtp/get-state ctx [:engine/cancelled-tokens])]
-              (boolean (and cancelled (contains? cancelled cancel-token))))))
+          (let [ctx (try (ec/current-execution-context)
+                         (catch #?(:clj Throwable :cljs :default) _ nil))
+                cancelled (when ctx (rtp/get-state ctx [:engine/cancelled-tokens]))
+                in-set? (boolean (and cancelled (contains? cancelled cancel-token)))]
+            ;; Self-cleaning: external resources deliver each consumer's
+            ;; closure at most once. After the closure fires (cancelled or
+            ;; not), drop our token from the cancelled set so it doesn't
+            ;; accumulate over the context's lifetime. Bounds the set's
+            ;; growth to closures that never get fired (e.g. a Deferred
+            ;; that's abandoned without being delivered).
+            (when (and ctx in-set?)
+              (rtp/swap-state! ctx [:engine/cancelled-tokens]
+                               (fn [s] (if s (disj s cancel-token) s))))
+            in-set?))
         wrapped-resolve (fn [v]
-                          (when-not (cancelled-now?)
+                          (when-not (check-and-clean!)
                             (resolve v)))
         wrapped-reject  (fn [e]
-                          (when-not (cancelled-now?)
+                          (when-not (check-and-clean!)
                             (reject e)))
         cont {:id cont-id
               ;; Event-key is informational — no handler reads

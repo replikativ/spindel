@@ -194,9 +194,9 @@
   anywhere; the next iteration finds the next waiter (or pushes the msg
   to `:queue` if no more waiters)."
   [mailbox msg state-atom]
-  (let [cancelled-tokens (when-let [ctx (try (ec/current-execution-context)
-                                             (catch #?(:clj Throwable :cljs :default) _ nil))]
-                           (rtp/get-state ctx [:engine/cancelled-tokens]))]
+  (let [ctx (try (ec/current-execution-context)
+                 (catch #?(:clj Throwable :cljs :default) _ nil))
+        cancelled-tokens (when ctx (rtp/get-state ctx [:engine/cancelled-tokens]))]
     (loop []
       (let [waiter-to-try (atom nil)
             _result (swap! state-atom
@@ -214,7 +214,17 @@
             (recur)
 
             (and cancel-token cancelled-tokens (contains? cancelled-tokens cancel-token))
-            (recur)
+            (do
+              ;; Self-cleaning: this waiter was cancelled and we're consuming
+              ;; (skipping) it now — the cancel-token is no longer needed.
+              ;; Drop it from the set so cancelled-tokens doesn't accumulate
+              ;; one entry per signal-change × waiter over the context's
+              ;; lifetime. See `effects/await.cljc::cancellable-external-pair`
+              ;; for the Deferred/ifn? side of the same self-cleaning story.
+              (when ctx
+                (rtp/swap-state! ctx [:engine/cancelled-tokens]
+                                 (fn [s] (if s (disj s cancel-token) s))))
+              (recur))
 
             :else
             (do
@@ -1123,13 +1133,18 @@
 
   Returns: true"
   [context spin-id]
-  ;; Fire cancellation hooks on all conts BEFORE the atomic state mutation
-  ;; below. External-await conts (Deferred / Mailbox / plain-fn wrappers)
-  ;; use these to no-op the orphaned resolve closures held by the resource.
-  ;; See `effects/await.cljc::cancellable-external-pair`.
-  (when-let [all-conts (rtp/get-state context [:continuations spin-id])]
-    (doseq [[_ c] all-conts]
-      (when-let [cancel! (:cancel! c)] (cancel! context))))
+  ;; NOTE: we intentionally do NOT fire `:cancel!` on the cleared conts.
+  ;; The orphaned-callback double-execution risk only exists at TRUNCATION
+  ;; sites (where the spin stays alive and re-runs, generating a NEW cont
+  ;; at the same source-loc that races with the OLD external closure).
+  ;; clear-deps! is a teardown path — the spin is going away — so no NEW
+  ;; cont will compete. A late-firing external resolve will harmlessly
+  ;; advance the (already-cleared) body slice toward cache-result, which
+  ;; is idempotent. Calling `:cancel!` here would silently no-op
+  ;; LEGITIMATE in-flight resolves when the JVM Cleaner GCs a spin whose
+  ;; body is still suspended on an external await — observed as test
+  ;; flakes in tests where the user drops their Spin ref before the
+  ;; deferred delivers (Cleaner-1 thread → full-cleanup-spin! → :cancel!).
   (rtp/swap-state! context []
     (fn [rt-state]
       ;; To safely clear observers, take the UNION of `spin.deps` (the
@@ -1207,10 +1222,11 @@
 
   Returns: true"
   [context spin-id]
-  ;; Cancellation hooks first — same rationale as `clear-deps!`.
-  (when-let [all-conts (rtp/get-state context [:continuations spin-id])]
-    (doseq [[_ c] all-conts]
-      (when-let [cancel! (:cancel! c)] (cancel! context))))
+  ;; NOTE: we intentionally do NOT fire `:cancel!` here. Same rationale as
+  ;; `clear-deps!` — this is a teardown path, no new cont will compete with
+  ;; an orphaned closure. Firing `:cancel!` would silently no-op legitimate
+  ;; in-flight resolves when the JVM Cleaner GCs a spin whose body is still
+  ;; suspended on an external await.
   (rtp/swap-state! context []
     (fn [state]
       (let [node (get-in state [:nodes spin-id])
@@ -1528,12 +1544,12 @@
               (swap! result update :spins-affected inc)
               (swap! result update :continuations-cleared + (count await-conts))
 
-              ;; Fire cancellation hooks for any external-await conts among
-              ;; the cleared set, so orphaned Deferred/Mailbox/plain-fn
-              ;; resolve closures become no-ops. See
-              ;; `effects/await.cljc::cancellable-external-pair`.
-              (doseq [[_ cont] await-conts]
-                (when-let [cancel! (:cancel! cont)] (cancel! context)))
+              ;; NOTE: we intentionally do NOT fire `:cancel!` here. This is
+              ;; a generation-boundary cleanup of completed-not-running spins
+              ;; — no new cont will be registered for these spins in this
+              ;; generation. The orphaned-callback double-execution risk only
+              ;; exists at TRUNCATION sites where the spin stays alive and
+              ;; re-runs.
 
               ;; Remove await continuations and their subscriptions atomically.
               ;; The event-key shape depends on cont type:
@@ -1857,24 +1873,6 @@
               (log/trace :claim/success-new-node {:spin-id spin-id})
               (nodes/->spin-node nil :clean false true #{} {} nil #{})))))
     @claimed?))
-
-(defn ^:no-doc mark-not-running!
-  "Clear the running? flag for a spin.
-
-  Called when a spin yields (returns ::incomplete) to indicate it's no longer
-  actively executing - it's suspended waiting for a continuation.
-
-  Args:
-    context - context record (implements PState protocol)
-    spin-id - ID of spin to mark as not running
-
-  Returns: true"
-  [context spin-id]
-  (rtp/swap-state! context [:nodes spin-id]
-    (fn [node]
-      (when node
-        (assoc node :running? false))))
-  true)
 
 (defn ^:no-doc add-pending-callback!
   "Add a callback to be invoked when a currently-running spin completes.
