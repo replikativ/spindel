@@ -54,7 +54,12 @@
     - resolve: (fn [value] ...) - Resume with success
     - reject: (fn [error] ...) - Resume with error
 
-    Returns: nil (side-effects only)"))
+    Returns: whatever the continuation chain returns — this is a link in
+    the CPS chain, so the return value MUST be propagated, not discarded:
+    a partial-cps trampoline Thunk (when a continuation hit a loop/recur),
+    `spin-core/incomplete` (when the handler suspended), or the final
+    value (synchronous completion). Returning a hardcoded value here
+    severs the trampoline and the spin never resolves."))
 
 ;; Note: Keyword-based global registries and perform-based invocation have been
 ;; removed in favor of explicit symbol-based registration and dispatch.
@@ -92,15 +97,20 @@
 (defn async-effect
   "Helper for creating asynchronous effect handlers.
 
-  Takes a function (fn [context args resolve reject] ...) that is
-  responsible for calling resolve or reject at some future point.
+  Takes a function (fn [context args resolve reject] ...) that either
+  resolves asynchronously (registers callbacks, returns nil) or resolves
+  synchronously inline (calls resolve and returns its result).
 
-  The function should:
-  1. Set up async operation (use ec/*execution-context* binding for state access)
-  2. Register callbacks that will call resolve/reject
-  3. Return nil
+  `handle-effect` propagates `effect-fn`'s return value unchanged. This
+  matters for synchronous-resolve handlers: when such a handler's
+  continuation hits a `recur` (in a loop/dotimes), the continuation
+  returns a partial-cps trampoline Thunk. That Thunk must propagate back
+  up to the enclosing spin-macro trampoline so it gets bounced — if
+  `handle-effect` swallowed it (returning nil), the trampoline chain
+  would break and the spin would never resolve. Truly-async handlers
+  still return nil, which propagates harmlessly.
 
-  Example:
+  Example (async):
     (async-effect
       (fn [context {:keys [spin-ref]} resolve reject]
         (binding [ec/*execution-context* context]
@@ -110,8 +120,7 @@
   [effect-fn]
   (reify PEffectHandler
     (handle-effect [_ context args resolve reject]
-      (effect-fn context args resolve reject)
-      nil)))
+      (effect-fn context args resolve reject))))
 
 ;; =============================================================================
 ;; Symbol-based syntax registry for direct CPS interception
