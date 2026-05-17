@@ -45,9 +45,6 @@ partial-cps
 simmis
 zeitlauf
 
-# Separate inference repository (extracted)
-inference/
-
 # Benchmark results
 bench/*.txt
 
