@@ -255,44 +255,31 @@ therefore do **not** leak back into the parent — pinned by
 `fork-isolated-cancellation` in `cont_cancellation_test.cljc`.
 
 A precise note on the divergence mechanism: `:engine/cancelled-tokens`
-is a depth-1 path, so the OverlayBackend takes its "shallow shared
-path" branch (`(swap! overlay-atom update-in path f)`), not the
-entity-CoW branch that applies to depth-≥2 shared paths like
-`[:nodes spin-id …]`. Practically that means a fork's first write
-does NOT pre-copy parent's value into the overlay — fork's `swap!`
-sees `nil` and starts a fresh set containing just the fork's token.
-After that first write, parent's pre-fork tokens are no longer
-visible in fork (the overlay shadows the parent). For the
-fork→parent guarantee this is fine; for parent→fork it has a
-consequence — see the note below.
+is a depth-1 shared path. The OverlayBackend used to write at depth-1
+via `(swap! overlay-atom update-in path f)` directly, which meant a
+fork's first write saw `nil` in the overlay and produced
+`(f nil) = #{fork-token}` — silently shadowing the parent's pre-fork
+tokens. The unified-subscription-model branch extends the entity-CoW
+that depth-≥2 shared paths already had down to depth-1: on first write
+to a shared depth-1 path the overlay is seeded with parent's current
+value (read through `backend-read` on the parent), and `f` then runs
+against that seeded value. Practical consequences:
 
-Note on the OTHER direction — parent→fork: parent's cancellations
-made AFTER the fork was created propagate into the fork while the
-fork hasn't written to the cancelled-tokens path yet (reads fall
-through). This is the OverlayBackend's parent-following contract
-by design — overlay forks track parent's evolving state (signal
-observer graph, continuation registry, etc.) precisely because
-that's what makes them useful for speculative-with-rebase /
-Elle-distributed-consistency-style branching. A cancellation is
-a fact about the shared continuation graph, so applying it to
-anyone observing that graph is consistent.
+1. Fork inherits parent's pre-fork tokens on first write (CoW
+   semantics — the same property the depth-≥2 entity CoW guarantees).
+   The wrapped closure for any pre-fork-cancelled cont remains a no-op
+   when invoked by fork's drain.
+2. After the first write, fork's overlay holds its own copy. Parent's
+   cancellations made *after* the fork are no longer visible to fork
+   (fork has CoW'd the path).
+3. Fork→parent direction is unchanged: parent never reads fork's
+   overlay. `fork-isolated-cancellation` still holds.
 
-**Latent edge case (not currently exercised in production):** the
-shallow-path swap means fork's first write does not copy parent's
-pre-fork tokens; subsequent reads in fork see only fork-written
-tokens. If parent cancelled a cont *before* the fork was created
-AND that cont's wrapped resolve closure made it into fork's
-gate.:pending at fork time AND fork later cancels a different
-cont, the parent-pre-fork closure firing inside fork's drain would
-no longer see the parent's pre-fork token and would fire when it
-should remain silenced. The existing fork-isolation test does not
-exercise this sequence (it cancels in fork only). Cleanest future
-fix is to extend OverlayBackend's atomic write path to copy parent's
-value into the overlay on first write for shared depth-1 paths
-(mirroring the depth-≥2 entity-CoW logic). For workloads that
-want fully isolated cancellation today, use `snapshot-context`
-instead of `fork-context` — a snapshot is a new root with
-`ImmutableBackend`, no parent, no fall-through.
+The pre-fix behaviour was a real bug (an orphaned closure could fire
+in fork's drain) — pinned by
+`fork-preserves-parent-pre-fork-cancellation-tokens` in
+`cont_cancellation_test.cljc`. The fix lives in
+`state-backend.cljc::backend-write!`'s shared-depth-1 branch.
 
 Compare to a `volatile!` captured in the closure (the original
 stage-4 design): the volatile is a single mutable object shared by

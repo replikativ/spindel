@@ -23,6 +23,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -123,6 +124,97 @@
         (finally
           (reset! hold [])
           (ctx/close-context! ctx-root))))))
+
+(deftest fork-preserves-parent-pre-fork-cancellation-tokens
+  (testing "When a fork inherits a parent that already has cancelled
+            tokens, the fork's own first cancel-write must NOT shadow
+            (clobber) parent's pre-fork tokens in fork's view.
+
+            Regression: `:engine/cancelled-tokens` is a depth-1 shared
+            path on the OverlayBackend. Before the depth-1 CoW fix, a
+            fork's first `(swap-state! ctx [:engine/cancelled-tokens] f)`
+            would land `f(nil)` in fork's overlay — overwriting fork's
+            view of parent's set. An orphaned external-await closure
+            registered before the fork (gated on a token in parent's
+            set) would then fire when fork's drain invoked it (token
+            absent from fork's now-shadowed set).
+
+            Scenario:
+              1. Parent runs `(track s) → (await d) → side-effect`,
+                 suspends on `d`.
+              2. Parent `(reset! s …)` truncates the await cont in
+                 parent. Parent's `:engine/cancelled-tokens` = #{A}.
+                 `d.:pending` still has the orphaned closure gated on A
+                 plus the new closure gated on A'.
+              3. Fork the parent. Fork inherits `:continuations`
+                 (explicitly copied) but reads `:engine/cancelled-tokens`
+                 via overlay fall-through → sees #{A}.
+              4. Fork `(reset! s …)` truncates fork's await cont and
+                 writes token B into fork's `:engine/cancelled-tokens`.
+                 With the CoW fix, fork's overlay becomes #{A B}; without
+                 it, fork's overlay would be #{B} and A would be lost
+                 in fork's view.
+              5. Fork `(deliver! d …)`. Fork's drain iterates `d.:pending`
+                 (now #{A A' B}), invoking each wrapped closure. Each
+                 reads fork's `:engine/cancelled-tokens` and no-ops if
+                 its token is present.
+
+            With the fix, only the body slice gated on B advances and
+            the side effect fires exactly once. Without the fix, both
+            B's slice AND A's orphaned slice fire — side effect fires
+            twice."
+    (let [parent-ctx (ctx/create-execution-context)
+          hold (atom [])]
+      (try
+        (binding [ec/*execution-context* parent-ctx]
+          (let [s     (sig/signal :v0)
+                d     (sync/deferred)
+                fires (atom 0)
+                obs   (spin
+                        (let [{tracked :new} (track s)
+                              _ (await d)]
+                          (swap! fires inc)
+                          tracked))
+                _     (swap! hold conj obs)]
+            ;; First run suspends on (await d).
+            (obs identity identity)
+            (simple/await-drain-complete! parent-ctx :timeout-ms 1000)
+
+            ;; Truncate the await cont in parent. parent's
+            ;; :engine/cancelled-tokens now has #{A}; the orphaned
+            ;; closure for A is still in d.:pending alongside the new
+            ;; A' closure.
+            (reset! s :v1)
+            (simple/await-drain-complete! parent-ctx :timeout-ms 1000)
+
+            ;; Fork: should inherit parent's tokens by fall-through,
+            ;; then CoW on first write.
+            (let [fork-ctx (ctx/fork-context parent-ctx)]
+              (binding [ec/*execution-context* fork-ctx]
+                (reset! s :v2)
+                (simple/await-drain-complete! fork-ctx :timeout-ms 1000)
+
+                ;; Sanity: fork's overlay must contain BOTH parent's
+                ;; pre-fork token AND fork's own new token.
+                (let [fork-tokens (rtp/get-state fork-ctx [:engine/cancelled-tokens])]
+                  (is (>= (count fork-tokens) 2)
+                      "fork's overlay seeded from parent's pre-fork token
+                       before adding fork's own"))
+
+                ;; Deliver in fork. d.:pending fires all three closures.
+                ;; Only the live (B) one should advance the body.
+                (sync/deliver! d :delivered)
+                (simple/await-drain-complete! fork-ctx :timeout-ms 2000))
+
+              (is (= 1 @fires)
+                  "side effect fired exactly once — the orphaned closure
+                   from parent's pre-fork cancellation was correctly
+                   no-op'd in fork's drain (depth-1 CoW preserved
+                   parent's token in fork's view)")
+              (ctx/close-context! fork-ctx))))
+        (finally
+          (reset! hold [])
+          (ctx/close-context! parent-ctx))))))
 
 (deftest fork-isolated-cancellation
   (testing "Cancellation in a fork does NOT cancel the same orphaned
