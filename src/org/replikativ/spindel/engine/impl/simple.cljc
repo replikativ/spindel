@@ -1928,42 +1928,54 @@
 
   Returns: Continuation with :id and :order added"
   [context spin-id cont]
-  (let [cont-atom (atom nil)
-        displaced-cancel-atom (atom nil)]
-    (rtp/swap-state! context []
-      (fn [rt-state]
-        (let [conts (get-in rt-state [:continuations spin-id])
-              order (inc (count conts))
-              cont-id (or (:id cont) (keyword (str "cont-" (random-uuid))))
-              ;; If a cont with the same deterministic id already exists
-              ;; (e.g. a loop that re-awaits the same Deferred at the same
-              ;; source-loc), the assoc-in below will overwrite it. The
-              ;; OLD cont's `:cancel!` hook must fire — otherwise its
-              ;; wrapped resolve/reject closures stay ungated in the
-              ;; external resource's pending list and re-introduce the
-              ;; orphaned-callback double-execution bug Stage 4 closes.
-              ;; Capture the displaced cancel hook to call AFTER the swap
-              ;; (calling it inside the swap-fn would tangle with the
-              ;; atomic swap's retry semantics).
-              displaced-cont (get conts cont-id)
-              _ (when-let [c! (:cancel! displaced-cont)]
-                  (reset! displaced-cancel-atom c!))
-              cont' (-> cont (assoc :id cont-id :order order))
-              event-key (:event-key cont')]
-          ;; Store cont' for return value
-          (reset! cont-atom cont')
-          ;; Update state atomically
-          (-> rt-state
-              ;; Store continuation
-              (assoc-in [:continuations spin-id cont-id] cont')
-              ;; Register subscription
-              (update-in [:subscriptions event-key spin-id]
-                         (fn [s] (conj (or s #{}) cont-id)))))))
-    ;; Fire displaced cont's cancel hook after the swap completes,
+  ;; cont-id is stateless — generate it ONCE up front so a swap-fn retry
+  ;; doesn't waste a fresh random-uuid per iteration.
+  (let [cont-id (or (:id cont) (keyword (str "cont-" (random-uuid))))
+        ;; The one piece of in-swap state we have to capture out-of-band:
+        ;; the :cancel! hook of any cont being DISPLACED at cont-id (i.e.
+        ;; a re-await of the same external resource at the same source-loc).
+        ;; The OLD cont's `:cancel!` must fire, otherwise its wrapped
+        ;; resolve/reject closures stay ungated in the external resource's
+        ;; pending list and re-introduce the orphaned-callback double-
+        ;; execution bug Stage 4 closes.
+        ;;
+        ;; Why the side-effect-in-swap-fn pattern is correct:
+        ;;
+        ;; - Retry-safe: each retry reads the latest :continuations and
+        ;;   captures whichever :cancel! it sees. The LAST retry — the one
+        ;;   whose state actually CAS'd — captures the cont truly being
+        ;;   displaced. Earlier retries' captures are harmlessly
+        ;;   overwritten. We read the atom EXACTLY ONCE after the swap
+        ;;   returns, so only the last winner fires.
+        ;;
+        ;; - Can't move :cancel! inside the swap-fn: :cancel! itself does
+        ;;   a swap-state! on a different path (:engine/cancelled-tokens).
+        ;;   A nested swap on the same backend tangles with retry semantics
+        ;;   — at best wasted work, at worst inconsistent intermediate state.
+        ;;
+        ;; - Can't pre-fetch :cancel! before the swap: between the read and
+        ;;   the swap, another swap could install a NEW cont at the same id;
+        ;;   we'd then cancel the wrong (already-replaced) cont and leave
+        ;;   the actually-displaced one ungated. Capture must happen INSIDE
+        ;;   the swap-fn so it observes the same state the CAS commits.
+        displaced-cancel (atom nil)
+        new-state (rtp/swap-state! context []
+                    (fn [rt-state]
+                      (let [conts (get-in rt-state [:continuations spin-id])
+                            order (inc (count conts))
+                            _     (when-let [c! (:cancel! (get conts cont-id))]
+                                    (reset! displaced-cancel c!))
+                            cont' (-> cont (assoc :id cont-id :order order))
+                            event-key (:event-key cont')]
+                        (-> rt-state
+                            (assoc-in [:continuations spin-id cont-id] cont')
+                            (update-in [:subscriptions event-key spin-id]
+                                       (fn [s] (conj (or s #{}) cont-id)))))))]
+    ;; Fire the displaced cont's cancel hook AFTER the swap commits,
     ;; passing the engine context so the cancellation is recorded
     ;; fork-locally (Option A — state-backed cancel tokens).
-    (when-let [c! @displaced-cancel-atom] (c! context))
-    @cont-atom))
+    (when-let [c! @displaced-cancel] (c! context))
+    (get-in new-state [:continuations spin-id cont-id])))
 
 (defn remove-continuation!
   "Remove a continuation from a spin.
