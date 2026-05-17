@@ -43,7 +43,8 @@
             [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [replikativ.logging :as log]))
+            [replikativ.logging :as log])
+  #?(:clj (:import [java.util Collections WeakHashMap])))
 
 ;; =============================================================================
 ;; Discharge Protocol
@@ -141,6 +142,53 @@
 ;; deltas (e.g. a rebuild because the spin re-ran) is a different object
 ;; and gets its deltas applied normally.
 (def ^:dynamic *applied-vnodes* nil)
+
+;; ----------------------------------------------------------------------------
+;; Weak-set helpers for *applied-vnodes*
+;; ----------------------------------------------------------------------------
+;;
+;; *applied-vnodes* used to be `(atom #{})`. The atom held STRONG references
+;; to every vnode whose deltas had been applied during the render effect's
+;; lifetime. Each time a spin re-ran and produced a fresh cached result, the
+;; OLD vnode was no longer reachable via :nodes[id]:result but stayed pinned
+;; by this set — an unbounded leak in long-running apps (simmis sessions
+;; routinely accrue thousands of re-renders).
+;;
+;; Weak-set semantics are exactly right here: we only need "have I seen
+;; THIS vnode object?" (identity, not value); when the vnode becomes
+;; otherwise unreachable, dropping it from the set is correct — the cached
+;; spin result that referenced it is gone, so no future cycle will encounter
+;; it again. CLJ uses Collections/newSetFromMap over WeakHashMap (the
+;; canonical recipe), wrapped in synchronizedSet because multiple
+;; async-dispatch threads can drive concurrent discharge passes against
+;; the same applied-set. CLJS is single-threaded so a bare js/WeakSet
+;; suffices.
+
+(defn make-applied-vnodes
+  "Create a fresh weak set for tracking applied vnodes (one per render-effect).
+   Returns an object with identity-based 'have I seen this?' semantics that
+   does NOT prevent the vnode from being GC'd when its cached spin result
+   is dropped."
+  []
+  #?(:clj  (Collections/synchronizedSet
+             (Collections/newSetFromMap (WeakHashMap.)))
+     :cljs (js/WeakSet.)))
+
+(defn- applied-contains?
+  "Has this vnode object been marked applied? Nil-safe on the set arg
+   (matches the existing `(and *applied-vnodes* …)` guards)."
+  [s vnode]
+  (and s
+       #?(:clj  (.contains ^java.util.Set s vnode)
+          :cljs (.has s vnode))))
+
+(defn- applied-add!
+  "Mark this vnode object as applied. No-op when the set is nil."
+  [s vnode]
+  (when s
+    #?(:clj  (.add ^java.util.Set s vnode)
+       :cljs (.add s vnode)))
+  nil)
 
 ;; Track addresses claimed during the current render pass. If two different
 ;; vnodes try to claim the same :addr we have an addressing collision —
@@ -388,7 +436,7 @@
   [discharge vnode]
   (when vnode
     (let [is-rendered? (and *rendered-vnodes* (contains? @*rendered-vnodes* vnode))
-          is-applied?  (and *applied-vnodes*  (contains? @*applied-vnodes* vnode))]
+          is-applied?  (applied-contains? *applied-vnodes* vnode)]
       (log/debug ::discharge-vnode {:tag (:tag vnode)
                           :is-rendered? is-rendered?
                           :is-applied? is-applied?
@@ -410,8 +458,7 @@
             ;; Mark this vnode object as applied so future render cycles
             ;; that encounter the SAME vnode (e.g. a cached spin result
             ;; embedded by a re-emitting parent) skip re-applying.
-            (when *applied-vnodes*
-              (swap! *applied-vnodes* conj vnode))))))))
+            (applied-add! *applied-vnodes* vnode)))))))
 
 ;; =============================================================================
 ;; Tree Walking
@@ -557,8 +604,7 @@
   (when vnode
     (when *rendered-vnodes*
       (swap! *rendered-vnodes* conj vnode))
-    (when *applied-vnodes*
-      (swap! *applied-vnodes* conj vnode))))
+    (applied-add! *applied-vnodes* vnode)))
 
 (defn render-initial!
   "Render entire vdom tree to target for initial mount.

@@ -136,25 +136,24 @@
 
   The returned function should be called with the vdom result.
 
-  Each render effect carries a long-lived `*applied-vnodes*` atom that
+  Each render effect carries a long-lived `*applied-vnodes*` set that
   tracks vnode objects whose deltas have already been applied. This is
   what makes cached spin results safe to embed in a re-emitting parent:
   the same vnode object encountered in a later cycle is recognized and
   its deltas are not re-applied (which would duplicate children — the
   cross-spin reuse bug).
 
-  TODO: `applied-atom` holds strong references. When a spin re-runs and
-  produces a fresh cached result, the OLD vnode is no longer referenced
-  via the spin's :result cache, but remains pinned by this set. For a
-  long-running app with frequent re-runs this accumulates. Replace with
-  a weak collection (CLJ: `Collections/newSetFromMap` over WeakHashMap;
-  CLJS: js/WeakSet) once the leak is observed in practice. A WeakSet
-  is appropriate here because we only need 'have I seen THIS object?'
-  semantics — when the vnode becomes otherwise unreachable, dropping
-  it from the set is harmless."
+  Storage: a weak set (CLJ: `Collections/newSetFromMap` over
+  `WeakHashMap`, wrapped in `synchronizedSet` to tolerate parallel
+  signal-change drains; CLJS: `js/WeakSet`). Identity semantics — when
+  a spin re-runs and produces a fresh cached result, the OLD vnode is
+  no longer referenced via the spin's :result cache and the weak set
+  lets it become GC-eligible rather than pinning it for the lifetime
+  of the render effect (which would leak unboundedly in long-running
+  apps)."
   [container discharge]
-  (let [state-atom    (atom (->RenderState container discharge nil false))
-        applied-atom  (atom #{})]
+  (let [state-atom (atom (->RenderState container discharge nil false))
+        applied    (disch/make-applied-vnodes)]
     (fn [vdom]
       (when vdom
         (let [state @state-atom
@@ -163,7 +162,7 @@
                               :vdom-tag (:tag vdom)
                               :vdom-has-deltas? has-deltas?
                               :vdom-deltas (:deltas vdom)})
-          (binding [disch/*applied-vnodes* applied-atom]
+          (binding [disch/*applied-vnodes* applied]
             (if (:mounted? state)
               ;; Update with delta-direct rendering
               (swap! state-atom update-render! vdom)
