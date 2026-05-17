@@ -331,10 +331,6 @@ waiter list at all (plain-fn).
   is safe; moving it inside the swap-fn for stylistic consistency
   is a minor cleanup.
 
-- `mark-not-running!` is now unreferenced by production code (only the
-  snapshot-restore in `context.cljc` still resets `:running?` to false
-  on in-flight spins after a snapshot is restored, which is unrelated).
-  Can be removed after a deprecation cycle.
 - The `:engine/current-batch` field could potentially be folded into a
   thread-local; the current shared-state form is convenient for forks
   but every readers does so within the signal-change handler call stack.
