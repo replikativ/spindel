@@ -858,7 +858,21 @@
                               (.start))
                             :cljs nil)
             ctx (->ExecutionContext fork-id backend-obj nil executor bindings metadata running drain-thread drain-signal drain-active)]
-        #?(:clj (.set ^java.util.concurrent.atomic.AtomicReference ctx-holder (WeakReference. ctx)))
+        #?(:clj
+           (do
+             (.set ^java.util.concurrent.atomic.AtomicReference ctx-holder (WeakReference. ctx))
+             ;; Register a GC Cleaner so the daemon drain thread stops
+             ;; once the deserialized ctx is no longer reachable. Without
+             ;; this, every deserialize-context call leaked a daemon
+             ;; drain thread for the JVM's lifetime — the WeakReference
+             ;; let the ctx be GC'd but nothing ever set `running` false,
+             ;; so the loop spun on (.poll drain-signal 1s) forever.
+             ;; (Mirrors create-execution-context.)
+             (.register context-cleaner ctx
+                        (reify Runnable
+                          (run [_]
+                            (reset! running false)
+                            (.offer ^LinkedBlockingQueue drain-signal :stop))))))
         ctx)
       ;; Immutable backend - no drain thread
       (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil nil nil))))

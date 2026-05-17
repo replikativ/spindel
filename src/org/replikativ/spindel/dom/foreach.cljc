@@ -619,8 +619,23 @@
             (loop [remaining items-with-keys
                    resolved []]
               (if (empty? remaining)
-                ;; was-sync? = false: ifor-each's outer return value is a Spin
-                (build-fragment-result my-addr resolved prev-by-key prev-order false)
+                ;; was-sync? = false: ifor-each's outer return value is a Spin.
+                ;;
+                ;; Re-read the keyed cache FRESH here rather than diffing
+                ;; against the prev-by-key/prev-order captured at for-each*
+                ;; call time. This loop-spin re-runs whenever a *reactive*
+                ;; per-item spin re-completes (its tracked signals changed)
+                ;; — long after for-each* captured prev-cache. Diffing
+                ;; against the stale capture (empty on the first call)
+                ;; makes build-fragment-result re-emit :add deltas for
+                ;; items that already exist, duplicating them in the DOM.
+                ;; The cache reflects what this same loop-spin wrote on its
+                ;; previous completion, so a fresh read gives the true
+                ;; prev-order and yields :update deltas for changed items.
+                (let [fresh-cache (get-keyed-cache my-addr)
+                      fresh-by-key (or (:by-key fresh-cache) {})
+                      fresh-order (or (:order fresh-cache) [])]
+                  (build-fragment-result my-addr resolved fresh-by-key fresh-order false))
                 (let [{:keys [key vnode item]} (first remaining)
                       resolved-vnode (if (spin? vnode) (await vnode) vnode)]
                   (recur (rest remaining)
