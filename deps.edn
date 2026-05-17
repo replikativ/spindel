@@ -21,26 +21,8 @@
                                                         :git/sha "b913579cac898d4ea5746125135e45d39d034b8e"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-         ;; Exclude tests tagged ^:known-failure from the default run.
-         ;; These pin open design follow-ups documented in
-         ;; docs/unified-subscription-design.md — they fail on purpose
-         ;; until the corresponding fix lands. Run them on demand with:
-         ;;   clojure -M:test-known-failure
-         :main-opts ["-m" "cognitect.test-runner" "-e" ":known-failure"]
+         :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
-
-  ;; Run ONLY the ^:known-failure tests — useful for confirming a
-  ;; pending design follow-up reproduces, or for verifying the fix
-  ;; flipped a previously-red test green.
-  :test-known-failure
-  {:extra-paths ["test"]
-   :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
-                org.replikativ/distributed-scope {:git/url "https://github.com/simm-is/distributed-scope"
-                                                  :git/sha "b913579cac898d4ea5746125135e45d39d034b8e"}
-                io.github.cognitect-labs/test-runner
-                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-   :main-opts ["-m" "cognitect.test-runner" "-i" ":known-failure"]
-   :exec-fn cognitect.test-runner.api/test}
 
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}}
