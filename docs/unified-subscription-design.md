@@ -325,14 +325,6 @@ waiter list at all (plain-fn).
   directions for free.
 
 
-- **`add-continuation!` cancel-on-overwrite ordering.** Currently
-  fires `:cancel!` outside the atomic `swap-state!` (captured via
-  an outer atom). The cancel is idempotent under swap-retry so this
-  is safe; moving it inside the swap-fn for stylistic consistency
-  is a minor cleanup.
-
 - The `:engine/current-batch` field could potentially be folded into a
   thread-local; the current shared-state form is convenient for forks
   but every readers does so within the signal-change handler call stack.
-- Stronger lifecycle hygiene for `*applied-vnodes*` (already a documented
-  TODO in `dom/render.cljc`).
