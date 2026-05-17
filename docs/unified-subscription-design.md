@@ -198,7 +198,23 @@ the set triggers copy-on-write and the parent / fork sets diverge.
 The wrapped closure, invoked by a drain in fork's context (which
 binds `*execution-context*` to fork's context), reads fork's set.
 The same closure, invoked by parent's drain, reads parent's set.
-Cancellations in one fork do **not** leak across fork boundaries.
+Cancellations made BY a fork do **not** leak back into the parent
+(this is the fork→parent isolation guarantee pinned by
+`fork-isolated-cancellation` in `cont_cancellation_test.cljc`).
+
+Note on the OTHER direction — parent→fork: parent's cancellations
+made AFTER the fork was created DO propagate into the fork while
+the fork hasn't written to the cancelled-tokens set yet (until the
+overlay's first write triggers copy-on-write). This is the
+OverlayBackend's parent-following contract by design — overlay
+forks track parent's evolving state (signal observer graph,
+continuation registry, etc.) precisely because that's what makes
+them useful for speculative-with-rebase / Elle-distributed-
+consistency-style branching. A cancellation is a fact about the
+shared continuation graph, so applying it to anyone observing that
+graph is consistent. For workloads that want fully isolated
+cancellation, use `snapshot-context` instead — a snapshot is a new
+root with `ImmutableBackend`, no parent, no fall-through.
 
 Compare to a `volatile!` captured in the closure (the original
 stage-4 design): the volatile is a single mutable object shared by
@@ -309,21 +325,6 @@ deliver to all pending closures (Deferred) or don't pop from a
 waiter list at all (plain-fn).
 
 ## Open follow-ups
-
-- **Fork-isolation gap for parent-cancels-after-fork.** The
-  `fork-isolated-cancellation` test pins fork→parent isolation (fork
-  cancels, parent must still fire). The opposite direction
-  (parent→fork: parent cancels after fork was created, fork must still
-  fire) is not tested. Because `:engine/cancelled-tokens` is a
-  shared-state path (not in `fork-local-paths`), a fork's read falls
-  through to parent until fork writes — so parent's late cancellation
-  would silence fork's wrapped resolve. Whether this matters depends
-  on whether parents truncate after handing forks live conts.
-  Options: add a test + make the key fork-local with copy-on-fork; or
-  switch to nonce-checked cont presence with a tombstone (Leak-N
-  design from the discussion) which gives fork isolation in both
-  directions for free.
-
 
 - The `:engine/current-batch` field could potentially be folded into a
   thread-local; the current shared-state form is convenient for forks
