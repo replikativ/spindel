@@ -11,7 +11,18 @@
   Effect handlers (sample, observe) are algorithm-agnostic and work with
   KernelCoordinator via the InferenceCoordinator protocol.
 
-  See KERNEL_INFERENCE_DESIGN.md for the full architecture."
+  Lifecycle in brief: `start-inference!` forks one execution context per
+  particle and registers the kernel. Each particle's spin runs
+  independently; when it hits a `sample`/`observe` effect it posts to
+  the coordinator's mailbox. The coordinator's drain loop matches the
+  PInferenceKernel's policy — `:every-observe` waits for all particles
+  before resampling, `:none` lets them run free. Failed particles call
+  `notify-failed!` so the coordinator can resolve `on-complete` with an
+  `InferenceFailure` marker instead of hanging.
+
+  See `inference.cljc` for the public entry points (`kernel-infer`,
+  `importance-sampling`, `smc-infer`) and `kernel.cljc` for the
+  PInferenceKernel protocol the coordinator dispatches on."
   (:require [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]
@@ -332,7 +343,7 @@
 ;; - Barrier synchronization for SMC-style resampling
 ;; - Future: :modify and :iterate actions for MCMC
 ;;
-;; See KERNEL_INFERENCE_DESIGN.md for full architecture.
+;; See the namespace docstring above for the architectural overview.
 
 (defrecord KernelCoordinator
   [kernel           ; PInferenceKernel instance

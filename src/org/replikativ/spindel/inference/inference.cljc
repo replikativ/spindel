@@ -1,14 +1,23 @@
 (ns org.replikativ.spindel.inference.inference
   "Compositional probabilistic inference algorithms.
 
-  Implements spin-returning inference functions using the kernel-based
-  architecture from KERNEL_INFERENCE_DESIGN.md:
+  Implements spin-returning inference functions on top of the kernel
+  abstraction in `kernel.cljc` and the `KernelCoordinator` in
+  `coordinator.cljc`:
 
   - kernel-infer: Core inference function using PInferenceKernel
   - importance-sampling: Delegates to kernel-infer with PriorKernel, no barriers
   - smc-infer: Delegates to kernel-infer with PriorKernel, barriers at observe
 
   All functions return Spin<EmpiricalMeasure> for composability.
+
+  Architecture in one paragraph: each particle runs the probabilistic
+  program in its own forked execution context. `sample` / `observe`
+  effects post to the shared KernelCoordinator. The coordinator's
+  PInferenceKernel decides what to do at each checkpoint — assign a
+  fresh sample (importance), wait for all particles and resample
+  (SMC), etc. Per-particle results are folded into an
+  `EmpiricalMeasure` (weighted samples) delivered through `on-complete`.
 
   Key design principles:
   - Unified kernel protocol (PInferenceKernel controls checkpoint behavior)

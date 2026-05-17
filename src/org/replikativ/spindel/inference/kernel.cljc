@@ -7,7 +7,19 @@
 
   This namespace also defines PInferenceKernel - kernels that operate
   at checkpoints during execution (not post-processing on measures).
-  See KERNEL_INFERENCE_DESIGN.md for the full architecture."
+
+  Two protocol layers:
+  - `PKernel`        — operates on measures (post hoc). Used for
+                       resampling, MCMC moves, etc.
+  - `PInferenceKernel` — operates on particles *at checkpoints* during
+                       execution. The KernelCoordinator
+                       (`coordinator.cljc`) calls
+                       `decide-checkpoint` whenever a particle hits
+                       `sample` or `observe`; the kernel returns
+                       `[:assign value]`, `[:modify ...]`, or
+                       `[:iterate ...]` to drive the particle forward.
+                       This is what makes importance sampling vs SMC
+                       a choice of kernel, not a choice of engine."
   (:require [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [replikativ.logging :as log]
