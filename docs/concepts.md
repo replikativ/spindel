@@ -126,14 +126,21 @@ If C observes A's new value but B's old value, it computes with inconsistent inp
 
 ### Spindel's Solution
 
-1. **Topological sort** — the dependency graph produces a level ordering. Spins at the same level form an antichain (no dependencies between them).
-2. **Batch processing** — signal changes are collected during Phase 1 (resuming track continuations). Completion events are deferred to Phase 2.
-3. **Level-parallel execution** — within a level, independent spins can execute concurrently. Spins at deeper levels wait for shallower levels to complete.
+1. **Topological sort** — when a signal changes, the engine computes the observer set in topological order over the live observer graph (dependents always after dependencies).
+2. **Descendant filtering + ancestor escalation** — observers that are descendants of other observers in the same batch are skipped (the ancestor's completion will naturally re-resume them via the cascade). Each remaining observer is escalated to its root await-ancestor — the spin that actually needs to resume in this batch.
+3. **Level-parallel dispatch, single-queue cascade** — within the batch, independent observers dispatch concurrently on the executor; the `:spin-completion` events they produce flow through the single `:engine/pending` FIFO and are drained naturally. There is no separate completion queue or per-batch barrier — the unified subscription model collapsed those into one drain. See [`unified-subscription-design.md`](unified-subscription-design.md) for the full rationale.
 
 ```
-Level 0: Signal x changes
-Level 1: Spins A, B execute (parallel, no dependency between them)
-Level 2: Spin C executes (sees consistent A and B)
+Signal x changes
+   │
+   ▼
+Topo order + descendant filter + ancestor escalation → ordered observer set
+   │
+   ▼
+Resume each observer's track-cont (parallel on JVM for >1)
+   │
+   ▼
+Completions enqueue on :engine/pending, drained FIFO (no glitches)
 ```
 
 ### Batching Multiple Signals

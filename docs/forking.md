@@ -32,7 +32,7 @@ Spindel supports **O(1) copy-on-write forking** of execution contexts. Forks sha
 
 ## Isolation
 
-Forks and parents are fully isolated — mutations in one don't affect the other:
+A fork is **fully isolated from parent for its own writes** (fork→parent never leaks) and **parent-following on shared paths** (parent's writes are visible in the fork until the fork shadows that path). Overlay forks are deliberately not symmetric snapshots — that asymmetry is what makes them efficient for speculative-with-rebase / Elle-style branching.
 
 ```clojure
 ;; Mutate in fork
@@ -41,7 +41,7 @@ Forks and parents are fully isolated — mutations in one don't affect the other
   (swap! counter inc)    ;; fork: counter = 3
   @counter)              ;; => 3
 
-;; Parent unchanged
+;; Parent unchanged by fork's writes
 (binding [ec/*execution-context* ctx-main]
   @counter)              ;; => 1
 ```
@@ -50,10 +50,17 @@ Forks and parents are fully isolated — mutations in one don't affect the other
 
 | Operation | Parent sees? | Fork sees? |
 |-----------|--------------|------------|
-| Fork reads parent state | N/A | Yes (via fallback) |
-| Fork mutates state | No | Yes (in overlay) |
-| Parent mutates state | Yes | No (isolated) |
+| Fork reads parent state | N/A | Yes (via overlay fall-through) |
+| Fork mutates state | **No** — always isolated to fork's overlay | Yes (in overlay) |
+| Parent mutates state on a *shared* path | Yes | **Yes, until fork shadows that path** — overlay-fork is parent-following by design |
+| Parent mutates state on a *fork-local* path | Yes | No (fork has its own value or `nil`) |
 | Fork creates new state | No | Yes (in overlay) |
+
+**Fork-local paths** (full isolation, no fall-through from parent): `:continuations`, `:engine/pending`, `:engine/draining?`, `:engine/delayed-spins`, `:engine/timer-handles`, plus any path added via the OverlayBackend's `local-paths` set.
+
+**Shared paths** (overlay fall-through, parent-following on reads): everything else, including `:nodes`, `:subscriptions`, `:spin-tracking`, `:atoms`, and `:engine/cancelled-tokens`.
+
+If you need fully-isolated semantics on a shared path — a fork that does not track parent's later writes — use `snapshot-context` instead of `fork-context`. A snapshot returns a new root with `ImmutableBackend`, no parent, no fall-through. See [`unified-subscription-design.md`](unified-subscription-design.md) §Cont cancellation for an extended discussion of why this distinction matters for cancellation semantics.
 
 ## Overlay Backend
 

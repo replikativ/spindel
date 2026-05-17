@@ -190,31 +190,57 @@ associated engine cont owns the token via `:cancel!`, which takes
 the engine context as a parameter and `swap-state!`'s the token
 into that context's set.
 
-**Why this is fork-safe:** `:engine/cancelled-tokens` is regular
-context state, not a closure-captured volatile. Fork creation's
-overlay starts empty; reads fall through to parent (so a fork
-inherits parent's cancellations — correct). Fork's first write to
-the set triggers copy-on-write and the parent / fork sets diverge.
-The wrapped closure, invoked by a drain in fork's context (which
-binds `*execution-context*` to fork's context), reads fork's set.
-The same closure, invoked by parent's drain, reads parent's set.
-Cancellations made BY a fork do **not** leak back into the parent
-(this is the fork→parent isolation guarantee pinned by
-`fork-isolated-cancellation` in `cont_cancellation_test.cljc`).
+**Why this is fork-safe (fork→parent direction):**
+`:engine/cancelled-tokens` is regular context state, not a
+closure-captured volatile. Reads in a fork that has not yet written
+to the path fall through to parent (so a fork inherits parent's
+current cancellation set — correct). Once a fork writes, its
+overlay holds its own value at the path and shadows parent for
+subsequent reads in that fork. The wrapped closure, invoked by
+fork's drain, reads fork's view; the same closure invoked by
+parent's drain reads parent's view. Cancellations made BY a fork
+therefore do **not** leak back into the parent — pinned by
+`fork-isolated-cancellation` in `cont_cancellation_test.cljc`.
+
+A precise note on the divergence mechanism: `:engine/cancelled-tokens`
+is a depth-1 path, so the OverlayBackend takes its "shallow shared
+path" branch (`(swap! overlay-atom update-in path f)`), not the
+entity-CoW branch that applies to depth-≥2 shared paths like
+`[:nodes spin-id …]`. Practically that means a fork's first write
+does NOT pre-copy parent's value into the overlay — fork's `swap!`
+sees `nil` and starts a fresh set containing just the fork's token.
+After that first write, parent's pre-fork tokens are no longer
+visible in fork (the overlay shadows the parent). For the
+fork→parent guarantee this is fine; for parent→fork it has a
+consequence — see the note below.
 
 Note on the OTHER direction — parent→fork: parent's cancellations
-made AFTER the fork was created DO propagate into the fork while
-the fork hasn't written to the cancelled-tokens set yet (until the
-overlay's first write triggers copy-on-write). This is the
-OverlayBackend's parent-following contract by design — overlay
-forks track parent's evolving state (signal observer graph,
-continuation registry, etc.) precisely because that's what makes
-them useful for speculative-with-rebase / Elle-distributed-
-consistency-style branching. A cancellation is a fact about the
-shared continuation graph, so applying it to anyone observing that
-graph is consistent. For workloads that want fully isolated
-cancellation, use `snapshot-context` instead — a snapshot is a new
-root with `ImmutableBackend`, no parent, no fall-through.
+made AFTER the fork was created propagate into the fork while the
+fork hasn't written to the cancelled-tokens path yet (reads fall
+through). This is the OverlayBackend's parent-following contract
+by design — overlay forks track parent's evolving state (signal
+observer graph, continuation registry, etc.) precisely because
+that's what makes them useful for speculative-with-rebase /
+Elle-distributed-consistency-style branching. A cancellation is
+a fact about the shared continuation graph, so applying it to
+anyone observing that graph is consistent.
+
+**Latent edge case (not currently exercised in production):** the
+shallow-path swap means fork's first write does not copy parent's
+pre-fork tokens; subsequent reads in fork see only fork-written
+tokens. If parent cancelled a cont *before* the fork was created
+AND that cont's wrapped resolve closure made it into fork's
+gate.:pending at fork time AND fork later cancels a different
+cont, the parent-pre-fork closure firing inside fork's drain would
+no longer see the parent's pre-fork token and would fire when it
+should remain silenced. The existing fork-isolation test does not
+exercise this sequence (it cancels in fork only). Cleanest future
+fix is to extend OverlayBackend's atomic write path to copy parent's
+value into the overlay on first write for shared depth-1 paths
+(mirroring the depth-≥2 entity-CoW logic). For workloads that
+want fully isolated cancellation today, use `snapshot-context`
+instead of `fork-context` — a snapshot is a new root with
+`ImmutableBackend`, no parent, no fall-through.
 
 Compare to a `volatile!` captured in the closure (the original
 stage-4 design): the volatile is a single mutable object shared by
@@ -234,26 +260,29 @@ abandoned Deferred) — a tiny constant in practice.
 
 **Where `:cancel!` fires:** only at TRUNCATION sites, where the
 spin stays alive and re-runs (so a new cont may race with the
-orphaned external closure). Teardown sites *removed* `:cancel!`
-after a regression hunt — the JVM Cleaner thread invoking
-`full-cleanup-spin!` was firing `:cancel!` on legitimate
-in-flight resolves whose Spin object was GC'd by the test before
-the deferred delivered, silently silencing the resolve and
-producing a ~27% flake rate in async tests.
+orphaned external closure).
 
-Active sites:
+Active sites (fire `:cancel!`):
 - `resume-single-observer!`  — truncates conts with order > resumed
 - `re-execute-dirty-parent!` — same truncation pattern
 - `add-continuation!`        — cancels a cont being displaced by a
                                re-await at the same deterministic
                                cont-id
 
-Removed (no longer fire `:cancel!`):
+Teardown sites (do NOT fire `:cancel!`):
 - `clear-all-await-continuations!` — generation boundary cleanup; the
                                      spin is already completed and not
                                      running, no new cont will compete
 - `clear-deps!`                    — invalidation; teardown path
 - `full-cleanup-spin!`             — GC; teardown path
+
+The teardown-site exclusion was added after a regression hunt
+against a ~27% flake rate in async tests: the JVM Cleaner thread
+invoking `full-cleanup-spin!` had been firing `:cancel!` on
+legitimately in-flight resolves whose Spin object was GC'd by the
+test before the deferred delivered, silently silencing the
+resolve. Restricting `:cancel!` to truncation sites where the spin
+stays alive eliminated the flake.
 
 Awaits on a Spin (slow path) do not need this treatment: the child's
 completion enqueues a `:spin-completion` event whose dispatch looks up

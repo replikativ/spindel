@@ -114,23 +114,23 @@ Spindel prevents **glitches** — the situation where a spin observes a half-upd
 (def total (spin (+ (await tax) (let [{:keys [new]} (track price)] new))))
 ```
 
-If `price` changes to 200 and `total` re-executes before `tax` does, it sees `tax=20` (stale) and `price=200` (fresh) — a glitch. Spindel prevents this via **batched signal-change processing**:
+If `price` changes to 200 and `total` re-executes before `tax` does, it sees `tax=20` (stale) and `price=200` (fresh) — a glitch. Spindel prevents this with a **single-queue topological-dispatch** model:
 
-### Phase 1 — Resume track continuations
+### Topological observer dispatch
 
 When a `:signal-change` event is processed, the engine:
 
-1. Computes the observer set in **topological order** (dependents always after dependencies).
-2. Creates a `Batch` object and stores it in context state at `:engine/current-batch`.
-3. Resumes each observer's `track` continuation with the fresh signal value. Observers with `>1` entry are dispatched in parallel on the ForkJoinPool, using `CountDownLatch` + `managedBlock` to wait for all of them.
+1. Computes the observer set in **topological order** over the live observer graph (dependents always after dependencies). The graph is `signal.observers` (eagerly maintained via the unified subscription model — see [`unified-subscription-design.md`](unified-subscription-design.md)).
+2. Filters out observers that are *descendants* of other observers in this batch (a descendant will be naturally re-resumed by its ancestor's completion event, so dispatching it directly here would cause duplicate work).
+3. Escalates each remaining observer to its root await-ancestor (`find-root-await-ancestor`) — the spin that actually needs to resume in this batch. Suspended descendants on `await` chains anchor at the right level.
+4. Creates a `Batch` record at `:engine/current-batch` carrying the signal-id, generation counter, and a set of conts already resumed during the batch (to keep parallel dispatch idempotent).
+5. Resumes each observer's `track` continuation with the fresh signal value. Observers with `>1` entry are dispatched in parallel on the ForkJoinPool (JVM), using `CountDownLatch` + `managedBlock` to wait for all of them.
 
-### Phase 2 — Collect completions
+### Cascade events
 
-While track continuations execute (possibly on multiple threads), any `:spin-completion` events they produce are routed to the **batch's private queue** (a `LinkedBlockingQueue`), not to `:engine/pending`. The drain thread blocking-takes from this queue until all expected observers have completed, processing each completion event as it arrives.
+While observer bodies execute, they may produce more events: `:spin-completion` when a body resolves, `:signal-change` if the body itself swaps a signal, etc. These all flow through the **single** `:engine/pending` queue and are drained naturally by the outer drain loop after the current event finishes. There is no separate "Phase 2" queue and no blocking wait — the redesign collapsed those into the unified FIFO. See [`unified-subscription-design.md`](unified-subscription-design.md) for the full rationale (the two-stage commit model previously here was the source of the "Phase 2 deadlock on Deferred suspension" bug, now fixed).
 
-Only after all observers finish does the batch end and `:engine/current-batch` clear to nil.
-
-This guarantees that within a single signal change, all dependent spins complete before any downstream observer can be notified — no spin ever sees a partially-updated graph.
+The descendant-filtering + ancestor-escalation step preserves the no-glitch guarantee without a per-batch barrier: within one `:signal-change` dispatch all directly-affected observers resume against the fresh signal value, and downstream completions propagate via the same drain in FIFO order — no spin ever sees a partially-updated graph.
 
 ## Dependency Tracking and the Graph
 
@@ -218,5 +218,4 @@ The fork's event queue and draining lock (`engine/pending`, `:engine/draining?`)
 | Executor | ForkJoinPool / virtual threads | `setTimeout 0` |
 | Parallel observers | `CountDownLatch` + `managedBlock` | Always sequential (single-threaded) |
 | `await-drain-complete!` | Blocks with `ForkJoinPool.managedBlock` + 100µs `parkNanos` | Returns current idle state, non-blocking |
-| Batch queue | `LinkedBlockingQueue` with `.take()` | `AtomicReference` with poll loop |
 | `@spin` deref | Blocks until complete | Not supported; use `run-spin!` callbacks |
