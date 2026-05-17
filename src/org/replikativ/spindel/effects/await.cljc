@@ -314,17 +314,25 @@
   Fork-safe cancellation design (Option A from the design discussion):
 
   We use a **cancel-token** stored in engine state at
-  `:engine/cancelled-tokens` (a set, shared/overlaid like the rest of
-  context state). The wrapped resolve/reject closures resolve the
-  current execution context dynamically (`ec/current-execution-context`)
-  and read the set from THAT context's state.
+  `:engine/cancelled-tokens` — a depth-1 SHARED path (overlay-fork
+  fall-through on read, fork's own value on write). The wrapped
+  resolve/reject closures resolve the current execution context
+  dynamically (`ec/current-execution-context`) and read the set from
+  THAT context's state.
 
-  When a fork is created, its overlay falls through to parent for unread
-  keys, so fork's view of cancelled-tokens initially matches parent's.
-  Fork's first cancellation write triggers copy-on-write semantics —
-  parent and fork's sets then diverge cleanly. The wrapped closure,
-  invoked by the fork's drain (which binds `*execution-context*` to the
-  fork's context), reads the fork's set, not the parent's.
+  When a fork is created, its overlay starts empty for this path, so
+  fork's reads fall through to parent (fork inherits parent's current
+  cancellation set — correct). Fork's first write goes through the
+  OverlayBackend's shallow-shared-path branch: a direct
+  `(swap! overlay-atom update-in [:engine/cancelled-tokens] f)` where
+  `f` sees `nil` and starts a fresh set. After that first write,
+  fork's overlay shadows parent for this path. The wrapped closure
+  invoked by fork's drain reads fork's view; the same closure invoked
+  by parent's drain reads parent's view. Fork's cancellations do NOT
+  leak back into parent — pinned by `fork-isolated-cancellation`.
+
+  See `docs/unified-subscription-design.md` §Cont cancellation for
+  the full discussion including the parent→fork edge case.
 
   Compare to a `volatile!` captured in the closure: the volatile is a
   single mutable object shared by every fork that inherits the cont,

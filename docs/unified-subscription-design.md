@@ -16,25 +16,65 @@ unsubscribed from those signals.
 
 ## Engine state shape (after the experiment)
 
+The engine state lives in the backend (`AtomBackend` for root contexts,
+`OverlayBackend` for forks, `ImmutableBackend` for snapshots). Some
+state is **fork-local** (no fall-through to parent); the rest is
+**shared** (overlay fall-through). The `ExecutionContext` defrecord
+also carries a small number of per-context fields outside the backend.
+
+### Backend state keys
+
 ```
-{:nodes {
+{:nodes {                                                   ; SHARED
    signal-id -> SignalNode{:snapshot :old-snapshot :deltas :generation
-                            :observers #{spin-ids}}        ; ← eager
+                           :deltaable? :observers #{spin-ids}}
+                                                            ;   ↑ eager
    spin-id   -> SpinNode{:result :status :completed? :running?
-                          :deps {:signals #{} :spins #{}}   ; ← diff cache
-                          :observers #{parent-spin-ids}     ; ← eager
-                          :created-by :created-spins
-                          :dom-scope}}
- :continuations {spin-id -> {cont-id -> cont}}              ; primary cont store
- :subscriptions {event-key -> {spin-id -> #{cont-ids}}}     ; reverse index of conts
- :spin-tracking {spin-id -> {:signals #{} :spins #{}}}      ; transient body-run accumulator
- :pending-callbacks {spin-id -> [...]}                      ; deref / spawn coordination
- :engine/pending [events...]                                ; single FIFO drain queue
- :engine/current-batch {:generation :signal-id :resumed-conts :processed}
-                                                            ; per-signal-change metadata
- :engine/draining? bool
- :addressing {…}                                            ; chain-head etc.
- :bindings {…}}
+                         :deps {:signals #{} :spins #{}}    ;   diff cache only
+                         :observers #{parent-spin-ids}      ;   eager
+                         :created-by :created-spins
+                         :chain-head}}                      ;   per-spin addressing cursor
+                                                            ;   (SpinNodes may also carry an ad-hoc
+                                                            ;   :dom-scope when the spin was
+                                                            ;   constructed inside DOM scope —
+                                                            ;   not a defrecord field)
+ :continuations {spin-id -> {cont-id -> cont}}              ; FORK-LOCAL — primary cont store
+ :subscriptions {event-key -> {spin-id -> #{cont-ids}}}     ; SHARED — reverse index of conts
+ :spin-tracking {spin-id -> {:signals #{} :spins #{}}}      ; SHARED — transient body-run accumulator
+ :pending-callbacks {spin-id -> [...]}                      ; SHARED — collapses concurrent
+                                                            ;   derefs of an in-flight spin
+                                                            ;   into one execution + fan-out
+ :atoms {atom-id -> {:value … :watchers #{}}}               ; SHARED — fork-safe runtime atoms
+
+ ;; Engine namespace — drain machinery and timer / event-loop state.
+ :engine/pending          [events…]                          ; FORK-LOCAL — single FIFO drain queue
+ :engine/current-batch    {:generation :signal-id :resumed-conts :processed}
+                                                            ; SHARED — per-signal-change metadata
+ :engine/draining?        bool                               ; FORK-LOCAL — drain lock
+ :engine/delayed-spins    (sorted-map t -> #{spin-ids})      ; FORK-LOCAL — virtual-time timer queue
+ :engine/timer-handles    {spin-id -> handle}                ; FORK-LOCAL — JS-side timers
+ :engine/virtual-time     long                               ; SHARED — simulation clock
+ :engine/time-mode        :wall|:virtual                     ; SHARED — clock source selection
+ :engine/cancelled-tokens #{cancel-tokens}                   ; SHARED — cont cancellation set
+                                                            ;   (see §Cont cancellation)
+
+ :addressing {:chain-head <global fallback>}                 ; SHARED — global chain-head only
+}                                                           ;   per-spin chain-head is on the SpinNode
+```
+
+### ExecutionContext fields (outside the backend)
+
+```
+{:fork-id       <unique fork id>
+ :backend       <PStateBackend impl — AtomBackend / OverlayBackend / ImmutableBackend>
+ :parent-ctx    <parent ExecutionContext or nil>
+ :executor      <thread pool / event loop>
+ :bindings      <fork-local config, merged with parent's bindings>
+ :metadata      <fork metadata: :process-id :fork-depth …>
+ :running       <atom: drain-thread liveness>
+ :drain-thread  <Thread or nil>
+ :drain-signal  <LinkedBlockingQueue (JVM) or nil>
+ :drain-active  <atom: count of in-flight drain calls>}
 ```
 
 Indexes that were removed in this experiment:
@@ -103,7 +143,19 @@ Spin.invoke (cache miss) →
         cont := await-cont-map (with tracking-snap, chain-head-snap,
                                 :awaited-spin strong-ref)
         continuation-add!
-        run child-spin-fn (may complete sync, may suspend)
+        bind child-ctx with awaited spin's DOM scope,
+             *spin-id* := awaited-spin-id,
+             *chain-head* := (atom (body-start-chain-head awaited-spin-id)),
+             *in-trampoline* := false
+        call .-spin-fn directly (NOT Spin.-invoke — slow path needs to
+          inject child-resolve / child-reject, which -invoke doesn't
+          expose. Because -invoke is bypassed, the slow path seeds
+          *chain-head* explicitly with the awaited spin's
+          body-start cursor; otherwise the child body would inherit
+          the parent's chain-head and its vnode addresses would
+          shift on every parent re-run from a different track-cont,
+          breaking discharge's by-address element lookup.)
+        child may complete sync (resume parent inline) or suspend
       Deferred:
         (deferred resolve reject)                  ; resolve held by external
 
