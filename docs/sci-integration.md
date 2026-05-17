@@ -265,6 +265,33 @@ If using the functional API and you need CPS support:
 ;; Now CPS transformation works in this SCI context
 ```
 
+### Why partial-cps loads with a native runtime
+
+`load-partial-cps!` does not interpret all three partial-cps files
+uniformly inside SCI. The split matters:
+
+- **`ioc.clj` and `async.cljc` are interpreted inside SCI.** They
+  contain the CPS-transform machinery (the `async` macro and `invert`)
+  that has to expand against SCI's symbol environment so user-written
+  `spin` bodies inside SCI are transformed correctly.
+- **`runtime.cljc` is injected as a native namespace** carrying the
+  compiled `bound-fn`, `->thunk`, and `Thunk` defrecord from the host
+  JVM's classloader.
+
+The reason is identity. Every trampoline check —
+`(instance? is.simm.partial_cps.runtime.Thunk x)` — runs against the
+**compiled** `Thunk` class. If `runtime.cljc` were interpreted inside
+SCI, `(deftype Thunk [f])` would produce a `sci.impl.deftype.SciType`
+that is *not* an instance of the compiled class. The check would
+silently always return false, the trampoline would never bounce a
+Thunk, and any `recur` after a breakpoint inside a `loop` or
+`dotimes` would hang forever. Keeping one canonical compiled `Thunk`
+class fixes that.
+
+This is invisible to end-user SCI code, but matters if you are
+extending the loader (e.g. adding more native namespaces) or
+debugging a "loop with effect hangs in SCI but works natively" bug.
+
 ## API Reference
 
 ### `spindel.sci.boundary`

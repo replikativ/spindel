@@ -192,6 +192,8 @@ After step 3, the entry guard guarantees no new drain will ever enter active pro
 
 If a context is abandoned without calling `stop-context!` (common in tests), Java's `Cleaner` automatically stops the drain thread when the context object is collected. The Cleaner registration uses phantom references, so it fires once the context has no more strong references — calling `(reset! running false)` and waking the drain thread.
 
+Both root-context constructors register this Cleaner: `create-execution-context` (the normal entry point) and `deserialize-context` (when restoring a snapshot with a mutable backend). Earlier versions of `deserialize-context` spawned the drain thread without registering a Cleaner, leaking one daemon drain thread per call for the lifetime of the JVM.
+
 This is a safety net, not a substitute for explicit cleanup. Use `stop-context!` in your lifecycle code.
 
 ## Fork Scheduling

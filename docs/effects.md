@@ -218,6 +218,19 @@ A mailbox is a FIFO queue for message passing between spins:
 - **Multiple consumers**: Each message goes to one consumer only
 - **Fork-safe**: State stored in the execution context
 
+**Waiter struct** (internal, relevant if you extend mailbox-like
+primitives): each pending await lives in `state-atom.:waiters` as
+`{:spin-id … :cancel-token … :resolve …}`. `post-inline!` reads
+`:engine/cancelled-tokens` from the current execution context once
+per call and skips waiters whose `:cancel-token` is in the cancelled
+set — **without** consuming the message (it recurs onto the next
+waiter, or pushes the message back to `:queue` if no live waiter
+remains). This prevents the "orphaned waiter silently absorbs a
+producer's post" message-loss bug when a body's await is truncated
+by a track-resume. See [Cont-level cancellation gate](#cont-level-cancellation-gate) for the gate machinery,
+and `docs/unified-subscription-design.md` §Cont cancellation for the
+full design.
+
 ### Never — Infinite Wait
 
 A spin that never completes, useful with `race` and `timeout`:
@@ -286,6 +299,60 @@ For performance, you can register a **direct handler** — a function called dir
 ```
 
 Direct handlers receive arguments already adapted, plus spin context. The built-in `await` and `track` use direct handlers for performance.
+
+## Cont-level cancellation gate
+
+`await`'s [cancellation check](#await) handles whole-spin cancellation
+(the entire body bails with `::spin-cancelled`). There is a second,
+finer-grained mechanism for **cont-level** cancellation — relevant only
+when you write custom effect handlers that hand a raw resolve closure
+to an external resource (Deferred's `:pending` list, Mailbox waiter
+struct, plain-fn awaitable callbacks).
+
+The problem: when a parent body's earlier `track` continuation
+re-resumes (because a tracked signal changed), the engine truncates
+later conts — including the engine-side await cont. But the external
+resource still holds the raw resolve closure in its pending list /
+waiter struct. If the resource later fires, both the orphaned closure
+and the new closure (registered by the parent's re-run) advance their
+respective body slices to outer-resolve. Pure bodies waste work;
+side-effecting bodies fire those side effects twice.
+
+The fix — built into the standard
+`effects/await.cljc::cancellable-external-pair` and used automatically
+by `await-deferred`, `await-mailbox`, and the plain-fn awaitable path —
+wraps every raw resolve / reject in a **cancellation gate**:
+
+1. Each await mints a fresh `cancel-token` (UUID).
+2. The wrapped closure resolves `(ec/current-execution-context)` at
+   call time and gates on whether the token is in that context's
+   `:engine/cancelled-tokens` set. If yes, the closure no-ops.
+3. The engine cont owns the gate via `:cancel!`, which writes the
+   token to whatever execution context invokes it.
+4. After firing, the wrapped closure self-cleans by removing its own
+   token from the set (bounded steady-state).
+
+**You only interact with this if you're building a new external
+awaitable.** The two helpers to know:
+
+- `effects/await.cljc::cancellable-external-pair` returns
+  `[wrapped-resolve wrapped-reject cancel-token]` — call this with
+  the parent's `resolve`/`reject` and pass the wrapped pair to your
+  resource.
+- For resources like Mailbox that consume a waiter per producer event
+  (so a no-op gate would silently lose the event), thread the
+  `cancel-token` through `engine.core/*external-await-cancel-token*`
+  into the waiter struct, and have your consumer skip cancelled
+  waiters BEFORE consuming the event (see Mailbox above).
+
+Deferred and plain-fn awaitables don't need the third token-threading
+step because they deliver to all pending closures (no consumption).
+`engine.core/*external-await-cancel-token*` is bound to `nil` for
+them.
+
+Full design in [`unified-subscription-design.md`](unified-subscription-design.md) §Cont cancellation, including the
+fork-safety reasoning for why the cancellation set lives in engine
+state rather than a closure-captured volatile.
 
 ## See Also
 

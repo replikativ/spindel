@@ -146,6 +146,43 @@ sees a fresh trampoline:
 See [`engine.bindings`](../src/org/replikativ/spindel/engine/bindings.cljc)
 for how dynamic bindings are captured and restored across the suspension.
 
+### Sync vs async return values
+
+`handle-effect` is a link in the CPS chain — its **return value** is
+threaded back through the trampoline. Returning the wrong thing breaks
+loops:
+
+| handler shape | return value semantics |
+|---|---|
+| **Truly async** (registers callbacks, returns immediately) | Return `nil` — propagates harmlessly. |
+| **Synchronous-resolve** (calls `resolve` inline before returning) | Return whatever the `resolve` call returned. |
+
+The latter case is the one that bites. When a synchronous-resolve
+handler's `resolve` continuation hits a `recur` (inside a `loop` or
+`dotimes`), the continuation returns a partial-cps trampoline `Thunk`.
+That Thunk has to propagate back up to the enclosing spin-macro
+trampoline so it can be bounced; if `handle-effect` swallows it
+(returning a hard-coded `nil`), the trampoline chain breaks and the
+spin hangs. This was the source of the original
+`(loop … (observe …) (recur …))` hang in agent-authored inference
+models — fixed by having `engine.effects/async-effect`'s
+`handle-effect` propagate `(effect-fn …)` instead of `nil`. The
+rule generalises to any custom effect handler: **return the
+continuation's value, not a sentinel**.
+
+```clojure
+;; CORRECT — propagates Thunks from recur-after-effect
+(reify eff/PEffectHandler
+  (handle-effect [_ context args resolve reject]
+    (effect-fn context args resolve reject)))
+
+;; WRONG — silently breaks loops with effects in them
+(reify eff/PEffectHandler
+  (handle-effect [_ context args resolve reject]
+    (effect-fn context args resolve reject)
+    nil))                                       ; ← drops the Thunk
+```
+
 ## Usage guidance
 
 A few things to keep in mind:

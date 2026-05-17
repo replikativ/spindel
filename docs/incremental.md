@@ -221,6 +221,26 @@ Transform items by key, only re-transforming changed items:
     @rendered))
 ```
 
+#### Reactive per-item spins
+
+If `render-fn` returns *spins* rather than plain values, `ifor-each`'s
+DOM-side equivalent (`dom/foreach`) returns a single outer spin that
+awaits every per-item spin and assembles a `KeyedFragment`. When the
+per-item spins are themselves reactive (they `track` signals and re-
+complete on signal change), the outer loop-spin's `(await per-item-spin)`
+re-fires for each re-completion and rebuilds the fragment.
+
+The rebuild path re-reads the keyed cache fresh inside the loop-spin
+at fragment-build time rather than using the `prev-by-key`/`prev-order`
+that were captured at `for-each*` call time. The captured values are
+stale (typically empty on the first call); diffing against them would
+re-emit `:add` deltas for items that already exist and duplicate DOM
+nodes. Re-reading the cache fresh gives the true previous order and
+yields `:update` deltas for value changes, leaving the DOM stable.
+
+This matters for any caller wiring `ifor-each` to a collection of
+reactive children — a sidebar of `(ifor-each :kb/id kbs (fn [kb] (spin (track kb-state) …)))`-style structures, for example.
+
 ### `islice` — Windowed View
 
 Maintain a window into a collection for virtual scrolling:
