@@ -217,3 +217,110 @@
         (finally
           (reset! hold [])
           (ctx/close-context! parent-ctx))))))
+
+(deftest ^:known-failure
+  parent-cancels-after-fork-must-not-bleed-into-fork
+  (testing "Mirror image of `fork-isolated-cancellation` — closes the
+            OTHER direction of fork isolation.
+
+            Setup mirrors the fork→parent test but the cancel comes
+            from the PARENT after the fork was created:
+
+            1. parent: (track s) → (await gate), suspends.
+            2. fork-ctx := (fork-context parent-ctx).
+               Fork inherits parent's :continuations (fork-local
+               with snapshot) and parent's gate.:pending list, which
+               holds the ORIGINAL wrapped resolve closure.
+            3. In PARENT only: change s. Parent's
+               resume-single-observer truncates the await-gate cont
+               and writes the cont's cancel-token into PARENT's
+               :engine/cancelled-tokens. Parent's body re-runs,
+               suspends on a new (await gate), so parent's pending
+               now has [OLD wrapped resolve, NEW wrapped resolve].
+            4. In PARENT only: sync/deliver! gate. Parent's drain
+               iterates parent's pending, fires both closures:
+               - OLD reads parent's cancelled-tokens → token present
+                 → no-op (correct).
+               - NEW reads parent's cancelled-tokens → no token for
+                 NEW cont → fires → body advances → counter +1.
+            5. In FORK only: sync/deliver! gate. Fork's pending still
+               has the OLD wrapped resolve (the fork-time snapshot,
+               not affected by parent's later truncation). The
+               closure reads (ec/current-execution-context) — fork
+               — and looks up :engine/cancelled-tokens.
+
+            HERE IS THE GAP: :engine/cancelled-tokens is not in
+            default-fork-local-paths. Fork's overlay has no entry for
+            it (fork never wrote), so the read FALLS THROUGH to
+            parent. Parent's set has the token from step 3. Fork's
+            closure SEES the token and silently no-ops — even though
+            the cancellation happened in parent AFTER the fork was
+            created and is logically unrelated to fork's execution.
+
+            Expected behaviour (with the eventual copy-on-fork fix):
+            fork's pre-fork view of the cancelled-tokens set was
+            empty. Parent's later writes do not bleed into fork's
+            view. Fork's closure fires → fork's body advances →
+            counter increments to 2.
+
+            Until the fix lands this test fails with counter=1 and
+            is tagged ^:known-failure so the suite stays green in
+            CI runs that exclude that keyword. See design doc
+            §Open follow-ups."
+    (let [parent-ctx (ctx/create-execution-context)
+          hold (atom [])]
+      (try
+        (let [s (binding [ec/*execution-context* parent-ctx] (sig/signal :initial))
+              gate (binding [ec/*execution-context* parent-ctx] (sync/deferred))
+              ;; One shared counter; we want to count body-runs across
+              ;; both parent and fork.
+              total-side-effects (atom 0)
+              obs (binding [ec/*execution-context* parent-ctx]
+                    (spin
+                      (let [{tracked :new} (track s)
+                            _ (await gate)]
+                        (swap! total-side-effects inc)
+                        tracked)))
+              _ (swap! hold conj obs)]
+          ;; Start body in parent — suspends on gate. Parent's
+          ;; :continuations holds the await-gate cont; gate.:pending
+          ;; holds the wrapped resolve closure.
+          (binding [ec/*execution-context* parent-ctx]
+            (obs identity identity)
+            (simple/await-drain-complete! parent-ctx :timeout-ms 1000))
+          (is (zero? @total-side-effects) "body suspended, hasn't run")
+
+          ;; Fork BEFORE parent does anything else. Fork inherits the
+          ;; await-gate cont and the wrapped closure in pending.
+          (let [fork-ctx (ctx/fork-context parent-ctx)]
+            ;; Now in PARENT only: change s (triggers truncation +
+            ;; cancel in parent), then deliver gate (parent's body
+            ;; re-runs once with :changed).
+            (binding [ec/*execution-context* parent-ctx]
+              (reset! s :changed-in-parent)
+              (simple/await-drain-complete! parent-ctx :timeout-ms 1000)
+              (sync/deliver! gate :gate-released-in-parent)
+              (simple/await-drain-complete! parent-ctx :timeout-ms 2000))
+
+            (is (= 1 @total-side-effects)
+                "parent ran the body exactly once after its re-run + deliver")
+
+            ;; CRITICAL parent→fork ISOLATION CHECK:
+            ;; Fork's pending still has the original wrapped resolve
+            ;; (fork-time snapshot, unaffected by parent's truncation).
+            ;; When fork delivers gate, the closure should fire because
+            ;; from fork's perspective NOTHING was cancelled — the
+            ;; cancel happened in a sibling context.
+            (binding [ec/*execution-context* fork-ctx]
+              (sync/deliver! gate :gate-released-in-fork)
+              (simple/await-drain-complete! fork-ctx :timeout-ms 2000))
+
+            (is (= 2 @total-side-effects)
+                (str "fork's body must run; parent's cancellation must NOT "
+                     "bleed into fork. If you see total=1 here, the parent→"
+                     "fork direction is leaking via :engine/cancelled-tokens "
+                     "falling through from parent's overlay."))
+            (ctx/close-context! fork-ctx)))
+        (finally
+          (reset! hold [])
+          (ctx/close-context! parent-ctx))))))
