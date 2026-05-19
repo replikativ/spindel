@@ -52,3 +52,4 @@ zeitlauf
 .shadow-cljs/
 node_modules/
 examples/public/js/
+out/
