@@ -1,0 +1,54 @@
+# Clojure / Leiningen / deps.edn
+.cpcache/
+.nrepl-port
+.nrepl-history
+.rebel_readline_history
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+/lib/
+/classes/
+/target/
+/checkouts/
+.lein-*
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# LSP / clj-kondo
+.lsp/
+.clj-kondo/.cache/
+.clj-kondo/
+
+# REPL logs (and rotated/compressed variants like foo.log.1, foo.log-2025-…gz)
+*.log
+*.log.*
+
+# Claude Code
+.claude/
+
+# Internal technical docs (design notes, exploration logs)
+.internal/
+
+# Reference implementation symlink
+laufzeit
+
+# Local dependency symlinks (for development reference)
+partial-cps
+simmis
+zeitlauf
+
+# Benchmarks — kept locally, not shipped in this release
+/bench/
+
+# shadow-cljs / CLJS build
+.shadow-cljs/
+node_modules/
+examples/public/js/

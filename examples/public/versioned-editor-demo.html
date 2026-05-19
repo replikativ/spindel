@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spindel — Versioned Editor Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #faf9f7;
+      color: #1f1f1f;
+    }
+
+    /* ===================================================================
+       Layout — DAG panel on the left, main column on the right.
+       =================================================================== */
+
+    .layout {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    /* ===================================================================
+       DAG panel — vertical commit history with fork stubs.
+       =================================================================== */
+
+    .dag-panel {
+      background: #fff;
+      border: 1px solid #e5e3df;
+      border-radius: 10px;
+      padding: 10px 8px 14px;
+      font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+      font-size: 0.78em;
+      position: sticky;
+      top: 12px;
+    }
+
+    .dag-title {
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #999;
+      font-size: 0.75em;
+      padding: 0 6px 8px;
+      border-bottom: 1px solid #efece5;
+      margin-bottom: 6px;
+    }
+
+    .dag-row {
+      position: relative;
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 5px 0;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.08s;
+    }
+    .dag-row:hover           { background: #f7f5f0; }
+    .dag-row.head:hover      { background: #eef3f8; }
+    .dag-row.viewed:hover    { background: #fff4d6; }
+    .dag-row::before {
+      content: "";
+      position: absolute;
+      left: 11px;
+      top: 18px;
+      bottom: -5px;
+      width: 1px;
+      background: #d8d5cd;
+    }
+    .dag-row:last-child::before { display: none; }
+
+    .dag-node {
+      flex: 0 0 18px;
+      text-align: center;
+      color: #999;
+      font-size: 1em;
+      line-height: 1;
+      padding-top: 2px;
+    }
+    .dag-row.head .dag-node { color: #1565c0; }
+    .dag-row.viewed .dag-node { color: #d97706; }
+
+    .dag-label {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      gap: 2px;
+    }
+    .dag-msg { color: #444; }
+    .dag-row.head .dag-msg     { color: #1565c0; font-weight: 500; }
+    .dag-row.viewed .dag-msg   { color: #d97706; font-weight: 500; }
+    .head-tag, .viewed-tag {
+      display: inline-block;
+      padding: 0 5px;
+      color: #fff;
+      border-radius: 3px;
+      font-size: 0.7em;
+      letter-spacing: 0.05em;
+      width: max-content;
+    }
+    .head-tag   { background: #1565c0; }
+    .viewed-tag { background: #d97706; }
+
+    .dag-forks {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 3px;
+    }
+    .dag-fork {
+      display: flex;
+      align-items: baseline;
+      gap: 3px;
+      color: #6a7280;
+      cursor: pointer;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .dag-fork:hover  { background: #f4f3f1; }
+    .dag-fork.active { background: #e7f3ff; color: #1565c0; }
+    .fork-arrow      { color: #b5b0a6; }
+    .fork-name       { font-weight: 500; }
+    .fork-prompt     { color: #999; font-style: italic; font-size: 0.92em; }
+    /* Stacked-refinement counter on a fork stub. Color is the amber
+       of edited-blocks so the cue reads as "this fork has internal
+       history" without competing with author colors. */
+    .fork-depth {
+      color: #b48f00;
+      font-size: 0.85em;
+      font-weight: 600;
+      margin-left: 2px;
+    }
+
+    .dag-empty { color: #aaa; padding: 8px; }
+
+    /* ===================================================================
+       Main column container
+       =================================================================== */
+
+    .main-column {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ===================================================================
+       Prompt row — input + Try + undo/redo.
+       =================================================================== */
+
+    .prompt-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: #fff;
+      border: 1px solid #e5e3df;
+      border-radius: 10px;
+    }
+
+    .prompt-input {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid #d6d4cf;
+      border-radius: 6px;
+      font-size: 0.95em;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.1s;
+    }
+    .prompt-input:focus { border-color: #1565c0; }
+
+    /* Author selector. Border picks up the chosen author's color
+       (set inline) — small visual cue, low chroma. */
+    .author-select {
+      padding: 5px 6px 5px 10px;
+      border: 1px solid #d6d4cf;
+      border-left-width: 4px;
+      border-radius: 6px;
+      background: #fff;
+      font-size: 0.9em;
+      font-family: inherit;
+      cursor: pointer;
+      outline: none;
+    }
+    .author-select:hover { background: #f7f5f0; }
+
+    /* Author chip used in the proposal banner. */
+    .author-chip {
+      display: inline-block;
+      padding: 1px 7px;
+      margin-right: 8px;
+      border-radius: 3px;
+      color: #fff;
+      font-size: 0.78em;
+      letter-spacing: 0.02em;
+      font-weight: 500;
+      vertical-align: 2px;
+    }
+
+    /* Small dot before a fork name in the DAG — color = author. */
+    .author-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin: 0 4px 0 2px;
+      vertical-align: 0;
+    }
+
+    .btn.ghost {
+      background: #fff;
+      border: 1px solid #e0ddd7;
+      color: #555;
+      padding: 5px 9px;
+    }
+    .btn.ghost:hover:not(:disabled) {
+      background: #f4f3f1;
+      border-color: #d0cdc6;
+    }
+    .btn.ghost:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn.back-to-head {
+      margin-left: 10px;
+      border-color: #f1d77e;
+      background: #fff8e6;
+      color: #6a4f00;
+    }
+    .btn.back-to-head:hover {
+      background: #ffefc9;
+      border-color: #e8c25b;
+    }
+
+    /* Page in time-travel preview mode — soft amber tint to signal
+       "you are looking at the past, not the present". */
+    .page.previewing {
+      background: #fffbf3;
+      border-color: #f1d77e;
+    }
+    .page.previewing > h2::after {
+      content: " · preview";
+      color: #d97706;
+      font-style: italic;
+      font-size: 0.85em;
+      font-weight: normal;
+    }
+
+    /* ===================================================================
+       Chrome — top bar with branch identity + branch switcher
+       =================================================================== */
+
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: #fff;
+      border: 1px solid #e5e3df;
+      border-radius: 10px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+
+    .branch-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+      font-size: 0.85em;
+      cursor: pointer;
+      transition: background 0.12s;
+      user-select: none;
+    }
+
+    .branch-pill.main    { background: #e8eef5; color: #2c3e50; }
+    .branch-pill.fork    { background: #e7f3ff; color: #1565c0; }
+    .branch-pill:hover   { filter: brightness(0.97); }
+
+    .branch-pill .arrow  { opacity: 0.5; font-size: 0.75em; margin-left: 2px; }
+
+    /* Pending-changes badge on the pill — small numeric cue that
+       lets the user know there's an unresolved diff vs trunk without
+       requiring the full diff overlay to be on. */
+    .pill-badge {
+      display: inline-block;
+      margin: 0 4px;
+      padding: 1px 7px;
+      border-radius: 9px;
+      background: #d97706;
+      color: #fff;
+      font-size: 0.78em;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .branch-pill.main .pill-badge { display: none; }
+
+    .branch-menu {
+      position: absolute;
+      margin-top: 4px;
+      background: #fff;
+      border: 1px solid #e0ddd7;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+      padding: 4px 0;
+      min-width: 220px;
+      z-index: 10;
+    }
+
+    .branch-menu .item {
+      display: block;
+      padding: 6px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85em;
+      cursor: pointer;
+    }
+    .branch-menu .item:hover  { background: #f4f3f1; }
+    .branch-menu .item.active { background: #eef3f8; color: #1565c0; }
+
+    .chrome-actions { margin-left: auto; display: flex; gap: 6px; }
+
+    .btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1px solid #d6d4cf;
+      background: #fff;
+      font-size: 0.85em;
+      cursor: pointer;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .btn:hover     { background: #f4f3f1; }
+    .btn.primary   { background: #1565c0; border-color: #1565c0; color: #fff; }
+    .btn.primary:hover { background: #0d47a1; border-color: #0d47a1; }
+    .btn.accept    { background: #2e7d32; border-color: #2e7d32; color: #fff; }
+    .btn.accept:hover { background: #1b5e20; }
+    .btn.reject    { background: #fff; border-color: #c0392b; color: #c0392b; }
+    .btn.reject:hover { background: #fef0ee; }
+
+    /* Workspace-mode action bar on a fork: Merge to trunk + Discard.
+       Sits below the prompt row, only when not in review mode. */
+    .fork-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: -2px 0 10px 0;
+    }
+    .fork-actions .btn.merge {
+      background: #d97706;
+      border-color: #d97706;
+      color: #fff;
+    }
+    .fork-actions .btn.merge:hover { background: #b86606; border-color: #b86606; }
+    .fork-actions .btn.discard {
+      color: #888;
+      font-size: 0.9em;
+      padding: 4px 10px;
+    }
+    .fork-actions .btn.discard:hover {
+      color: #c0392b;
+      border-color: #f5c6cb;
+      background: #fdeceb;
+    }
+
+    /* ===================================================================
+       Branch-level banner (shown when active branch ≠ main)
+       =================================================================== */
+
+    .branch-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      background: #fff8e6;
+      border: 1px solid #f1d77e;
+      border-radius: 10px;
+      font-size: 0.9em;
+    }
+    .branch-banner .summary { flex: 1; color: #6a4f00; }
+    .branch-banner strong   { color: #4a3700; }
+
+    /* ===================================================================
+       Page body — the block list
+       =================================================================== */
+
+    .page {
+      background: #fff;
+      border: 1px solid #e5e3df;
+      border-radius: 12px;
+      padding: 16px;
+      min-height: 240px;
+    }
+
+    .page h2 {
+      margin: 0 0 12px 0;
+      font-size: 1.1em;
+      color: #555;
+      font-weight: 500;
+    }
+
+    /* ===================================================================
+       Block — the unit of content; carries diff decoration when on a fork
+       =================================================================== */
+
+    .block {
+      position: relative;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px 8px 16px;
+      margin: 2px 0;
+      border-left: 3px solid transparent;
+      border-radius: 4px;
+      transition: background 0.08s, opacity 0.15s;
+    }
+
+    .block .gutter-icon {
+      flex: 0 0 18px;
+      text-align: center;
+      font-size: 0.85em;
+      line-height: 1.4;
+      color: rgba(0,0,0,0.55);
+      user-select: none;
+    }
+
+    .block .body {
+      flex: 1;
+      line-height: 1.5;
+      font-size: 0.95em;
+    }
+
+    .block .toolbar {
+      visibility: hidden;
+      display: flex;
+      gap: 4px;
+    }
+    .block:hover .toolbar { visibility: visible; }
+
+    .block .toolbar .icon-btn {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+      font-size: 0.95em;
+      line-height: 1;
+    }
+    .block .toolbar .icon-btn.accept       { color: #2e7d32; }
+    .block .toolbar .icon-btn.accept:hover { background: #e6f4e7; border-color: #c8e6c9; }
+    .block .toolbar .icon-btn.reject       { color: #c0392b; }
+    .block .toolbar .icon-btn.reject:hover { background: #fdeceb; border-color: #f5c6cb; }
+    .block .toolbar .icon-btn.delete       { color: #888; font-size: 1.1em; }
+    .block .toolbar .icon-btn.delete:hover { background: #f4f4f4; border-color: #ddd; color: #555; }
+
+    /* Inline edit input — sits inside .body, fills it, looks like the
+       block's text rather than a foreign form control. */
+    .block-edit-input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #c9c5bd;
+      border-radius: 4px;
+      background: #fff;
+      padding: 4px 6px;
+      font: inherit;
+      color: inherit;
+      outline: none;
+    }
+    .block-edit-input:focus { border-color: #1565c0; }
+    .block .body { cursor: text; }
+
+    /* Insert-affordance: slim row between blocks. Reveals a "+" on
+       hover; clicking inserts a fresh empty block and focuses the
+       new edit input. */
+    .insert-row {
+      height: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 80ms ease, height 80ms ease;
+    }
+    .insert-row:hover {
+      opacity: 1;
+      height: 22px;
+    }
+    .insert-glyph {
+      display: inline-block;
+      width: 22px;
+      height: 22px;
+      line-height: 20px;
+      text-align: center;
+      border-radius: 11px;
+      background: #f0eee9;
+      color: #888;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .insert-row:hover .insert-glyph {
+      background: #1565c0;
+      color: #fff;
+    }
+
+    /* Diff decorations — only dim "unchanged" when actually comparing
+       against a fork (.page.viewing-fork sets the parent class). On
+       the trunk view, every block is "unchanged" but shouldn't be
+       greyed out. */
+
+    .page.viewing-fork .block.unchanged { opacity: 0.45; }
+    .block.added               { border-left-color: #2e7d32; background: #eef8ef; }
+    .block.added .gutter-icon  { color: #2e7d32; font-weight: 700; }
+
+    .block.removed             { border-left-color: #c0392b; background: #fdf1ef; opacity: 0.85; }
+    .block.removed .body       { text-decoration: line-through; color: rgba(0,0,0,0.55); }
+    .block.removed .gutter-icon{ color: #c0392b; font-weight: 700; }
+
+    .block.edited              { border-left-color: #d97706; background: #fffaf0; }
+    .block.edited .gutter-icon { color: #d97706; font-weight: 700; }
+    .block.edited .prev-text   { display: block;
+                                 color: rgba(0,0,0,0.45);
+                                 text-decoration: line-through;
+                                 font-size: 0.9em;
+                                 margin-top: 2px; }
+
+    /* ===================================================================
+       Header / explainer
+       =================================================================== */
+
+    header { margin-bottom: 20px; }
+    header h1 {
+      margin: 0 0 6px 0;
+      font-size: 1.6em;
+      color: #1f1f1f;
+    }
+    header .subtitle {
+      margin: 0;
+      color: #707070;
+      font-size: 0.95em;
+    }
+    .explainer {
+      background: #f7f5f0;
+      border: 1px solid #ebe7e0;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-top: 12px;
+      font-size: 0.88em;
+      color: #555;
+      line-height: 1.55;
+    }
+    .explainer code {
+      background: #ece9e3;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.92em;
+    }
+
+    footer {
+      margin-top: 24px;
+      text-align: center;
+      color: #999;
+      font-size: 0.85em;
+    }
+    footer a { color: #1565c0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Versioned editor — branch as inference experiment</h1>
+    <p class="subtitle">Reactive UI that projects between trunk and forks. Click <strong>Try</strong> to spawn a speculative experiment; accept it to merge, reject to discard.</p>
+    <div class="explainer">
+      State is a single spindel signal map of <code>{:branch-name [blocks]}</code>. The active branch is another signal. The page derives a <code>(diff main, active)</code> per-block classification and renders gutters / strikethrough / dim accordingly — all reactive, all incremental. Inspect <code>@examples.versioned-editor-demo/branches</code> and <code>@examples.versioned-editor-demo/active-branch</code> in the CLJS REPL on port 9631.
+    </div>
+  </header>
+
+  <div id="app"></div>
+
+  <footer>
+    Part of the <a href="/">spindel examples</a>. ·
+    Prototype for simmis branching UX.
+  </footer>
+
+  <script src="/js/versioned-editor-demo.js"></script>
+</body>
+</html>

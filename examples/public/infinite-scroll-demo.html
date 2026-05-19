@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spindel Infinite Scroll - O(delta) Virtual List Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+            color: #444;
+            font-size: 18px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+
+        /* Control Buttons */
+        .button-group {
+            margin-bottom: 15px;
+        }
+
+        .button-group-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        button {
+            padding: 8px 14px;
+            font-size: 13px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+        }
+
+        .btn-scroll { background: #4CAF50; color: white; }
+        .btn-scroll:hover { background: #45a049; }
+
+        .btn-jump { background: #2196F3; color: white; }
+        .btn-jump:hover { background: #1976D2; }
+
+        .btn-data { background: #9c27b0; color: white; }
+        .btn-data:hover { background: #7b1fa2; }
+
+        .btn-clear { background: #607d8b; color: white; }
+        .btn-clear:hover { background: #455a64; }
+
+        /* Stats */
+        #render-stats {
+            background: #e3f2fd;
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            margin-bottom: 15px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        #render-stats strong {
+            color: #1565c0;
+        }
+
+        /* Virtual List Container */
+        .virtual-list-container {
+            height: 500px;
+            overflow-y: auto;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            background: #fafafa;
+            position: relative;
+        }
+
+        /* The spacer maintains scroll height */
+        .scroll-spacer {
+            width: 100%;
+            position: relative;
+        }
+
+        /* Visible items container */
+        .visible-items {
+            position: absolute;
+            left: 0;
+            right: 0;
+        }
+
+        /* Individual item styling */
+        .list-item {
+            height: 60px;
+            padding: 10px 15px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            background: white;
+            transition: background 0.1s;
+        }
+
+        .list-item:hover {
+            background: #f5f5f5;
+        }
+
+        .item-index {
+            width: 60px;
+            font-family: monospace;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .item-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+            color: white;
+        }
+
+        .item-content {
+            flex: 1;
+        }
+
+        .item-name {
+            font-weight: 500;
+            color: #333;
+            margin-bottom: 3px;
+        }
+
+        .item-email {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .item-meta {
+            text-align: right;
+            font-size: 11px;
+            color: #999;
+        }
+
+        /* Operation Log */
+        #op-log {
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 11px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+        }
+
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #333;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-entry.add {
+            color: #4ec9b0;
+        }
+
+        .log-entry.remove {
+            color: #ce9178;
+        }
+
+        /* Info Box */
+        .info-box {
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #2e7d32;
+        }
+
+        .info-box p {
+            margin: 0 0 8px 0;
+            color: #1b5e20;
+            font-size: 14px;
+        }
+
+        .info-box ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .info-box li {
+            color: #1b5e20;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .info-box code {
+            background: #c8e6c9;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        /* Metrics display */
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .metric {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1976d2;
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: #666;
+            text-transform: uppercase;
+            margin-top: 4px;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Spindel Infinite Scroll</h1>
+    <p class="subtitle">O(delta) virtual list rendering with <code>islice</code> combinator</p>
+
+    <div class="info-box">
+        <h3>How Virtual List Works</h3>
+        <p>This demo shows <strong>true O(delta) virtual list</strong> - only entering/exiting items cause DOM changes:</p>
+        <ul>
+            <li><strong>10,000 items</strong> in memory, but only ~10-15 rendered at once</li>
+            <li><strong>Scroll events</strong> produce deltas for items entering/exiting viewport</li>
+            <li><strong><code>islice</code></strong> combinator computes window changes efficiently</li>
+            <li><strong>No virtual DOM diffing</strong> - deltas flow directly to DOM operations</li>
+        </ul>
+        <p>Watch the <strong>DOM Operations</strong> counter - each scroll only adds/removes a few items, not 10!</p>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Virtual List (10,000 items)</h2>
+
+            <div class="metrics">
+                <div class="metric">
+                    <div class="metric-value" id="total-items">0</div>
+                    <div class="metric-label">Total Items</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="visible-count">0</div>
+                    <div class="metric-label">Visible</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value" id="dom-ops">0</div>
+                    <div class="metric-label">DOM Ops</div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <span class="button-group-label">Scroll Controls</span>
+                <div class="buttons">
+                    <button id="btn-scroll-down" class="btn-scroll">Scroll Down 5</button>
+                    <button id="btn-scroll-up" class="btn-scroll">Scroll Up 5</button>
+                    <button id="btn-scroll-page" class="btn-scroll">Page Down</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <span class="button-group-label">Jump To</span>
+                <div class="buttons">
+                    <button id="btn-jump-start" class="btn-jump">Start</button>
+                    <button id="btn-jump-middle" class="btn-jump">Middle</button>
+                    <button id="btn-jump-end" class="btn-jump">End</button>
+                    <button id="btn-jump-random" class="btn-jump">Random</button>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <span class="button-group-label">Data Operations</span>
+                <div class="buttons">
+                    <button id="btn-add-items" class="btn-data">+ Add 100</button>
+                    <button id="btn-remove-items" class="btn-data">- Remove 100</button>
+                    <button id="btn-reset" class="btn-clear">Reset</button>
+                </div>
+            </div>
+
+            <div id="render-stats">
+                <strong>Window:</strong> [0, 10) |
+                <strong>Scroll:</strong> 0px |
+                <strong>Last Op:</strong> -
+            </div>
+
+            <div id="scroll-container" class="virtual-list-container">
+                <!-- Virtual list renders here -->
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>DOM Operations Log</h2>
+            <p style="color: #666; font-size: 13px; margin-top: 0;">
+                Watch how few operations occur per scroll. Each scroll only touches entering/exiting items.
+            </p>
+            <div id="op-log">
+                <em>Scroll the list or click buttons to see DOM operations</em>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/shared.js"></script>
+    <script src="/js/infinite-scroll-demo.js"></script>
+    <script>
+        // Initialize when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+                examples.infinite_scroll_demo.init();
+            });
+        } else {
+            examples.infinite_scroll_demo.init();
+        }
+    </script>
+</body>
+</html>

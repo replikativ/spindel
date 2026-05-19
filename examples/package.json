@@ -1,0 +1,21 @@
+{
+  "name": "spindel-examples",
+  "version": "0.1.0",
+  "description": "Example applications demonstrating spindel's incremental DOM rendering",
+  "private": true,
+  "scripts": {
+    "watch:todo": "shadow-cljs watch todo-demo",
+    "watch:block-editor": "shadow-cljs watch block-editor-demo",
+    "watch:infinite-scroll": "shadow-cljs watch infinite-scroll-demo",
+    "watch:tiptap": "shadow-cljs watch tiptap-demo",
+    "watch:all": "shadow-cljs watch todo-demo block-editor-demo infinite-scroll-demo tiptap-demo",
+    "release": "shadow-cljs release todo-demo block-editor-demo infinite-scroll-demo tiptap-demo"
+  },
+  "devDependencies": {
+    "shadow-cljs": "^2.28.0"
+  },
+  "dependencies": {
+    "@tiptap/core": "^2.1.0",
+    "@tiptap/starter-kit": "^2.1.0"
+  }
+}

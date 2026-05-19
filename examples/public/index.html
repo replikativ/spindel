@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spindel Examples</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 2.5em;
+            color: #1976d2;
+        }
+
+        .tagline {
+            font-size: 1.2em;
+            color: #666;
+            margin: 0;
+        }
+
+        .intro {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .intro h2 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        .intro p {
+            margin-bottom: 16px;
+        }
+
+        .intro code {
+            background: #e8e8e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        .demos {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .demo-card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-decoration: none;
+            color: inherit;
+            display: block;
+        }
+
+        .demo-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+        }
+
+        .demo-card h3 {
+            margin: 0 0 12px 0;
+            color: #1976d2;
+            font-size: 1.3em;
+        }
+
+        .demo-card p {
+            margin: 0 0 16px 0;
+            color: #666;
+            font-size: 0.95em;
+        }
+
+        .demo-card .features {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .demo-card .features li {
+            font-size: 0.85em;
+            color: #888;
+            padding: 4px 0;
+            border-top: 1px solid #eee;
+        }
+
+        .demo-card .features li:first-child {
+            border-top: none;
+        }
+
+        .demo-card .features li::before {
+            content: "✓ ";
+            color: #4CAF50;
+        }
+
+        .getting-started {
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 30px;
+        }
+
+        .getting-started h2 {
+            margin-top: 0;
+            color: #2e7d32;
+        }
+
+        .getting-started pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 0.9em;
+        }
+
+        .getting-started code {
+            font-family: 'Fira Code', 'Monaco', monospace;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #999;
+            font-size: 0.9em;
+        }
+
+        footer a {
+            color: #1976d2;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Spindel Examples</h1>
+        <p class="tagline">Delta-direct incremental DOM rendering without virtual DOM diffing</p>
+    </header>
+
+    <div class="intro">
+        <h2>What is Spindel?</h2>
+        <p>
+            Spindel is an incremental UI rendering library for ClojureScript that achieves true
+            <strong>O(delta) DOM updates</strong>. Unlike React's virtual DOM diffing, spindel
+            tracks changes at the data level and produces precise DOM mutations.
+        </p>
+        <p>
+            Key concepts: <code>signal</code> (reactive state), <code>track</code> (observe changes),
+            <code>spin</code> (reactive computation), <code>ifor-each</code> (incremental list rendering).
+        </p>
+    </div>
+
+    <div class="demos">
+        <a href="todo-demo.html" class="demo-card">
+            <h3>TODO MVC</h3>
+            <p>Classic TODO app demonstrating add, remove, toggle, and filter operations with minimal DOM updates.</p>
+            <ul class="features">
+                <li>Add/remove items with single DOM ops</li>
+                <li>Toggle done status (attr update only)</li>
+                <li>Priority cycling</li>
+                <li>ifilter combinator for filtering</li>
+                <li>DOM operations log</li>
+            </ul>
+        </a>
+
+        <a href="block-editor-demo.html" class="demo-card">
+            <h3>Block Editor</h3>
+            <p>Hierarchical block editor like Notion/Roam with nested blocks and keyboard navigation.</p>
+            <ul class="features">
+                <li>Hierarchical nested blocks</li>
+                <li>Indent/outdent with Tab</li>
+                <li>Collapse/expand children</li>
+                <li>Keyboard navigation</li>
+                <li>Incremental focus management</li>
+            </ul>
+        </a>
+
+        <a href="infinite-scroll-demo.html" class="demo-card">
+            <h3>Infinite Scroll</h3>
+            <p>Virtual list with 10,000 items but only ~10 rendered. Scroll produces minimal DOM changes.</p>
+            <ul class="features">
+                <li>10,000 items, ~10 rendered</li>
+                <li>islice combinator for windowing</li>
+                <li>O(delta) scroll updates</li>
+                <li>DOM operations counter</li>
+                <li>Jump to any position</li>
+            </ul>
+        </a>
+
+        <a href="tiptap-demo.html" class="demo-card">
+            <h3>TipTap Integration</h3>
+            <p>Rich text editor integration using spindel's foreign-node for third-party library support.</p>
+            <ul class="features">
+                <li>TipTap/ProseMirror editor</li>
+                <li>foreign-node primitive</li>
+                <li>Bidirectional sync via signals</li>
+                <li>Live HTML preview</li>
+            </ul>
+        </a>
+
+        <a href="versioned-editor-demo.html" class="demo-card">
+            <h3>Versioned Editor</h3>
+            <p>Reactive UI projecting between trunk and forks. Click <em>Try</em> to spawn a speculative experiment; accept incorporates the change, reject discards it.</p>
+            <ul class="features">
+                <li>Branches as signal-held map values</li>
+                <li>Per-block diff classification</li>
+                <li>Chrome pill + branch switcher</li>
+                <li>Hover-revealed accept/reject toolbar</li>
+                <li>Cherry-pick: per-block accept</li>
+            </ul>
+        </a>
+    </div>
+
+    <div class="getting-started">
+        <h2>Getting Started</h2>
+        <pre><code># Clone the repository
+git clone https://github.com/replikativ/spindel.git
+cd spindel/examples
+
+# Install dependencies
+npm install
+
+# Start all examples with one command
+npx shadow-cljs watch examples
+
+# Open http://localhost:8080/</code></pre>
+    </div>
+
+    <footer>
+        <p>
+            Spindel is part of the <a href="https://github.com/replikativ">replikativ</a> ecosystem.
+            <br>
+            Built with ClojureScript and shadow-cljs.
+        </p>
+    </footer>
+</body>
+</html>

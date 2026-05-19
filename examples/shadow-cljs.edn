@@ -1,0 +1,71 @@
+;; shadow-cljs configuration for spindel examples
+;;
+;; Usage:
+;;   cd examples
+;;   npm install
+;;   npx shadow-cljs watch examples
+;;   # Open http://localhost:8080/
+
+{:deps {:aliases [:dev]}
+ :dev-http {8080 "public"}
+
+ :builds
+ {;; Combined build with all examples - use this for development
+  :examples
+  {:target :browser
+   :output-dir "public/js"
+   :asset-path "/js"
+   :modules {:shared {:entries []}
+             :todo-demo {:entries [examples.todo-demo]
+                         :depends-on #{:shared}}
+             :block-editor-demo {:entries [examples.block-editor-demo]
+                                 :depends-on #{:shared}}
+             :infinite-scroll-demo {:entries [examples.infinite-scroll-demo]
+                                    :depends-on #{:shared}}
+             :tiptap-demo {:entries [examples.tiptap-demo]
+                           :depends-on #{:shared}}
+             :versioned-editor-demo {:entries [examples.versioned-editor-demo]
+                                     :depends-on #{:shared}}}
+   :devtools {:repl-init-ns examples.todo-demo}}
+
+  ;; Individual builds (for standalone use)
+  :todo-demo
+  {:target :browser
+   :output-dir "public/js"
+   :asset-path "/js"
+   :modules {:todo-demo {:entries [examples.todo-demo]
+                         :init-fn examples.todo-demo/init}}
+   :devtools {:repl-init-ns examples.todo-demo}}
+
+  :block-editor-demo
+  {:target :browser
+   :output-dir "public/js"
+   :asset-path "/js"
+   :modules {:block-editor-demo {:entries [examples.block-editor-demo]
+                                  :init-fn examples.block-editor-demo/init}}
+   :devtools {:repl-init-ns examples.block-editor-demo}}
+
+  :infinite-scroll-demo
+  {:target :browser
+   :output-dir "public/js"
+   :asset-path "/js"
+   :modules {:infinite-scroll-demo {:entries [examples.infinite-scroll-demo]
+                                     :init-fn examples.infinite-scroll-demo/init}}
+   :devtools {:repl-init-ns examples.infinite-scroll-demo}}
+
+  :tiptap-demo
+  {:target :browser
+   :output-dir "public/js"
+   :asset-path "/js"
+   :modules {:tiptap-demo {:entries [examples.tiptap-demo]
+                           :init-fn examples.tiptap-demo/init}}
+   :devtools {:repl-init-ns examples.tiptap-demo}}
+
+  :versioned-editor-demo
+  {:target :browser
+   :output-dir "public/js"
+   :asset-path "/js"
+   :modules {:versioned-editor-demo
+             {:entries [examples.versioned-editor-demo]
+              :init-fn examples.versioned-editor-demo/init}}
+   :devtools {:repl-init-ns examples.versioned-editor-demo}}}}
