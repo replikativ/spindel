@@ -13,14 +13,19 @@
    :compiler-options {:optimizations :none}}
 
   ;; CI build, called by the replikativ/clj-tools@0 orb's tools/build
-  ;; (`npx shadow-cljs compile ci`) and then run by tools/cljstest.
+  ;; (`npx shadow-cljs compile ci`) and then run by tools/cljstest via
+  ;; bin/run-cljstests (`shadow-cljs release ci && node out/ci-tests.js`).
   ;; No :autorun — the test runner is invoked as a separate CI step.
-  ;; Mirrors superficie's :ci convention.
+  ;; No :optimizations override — `release` needs a real optimization
+  ;; level (defaults to :simple for :node-test). Mirrors superficie.
+  ;; `:elide-asserts false` keeps `(assert …)` forms in the test
+  ;; bundle so assertion tests (e.g. partitioned's power-of-2 check)
+  ;; still fire under release-mode optimization.
   :ci
   {:target :node-test
    :output-to "out/ci-tests.js"
    :ns-regexp "-test$"
-   :compiler-options {:optimizations :none}}
+   :compiler-options {:elide-asserts false}}
 
   :lib
   {:target :node-library
