@@ -180,9 +180,11 @@
           (when (= ::timeout warmup)
             (throw (ex-info "peer handshake did not complete within 10s"
                             {:server-id server-id :url url}))))
-        ;; Error is wrapped by distributed-scope as "Remote invocation error".
-        ;; The original "boom" message is in the :error data.
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Remote invocation error"
+        ;; distributed-scope 0.1.2 propagates the original ex-info message
+        ;; directly without a "Remote invocation error" wrapper. The remote
+        ;; ex-info raised by throw-error has :message "boom" + :data
+        ;; {:type :test-error}, and that's what the client deref re-raises.
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"boom"
                               (deref (spin (await (throw-error server-id "boom"))) 10000 ::timeout)))
         (finally
           (stop-server! started))))))

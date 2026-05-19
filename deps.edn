@@ -15,10 +15,12 @@
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
-                      ;; Include distributed-scope for testing the distributed namespace
-                      ;; distributed-scope brings kabel as a transitive local dep
-                      org.replikativ/distributed-scope {:git/url "https://github.com/simm-is/distributed-scope"
-                                                        :git/sha "b913579cac898d4ea5746125135e45d39d034b8e"}
+                      ;; Released Clojars artifact (group is.simm, not
+                      ;; org.replikativ — distributed-scope is published from
+                      ;; the simm-is org). Pulls kabel + missionary as
+                      ;; transitive deps; needed by tests that exercise the
+                      ;; spindel.distributed/* namespaces.
+                      is.simm/distributed-scope {:mvn/version "0.1.2"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
