@@ -1,13 +1,25 @@
-;; shadow-cljs configuration for spindel CLJS support
-;; Uses deps.edn for dependency resolution (local deps work correctly)
-{:deps {:aliases [:cljs]}  ; Use deps.edn with :cljs alias
+;; shadow-cljs configuration for spindel CLJS support.
+;; Uses deps.edn for dependency resolution via the :cljs alias.
+{:deps {:aliases [:cljs]}
 
  :builds
- {:test
+ {;; Local test runner: `npx shadow-cljs compile test` (or `watch test`).
+  ;; :autorun true → runs the tests as soon as compile completes.
+  :test
   {:target :node-test
    :output-to "target/test.js"
    :ns-regexp "-test$"
    :autorun true
+   :compiler-options {:optimizations :none}}
+
+  ;; CI build, called by the replikativ/clj-tools@0 orb's tools/build
+  ;; (`npx shadow-cljs compile ci`) and then run by tools/cljstest.
+  ;; No :autorun — the test runner is invoked as a separate CI step.
+  ;; Mirrors superficie's :ci convention.
+  :ci
+  {:target :node-test
+   :output-to "out/ci-tests.js"
+   :ns-regexp "-test$"
    :compiler-options {:optimizations :none}}
 
   :lib
