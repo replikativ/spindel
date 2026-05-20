@@ -591,6 +591,19 @@
     Prototype for simmis branching UX.
   </footer>
 
+  <script src="/js/shared.js"></script>
   <script src="/js/versioned-editor-demo.js"></script>
+  <script>
+    // The :examples combined build doesn't bake :init-fn into the module
+    // (modules are entries-only). Invoke the demo's exported init after
+    // the JS bundle has loaded.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () {
+        examples.versioned_editor_demo.init();
+      });
+    } else {
+      examples.versioned_editor_demo.init();
+    }
+  </script>
 </body>
 </html>
