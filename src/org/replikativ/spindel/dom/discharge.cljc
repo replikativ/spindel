@@ -43,7 +43,7 @@
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.permutation :as perm]
             [replikativ.logging :as log])
-  #?(:clj (:import [java.util Collections WeakHashMap])))
+  #?(:clj (:import [java.util Collections IdentityHashMap])))
 
 ;; =============================================================================
 ;; Discharge Protocol
@@ -141,58 +141,90 @@
 ;; this set, every time a parent re-emits and embeds the cached child
 ;; vnode, the same :deltas fire again, duplicating children in the DOM.
 ;;
-;; Identity comparison (`identical?` via a Java IdentityHashMap-backed
-;; set, or a regular Clojure set when the vnodes are persistent values)
-;; is the right granularity: a *new* vnode at the same addr with new
-;; deltas (e.g. a rebuild because the spin re-ran) is a different object
-;; and gets its deltas applied normally.
+;; Identity comparison is the WHOLE point: a *new* vnode at the same
+;; addr with new deltas (e.g. a rebuild because the spin re-ran, OR a
+;; fresh build-element output that just happens to be value-equal to a
+;; prior cycle's vnode) is a different object and MUST get its deltas
+;; applied. Value comparison here is a correctness bug — when a source
+;; oscillates back to an equal state, two distinct render cycles
+;; produce value-equal parent vnodes, and a value-keyed set silently
+;; drops the second cycle's deltas, leaving stale / duplicated DOM.
 (def ^:dynamic *applied-vnodes* nil)
 
 ;; ----------------------------------------------------------------------------
-;; Weak-set helpers for *applied-vnodes*
+;; Generational identity tracking for *applied-vnodes*
 ;; ----------------------------------------------------------------------------
 ;;
-;; *applied-vnodes* used to be `(atom #{})`. The atom held STRONG references
-;; to every vnode whose deltas had been applied during the render effect's
-;; lifetime. Each time a spin re-ran and produced a fresh cached result, the
-;; OLD vnode was no longer reachable via :nodes[id]:result but stayed pinned
-;; by this set — an unbounded leak in long-running apps that accumulate
-;; thousands of re-renders over a session.
+;; Requirements: (a) IDENTITY semantics — "have I seen THIS object?",
+;; never "an equal one"; (b) bounded memory — a naive identity set held
+;; for the render-effect's whole life pins every vnode ever discharged.
 ;;
-;; Weak-set semantics are exactly right here: we only need "have I seen
-;; THIS vnode object?" (identity, not value); when the vnode becomes
-;; otherwise unreachable, dropping it from the set is correct — the cached
-;; spin result that referenced it is gone, so no future cycle will encounter
-;; it again. CLJ uses Collections/newSetFromMap over WeakHashMap (the
-;; canonical recipe), wrapped in synchronizedSet because multiple
-;; async-dispatch threads can drive concurrent discharge passes against
-;; the same applied-set. CLJS is single-threaded so a bare js/WeakSet
-;; suffices.
+;; The JVM has no weak *identity* map in the stdlib (`WeakHashMap` is
+;; value-keyed; `IdentityHashMap` is strong). So instead of relying on
+;; GC we bound memory explicitly with two generations, :prev and :cur,
+;; rotated once per discharge cycle (`rotate-applied!`). A cached spin
+;; result that is still being re-embedded is re-touched into :cur every
+;; cycle, so it never ages out while live; once its spin re-runs and it
+;; stops being embedded, it falls out within two cycles. CLJS keeps a
+;; bare js/WeakSet — JS WeakSet is already weak AND identity-keyed — so
+;; the generational machinery is a CLJ-only no-op there.
+;;
+;; synchronizedSet because multiple async-dispatch threads can drive
+;; concurrent discharge passes against the same applied-set.
+
+#?(:clj
+   (defn- identity-vnode-set []
+     (Collections/synchronizedSet
+      (Collections/newSetFromMap (IdentityHashMap.)))))
 
 (defn make-applied-vnodes
-  "Create a fresh weak set for tracking applied vnodes (one per render-effect).
-   Returns an object with identity-based 'have I seen this?' semantics that
-   does NOT prevent the vnode from being GC'd when its cached spin result
-   is dropped."
+  "Create a fresh applied-vnodes tracker (one per render-effect).
+
+   CLJ: an atom holding `{:prev <identity-set> :cur <identity-set>}`.
+   CLJS: a js/WeakSet (already weak + identity-keyed).
+
+   Identity-based 'have I seen THIS object?' semantics; memory is
+   bounded to ~2 discharge cycles via `rotate-applied!`."
   []
-  #?(:clj  (Collections/synchronizedSet
-            (Collections/newSetFromMap (WeakHashMap.)))
+  #?(:clj  (atom {:prev (identity-vnode-set) :cur (identity-vnode-set)})
      :cljs (js/WeakSet.)))
 
-(defn- applied-contains?
-  "Has this vnode object been marked applied? Nil-safe on the set arg
-   (matches the existing `(and *applied-vnodes* …)` guards)."
+(defn- applied-seen?!
+  "Identity check: was this exact vnode object already discharged in
+   this cycle or the previous one? Nil-safe on the set arg.
+
+   Side effect: when the vnode is found only in the older (:prev)
+   generation, it is refreshed into :cur — so a cached spin result
+   that keeps being re-embedded never ages out across the rotation."
   [s vnode]
   (and s
-       #?(:clj  (.contains ^java.util.Set s vnode)
+       #?(:clj  (let [{:keys [prev cur]} @s]
+                  (cond
+                    (.contains ^java.util.Set cur vnode)  true
+                    (.contains ^java.util.Set prev vnode) (do (.add ^java.util.Set cur vnode)
+                                                              true)
+                    :else false))
           :cljs (.has s vnode))))
 
 (defn- applied-add!
-  "Mark this vnode object as applied. No-op when the set is nil."
+  "Mark this vnode object as applied in the current generation.
+   No-op when the set is nil."
   [s vnode]
   (when s
-    #?(:clj  (.add ^java.util.Set s vnode)
+    #?(:clj  (.add ^java.util.Set (:cur @s) vnode)
        :cljs (.add s vnode)))
+  nil)
+
+(defn- rotate-applied!
+  "Advance the applied-vnodes generations at a discharge-cycle
+   boundary: this cycle's :cur becomes :prev and a fresh empty :cur
+   starts. Bounds memory to the last two cycles' worth of applied
+   vnodes. CLJS's js/WeakSet is GC-managed, so this is a no-op there."
+  [s]
+  #?(:clj  (when s
+             (swap! s (fn [{:keys [cur]}]
+                        {:prev cur :cur (identity-vnode-set)})))
+     :cljs nil)
   nil)
 
 ;; Track addresses claimed during the current render pass. If two different
@@ -764,7 +796,7 @@
   [discharge vnode]
   (when vnode
     (let [is-rendered? (and *rendered-vnodes* (contains? @*rendered-vnodes* vnode))
-          is-applied?  (applied-contains? *applied-vnodes* vnode)]
+          is-applied?  (applied-seen?! *applied-vnodes* vnode)]
       (log/debug ::discharge-vnode {:tag (:tag vnode)
                                     :is-rendered? is-rendered?
                                     :is-applied? is-applied?
@@ -836,7 +868,11 @@
                                   :nodes-with-deltas (mapv (fn [n] {:tag (:tag n) :deltas (:deltas n)}) nodes)})
       (doseq [node nodes]
         (discharge-vnode! discharge node))
-      (clear-deltas-deep vdom))))
+      (let [result (clear-deltas-deep vdom)]
+        ;; Advance the applied-vnodes generations so memory stays
+        ;; bounded while cross-cycle cached-result protection holds.
+        (rotate-applied! *applied-vnodes*)
+        result))))
 
 ;; =============================================================================
 ;; Delta Clearing

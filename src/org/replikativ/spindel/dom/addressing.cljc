@@ -34,15 +34,18 @@
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.addressing])))
 
 ;; =============================================================================
-;; Ephemeral key registration
+;; Spin scope key registration
 ;; =============================================================================
 ;;
-;; DOM parent-addr and current-slot are per-render-pass scope. They must be
-;; cleared when a track continuation resumes (= start of a new render pass),
-;; but preserved across await resumes (= resuming mid-body in the same pass).
+;; :dom/parent-addr and :dom/current-slot are lexical scope for element
+;; addressing — set by element macros around the point a spin is created.
+;; A spin's body must address its elements under that same scope on every
+;; re-run. Registering them as spin-scope keys (see engine.bindings) makes
+;; the engine snapshot them at spin construction and re-establish them on
+;; every body-entry path — without the engine ever naming a :dom/* key.
 
-(bindings/register-ephemeral-binding-key! :dom/parent-addr)
-(bindings/register-ephemeral-binding-key! :dom/current-slot)
+(bindings/register-spin-scope-key! :dom/parent-addr)
+(bindings/register-spin-scope-key! :dom/current-slot)
 
 ;; =============================================================================
 ;; Tree Address Computation

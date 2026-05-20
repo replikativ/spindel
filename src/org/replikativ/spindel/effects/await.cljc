@@ -166,13 +166,13 @@
         ;; We need to execute child body (to create nested spins, register continuations)
         ;; but continue synchronously instead of suspending
         rebuild?
-        (let [;; Re-apply the awaited spin's captured DOM scope, same as the
+        (let [;; Re-apply the awaited spin's captured scope, same as the
               ;; slow path below. Rebuild executes the child body for side
               ;; effects (registering child continuations etc.); those spins
               ;; need to see their own scope, not the parent's.
-              spin-dom-scope (rtp/get-state ctx [:nodes awaited-spin-id :dom-scope])
-              child-ctx (if (seq spin-dom-scope)
-                          (update ctx :bindings merge spin-dom-scope)
+              spin-scope (rtp/get-state ctx [:nodes awaited-spin-id :spin-scope])
+              child-ctx (if (seq spin-scope)
+                          (update ctx :bindings merge spin-scope)
                           ctx)]
           ;; Execute child spin for side effects with child's scope applied
           (binding [ec/*execution-context* child-ctx
@@ -247,16 +247,16 @@
               ;; (Observer registration of parent in child.observers was done
               ;; at await-spin entry via `(ec/deps-track-spin! ...)` — see
               ;; the fast-path branch comment above.)
-              ;; Re-apply the awaited spin's captured DOM scope (snapshotted
-              ;; at construction in spin/core.cljc::make-spin). Without this,
+              ;; Re-apply the awaited spin's captured scope (snapshotted at
+              ;; construction in spin/core.cljc::make-spin). Without this,
               ;; the child body would inherit the parent's *execution-context*
-              ;; bindings — losing any keyed/scoped DOM context the child was
-              ;; constructed under (e.g. ifor-each per-item scope). This is
-              ;; the await-handler analogue of the :spin-execution-event fix
-              ;; in engine/impl/simple.cljc.
-              spin-dom-scope (rtp/get-state ctx [:nodes awaited-spin-id :dom-scope])
-              child-ctx (if (seq spin-dom-scope)
-                          (update ctx :bindings merge spin-dom-scope)
+              ;; bindings — losing any keyed/scoped context the child was
+              ;; constructed under (e.g. ifor-each per-item DOM scope). This
+              ;; is the await-handler analogue of the :spin-execution-event
+              ;; handling in engine/impl/simple.cljc.
+              spin-scope (rtp/get-state ctx [:nodes awaited-spin-id :spin-scope])
+              child-ctx (if (seq spin-scope)
+                          (update ctx :bindings merge spin-scope)
                           ctx)
               ;; Seed the child's per-spin chain-head slot before invoking
               ;; its body — exactly what `Spin`'s `-invoke` Case 2 does.

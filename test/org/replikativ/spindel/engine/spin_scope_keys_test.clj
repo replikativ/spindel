@@ -1,14 +1,15 @@
-(ns org.replikativ.spindel.engine.ephemeral-bindings-test
-  "Tests for the historical ephemeral binding keys mechanism.
+(ns org.replikativ.spindel.engine.spin-scope-keys-test
+  "Tests for the spin-scope-key mechanism.
 
-  This mechanism is being phased out: continuations now snapshot full
-  :bindings at suspend time and restore them at resume time, so the
-  per-key ephemerality category is no longer needed. Keys registered via
-  register-ephemeral-binding-key! are now preserved across both track and
-  await resumes — the suspend-time scope is what the body sees on resume,
-  the same way lexical bindings flow into a continuation's closure.
+  A spin-scope key is a :bindings entry that represents a spin's lexical
+  construction scope. `make-spin` snapshots the registered scope keys onto
+  the spin's node and the engine re-establishes them on every body-entry
+  path — initial run, track resume, and await resume — so the body always
+  runs under the scope it was constructed in, the same way lexical bindings
+  flow into a continuation's closure.
 
-  These tests document the post-snapshot behavior."
+  The registry (engine.bindings) is the engine's only knowledge of these
+  keys: the engine never names a :dom/* (or any domain) key itself."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
@@ -19,20 +20,21 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]))
 
-;; Register a test-only key so this test doesn't depend on DOM registration.
-(bindings/register-ephemeral-binding-key! ::ephemeral)
+;; Register a test-only scope key so this test doesn't depend on DOM registration.
+(bindings/register-spin-scope-key! ::scoped)
 
 (defn- observe-bindings
-  "Read the current context's :bindings for both ephemeral and persistent keys."
+  "Read the current context's :bindings for both a scope key and a
+  persistent (unregistered) key."
   []
   (let [b (:bindings ec/*execution-context*)]
-    {:ephemeral  (get b ::ephemeral)
+    {:scoped     (get b ::scoped)
      :persistent (get b ::persistent)}))
 
-(deftest ephemeral-key-preserved-on-track-resume
-  (testing "Ephemeral key is preserved on track resume (new snapshot model)"
+(deftest scope-key-preserved-on-track-resume
+  (testing "Scope key is preserved when a spin resumes from a track continuation"
     (let [ctx-root (ctx/create-execution-context
-                    :bindings {::ephemeral  :set
+                    :bindings {::scoped     :set
                                ::persistent :set})]
       (try
         (binding [ec/*execution-context* ctx-root]
@@ -46,24 +48,23 @@
             (is (= 0 @s))
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)
 
-            ;; Second pass — signal change forces track resume. Body resumes
-            ;; with the bindings that were active at the track suspend point.
+            ;; Second pass — signal change forces a track resume.
             (swap! counter inc)
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)
 
             (is (= 2 (count @observed)) "spin body should execute twice")
             (let [[p1 p2] @observed]
-              (is (= :set (:ephemeral p1))  "pass 1: ephemeral visible")
+              (is (= :set (:scoped p1))     "pass 1: scope key visible")
               (is (= :set (:persistent p1)) "pass 1: persistent visible")
-              (is (= :set (:ephemeral p2))  "pass 2 (track resume): ephemeral preserved via snapshot")
+              (is (= :set (:scoped p2))     "pass 2 (track resume): scope key preserved")
               (is (= :set (:persistent p2)) "pass 2 (track resume): persistent preserved"))))
         (finally
           (ctx/stop-context! ctx-root))))))
 
-(deftest ephemeral-key-preserved-across-await-resume
-  (testing "Ephemeral key survives an await resume (same render pass)"
+(deftest scope-key-preserved-across-await-resume
+  (testing "Scope key survives an await resume (re-applied from the spin's snapshot)"
     (let [ctx-root (ctx/create-execution-context
-                    :bindings {::ephemeral  :set
+                    :bindings {::scoped     :set
                                ::persistent :set})]
       (try
         (binding [ec/*execution-context* ctx-root]
@@ -74,15 +75,15 @@
                           (reset! observed (observe-bindings))))]
             @parent
             (simple/await-drain-complete! ctx-root :timeout-ms 2000)
-            (is (= {:ephemeral :set :persistent :set} @observed)
+            (is (= {:scoped :set :persistent :set} @observed)
                 "both bindings visible after await resume")))
         (finally
           (ctx/stop-context! ctx-root))))))
 
-(deftest ephemeral-registry-is-global
-  (testing "Ephemeral keys registered earlier are returned by the accessor"
-    (is (contains? (bindings/ephemeral-binding-keys) ::ephemeral)))
+(deftest scope-key-registry-is-global
+  (testing "Scope keys registered earlier are returned by the accessor"
+    (is (contains? (bindings/spin-scope-keys) ::scoped)))
   (testing "DOM keys are pre-registered by dom.addressing"
     (require 'org.replikativ.spindel.dom.addressing)
-    (is (contains? (bindings/ephemeral-binding-keys) :dom/parent-addr))
-    (is (contains? (bindings/ephemeral-binding-keys) :dom/current-slot))))
+    (is (contains? (bindings/spin-scope-keys) :dom/parent-addr))
+    (is (contains? (bindings/spin-scope-keys) :dom/current-slot))))
