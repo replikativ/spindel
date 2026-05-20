@@ -274,6 +274,32 @@
                       :hint "Two vnodes claim the same :addr in one render pass. Use ifor-each for cardinality-variable lists, or split the call site so each sibling has a distinct source-loc. (Logged once per process — see logged-collisions atom.)"}))
         (swap! *rendered-addrs* assoc addr vnode)))))
 
+;; Addresses whose per-element caches are slated for eviction because a
+;; vnode at that address was unmounted this render pass. Eviction is
+;; *deferred* to end-of-cycle: an unmount runs before the live subtree is
+;; render-initial!'d, so an address can sit in both a destroyed subtree and
+;; a live one within one pass (a churned parent whose keyed descendants
+;; survive). `flush-pending-evictions!` drops only the addresses absent
+;; from `*rendered-addrs*` once the pass is complete.
+(def ^:dynamic *pending-evictions* nil)
+
+(defn flush-pending-evictions!
+  "Evict the per-element caches of addresses unmounted this render pass
+  that no live element claimed. Call once, after the full discharge walk,
+  inside the `*pending-evictions*` / `*rendered-addrs*` binding.
+
+  Eager eviction on unmount is unsafe: unmount runs before the live
+  subtree is render-initial!'d, so it would wipe the cache of an address
+  that a still-live element (a surviving keyed descendant of a churned
+  parent) re-claims later in the same pass. By end-of-pass `*rendered-addrs*`
+  holds every live address, so (pending - live) is exactly the dead set."
+  []
+  (when (and *pending-evictions* *rendered-addrs*)
+    (let [live (set (keys @*rendered-addrs*))]
+      (doseq [addr @*pending-evictions*]
+        (when-not (contains? live addr)
+          (cache/evict-cache! addr))))))
+
 ;; =============================================================================
 ;; Attribute Delta Application
 ;; =============================================================================
@@ -862,13 +888,17 @@
   Returns the vdom with deltas cleared."
   [discharge vdom]
   (binding [*rendered-vnodes* (atom #{})
-            *rendered-addrs* (atom {})]
+            *rendered-addrs* (atom {})
+            *pending-evictions* (atom #{})]
     (let [nodes (collect-nodes-with-deltas vdom)]
       (log/debug ::discharge-all {:nodes-count (count nodes)
                                   :nodes-with-deltas (mapv (fn [n] {:tag (:tag n) :deltas (:deltas n)}) nodes)})
       (doseq [node nodes]
         (discharge-vnode! discharge node))
       (let [result (clear-deltas-deep vdom)]
+        ;; Evict caches of addresses unmounted this pass that no live
+        ;; element re-claimed (deferred — see flush-pending-evictions!).
+        (flush-pending-evictions!)
         ;; Advance the applied-vnodes generations so memory stays
         ;; bounded while cross-cycle cached-result protection holds.
         (rotate-applied! *applied-vnodes*)
@@ -924,10 +954,12 @@
                                          :error (str e)})))))
 
 (defn- call-refs-on-unmount!
-  "Recursively call ref callbacks with nil and evict per-element cache state
-  for a vnode and its descendants. Called on every unmount path so the
-  [:dom/cache addr] / [:dom/attr-cache addr] entries do not accumulate for
-  the lifetime of the context."
+  "Recursively call ref callbacks with nil for a vnode and its descendants,
+  and schedule their per-element caches for eviction. The eviction itself
+  is deferred to end-of-cycle (see `*pending-evictions*` /
+  `flush-pending-evictions!`) so it cannot wipe a cache that an address
+  still-live elsewhere in the same render pass re-claims. Outside a render
+  pass (no binding) eviction falls back to eager, as before."
   [vnode]
   (when vnode
     (cond
@@ -941,7 +973,10 @@
       (core/vnode? vnode)
       (do
         (call-ref! vnode nil)
-        (cache/evict-cache! (:addr vnode))
+        (if *pending-evictions*
+          (when-let [addr (:addr vnode)]
+            (swap! *pending-evictions* conj addr))
+          (cache/evict-cache! (:addr vnode)))
         (when-let [children (:children vnode)]
           (let [child-vec (if (d/deltaable? children) @children children)]
             (doseq [child child-vec]

@@ -89,12 +89,14 @@
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
         (binding [disch/*rendered-vnodes* (atom #{})
-                  disch/*rendered-addrs* (atom {})]
+                  disch/*rendered-addrs* (atom {})
+                  disch/*pending-evictions* (atom #{})]
           (let [nodes-with-deltas (disch/collect-nodes-with-deltas new-vdom)]
             (when (seq nodes-with-deltas)
               (log/trace :render/delta-update {:nodes-with-deltas (count nodes-with-deltas)})
               (doseq [node nodes-with-deltas]
-                (disch/discharge-vnode! discharge node)))))
+                (disch/discharge-vnode! discharge node))))
+          (disch/flush-pending-evictions!))
 
         ;; Clear deltas for next render cycle
         ;; No ref transfer needed — cleared vnodes carry same :addr values
