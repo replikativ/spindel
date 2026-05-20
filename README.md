@@ -235,6 +235,6 @@ testing patterns.
 
 ## License
 
-Copyright © 2024–2026 Christian Weilbach.
+Copyright © 2026 Christian Weilbach.
 
 Licensed under the Apache License 2.0 (see [LICENSE](LICENSE)).
