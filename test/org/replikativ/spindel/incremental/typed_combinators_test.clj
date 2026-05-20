@@ -127,8 +127,8 @@
             ;; shape. iflat-map's OUTPUT is the typed seq-diff, which
             ;; is what we then exercise via apply-deltas below.
             r (tc/iflat-map* loc body (iv/->Interval [:a :b]
-                                                    [:a :x :b]
-                                                    [{:delta :add :value :x}]))]
+                                                     [:a :x :b]
+                                                     [{:delta :add :value :x}]))]
         (is (= [:a :a :x :x :b :b] (iv/get-new r)))
         (let [delta (iv/get-deltas r)]
           (is (some? delta) "should produce a real diff via state-diff")
@@ -176,5 +176,5 @@
                         d (iv/get-deltas r)]
                     (or (nil? d)
                         (= (iv/get-new r) (a/apply-deltas sa/sequence-algebra
-                                                         (iv/get-old r)
-                                                         d)))))))
+                                                          (iv/get-old r)
+                                                          d)))))))
