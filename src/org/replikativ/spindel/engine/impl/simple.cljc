@@ -1529,17 +1529,17 @@
                          (if existing-node
           ;; Re-registration: the (spin …) form was re-evaluated by a
           ;; re-running enclosing scope → a fresh closure. Mark the node
-          ;; dirty — so the fresh cps-fn runs instead of await/deref
-          ;; serving the stale cached result — but ONLY when the captured
-          ;; environment actually changed (identical?-compared). When no
-          ;; capture info was supplied (a non-macro spin: new-caps nil)
-          ;; fall back to dirtying unconditionally. :result is kept as the
-          ;; previous value (needed for value-change diffing).
+          ;; dirty so the fresh cps-fn runs instead of await/deref serving
+          ;; the stale cached result. A :resource spin (effectful, not
+          ;; B-cacheable) is always re-run on re-registration; a
+          ;; :computation spin only when its captured environment actually
+          ;; changed (identical?-compared). :result is kept as the previous
+          ;; value (for value-change diffing).
                            (let [base (assoc existing-node
                                              :created-by creator-id
                                              :captured-locals new-caps
                                              :kind kind)]
-                             (if (or (nil? new-caps)
+                             (if (or (= kind :resource)
                                      (captures-changed? (:captured-locals existing-node)
                                                         new-caps))
                                (-> base (assoc :completed? false) (nodes/mark-dirty))
