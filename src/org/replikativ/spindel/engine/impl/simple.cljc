@@ -1524,7 +1524,8 @@
     ;; Create or update SpinNode in :nodes
     (rtp/swap-state! context [:nodes spin-id]
                      (fn [existing-node]
-                       (let [new-caps (:captured-locals spin-meta)]
+                       (let [new-caps (:captured-locals spin-meta)
+                             kind     (:kind spin-meta)]
                          (if existing-node
           ;; Re-registration: the (spin …) form was re-evaluated by a
           ;; re-running enclosing scope → a fresh closure. Mark the node
@@ -1536,7 +1537,8 @@
           ;; previous value (needed for value-change diffing).
                            (let [base (assoc existing-node
                                              :created-by creator-id
-                                             :captured-locals new-caps)]
+                                             :captured-locals new-caps
+                                             :kind kind)]
                              (if (or (nil? new-caps)
                                      (captures-changed? (:captured-locals existing-node)
                                                         new-caps))
@@ -1544,7 +1546,8 @@
                                base))
           ;; First registration: new node, record the captured environment.
                            (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
-                                  :captured-locals new-caps)))))
+                                  :captured-locals new-caps
+                                  :kind kind)))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
     ;; created-spins set. Self-add could occur on CLJS if a stale async

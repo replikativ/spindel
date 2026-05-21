@@ -180,7 +180,9 @@
                      observers           ; Set of observer node IDs
                      deps                ; {:signals #{...} :spins #{...}}
                      created-by          ; spin-id that created this spin (nil for top-level)
-                     created-spins]      ; Set of spin-ids created during this spin's execution
+                     created-spins        ; Set of spin-ids created during this spin's execution
+                     kind]                ; :computation (deterministic id, replayable, B-gated)
+                                          ; | :resource (gensym id, effectful one-shot body)
 
   PNode
   (node-type [_] :spin)
@@ -259,4 +261,8 @@
                           {:signals #{} :spins #{}})]
     (->SpinNode result status completed? running? observers
                 normalized-deps
-                created-by (or created-spins #{}))))
+                created-by (or created-spins #{})
+                ;; :kind defaults to :computation here; make-spin and
+                ;; register-spin! set the real kind on the node. The other
+                ;; ->spin-node call sites build transient/default nodes.
+                :computation)))
