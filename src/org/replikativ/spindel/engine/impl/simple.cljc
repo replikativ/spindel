@@ -1512,8 +1512,15 @@
     (rtp/swap-state! context [:nodes spin-id]
                      (fn [existing-node]
                        (if existing-node
-          ;; Spin already exists - update created-by (closure may have changed)
-                         (assoc existing-node :created-by creator-id)
+          ;; Re-registration: the (spin …) form was re-evaluated by a
+          ;; re-running enclosing scope → a fresh closure with possibly
+          ;; fresh captures. Mark the node dirty so the fresh cps-fn
+          ;; actually runs, instead of `await`/`deref` serving the stale
+          ;; cached result computed by the previous closure. :result is
+          ;; kept as the previous value (needed for value-change diffing).
+                         (-> existing-node
+                             (assoc :created-by creator-id :completed? false)
+                             (nodes/mark-dirty))
           ;; Create new SpinNode with creator tracking
                          (nodes/->spin-node nil :clean false false #{} {} creator-id #{}))))
 
