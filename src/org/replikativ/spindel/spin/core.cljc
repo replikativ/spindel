@@ -453,7 +453,7 @@
      ;; invocation in effects/await.cljc), giving spins closure semantics
      ;; over the scope they were constructed under. Continuation resumes
      ;; instead restore the suspend-time scope via the cont's
-     ;; `:ctx-bindings`. Which keys count as scope is
+     ;; `:slice-state` snapshot. Which keys count as scope is
      ;; supplied entirely by the registry — e.g. dom.addressing registers
      ;; :dom/parent-addr / :dom/current-slot — so spin/core stays domain-
      ;; agnostic. Spins constructed at root scope capture nothing, so this

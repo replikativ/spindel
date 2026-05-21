@@ -3,19 +3,21 @@
 
   Scenario: a spin body has N sequential `(track ...)` calls. When the K-th
   signal changes, the engine resumes from cont K. The pre-fix code captured
-  cont K's `:tracking-snap` BEFORE adding signal K to the spin's transient
-  tracking — so on resume, the restored snap was missing signal K. The body
-  slice continued from AFTER `(track signal-K)`, so the body never re-tracked
-  signal K. `record-deps!` then committed deps without signal K, leaving the
-  signal with no observer. Future changes of signal K were silently dropped.
+  cont K's tracking snapshot (`:slice-state :tracking`) BEFORE adding signal
+  K to the spin's transient tracking — so on resume, the restored snap was
+  missing signal K. The body slice continued from AFTER `(track signal-K)`,
+  so the body never re-tracked signal K. `record-deps!` then committed deps
+  without signal K, leaving the signal with no observer. Future changes of
+  signal K were silently dropped.
 
   User-visible symptom: a tracked signal loses reactivity after the first
   re-render — downstream consumers see no further updates until a full
   re-render is forced.
 
-  The fix in `effects/track.cljc` constructs `:tracking-snap` by explicitly
-  conj-ing the current signal-id onto the base snapshot, regardless of when
-  the underlying `deps-track-signal!` write becomes visible."
+  The fix in `effects/track.cljc` constructs the tracking snapshot by
+  explicitly conj-ing the current signal-id onto the base snapshot,
+  regardless of when the underlying `deps-track-signal!` write becomes
+  visible."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]

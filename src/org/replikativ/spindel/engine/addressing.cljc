@@ -30,8 +30,8 @@
      fork/snapshot semantics of the rest of the runtime for free, and
      (c) no CLJS-specific dynamic-var leak surface exists. At body
      entry the engine seeds the slot via `set-chain-head!` and at
-     suspend the cont-map records the cursor value
-     (`:chain-head-snap`) so the engine can restore it at resume.
+     suspend the cont-map records the cursor value (under
+     `:slice-state :chain-head`) so the engine can restore it at resume.
 
      Per-spin scoping has two consequences that solve real bugs:
 

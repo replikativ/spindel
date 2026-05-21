@@ -292,6 +292,40 @@
   (rtp/swap-state! context [:nodes spin-id]
                    (fn [node] (when node (assoc node :created-spins #{})))))
 
+(defn- restore-slice-state!
+  "Restore a continuation's per-slice `:slice-state` snapshot so the
+  resumed body slice continues consistently with where it suspended.
+
+  Every continuation (track + await) carries `:slice-state`
+  `{:bindings … :chain-head … :tracking …}` — captured at the
+  track/await suspend point (see effects/track.cljc and
+  effects/await.cljc). This puts each piece back:
+
+  - `:tracking` — restored into `[:spin-tracking spin-id]` so the body's
+    accumulated dep tracking continues from the pre-suspend accumulator
+    rather than empty (which would make record-deps! tear down deps the
+    pre-suspend slice had registered).
+
+  - `:chain-head` — seeded into the per-spin addressing chain-head slot
+    so any `(spin …)` / `(effect …)` in the post-resume slice mint the
+    same ids as on the first run. Falls back to the body-start value
+    when no snapshot was captured.
+
+  - `:bindings` — merged onto the current context bindings (snapshot
+    wins) and returned as a NEW context. The other two are state
+    mutations; this one is a value the caller must `binding`.
+
+  Returns the context with `:slice-state`'s `:bindings` merged in."
+  [context spin-id cont]
+  (let [{:keys [bindings chain-head tracking]} (:slice-state cont)]
+    (when tracking
+      (rtp/swap-state! context [:spin-tracking spin-id] (constantly tracking)))
+    (addressing/seed-chain-head! context spin-id
+                                 (or chain-head
+                                     (addressing/body-start-chain-head spin-id)))
+    (cond-> context
+      bindings (update :bindings merge bindings))))
+
 (defn- resume-single-observer!
   "Resume a single observer's track continuation during Phase 1 of signal-change.
 
@@ -353,37 +387,11 @@
   ;; environment changed (B) — no blanket invalidation needed.
   (clear-created-spins! context spin-id)
 
-  ;; Restore the parent's transient deps tracking from the snapshot captured
-  ;; at suspend time. Without this, the body slice that resumes after the
-  ;; track point starts with empty tracking — the deps it accumulated in the
-  ;; pre-suspend slice are gone. record-deps! at body completion would then
-  ;; commit only the post-resume deps and tear down observer relations for
-  ;; everything tracked in the pre-suspend slice (e.g. nav-spin in a body
-  ;; that awaited nav-spin then columns-spin, resuming from the cols await).
-  (when-let [snap (:tracking-snap cont)]
-    (rtp/swap-state! context [:spin-tracking spin-id] (constantly snap)))
-
-  ;; Resume with the bindings that were active at suspend time. The cont's
-  ;; :ctx-bindings is a snapshot of (:bindings ctx) at the suspension point,
-  ;; so it already carries whatever scope the body had pushed (DOM
-  ;; parent-addr, slot, keys, etc.). Merge with current context bindings to
-  ;; pick up any persistent additions (e.g. middleware-set values) that
-  ;; arrived between suspend and resume; cont values win where they overlap.
-  ;;
-  ;; The per-spin chain-head slot is seeded with the cont's
-  ;; `:chain-head-snap` (the cursor value captured at suspend) so the
-  ;; post-resume slice mints `(spin …)` / `(effect …)` ids deterministically
-  ;; continuing from where the pre-suspend slice left off. The cursor
-  ;; lives in ctx state under `:addressing :chain-heads` — see
-  ;; addressing.cljc — so no dynamic-var capture/restore is needed.
-  (let [ctx-bindings (:ctx-bindings cont)
-        merged-bindings (if ctx-bindings
-                          (merge (:bindings context) ctx-bindings)
-                          (:bindings context))
-        ctx-with-bindings (assoc context :bindings merged-bindings)
-        chain-head-start (or (:chain-head-snap cont)
-                             (addressing/body-start-chain-head spin-id))]
-    (addressing/seed-chain-head! context spin-id chain-head-start)
+  ;; Restore the cont's per-slice snapshot — deps tracking, addressing
+  ;; chain-head, context bindings — so the post-resume body slice
+  ;; continues consistently with where it suspended. See
+  ;; restore-slice-state! for what each piece is for.
+  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
@@ -442,22 +450,11 @@
   ;; Reset :created-spins for this body slice (see resume-single-observer!).
   (clear-created-spins! context spin-id)
 
-  ;; Restore tracking snapshot from the suspension point so the body's
-  ;; deps tracking continues from there rather than restarting empty.
-  ;; See resume-single-observer! for the rationale.
-  (when-let [snap (:tracking-snap cont)]
-    (rtp/swap-state! context [:spin-tracking spin-id] (constantly snap)))
-
-  ;; Resume continuation with current signal value. cont's :ctx-bindings is
-  ;; the suspend-time scope, merged onto current context bindings so any
-  ;; intervening persistent additions are kept.
-  ;; See resume-single-observer! for the chain-head slot seeding rationale.
-  (let [ctx-bindings (:ctx-bindings cont)
-        ctx-with-bindings (cond-> context
-                            ctx-bindings  (update :bindings merge ctx-bindings))
-        chain-head-start (or (:chain-head-snap cont)
-                             (addressing/body-start-chain-head spin-id))]
-    (addressing/seed-chain-head! context spin-id chain-head-start)
+  ;; Restore the cont's per-slice snapshot — deps tracking, addressing
+  ;; chain-head, context bindings — so the post-resume body slice
+  ;; continues consistently with where it suspended. See
+  ;; restore-slice-state! for the rationale.
+  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
@@ -678,22 +675,10 @@
                   (swap! (:resumed-conts batch) conj dedup-key))
                 (log/debug :engine/resuming-await-continuation {:parent-id parent-id :cont-id cont-id :child-id tid
                                                                 :generation generation})
-                ;; Restore the parent's transient deps tracking captured at the
-                ;; await suspend point. See resume-single-observer! for rationale.
-                (when-let [snap (:tracking-snap cont)]
-                  (rtp/swap-state! context [:spin-tracking parent-id] (constantly snap)))
-                ;; Resume with the suspend-time bindings (cont's :ctx-bindings).
-                ;; Await continuations now carry :ctx-bindings — a snapshot of
-                ;; (:bindings ctx) at the await-suspend point, exactly as track
-                ;; continuations do — so merging it back restores the resuming
-                ;; spin's full context scope (including its construction scope).
-                ;; See resume-single-observer! for the chain-head atom rationale.
-                (let [ctx-bindings (:ctx-bindings cont)
-                      ctx-for-resume (cond-> context
-                                       ctx-bindings (update :bindings merge ctx-bindings))
-                      chain-head-start (or (:chain-head-snap cont)
-                                           (addressing/body-start-chain-head parent-id))]
-                  (addressing/seed-chain-head! context parent-id chain-head-start)
+                ;; Restore the cont's per-slice snapshot — deps tracking,
+                ;; addressing chain-head, context bindings — captured at the
+                ;; await suspend point. See restore-slice-state! for rationale.
+                (let [ctx-for-resume (restore-slice-state! context parent-id cont)]
                   (binding [ec/*execution-context* ctx-for-resume
                             ec/*spin-id* parent-id
                             pcps-async/*in-trampoline* false]
