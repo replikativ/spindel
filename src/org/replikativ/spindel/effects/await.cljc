@@ -116,9 +116,20 @@
    :source-loc source-loc
    :slice-state slice-state
    :awaited-spin awaited-spin
+   ;; await is monadic: `:on-resume` fetches the awaited child's cached
+   ;; `Result`, and `:resume-fn` routes it to this cont's `:resolve-fn`
+   ;; (on :ok) or `:reject-fn` (on :error). The engine's unified
+   ;; `resume-body!` calls this `:resume-fn` rather than its track
+   ;; default — track passes a signal value straight through, await
+   ;; pattern-matches a result. Reading `:variant` (rather than
+   ;; `spin-core/match`) keeps a nil/absent result routing harmlessly
+   ;; to reject instead of throwing `No protocol method PResult.match`.
    :on-resume (fn [_rt]
-                (let [res (ec/spin-current-result awaited-spin-id)]
-                  (spin-core/match res identity identity)))})
+                (ec/spin-current-result awaited-spin-id))
+   :resume-fn (fn [child-result]
+                (if (= (:variant child-result) :ok)
+                  (pcps-async/invoke-continuation resolve (:payload child-result))
+                  (pcps-async/invoke-continuation reject (:payload child-result))))})
 
 (defn- await-spin
   "Direct await handler for Spin.
