@@ -598,12 +598,13 @@
   :rng, app config. This is analogous to how Clojure's dynamic vars (*out*,
   *print-length*, ...) carry per-thread config.
 
-  A key can also be registered as **ephemeral** via
-  engine.bindings/register-ephemeral-binding-key!. Ephemeral keys represent
-  per-render-pass scope: they're cleared when a track continuation resumes
-  (start of a new render pass) but preserved when an await continuation
-  resumes (mid-body, same pass). DOM addressing (:dom/parent-addr,
-  :dom/current-slot) uses this.
+  A key can also be registered as a **spin scope key** via
+  engine.bindings/register-spin-scope-key!. Spin scope keys represent a
+  spin's lexical construction scope: `make-spin` snapshots them onto the
+  spin's node and the engine re-establishes them on every body-entry path
+  (initial run, track resume, await resume). DOM addressing
+  (:dom/parent-addr, :dom/current-slot) uses this so element addresses stay
+  stable across re-renders.
 
   Returns map of keys to values."
   [ctx]
@@ -663,9 +664,9 @@
 
   Also:
   - Resets engine draining flag.
-  - Drops :dom/cache and :dom/attr-cache, since slot/attribute reconciliation
-    state belongs to the previous render pass and would mismatch the DOM the
-    restored context renders into.
+  - Drops :dom/cache, :dom/attr-cache and :dom/keyed-cache, since slot,
+    attribute and keyed-list reconciliation state belongs to the previous
+    render pass and would mismatch the DOM the restored context renders into.
 
   NOTE: Continuations are preserved for in-memory snapshot/restore.
   They will be dropped during serialization (since closures can't be serialized).
@@ -680,7 +681,7 @@
       (assoc :engine/draining? false)
 
       ;; Drop render-pass-specific DOM caches; restored context re-renders.
-      (dissoc :dom/cache :dom/attr-cache)
+      (dissoc :dom/cache :dom/attr-cache :dom/keyed-cache)
 
       ;; Mark in-flight spins as dirty
       (update :nodes

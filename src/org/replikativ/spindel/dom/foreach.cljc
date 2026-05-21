@@ -55,11 +55,11 @@
      was already correct, and dropping the incremental branch shrinks
      this file from ~680 to ~250 LOC."
   (:refer-clojure :exclude [await])
-  (:require [clojure.set :as set]
-            [org.replikativ.spindel.dom.fragment :as frag]
+  (:require [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as d]
+            [org.replikativ.spindel.incremental.sequence-algebra :as sa]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]])
@@ -142,114 +142,27 @@
   (ec/swap-state! [:dom/keyed-cache addr] (constantly cache-data)))
 
 ;; =============================================================================
-;; Delta derivation — build a SequenceAlgebra diff from prev/new state
+;; Delta derivation — package the keyed SequenceAlgebra diff for discharge
 ;; =============================================================================
 
 (defn- build-seq-diff
-  "Build a SequenceAlgebra diff describing how to transform the prev
-   vnode list (in `prev-order`) into the new vnode list (in `order`).
+  "Build the discharge-layer `:seq-diff` delta for the fragment.
 
-   Returns either a single `:seq-diff` delta (in a wrapping vector) or
-   `nil` when nothing changed.
+   The keyed-sequence diff itself is computed by the incremental layer
+   (`sequence-algebra/keyed-seq-diff`) — identity is the item key, and
+   per-key change is detected with structural vnode equality. This
+   function only packages the resulting SequenceAlgebra diff as the
+   `:seq-diff` delta the discharge tree-walk consumes, attaching
+   `:prev-items` (the previous vnodes in DOM order) that `apply-seq-diff!`
+   needs.
 
-   Construction
-   ------------
-   Let n_old = (count prev-order), n_new = (count order).
-
-   - removed = prev keys absent from new
-   - added   = new keys absent from prev
-   - common  = intersection (whether or not their relative order
-               changes; the permutation handles reordering)
-
-   Layout in working space [0, n_old + grow):
-   - [0, n_old): the prev items at their original positions
-   - [n_old, n_old + grow): the appended grown slots (one per added key)
-
-   The permutation π sends:
-   - each surviving key from old-pos(k) to new-pos(k)
-   - each removed key from old-pos(k) to a doomed tail slot in
-     [n_new, n_new + shrink) — these are dropped by the shrink phase
-   - each added key from a grown slot in [n_old, n_old + grow) to its
-     new-pos(k)
-
-   :change covers two cases at new positions:
-   - added keys must populate their grown slots (which started as nil)
-   - surviving keys whose vnode value changed (vnode-value-equal? is
-     false) get their slot replaced (or reconciled in place if
-     tag+key+addr match; discharge decides)
-
-   Surviving keys whose vnode value is structurally equal contribute
-   *no* `:change` entry — the DOM element survives untouched."
+   Returns the delta in a wrapping vector, or nil when nothing changed."
   [order prev-order by-key prev-by-key]
-  (let [n-old (count prev-order)
-        n-new (count order)
-        old-keys (set prev-order)
-        new-keys (set order)
-        added (set/difference new-keys old-keys)
-        removed (set/difference old-keys new-keys)
-        shrink (count removed)
-        grow (count added)
-        degree (+ n-old grow)
-        old-pos (zipmap prev-order (range))
-        new-pos (zipmap order (range))
-        ;; Iterate added in `order` so the grown slots are assigned in
-        ;; the order they appear in the new sequence. This isn't
-        ;; required for correctness, but makes diffs deterministic and
-        ;; easier to inspect in logs.
-        added-in-order (filterv added order)
-        removed-in-order (filterv removed prev-order)
-        ;; Build the permutation.
-        permutation
-        (as-> {} π
-          ;; Surviving keys: old-pos(k) → new-pos(k).
-          (reduce (fn [acc k]
-                    (if (contains? removed k)
-                      acc
-                      (let [from (old-pos k)
-                            to (new-pos k)]
-                        (if (= from to) acc (assoc acc from to)))))
-                  π prev-order)
-          ;; Removed keys: send to doomed tail [n_new, n_new + shrink).
-          (first
-           (reduce (fn [[acc i] k]
-                     [(assoc acc (old-pos k) (+ n-new i))
-                      (inc i)])
-                   [π 0]
-                   removed-in-order))
-          ;; Added keys: grown slot [n_old, n_old + grow) → new-pos(k).
-          (first
-           (reduce (fn [[acc i] k]
-                     [(let [from (+ n-old i)
-                            to (new-pos k)]
-                        (if (= from to) acc (assoc acc from to)))
-                      (inc i)])
-                   [π 0]
-                   added-in-order)))
-        ;; Build :change in post-shrink space [0, n_new).
-        change (persistent!
-                (reduce (fn [acc k]
-                          (let [new-vn (get by-key k)]
-                            (cond
-                              (contains? added k)
-                              (assoc! acc (new-pos k) new-vn)
-
-                              (not (vnode-value-equal?
-                                    (get prev-by-key k) new-vn))
-                              (assoc! acc (new-pos k) new-vn)
-
-                              :else acc)))
-                        (transient {}) order))]
-    (if (and (zero? grow) (zero? shrink)
-             (empty? permutation) (empty? change))
-      nil
-      [{:delta :seq-diff
-        :diff {:degree degree
-               :grow grow
-               :shrink shrink
-               :permutation permutation
-               :change change
-               :freeze #{}}
-        :prev-items (mapv #(get prev-by-key %) prev-order)}])))
+  (when-let [diff (sa/keyed-seq-diff order prev-order by-key prev-by-key
+                                     vnode-value-equal?)]
+    [{:delta :seq-diff
+      :diff diff
+      :prev-items (mapv #(get prev-by-key %) prev-order)}]))
 
 ;; =============================================================================
 ;; Fragment build (sync and async paths)

@@ -228,7 +228,14 @@
 (defn ^:no-doc for-each*
   "Apply `transform-fn` to every element of the source sequence,
    memoising results by `key-fn`. Input-equal items at the same key
-   reuse the prior `transform-fn` output. Output algebra: sequence."
+   reuse the prior `transform-fn` output. Output algebra: sequence.
+
+   Note: `key-fn` is used for memoisation only. The output `:deltas`
+   come from `state-diff` on the transformed vectors — a *value-based*
+   sequence diff that does not recognise reorders (a reorder degrades to
+   change-everything). A consumer that needs a reorder-aware keyed diff
+   should use `sequence-algebra/keyed-seq-diff` — which is what the DOM
+   `dom/foreach` layer does."
   [source-loc key-fn transform-fn source]
   (with-cache source-loc
     (fn [prev]

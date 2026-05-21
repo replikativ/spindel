@@ -15,7 +15,7 @@
 
   **CPS-Aware Design:**
 
-  The context binding helpers (with-parent-addr, with-slot, with-keyed-context)
+  The context binding helpers (with-parent-addr, with-slot, with-dom-context)
   are MACROS that expand to `binding` forms. This is critical for CPS/await
   support in element children:
 
@@ -34,15 +34,18 @@
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.addressing])))
 
 ;; =============================================================================
-;; Ephemeral key registration
+;; Spin scope key registration
 ;; =============================================================================
 ;;
-;; DOM parent-addr and current-slot are per-render-pass scope. They must be
-;; cleared when a track continuation resumes (= start of a new render pass),
-;; but preserved across await resumes (= resuming mid-body in the same pass).
+;; :dom/parent-addr and :dom/current-slot are lexical scope for element
+;; addressing — set by element macros around the point a spin is created.
+;; A spin's body must address its elements under that same scope on every
+;; re-run. Registering them as spin-scope keys (see engine.bindings) makes
+;; the engine snapshot them at spin construction and re-establish them on
+;; every body-entry path — without the engine ever naming a :dom/* key.
 
-(bindings/register-ephemeral-binding-key! :dom/parent-addr)
-(bindings/register-ephemeral-binding-key! :dom/current-slot)
+(bindings/register-spin-scope-key! :dom/parent-addr)
+(bindings/register-spin-scope-key! :dom/current-slot)
 
 ;; =============================================================================
 ;; Tree Address Computation
@@ -68,14 +71,24 @@
     (keyword (str "el-" uuid))))
 
 (defn keyed-child-address
-  "Compute address for a keyed child (inside ifor-each).
+  "Compute address for a keyed child.
 
-  Uses the item's key instead of slot index for stable identity
-  across reorderings.
+  Uses the item's key instead of slot index, so identity is stable
+  across reorderings of the surrounding collection.
+
+  Two callers, two roles:
+  - `dom/foreach`'s `for-each*` passes the `ifor-each`'s own (stable)
+    address as `parent-addr` plus the item key — giving each item true
+    position-independent identity.
+  - `build-element` passes the element's own structural `my-addr` for a
+    keyed element — there the key only disambiguates multiple keyed
+    elements at the same source location (e.g. siblings from a `map`); it
+    does NOT confer position-independent identity, since `my-addr` itself
+    depends on slot. Position-independent identity is `ifor-each`'s job.
 
   Args:
-    parent-addr - Parent element's address (the ifor-each's address)
-    item-key - The key extracted from the item (via key-fn)
+    parent-addr - Address to scope the key under (see above)
+    item-key    - The key extracted from the item (via key-fn)
 
   Returns: Keyword address"
   [parent-addr item-key]
@@ -145,17 +158,6 @@
         (with-slot ~slot-index
           ~@body))))
 
-#?(:clj
-   (defmacro with-keyed-context
-     "Execute body with keyed child context (for ifor-each items).
-
-     Sets parent-addr to the keyed address and slot to 0
-     (keyed children typically have single root element)."
-     [parent-addr item-key & body]
-     `(let [keyed-addr# (keyed-child-address ~parent-addr ~item-key)]
-        (with-dom-context keyed-addr# 0
-          ~@body))))
-
 ;; =============================================================================
 ;; Function Versions (for programmatic/runtime use)
 ;; =============================================================================
@@ -185,10 +187,10 @@
     (thunk)))
 
 (defn with-keyed-context-fn
-  "Function version of with-keyed-context for runtime/programmatic use.
+  "Execute `thunk` with keyed child context — used for ifor-each items.
 
-  Executes thunk with keyed child context. Use the macro version in element
-  macros for CPS/await support.
+  Sets :dom/parent-addr to (keyed-child-address parent-addr item-key) and
+  :dom/current-slot to 0 (a keyed child is a single root element).
 
   In addition to the DOM bindings, this also forks the addressing chain-head
   by hashing the item-key into it for the duration of the thunk. That makes

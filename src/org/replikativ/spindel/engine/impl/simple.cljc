@@ -500,6 +500,27 @@
                 (recur (first grandparents) (conj visited current))
                 current))))))))
 
+(defn- apply-spin-scope
+  "Merge spin `sid`'s captured scope onto `ctx`'s bindings.
+
+  `make-spin` (spin/core.cljc) snapshots the registered spin-scope binding
+  keys (see engine.bindings) at construction into `[:nodes sid :spin-scope]`.
+  That scope is intrinsic to the spin and must be re-established on EVERY
+  body-entry path so the body addresses and behaves consistently no matter
+  which engine path runs it.
+
+  Track-continuation resumes happen to restore it via the cont's
+  `:ctx-bindings` snapshot, but await-continuation resumes carry no
+  `:ctx-bindings` — so without this an awaiting spin (e.g. a keyed
+  `ifor-each` item-spin re-running because its awaited child re-completed)
+  would lose its construction scope, drifting any scope-derived addressing
+  and breaking discharge reconciliation."
+  [ctx sid]
+  (let [spin-scope (rtp/get-state ctx [:nodes sid :spin-scope])]
+    (if (seq spin-scope)
+      (update ctx :bindings merge spin-scope)
+      ctx)))
+
 (defn process-event!
   "Process a single event.
 
@@ -676,8 +697,15 @@
                 ;; merged onto the current context bindings.
                 ;; See resume-single-observer! for the chain-head atom rationale.
                 (let [ctx-bindings (:ctx-bindings cont)
-                      ctx-for-resume (cond-> context
-                                       ctx-bindings (update :bindings merge ctx-bindings))
+                      ctx-for-resume (-> (cond-> context
+                                           ctx-bindings (update :bindings merge ctx-bindings))
+                                         ;; Re-apply the resuming spin's intrinsic
+                                         ;; scope. Await continuations carry no
+                                         ;; :ctx-bindings, so this is the only thing
+                                         ;; that restores construction scope for a
+                                         ;; spin that re-runs because its awaited
+                                         ;; child re-completed.
+                                         (apply-spin-scope parent-id))
                       chain-head-start (or (:chain-head-snap cont)
                                            (addressing/body-start-chain-head parent-id))]
                   (addressing/seed-chain-head! context parent-id chain-head-start)
@@ -766,15 +794,16 @@
         ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
         ;; This ensures invoke-continuation establishes a new trampoline loop
         ;; If execution-context is provided (e.g., from SMC), bind it; otherwise use context
-        ;; Apply this spin's captured DOM scope (see make-spin in spin/core.cljc)
+        ;; Apply this spin's captured scope (see make-spin in spin/core.cljc)
         ;; on top of the chosen context's bindings, so the body's initial
         ;; synchronous code (before any track/await) sees the spin's lexical
-        ;; DOM scope. Without this, only continuation resumes restore scope —
-        ;; elements built before the first effect would use runtime bindings.
+        ;; construction scope. Without this, only continuation resumes restore
+        ;; scope — elements built before the first effect would use runtime
+        ;; bindings.
         (let [base-ctx (or execution-context context)
-              spin-dom-scope (rtp/get-state context [:nodes tid :dom-scope])
-              effective-ctx (if (seq spin-dom-scope)
-                              (update base-ctx :bindings merge spin-dom-scope)
+              spin-scope (rtp/get-state context [:nodes tid :spin-scope])
+              effective-ctx (if (seq spin-scope)
+                              (update base-ctx :bindings merge spin-scope)
                               base-ctx)]
           (binding [ec/*execution-context* effective-ctx
                     ec/*spin-id* tid

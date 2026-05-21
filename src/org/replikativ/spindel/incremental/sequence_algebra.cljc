@@ -271,6 +271,119 @@
       (naive-state-diff a b))))
 
 ;; =============================================================================
+;; Keyed state diff
+;;
+;; `linear-state-diff` matches elements by *value* (longest common
+;; prefix/suffix). That is the right diff when elements have no identity
+;; of their own — but when each element carries a stable key, a value-
+;; based diff cannot recognise a reorder (it degrades to change-everything)
+;; and cannot tell an unchanged-but-moved element from a replaced one.
+;;
+;; `keyed-seq-diff` diffs two *keyed* sequences: the caller supplies the
+;; key order of each state plus key→value maps. Identity is the key;
+;; `eq-fn` decides, for a key present in both states, whether its value
+;; changed. The result is the same SequenceAlgebra diff record the other
+;; state-diffs produce, so it flows through `apply-deltas` /
+;; `compose-deltas` / discharge unchanged.
+;; =============================================================================
+
+(defn keyed-seq-diff
+  "Compute a SequenceAlgebra diff between two *keyed* sequences.
+
+  Where `linear-state-diff` matches elements by value, `keyed-seq-diff`
+  matches by key: it recognises reorders as permutations and emits a
+  `:change` only for a surviving key whose value actually changed.
+
+  Args:
+    order        - vector of keys in the new state's order
+    prev-order   - vector of keys in the previous state's order
+    by-key       - map {key -> new value}
+    prev-by-key  - map {key -> previous value}
+    eq-fn        - (eq-fn prev-value new-value) -> truthy when a key
+                   present in both states did NOT change. Keys whose
+                   values differ get a `:change` entry. Callers pass the
+                   equality appropriate to their element type (e.g.
+                   structural vnode equality for DOM).
+
+  Returns the 5-field SequenceAlgebra diff map, or nil when nothing
+  changed.
+
+  Working space [0, n-old + grow):
+   - [0, n-old):            previous items at their original positions
+   - [n-old, n-old + grow): appended grown slots, one per added key
+  The permutation sends each surviving key old-pos -> new-pos, each
+  removed key to a doomed tail slot in [n-new, n-new + shrink) (dropped
+  by :shrink), and each added key from its grown slot to its new-pos.
+  :change populates the added keys' grown slots and replaces surviving
+  keys whose value changed."
+  [order prev-order by-key prev-by-key eq-fn]
+  (let [n-old (count prev-order)
+        n-new (count order)
+        old-keys (set prev-order)
+        new-keys (set order)
+        added (set/difference new-keys old-keys)
+        removed (set/difference old-keys new-keys)
+        shrink (count removed)
+        grow (count added)
+        degree (+ n-old grow)
+        old-pos (zipmap prev-order (range))
+        new-pos (zipmap order (range))
+        ;; Iterate added in `order` so grown slots are assigned in the
+        ;; order they appear in the new sequence — not required for
+        ;; correctness, but makes diffs deterministic and log-friendly.
+        added-in-order (filterv added order)
+        removed-in-order (filterv removed prev-order)
+        permutation
+        (as-> {} π
+          ;; Surviving keys: old-pos(k) -> new-pos(k).
+          (reduce (fn [acc k]
+                    (if (contains? removed k)
+                      acc
+                      (let [from (old-pos k)
+                            to (new-pos k)]
+                        (if (= from to) acc (assoc acc from to)))))
+                  π prev-order)
+          ;; Removed keys: send to the doomed tail [n-new, n-new + shrink).
+          (first
+           (reduce (fn [[acc i] k]
+                     [(assoc acc (old-pos k) (+ n-new i))
+                      (inc i)])
+                   [π 0]
+                   removed-in-order))
+          ;; Added keys: grown slot [n-old, n-old + grow) -> new-pos(k).
+          (first
+           (reduce (fn [[acc i] k]
+                     [(let [from (+ n-old i)
+                            to (new-pos k)]
+                        (if (= from to) acc (assoc acc from to)))
+                      (inc i)])
+                   [π 0]
+                   added-in-order)))
+        ;; :change in post-shrink space [0, n-new): added keys populate
+        ;; their grown slots; surviving keys whose value changed get
+        ;; replaced. Surviving, value-equal keys contribute nothing.
+        change (persistent!
+                (reduce (fn [acc k]
+                          (let [new-v (get by-key k)]
+                            (cond
+                              (contains? added k)
+                              (assoc! acc (new-pos k) new-v)
+
+                              (not (eq-fn (get prev-by-key k) new-v))
+                              (assoc! acc (new-pos k) new-v)
+
+                              :else acc)))
+                        (transient {}) order))]
+    (when-not (and (zero? grow) (zero? shrink)
+                   (empty? permutation) (empty? change))
+      {:degree degree
+       :grow grow
+       :shrink shrink
+       :permutation permutation
+       :change change
+       :freeze #{}})))
+
+;; =============================================================================
 ;; Algebra instance
 ;; =============================================================================
 

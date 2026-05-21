@@ -17,41 +17,48 @@
   frame on the stack, and frames are properly cleaned up in LIFO order.")
 
 ;; =============================================================================
-;; Ephemeral Binding Keys
+;; Spin Scope Keys
 ;; =============================================================================
 ;;
 ;; The ExecutionContext's :bindings map carries fork-scoped values that
 ;; propagate to child spins and continuations (see engine.context). Most
 ;; entries are persistent — set at context/fork creation, inherited across
-;; every continuation resume.
+;; every continuation resume, never per-spin.
 ;;
-;; A few entries represent *per-render-pass* scope: values set by element
-;; macros (e.g. :dom/parent-addr, :dom/current-slot) that should NOT survive
-;; across a track continuation resume, because a track resume marks the start
-;; of a new render pass where the surrounding scope re-establishes them.
-;; They SHOULD survive await resumes, since those resume mid-body within
-;; the same render pass.
+;; A few entries instead represent a *spin's lexical scope*: values set by
+;; an enclosing construct around the point a spin is created (e.g. element
+;; macros set :dom/parent-addr / :dom/current-slot). Such a key must be
+;; re-established whenever the spin's body runs — on EVERY body-entry path —
+;; so the body addresses and behaves consistently no matter which engine
+;; path resumed it. `make-spin` snapshots these keys at construction onto
+;; the spin's node; the engine re-applies the snapshot on every body entry.
 ;;
-;; Libraries that introduce such keys register them here at ns load. The
-;; engine consults the registry when resuming track continuations (see
-;; engine.impl.simple/resume-single-observer!).
+;; Libraries that introduce such keys register them here at ns load. This
+;; registry is the engine's only knowledge of them: the engine itself never
+;; names a :dom/* (or any other domain) key — it just snapshots and restores
+;; whatever was registered.
 
-(defonce ^:private ephemeral-keys-atom (atom #{}))
+(defonce ^:private scope-keys-atom (atom #{}))
 
-(defn register-ephemeral-binding-key!
-  "Register a key in the ExecutionContext's :bindings map as ephemeral.
+(defn register-spin-scope-key!
+  "Register a key of the ExecutionContext's :bindings map as a *spin scope*
+  key.
 
-  Ephemeral keys are cleared when a track continuation resumes (new render
-  pass). Persistent keys survive all continuation resumes, as does every
-  unregistered key."
+  Spin scope keys are snapshotted by `make-spin` at construction and
+  re-established by the engine on every body-entry path (initial run,
+  track resume, await resume). Unregistered keys are not snapshotted —
+  persistent context bindings already flow through unchanged."
   [k]
-  (swap! ephemeral-keys-atom conj k)
+  (swap! scope-keys-atom conj k)
   nil)
 
-(defn ephemeral-binding-keys
-  "Return the current set of registered ephemeral binding keys."
+(defn spin-scope-keys
+  "Return the current set of registered spin scope keys.
+
+  Consumed by `make-spin` (spin/core.cljc) to decide which :bindings
+  entries make up a spin's captured construction scope."
   []
-  @ephemeral-keys-atom)
+  @scope-keys-atom)
 
 ;; =============================================================================
 ;; CLJS Var Registry

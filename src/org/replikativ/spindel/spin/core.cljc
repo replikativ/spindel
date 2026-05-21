@@ -8,6 +8,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.bindings :as bindings]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
@@ -430,21 +431,22 @@
      ;; Register spin with runtime via protocol (uses dynamic *execution-context*)
      (ec/spin-register! spin-id {:provides #{}})
 
-     ;; Snapshot DOM ephemeral bindings (:dom/parent-addr, :dom/current-slot)
-     ;; from the construction-time execution context, and store them on this
-     ;; spin's node. The engine re-applies them on every continuation entry
-     ;; (see resume-single-observer! in engine/impl/simple.cljc). This gives
-     ;; spins closure semantics over their lexical DOM scope: an inner spin
-     ;; constructed under a keyed/scoped context restores that scope on each
-     ;; track/await resume, even though the engine strips ephemeral keys.
-     ;; Root spins (no surrounding element macro at construction) capture an
-     ;; empty scope, so this is a no-op there.
+     ;; Snapshot this spin's lexical scope — the registered spin-scope
+     ;; binding keys (see engine.bindings) — from the construction-time
+     ;; execution context onto the spin's node. The engine re-applies the
+     ;; snapshot on every body-entry path (see apply-spin-scope in
+     ;; engine/impl/simple.cljc), giving spins closure semantics over the
+     ;; scope they were constructed under. Which keys count as scope is
+     ;; supplied entirely by the registry — e.g. dom.addressing registers
+     ;; :dom/parent-addr / :dom/current-slot — so spin/core stays domain-
+     ;; agnostic. Spins constructed at root scope capture nothing, so this
+     ;; is a no-op there.
      (when-let [ctx (ec/current-execution-context)]
-       (let [dom-scope (select-keys (:bindings ctx)
-                                    [:dom/parent-addr :dom/current-slot])]
-         (when (seq dom-scope)
-           (rtp/swap-state! ctx [:nodes spin-id :dom-scope]
-                            (constantly dom-scope)))))
+       (let [spin-scope (select-keys (:bindings ctx)
+                                     (bindings/spin-scope-keys))]
+         (when (seq spin-scope)
+           (rtp/swap-state! ctx [:nodes spin-id :spin-scope]
+                            (constantly spin-scope)))))
 
      ;; Register automatic cleanup when spin is GC'd
      ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
