@@ -163,6 +163,7 @@
             ;; is safe to restore and cannot collide across distinct spins.
             chain-head-snap (addressing/get-chain-head ctx)
             cont {:event-key [:signal signal-id]
+                  :kind :track
                   :resolve-fn resolve
                   :reject-fn reject
                   :source-loc source-loc

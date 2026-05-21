@@ -105,6 +105,9 @@
                                          initial-val (get initial-results j)
                                          captured-bindings (bindings/capture-bindings)
                                          cont-map {:event-key [:spin/complete t-id]
+                                                   ;; Persistent reactive cont — parallel re-fires when a
+                                                   ;; child re-completes; never reaped at generation bounds.
+                                                   :kind :await-reactive
                                                    :resolve-fn (fn [_]
                                                                  ;; Child completed, check if value changed from initial
                                                                  ;; This distinguishes initial completion events (still in queue)

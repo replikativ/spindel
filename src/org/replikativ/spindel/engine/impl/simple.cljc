@@ -1315,9 +1315,7 @@
   cascade cleanup of awaiter/awaitee pairs once both are unreachable."
   [context spin-id]
   (->> (vals (rtp/get-state context [:continuations spin-id]))
-       (some (fn [c]
-               (when-let [[ek-type _] (:event-key c)]
-                 (= ek-type :signal))))))
+       (some (fn [c] (= :track (:kind c))))))
 
 (defn try-gc-cleanup-spin!
   "Called from GC callback. Attempts full cleanup if safe, otherwise marks
@@ -1618,10 +1616,10 @@
 (defn clear-all-await-continuations!
   "Clear ephemeral await continuations from completed spins at generation boundary.
 
-  Only clears continuations marked with :ephemeral-await? true. This preserves
-  persistent reactive continuations (like those from the parallel combinator)
-  while clearing ephemeral await continuations that should not persist across
-  signal-change boundaries.
+  Only clears ephemeral continuations — :kind :await-once and
+  :external-await. Persistent continuations (:kind :track and
+  :await-reactive, e.g. the parallel combinator's) are preserved; they
+  must not be cleared across signal-change boundaries.
 
   Called at generation boundaries to ensure clean separation between generations.
 
@@ -1640,10 +1638,12 @@
         ;; its continuations or it will be orphaned and never resume
         (when (and (:completed? node) (not (:running? node)))
           (let [all-conts (rtp/get-state context [:continuations spin-id])
-                ;; Filter to only EPHEMERAL await continuations (marked with :ephemeral-await? true)
-                ;; This excludes persistent reactive continuations (like parallel's) which should NOT be cleared
+                ;; Filter to ephemeral continuations only — :kind :await-once
+                ;; and :external-await. Persistent kinds (:track and
+                ;; :await-reactive — e.g. parallel's) must NOT be cleared.
                 await-conts (filter (fn [[_k v]]
-                                      (:ephemeral-await? v))
+                                      (contains? #{:await-once :external-await}
+                                                 (:kind v)))
                                     all-conts)]
             (when (seq await-conts)
               (swap! result update :spins-affected inc)

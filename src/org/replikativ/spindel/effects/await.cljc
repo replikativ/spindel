@@ -54,7 +54,7 @@
 (defn- spin-await-cont-map
   "Build the continuation map for a parent awaiting a child Spin.
 
-  Reactive children (PSpin) get :ephemeral-await? false so the continuation
+  Reactive children (PSpin) get :kind :await-reactive so the continuation
   survives `clear-all-await-continuations!` between batches and re-fires
   whenever the child re-completes (e.g. its tracked signals change).
 
@@ -91,10 +91,10 @@
   [parent-spin-id awaited-spin awaited-spin-id resolve reject source-loc is-reactive-spin tracking-snap chain-head-snap]
   {:id (await-spin-cont-id parent-spin-id awaited-spin-id source-loc)
    :event-key [:spin/complete awaited-spin-id]
+   :kind (if is-reactive-spin :await-reactive :await-once)
    :resolve-fn resolve
    :reject-fn reject
    :source-loc source-loc
-   :ephemeral-await? (not is-reactive-spin)
    :tracking-snap tracking-snap
    :chain-head-snap chain-head-snap
    :awaited-spin awaited-spin
@@ -349,7 +349,7 @@
   being delivered) — a tiny constant in practice.
 
   The engine cont is added to `:continuations[spin-id]` with
-  `:ephemeral-await? true` so `clear-all-await-continuations!` reaps it
+  `:kind :external-await` so `clear-all-await-continuations!` reaps it
   at generation boundaries.
 
   Args:
@@ -417,8 +417,8 @@
               ;; continuations! / clear-deps! work without special-
               ;; casing.
               :event-key [:external-await ext-tag]
+              :kind :external-await
               :source-loc source-loc
-              :ephemeral-await? true
               :cancel-token cancel-token
               ;; `:cancel!` takes the engine context to record the
               ;; cancellation in. Engine truncation sites pass the
