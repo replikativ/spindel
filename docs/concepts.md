@@ -143,6 +143,23 @@ Resume each observer's track-cont (parallel on JVM for >1)
 Completions enqueue on :engine/pending, drained FIFO (no glitches)
 ```
 
+### Dynamic Dependencies
+
+The diamond above is a *static* graph. But a spin can change which dependencies it has from one run to the next:
+
+```clojure
+(spin
+  (if (= 42 (:new (track x)))
+    (await k)   ;; depends on `k` — but only when x = 42
+    0))         ;; otherwise, no dependency on `k`
+```
+
+When `x` ≠ 42 the edge to `k` does not exist. A topological sort built from that graph cannot order `k` before this spin — the edge only appears *after* the spin re-runs and takes the other branch.
+
+Spindel stays glitch-free here because `await` is a **pull**: awaiting a dirty dependency re-executes it rather than returning its (stale) cache. The dependency chain is walked in the data-flow order of the *current* run, not a precomputed one — so a dependency discovered mid-flight is always read fresh. The topological sort is an optimization layered on top; it is not what makes this case correct.
+
+This is the reactive-systems failure mode Kenny Tilton (Cells) named the "Pentagram of Death". See `test/org/replikativ/spindel/continuation_glitch_test.clj` for the regression tests.
+
 ### Batching Multiple Signals
 
 Use `batch` to group signal changes into a single propagation:
