@@ -156,6 +156,27 @@ While observer bodies execute, they may produce more events: `:spin-completion` 
 
 The descendant-filtering + ancestor-escalation step preserves the no-glitch guarantee without a per-batch barrier: within one `:signal-change` dispatch all directly-affected observers resume against the fresh signal value, and downstream completions propagate via the same drain in FIFO order — no spin ever sees a partially-updated graph.
 
+### Dynamically-discovered dependencies
+
+Topological dispatch orders the graph *as it exists when the signal changes*. But a spin re-tracks its dependencies on every run (see [Dependency Tracking](#dependency-tracking-and-the-graph) below), so a conditional branch can establish a brand-new edge that only appears *after* the spin re-runs:
+
+```clojure
+(spin (if (= 42 (:new (track x)))
+        (await k)   ;; edge to `k` exists only when x = 42
+        0))
+```
+
+A topological sort built before re-execution cannot order `k` ahead of this spin — that edge did not exist yet. Correctness in this case does not come from the sort; it comes from `await` being demand-driven.
+
+`await-spin` (`effects/await.cljc`) takes the **fast path** — return the child's cached result — only when the child has a cached result, is **not dirty**, and either we are not inside a `:signal-change` batch *or* the child was already processed in this batch (`:processed` set). Otherwise it takes the **slow path**: re-execute the child's body, which re-reads the child's own `track` / `await` dependencies recursively; the awaiting spin suspends on a continuation and resumes with the freshly-computed value.
+
+Two independent guards keep this robust mid-propagation:
+
+- **Dirty flag** — `mark-dirty!` BFS-marks the changed signal's transitive observers dirty, so awaiting any of them refuses the fast path.
+- **Batch `:processed` set** — a spin newly pulled into the graph by a conditional `await` was never marked dirty, but it is also not in `:processed`, so the fast path is refused and the child is re-executed anyway.
+
+So a dependency chain — including edges discovered *during* this propagation — is always walked in the true data-flow order of the current computation. The topological sort is a scheduling optimization that avoids redundant re-runs for the common static graph; it is not the correctness mechanism for dynamic dependencies. See `test/org/replikativ/spindel/continuation_glitch_test.clj` and [`concepts.md`](concepts.md#dynamic-dependencies).
+
 ## Dependency Tracking and the Graph
 
 Spindel tracks dependencies automatically at runtime, on a **unified-subscription** model: observer registration happens *eagerly* at the moment the body calls `track` or `await`, not deferred to body completion.

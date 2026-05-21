@@ -208,3 +208,110 @@
         (is (= 25 @t1))
         (is (= 9 @t2))  ; unchanged
         (is (= 39 @combined) "combined should see consistent s1 and t1 values (no glitch!)")))))
+
+;; =============================================================================
+;; Dynamic Dependency Rediscovery — the "Pentagram of Death"
+;;
+;; Credit: Kenny Tilton (Cells), who named this failure mode and built the
+;; original `df-interference` test for it.
+;;
+;; The topological sort is computed from the dependency graph that exists
+;; BEFORE re-execution. But a conditional branch inside a spin body can
+;; establish a brand-new dependency edge only AFTER the spin re-runs — an
+;; edge the old topo sort never saw and could not have ordered. A scheduler
+;; that trusted the topo sort alone would let a spin read a stale cache
+;; through that new edge.
+;;
+;; Spindel is immune because `await` is a demand-driven pull: awaiting a
+;; dirty / not-yet-processed child re-executes that child rather than
+;; returning its cache (see effects/await.cljc `await-spin`, the
+;; `allow-fast-path?` gate). The dependency chain is therefore walked in
+;; the true data-flow order of the CURRENT computation, not a precomputed
+;; one. These tests pin that behavior so a future scheduler change cannot
+;; silently reintroduce the glitch.
+;; =============================================================================
+
+(deftest test-pentagram-dynamic-dependency-no-glitch
+  (testing "Conditionally-discovered dependency: no stale read through a new edge"
+    (th/with-ctx [ctx]
+      ;; Kenny Tilton's example:
+      ;;   X = 0
+      ;;   A = X + B
+      ;;   B = if X == 42 then K else 0
+      ;;   K = X
+      ;;
+      ;; At X=0, B takes the `else` branch and NEVER awaits K, so the edge
+      ;; B->K does not exist. At X->42, B re-runs, takes the `then` branch,
+      ;; and NEWLY awaits K. The topo sort built from the X=0 graph cannot
+      ;; know "K before B". If B read K's stale cache (0), A would be 42.
+      (let [x (sig/signal 0)
+            k (spin (:new (track x)))
+            b (spin (if (= 42 (:new (track x)))
+                      (await k)
+                      0))
+            a (spin (+ (:new (track x)) (await b)))]
+
+        ;; X = 0: else branch taken, no B->K edge exists yet
+        (is (= 0 @k))
+        (is (= 0 @b))
+        (is (= 0 @a))
+
+        ;; X -> 42: B re-runs and discovers its dependency on K
+        (swap! x (constantly 42))
+        (await-drain ctx)
+
+        (is (= 42 @k) "K = X = 42")
+        (is (= 42 @b) "B took the then-branch and awaited fresh K")
+        (is (= 84 @a) "A = X + B = 42 + 42; would be 42 if B read stale K")))))
+
+(deftest test-newly-discovered-dependency-chain-no-glitch
+  (testing "A multi-hop sub-path discovered entirely during re-execution"
+    (th/with-ctx [ctx]
+      ;;   X = 0
+      ;;   O = X            (tracks X)
+      ;;   K = 10 * O       (awaits O; does NOT track X)
+      ;;   B = if X == 42 then K else 0
+      ;;   A = X + B
+      ;;
+      ;; At X=0, neither K nor O is on B's path, and K is not an observer
+      ;; of X at all. At X->42 the whole B->K->O sub-path is discovered
+      ;; while B re-executes — each hop resolved by a recursive await-pull.
+      (let [x (sig/signal 0)
+            o (spin (:new (track x)))
+            k (spin (* 10 (await o)))
+            b (spin (if (= 42 (:new (track x)))
+                      (await k)
+                      0))
+            a (spin (+ (:new (track x)) (await b)))]
+
+        (is (= 0 @a) "X=0: B short-circuits, K and O never enter the graph")
+
+        (swap! x (constantly 42))
+        (await-drain ctx)
+
+        (is (= 42 @o) "O = X = 42")
+        (is (= 420 @k) "K = 10 * O")
+        (is (= 420 @b) "B awaited the newly-discovered K")
+        (is (= 462 @a) "A = X + B = 42 + 420; full B->K->O chain rediscovered")))))
+
+(deftest test-dynamic-dependency-add-and-prune
+  (testing "The conditional B->K edge is added and pruned cleanly across toggles"
+    (th/with-ctx [ctx]
+      ;; Same graph as the Pentagram test, toggled repeatedly. Verifies the
+      ;; B->K edge is established when X=42 and pruned when X leaves 42 —
+      ;; no stale dependency accumulates, no stale value leaks through.
+      (let [x (sig/signal 0)
+            k (spin (:new (track x)))
+            b (spin (if (= 42 (:new (track x)))
+                      (await k)
+                      0))
+            a (spin (+ (:new (track x)) (await b)))]
+
+        (is (= 0 @a))
+
+        (doseq [[v expected] [[42 84] [0 0] [42 84] [7 7] [42 84] [0 0]]]
+          (swap! x (constantly v))
+          (await-drain ctx)
+          (is (= expected @a)
+              (str "X=" v " => A should be " expected
+                   " (B->K edge " (if (= v 42) "active" "pruned") ")")))))))
