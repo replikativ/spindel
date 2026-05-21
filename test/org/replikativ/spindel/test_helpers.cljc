@@ -69,13 +69,20 @@
      (if (:js-globals &env)
        ;; CLJS - use cljs.test/async, with cleanup atom so nested with-ctx
        ;; can defer stop-context! until after `done` fires.
-       `(let [cleanups# (atom [])]
+       `(let [cleanups# (atom [])
+              done?# (atom false)]
           (cljs.test/async raw-done#
                            (binding [*async-cleanups* cleanups#]
                              (let [~done-sym (fn []
-                                               (doseq [c# @cleanups#]
-                                                 (try (c#) (catch :default _#)))
-                                               (raw-done#))]
+                                               ;; Idempotent: `done` MUST run exactly once, but
+                                               ;; run-spin!'s callback is a reactive subscription
+                                               ;; that can re-fire — guard so cleanups + raw-done
+                                               ;; run a single time (mirrors the CLJ branch's
+                                               ;; realized? guard).
+                                               (when (compare-and-set! done?# false true)
+                                                 (doseq [c# @cleanups#]
+                                                   (try (c#) (catch :default _#)))
+                                                 (raw-done#)))]
                                ~@body))))
        ;; CLJ - use promise-based blocking, with cleanups deferred until
        ;; after the deref so any with-ctx inside body keeps its context

@@ -13,6 +13,7 @@
             [org.replikativ.spindel.engine.executor :as executor]))
 
 (declare process-delayed-spins!)
+(declare fire-delayed-spin!)
 
 (defn current-time
   "Get current time (virtual or real) in milliseconds."
@@ -60,9 +61,17 @@
         time-mode (rtp/get-state context [:engine/time-mode])
         executor  (:executor context)]
     (when (and (= time-mode :real) executor)
+      ;; Real mode: the executor timer is authoritative. When it fires,
+      ;; THIS entry's delay has elapsed by construction — fire exactly
+      ;; this spin, with no wall-clock re-check. A shared
+      ;; process-delayed-spins! scan re-derives readiness from
+      ;; `current-time`, and a setTimeout / JVM timer that fires ~1ms
+      ;; before `(.now js/Date)` agrees would then strand its own entry
+      ;; permanently (the entry has no other trigger). See
+      ;; fire-delayed-spin!.
       (executor/execute-after! executor delay-ms
                                (executor/alive-fn context
-                                                  #(process-delayed-spins! context executor))))
+                                                  #(fire-delayed-spin! context executor spin-id))))
     spin-id))
 
 (defn process-delayed-spins!
@@ -105,6 +114,47 @@
                                                  (spin-fn))))))
 
     (count @ready-spins)))
+
+(defn fire-delayed-spin!
+  "Fire exactly one delayed spin, by id — the real-time path.
+
+  The executor timer armed for this entry by `schedule-delayed!` has
+  elapsed, so the entry's delay is up *by construction*. We deliberately
+  do NOT re-derive readiness from `current-time`: a `setTimeout` / JVM
+  timer can fire a millisecond before `(.now js/Date)` agrees the delay
+  elapsed, and a wall-clock re-check would then strand the entry — it has
+  no other trigger. The entry is removed from the queue and run.
+
+  Virtual time uses `process-delayed-spins!` instead, where `current-time`
+  is advanced explicitly by `advance-virtual-time!` and the readiness
+  comparison is exact.
+
+  No-ops if the entry is absent (already fired, or cancelled via
+  `cancel-delayed-spin!`)."
+  [context executor spin-id]
+  (let [entry (atom nil)]
+    (rtp/swap-state! context []
+                     (fn [state]
+                       (let [queue (get state :engine/delayed-spins (sorted-map))
+                             found (->> (vals queue)
+                                        (mapcat identity)
+                                        (some #(when (= (:id %) spin-id) %)))
+                             remaining (into (sorted-map)
+                                             (keep (fn [[fire-time spins]]
+                                                     (let [kept (filterv #(not= (:id %) spin-id) spins)]
+                                                       (when (seq kept) [fire-time kept])))
+                                                   queue))]
+                         (reset! entry found)
+                         (-> state
+                             (assoc :engine/delayed-spins remaining)
+                             (update :engine/timer-handles dissoc spin-id)))))
+    (when-let [{:keys [spin-fn id fire-time]} @entry]
+      (log/trace :engine/execute-delayed {:spin-id id :fire-time fire-time :now (current-time context)})
+      (when executor
+        (executor/execute! executor
+                           (executor/alive-fn context
+                                              #(binding [ec/*execution-context* context]
+                                                 (spin-fn))))))))
 
 (defn cancel-delayed-spin!
   "Cancel a scheduled delayed spin by id. Returns true if cancelled, false if not found."
