@@ -448,9 +448,12 @@
      ;; Snapshot this spin's lexical scope — the registered spin-scope
      ;; binding keys (see engine.bindings) — from the construction-time
      ;; execution context onto the spin's node. The engine re-applies the
-     ;; snapshot on every body-entry path (see apply-spin-scope in
-     ;; engine/impl/simple.cljc), giving spins closure semantics over the
-     ;; scope they were constructed under. Which keys count as scope is
+     ;; snapshot on every COLD body start (the :spin-execution handler in
+     ;; engine/impl/simple.cljc and the await-spin slow/rebuild child
+     ;; invocation in effects/await.cljc), giving spins closure semantics
+     ;; over the scope they were constructed under. Continuation resumes
+     ;; instead restore the suspend-time scope via the cont's
+     ;; `:ctx-bindings`. Which keys count as scope is
      ;; supplied entirely by the registry — e.g. dom.addressing registers
      ;; :dom/parent-addr / :dom/current-slot — so spin/core stays domain-
      ;; agnostic. Spins constructed at root scope capture nothing, so this

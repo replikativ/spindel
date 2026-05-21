@@ -510,27 +510,6 @@
                 (recur (first grandparents) (conj visited current))
                 current))))))))
 
-(defn- apply-spin-scope
-  "Merge spin `sid`'s captured scope onto `ctx`'s bindings.
-
-  `make-spin` (spin/core.cljc) snapshots the registered spin-scope binding
-  keys (see engine.bindings) at construction into `[:nodes sid :spin-scope]`.
-  That scope is intrinsic to the spin and must be re-established on EVERY
-  body-entry path so the body addresses and behaves consistently no matter
-  which engine path runs it.
-
-  Track-continuation resumes happen to restore it via the cont's
-  `:ctx-bindings` snapshot, but await-continuation resumes carry no
-  `:ctx-bindings` — so without this an awaiting spin (e.g. a keyed
-  `ifor-each` item-spin re-running because its awaited child re-completed)
-  would lose its construction scope, drifting any scope-derived addressing
-  and breaking discharge reconciliation."
-  [ctx sid]
-  (let [spin-scope (rtp/get-state ctx [:nodes sid :spin-scope])]
-    (if (seq spin-scope)
-      (update ctx :bindings merge spin-scope)
-      ctx)))
-
 (defn process-event!
   "Process a single event.
 
@@ -703,19 +682,15 @@
                 ;; await suspend point. See resume-single-observer! for rationale.
                 (when-let [snap (:tracking-snap cont)]
                   (rtp/swap-state! context [:spin-tracking parent-id] (constantly snap)))
-                ;; Resume with the suspend-time bindings (cont's :ctx-bindings)
-                ;; merged onto the current context bindings.
+                ;; Resume with the suspend-time bindings (cont's :ctx-bindings).
+                ;; Await continuations now carry :ctx-bindings — a snapshot of
+                ;; (:bindings ctx) at the await-suspend point, exactly as track
+                ;; continuations do — so merging it back restores the resuming
+                ;; spin's full context scope (including its construction scope).
                 ;; See resume-single-observer! for the chain-head atom rationale.
                 (let [ctx-bindings (:ctx-bindings cont)
-                      ctx-for-resume (-> (cond-> context
-                                           ctx-bindings (update :bindings merge ctx-bindings))
-                                         ;; Re-apply the resuming spin's intrinsic
-                                         ;; scope. Await continuations carry no
-                                         ;; :ctx-bindings, so this is the only thing
-                                         ;; that restores construction scope for a
-                                         ;; spin that re-runs because its awaited
-                                         ;; child re-completed.
-                                         (apply-spin-scope parent-id))
+                      ctx-for-resume (cond-> context
+                                       ctx-bindings (update :bindings merge ctx-bindings))
                       chain-head-start (or (:chain-head-snap cont)
                                            (addressing/body-start-chain-head parent-id))]
                   (addressing/seed-chain-head! context parent-id chain-head-start)

@@ -58,8 +58,15 @@
   survives `clear-all-await-continuations!` between batches and re-fires
   whenever the child re-completes (e.g. its tracked signals change).
 
-  Captures two per-spin snapshots so the resumed body slice resumes
+  Captures three per-spin snapshots so the resumed body slice resumes
   consistently with where it left off:
+
+  - `:ctx-bindings` — the parent's `(:bindings ctx)` map at await-suspend
+    time. On resume the `:spin-completion` handler merges it back so the
+    post-resume body slice sees the same context scope (DOM parent-addr,
+    slot, keys, the spin's construction scope) it had pushed before
+    suspending. Captured exactly as track continuations do — this is
+    what lets a single resume path serve both track and await conts.
 
   - `:tracking-snap` — the parent's transient `:spin-tracking` entry at
     suspend time. On resume the engine restores it so the body's
@@ -88,13 +95,14 @@
   cache-result and the :spin-completion event handler can delete it
   again — at which point `on-resume` reads `spin-current-result` and
   gets nil, producing the `No protocol method PResult.match` crash."
-  [parent-spin-id awaited-spin awaited-spin-id resolve reject source-loc is-reactive-spin tracking-snap chain-head-snap]
+  [parent-spin-id awaited-spin awaited-spin-id resolve reject source-loc is-reactive-spin ctx-bindings tracking-snap chain-head-snap]
   {:id (await-spin-cont-id parent-spin-id awaited-spin-id source-loc)
    :event-key [:spin/complete awaited-spin-id]
    :kind (if is-reactive-spin :await-reactive :await-once)
    :resolve-fn resolve
    :reject-fn reject
    :source-loc source-loc
+   :ctx-bindings ctx-bindings
    :tracking-snap tracking-snap
    :chain-head-snap chain-head-snap
    :awaited-spin awaited-spin
@@ -152,12 +160,13 @@
           ;; running multiple times overwrites instead of accumulating stale
           ;; continuations.
           (when is-reactive-spin
-            (let [tracking-snap (rtp/get-state ctx [:spin-tracking spin-id])
+            (let [ctx-bindings (:bindings ctx)
+                  tracking-snap (rtp/get-state ctx [:spin-tracking spin-id])
                   chain-head-snap (addressing/get-chain-head ctx)]
               (ec/continuation-add!
                spin-id
                (spin-await-cont-map spin-id spin-ref awaited-spin-id resolve reject source-loc true
-                                    tracking-snap chain-head-snap))))
+                                    ctx-bindings tracking-snap chain-head-snap))))
           (spin-core/match cached
             #(spin-core/resume resolve %)
             #(spin-core/resume reject %)))
@@ -235,11 +244,13 @@
                                (simple/enqueue-completion-event! ctx awaited-spin-id))
                              nil)
               is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
+              ctx-bindings (:bindings ctx)
               tracking-snap (rtp/get-state ctx [:spin-tracking spin-id])
               chain-head-snap (addressing/get-chain-head ctx)
               cont-map (spin-await-cont-map spin-id spin-ref awaited-spin-id
                                             resolve reject source-loc
                                             is-reactive-spin
+                                            ctx-bindings
                                             tracking-snap chain-head-snap)
               ;; Pre-register so any async completion has a subscriber.
               _ (ec/continuation-add! spin-id cont-map)
