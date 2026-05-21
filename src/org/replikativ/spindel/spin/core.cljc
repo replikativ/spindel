@@ -424,12 +424,17 @@
 
    The spin-id is used to track dependencies in the runtime's graph."
   ([spin-fn]
-   (make-spin spin-fn (keyword (gensym "spin-"))))
+   (make-spin spin-fn (keyword (gensym "spin-")) nil))
   ([spin-fn spin-id]
+   (make-spin spin-fn spin-id nil))
+  ([spin-fn spin-id captured-locals]
    (let [reactive-spin (->Spin spin-id spin-fn)]
 
-     ;; Register spin with runtime via protocol (uses dynamic *execution-context*)
-     (ec/spin-register! spin-id {:provides #{}})
+     ;; Register spin with runtime via protocol (uses dynamic *execution-context*).
+     ;; captured-locals — {sym value} of the body's free variables — lets
+     ;; register-spin! detect (identical?) whether a re-registered spin's
+     ;; captured environment changed. nil for non-macro callers.
+     (ec/spin-register! spin-id {:provides #{} :captured-locals captured-locals})
 
      ;; Snapshot this spin's lexical scope — the registered spin-scope
      ;; binding keys (see engine.bindings) — from the construction-time

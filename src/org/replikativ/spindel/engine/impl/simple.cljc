@@ -1487,6 +1487,19 @@
 ;; Spin Lifecycle (shared across all context implementations)
 ;; =============================================================================
 
+(defn- captures-changed?
+  "True when a spin's captured environment differs from the previous one.
+
+  The key set is fixed per `(spin …)` form (the macro bakes in the free
+  variables), so this reduces to: is any captured value not `identical?`
+  to its prior value. `identical?` — not `=` — because it is O(1), never
+  throws, and Clojure's structural sharing keeps an unchanged persistent
+  value `identical?`; the only cost is an occasional needless re-run when
+  a value is rebuilt `=`-equal but not `identical?`."
+  [old new]
+  (or (not= (set (keys old)) (set (keys new)))
+      (boolean (some (fn [[k v]] (not (identical? v (get old k)))) new))))
+
 (defn register-spin!
   "Register a spin's metadata in the context.
 
@@ -1511,18 +1524,27 @@
     ;; Create or update SpinNode in :nodes
     (rtp/swap-state! context [:nodes spin-id]
                      (fn [existing-node]
-                       (if existing-node
+                       (let [new-caps (:captured-locals spin-meta)]
+                         (if existing-node
           ;; Re-registration: the (spin …) form was re-evaluated by a
-          ;; re-running enclosing scope → a fresh closure with possibly
-          ;; fresh captures. Mark the node dirty so the fresh cps-fn
-          ;; actually runs, instead of `await`/`deref` serving the stale
-          ;; cached result computed by the previous closure. :result is
-          ;; kept as the previous value (needed for value-change diffing).
-                         (-> existing-node
-                             (assoc :created-by creator-id :completed? false)
-                             (nodes/mark-dirty))
-          ;; Create new SpinNode with creator tracking
-                         (nodes/->spin-node nil :clean false false #{} {} creator-id #{}))))
+          ;; re-running enclosing scope → a fresh closure. Mark the node
+          ;; dirty — so the fresh cps-fn runs instead of await/deref
+          ;; serving the stale cached result — but ONLY when the captured
+          ;; environment actually changed (identical?-compared). When no
+          ;; capture info was supplied (a non-macro spin: new-caps nil)
+          ;; fall back to dirtying unconditionally. :result is kept as the
+          ;; previous value (needed for value-change diffing).
+                           (let [base (assoc existing-node
+                                             :created-by creator-id
+                                             :captured-locals new-caps)]
+                             (if (or (nil? new-caps)
+                                     (captures-changed? (:captured-locals existing-node)
+                                                        new-caps))
+                               (-> base (assoc :completed? false) (nodes/mark-dirty))
+                               base))
+          ;; First registration: new node, record the captured environment.
+                           (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
+                                  :captured-locals new-caps)))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
     ;; created-spins set. Self-add could occur on CLJS if a stale async
