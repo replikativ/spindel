@@ -326,30 +326,20 @@
     (cond-> context
       bindings (update :bindings merge bindings))))
 
-(defn- resume-single-observer!
-  "Resume a single observer's track continuation during Phase 1 of signal-change.
+(defn- truncate-stale-conts!
+  "Drop a spin's continuations whose `:order` is strictly greater than the
+  resumed continuation's, then re-track the signal deps of the conts whose
+  `:order` is strictly less (they belong to the pre-resume body slice that
+  stays in effect).
 
-  Handles: stale continuation cleanup, signal dep re-tracking, marking dirty/running,
-  and resuming the continuation with the fresh signal value.
-
-  Args:
-    context - execution context
-    spin-id - observer spin to resume
-    sid - signal that changed
-    cont - the earliest continuation for this observer"
-  [context spin-id sid cont]
-  (log/debug :engine/resuming-track-continuation {:spin-id spin-id :signal-id sid})
-
-  ;; Remove stale continuations (order > resumed continuation's order)
-  ;;
-  ;; Before dissociating each removed cont, call its `:cancel!` hook if
-  ;; any. External-await wrappers (Deferred / Mailbox / plain-fn) install
-  ;; a cancellation gate so that when the resource later fires, the
-  ;; orphaned resolve closure is a no-op. Without this, both the OLD
-  ;; (orphaned) and NEW (registered by the parent re-run) body slices
-  ;; would advance to outer-resolve, causing double cache-result, double
-  ;; record-deps, and double side effects. See
-  ;; `effects/await.cljc::cancellable-external-pair`.
+  Before dissociating each removed cont, call its `:cancel!` hook if any.
+  External-await wrappers (Deferred / Mailbox / plain-fn) install a
+  cancellation gate so that when the resource later fires, the orphaned
+  resolve closure is a no-op. Without this, both the OLD (orphaned) and
+  NEW (registered by the parent re-run) body slices would advance to
+  outer-resolve, causing double cache-result, double record-deps, and
+  double side effects. See `effects/await.cljc::cancellable-external-pair`."
+  [context spin-id cont]
   (let [cont-order (:order cont)
         all-conts (rtp/get-state context [:continuations spin-id])
         skipped-signal-ids (->> (vals all-conts)
@@ -366,102 +356,85 @@
       (when-let [cancel! (:cancel! c)] (cancel! context)))
     (rtp/swap-state! context [:continuations spin-id]
                      (fn [conts]
-                       (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
+                       (into {} (filter (fn [[_k v]] (<= (:order v) cont-order)) conts))))
     (doseq [skipped-sid skipped-signal-ids]
-      (track-signal-dep! context spin-id skipped-sid)))
+      (track-signal-dep! context spin-id skipped-sid))))
 
-  ;; Re-track the resumed signal dependency
-  (track-signal-dep! context spin-id sid)
+(defn- resume-body!
+  "Resume a suspended spin body slice from one of its continuations.
 
-  ;; Mark spin as not completed, dirty, AND running
-  (rtp/swap-state! context [:nodes spin-id]
-                   (fn [node]
-                     (when node
-                       (-> node
-                           (assoc :completed? false)
-                           (assoc :running? true)
-                           (nodes/mark-dirty)))))
+  Unified resume path for both track-continuation resumes (signal
+  changed) and await-continuation resumes (awaited child completed):
 
-  ;; Reset :created-spins for this body slice; children are re-registered
+  - `resume-single-observer!` — a signal changed and we resume the
+    observer's earliest track cont. (signal-change Phase 1)
+  - `re-execute-dirty-parent!` — a child completed and we re-run a
+    non-running ancestor from its earliest track cont. (propagate-
+    await-dirty!)
+  - the `:spin-completion` handler — an awaited child completed and we
+    resume the parent's await cont.
+
+  Steps, in order:
+  1. truncate stale conts (order > cont) + re-track skipped-cont deps,
+     unless `:truncate-stale?` is false;
+  2. re-track `:resumed-dep` if given (the signal a track cont resumed
+     on — await conts have no signal dep, so they pass nil);
+  3. mark the node `{:completed? false :running? true}` + dirty, unless
+     `:mark-dirty?` is false (a still-suspended body resuming on an
+     await must not be re-marked as a fresh re-run);
+  4. clear `:created-spins` — children are re-registered as the body
+     re-runs, and register-spin!'s identical?-gate (B) re-runs only
+     those whose captured environment changed;
+  5. restore the cont's `:slice-state` snapshot (deps tracking,
+     addressing chain-head, context bindings);
+  6. `binding` the execution context + spin-id and call
+     `resume-continuation!` with `:resume-fn` (defaults to the track
+     behaviour: invoke the cont's `:resolve-fn` with the resumed value).
+
+  Options map:
+    :resumed-dep     - signal-id to re-track (nil for await resumes)
+    :truncate-stale? - run truncate-stale-conts! (default true)
+    :mark-dirty?     - mark node dirty/running (default true)
+    :resume-fn       - fn passed to resume-continuation! (default:
+                       (fn [v] (invoke-continuation (:resolve-fn cont) v)))
+
+  Returns whatever `resume-continuation!` returns."
+  [context spin-id cont {:keys [resumed-dep truncate-stale? mark-dirty? resume-fn]
+                         :or {truncate-stale? true mark-dirty? true}}]
+  ;; 1. Remove stale continuations (order > resumed continuation's order).
+  (when truncate-stale?
+    (truncate-stale-conts! context spin-id cont))
+
+  ;; 2. Re-track the resumed signal dependency (track resumes only).
+  (when resumed-dep
+    (track-signal-dep! context spin-id resumed-dep))
+
+  ;; 3. Mark spin as not completed, dirty, AND running.
+  (when mark-dirty?
+    (rtp/swap-state! context [:nodes spin-id]
+                     (fn [node]
+                       (when node
+                         (-> node
+                             (assoc :completed? false)
+                             (assoc :running? true)
+                             (nodes/mark-dirty))))))
+
+  ;; 4. Reset :created-spins for this body slice; children are re-registered
   ;; as the body re-runs, and register-spin! re-runs any whose captured
   ;; environment changed (B) — no blanket invalidation needed.
   (clear-created-spins! context spin-id)
 
-  ;; Restore the cont's per-slice snapshot — deps tracking, addressing
-  ;; chain-head, context bindings — so the post-resume body slice
-  ;; continues consistently with where it suspended. See
-  ;; restore-slice-state! for what each piece is for.
-  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)]
+  ;; 5. + 6. Restore the cont's per-slice snapshot — deps tracking,
+  ;; addressing chain-head, context bindings — so the post-resume body
+  ;; slice continues consistently with where it suspended, then resume.
+  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)
+        resume-fn (or resume-fn
+                      (fn [signal-value]
+                        (pcps-async/invoke-continuation (:resolve-fn cont) signal-value)))]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
-      (rtp/resume-continuation!
-       context spin-id cont
-       (fn [signal-value]
-         (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
-
-(defn- re-execute-dirty-parent!
-  "Re-execute a parent/ancestor spin by resuming its earliest track continuation.
-
-  Used by propagate-await-dirty! after a child completes during batch processing
-  to re-execute its non-running parent. The parent re-runs from its track point,
-  awaits the child (getting fresh cached result), and produces updated output.
-
-  Before re-executing, we invalidate created spins — old children retain stale
-  signal registrations that would cause double-executions if not cleaned up.
-
-  Args:
-    context - execution context
-    spin-id - parent spin to re-execute
-    signal-id - signal ID of the parent's earliest track continuation
-    cont - the earliest continuation for this parent"
-  [context spin-id signal-id cont]
-  (log/debug :engine/re-execute-dirty-parent {:spin-id spin-id :signal-id signal-id})
-
-  ;; Remove stale continuations (order > resumed continuation's order).
-  ;; See `resume-single-observer!` for the cancellation-hook rationale —
-  ;; same orphaned-callback risk here when re-executing a dirty parent.
-  (let [cont-order (:order cont)
-        all-conts (rtp/get-state context [:continuations spin-id])
-        skipped-signal-ids (->> (vals all-conts)
-                                (filter #(< (:order %) cont-order))
-                                (keep :signal-id))
-        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
-    (doseq [c cancelled-conts]
-      (when-let [cancel! (:cancel! c)] (cancel! context)))
-    (rtp/swap-state! context [:continuations spin-id]
-                     (fn [conts]
-                       (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
-    (doseq [skipped-sid skipped-signal-ids]
-      (track-signal-dep! context spin-id skipped-sid)))
-
-  ;; Re-track the resumed signal dependency
-  (track-signal-dep! context spin-id signal-id)
-
-  ;; Mark spin as not completed, dirty, AND running
-  (rtp/swap-state! context [:nodes spin-id]
-                   (fn [node]
-                     (when node
-                       (-> node
-                           (assoc :completed? false)
-                           (assoc :running? true)
-                           (nodes/mark-dirty)))))
-
-  ;; Reset :created-spins for this body slice (see resume-single-observer!).
-  (clear-created-spins! context spin-id)
-
-  ;; Restore the cont's per-slice snapshot — deps tracking, addressing
-  ;; chain-head, context bindings — so the post-resume body slice
-  ;; continues consistently with where it suspended. See
-  ;; restore-slice-state! for the rationale.
-  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)]
-    (binding [ec/*execution-context* ctx-with-bindings
-              ec/*spin-id* spin-id
-              pcps-async/*in-trampoline* false]
-      (rtp/resume-continuation!
-       context spin-id cont
-       (fn [signal-value]
-         (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
+      (rtp/resume-continuation! context spin-id cont resume-fn))))
 
 (defn- compute-descendant-observers
   "Given observer spin-ids, find those that are descendants of other observers.
@@ -596,9 +569,14 @@
                                      (vals escalation-targets)))
 
             do-resume! (fn [[spin-id cont]]
-                         (resume-single-observer! context spin-id sid cont))
+                         (log/debug :engine/resuming-track-continuation
+                                    {:spin-id spin-id :signal-id sid})
+                         (resume-body! context spin-id cont {:resumed-dep sid}))
             do-escalate! (fn [[root-id cont]]
-                           (re-execute-dirty-parent! context root-id (:signal-id cont) cont))]
+                           (log/debug :engine/re-execute-dirty-parent
+                                      {:spin-id root-id :signal-id (:signal-id cont)})
+                           (resume-body! context root-id cont
+                                         {:resumed-dep (:signal-id cont)}))]
 
         (when (seq descendant-set)
           (log/debug :engine/filtered-descendant-observers
@@ -1722,7 +1700,10 @@
                 (let [earliest (first (sort-by :order conts))
                       sid (:signal-id earliest)]
                   (when sid
-                    (re-execute-dirty-parent! context parent-id sid earliest)))))))))))
+                    (log/debug :engine/re-execute-dirty-parent
+                               {:spin-id parent-id :signal-id sid})
+                    (resume-body! context parent-id earliest
+                                  {:resumed-dep sid})))))))))))
 
 (defn cache-result!
   "Cache a spin's result value and mark observers dirty.

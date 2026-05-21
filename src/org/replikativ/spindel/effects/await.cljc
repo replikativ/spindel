@@ -313,7 +313,7 @@
   register an engine continuation for the wait.
 
   Background: when the engine resumes a parent's earlier track-cont via
-  `resume-single-observer!`/`re-execute-dirty-parent!`, it truncates all
+  `resume-body!`, it truncates all
   conts with `:order` strictly greater than the resumed cont. The
   engine's own resolve callbacks for those conts then never fire (their
   cont entries no longer exist). But external resources — Deferred's
