@@ -295,9 +295,10 @@
           (simple/mark-running! runtime spin-id)
           (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
 
-            ;; CRITICAL: Invalidate spins created during previous execution
-            ;; Their closures captured values from the old run - now stale
-          (simple/invalidate-created-spins! runtime spin-id)
+            ;; Reset :created-spins for this body run; children are re-registered
+            ;; as the body runs, and register-spin! re-runs any whose captured
+            ;; environment changed (B) — no blanket invalidation needed.
+          (simple/clear-created-spins! runtime spin-id)
 
             ;; Seed this body slice's per-spin chain-head slot with
             ;; `body-start-chain-head spin-id` before invoking spin-fn —

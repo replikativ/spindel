@@ -279,7 +279,18 @@
 
 (declare try-claim-execution!)
 (declare propagate-await-dirty!)
-(declare invalidate-created-spins!)
+
+(defn ^:no-doc clear-created-spins!
+  "Reset a spin's `:created-spins` set at the start of a (re-)run of its
+  body. Children are re-registered as the body re-runs; whether a child
+  must re-execute — because its captured environment changed — is decided
+  per-child by `register-spin!`'s identical?-gate (and a :resource child
+  is always re-run), so no blanket invalidation of the subtree is needed.
+  Dependency/continuation teardown of children that re-run is handled by
+  the normal `record-deps!` reconciliation at body completion."
+  [context spin-id]
+  (rtp/swap-state! context [:nodes spin-id]
+                   (fn [node] (when node (assoc node :created-spins #{})))))
 
 (defn- resume-single-observer!
   "Resume a single observer's track continuation during Phase 1 of signal-change.
@@ -337,11 +348,10 @@
                            (assoc :running? true)
                            (nodes/mark-dirty)))))
 
-  ;; Invalidate child spins created during previous execution
-  ;; Their closures captured values from the old run - now stale
-  ;; This is the missing call site: spin/core.cljc only calls this during invoke,
-  ;; but track resumption also re-executes the spin body from a continuation point
-  (invalidate-created-spins! context spin-id)
+  ;; Reset :created-spins for this body slice; children are re-registered
+  ;; as the body re-runs, and register-spin! re-runs any whose captured
+  ;; environment changed (B) — no blanket invalidation needed.
+  (clear-created-spins! context spin-id)
 
   ;; Restore the parent's transient deps tracking from the snapshot captured
   ;; at suspend time. Without this, the body slice that resumes after the
@@ -429,8 +439,8 @@
                            (assoc :running? true)
                            (nodes/mark-dirty)))))
 
-  ;; Invalidate child spins created during previous execution.
-  (invalidate-created-spins! context spin-id)
+  ;; Reset :created-spins for this body slice (see resume-single-observer!).
+  (clear-created-spins! context spin-id)
 
   ;; Restore tracking snapshot from the suspension point so the body's
   ;; deps tracking continues from there rather than restarting empty.
@@ -1753,43 +1763,6 @@
                       sid (:signal-id earliest)]
                   (when sid
                     (re-execute-dirty-parent! context parent-id sid earliest)))))))))))
-
-(defn ^:no-doc invalidate-created-spins!
-  "Invalidate all spins that were created by this spin during previous execution.
-
-  When a spin re-executes, any spins it previously created have stale closures
-  that captured values from the old execution. This function marks those spins
-  dirty so they will re-execute with their new closures.
-
-  Also clears the created-spins set since they will be re-registered during
-  the new execution.
-
-  Args:
-    context - context record (implements PState protocol)
-    spin-id - ID of the spin that is about to re-execute
-
-  Returns: set of invalidated spin-ids"
-  [context spin-id]
-  (let [created-spins (rtp/get-state context [:nodes spin-id :created-spins])]
-    (when (seq created-spins)
-      (log/debug :spin/invalidate-created {:spin-id spin-id :created-spins created-spins})
-      ;; Mark each created spin as dirty and fully clean up dependencies
-      ;; clear-deps! removes track continuations, subscriptions, and signal observer
-      ;; registrations so old children can't fire on future signal changes.
-      ;; Skip self-references defensively — register-spin! also prevents
-      ;; them, but a stale state map could still contain one.
-      (doseq [child-id created-spins
-              :when (not= child-id spin-id)]
-        (mark-dirty! context child-id)
-        (clear-deps! context child-id)
-        ;; Recursively invalidate grandchildren
-        (invalidate-created-spins! context child-id))
-      ;; Clear the created-spins set (they'll be re-registered during execution)
-      (rtp/swap-state! context [:nodes spin-id]
-                       (fn [node]
-                         (when node
-                           (assoc node :created-spins #{})))))
-    created-spins))
 
 (defn cache-result!
   "Cache a spin's result value and mark observers dirty.
