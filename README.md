@@ -138,10 +138,13 @@ for a working config.
 
 ## Documentation
 
+See **[docs/README.md](docs/README.md)** for the full documentation
+index. The essentials:
+
 | Guide | What it covers |
 |-------|----------------|
 | [Getting Started](docs/getting-started.md) | First-spin tutorial, signals, effects, running tests. |
-| [Concepts](docs/concepts.md) | Mental model: spins, signals, runtime, glitch-free FRP. |
+| [Concepts](docs/concepts.md) | Mental model: spins, signals, checkpoints, the drain queue, glitch-free FRP. |
 | [API Reference](docs/api-reference.md) | Namespace-by-namespace listing of every public function and macro. |
 | [Effects](docs/effects.md) | `await`, `track`, `yield`, deferred and mailbox synchronization. |
 | [Custom Effects](docs/custom-effects.md) | Register your own effects with `register-effect-by-symbol!`. |
@@ -149,8 +152,8 @@ for a working config.
 | [Incremental](docs/incremental.md) | Deltaable collections, typed delta algebra, `Interval` 3-state contract. |
 | [Atoms](docs/atoms.md) | Fork-safe runtime-backed atoms. |
 | [Forking](docs/forking.md) | `snapshot-context`, `restore-snapshot`, `fork-context`, serialization. |
-| [Scheduling](docs/scheduling.md) | Event queue, drain loop, executors, platform differences (JVM vs CLJS). |
-| [Engine](docs/engine.md) | State shape, deterministic addressing, CPS / trampoline mechanics, overlay backend, memory invariants. The implementation deep-dive. |
+| [Engine](docs/engine.md) | State shape, addressing, CPS / trampoline, executors, drain loop, overlay backend, GC. The implementation deep-dive. |
+| [Engine Formalism](docs/engine-formalism.md) | Algebraic properties, flow diagrams, correctness laws. |
 | [Pub/Sub](docs/pubsub.md) | `mult`, `pub`, buffers, async-sequence-based fan-out. |
 | [Distributed](docs/distributed.md) | `defn-spin-remote`, `spin-remote`, spin↔channel bridge, distributed-scope integration. |
 | [SCI Integration](docs/sci-integration.md) | Sandboxed spin execution via the Small Clojure Interpreter. |
@@ -213,9 +216,9 @@ npx shadow-cljs compile test     # or `watch test` for re-run on save
 ```
 
 CLJS tests run via shadow-cljs's `:node-test` target (jsdom-backed
-DOM tests included). See [docs/scheduling.md](docs/scheduling.md)
-for the JVM / CLJS executor differences and the platform-specific
-testing patterns.
+DOM tests included). See [docs/engine.md](docs/engine.md) for the
+JVM / CLJS executor differences and the platform-specific testing
+patterns.
 
 ## Critical Rules (or: the two things every new user trips over)
 

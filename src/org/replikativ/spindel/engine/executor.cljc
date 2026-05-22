@@ -59,10 +59,36 @@
     "Execute a spin function after delay-ms milliseconds.
 
      Each executor implements delayed execution in its own way:
-     - ThreadPoolExecutor: uses ScheduledExecutorService
+     - ThreadPoolExecutor / ForkJoinPoolExecutor: uses ScheduledExecutorService
      - EventLoopExecutor: uses setTimeout
+     - SynchronousExecutor: runs immediately (virtual-time / simulation)
 
-     Returns implementation-specific handle (or nil)."))
+     Returns an implementation-specific TIMER HANDLE that
+     `cancel-timer-handle!` can later cancel:
+     - JVM pool executors: a `ScheduledFuture`
+     - EventLoopExecutor: the `setTimeout` numeric id
+     - SynchronousExecutor: nil — the work already ran, nothing to cancel.
+
+     Callers that want disposal (`schedule-delayed!`) must retain this
+     handle; a discarded handle leaks a pending timer."))
+
+(defn cancel-timer-handle!
+  "Cancel a timer handle returned by `execute-after!`, releasing the
+  underlying executor resource so a completed / cancelled delayed spin
+  does not leave a pending timer behind.
+
+  Tolerates nil (SynchronousExecutor returns nil; an already-fired
+  timer's handle is also harmless to cancel) and is idempotent.
+
+  - JVM: `ScheduledFuture.cancel(false)` — does not interrupt a timer
+    already running its task.
+  - JS: `clearTimeout` on the numeric setTimeout id."
+  [handle]
+  (when handle
+    #?(:clj  (when (instance? java.util.concurrent.Future handle)
+               (.cancel ^java.util.concurrent.Future handle false))
+       :cljs (js/clearTimeout handle)))
+  nil)
 
 ;; =============================================================================
 ;; Executor Implementations
@@ -162,9 +188,10 @@
        ;; Capture current dynamic bindings before scheduling
        (let [captured-bindings (bindings/capture-bindings)
              bound-spin-fn #(bindings/restore-bindings captured-bindings spin-fn)]
-         ;; Use setTimeout for delayed execution
-         (js/setTimeout bound-spin-fn delay-ms)
-         nil))))
+         ;; Use setTimeout for delayed execution; return its id so the
+         ;; caller can clearTimeout it (see cancel-timer-handle!) and not
+         ;; leak a pending timer for a completed / cancelled delayed spin.
+         (js/setTimeout bound-spin-fn delay-ms)))))
 
 #?(:clj
    (do

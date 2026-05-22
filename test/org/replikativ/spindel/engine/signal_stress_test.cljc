@@ -7,7 +7,7 @@
   reactive spin whose `Spin` Java object had become unreachable
   (e.g. the user's `let` binding went out of scope after last use),
   even though the spin still had a live `(track …)` continuation
-  in `:continuations`. `full-cleanup-spin!` wiped the cont and the
+  in `:track-subscriptions`. `full-cleanup-spin!` wiped the cont and the
   signal's observer registration; subsequent signal-changes found
   no observer and silently no-op'd. The render-count test in
   `dom/render_test.cljc` saw this as flake: 3 of 5 swap!s sometimes

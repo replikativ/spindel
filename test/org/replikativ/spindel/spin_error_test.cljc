@@ -356,3 +356,94 @@
        (with-ctx [ctx]
          (let [assertion-spin (spin (assert false "Assertion failed"))]
            (is (thrown? AssertionError @assertion-spin)))))))
+
+;; =============================================================================
+;; attempt / absolve — error-handling combinators (engine-formalism §5.8)
+;; =============================================================================
+;;
+;; Regression: attempt/absolve built their spin-fn with a stale 4-arg
+;; signature `(fn [runtime-atom _ resolve _] …)` and invoked the wrapped
+;; spin with 4 args — both broken since the arity-2 CPS migration
+;; (`Spin` invoke calls spin-fn `(resolve reject)` and a Spin `(spin
+;; resolve reject)`). The combinators are documented public API
+;; (docs/combinators.md); these tests pin the 2-arity contract.
+
+(deftest test-attempt-captures-ok
+  (testing "attempt of a succeeding spin yields a thunk that returns the value"
+    (async done
+           (with-ctx [_ctx]
+             (let [parent (spin
+                           (let [f (await (spin-core/attempt (spin 42)))]
+                             (f)))]
+               (run-spin! parent
+                          (fn [result]
+                            (is (= 42 result) "attempt thunk should return the value")
+                            (done))
+                          (fn [err]
+                            (is false (str "attempt should not fail: " err))
+                            (done))))))))
+
+(deftest test-attempt-captures-error
+  (testing "attempt of a failing spin yields a thunk that throws the error,
+            and attempt itself still succeeds"
+    (async done
+           (with-ctx [_ctx]
+             (let [risky (spin (throw (ex-info "boom" {:x 1})))
+                   parent (spin
+                           (let [f (await (spin-core/attempt risky))]
+                             (try
+                               (f)
+                               :no-throw
+                               (catch #?(:clj Throwable :cljs :default) e
+                                 [:caught (ex-message e)]))))]
+               (run-spin! parent
+                          (fn [result]
+                            (is (= [:caught "boom"] result)
+                                "attempt thunk should throw the captured error")
+                            (done))
+                          (fn [err]
+                            (is false (str "attempt itself should never fail: " err))
+                            (done))))))))
+
+(deftest test-absolve-unwraps-ok
+  (testing "absolve calls the wrapped thunk and returns its value"
+    (async done
+           (with-ctx [_ctx]
+             (let [wrapped (spin (fn [] 99))
+                   parent (spin (await (spin-core/absolve wrapped)))]
+               (run-spin! parent
+                          (fn [result]
+                            (is (= 99 result) "absolve should return the thunk's value")
+                            (done))
+                          (fn [err]
+                            (is false (str "absolve should not fail: " err))
+                            (done))))))))
+
+(deftest test-absolve-rethrows-error
+  (testing "absolve of a thunk that throws converts it back to a rejected spin"
+    (async done
+           (with-ctx [_ctx]
+             (let [wrapped (spin (fn [] (throw (ex-info "kaboom" {}))))
+                   parent (spin (await (spin-core/absolve wrapped)))]
+               (run-spin! parent
+                          (fn [_]
+                            (is false "absolve should propagate the thrown error")
+                            (done))
+                          (fn [err]
+                            (is (= "kaboom" (ex-message err))
+                                "absolve should rethrow the captured error")
+                            (done))))))))
+
+(deftest test-attempt-absolve-roundtrip
+  (testing "absolve ∘ attempt is identity on a succeeding spin"
+    (async done
+           (with-ctx [_ctx]
+             (let [parent (spin (await (spin-core/absolve
+                                        (spin-core/attempt (spin 7)))))]
+               (run-spin! parent
+                          (fn [result]
+                            (is (= 7 result) "roundtrip should recover the value")
+                            (done))
+                          (fn [err]
+                            (is false (str "roundtrip should not fail: " err))
+                            (done))))))))

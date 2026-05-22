@@ -138,9 +138,19 @@
        (-reset! [this newval]
                 (swap-signal*-explicit this (constantly newval)))]))
 
-;; Resolve print-method dispatch ambiguity: SignalRef is both IRecord and IDeref.
-;; Prefer IRecord so records print in their default map form.
+;; Resolve print-method dispatch ambiguity. SignalRef is a defrecord —
+;; so it is BOTH clojure.lang.IRecord and clojure.lang.IPersistentMap —
+;; and it also implements IDeref. print-method has a method for each of
+;; those three interfaces, and they are mutually unordered, so dispatch
+;; is ambiguous unless EVERY pair is pinned. clojure.core pins
+;; IRecord > IPersistentMap; we pin the other two pairs here. Without
+;; the IPersistentMap/IDeref pin, dispatch throws "Multiple methods
+;; match ... and neither is preferred" non-deterministically — whether
+;; it throws depends on the hash-iteration order of print-method's
+;; method table, which varies per JVM run. With all three pairs pinned,
+;; IRecord always wins and a SignalRef prints in its default record form.
 #?(:clj (prefer-method print-method clojure.lang.IRecord clojure.lang.IDeref))
+#?(:clj (prefer-method print-method clojure.lang.IPersistentMap clojure.lang.IDeref))
 
 ;; Ensure a signal has an initialized entry in the runtime state
 (defn ensure-signal-initialized!

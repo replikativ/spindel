@@ -4,8 +4,9 @@
 
   Scenario: a parent body has `(track A)` early, then `(await deferred)`.
   When signal A changes while the body is suspended on the deferred,
-  `resume-single-observer!` truncates conts with `:order` greater than
-  the track-cont — including the engine-side await cont. But the
+  `resume-body!` (via `truncate-stale-conts!`) truncates conts with
+  `:order` greater than the track-cont — including the engine-side
+  await cont. But the
   deferred's `:pending` list still holds the parent body's raw resolve
   closure. When the deferred is later delivered, that orphaned closure
   fires AND the new closure (registered by the parent's re-run body)
@@ -15,10 +16,10 @@
   Stage 4 fix: every external-await (`await-deferred`, `await-mailbox`,
   the plain-fn awaitable path) wraps resolve/reject with a cancellation
   gate. The associated engine cont owns the gate via `:cancel!`. All
-  cont-removal sites in the engine (`resume-single-observer!`,
-  `re-execute-dirty-parent!`, `clear-all-await-continuations!`,
-  `clear-deps!`, `full-cleanup-spin!`) call `:cancel!` on every removed
-  cont before dissociating. The orphaned closure becomes a no-op."
+  cont-removal sites in the engine (`truncate-stale-conts!`,
+  `clear-all-await-continuations!`, `clear-deps!`, `full-cleanup-spin!`)
+  call `:cancel!` on every removed cont before dissociating. The
+  orphaned closure becomes a no-op."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
@@ -149,7 +150,7 @@
                  parent. Parent's `:engine/cancelled-tokens` = #{A}.
                  `d.:pending` still has the orphaned closure gated on A
                  plus the new closure gated on A'.
-              3. Fork the parent. Fork inherits `:continuations`
+              3. Fork the parent. Fork inherits the continuation tables
                  (explicitly copied) but reads `:engine/cancelled-tokens`
                  via overlay fall-through → sees #{A}.
               4. Fork `(reset! s …)` truncates fork's await cont and
@@ -269,7 +270,7 @@
                (simple/await-drain-complete! parent-ctx :timeout-ms 1000))
              (is (zero? @total-side-effects) "neither context has run the body yet")
 
-          ;; Fork the context. Fork inherits parent's :continuations
+          ;; Fork the context. Fork inherits parent's continuation tables
           ;; (including the await-gate cont) plus parent's Deferred
           ;; state (gate.:pending containing the wrapped resolve).
              (let [fork-ctx (ctx/fork-context parent-ctx)]

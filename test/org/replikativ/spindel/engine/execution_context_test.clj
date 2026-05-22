@@ -572,23 +572,24 @@
     (let [ctx (ctx/create-execution-context)]
       (try
         (binding [ec/*execution-context* ctx]
-          ;; Add some continuations to parent
-          (rtp/add-continuation! ctx :test-spin-1 {:id :cont-1 :type :test})
-          (rtp/add-continuation! ctx :test-spin-2 {:id :cont-2 :type :test})
+          ;; Add some continuations to parent. :kind routes them into
+          ;; :await-conts (await) vs :track-subscriptions (track).
+          (rtp/add-continuation! ctx :test-spin-1 {:id :cont-1 :kind :await-once :type :test})
+          (rtp/add-continuation! ctx :test-spin-2 {:id :cont-2 :kind :await-once :type :test})
 
           ;; Verify parent has continuations
-          (is (= 2 (count (keys (rtp/get-state ctx [:continuations])))))
+          (is (= 2 (count (keys (rtp/get-state ctx [:await-conts])))))
 
           ;; Create snapshot
           (let [snap (ctx/snapshot-context ctx)]
             ;; In-memory snapshot PRESERVES continuations (for checkpoinodes/restore)
-            (is (= 2 (count (keys (rtp/get-state snap [:continuations])))))
+            (is (= 2 (count (keys (rtp/get-state snap [:await-conts])))))
 
             ;; Snapshot should have cleared draining flag
             (is (false? (rtp/get-state snap [:engine/draining?]))))
 
           ;; Parent should still have continuations (unchanged)
-          (is (= 2 (count (keys (rtp/get-state ctx [:continuations]))))))
+          (is (= 2 (count (keys (rtp/get-state ctx [:await-conts]))))))
         (finally
           (ctx/stop-context! ctx))))))
 

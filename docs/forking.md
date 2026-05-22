@@ -291,6 +291,5 @@ Track fork lineage for distributed systems testing:
 
 - [Getting Started](getting-started.md) — Basic tutorial
 - [Concepts](concepts.md) — Execution context explained
-- [Engine](engine.md) — Overlay-backend mechanics, fork-local vs shared paths, the full architectural picture
-- [Scheduling](scheduling.md) — Drain-thread / signal-thread sharing across forks
+- [Engine](engine.md) — Overlay-backend mechanics, fork-local vs shared paths, drain-thread sharing across forks, the full architectural picture
 - [SCI Integration](sci-integration.md) — Agent isolation with forked contexts

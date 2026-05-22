@@ -51,23 +51,42 @@
   (keyword (str "await-cont-"
                 (h/content-hash [parent-spin-id awaited-spin-id source-loc]))))
 
+(defn- capture-slice-state
+  "Snapshot the per-slice state the engine restores when an await
+  continuation resumes: the parent's context bindings, addressing
+  chain-head, and transient deps tracking. See `spin-await-cont-map`
+  and `restore-slice-state!` (engine/impl/simple.cljc) for what each
+  key is for."
+  [ctx spin-id]
+  {:bindings (:bindings ctx)
+   :chain-head (addressing/get-chain-head ctx)
+   :tracking (rtp/get-state ctx [:spin-tracking spin-id])})
+
 (defn- spin-await-cont-map
   "Build the continuation map for a parent awaiting a child Spin.
 
-  Reactive children (PSpin) get :ephemeral-await? false so the continuation
+  Reactive children (PSpin) get :kind :await-reactive so the continuation
   survives `clear-all-await-continuations!` between batches and re-fires
   whenever the child re-completes (e.g. its tracked signals change).
 
-  Captures two per-spin snapshots so the resumed body slice resumes
-  consistently with where it left off:
+  Carries a `:slice-state` map — the parent's per-slice snapshot the
+  engine restores at resume (via restore-slice-state! in
+  engine/impl/simple.cljc) so the resumed body slice resumes
+  consistently with where it left off. Built identically for track and
+  await continuations; it has three keys:
 
-  - `:tracking-snap` — the parent's transient `:spin-tracking` entry at
+  - `:bindings` — the parent's `(:bindings ctx)` map at await-suspend
+    time. On resume the engine merges it back so the post-resume body
+    slice sees the same context scope (DOM parent-addr, slot, keys, the
+    spin's construction scope) it had pushed before suspending.
+
+  - `:tracking` — the parent's transient `:spin-tracking` entry at
     suspend time. On resume the engine restores it so the body's
     accumulated dep tracking continues from where it left off rather
     than restarting empty (which would cause record-deps! to spuriously
     remove deps that the pre-suspend body slice had registered).
 
-  - `:chain-head-snap` — the parent's per-spin addressing chain-head at
+  - `:chain-head` — the parent's per-spin addressing chain-head at
     suspend time. On resume the engine restores it so any `(spin …)` or
     `(effect …)` forms in the post-resume body slice mint the SAME ids
     as on the first run. Under per-spin chain-head scoping
@@ -88,19 +107,29 @@
   cache-result and the :spin-completion event handler can delete it
   again — at which point `on-resume` reads `spin-current-result` and
   gets nil, producing the `No protocol method PResult.match` crash."
-  [parent-spin-id awaited-spin awaited-spin-id resolve reject source-loc is-reactive-spin tracking-snap chain-head-snap]
+  [parent-spin-id awaited-spin awaited-spin-id resolve reject source-loc is-reactive-spin slice-state]
   {:id (await-spin-cont-id parent-spin-id awaited-spin-id source-loc)
    :event-key [:spin/complete awaited-spin-id]
+   :kind (if is-reactive-spin :await-reactive :await-once)
    :resolve-fn resolve
    :reject-fn reject
    :source-loc source-loc
-   :ephemeral-await? (not is-reactive-spin)
-   :tracking-snap tracking-snap
-   :chain-head-snap chain-head-snap
+   :slice-state slice-state
    :awaited-spin awaited-spin
+   ;; await is monadic: `:on-resume` fetches the awaited child's cached
+   ;; `Result`, and `:resume-fn` routes it to this cont's `:resolve-fn`
+   ;; (on :ok) or `:reject-fn` (on :error). The engine's unified
+   ;; `resume-body!` calls this `:resume-fn` rather than its track
+   ;; default — track passes a signal value straight through, await
+   ;; pattern-matches a result. Reading `:variant` (rather than
+   ;; `spin-core/match`) keeps a nil/absent result routing harmlessly
+   ;; to reject instead of throwing `No protocol method PResult.match`.
    :on-resume (fn [_rt]
-                (let [res (ec/spin-current-result awaited-spin-id)]
-                  (spin-core/match res identity identity)))})
+                (ec/spin-current-result awaited-spin-id))
+   :resume-fn (fn [child-result]
+                (if (= (:variant child-result) :ok)
+                  (pcps-async/invoke-continuation resolve (:payload child-result))
+                  (pcps-async/invoke-continuation reject (:payload child-result))))})
 
 (defn- await-spin
   "Direct await handler for Spin.
@@ -152,12 +181,10 @@
           ;; running multiple times overwrites instead of accumulating stale
           ;; continuations.
           (when is-reactive-spin
-            (let [tracking-snap (rtp/get-state ctx [:spin-tracking spin-id])
-                  chain-head-snap (addressing/get-chain-head ctx)]
-              (ec/continuation-add!
-               spin-id
-               (spin-await-cont-map spin-id spin-ref awaited-spin-id resolve reject source-loc true
-                                    tracking-snap chain-head-snap))))
+            (ec/continuation-add!
+             spin-id
+             (spin-await-cont-map spin-id spin-ref awaited-spin-id resolve reject source-loc true
+                                  (capture-slice-state ctx spin-id))))
           (spin-core/match cached
             #(spin-core/resume resolve %)
             #(spin-core/resume reject %)))
@@ -235,12 +262,10 @@
                                (simple/enqueue-completion-event! ctx awaited-spin-id))
                              nil)
               is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
-              tracking-snap (rtp/get-state ctx [:spin-tracking spin-id])
-              chain-head-snap (addressing/get-chain-head ctx)
               cont-map (spin-await-cont-map spin-id spin-ref awaited-spin-id
                                             resolve reject source-loc
                                             is-reactive-spin
-                                            tracking-snap chain-head-snap)
+                                            (capture-slice-state ctx spin-id))
               ;; Pre-register so any async completion has a subscriber.
               _ (ec/continuation-add! spin-id cont-map)
               _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
@@ -299,7 +324,7 @@
   register an engine continuation for the wait.
 
   Background: when the engine resumes a parent's earlier track-cont via
-  `resume-single-observer!`/`re-execute-dirty-parent!`, it truncates all
+  `resume-body!`, it truncates all
   conts with `:order` strictly greater than the resumed cont. The
   engine's own resolve callbacks for those conts then never fire (their
   cont entries no longer exist). But external resources — Deferred's
@@ -348,8 +373,8 @@
   that never get delivered (e.g. a Deferred that's abandoned without
   being delivered) — a tiny constant in practice.
 
-  The engine cont is added to `:continuations[spin-id]` with
-  `:ephemeral-await? true` so `clear-all-await-continuations!` reaps it
+  The engine cont is added to `:await-conts[spin-id]` with
+  `:kind :external-await` so `clear-all-await-continuations!` reaps it
   at generation boundaries.
 
   Args:
@@ -417,8 +442,8 @@
               ;; continuations! / clear-deps! work without special-
               ;; casing.
               :event-key [:external-await ext-tag]
+              :kind :external-await
               :source-loc source-loc
-              :ephemeral-await? true
               :cancel-token cancel-token
               ;; `:cancel!` takes the engine context to record the
               ;; cancellation in. Engine truncation sites pass the

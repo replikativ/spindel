@@ -133,12 +133,13 @@
     ;; Continuations are never removed - fully reactive incremental graph
     ;; IMPORTANT: Capture bindings so they're restored when continuation resumes
     ;; This ensures dynamic vars like *yield-handler* are available after suspension
-    ;; ALSO capture context bindings (DOM context like :dom/parent-addr, :dom/current-slot)
-    ;; These are stored in ExecutionContext's :bindings field, not as dynamic vars
+    ;; ALSO capture the per-slice :slice-state (see below)
     (when spin-id
       (let [captured-bindings (bindings/capture-bindings)
             ctx (ec/current-execution-context)
-            ;; Capture context bindings for DOM addressing
+            ;; Capture context bindings for DOM addressing (DOM context like
+            ;; :dom/parent-addr, :dom/current-slot). These are stored in
+            ;; ExecutionContext's :bindings field, not as dynamic vars.
             captured-ctx-bindings (when ctx (:bindings ctx))
             ;; Capture transient deps tracking so resumed body slice continues
             ;; from the pre-suspend accumulator rather than empty (which would
@@ -163,14 +164,19 @@
             ;; is safe to restore and cannot collide across distinct spins.
             chain-head-snap (addressing/get-chain-head ctx)
             cont {:event-key [:signal signal-id]
+                  :kind :track
                   :resolve-fn resolve
                   :reject-fn reject
                   :source-loc source-loc
                   :signal-id signal-id
                   :bindings captured-bindings
-                  :ctx-bindings captured-ctx-bindings
-                  :tracking-snap tracking-snap
-                  :chain-head-snap chain-head-snap
+                  ;; The per-slice snapshot the engine restores at resume:
+                  ;; context bindings, addressing chain-head, deps tracking.
+                  ;; restore-slice-state! in engine/impl/simple.cljc puts
+                  ;; each piece back before the body slice resumes.
+                  :slice-state {:bindings captured-ctx-bindings
+                                :chain-head chain-head-snap
+                                :tracking tracking-snap}
                   ;; Capture generation at continuation creation time
                   ;; On resume, we only return deltas if signal generation > this value
                   :consumed-generation current-generation

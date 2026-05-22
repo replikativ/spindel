@@ -15,7 +15,10 @@
             [org.replikativ.spindel.effects.track :refer [track]]))
 
 (defn- cont-count [spin-id]
-  (count (ec/get-state [:continuations spin-id])))
+  ;; Continuations are split into :track-subscriptions (comonadic) and
+  ;; :await-conts (monadic) — count both for a spin's total.
+  (+ (count (ec/get-state [:track-subscriptions spin-id]))
+     (count (ec/get-state [:await-conts spin-id]))))
 
 (deftest single-track-stays-bounded-under-many-signal-changes
   (testing "A spin with one track call site retains exactly one continuation

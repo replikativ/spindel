@@ -295,9 +295,10 @@
           (simple/mark-running! runtime spin-id)
           (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
 
-            ;; CRITICAL: Invalidate spins created during previous execution
-            ;; Their closures captured values from the old run - now stale
-          (simple/invalidate-created-spins! runtime spin-id)
+            ;; Reset :created-spins for this body run; children are re-registered
+            ;; as the body runs, and register-spin! re-runs any whose captured
+            ;; environment changed (B) — no blanket invalidation needed.
+          (simple/clear-created-spins! runtime spin-id)
 
             ;; Seed this body slice's per-spin chain-head slot with
             ;; `body-start-chain-head spin-id` before invoking spin-fn —
@@ -424,19 +425,35 @@
 
    The spin-id is used to track dependencies in the runtime's graph."
   ([spin-fn]
-   (make-spin spin-fn (keyword (gensym "spin-"))))
+   (make-spin spin-fn (keyword (gensym "spin-")) nil :resource))
   ([spin-fn spin-id]
+   (make-spin spin-fn spin-id nil :resource))
+  ([spin-fn spin-id captured-locals]
+   (make-spin spin-fn spin-id captured-locals :computation))
+  ([spin-fn spin-id captured-locals kind]
    (let [reactive-spin (->Spin spin-id spin-fn)]
 
-     ;; Register spin with runtime via protocol (uses dynamic *execution-context*)
-     (ec/spin-register! spin-id {:provides #{}})
+     ;; Register spin with runtime via protocol (uses dynamic *execution-context*).
+     ;; captured-locals — {sym value} of the body's free variables — lets
+     ;; register-spin! detect (identical?) whether a re-registered spin's
+     ;; captured environment changed. nil for non-macro callers.
+     ;; kind — :computation (deterministic id, replayable, B-gated; minted by
+     ;; the `spin`/`effect` macro's 3-arity call) or :resource (gensym id,
+     ;; effectful one-shot body; the 1-/2-arity used by sleep/parallel/race/
+     ;; deferred/mailbox/… combinators, which are not replayable).
+     (ec/spin-register! spin-id {:provides #{}
+                                 :captured-locals captured-locals
+                                 :kind kind})
 
      ;; Snapshot this spin's lexical scope — the registered spin-scope
      ;; binding keys (see engine.bindings) — from the construction-time
      ;; execution context onto the spin's node. The engine re-applies the
-     ;; snapshot on every body-entry path (see apply-spin-scope in
-     ;; engine/impl/simple.cljc), giving spins closure semantics over the
-     ;; scope they were constructed under. Which keys count as scope is
+     ;; snapshot on every COLD body start (the :spin-execution handler in
+     ;; engine/impl/simple.cljc and the await-spin slow/rebuild child
+     ;; invocation in effects/await.cljc), giving spins closure semantics
+     ;; over the scope they were constructed under. Continuation resumes
+     ;; instead restore the suspend-time scope via the cont's
+     ;; `:slice-state` snapshot. Which keys count as scope is
      ;; supplied entirely by the registry — e.g. dom.addressing registers
      ;; :dom/parent-addr / :dom/current-slot — so spin/core stays domain-
      ;; agnostic. Spins constructed at root scope capture nothing, so this
@@ -615,12 +632,14 @@
    Always succeeds - errors are captured as throwable functions."
   ([spin]
    (make-spin
-    (fn [runtime-atom _ resolve _]
+    ;; spin-fn is the arity-2 CPS continuation `(resolve reject)` — the
+    ;; signature `Spin`'s invoke calls. The wrapped spin is itself a
+    ;; `Spin`, also invoked `(spin on-ok on-err)`.
+    (fn [resolve _reject]
       ;; Always succeed with a thunk capturing either value or error
-      (let [sid (spin-id spin)
-            on-ok (fn [v] (resolve (fn [] v)))
+      (let [on-ok (fn [v] (resolve (fn [] v)))
             on-err (fn [e] (resolve (fn [] (throw e))))]
-        (spin runtime-atom sid on-ok on-err)
+        (spin on-ok on-err)
         incomplete)))))
 
 (defn absolve
@@ -629,13 +648,14 @@
    Inverse of attempt - converts wrapped errors back to thrown errors."
   ([spin]
    (make-spin
-    (fn [runtime-atom _ resolve reject]
-      (let [sid (spin-id spin)
-            on-ok (fn [thunk]
+    ;; arity-2 CPS continuation `(resolve reject)`; the wrapped spin is
+    ;; a `Spin`, invoked `(spin on-ok on-err)`.
+    (fn [resolve reject]
+      (let [on-ok (fn [thunk]
                     (try
                       (resolve (thunk))
                       (catch #?(:clj Throwable :cljs :default) e
                         (reject e))))
             on-err (fn [e] (reject e))]
-        (spin runtime-atom sid on-ok on-err)
+        (spin on-ok on-err)
         incomplete)))))

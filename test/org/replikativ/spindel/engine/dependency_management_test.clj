@@ -19,6 +19,13 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.test-async :refer [await-drain]]))
 
+(defn- spin-conts
+  "All of a spin's continuations — track + await — as one map. The
+  engine stores them in two kind-routed structures."
+  [ctx spin-id]
+  (merge (rtp/get-state ctx [:track-subscriptions spin-id])
+         (rtp/get-state ctx [:await-conts spin-id])))
+
 ;; =============================================================================
 ;; Test 1: Continuation Cleanup During Signal Changes
 ;; =============================================================================
@@ -53,7 +60,7 @@
             (is (= 1 @exec-count))
 
             ;; Check that 3 continuations were created (order 1, 2, 3)
-            (let [conts (rtp/get-state ctx [:continuations spin-id])]
+            (let [conts (spin-conts ctx spin-id)]
               (is (= 3 (count conts)) "Should have 3 continuations after initial execution"))
 
             ;; Change sig-b (middle signal) - spin resumes from continuation 2
@@ -68,7 +75,7 @@
             (is (= 2 @exec-count) "Should have re-executed once")
 
             ;; CRITICAL: Check that continuation 3 was removed (stale)
-            (let [conts-after (rtp/get-state ctx [:continuations spin-id])]
+            (let [conts-after (spin-conts ctx spin-id)]
               (is (<= (count conts-after) 3)
                   "Stale continuation should be removed or replaced"))
 
@@ -118,7 +125,7 @@
             (is (= 15 @test-spin)) ; 1+2+3+4+5
 
             ;; 5 continuations created
-            (let [conts (rtp/get-state ctx [:continuations spin-id])]
+            (let [conts (spin-conts ctx spin-id)]
               (is (= 5 (count conts))))
 
             ;; Change sig-3 (middle) - resumes from continuation 3
@@ -229,14 +236,14 @@
             @test-spin
 
             ;; Verify continuations exist
-            (let [conts (rtp/get-state ctx [:continuations spin-id])]
+            (let [conts (spin-conts ctx spin-id)]
               (is (= 2 (count conts)) "Should have 2 continuations before clear"))
 
             ;; Clear deps
             (simple/clear-deps! ctx spin-id)
 
             ;; Verify continuations removed
-            (let [conts (rtp/get-state ctx [:continuations spin-id])]
+            (let [conts (spin-conts ctx spin-id)]
               (is (or (nil? conts) (empty? conts))
                   "All continuations should be removed after clear-deps!"))))
         (finally

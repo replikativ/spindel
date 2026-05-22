@@ -19,6 +19,13 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.test-async :refer [await-drain]]))
 
+(defn- all-conts
+  "All of a spin's continuations — track + await — as one map. The
+  engine stores them in two kind-routed structures."
+  [ctx spin-id]
+  (merge (rtp/get-state ctx [:track-subscriptions spin-id])
+         (rtp/get-state ctx [:await-conts spin-id])))
+
 ;; =============================================================================
 ;; Property 1: Glitch-Freedom
 ;; =============================================================================
@@ -159,7 +166,7 @@
             @observer
 
             ;; Record initial continuation count
-            (let [initial-conts (rtp/get-state ctx [:continuations spin-id])
+            (let [initial-conts (all-conts ctx spin-id)
                   initial-count (count initial-conts)]
 
               ;; Perform 100 randomized signal updates
@@ -171,7 +178,7 @@
                 (await-drain ctx))
 
               ;; Check continuation count didn't grow unbounded
-              (let [final-conts (rtp/get-state ctx [:continuations spin-id])
+              (let [final-conts (all-conts ctx spin-id)
                     final-count (count final-conts)]
 
                 (is (<= final-count (+ initial-count 5))
@@ -211,7 +218,7 @@
                 (await-drain ctx))
 
               ;; Verify continuation count is reasonable
-              (let [conts (rtp/get-state ctx [:continuations spin-id])]
+              (let [conts (all-conts ctx spin-id)]
                 (is (<= (count conts) 10)
                     (str "Trial " trial ": Too many continuations: " (count conts)))))))
         (finally

@@ -279,38 +279,119 @@
 
 (declare try-claim-execution!)
 (declare propagate-await-dirty!)
-(declare invalidate-created-spins!)
 
-(defn- resume-single-observer!
-  "Resume a single observer's track continuation during Phase 1 of signal-change.
+(defn ^:no-doc clear-created-spins!
+  "Reset a spin's `:created-spins` set at the start of a (re-)run of its
+  body. Children are re-registered as the body re-runs; whether a child
+  must re-execute — because its captured environment changed — is decided
+  per-child by `register-spin!`'s identical?-gate (and a :resource child
+  is always re-run), so no blanket invalidation of the subtree is needed.
+  Dependency/continuation teardown of children that re-run is handled by
+  the normal `record-deps!` reconciliation at body completion."
+  [context spin-id]
+  (rtp/swap-state! context [:nodes spin-id]
+                   (fn [node] (when node (assoc node :created-spins #{})))))
 
-  Handles: stale continuation cleanup, signal dep re-tracking, marking dirty/running,
-  and resuming the continuation with the fresh signal value.
+(defn- restore-slice-state!
+  "Restore a continuation's per-slice `:slice-state` snapshot so the
+  resumed body slice continues consistently with where it suspended.
 
-  Args:
-    context - execution context
-    spin-id - observer spin to resume
-    sid - signal that changed
-    cont - the earliest continuation for this observer"
-  [context spin-id sid cont]
-  (log/debug :engine/resuming-track-continuation {:spin-id spin-id :signal-id sid})
+  Every continuation (track + await) carries `:slice-state`
+  `{:bindings … :chain-head … :tracking …}` — captured at the
+  track/await suspend point (see effects/track.cljc and
+  effects/await.cljc). This puts each piece back:
 
-  ;; Remove stale continuations (order > resumed continuation's order)
-  ;;
-  ;; Before dissociating each removed cont, call its `:cancel!` hook if
-  ;; any. External-await wrappers (Deferred / Mailbox / plain-fn) install
-  ;; a cancellation gate so that when the resource later fires, the
-  ;; orphaned resolve closure is a no-op. Without this, both the OLD
-  ;; (orphaned) and NEW (registered by the parent re-run) body slices
-  ;; would advance to outer-resolve, causing double cache-result, double
-  ;; record-deps, and double side effects. See
-  ;; `effects/await.cljc::cancellable-external-pair`.
+  - `:tracking` — restored into `[:spin-tracking spin-id]` so the body's
+    accumulated dep tracking continues from the pre-suspend accumulator
+    rather than empty (which would make record-deps! tear down deps the
+    pre-suspend slice had registered).
+
+  - `:chain-head` — seeded into the per-spin addressing chain-head slot
+    so any `(spin …)` / `(effect …)` in the post-resume slice mint the
+    same ids as on the first run. Falls back to the body-start value
+    when no snapshot was captured.
+
+  - `:bindings` — merged onto the current context bindings (snapshot
+    wins) and returned as a NEW context. The other two are state
+    mutations; this one is a value the caller must `binding`.
+
+  Returns the context with `:slice-state`'s `:bindings` merged in."
+  [context spin-id cont]
+  (let [{:keys [bindings chain-head tracking]} (:slice-state cont)]
+    (when tracking
+      (rtp/swap-state! context [:spin-tracking spin-id] (constantly tracking)))
+    (addressing/seed-chain-head! context spin-id
+                                 (or chain-head
+                                     (addressing/body-start-chain-head spin-id)))
+    (cond-> context
+      bindings (update :bindings merge bindings))))
+
+;; -----------------------------------------------------------------------------
+;; Continuation storage — split by the comonad / monad nature of the cont:
+;;
+;;   [:track-subscriptions spin-id]  — the comonadic, persistent track
+;;     conts (:kind :track). A signal change re-runs the body slice.
+;;   [:await-conts spin-id]          — the monadic await conts
+;;     (:kind :await-reactive / :await-once / :external-await). A child
+;;     completion advances the suspended body slice. NOT a stack — a
+;;     `parallel` holds many await conts live at once.
+;;
+;; Both are `{cont-id -> cont}` maps. `:order` is a SINGLE monotone
+;; sequence across BOTH structures per spin (the body-position ordinal):
+;; `truncate-stale-conts!` compares a track cont's :order against await
+;; conts' :order, so the counter must span both.
+
+(defn- track-cont?
+  "True if `cont` is a comonadic track continuation (belongs in
+  `:track-subscriptions`); false if it is a monadic await continuation
+  (belongs in `:await-conts`). The `case` has no `:else` so an
+  unrecognised `:kind` throws rather than silently mis-routing."
+  [cont]
+  (case (:kind cont)
+    :track true
+    (:await-reactive :await-once :external-await) false))
+
+(defn- cont-store-key
+  "The state key the continuation `cont` is stored under —
+  `:track-subscriptions` for a track cont, `:await-conts` for an await
+  cont."
+  [cont]
+  (if (track-cont? cont) :track-subscriptions :await-conts))
+
+(defn- spin-continuations
+  "All of a spin's continuations — track + await — as one `{cont-id ->
+  cont}` map. Used only where a consumer genuinely needs both kinds
+  together (truncation, earliest-of-all); kind-specific consumers read
+  the one structure they need directly."
+  [state spin-id]
+  (merge (get-in state [:track-subscriptions spin-id])
+         (get-in state [:await-conts spin-id])))
+
+(defn- truncate-stale-conts!
+  "Drop a spin's continuations whose `:order` is strictly greater than the
+  resumed continuation's, then re-track the signal deps of the conts whose
+  `:order` is strictly less (they belong to the pre-resume body slice that
+  stays in effect).
+
+  Before dissociating each removed cont, call its `:cancel!` hook if any.
+  External-await wrappers (Deferred / Mailbox / plain-fn) install a
+  cancellation gate so that when the resource later fires, the orphaned
+  resolve closure is a no-op. Without this, both the OLD (orphaned) and
+  NEW (registered by the parent re-run) body slices would advance to
+  outer-resolve, causing double cache-result, double record-deps, and
+  double side effects. See `effects/await.cljc::cancellable-external-pair`."
+  [context spin-id cont]
   (let [cont-order (:order cont)
-        all-conts (rtp/get-state context [:continuations spin-id])
+        ;; :order spans both structures, so truncation reads the merged
+        ;; track + await view. Track conts (the only conts with a
+        ;; :signal-id) before cont-order belong to the still-in-effect
+        ;; pre-resume slice; await conts after it are stale.
+        all-conts (spin-continuations (rtp/get-state context []) spin-id)
         skipped-signal-ids (->> (vals all-conts)
                                 (filter #(< (:order %) cont-order))
                                 (keep :signal-id))
-        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
+        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))
+        keep-kept (fn [conts] (into {} (filter (fn [[_k v]] (<= (:order v) cont-order)) conts)))]
     ;; Fire cancellation hooks BEFORE state mutation so orphaned closures
     ;; observe cancellation the moment the external resource calls them.
     ;; Pass the current context — under Option A (state-backed cancel
@@ -319,142 +400,103 @@
     ;; see their own state).
     (doseq [c cancelled-conts]
       (when-let [cancel! (:cancel! c)] (cancel! context)))
-    (rtp/swap-state! context [:continuations spin-id]
-                     (fn [conts]
-                       (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
+    (rtp/swap-state! context []
+                     (fn [state]
+                       (-> state
+                           (update-in [:track-subscriptions spin-id] keep-kept)
+                           (update-in [:await-conts spin-id] keep-kept))))
     (doseq [skipped-sid skipped-signal-ids]
-      (track-signal-dep! context spin-id skipped-sid)))
+      (track-signal-dep! context spin-id skipped-sid))))
 
-  ;; Re-track the resumed signal dependency
-  (track-signal-dep! context spin-id sid)
+(defn- resume-body!
+  "Resume a suspended spin body slice from one of its continuations.
 
-  ;; Mark spin as not completed, dirty, AND running
-  (rtp/swap-state! context [:nodes spin-id]
-                   (fn [node]
-                     (when node
-                       (-> node
-                           (assoc :completed? false)
-                           (assoc :running? true)
-                           (nodes/mark-dirty)))))
+  Unified resume path for both track-continuation resumes (signal
+  changed) and await-continuation resumes (awaited child completed):
 
-  ;; Invalidate child spins created during previous execution
-  ;; Their closures captured values from the old run - now stale
-  ;; This is the missing call site: spin/core.cljc only calls this during invoke,
-  ;; but track resumption also re-executes the spin body from a continuation point
-  (invalidate-created-spins! context spin-id)
+  - `resume-single-observer!` — a signal changed and we resume the
+    observer's earliest track cont. (signal-change Phase 1)
+  - `re-execute-dirty-parent!` — a child completed and we re-run a
+    non-running ancestor from its earliest track cont. (propagate-
+    await-dirty!)
+  - the `:spin-completion` handler — an awaited child completed and we
+    resume the parent's await cont.
 
-  ;; Restore the parent's transient deps tracking from the snapshot captured
-  ;; at suspend time. Without this, the body slice that resumes after the
-  ;; track point starts with empty tracking — the deps it accumulated in the
-  ;; pre-suspend slice are gone. record-deps! at body completion would then
-  ;; commit only the post-resume deps and tear down observer relations for
-  ;; everything tracked in the pre-suspend slice (e.g. nav-spin in a body
-  ;; that awaited nav-spin then columns-spin, resuming from the cols await).
-  (when-let [snap (:tracking-snap cont)]
-    (rtp/swap-state! context [:spin-tracking spin-id] (constantly snap)))
+  The two modes ARE the comonad (`:track`) / monad (`:await`)
+  distinction — see `docs/engine-formalism.md` §3.4, §5.5. The per-mode
+  data is carried by the continuation itself: a `:track` cont carries
+  `:signal-id` (the dependency to re-track), an `:await` cont carries
+  `:resume-fn` (the monadic result routing). `mode` is one of
+  `:track` / `:await`; the `case` has no `:else` so an unknown mode
+  throws rather than silently mis-resuming.
 
-  ;; Resume with the bindings that were active at suspend time. The cont's
-  ;; :ctx-bindings is a snapshot of (:bindings ctx) at the suspension point,
-  ;; so it already carries whatever scope the body had pushed (DOM
-  ;; parent-addr, slot, keys, etc.). Merge with current context bindings to
-  ;; pick up any persistent additions (e.g. middleware-set values) that
-  ;; arrived between suspend and resume; cont values win where they overlap.
-  ;;
-  ;; The per-spin chain-head slot is seeded with the cont's
-  ;; `:chain-head-snap` (the cursor value captured at suspend) so the
-  ;; post-resume slice mints `(spin …)` / `(effect …)` ids deterministically
-  ;; continuing from where the pre-suspend slice left off. The cursor
-  ;; lives in ctx state under `:addressing :chain-heads` — see
-  ;; addressing.cljc — so no dynamic-var capture/restore is needed.
-  (let [ctx-bindings (:ctx-bindings cont)
-        merged-bindings (if ctx-bindings
-                          (merge (:bindings context) ctx-bindings)
-                          (:bindings context))
-        ctx-with-bindings (assoc context :bindings merged-bindings)
-        chain-head-start (or (:chain-head-snap cont)
-                             (addressing/body-start-chain-head spin-id))]
-    (addressing/seed-chain-head! context spin-id chain-head-start)
+  `:track` mode (comonadic co-bind — re-run the body slice):
+  1. truncate stale conts (order > cont) + re-track skipped-cont deps;
+  2. re-track the cont's `:signal-id` — the signal it resumed on;
+  3. mark the node `{:completed? false :running? true}` + dirty;
+  4. clear `:created-spins` — the body slice re-runs from the track
+     point, children are re-registered, and register-spin!'s
+     identical?-gate (B) re-runs only those whose captured environment
+     changed;
+  5. restore the cont's `:slice-state` snapshot (deps tracking,
+     addressing chain-head, context bindings);
+  6. resume with the default track behaviour: invoke the cont's
+     `:resolve-fn` with the resumed value.
+
+  `:await` mode (monadic bind — advance a still-suspended body slice):
+  1. NO truncation — the body has not re-run, later conts are not stale;
+  2. NO signal re-track — an await cont has no signal dep;
+  3. NO dirty/running re-mark — a still-suspended body resuming on an
+     await must not be re-marked as a fresh re-run;
+  4. NO `:created-spins` clear — wiping the set would drop the children
+     (incl. the awaited child) the pre-suspend slice created;
+  5. restore the cont's `:slice-state` snapshot;
+  6. resume with the cont's own `:resume-fn`, which pattern-matches the
+     child's `Result` (`:ok` → resolve, `:error` → reject).
+
+  Returns whatever `resume-continuation!` returns."
+  [context spin-id cont mode]
+  ;; 1. Remove stale continuations (order > resumed continuation's order).
+  (case mode
+    :track (truncate-stale-conts! context spin-id cont)
+    :await nil)
+
+  ;; 2. Re-track the resumed signal dependency (track resumes only — the
+  ;; signal the track cont resumed on is the cont's own :signal-id).
+  (case mode
+    :track (track-signal-dep! context spin-id (:signal-id cont))
+    :await nil)
+
+  ;; 3. Mark spin as not completed, dirty, AND running.
+  (case mode
+    :track (rtp/swap-state! context [:nodes spin-id]
+                            (fn [node]
+                              (when node
+                                (-> node
+                                    (assoc :completed? false)
+                                    (assoc :running? true)
+                                    (nodes/mark-dirty)))))
+    :await nil)
+
+  ;; 4. Reset :created-spins for this body slice; children are re-registered
+  ;; as the body re-runs, and register-spin! re-runs any whose captured
+  ;; environment changed (B) — no blanket invalidation needed.
+  (case mode
+    :track (clear-created-spins! context spin-id)
+    :await nil)
+
+  ;; 5. + 6. Restore the cont's per-slice snapshot — deps tracking,
+  ;; addressing chain-head, context bindings — so the post-resume body
+  ;; slice continues consistently with where it suspended, then resume.
+  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)
+        resume-fn (case mode
+                    :track (fn [signal-value]
+                             (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))
+                    :await (:resume-fn cont))]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
-      (rtp/resume-continuation!
-       context spin-id cont
-       (fn [signal-value]
-         (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
-
-(defn- re-execute-dirty-parent!
-  "Re-execute a parent/ancestor spin by resuming its earliest track continuation.
-
-  Used by propagate-await-dirty! after a child completes during batch processing
-  to re-execute its non-running parent. The parent re-runs from its track point,
-  awaits the child (getting fresh cached result), and produces updated output.
-
-  Before re-executing, we invalidate created spins — old children retain stale
-  signal registrations that would cause double-executions if not cleaned up.
-
-  Args:
-    context - execution context
-    spin-id - parent spin to re-execute
-    signal-id - signal ID of the parent's earliest track continuation
-    cont - the earliest continuation for this parent"
-  [context spin-id signal-id cont]
-  (log/debug :engine/re-execute-dirty-parent {:spin-id spin-id :signal-id signal-id})
-
-  ;; Remove stale continuations (order > resumed continuation's order).
-  ;; See `resume-single-observer!` for the cancellation-hook rationale —
-  ;; same orphaned-callback risk here when re-executing a dirty parent.
-  (let [cont-order (:order cont)
-        all-conts (rtp/get-state context [:continuations spin-id])
-        skipped-signal-ids (->> (vals all-conts)
-                                (filter #(< (:order %) cont-order))
-                                (keep :signal-id))
-        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
-    (doseq [c cancelled-conts]
-      (when-let [cancel! (:cancel! c)] (cancel! context)))
-    (rtp/swap-state! context [:continuations spin-id]
-                     (fn [conts]
-                       (into {} (filter (fn [[k v]] (<= (:order v) cont-order)) conts))))
-    (doseq [skipped-sid skipped-signal-ids]
-      (track-signal-dep! context spin-id skipped-sid)))
-
-  ;; Re-track the resumed signal dependency
-  (track-signal-dep! context spin-id signal-id)
-
-  ;; Mark spin as not completed, dirty, AND running
-  (rtp/swap-state! context [:nodes spin-id]
-                   (fn [node]
-                     (when node
-                       (-> node
-                           (assoc :completed? false)
-                           (assoc :running? true)
-                           (nodes/mark-dirty)))))
-
-  ;; Invalidate child spins created during previous execution.
-  (invalidate-created-spins! context spin-id)
-
-  ;; Restore tracking snapshot from the suspension point so the body's
-  ;; deps tracking continues from there rather than restarting empty.
-  ;; See resume-single-observer! for the rationale.
-  (when-let [snap (:tracking-snap cont)]
-    (rtp/swap-state! context [:spin-tracking spin-id] (constantly snap)))
-
-  ;; Resume continuation with current signal value. cont's :ctx-bindings is
-  ;; the suspend-time scope, merged onto current context bindings so any
-  ;; intervening persistent additions are kept.
-  ;; See resume-single-observer! for the chain-head slot seeding rationale.
-  (let [ctx-bindings (:ctx-bindings cont)
-        ctx-with-bindings (cond-> context
-                            ctx-bindings  (update :bindings merge ctx-bindings))
-        chain-head-start (or (:chain-head-snap cont)
-                             (addressing/body-start-chain-head spin-id))]
-    (addressing/seed-chain-head! context spin-id chain-head-start)
-    (binding [ec/*execution-context* ctx-with-bindings
-              ec/*spin-id* spin-id
-              pcps-async/*in-trampoline* false]
-      (rtp/resume-continuation!
-       context spin-id cont
-       (fn [signal-value]
-         (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))))))
+      (rtp/resume-continuation! context spin-id cont resume-fn))))
 
 (defn- compute-descendant-observers
   "Given observer spin-ids, find those that are descendants of other observers.
@@ -484,7 +526,29 @@
   Reads parent set from `:nodes[spin-id]:observers` — under the unified-
   subscription design (stage 3), spin observers includes every parent
   currently awaiting this child, eagerly registered by track-spin-dep!.
-  This replaces the separate `:await-dependents` index."
+  This replaces the separate `:await-dependents` index.
+
+  Arbitrary-parent choice — analyzed, correctness-benign:
+  When a spin is awaited by MORE THAN ONE parent (an await *DAG*, not a
+  tree), `:observers` holds every parent and this walk takes `(first
+  parents)` — a set iteration order, so the chosen root is
+  non-deterministic. This does NOT cause a missed update or a stale
+  cache: escalating to *any* root re-runs that root, which re-awaits
+  the child; the child re-runs and re-completes, and its
+  `:spin-completion` event resumes the await conts of *every* parent
+  subscribed to `[:spin/complete child]` — not only the root that was
+  escalated to. So all parents converge to the child's new value
+  regardless of which one was picked (verified: a two-parent diamond
+  where both parents track the signal and await the child still
+  delivers the new value to both). Picking a single arbitrary root is
+  sufficient: when that root re-runs it re-awaits the child, the child
+  re-completes, and every parent subscribed to the child resumes from
+  its `:spin-completion` — so the choice is correctness-benign.
+
+  (A root that ALSO directly observes the signal is resumed exactly
+  once — not twice, via both direct-observers and roots-to-execute —
+  because the :signal-change handler excludes escalation roots from
+  direct-observers. See engine/diamond_test.cljc.)"
   [context spin-id]
   (letfn [(parents-of [tid]
             (when-let [node (rtp/get-state context [:nodes tid])]
@@ -499,27 +563,6 @@
               (if (seq grandparents)
                 (recur (first grandparents) (conj visited current))
                 current))))))))
-
-(defn- apply-spin-scope
-  "Merge spin `sid`'s captured scope onto `ctx`'s bindings.
-
-  `make-spin` (spin/core.cljc) snapshots the registered spin-scope binding
-  keys (see engine.bindings) at construction into `[:nodes sid :spin-scope]`.
-  That scope is intrinsic to the spin and must be re-established on EVERY
-  body-entry path so the body addresses and behaves consistently no matter
-  which engine path runs it.
-
-  Track-continuation resumes happen to restore it via the cont's
-  `:ctx-bindings` snapshot, but await-continuation resumes carry no
-  `:ctx-bindings` — so without this an awaiting spin (e.g. a keyed
-  `ifor-each` item-spin re-running because its awaited child re-completed)
-  would lose its construction scope, drifting any scope-derived addressing
-  and breaking discharge reconciliation."
-  [ctx sid]
-  (let [spin-scope (rtp/get-state ctx [:nodes sid :spin-scope])]
-    (if (seq spin-scope)
-      (update ctx :bindings merge spin-scope)
-      ctx)))
 
 (defn process-event!
   "Process a single event.
@@ -594,25 +637,46 @@
             (into {}
                   (keep (fn [[spin-id _cont]]
                           (when-let [root-id (find-root-await-ancestor context spin-id)]
-                            (when-let [root-conts (seq (vals (rtp/get-state context [:continuations root-id])))]
+                            ;; Escalate only when the root's EARLIEST cont
+                            ;; (over both kinds) is a track cont — that is
+                            ;; the track point a :track resume re-runs from.
+                            (when-let [root-conts (seq (vals (spin-continuations
+                                                              (rtp/get-state context []) root-id)))]
                               (let [earliest (first (sort-by :order root-conts))]
                                 (when (:signal-id earliest)
                                   [spin-id {:root-id root-id :cont earliest}]))))))
                   independent-observers)
 
-            direct-observers (if (seq escalation-targets)
-                               (vec (remove (fn [[sid _]] (contains? escalation-targets sid))
-                                            independent-observers))
-                               independent-observers)
-
             roots-to-execute (when (seq escalation-targets)
                                (into {} (map (fn [{:keys [root-id cont]}] [root-id cont]))
                                      (vals escalation-targets)))
 
+            ;; A spin is dispatched directly only if it is NEITHER an
+            ;; escalated child (it fires via its root) NOR itself an
+            ;; escalation root (it fires via roots-to-execute below).
+            ;; The second exclusion is the single-parent-diamond fix: a
+            ;; spin that BOTH directly tracks this signal AND is the
+            ;; await-root of another observer otherwise lands in
+            ;; direct-observers and roots-to-execute both, and would be
+            ;; resumed twice — re-running it (and everything it
+            ;; re-awaits) an extra time per change. Both paths resume it
+            ;; from the same earliest track cont, so one resume is
+            ;; correct. See engine/diamond_test.cljc.
+            direct-observers (if (seq escalation-targets)
+                               (vec (remove (fn [[sid _]]
+                                              (or (contains? escalation-targets sid)
+                                                  (contains? roots-to-execute sid)))
+                                            independent-observers))
+                               independent-observers)
+
             do-resume! (fn [[spin-id cont]]
-                         (resume-single-observer! context spin-id sid cont))
+                         (log/debug :engine/resuming-track-continuation
+                                    {:spin-id spin-id :signal-id sid})
+                         (resume-body! context spin-id cont :track))
             do-escalate! (fn [[root-id cont]]
-                           (re-execute-dirty-parent! context root-id (:signal-id cont) cont))]
+                           (log/debug :engine/re-execute-dirty-parent
+                                      {:spin-id root-id :signal-id (:signal-id cont)})
+                           (resume-body! context root-id cont :track))]
 
         (when (seq descendant-set)
           (log/debug :engine/filtered-descendant-observers
@@ -676,8 +740,12 @@
         (let [cont-ids (rtp/get-state context
                                       [:subscriptions [:spin/complete tid] parent-id])]
           (doseq [cont-id cont-ids]
+            ;; Subscribers of [:spin/complete tid] are await conts by
+            ;; construction — track conts subscribe to [:signal _]. Read
+            ;; :await-conts directly: an await resume cannot reach a
+            ;; track cont, and the structural split enforces that.
             (let [cont (rtp/get-state context
-                                      [:continuations parent-id cont-id])
+                                      [:await-conts parent-id cont-id])
                   ;; Generation-based deduplication via batch state (not dynamic bindings)
                   generation (when batch (:generation batch))
                   dedup-key [parent-id tid generation]
@@ -689,41 +757,16 @@
                   (swap! (:resumed-conts batch) conj dedup-key))
                 (log/debug :engine/resuming-await-continuation {:parent-id parent-id :cont-id cont-id :child-id tid
                                                                 :generation generation})
-                ;; Restore the parent's transient deps tracking captured at the
-                ;; await suspend point. See resume-single-observer! for rationale.
-                (when-let [snap (:tracking-snap cont)]
-                  (rtp/swap-state! context [:spin-tracking parent-id] (constantly snap)))
-                ;; Resume with the suspend-time bindings (cont's :ctx-bindings)
-                ;; merged onto the current context bindings.
-                ;; See resume-single-observer! for the chain-head atom rationale.
-                (let [ctx-bindings (:ctx-bindings cont)
-                      ctx-for-resume (-> (cond-> context
-                                           ctx-bindings (update :bindings merge ctx-bindings))
-                                         ;; Re-apply the resuming spin's intrinsic
-                                         ;; scope. Await continuations carry no
-                                         ;; :ctx-bindings, so this is the only thing
-                                         ;; that restores construction scope for a
-                                         ;; spin that re-runs because its awaited
-                                         ;; child re-completed.
-                                         (apply-spin-scope parent-id))
-                      chain-head-start (or (:chain-head-snap cont)
-                                           (addressing/body-start-chain-head parent-id))]
-                  (addressing/seed-chain-head! context parent-id chain-head-start)
-                  (binding [ec/*execution-context* ctx-for-resume
-                            ec/*spin-id* parent-id
-                            pcps-async/*in-trampoline* false]
-                    (let [resume-result (rtp/resume-continuation!
-                                         context
-                                         parent-id
-                                         cont
-                                         (fn [_child-value-from-on-resume]
-                                           ;; Get child's result from :nodes SpinNode
-                                           (let [spin-node (rtp/get-state context [:nodes tid])
-                                                 child-result (when spin-node (:result spin-node))]
-                                             (if (= (:variant child-result) :ok)
-                                               (pcps-async/invoke-continuation (:resolve-fn cont) (:payload child-result))
-                                               (pcps-async/invoke-continuation (:reject-fn cont) (:payload child-result))))))]
-                      resume-result))))))))
+                ;; Route through the unified resume-body! in :await mode.
+                ;; An await resume advances a still-SUSPENDED body slice
+                ;; (not a re-run of a completed one), so it does NOT
+                ;; truncate stale conts, re-mark the node dirty/running,
+                ;; or wipe :created-spins (which would drop the awaited
+                ;; child and any other spins the pre-suspend slice
+                ;; created). The cont's own :resume-fn carries the
+                ;; monadic resolve/reject routing on the child's Result
+                ;; (see spin-await-cont-map in effects/await.cljc).
+                (resume-body! context parent-id cont :await))))))
 
       ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -1067,6 +1110,65 @@
 ;; Dependency Tracking (shared across all context implementations)
 ;; =============================================================================
 
+(defn- reconcile-deps!
+  "Make a spin's dependency-graph edges consistent with a target dep set.
+
+  The single shared core of `record-deps!`, `clear-deps!` and
+  `full-cleanup-spin!`: given a spin, the dependency set it CURRENTLY
+  appears in (`old-signals` / `old-spins`) and the set it SHOULD appear
+  in (`new-signals` / `new-spins`), it removes the spin from the
+  `:observers` of every dep it stopped tracking — `(old − new)` — and
+  writes the target set onto the spin's `SpinNode :deps`:
+
+  * `record-deps!`   — new = the body's tracked set; prunes deps a
+                       conditional re-run skipped.
+  * `clear-deps!`    — new = empty; prunes every dep (teardown).
+  * `full-cleanup-spin!` — new = empty; prunes every dep (teardown).
+
+  Observer ADDS are never done here — under the unified-subscription
+  design they happen eagerly at `track-signal-dep!` / `track-spin-dep!`.
+
+  This is a pure `state → state` transform; callers run it inside their
+  own `swap-state!` so the reconciliation stays atomic with the rest of
+  their bookkeeping (`:spin-tracking`, the continuation tables, …).
+
+  Args:
+    state       - runtime-state map
+    spin-id     - the spin whose edges to reconcile
+    old-signals / old-spins - sets the spin currently appears in
+    new-signals / new-spins - sets the spin should appear in
+    deps-write  - how to write the SpinNode :deps to the new sets:
+                  :create     - set them, creating the node if absent
+                                (record-deps! commits a fresh baseline);
+                  :if-present - set them only if the node already exists
+                                (clear-deps! zeroes a surviving node);
+                  :skip       - don't touch :deps
+                                (full-cleanup-spin! drops the node)
+
+  Returns: the updated state map."
+  [state spin-id old-signals old-spins new-signals new-spins deps-write]
+  (let [removed-signals (set/difference old-signals new-signals)
+        removed-spins   (set/difference old-spins new-spins)
+        prune-observer  (fn [s dep-id]
+                          (if (get-in s [:nodes dep-id])
+                            (update-in s [:nodes dep-id] #(nodes/remove-observer % spin-id))
+                            s))
+        write-deps      (fn [node]
+                          (case deps-write
+                            :create     (-> (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))
+                                            (nodes/set-deps {:signals new-signals :spins new-spins}))
+                            :if-present (when node
+                                          (nodes/set-deps node {:signals new-signals :spins new-spins}))))]
+    (cond-> state
+      ;; Write the target set as the spin's new deps baseline.
+      (not= deps-write :skip)
+      (update-in [:nodes spin-id] write-deps)
+      ;; Remove the spin from the observer lists of signals it stopped
+      ;; tracking. (Adds are already in place from eager registration.)
+      true (as-> s (reduce prune-observer s removed-signals))
+      ;; Same for spins it stopped awaiting.
+      true (as-> s (reduce prune-observer s removed-spins)))))
+
 (defn record-deps!
   "Commit a body's tracked dependencies to the spin's permanent deps and
   prune any observer registrations from signals/spins that were tracked
@@ -1105,44 +1207,16 @@
                          (let [tracked-signals (:signals tracked-deps #{})
                                tracked-spins   (:spins tracked-deps #{})
                                spin-node (get-in rt-state [:nodes spin-id])
-                               old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
-                               old-signals (:signals old-deps #{})
-                               old-spins (:spins old-deps #{})
-                               removed-signals (set/difference old-signals tracked-signals)
-                               removed-spins (set/difference old-spins tracked-spins)]
+                               old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})]
                            (-> rt-state
-                ;; Snapshot tracked deps as the new spin.deps baseline.
-                               (update-in [:nodes spin-id]
-                                          (fn [node]
-                                            (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                                              (nodes/set-deps node {:signals tracked-signals
-                                                                    :spins tracked-spins}))))
-
-                ;; Remove spin from observer lists of signals it stopped
-                ;; tracking this run. (Adds are already in place from
-                ;; eager registration at track time.)
-                               (as-> state
-                                     (reduce (fn [s sid]
-                                               (let [node (get-in s [:nodes sid])]
-                                                 (if node
-                                                   (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
-                                                   s)))
-                                             state
-                                             removed-signals))
-
-                ;; Spin observers (parents awaiting children) are also
-                ;; eagerly registered now (Stage 3, via track-spin-dep!).
-                ;; record-deps! only needs to prune observers from spins
-                ;; the parent stopped awaiting between runs.
-                               (as-> state
-                                     (reduce (fn [s tid]
-                                               (let [node (get-in s [:nodes tid])]
-                                                 (if node
-                                                   (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
-                                                   s)))
-                                             state
-                                             removed-spins))
-
+                ;; Snapshot tracked deps as the new spin.deps baseline and
+                ;; prune observers of signals/spins this run stopped
+                ;; tracking (conditional tracking). Adds are already in
+                ;; place from eager registration at track time.
+                               (reconcile-deps! spin-id
+                                                (:signals old-deps #{}) (:spins old-deps #{})
+                                                tracked-signals tracked-spins
+                                                :create)
                 ;; Clear transient tracking.
                                (update :spin-tracking dissoc spin-id)))))))
   true)
@@ -1190,35 +1264,17 @@
                            spin-deps (set/union (:spins deps #{})
                                                 (:spins tracking #{}))]
                        (-> rt-state
-            ;; Clear committed deps on the SpinNode.
-                           (update-in [:nodes spin-id]
-                                      (fn [node]
-                                        (when node
-                                          (nodes/set-deps node {:signals #{} :spins #{}}))))
+            ;; Zero the SpinNode :deps (if it still exists) and unregister
+            ;; the spin from every signal/spin observer list — committed
+            ;; deps plus the in-flight eager registrations.
+                           (reconcile-deps! spin-id
+                                            signal-deps spin-deps
+                                            #{} #{}
+                                            :if-present)
 
-            ;; Unregister from signal observers (committed + eager).
-                           (as-> state
-                                 (reduce (fn [s sid]
-                                           (let [node (get-in s [:nodes sid])]
-                                             (if node
-                                               (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
-                                               s)))
-                                         state
-                                         signal-deps))
-
-            ;; Unregister from spin observers (committed + eager —
-            ;; same union semantics as signals after Stage 3).
-                           (as-> state
-                                 (reduce (fn [s tid]
-                                           (let [node (get-in s [:nodes tid])]
-                                             (if node
-                                               (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
-                                               s)))
-                                         state
-                                         spin-deps))
-
-            ;; Clear continuations + transient tracking.
-                           (update :continuations dissoc spin-id)
+            ;; Clear continuations (both kinds) + transient tracking.
+                           (update :track-subscriptions dissoc spin-id)
+                           (update :await-conts dissoc spin-id)
                            (update :spin-tracking dissoc spin-id)
 
             ;; Clean up subscriptions (remove spin-id from all event keys,
@@ -1263,24 +1319,20 @@
                            signal-deps (:signals deps #{})
                            spin-deps (:spins deps #{})]
                        (-> state
-            ;; 1. Unregister from signal observers
-                           (as-> s (reduce (fn [s sid]
-                                             (if (get-in s [:nodes sid])
-                                               (update-in s [:nodes sid] nodes/remove-observer spin-id)
-                                               s))
-                                           s signal-deps))
-            ;; 2. Unregister from spin observers
-                           (as-> s (reduce (fn [s tid]
-                                             (if (get-in s [:nodes tid])
-                                               (update-in s [:nodes tid] nodes/remove-observer spin-id)
-                                               s))
-                                           s spin-deps))
+            ;; 1+2. Unregister from every signal/spin observer list. The
+            ;; node itself is dropped below (step 3), so :deps isn't
+            ;; rewritten — deps-write :skip.
+                           (reconcile-deps! spin-id
+                                            signal-deps spin-deps
+                                            #{} #{}
+                                            :skip)
             ;; 3. Remove the spin node itself
                            (update :nodes dissoc spin-id)
             ;; 4. Remove metadata
                            (update :spins-meta dissoc spin-id)
-            ;; 5. Remove continuations
-                           (update :continuations dissoc spin-id)
+            ;; 5. Remove continuations (both kinds)
+                           (update :track-subscriptions dissoc spin-id)
+                           (update :await-conts dissoc spin-id)
             ;; 6. Remove pending callbacks
                            (update :pending-callbacks dissoc spin-id)
             ;; 7. Remove tracking data
@@ -1314,10 +1366,7 @@
   own reactive infrastructure). Counting them would block legitimate
   cascade cleanup of awaiter/awaitee pairs once both are unreachable."
   [context spin-id]
-  (->> (vals (rtp/get-state context [:continuations spin-id]))
-       (some (fn [c]
-               (when-let [[ek-type _] (:event-key c)]
-                 (= ek-type :signal))))))
+  (boolean (seq (rtp/get-state context [:track-subscriptions spin-id]))))
 
 (defn try-gc-cleanup-spin!
   "Called from GC callback. Attempts full cleanup if safe, otherwise marks
@@ -1334,8 +1383,8 @@
   torn down — will full-clean it.
 
   Why (3) is essential: a spin with `(track sig)` in its body keeps
-  a continuation registered in `:continuations spin-id` that the
-  engine resumes on every signal change. The cont's `:resolve-fn`
+  a track continuation registered in `:track-subscriptions spin-id`
+  that the engine resumes on every signal change. The cont's `:resolve-fn`
   closes over the CPS body slice (which references `spin-id`,
   atoms, etc.) but NOT over the `Spin` Java object itself. So the
   Spin object can become GC-eligible (e.g. the user's `let` binding
@@ -1487,6 +1536,19 @@
 ;; Spin Lifecycle (shared across all context implementations)
 ;; =============================================================================
 
+(defn- captures-changed?
+  "True when a spin's captured environment differs from the previous one.
+
+  The key set is fixed per `(spin …)` form (the macro bakes in the free
+  variables), so this reduces to: is any captured value not `identical?`
+  to its prior value. `identical?` — not `=` — because it is O(1), never
+  throws, and Clojure's structural sharing keeps an unchanged persistent
+  value `identical?`; the only cost is an occasional needless re-run when
+  a value is rebuilt `=`-equal but not `identical?`."
+  [old new]
+  (or (not= (set (keys old)) (set (keys new)))
+      (boolean (some (fn [[k v]] (not (identical? v (get old k)))) new))))
+
 (defn register-spin!
   "Register a spin's metadata in the context.
 
@@ -1511,11 +1573,30 @@
     ;; Create or update SpinNode in :nodes
     (rtp/swap-state! context [:nodes spin-id]
                      (fn [existing-node]
-                       (if existing-node
-          ;; Spin already exists - update created-by (closure may have changed)
-                         (assoc existing-node :created-by creator-id)
-          ;; Create new SpinNode with creator tracking
-                         (nodes/->spin-node nil :clean false false #{} {} creator-id #{}))))
+                       (let [new-caps (:captured-locals spin-meta)
+                             kind     (:kind spin-meta)]
+                         (if existing-node
+          ;; Re-registration: the (spin …) form was re-evaluated by a
+          ;; re-running enclosing scope → a fresh closure. Mark the node
+          ;; dirty so the fresh cps-fn runs instead of await/deref serving
+          ;; the stale cached result. A :resource spin (effectful, not
+          ;; B-cacheable) is always re-run on re-registration; a
+          ;; :computation spin only when its captured environment actually
+          ;; changed (identical?-compared). :result is kept as the previous
+          ;; value (for value-change diffing).
+                           (let [base (assoc existing-node
+                                             :created-by creator-id
+                                             :captured-locals new-caps
+                                             :kind kind)]
+                             (if (or (= kind :resource)
+                                     (captures-changed? (:captured-locals existing-node)
+                                                        new-caps))
+                               (-> base (assoc :completed? false) (nodes/mark-dirty))
+                               base))
+          ;; First registration: new node, record the captured environment.
+                           (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
+                                  :captured-locals new-caps
+                                  :kind kind)))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
     ;; created-spins set. Self-add could occur on CLJS if a stale async
@@ -1586,10 +1667,10 @@
 (defn clear-all-await-continuations!
   "Clear ephemeral await continuations from completed spins at generation boundary.
 
-  Only clears continuations marked with :ephemeral-await? true. This preserves
-  persistent reactive continuations (like those from the parallel combinator)
-  while clearing ephemeral await continuations that should not persist across
-  signal-change boundaries.
+  Only clears ephemeral continuations — :kind :await-once and
+  :external-await. Persistent continuations (:kind :track and
+  :await-reactive, e.g. the parallel combinator's) are preserved; they
+  must not be cleared across signal-change boundaries.
 
   Called at generation boundaries to ensure clean separation between generations.
 
@@ -1607,12 +1688,14 @@
         ;; If a spin is still running (suspended awaiting children), DON'T clear
         ;; its continuations or it will be orphaned and never resume
         (when (and (:completed? node) (not (:running? node)))
-          (let [all-conts (rtp/get-state context [:continuations spin-id])
-                ;; Filter to only EPHEMERAL await continuations (marked with :ephemeral-await? true)
-                ;; This excludes persistent reactive continuations (like parallel's) which should NOT be cleared
+          (let [;; Only await conts can be ephemeral — read :await-conts
+                ;; directly, no track scan. Within it, persistent
+                ;; :await-reactive conts (e.g. parallel's) must NOT be
+                ;; cleared; only :await-once / :external-await are.
                 await-conts (filter (fn [[_k v]]
-                                      (:ephemeral-await? v))
-                                    all-conts)]
+                                      (contains? #{:await-once :external-await}
+                                                 (:kind v)))
+                                    (rtp/get-state context [:await-conts spin-id]))]
             (when (seq await-conts)
               (swap! result update :spins-affected inc)
               (swap! result update :continuations-cleared + (count await-conts))
@@ -1636,7 +1719,9 @@
                                  (reduce
                                   (fn [state [cont-id cont]]
                                     (let [event-key (:event-key cont)
-                                          state' (update-in state [:continuations spin-id] dissoc cont-id)
+                                          ;; These are await conts by construction
+                                          ;; (filtered to :await-once / :external-await).
+                                          state' (update-in state [:await-conts spin-id] dissoc cont-id)
                                           spin-subs (get-in state' [:subscriptions event-key spin-id])
                                           spin-subs' (disj (or spin-subs #{}) cont-id)]
                                       (if (seq spin-subs')
@@ -1716,48 +1801,17 @@
                                                       :skipped (- (count awaiting-parents) (count parents-to-dirty))})
             (doseq [parent-id parents-to-dirty]
               (mark-dirty! context parent-id)
-              (when-let [conts (seq (vals (rtp/get-state context [:continuations parent-id])))]
+              ;; Re-run the parent from its earliest cont only if that
+              ;; cont (over both kinds) is a track cont — :signal-id
+              ;; present ⇒ track ⇒ a :track resume is valid.
+              (when-let [conts (seq (vals (spin-continuations
+                                           (rtp/get-state context []) parent-id)))]
                 (let [earliest (first (sort-by :order conts))
                       sid (:signal-id earliest)]
                   (when sid
-                    (re-execute-dirty-parent! context parent-id sid earliest)))))))))))
-
-(defn ^:no-doc invalidate-created-spins!
-  "Invalidate all spins that were created by this spin during previous execution.
-
-  When a spin re-executes, any spins it previously created have stale closures
-  that captured values from the old execution. This function marks those spins
-  dirty so they will re-execute with their new closures.
-
-  Also clears the created-spins set since they will be re-registered during
-  the new execution.
-
-  Args:
-    context - context record (implements PState protocol)
-    spin-id - ID of the spin that is about to re-execute
-
-  Returns: set of invalidated spin-ids"
-  [context spin-id]
-  (let [created-spins (rtp/get-state context [:nodes spin-id :created-spins])]
-    (when (seq created-spins)
-      (log/debug :spin/invalidate-created {:spin-id spin-id :created-spins created-spins})
-      ;; Mark each created spin as dirty and fully clean up dependencies
-      ;; clear-deps! removes track continuations, subscriptions, and signal observer
-      ;; registrations so old children can't fire on future signal changes.
-      ;; Skip self-references defensively — register-spin! also prevents
-      ;; them, but a stale state map could still contain one.
-      (doseq [child-id created-spins
-              :when (not= child-id spin-id)]
-        (mark-dirty! context child-id)
-        (clear-deps! context child-id)
-        ;; Recursively invalidate grandchildren
-        (invalidate-created-spins! context child-id))
-      ;; Clear the created-spins set (they'll be re-registered during execution)
-      (rtp/swap-state! context [:nodes spin-id]
-                       (fn [node]
-                         (when node
-                           (assoc node :created-spins #{})))))
-    created-spins))
+                    (log/debug :engine/re-execute-dirty-parent
+                               {:spin-id parent-id :signal-id sid})
+                    (resume-body! context parent-id earliest :track)))))))))))
 
 (defn cache-result!
   "Cache a spin's result value and mark observers dirty.
@@ -2014,8 +2068,8 @@
         ;;
         ;; Why the side-effect-in-swap-fn pattern is correct:
         ;;
-        ;; - Retry-safe: each retry reads the latest :continuations and
-        ;;   captures whichever :cancel! it sees. The LAST retry — the one
+        ;; - Retry-safe: each retry reads the latest continuation tables
+        ;;   and captures whichever :cancel! it sees. The LAST retry — the one
         ;;   whose state actually CAS'd — captures the cont truly being
         ;;   displaced. Earlier retries' captures are harmlessly
         ;;   overwritten. We read the atom EXACTLY ONCE after the swap
@@ -2032,23 +2086,30 @@
         ;;   the actually-displaced one ungated. Capture must happen INSIDE
         ;;   the swap-fn so it observes the same state the CAS commits.
         displaced-cancel (atom nil)
+        ;; Route by kind: a :track cont lands in :track-subscriptions, an
+        ;; await cont in :await-conts. :order is a single monotone
+        ;; sequence across BOTH so truncation can compare across kinds.
+        store-key (cont-store-key cont)
         new-state (rtp/swap-state! context []
                                    (fn [rt-state]
-                                     (let [conts (get-in rt-state [:continuations spin-id])
-                                           order (inc (count conts))
-                                           _     (when-let [c! (:cancel! (get conts cont-id))]
+                                     (let [track-conts (get-in rt-state [:track-subscriptions spin-id])
+                                           await-conts (get-in rt-state [:await-conts spin-id])
+                                           order (inc (+ (count track-conts) (count await-conts)))
+                                           displaced (or (get track-conts cont-id)
+                                                         (get await-conts cont-id))
+                                           _     (when-let [c! (:cancel! displaced)]
                                                    (reset! displaced-cancel c!))
                                            cont' (-> cont (assoc :id cont-id :order order))
                                            event-key (:event-key cont')]
                                        (-> rt-state
-                                           (assoc-in [:continuations spin-id cont-id] cont')
+                                           (assoc-in [store-key spin-id cont-id] cont')
                                            (update-in [:subscriptions event-key spin-id]
                                                       (fn [s] (conj (or s #{}) cont-id)))))))]
     ;; Fire the displaced cont's cancel hook AFTER the swap commits,
     ;; passing the engine context so the cancellation is recorded
     ;; fork-locally (Option A — state-backed cancel tokens).
     (when-let [c! @displaced-cancel] (c! context))
-    (get-in new-state [:continuations spin-id cont-id])))
+    (get-in new-state [store-key spin-id cont-id])))
 
 (defn remove-continuation!
   "Remove a continuation from a spin.
@@ -2065,31 +2126,44 @@
   [context spin-id cont-id]
   (rtp/swap-state! context []
                    (fn [rt-state]
-                     (let [cont (get-in rt-state [:continuations spin-id cont-id])
+                     (let [;; cont-id alone doesn't carry the kind — look it
+                           ;; up to find which structure it lives in.
+                           cont (or (get-in rt-state [:track-subscriptions spin-id cont-id])
+                                    (get-in rt-state [:await-conts spin-id cont-id]))
+                           store-key (when cont (cont-store-key cont))
                            event-key (:event-key cont)]
-                       (-> rt-state
-            ;; Remove continuation
-                           (update-in [:continuations spin-id] dissoc cont-id)
+                       (cond-> rt-state
+            ;; Remove continuation from its kind-routed structure.
+                         store-key
+                         (update-in [store-key spin-id] dissoc cont-id)
 
             ;; Unregister subscription and clean up empty entries
-                           (update :subscriptions
-                                   (fn [subs]
-                                     (let [spin-subs (get-in subs [event-key spin-id])
-                                           spin-subs' (disj (or spin-subs #{}) cont-id)]
-                                       (if (seq spin-subs')
+                         true
+                         (update :subscriptions
+                                 (fn [subs]
+                                   (let [spin-subs (get-in subs [event-key spin-id])
+                                         spin-subs' (disj (or spin-subs #{}) cont-id)]
+                                     (if (seq spin-subs')
                           ;; Still have subscriptions for this spin
-                                         (assoc-in subs [event-key spin-id] spin-subs')
+                                       (assoc-in subs [event-key spin-id] spin-subs')
                           ;; No more subscriptions for this spin
-                                         (let [event-subs (dissoc (get subs event-key) spin-id)]
-                                           (if (seq event-subs)
+                                       (let [event-subs (dissoc (get subs event-key) spin-id)]
+                                         (if (seq event-subs)
                               ;; Still have other spins subscribed to this event
-                                             (assoc subs event-key event-subs)
+                                           (assoc subs event-key event-subs)
                               ;; No more spins subscribed to this event
-                                             (dissoc subs event-key)))))))))))
+                                           (dissoc subs event-key)))))))))))
   true)
 
 (defn earliest-continuation
-  "Get the earliest continuation for a spin subscribed to a signal or spin completion.
+  "Get the earliest continuation for a spin subscribed to a signal or
+  spin completion.
+
+  The lone engine call site (`process-event! :signal-change`) passes a
+  signal-id and resumes the result as a track cont, so in practice this
+  selects from `:track-subscriptions`. The `:spin/complete` branch is
+  kept for the protocol's documented dual purpose — hence reading the
+  merged track + await view rather than just `:track-subscriptions`.
 
   Args:
     context - context record (implements PState protocol)
@@ -2099,7 +2173,7 @@
   Returns: Continuation map or nil"
   [context spin-id signal-id]
   (let [rt-state (rtp/get-state context [])
-        conts (vals (get-in rt-state [:continuations spin-id]))]
+        conts (vals (spin-continuations rt-state spin-id))]
     (first (sort-by :order
                     (filter (fn [c]
                               (when-let [[ek-type ek-id] (:event-key c)]

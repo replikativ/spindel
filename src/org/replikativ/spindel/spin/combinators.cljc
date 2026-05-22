@@ -104,37 +104,57 @@
                                    (let [t-id (spin-core/spin-id t)
                                          initial-val (get initial-results j)
                                          captured-bindings (bindings/capture-bindings)
+                                         resolve-fn (fn [new-val]
+                                                      ;; Child re-completed :ok — `new-val` is its
+                                                      ;; payload. Only notify if it differs from the
+                                                      ;; initial value: initial completion events are
+                                                      ;; still in the queue and carry `initial-val`;
+                                                      ;; re-completions due to signal changes carry a
+                                                      ;; different value.
+                                                      (when (not= new-val initial-val)
+                                                        ;; Update result in runtime state (fork-safe)
+                                                        (ec/swap-state! results-path #(assoc % j new-val))
+                                                        ;; Get current results and re-cache
+                                                        (let [current-results (ec/get-state results-path)]
+                                                          ;; Re-cache parallel's result to notify our awaiters
+                                                          (ec/spin-cache-result!
+                                                           parallel-spin-id
+                                                           (spin-core/ok current-results))
+                                                          ;; Fire completion event to resume awaiting spins
+                                                          (ec/enqueue-event!
+                                                           {:type :spin-completion :id parallel-spin-id}))))
+                                         reject-fn (fn [e]
+                                                     ;; Child re-completed :error — propagate the
+                                                     ;; failure. parallel re-completes :error,
+                                                     ;; consistent with its fail-fast initial
+                                                     ;; behavior (a re-failing child fails parallel).
+                                                     (ec/spin-cache-result!
+                                                      parallel-spin-id
+                                                      (spin-core/error e))
+                                                     (ec/enqueue-event!
+                                                      {:type :spin-completion :id parallel-spin-id}))
                                          cont-map {:event-key [:spin/complete t-id]
-                                                   :resolve-fn (fn [_]
-                                                                 ;; Child completed, check if value changed from initial
-                                                                 ;; This distinguishes initial completion events (still in queue)
-                                                                 ;; from actual re-completions due to signal changes
-                                                                 (let [child-result (ec/spin-current-result t-id)
-                                                                       new-val (:payload child-result)]
-                                                                   ;; Only notify if value differs from initial
-                                                                   ;; Initial completion events have same value as initial-val
-                                                                   ;; Re-completions have different value
-                                                                   (when (not= new-val initial-val)
-                                                                     ;; Update result in runtime state (fork-safe)
-                                                                     (ec/swap-state! results-path #(assoc % j new-val))
-                                                                     ;; Get current results and re-cache
-                                                                     (let [current-results (ec/get-state results-path)]
-                                                                       ;; Re-cache parallel's result to notify our awaiters
-                                                                       (ec/spin-cache-result!
-                                                                        parallel-spin-id
-                                                                        (spin-core/ok current-results))
-                                                                       ;; Fire completion event to resume awaiting spins
-                                                                       (ec/enqueue-event!
-                                                                        {:type :spin-completion :id parallel-spin-id})))))
-                                                   :reject-fn (fn [e]
-                                                              ;; Child failed on re-run
-                                                                (ec/spin-cache-result!
-                                                                 parallel-spin-id
-                                                                 (spin-core/error e))
-                                                                (ec/enqueue-event!
-                                                                 {:type :spin-completion :id parallel-spin-id}))
+                                                   ;; Persistent reactive cont — parallel re-fires when a
+                                                   ;; child re-completes; never reaped at generation bounds.
+                                                   :kind :await-reactive
+                                                   :resolve-fn resolve-fn
+                                                   :reject-fn reject-fn
+                                                   ;; await is monadic: `:on-resume` fetches the
+                                                   ;; child's cached `Result` and `:resume-fn`
+                                                   ;; pattern-matches its `:variant`, routing an
+                                                   ;; :ok re-completion to `resolve-fn` and an
+                                                   ;; :error re-completion to `reject-fn`. Without
+                                                   ;; the variant match a re-completing :error
+                                                   ;; child would be re-cached as `(ok <the-error>)`
+                                                   ;; instead of propagating the failure — see the
+                                                   ;; standard await cont in effects/await.cljc.
+                                                   :resume-fn (fn [child-result]
+                                                                (if (= (:variant child-result) :ok)
+                                                                  (spin-core/resume resolve-fn (:payload child-result))
+                                                                  (spin-core/resume reject-fn (:payload child-result))))
                                                    :bindings captured-bindings
-                                                   :on-resume (fn [_] nil)}]
+                                                   :on-resume (fn [_]
+                                                                (ec/spin-current-result t-id))}]
                                      (ec/continuation-add! parallel-spin-id cont-map))))
                                ;; Initial resolve with current results from runtime state
                                (spin-core/resume resolve (ec/get-state results-path))))))

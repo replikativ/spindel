@@ -8,6 +8,7 @@
             [is.simm.partial-cps.async :as async]
             [is.simm.partial-cps.runtime]            ;; Loads Thunk into the runtime ns
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
+            #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars])
             [org.replikativ.spindel.spin.core :as spin-core])
   ;; Make the spin macro available to CLJS via require-macros
   ;; Note: effect is not included here because it's defined in #?(:clj ...) only and
@@ -139,6 +140,20 @@
             (catch ~(if is-cljs? :default `Throwable) t# (~e t#)))))))
 
 #?(:clj
+   (defn- captured-locals-form
+     "Build a `{'sym sym …}` form snapshotting the runtime values of the
+      body's free variables. register-spin! `identical?`-compares this map
+      across re-registrations to decide whether a spin's captured
+      environment changed — and so whether the re-evaluated form must
+      re-run rather than serve its cached result. Free vars are found by
+      a proper analysis (engine.free-vars); on analyzer failure it falls
+      back to all enclosing locals (a safe over-approximation)."
+     [env body]
+     (into {}
+           (map (fn [s] [(list 'quote s) s]))
+           (free-vars/free-variables-or-all env (cons 'do body)))))
+
+#?(:clj
    (defmacro spin
      "Create a cached, reactive spin that automatically tracks dependencies and re-executes when dependencies change.
 
@@ -170,6 +185,9 @@
      [& body]
      (let [execution-context-expr `(ec/current-execution-context)
            cps-fn (build-cps-fn body (build-breakpoints) &env)
+           ;; Free variables the body captures, snapshotted as {'sym sym}
+           ;; so register-spin! can identical?-detect a changed environment.
+           captured (captured-locals-form &env body)
            ;; Capture source location at macro expansion time
            source-loc {:file *file*
                        :line (:line (meta &form))
@@ -178,7 +196,7 @@
           (ec/with-context ctx#
             ;; Generate deterministic spin ID via hash-chain addressing
             (let [spin-id# (addressing/next-address! ctx# "spin" ~source-loc)]
-              (spin-core/make-spin ~cps-fn spin-id#))))))
+              (spin-core/make-spin ~cps-fn spin-id# ~captured))))))
 
    #?(:clj
       (defmacro effect
@@ -218,6 +236,8 @@
            ;; Wrap body to return nil after executing
               body-with-nil (concat body [nil])
               cps-fn (build-cps-fn body-with-nil (build-breakpoints) &env)
+           ;; Free variables the body captures (see `spin`).
+              captured (captured-locals-form &env body)
            ;; Capture source location at macro expansion time
               source-loc {:file *file*
                           :line (:line (meta &form))
@@ -226,4 +246,4 @@
              (ec/with-context ctx#
             ;; Generate deterministic effect ID via hash-chain addressing
                (let [spin-id# (addressing/next-address! ctx# "effect" ~source-loc)]
-                 (spin-core/make-spin ~cps-fn spin-id#))))))))
+                 (spin-core/make-spin ~cps-fn spin-id# ~captured))))))))

@@ -247,8 +247,9 @@
                              {;; Core execution context structures
                               :nodes {}              ; Unified nodes (SignalNode + SpinNode)
                               :spin-tracking {}      ; Transient dependency tracking
-                              :continuations {}      ; Spin continuations
-                              :subscriptions {}      ; Event subscriptions (reverse index of :continuations)
+                              :track-subscriptions {} ; Comonadic track continuations (per spin)
+                              :await-conts {}        ; Monadic await continuations (per spin)
+                              :subscriptions {}      ; Event subscriptions (reverse index of the continuation tables)
                               :atoms {}              ; Fork-safe execution context atoms
                               ;; Engine state
                               :engine/pending []
@@ -350,6 +351,11 @@
   (when (nil? (:parent-ctx context))
     (when-let [running (:running context)]
       (reset! running false))
+    ;; Release every pending executor timer handle. The stopped context's
+    ;; queued delayed spins will never fire (the drain rejects new work
+    ;; and alive-fn drops stale callbacks), so a still-armed setTimeout /
+    ;; ScheduledFuture is a pure leak — cancel it now.
+    (delayed/cancel-all-timers! context)
     ;; Wake drain thread immediately so it notices running=false
     #?(:clj
        (when-let [ds (:drain-signal context)]
@@ -471,10 +477,13 @@
                       metadata nil
                       process-id nil}}]
   (let [fork-id (keyword (str "fork-" (random-uuid)))
-        ;; Copy parent's continuations so fork inherits reactive subscriptions
-        ;; Without this, spins executed in parent won't re-execute in fork when signals change
-        ;; because continuations are fork-local (no parent fallback)
-        parent-continuations (rtp/get-state parent-ctx [:continuations])
+        ;; Copy parent's continuations — both kinds — so the fork inherits
+        ;; the parent's reactive subscriptions. Without this, spins
+        ;; executed in the parent won't re-execute in the fork when
+        ;; signals change (the continuation tables are fork-local, no
+        ;; parent fallback).
+        parent-track-subscriptions (rtp/get-state parent-ctx [:track-subscriptions])
+        parent-await-conts (rtp/get-state parent-ctx [:await-conts])
 
         ;; Fork external refs - pure map transformation
         ;; Each entry in [:external-refs] must implement PForkable
@@ -489,7 +498,8 @@
 
         ;; Initialize fork-local state (engine state, continuations, external-refs)
         fork-local-state (merge
-                          {:continuations (or parent-continuations {})  ; ← Copy parent's continuations!
+                          {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
+                           :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
                            :engine/pending []
                            :engine/draining? false
                            :engine/delayed-spins (sorted-map)
