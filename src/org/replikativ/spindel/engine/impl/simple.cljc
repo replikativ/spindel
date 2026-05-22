@@ -540,13 +540,15 @@
   escalated to. So all parents converge to the child's new value
   regardless of which one was picked (verified: a two-parent diamond
   where both parents track the signal and await the child still
-  delivers the new value to both). The only observable effect of the
-  choice is *which* parent receives one extra escalated re-run — i.e.
-  it makes the diamond's (pre-existing, single-parent-too) escalation
-  over-execution *asymmetric* rather than introducing incorrectness.
-  Picking a single root is therefore sufficient for correctness; a
-  deterministic pick (e.g. lowest id) would only stabilize the
-  over-execution distribution, not fix a correctness defect."
+  delivers the new value to both). Picking a single arbitrary root is
+  sufficient: when that root re-runs it re-awaits the child, the child
+  re-completes, and every parent subscribed to the child resumes from
+  its `:spin-completion` — so the choice is correctness-benign.
+
+  (A root that ALSO directly observes the signal is resumed exactly
+  once — not twice, via both direct-observers and roots-to-execute —
+  because the :signal-change handler excludes escalation roots from
+  direct-observers. See engine/diamond_test.cljc.)"
   [context spin-id]
   (letfn [(parents-of [tid]
             (when-let [node (rtp/get-state context [:nodes tid])]
@@ -645,14 +647,27 @@
                                   [spin-id {:root-id root-id :cont earliest}]))))))
                   independent-observers)
 
-            direct-observers (if (seq escalation-targets)
-                               (vec (remove (fn [[sid _]] (contains? escalation-targets sid))
-                                            independent-observers))
-                               independent-observers)
-
             roots-to-execute (when (seq escalation-targets)
                                (into {} (map (fn [{:keys [root-id cont]}] [root-id cont]))
                                      (vals escalation-targets)))
+
+            ;; A spin is dispatched directly only if it is NEITHER an
+            ;; escalated child (it fires via its root) NOR itself an
+            ;; escalation root (it fires via roots-to-execute below).
+            ;; The second exclusion is the single-parent-diamond fix: a
+            ;; spin that BOTH directly tracks this signal AND is the
+            ;; await-root of another observer otherwise lands in
+            ;; direct-observers and roots-to-execute both, and would be
+            ;; resumed twice — re-running it (and everything it
+            ;; re-awaits) an extra time per change. Both paths resume it
+            ;; from the same earliest track cont, so one resume is
+            ;; correct. See engine/diamond_test.cljc.
+            direct-observers (if (seq escalation-targets)
+                               (vec (remove (fn [[sid _]]
+                                              (or (contains? escalation-targets sid)
+                                                  (contains? roots-to-execute sid)))
+                                            independent-observers))
+                               independent-observers)
 
             do-resume! (fn [[spin-id cont]]
                          (log/debug :engine/resuming-track-continuation
