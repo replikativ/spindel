@@ -54,13 +54,13 @@
 
 (deftest ^:stale-scope-spec form-1-track-resume-baseline
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            outer (spin
-                   (let [{m :new} (track s)]
-                     (let [inner (spin (* 10 m))]
-                       (await inner))))]
-        (check-rerun done outer 20 #(reset! s 3) 30)))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 outer (spin
+                        (let [{m :new} (track s)]
+                          (let [inner (spin (* 10 m))]
+                            (await inner))))]
+             (check-rerun done outer 20 #(reset! s 3) 30)))))
 
 ;; =============================================================================
 ;; Form 2 — nested spin captures an AWAIT-derived local; the parent re-runs
@@ -69,14 +69,14 @@
 
 (deftest ^:stale-scope-spec form-2-await-cascade-nested
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            data (spin (let [{v :new} (track s)] v))
-            parent (spin
-                    (let [r (await data)]
-                      (let [inner (spin (* 10 r))]
-                        (await inner))))]
-        (check-rerun done parent 20 #(reset! s 3) 30)))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 data (spin (let [{v :new} (track s)] v))
+                 parent (spin
+                         (let [r (await data)]
+                           (let [inner (spin (* 10 r))]
+                             (await inner))))]
+             (check-rerun done parent 20 #(reset! s 3) 30)))))
 
 ;; =============================================================================
 ;; Form 3 — two nesting levels under an await-cascade resume.
@@ -84,16 +84,16 @@
 
 (deftest ^:stale-scope-spec form-3-await-cascade-deep
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            data (spin (let [{v :new} (track s)] v))
-            parent (spin
-                    (let [r (await data)]
-                      (let [mid (spin
-                                 (let [inner (spin (* 10 r))]
-                                   (await inner)))]
-                        (await mid))))]
-        (check-rerun done parent 20 #(reset! s 3) 30)))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 data (spin (let [{v :new} (track s)] v))
+                 parent (spin
+                         (let [r (await data)]
+                           (let [mid (spin
+                                      (let [inner (spin (* 10 r))]
+                                        (await inner)))]
+                             (await mid))))]
+             (check-rerun done parent 20 #(reset! s 3) 30)))))
 
 ;; =============================================================================
 ;; Form 4 — two sibling nested spins each capturing the same track-derived
@@ -102,14 +102,14 @@
 
 (deftest ^:stale-scope-spec form-4-sibling-spins-track
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            parent (spin
-                    (let [{m :new} (track s)
-                          a (spin (* 10 m))
-                          b (spin (* 100 m))]
-                      [(await a) (await b)]))]
-        (check-rerun done parent [20 200] #(reset! s 3) [30 300])))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 parent (spin
+                         (let [{m :new} (track s)
+                               a (spin (* 10 m))
+                               b (spin (* 100 m))]
+                           [(await a) (await b)]))]
+             (check-rerun done parent [20 200] #(reset! s 3) [30 300])))))
 
 ;; =============================================================================
 ;; Form 5 — inner spin tracks its OWN signal AND captures an outer local.
@@ -119,25 +119,25 @@
 
 (deftest ^:stale-scope-spec form-5-reactive-inner-captures-outer
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 10)
-            t (sig/signal 1)
-            outer (spin
-                   (let [{v :new} (track s)]
-                     (let [inner (spin (let [{w :new} (track t)] (+ v w)))]
-                       (await inner))))
-            stage (atom 0)
-            fail (fn [e] (is false (str "unexpected spin error: " e)) (done))]
-        (run-spin! outer
-                   (fn [r]
-                     (case (swap! stage inc)
-                       1 (do (is (= 11 r) "first run: 10 + 1") (reset! s 20))
-                       2 (do (is (= 21 r) "after s change: 20 + 1") (reset! t 5))
-                       3 (do (is (= 25 r)
-                                 "after t change — inner re-runs on its own signal; must use v=20")
-                             (done))
-                       nil))
-                   fail)))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 10)
+                 t (sig/signal 1)
+                 outer (spin
+                        (let [{v :new} (track s)]
+                          (let [inner (spin (let [{w :new} (track t)] (+ v w)))]
+                            (await inner))))
+                 stage (atom 0)
+                 fail (fn [e] (is false (str "unexpected spin error: " e)) (done))]
+             (run-spin! outer
+                        (fn [r]
+                          (case (swap! stage inc)
+                            1 (do (is (= 11 r) "first run: 10 + 1") (reset! s 20))
+                            2 (do (is (= 21 r) "after s change: 20 + 1") (reset! t 5))
+                            3 (do (is (= 25 r)
+                                      "after t change — inner re-runs on its own signal; must use v=20")
+                                  (done))
+                            nil))
+                        fail)))))
 
 ;; =============================================================================
 ;; Form 6 — under await-cascade, prove the stale nested spin's BODY re-runs
@@ -146,23 +146,23 @@
 
 (deftest ^:stale-scope-spec form-6-await-cascade-body-not-rerun
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            runs (atom 0)
-            data (spin (let [{v :new} (track s)] v))
-            parent (spin
-                    (let [r (await data)]
-                      (let [inner (spin (swap! runs inc) (* 10 r))]
-                        (await inner))))
-            stage (atom 0)
-            fail (fn [e] (is false (str "unexpected spin error: " e)) (done))]
-        (run-spin! parent
-                   (fn [_]
-                     (case (swap! stage inc)
-                       1 (do (is (= 1 @runs) "inner ran once") (reset! s 3))
-                       2 (do (is (= 2 @runs) "inner must re-run with fresh r") (done))
-                       nil))
-                   fail)))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 runs (atom 0)
+                 data (spin (let [{v :new} (track s)] v))
+                 parent (spin
+                         (let [r (await data)]
+                           (let [inner (spin (swap! runs inc) (* 10 r))]
+                             (await inner))))
+                 stage (atom 0)
+                 fail (fn [e] (is false (str "unexpected spin error: " e)) (done))]
+             (run-spin! parent
+                        (fn [_]
+                          (case (swap! stage inc)
+                            1 (do (is (= 1 @runs) "inner ran once") (reset! s 3))
+                            2 (do (is (= 2 @runs) "inner must re-run with fresh r") (done))
+                            nil))
+                        fail)))))
 
 ;; =============================================================================
 ;; Form 7 — nested spin under await-cascade that ALSO tracks its own signal.
@@ -170,16 +170,16 @@
 
 (deftest ^:stale-scope-spec form-7-await-cascade-reactive-inner
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            t (sig/signal 1)
-            data (spin (let [{v :new} (track s)] v))
-            parent (spin
-                    (let [r (await data)]
-                      (let [inner (spin (let [{w :new} (track t)]
-                                          (+ (* 10 r) w)))]
-                        (await inner))))]
-        (check-rerun done parent 21 #(reset! s 3) 31)))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 t (sig/signal 1)
+                 data (spin (let [{v :new} (track s)] v))
+                 parent (spin
+                         (let [r (await data)]
+                           (let [inner (spin (let [{w :new} (track t)]
+                                               (+ (* 10 r) w)))]
+                             (await inner))))]
+             (check-rerun done parent 21 #(reset! s 3) 31)))))
 
 ;; =============================================================================
 ;; Form 8 — sibling nested spins under an await-cascade resume.
@@ -187,12 +187,12 @@
 
 (deftest ^:stale-scope-spec form-8-await-cascade-siblings
   (async done
-    (with-ctx [_ctx]
-      (let [s (sig/signal 2)
-            data (spin (let [{v :new} (track s)] v))
-            parent (spin
-                    (let [r (await data)
-                          a (spin (* 10 r))
-                          b (spin (* 100 r))]
-                      [(await a) (await b)]))]
-        (check-rerun done parent [20 200] #(reset! s 3) [30 300])))))
+         (with-ctx [_ctx]
+           (let [s (sig/signal 2)
+                 data (spin (let [{v :new} (track s)] v))
+                 parent (spin
+                         (let [r (await data)
+                               a (spin (* 10 r))
+                               b (spin (* 100 r))]
+                           [(await a) (await b)]))]
+             (check-rerun done parent [20 200] #(reset! s 3) [30 300])))))

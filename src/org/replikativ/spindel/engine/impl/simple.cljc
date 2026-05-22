@@ -2134,25 +2134,25 @@
                            event-key (:event-key cont)]
                        (cond-> rt-state
             ;; Remove continuation from its kind-routed structure.
-                           store-key
-                           (update-in [store-key spin-id] dissoc cont-id)
+                         store-key
+                         (update-in [store-key spin-id] dissoc cont-id)
 
             ;; Unregister subscription and clean up empty entries
-                           true
-                           (update :subscriptions
-                                   (fn [subs]
-                                     (let [spin-subs (get-in subs [event-key spin-id])
-                                           spin-subs' (disj (or spin-subs #{}) cont-id)]
-                                       (if (seq spin-subs')
+                         true
+                         (update :subscriptions
+                                 (fn [subs]
+                                   (let [spin-subs (get-in subs [event-key spin-id])
+                                         spin-subs' (disj (or spin-subs #{}) cont-id)]
+                                     (if (seq spin-subs')
                           ;; Still have subscriptions for this spin
-                                         (assoc-in subs [event-key spin-id] spin-subs')
+                                       (assoc-in subs [event-key spin-id] spin-subs')
                           ;; No more subscriptions for this spin
-                                         (let [event-subs (dissoc (get subs event-key) spin-id)]
-                                           (if (seq event-subs)
+                                       (let [event-subs (dissoc (get subs event-key) spin-id)]
+                                         (if (seq event-subs)
                               ;; Still have other spins subscribed to this event
-                                             (assoc subs event-key event-subs)
+                                           (assoc subs event-key event-subs)
                               ;; No more spins subscribed to this event
-                                             (dissoc subs event-key)))))))))))
+                                           (dissoc subs event-key)))))))))))
   true)
 
 (defn earliest-continuation
