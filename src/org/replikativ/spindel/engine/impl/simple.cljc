@@ -526,7 +526,27 @@
   Reads parent set from `:nodes[spin-id]:observers` — under the unified-
   subscription design (stage 3), spin observers includes every parent
   currently awaiting this child, eagerly registered by track-spin-dep!.
-  This replaces the separate `:await-dependents` index."
+  This replaces the separate `:await-dependents` index.
+
+  Arbitrary-parent choice — analyzed, correctness-benign:
+  When a spin is awaited by MORE THAN ONE parent (an await *DAG*, not a
+  tree), `:observers` holds every parent and this walk takes `(first
+  parents)` — a set iteration order, so the chosen root is
+  non-deterministic. This does NOT cause a missed update or a stale
+  cache: escalating to *any* root re-runs that root, which re-awaits
+  the child; the child re-runs and re-completes, and its
+  `:spin-completion` event resumes the await conts of *every* parent
+  subscribed to `[:spin/complete child]` — not only the root that was
+  escalated to. So all parents converge to the child's new value
+  regardless of which one was picked (verified: a two-parent diamond
+  where both parents track the signal and await the child still
+  delivers the new value to both). The only observable effect of the
+  choice is *which* parent receives one extra escalated re-run — i.e.
+  it makes the diamond's (pre-existing, single-parent-too) escalation
+  over-execution *asymmetric* rather than introducing incorrectness.
+  Picking a single root is therefore sufficient for correctness; a
+  deterministic pick (e.g. lowest id) would only stabilize the
+  over-execution distribution, not fix a correctness defect."
   [context spin-id]
   (letfn [(parents-of [tid]
             (when-let [node (rtp/get-state context [:nodes tid])]

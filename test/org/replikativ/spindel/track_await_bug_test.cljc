@@ -18,7 +18,8 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
+            [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!
+                                                         await-engine-idle!]]
             #?(:clj [org.replikativ.spindel.test-async :refer [await-drain]]))
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
@@ -188,3 +189,56 @@
                              (fn [error]
                                (is false (str "Should not error: " error))
                                (done)))))))))
+
+
+;; =============================================================================
+;; Multi-parent await DAG — find-root-await-ancestor arbitrary root choice
+;; =============================================================================
+;;
+;; When a child spin is awaited by more than one parent, the engine's
+;; `find-root-await-ancestor` walks `:observers` taking `(first parents)` —
+;; a non-deterministic set-iteration pick. This regression pins the
+;; correctness-benign property: escalating to *any* one root still
+;; delivers the child's new value to *every* parent, because the child's
+;; re-completion enqueues a `:spin-completion` that resumes all parents
+;; subscribed to it — not just the escalated root. See the docstring on
+;; `find-root-await-ancestor` in engine/impl/simple.cljc.
+
+(deftest multi-parent-await-dag-converges
+  (testing "A diamond where two parents both track a signal AND await a
+            child that also tracks it: both parents converge to the new
+            value regardless of which parent find-root-await-ancestor
+            picks as the escalation root."
+    (async done
+           (with-ctx [ctx]
+             (let [s (sig/signal 1)
+                   child (spin (let [{cv :new} (track s)]
+                                 (* cv 10)))
+                   p1-seen (atom [])
+                   p2-seen (atom [])
+                   p1 (spin (let [{sv :new} (track s)
+                                  cv (await child)]
+                              (swap! p1-seen conj [sv cv])
+                              [sv cv]))
+                   p2 (spin (let [{sv :new} (track s)
+                                  cv (await child)]
+                              (swap! p2-seen conj [sv cv])
+                              [sv cv]))]
+               (run-spin! p1 (fn [_] nil) (fn [_] nil))
+               (run-spin! p2 (fn [_] nil) (fn [_] nil))
+               (await-engine-idle!
+                ctx
+                (fn []
+                  (is (= [1 10] (last @p1-seen)) "p1 initial [1 10]")
+                  (is (= [1 10] (last @p2-seen)) "p2 initial [1 10]")
+                  (reset! s 2)
+                  (await-engine-idle!
+                   ctx
+                   (fn []
+                     ;; Whichever parent is picked as the escalation root,
+                     ;; both must end up at the child's new value.
+                     (is (= [2 20] (last @p1-seen))
+                         "p1 must converge to [2 20] after the flip")
+                     (is (= [2 20] (last @p2-seen))
+                         "p2 must converge to [2 20] after the flip")
+                     (done))))))))))
