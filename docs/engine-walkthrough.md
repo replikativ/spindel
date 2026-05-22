@@ -345,10 +345,10 @@ too. An error propagates up the await chain just as a value would, only
 down the failure track.
 
 **Cancellation is cooperative.** `cancel-spin!` *marks* a spin (and
-everything depending on it) — it does not kill anything mid-flight. Every
-effect handler checks "am I cancelled?" the instant it runs, so a
-cancelled spin stops the next time it reaches a **checkpoint**. A spin in
-a tight loop with no `track` / `await` / `yield` in it will not notice
+everything depending on it) — it does not kill anything mid-flight. The
+consuming effects — `track` and `await` — check "am I cancelled?" the
+instant they run, so a cancelled spin stops the next time it reaches one.
+A spin in a tight loop with no `track` or `await` in it will not notice
 until the loop ends — that "cooperative, not preemptive" contract falls
 straight out of *checkpoints are the control points*. `race` and
 `parallel` use this internally — `race` cancels the losers, `parallel`
