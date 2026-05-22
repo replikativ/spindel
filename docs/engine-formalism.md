@@ -729,7 +729,7 @@ stateDiagram-v2
     [*] --> Registered: make-spin (3-arity) → register-spin! :computation
     Registered --> Running: (spin r e) invoke Case 2 / :spin-execution
     Running --> Completed: outer resolve → cache-result! (:clean, completed?, running?=false)
-    Running --> Suspended: body returns ::incomplete (await/track)
+    Running --> Suspended: body returns the incomplete sentinel (await/track)
     Suspended --> Running: resume-body! (cont fires)
     Completed --> Dirty: dependency changed → mark-dirty! / cache-result! cascade
     Completed --> Completed: re-register with identical? captures (B-gate no-op)
@@ -744,7 +744,7 @@ stateDiagram-v2
     [*] --> Armed: make-spin (1/2-arity) → register-spin! :resource (gensym id)
     Armed --> Fired: body invoked once (sleep timer / parallel children / deferred)
     Fired --> Resolved: resolve/reject called → cache-result!
-    Resolved --> Disposed: GC cleanup (no replay path; always re-run on re-register)
+    Resolved --> Disposed: GC cleanup (no replay path, always re-run on re-register)
     Armed --> Armed: re-register → ALWAYS re-run (kind=:resource)
 ```
 
