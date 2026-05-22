@@ -98,7 +98,7 @@
   "Default set of fork-local paths that don't fall back to parent.
 
   Fork-local state:
-  - :continuations - Execution state specific to this fork
+  - :track-subscriptions / :await-conts - Continuations specific to this fork
   - :engine/* - Engine execution state (pending queue, draining flag, timers)
 
   Shared state (falls back to parent):
@@ -106,7 +106,7 @@
   - :spin-tracking - Dependency tracking (transient accumulator)
   - :subscriptions - Event subscriptions
   - :atoms - Runtime atoms"
-  #{:continuations :engine/pending :engine/draining?
+  #{:track-subscriptions :await-conts :engine/pending :engine/draining?
     :engine/delayed-spins :engine/timer-handles})
 
 (defn fork-local-path?
@@ -389,8 +389,9 @@
   [backend]
   (when (= (backend-type backend) :immutable)
     (let [state (backend-deref backend)
-          ;; Remove continuations (contain non-serializable closures)
-          serializable-state (dissoc state :continuations)]
+          ;; Remove continuations — both kinds — they contain
+          ;; non-serializable closures.
+          serializable-state (dissoc state :track-subscriptions :await-conts)]
       (pr-str {:state serializable-state
                :metadata (:metadata backend)}))))
 

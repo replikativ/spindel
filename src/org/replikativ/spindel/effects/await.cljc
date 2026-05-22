@@ -373,7 +373,7 @@
   that never get delivered (e.g. a Deferred that's abandoned without
   being delivered) — a tiny constant in practice.
 
-  The engine cont is added to `:continuations[spin-id]` with
+  The engine cont is added to `:await-conts[spin-id]` with
   `:kind :external-await` so `clear-all-await-continuations!` reaps it
   at generation boundaries.
 

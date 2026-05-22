@@ -242,6 +242,7 @@
     (th/with-ctx [ctx]
       (let [spin-id :test-spin
             cont {:event-key [:signal :sig-1]
+                  :kind :track
                   :on-resume (fn [_] 42)
                   :resolve-fn identity
                   :reject-fn identity}]
@@ -251,15 +252,15 @@
           (is (some? (:id added-cont)))
           (is (some? (:order added-cont)))
 
-          ;; Verify stored
-          (let [stored (ec/get-state [:continuations spin-id (:id added-cont)])]
+          ;; Verify stored — a :track cont lands in :track-subscriptions.
+          (let [stored (ec/get-state [:track-subscriptions spin-id (:id added-cont)])]
             (is (some? stored)))
 
           ;; Remove continuation
           (rtp/remove-continuation! ctx spin-id (:id added-cont))
 
           ;; Verify removed
-          (is (nil? (ec/get-state [:continuations spin-id (:id added-cont)]))))))))
+          (is (nil? (ec/get-state [:track-subscriptions spin-id (:id added-cont)]))))))))
 
 (deftest test-pcontinuation-earliest
   (testing "earliest-continuation returns earliest by order"
@@ -267,10 +268,12 @@
       (let [spin-id :test-spin
             sig-id :sig-1
             cont1 {:event-key [:signal sig-id]
+                   :kind :track
                    :on-resume (fn [_] 1)
                    :resolve-fn identity
                    :reject-fn identity}
             cont2 {:event-key [:signal sig-id]
+                   :kind :track
                    :on-resume (fn [_] 2)
                    :resolve-fn identity
                    :reject-fn identity}]

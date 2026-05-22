@@ -150,7 +150,7 @@
                  parent. Parent's `:engine/cancelled-tokens` = #{A}.
                  `d.:pending` still has the orphaned closure gated on A
                  plus the new closure gated on A'.
-              3. Fork the parent. Fork inherits `:continuations`
+              3. Fork the parent. Fork inherits the continuation tables
                  (explicitly copied) but reads `:engine/cancelled-tokens`
                  via overlay fall-through → sees #{A}.
               4. Fork `(reset! s …)` truncates fork's await cont and
@@ -270,7 +270,7 @@
                (simple/await-drain-complete! parent-ctx :timeout-ms 1000))
              (is (zero? @total-side-effects) "neither context has run the body yet")
 
-          ;; Fork the context. Fork inherits parent's :continuations
+          ;; Fork the context. Fork inherits parent's continuation tables
           ;; (including the await-gate cont) plus parent's Deferred
           ;; state (gate.:pending containing the wrapped resolve).
              (let [fork-ctx (ctx/fork-context parent-ctx)]

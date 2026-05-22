@@ -33,7 +33,7 @@
    (defn- track-cont-for
      "The track continuation registered on spin `tid` for `signal-ref`."
      [tid signal-ref]
-     (->> (vals (ec/get-state [:continuations tid]))
+     (->> (vals (ec/get-state [:track-subscriptions tid]))
           (filter #(= (:signal-id %) (:id signal-ref)))
           first)))
 

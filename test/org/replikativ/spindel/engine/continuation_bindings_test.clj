@@ -16,14 +16,15 @@
 
         ;; Add a continuation
         (let [cont {:id :test-cont
+                    :kind :await-once
                     :resolve-fn (fn [v] v)
                     :reject-fn (fn [e] e)}]
 
           (ec/continuation-add! :test-spin cont)
 
           ;; Retrieve the continuation from runtime state
-          ;; Continuations are stored at [:continuations spin-id cont-id]
-          (let [all-conts (ec/get-state [:continuations :test-spin])
+          ;; Await conts are stored at [:await-conts spin-id cont-id]
+          (let [all-conts (ec/get-state [:await-conts :test-spin])
                 stored-cont (first (vals all-conts))]
 
             ;; Should have :bindings field
@@ -50,6 +51,7 @@
           ;; Create continuation with specific bindings
           (binding [ec/*yield-handler* (fn [v _] (* 2 v))]
             (let [cont {:id :test-cont
+                        :kind :await-once
                         :resolve-fn (fn [v] (reset! result-atom v))
                         :on-resume (fn [_rt] :resume-value)}]
 
@@ -59,7 +61,7 @@
           (binding [ec/*spin-id* :different-spin
                     ec/*yield-handler* nil]  ; Unbound
 
-            (let [all-conts (ec/get-state [:continuations :outer-spin])
+            (let [all-conts (ec/get-state [:await-conts :outer-spin])
                   stored-cont (first (vals all-conts))
                   captured-handler (atom nil)]
 
@@ -89,6 +91,7 @@
 
           ;; Capture continuation on main thread
           (let [cont {:id :cross-thread-cont
+                      :kind :await-once
                       :resolve-fn (fn [v] (deliver result-promise v))
                       :on-resume (fn [_rt] :thread-value)}]
 
@@ -97,7 +100,7 @@
         ;; Resume on a different thread (simulating async completion)
         (future
           (binding [ec/*execution-context* ctx]
-            (let [all-conts (ec/get-state [:continuations :main-spin])
+            (let [all-conts (ec/get-state [:await-conts :main-spin])
                   stored-cont (first (vals all-conts))]
               (simple/resume-continuation! ctx :main-spin stored-cont
                                            (fn [value]
@@ -119,16 +122,17 @@
     (let [result-atom (atom nil)]
       (th/with-ctx [ctx]
         ;; Manually create continuation WITHOUT :bindings field
-        ;; Continuations are stored at [:continuations spin-id cont-id]
-        (ec/swap-state! [:continuations :compat-spin]
+        ;; Await conts are stored at [:await-conts spin-id cont-id]
+        (ec/swap-state! [:await-conts :compat-spin]
                         (constantly {:old-cont {:id :old-cont
+                                                :kind :await-once
                                                 :event-key nil
                                                 :resolve-fn (fn [v] (reset! result-atom v))
                                                 :on-resume (fn [_rt] :old-value)
                                                 :order 1}}))
 
         ;; Resume should handle missing :bindings gracefully
-        (let [all-conts (ec/get-state [:continuations :compat-spin])
+        (let [all-conts (ec/get-state [:await-conts :compat-spin])
               cont (first (vals all-conts))]
           (is (nil? (:bindings cont))
               "Test setup: continuation should not have :bindings")

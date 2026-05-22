@@ -48,7 +48,8 @@
               ;; Verify all state is gone
                             (is (nil? (rtp/get-state ctx [:nodes sid])) "Node should be removed")
                             (is (nil? (rtp/get-state ctx [:spins-meta sid])) "Meta should be removed")
-                            (is (nil? (rtp/get-state ctx [:continuations sid])) "Continuations should be removed")
+                            (is (nil? (rtp/get-state ctx [:track-subscriptions sid])) "Track conts should be removed")
+                            (is (nil? (rtp/get-state ctx [:await-conts sid])) "Await conts should be removed")
                             (done))
                           (fn [e] (is false (str "Spin failed: " e)) (done))))))))
 
