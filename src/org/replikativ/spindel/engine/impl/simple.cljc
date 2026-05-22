@@ -374,72 +374,77 @@
   - the `:spin-completion` handler — an awaited child completed and we
     resume the parent's await cont.
 
-  Steps, in order:
-  1. truncate stale conts (order > cont) + re-track skipped-cont deps,
-     unless `:truncate-stale?` is false;
-  2. re-track `:resumed-dep` if given (the signal a track cont resumed
-     on — await conts have no signal dep, so they pass nil);
-  3. mark the node `{:completed? false :running? true}` + dirty, unless
-     `:mark-dirty?` is false (a still-suspended body resuming on an
-     await must not be re-marked as a fresh re-run);
-  4. clear `:created-spins`, unless `:clear-created-spins?` is false —
-     children are re-registered as the body re-runs, and register-spin!'s
+  The two modes ARE the comonad (`:track`) / monad (`:await`)
+  distinction — see `docs/engine-formalism.md` §3.4, §5.5. The per-mode
+  data is carried by the continuation itself: a `:track` cont carries
+  `:signal-id` (the dependency to re-track), an `:await` cont carries
+  `:resume-fn` (the monadic result routing). `mode` is one of
+  `:track` / `:await`; the `case` has no `:else` so an unknown mode
+  throws rather than silently mis-resuming.
+
+  `:track` mode (comonadic co-bind — re-run the body slice):
+  1. truncate stale conts (order > cont) + re-track skipped-cont deps;
+  2. re-track the cont's `:signal-id` — the signal it resumed on;
+  3. mark the node `{:completed? false :running? true}` + dirty;
+  4. clear `:created-spins` — the body slice re-runs from the track
+     point, children are re-registered, and register-spin!'s
      identical?-gate (B) re-runs only those whose captured environment
-     changed. A track resume re-runs the whole body slice from the
-     track point, so it clears; an await resume continues a
-     still-suspended body mid-flight — wiping the set would drop the
-     children (incl. the awaited child) the pre-suspend slice created —
-     so it does NOT clear;
+     changed;
   5. restore the cont's `:slice-state` snapshot (deps tracking,
      addressing chain-head, context bindings);
-  6. `binding` the execution context + spin-id and call
-     `resume-continuation!` with `:resume-fn` (defaults to the track
-     behaviour: invoke the cont's `:resolve-fn` with the resumed value).
+  6. resume with the default track behaviour: invoke the cont's
+     `:resolve-fn` with the resumed value.
 
-  Options map:
-    :resumed-dep          - signal-id to re-track (nil for await resumes)
-    :truncate-stale?      - run truncate-stale-conts! (default true)
-    :mark-dirty?          - mark node dirty/running (default true)
-    :clear-created-spins? - reset the node's :created-spins (default true)
-    :resume-fn            - fn passed to resume-continuation! (default:
-                            (fn [v] (invoke-continuation (:resolve-fn cont) v)))
+  `:await` mode (monadic bind — advance a still-suspended body slice):
+  1. NO truncation — the body has not re-run, later conts are not stale;
+  2. NO signal re-track — an await cont has no signal dep;
+  3. NO dirty/running re-mark — a still-suspended body resuming on an
+     await must not be re-marked as a fresh re-run;
+  4. NO `:created-spins` clear — wiping the set would drop the children
+     (incl. the awaited child) the pre-suspend slice created;
+  5. restore the cont's `:slice-state` snapshot;
+  6. resume with the cont's own `:resume-fn`, which pattern-matches the
+     child's `Result` (`:ok` → resolve, `:error` → reject).
 
   Returns whatever `resume-continuation!` returns."
-  [context spin-id cont {:keys [resumed-dep truncate-stale? mark-dirty?
-                                clear-created-spins? resume-fn]
-                         :or {truncate-stale? true mark-dirty? true
-                              clear-created-spins? true}}]
+  [context spin-id cont mode]
   ;; 1. Remove stale continuations (order > resumed continuation's order).
-  (when truncate-stale?
-    (truncate-stale-conts! context spin-id cont))
+  (case mode
+    :track (truncate-stale-conts! context spin-id cont)
+    :await nil)
 
-  ;; 2. Re-track the resumed signal dependency (track resumes only).
-  (when resumed-dep
-    (track-signal-dep! context spin-id resumed-dep))
+  ;; 2. Re-track the resumed signal dependency (track resumes only — the
+  ;; signal the track cont resumed on is the cont's own :signal-id).
+  (case mode
+    :track (track-signal-dep! context spin-id (:signal-id cont))
+    :await nil)
 
   ;; 3. Mark spin as not completed, dirty, AND running.
-  (when mark-dirty?
-    (rtp/swap-state! context [:nodes spin-id]
-                     (fn [node]
-                       (when node
-                         (-> node
-                             (assoc :completed? false)
-                             (assoc :running? true)
-                             (nodes/mark-dirty))))))
+  (case mode
+    :track (rtp/swap-state! context [:nodes spin-id]
+                            (fn [node]
+                              (when node
+                                (-> node
+                                    (assoc :completed? false)
+                                    (assoc :running? true)
+                                    (nodes/mark-dirty)))))
+    :await nil)
 
   ;; 4. Reset :created-spins for this body slice; children are re-registered
   ;; as the body re-runs, and register-spin! re-runs any whose captured
   ;; environment changed (B) — no blanket invalidation needed.
-  (when clear-created-spins?
-    (clear-created-spins! context spin-id))
+  (case mode
+    :track (clear-created-spins! context spin-id)
+    :await nil)
 
   ;; 5. + 6. Restore the cont's per-slice snapshot — deps tracking,
   ;; addressing chain-head, context bindings — so the post-resume body
   ;; slice continues consistently with where it suspended, then resume.
   (let [ctx-with-bindings (restore-slice-state! context spin-id cont)
-        resume-fn (or resume-fn
-                      (fn [signal-value]
-                        (pcps-async/invoke-continuation (:resolve-fn cont) signal-value)))]
+        resume-fn (case mode
+                    :track (fn [signal-value]
+                             (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))
+                    :await (:resume-fn cont))]
     (binding [ec/*execution-context* ctx-with-bindings
               ec/*spin-id* spin-id
               pcps-async/*in-trampoline* false]
@@ -580,12 +585,11 @@
             do-resume! (fn [[spin-id cont]]
                          (log/debug :engine/resuming-track-continuation
                                     {:spin-id spin-id :signal-id sid})
-                         (resume-body! context spin-id cont {:resumed-dep sid}))
+                         (resume-body! context spin-id cont :track))
             do-escalate! (fn [[root-id cont]]
                            (log/debug :engine/re-execute-dirty-parent
                                       {:spin-id root-id :signal-id (:signal-id cont)})
-                           (resume-body! context root-id cont
-                                         {:resumed-dep (:signal-id cont)}))]
+                           (resume-body! context root-id cont :track))]
 
         (when (seq descendant-set)
           (log/debug :engine/filtered-descendant-observers
@@ -662,21 +666,16 @@
                   (swap! (:resumed-conts batch) conj dedup-key))
                 (log/debug :engine/resuming-await-continuation {:parent-id parent-id :cont-id cont-id :child-id tid
                                                                 :generation generation})
-                ;; Route through the unified resume-body!. An await resume
-                ;; advances a still-SUSPENDED body slice (not a re-run of a
-                ;; completed one), so it must NOT truncate stale conts,
-                ;; re-mark the node dirty/running, or wipe :created-spins
-                ;; (which would drop the awaited child and any other spins
-                ;; the pre-suspend slice created) — hence :truncate-stale?,
-                ;; :mark-dirty? and :clear-created-spins? all false. The
-                ;; cont's own :resume-fn carries the monadic resolve/reject
-                ;; routing on the child's Result (see spin-await-cont-map
-                ;; in effects/await.cljc).
-                (resume-body! context parent-id cont
-                              {:truncate-stale? false
-                               :mark-dirty? false
-                               :clear-created-spins? false
-                               :resume-fn (:resume-fn cont)}))))))
+                ;; Route through the unified resume-body! in :await mode.
+                ;; An await resume advances a still-SUSPENDED body slice
+                ;; (not a re-run of a completed one), so it does NOT
+                ;; truncate stale conts, re-mark the node dirty/running,
+                ;; or wipe :created-spins (which would drop the awaited
+                ;; child and any other spins the pre-suspend slice
+                ;; created). The cont's own :resume-fn carries the
+                ;; monadic resolve/reject routing on the child's Result
+                ;; (see spin-await-cont-map in effects/await.cljc).
+                (resume-body! context parent-id cont :await))))))
 
       ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -1707,8 +1706,7 @@
                   (when sid
                     (log/debug :engine/re-execute-dirty-parent
                                {:spin-id parent-id :signal-id sid})
-                    (resume-body! context parent-id earliest
-                                  {:resumed-dep sid})))))))))))
+                    (resume-body! context parent-id earliest :track)))))))))))
 
 (defn cache-result!
   "Cache a spin's result value and mark observers dirty.
