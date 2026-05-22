@@ -1019,6 +1019,65 @@
 ;; Dependency Tracking (shared across all context implementations)
 ;; =============================================================================
 
+(defn- reconcile-deps!
+  "Make a spin's dependency-graph edges consistent with a target dep set.
+
+  The single shared core of `record-deps!`, `clear-deps!` and
+  `full-cleanup-spin!`: given a spin, the dependency set it CURRENTLY
+  appears in (`old-signals` / `old-spins`) and the set it SHOULD appear
+  in (`new-signals` / `new-spins`), it removes the spin from the
+  `:observers` of every dep it stopped tracking — `(old − new)` — and
+  writes the target set onto the spin's `SpinNode :deps`:
+
+  * `record-deps!`   — new = the body's tracked set; prunes deps a
+                       conditional re-run skipped.
+  * `clear-deps!`    — new = empty; prunes every dep (teardown).
+  * `full-cleanup-spin!` — new = empty; prunes every dep (teardown).
+
+  Observer ADDS are never done here — under the unified-subscription
+  design they happen eagerly at `track-signal-dep!` / `track-spin-dep!`.
+
+  This is a pure `state → state` transform; callers run it inside their
+  own `swap-state!` so the reconciliation stays atomic with the rest of
+  their bookkeeping (`:spin-tracking`, `:continuations`, …).
+
+  Args:
+    state       - runtime-state map
+    spin-id     - the spin whose edges to reconcile
+    old-signals / old-spins - sets the spin currently appears in
+    new-signals / new-spins - sets the spin should appear in
+    deps-write  - how to write the SpinNode :deps to the new sets:
+                  :create     - set them, creating the node if absent
+                                (record-deps! commits a fresh baseline);
+                  :if-present - set them only if the node already exists
+                                (clear-deps! zeroes a surviving node);
+                  :skip       - don't touch :deps
+                                (full-cleanup-spin! drops the node)
+
+  Returns: the updated state map."
+  [state spin-id old-signals old-spins new-signals new-spins deps-write]
+  (let [removed-signals (set/difference old-signals new-signals)
+        removed-spins   (set/difference old-spins new-spins)
+        prune-observer  (fn [s dep-id]
+                          (if (get-in s [:nodes dep-id])
+                            (update-in s [:nodes dep-id] #(nodes/remove-observer % spin-id))
+                            s))
+        write-deps      (fn [node]
+                          (case deps-write
+                            :create     (-> (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))
+                                            (nodes/set-deps {:signals new-signals :spins new-spins}))
+                            :if-present (when node
+                                          (nodes/set-deps node {:signals new-signals :spins new-spins}))))]
+    (cond-> state
+      ;; Write the target set as the spin's new deps baseline.
+      (not= deps-write :skip)
+      (update-in [:nodes spin-id] write-deps)
+      ;; Remove the spin from the observer lists of signals it stopped
+      ;; tracking. (Adds are already in place from eager registration.)
+      true (as-> s (reduce prune-observer s removed-signals))
+      ;; Same for spins it stopped awaiting.
+      true (as-> s (reduce prune-observer s removed-spins)))))
+
 (defn record-deps!
   "Commit a body's tracked dependencies to the spin's permanent deps and
   prune any observer registrations from signals/spins that were tracked
@@ -1057,44 +1116,16 @@
                          (let [tracked-signals (:signals tracked-deps #{})
                                tracked-spins   (:spins tracked-deps #{})
                                spin-node (get-in rt-state [:nodes spin-id])
-                               old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})
-                               old-signals (:signals old-deps #{})
-                               old-spins (:spins old-deps #{})
-                               removed-signals (set/difference old-signals tracked-signals)
-                               removed-spins (set/difference old-spins tracked-spins)]
+                               old-deps (if spin-node (nodes/get-deps spin-node) {:signals #{} :spins #{}})]
                            (-> rt-state
-                ;; Snapshot tracked deps as the new spin.deps baseline.
-                               (update-in [:nodes spin-id]
-                                          (fn [node]
-                                            (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                                              (nodes/set-deps node {:signals tracked-signals
-                                                                    :spins tracked-spins}))))
-
-                ;; Remove spin from observer lists of signals it stopped
-                ;; tracking this run. (Adds are already in place from
-                ;; eager registration at track time.)
-                               (as-> state
-                                     (reduce (fn [s sid]
-                                               (let [node (get-in s [:nodes sid])]
-                                                 (if node
-                                                   (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
-                                                   s)))
-                                             state
-                                             removed-signals))
-
-                ;; Spin observers (parents awaiting children) are also
-                ;; eagerly registered now (Stage 3, via track-spin-dep!).
-                ;; record-deps! only needs to prune observers from spins
-                ;; the parent stopped awaiting between runs.
-                               (as-> state
-                                     (reduce (fn [s tid]
-                                               (let [node (get-in s [:nodes tid])]
-                                                 (if node
-                                                   (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
-                                                   s)))
-                                             state
-                                             removed-spins))
-
+                ;; Snapshot tracked deps as the new spin.deps baseline and
+                ;; prune observers of signals/spins this run stopped
+                ;; tracking (conditional tracking). Adds are already in
+                ;; place from eager registration at track time.
+                               (reconcile-deps! spin-id
+                                                (:signals old-deps #{}) (:spins old-deps #{})
+                                                tracked-signals tracked-spins
+                                                :create)
                 ;; Clear transient tracking.
                                (update :spin-tracking dissoc spin-id)))))))
   true)
@@ -1142,32 +1173,13 @@
                            spin-deps (set/union (:spins deps #{})
                                                 (:spins tracking #{}))]
                        (-> rt-state
-            ;; Clear committed deps on the SpinNode.
-                           (update-in [:nodes spin-id]
-                                      (fn [node]
-                                        (when node
-                                          (nodes/set-deps node {:signals #{} :spins #{}}))))
-
-            ;; Unregister from signal observers (committed + eager).
-                           (as-> state
-                                 (reduce (fn [s sid]
-                                           (let [node (get-in s [:nodes sid])]
-                                             (if node
-                                               (update-in s [:nodes sid] #(nodes/remove-observer % spin-id))
-                                               s)))
-                                         state
-                                         signal-deps))
-
-            ;; Unregister from spin observers (committed + eager —
-            ;; same union semantics as signals after Stage 3).
-                           (as-> state
-                                 (reduce (fn [s tid]
-                                           (let [node (get-in s [:nodes tid])]
-                                             (if node
-                                               (update-in s [:nodes tid] #(nodes/remove-observer % spin-id))
-                                               s)))
-                                         state
-                                         spin-deps))
+            ;; Zero the SpinNode :deps (if it still exists) and unregister
+            ;; the spin from every signal/spin observer list — committed
+            ;; deps plus the in-flight eager registrations.
+                           (reconcile-deps! spin-id
+                                            signal-deps spin-deps
+                                            #{} #{}
+                                            :if-present)
 
             ;; Clear continuations + transient tracking.
                            (update :continuations dissoc spin-id)
@@ -1215,18 +1227,13 @@
                            signal-deps (:signals deps #{})
                            spin-deps (:spins deps #{})]
                        (-> state
-            ;; 1. Unregister from signal observers
-                           (as-> s (reduce (fn [s sid]
-                                             (if (get-in s [:nodes sid])
-                                               (update-in s [:nodes sid] nodes/remove-observer spin-id)
-                                               s))
-                                           s signal-deps))
-            ;; 2. Unregister from spin observers
-                           (as-> s (reduce (fn [s tid]
-                                             (if (get-in s [:nodes tid])
-                                               (update-in s [:nodes tid] nodes/remove-observer spin-id)
-                                               s))
-                                           s spin-deps))
+            ;; 1+2. Unregister from every signal/spin observer list. The
+            ;; node itself is dropped below (step 3), so :deps isn't
+            ;; rewritten — deps-write :skip.
+                           (reconcile-deps! spin-id
+                                            signal-deps spin-deps
+                                            #{} #{}
+                                            :skip)
             ;; 3. Remove the spin node itself
                            (update :nodes dissoc spin-id)
             ;; 4. Remove metadata

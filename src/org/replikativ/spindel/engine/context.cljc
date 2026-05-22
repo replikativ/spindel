@@ -350,6 +350,11 @@
   (when (nil? (:parent-ctx context))
     (when-let [running (:running context)]
       (reset! running false))
+    ;; Release every pending executor timer handle. The stopped context's
+    ;; queued delayed spins will never fire (the drain rejects new work
+    ;; and alive-fn drops stale callbacks), so a still-armed setTimeout /
+    ;; ScheduledFuture is a pure leak — cancel it now.
+    (delayed/cancel-all-timers! context)
     ;; Wake drain thread immediately so it notices running=false
     #?(:clj
        (when-let [ds (:drain-signal context)]

@@ -69,9 +69,31 @@
       ;; before `(.now js/Date)` agrees would then strand its own entry
       ;; permanently (the entry has no other trigger). See
       ;; fire-delayed-spin!.
-      (executor/execute-after! executor delay-ms
-                               (executor/alive-fn context
-                                                  #(fire-delayed-spin! context executor spin-id))))
+      ;;
+      ;; Retain the timer handle in [:engine/timer-handles spin-id] so the
+      ;; underlying executor resource (a JVM ScheduledFuture / a JS
+      ;; setTimeout id) can be released when the entry fires, is
+      ;; cancelled, or its context stops — otherwise a completed /
+      ;; cancelled sleep leaves a pending timer behind.
+      (let [handle (executor/execute-after!
+                    executor delay-ms
+                    (executor/alive-fn context
+                                       #(fire-delayed-spin! context executor spin-id)))
+            ;; A SynchronousExecutor runs the timer callback INLINE during
+            ;; execute-after! above — so fire-delayed-spin! has already
+            ;; run and removed the entry by the time we get here. Real
+            ;; async executors never fire that fast, so a missing entry
+            ;; here means "already fired synchronously".
+            still-queued? (->> (rtp/get-state context [:engine/delayed-spins])
+                               vals
+                               (some #(some (fn [e] (= (:id e) spin-id)) %))
+                               boolean)]
+        (if still-queued?
+          (rtp/swap-state! context [:engine/timer-handles]
+                           (fn [handles] (assoc handles spin-id handle)))
+          ;; Already fired synchronously — release the now-useless handle
+          ;; instead of leaking a stale entry into :engine/timer-handles.
+          (executor/cancel-timer-handle! handle))))
     spin-id))
 
 (defn process-delayed-spins!
@@ -83,6 +105,7 @@
   (let [now (current-time context)
         ;; Atomically extract all ready spins and clean up queue + handles
         ready-spins (atom nil)
+        ready-handles (atom nil)
         _ (rtp/swap-state! context []
                            (fn [state]
                              (let [queue (get state :engine/delayed-spins (sorted-map))
@@ -93,16 +116,21 @@
                     ;; Remove ready entries from queue
                                    remaining (into (sorted-map)
                                                    (drop (count ready) queue))
+                                   old-handles (get state :engine/timer-handles {})
                     ;; Clean up timer handles for ready spins
-                                   new-handles (apply dissoc
-                                                      (get state :engine/timer-handles {})
-                                                      ready-ids)]
+                                   new-handles (apply dissoc old-handles ready-ids)]
                 ;; Store spins for execution outside swap
                                (reset! ready-spins spins)
+                ;; Store the detached handles so they can be cancelled
+                ;; outside the swap (virtual-time entries normally have
+                ;; no executor timer, but a mixed-mode context might).
+                               (reset! ready-handles (keep old-handles ready-ids))
                 ;; Return new state
                                (-> state
                                    (assoc :engine/delayed-spins remaining)
-                                   (assoc :engine/timer-handles new-handles)))))]
+                                   (assoc :engine/timer-handles new-handles)))))
+        _ (doseq [h @ready-handles]
+            (executor/cancel-timer-handle! h))]
 
     ;; Execute spins outside the transaction
     (doseq [{:keys [spin-fn id fire-time]} @ready-spins]
@@ -132,7 +160,8 @@
   No-ops if the entry is absent (already fired, or cancelled via
   `cancel-delayed-spin!`)."
   [context executor spin-id]
-  (let [entry (atom nil)]
+  (let [entry (atom nil)
+        handle (atom nil)]
     (rtp/swap-state! context []
                      (fn [state]
                        (let [queue (get state :engine/delayed-spins (sorted-map))
@@ -145,9 +174,14 @@
                                                        (when (seq kept) [fire-time kept])))
                                                    queue))]
                          (reset! entry found)
+                         (reset! handle (get-in state [:engine/timer-handles spin-id]))
                          (-> state
                              (assoc :engine/delayed-spins remaining)
                              (update :engine/timer-handles dissoc spin-id)))))
+    ;; Release the executor timer resource. This is the timer's own
+    ;; callback so it has already fired — cancelling is a harmless no-op
+    ;; that simply drops the now-useless handle reference.
+    (executor/cancel-timer-handle! @handle)
     (when-let [{:keys [spin-fn id fire-time]} @entry]
       (log/trace :engine/execute-delayed {:spin-id id :fire-time fire-time :now (current-time context)})
       (when executor
@@ -159,7 +193,8 @@
 (defn cancel-delayed-spin!
   "Cancel a scheduled delayed spin by id. Returns true if cancelled, false if not found."
   [context spin-id]
-  (let [cancelled? (atom false)]
+  (let [cancelled? (atom false)
+        handle (atom nil)]
 
     ;; Remove from event queue
     (rtp/swap-state! context [:engine/delayed-spins]
@@ -172,12 +207,40 @@
                                    (reset! cancelled? true))
                                  [fire-time filtered])))))
 
-    ;; Clean up timer handle
-    (rtp/swap-state-args! context [:engine/timer-handles] dissoc [spin-id])
+    ;; Detach and cancel the executor timer handle so a cancelled sleep
+    ;; does not leave a pending setTimeout / ScheduledFuture behind.
+    (rtp/swap-state! context [:engine/timer-handles]
+                     (fn [handles]
+                       (reset! handle (get handles spin-id))
+                       (dissoc handles spin-id)))
+    (executor/cancel-timer-handle! @handle)
 
     (log/trace :engine/cancel-delayed {:spin-id spin-id :cancelled? @cancelled?})
 
     @cancelled?))
+
+(defn cancel-all-timers!
+  "Cancel and detach every pending executor timer handle for a context.
+
+  Called from `stop-context!`: once a context stops, its queued delayed
+  spins will never fire (drain rejects new work, `alive-fn` drops stale
+  callbacks), so the still-armed executor timers — JS setTimeout ids /
+  JVM ScheduledFutures — are pure leaks. Cancelling them releases the
+  underlying resource immediately rather than waiting for the timer to
+  fire into a no-op.
+
+  Leaves `:engine/delayed-spins` alone — the queue is forkable state and
+  a restore-snapshot may legitimately revive those entries; only the
+  one-shot executor handles are released here."
+  [context]
+  (let [handles (atom nil)]
+    (rtp/swap-state! context [:engine/timer-handles]
+                     (fn [hs]
+                       (reset! handles (vals hs))
+                       {}))
+    (doseq [h @handles]
+      (executor/cancel-timer-handle! h))
+    (count @handles)))
 
 (defn advance-virtual-time!
   "Advance virtual time to target-time-ms, processing all spins along the way.
