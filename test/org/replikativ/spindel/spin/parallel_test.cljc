@@ -8,12 +8,15 @@
                [org.replikativ.spindel.engine.executor :as sched]
                [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.engine.impl.simple :as simple]
+               [org.replikativ.spindel.signal :refer [signal]]
                [org.replikativ.spindel.spin.sync :as sync]
                [org.replikativ.spindel.spin.core :as spin-core]
                [org.replikativ.spindel.spin.combinators :refer [parallel]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.await :refer [await]]
-               [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]
+               [org.replikativ.spindel.effects.track :refer [track]]
+               [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!
+                                                            await-engine-idle!]]
                [org.replikativ.spindel.test-helpers.async-stub :as async-stub]
                [is.simm.partial-cps.async :as pcps-async])
      :cljs
@@ -24,8 +27,11 @@
                [org.replikativ.spindel.spin.combinators :refer [parallel]]
                [org.replikativ.spindel.spin.cps :refer [spin]]
                [org.replikativ.spindel.effects.await :refer [await]]
-               [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]]))
-  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
+               [org.replikativ.spindel.effects.track :refer [track]]
+               [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!
+                                                            await-engine-idle!]]))
+  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
+                            [org.replikativ.spindel.signal :refer [signal]])))
 
 ;; CLJ-only fixture. Uses close-context! (rather than stop-context!) so the
 ;; thread-pool-executor created here is shut down after each test. With
@@ -147,6 +153,57 @@
                           (fn [err]
                             (is false (str "Spin failed: " err))
                             (done))))))))
+
+;; =============================================================================
+;; Reactive re-completion: a child that re-completes :error must propagate
+;; =============================================================================
+
+(deftest test-parallel-reactive-child-error-propagates
+  (testing "A parallel child that first completes :ok then re-completes :error
+            must make parallel re-complete :error — not re-cache (ok <the-error>)"
+    (async done
+           (with-ctx [ctx]
+             (let [;; mode signal: :ok → child returns a value;
+                   ;;              :fail → child throws on re-run
+                   mode (signal :ok)
+                   ;; reactive child: tracks `mode`, throws when it flips to :fail
+                   child-a (spin
+                            (let [{m :new} (track mode)]
+                              (if (= m :fail)
+                                (throw (ex-info "child-a re-completed with error" {:boom true}))
+                                :a-value)))
+                   child-b (spin :b-value)
+                   ;; parent awaits the parallel; its await cont re-fires when
+                   ;; parallel re-completes after child-a re-runs.
+                   outcomes (atom [])
+                   parent (spin
+                           (let [r (await (parallel child-a child-b))]
+                             r))]
+               (run-spin! parent
+                          (fn [v] (swap! outcomes conj [:ok v]))
+                          (fn [e] (swap! outcomes conj [:error e])))
+               (await-engine-idle!
+                ctx
+                (fn []
+                  ;; Initial completion: parallel resolved [:a-value :b-value].
+                  (is (= [[:ok [:a-value :b-value]]] @outcomes)
+                      "parallel should initially complete :ok")
+                  ;; Flip the signal — child-a re-runs and throws.
+                  (reset! mode :fail)
+                  (await-engine-idle!
+                   ctx
+                   (fn []
+                     (is (= 2 (count @outcomes))
+                         "parent should be resumed once more by the re-completion")
+                     (let [[variant payload] (second @outcomes)]
+                       (is (= :error variant)
+                           "parallel must re-complete :error when a child re-completes :error")
+                       (is (and (instance? #?(:clj clojure.lang.ExceptionInfo
+                                              :cljs cljs.core/ExceptionInfo)
+                                           payload)
+                                (:boom (ex-data payload)))
+                           "the error payload must be the child's exception, not an ok-wrapped value"))
+                     (done))))))))))
 
 ;; =============================================================================
 ;; CLJ-only tests: require Thread/sleep, future, promise, thread-pool-executor
