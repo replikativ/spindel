@@ -1,10 +1,22 @@
 # Scheduling and Execution Model
 
+> **Conceptual ladder — rung 4 of 5.** Read order:
+> `concepts.md` → `engine-walkthrough.md` → `engine.md` (the
+> *structural* internals) → **`scheduling.md`** (this doc — the
+> *operational* internals: drain thread, event types, executors,
+> topological dispatch) → `engine-formalism.md` (the rigorous
+> companion). This doc is the operational sibling of `engine.md`: where
+> `engine.md` describes *what state exists*, this one describes *when
+> work runs against it*. The two overlap only at the event queue / drain
+> seam, and cross-reference each other; if they read as one doc to you,
+> that is worth a human's call on merging.
+
 This document explains how spindel processes events, executes spins, and propagates reactive updates. Understanding this helps when reasoning about ordering guarantees, concurrency behavior, and what happens under the hood when a signal changes.
 
 For the architectural side — state shape, deterministic addressing,
 CPS / trampoline mechanics, overlay backend, memory invariants — see
-[`engine.md`](engine.md).
+[`engine.md`](engine.md). For the plain-language model that both docs
+build on, see [`engine-walkthrough.md`](engine-walkthrough.md).
 
 ## Overview
 
@@ -137,7 +149,7 @@ Spindel prevents **glitches** — the situation where a spin observes a half-upd
 (def total (spin (+ (await tax) (let [{:keys [new]} (track price)] new))))
 ```
 
-If `price` changes to 200 and `total` re-executes before `tax` does, it sees `tax=20` (stale) and `price=200` (fresh) — a glitch. Spindel prevents this with a **single-queue topological-dispatch** model:
+If `price` changes to 200 and `total` re-runs before `tax` does, it sees `tax=20` (stale) and `price=200` (fresh) — a glitch. Spindel prevents this with a **single-queue topological-dispatch** model:
 
 ### Topological observer dispatch
 
@@ -166,14 +178,14 @@ Topological dispatch orders the graph *as it exists when the signal changes*. Bu
         0))
 ```
 
-A topological sort built before re-execution cannot order `k` ahead of this spin — that edge did not exist yet. Correctness in this case does not come from the sort; it comes from `await` being demand-driven.
+A topological sort built before the spin re-runs cannot order `k` ahead of this spin — that edge did not exist yet. Correctness in this case does not come from the sort; it comes from `await` being demand-driven.
 
-`await-spin` (`effects/await.cljc`) takes the **fast path** — return the child's cached result — only when the child has a cached result, is **not dirty**, and either we are not inside a `:signal-change` batch *or* the child was already processed in this batch (`:processed` set). Otherwise it takes the **slow path**: re-execute the child's body, which re-reads the child's own `track` / `await` dependencies recursively; the awaiting spin suspends on a continuation and resumes with the freshly-computed value.
+`await-spin` (`effects/await.cljc`) takes the **fast path** — return the child's cached result — only when the child has a cached result, is **not dirty**, and either we are not inside a `:signal-change` batch *or* the child was already processed in this batch (`:processed` set). Otherwise it takes the **slow path**: re-run the child's body, which re-reads the child's own `track` / `await` dependencies recursively; the awaiting spin suspends on a continuation and resumes with the freshly-computed value.
 
 Two independent guards keep this robust mid-propagation:
 
 - **Dirty flag** — `mark-dirty!` BFS-marks the changed signal's transitive observers dirty, so awaiting any of them refuses the fast path.
-- **Batch `:processed` set** — a spin newly pulled into the graph by a conditional `await` was never marked dirty, but it is also not in `:processed`, so the fast path is refused and the child is re-executed anyway.
+- **Batch `:processed` set** — a spin newly pulled into the graph by a conditional `await` was never marked dirty, but it is also not in `:processed`, so the fast path is refused and the child is re-run anyway.
 
 So a dependency chain — including edges discovered *during* this propagation — is always walked in the true data-flow order of the current computation. The topological sort is a scheduling optimization that avoids redundant re-runs for the common static graph; it is not the correctness mechanism for dynamic dependencies. See `test/org/replikativ/spindel/continuation_glitch_test.clj` and [`concepts.md`](concepts.md#dynamic-dependencies).
 

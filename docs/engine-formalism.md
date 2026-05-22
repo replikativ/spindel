@@ -1,12 +1,23 @@
 # Spindel Engine Formalism
 
+> **Conceptual ladder — rung 5 of 5.** The rigorous companion to
+> `engine-walkthrough.md`: every claim is stated as a law and classified
+> Holds / Conjectured / Violated, with `file:line` citations. Read
+> `concepts.md` → `engine-walkthrough.md` → `engine.md` → `scheduling.md`
+> first; this doc assumes their vocabulary and adds proof obligations,
+> algebra, and the remaining normalization backlog. It does not
+> re-explain the model — it formalizes it.
+
 A formal account of the spindel reactive engine as it stands on branch
 `refactor/engine-regularization` (post-regularization: `SpinNode :kind`
 explicit, `register-spin!` dispatches on `:kind`, continuation `:kind`
-explicit, per-slice `:slice-state`, and a single unified `resume-body!`).
+explicit, per-slice `:slice-state`, the continuation table split into
+`:track-subscriptions` + `:await-conts`, and a single unified
+`resume-body!` taking a `:mode`).
 
 This document is descriptive and analytical — it does not propose
-engine changes inline. Part 5 collects normalization opportunities.
+engine changes inline. Part 5 collects the *remaining* normalization
+opportunities (several earlier ones are now done — see Part 5's intro).
 
 Citations are `file:line` against the source tree at this branch.
 
@@ -102,10 +113,27 @@ they are `:computation` spins — but they *compose* `:resource` spins
 #### Continuation
 
 A **continuation** is a suspension point in a spin body — the reified
-"rest of the body" past a `track` or `await` call. It is a plain map
-stored at `[:continuations spin-id cont-id]`. Every continuation now
-carries an explicit `:kind` (the regularization removed the implicit
-`:ephemeral-await?` flag):
+"rest of the body" past a `track` or `await` call. It is a plain map.
+The continuation table is **split in two** (the regularization landed
+this — Part 5's old §5.1):
+
+* **`[:track-subscriptions spin-id]`** — the comonadic track conts of a
+  spin. Persistent: a track cont watches a signal and re-runs the body
+  on every change, so it is never reaped at a generation boundary.
+* **`[:await-conts spin-id]`** — the monadic await conts of a spin.
+  Some are ephemeral (reaped at the generation boundary), some
+  persistent (a reactive child can re-complete).
+
+`add-continuation!` routes a new cont to one structure or the other via
+`track-cont?` (`engine/impl/simple.cljc:344-359`, `:2010-…`), a `case`
+on `:kind` with no `:else` (an unknown kind throws). `:order` is **one
+monotone insertion sequence across both structures**, so the relative
+order of a track cont and an await cont in the same body is still
+well-defined (`add-continuation!` counts both tables —
+`engine/impl/simple.cljc:2060-2064`).
+
+Every continuation carries an explicit `:kind` (the regularization
+removed the implicit `:ephemeral-await?` flag):
 
 | `:kind`            | created by                                  | persistence                                                    | resume semantics |
 |--------------------|---------------------------------------------|----------------------------------------------------------------|------------------|
@@ -222,12 +250,14 @@ monoid `(D, ·, id)` — see Part 2.2.
 | `track`               | `effects/track.cljc:105-197`          | synchronous read + persistent re-run subscription |
 | `await`               | `effects/await.cljc:134-320`          | one-shot suspension on a child spin / resource |
 | `(spin r e)` invoke   | `spin/core.cljc:222-390`              | run / cache-hit / rebuild a spin body |
-| `drain-events!`       | `engine/impl/simple.cljc:776-900`     | process the event queue to fixpoint |
-| `process-event!`      | `engine/impl/simple.cljc:492-771`     | dispatch one event |
-| `resume-body!`        | `engine/impl/simple.cljc:363-446`     | unified body-slice resume |
-| `cache-result!`       | `engine/impl/simple.cljc:1713-1773`   | store Result, mark observers dirty |
-| `register-spin!`      | `engine/impl/simple.cljc:1454-1517`   | create/update SpinNode, B-gate re-run |
-| `record-deps!`        | `engine/impl/simple.cljc:1023-1101`   | commit transient deps; prune dropped observers |
+| `drain-events!`       | `engine/impl/simple.cljc:831-…`       | process the event queue to fixpoint |
+| `process-event!`      | `engine/impl/simple.cljc:545-…`       | dispatch one event |
+| `resume-body!`        | `engine/impl/simple.cljc:411-…`       | unified body-slice resume, `mode ∈ {:track :await}` |
+| `add-continuation!`   | `engine/impl/simple.cljc:2010-…`      | route a new cont to `:track-subscriptions` / `:await-conts` by `:kind` |
+| `cache-result!`       | `engine/impl/simple.cljc:1781-…`      | store Result, mark observers dirty |
+| `register-spin!`      | `engine/impl/simple.cljc:1517-…`      | create/update SpinNode, B-gate re-run |
+| `reconcile-deps!`     | `engine/impl/simple.cljc:1078-…`      | shared observer-edge reconciliation core |
+| `record-deps!`        | `engine/impl/simple.cljc:1137-…`      | commit transient deps; prune dropped observers |
 | `fork-context`        | `engine/context.cljc:422-551`         | O(1) overlay copy |
 | `snapshot`/`restore`  | `engine/context.cljc:705-812`         | freeze / revive a context |
 
@@ -564,7 +594,7 @@ determinism aid, not a commutativity guarantee.
 **Law.** `resume-body!` applied to the same `(spin, cont)` is safe to
 attempt more than once without double-executing side effects.
 
-`resume-body!` (`engine/impl/simple.cljc:363-446`) itself is not
+`resume-body!` (`engine/impl/simple.cljc:411-…`) itself is not
 idempotent — it unconditionally re-runs the body slice. Idempotence is
 provided by the layers around it:
 
@@ -585,10 +615,13 @@ provided by the layers around it:
 
 **Status: Holds — idempotence is enforced by dedup + cancellation gate +
 claim, not by `resume-body!` itself.** This is a structural observation
-worth flagging: `resume-body!` is the *one* re-execution path now (step
-6-7/7), and its safety is entirely delegated to its callers passing the
-right option flags (`:truncate-stale?`, `:mark-dirty?`,
-`:clear-created-spins?`). See Part 4 and Part 5.
+worth flagging: `resume-body!` is the *one* resume path now (the
+regularization collapsed the four near-duplicate re-execution paths),
+and it takes a single `mode ∈ {:track :await}` argument. The mode is a
+`case` with no `:else`, so an illegal mode throws rather than silently
+mis-resuming; the per-mode data (`:signal-id` to re-track for `:track`,
+`:resume-fn` for `:await`) is carried by the continuation itself. See
+Part 4 and Part 5.
 
 ---
 
@@ -626,7 +659,7 @@ flowchart TD
     F --> G["ordered-observers: topological sort of transitive closure"]
     G --> H["keep observers with a live track cont for sid"]
     H --> I["filter descendant observers; escalate await-children to root"]
-    I --> J["for each independent observer: resume-body! {:resumed-dep sid}"]
+    I --> J["for each independent observer: resume-body! mode :track"]
     J --> K["truncate-stale-conts! (order > track cont)"]
     K --> L["restore :slice-state (bindings, chain-head, tracking)"]
     L --> M["body slice re-runs from track point"]
@@ -647,9 +680,9 @@ flowchart TD
     D --> E["process-event! :spin-completion"]
     E --> F["parents = subscriptions[[:spin/complete child]]"]
     F --> G["for each parent cont (not already-resumed in this batch)"]
-    G --> H["resume-body! {:truncate-stale? false
-             :mark-dirty? false :clear-created-spins? false
-             :resume-fn (:resume-fn cont)}"]
+    G --> H["resume-body! mode :await
+             (no truncate, no dirty-remark, no created-spins clear;
+              uses the cont's own :resume-fn)"]
     H --> I[":resume-fn pattern-matches child Result:
             :ok→resolve-fn, :error→reject-fn"]
     I --> J["parent body slice continues past (await child)"]
@@ -660,31 +693,34 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph TRACK["track resume — COMONADIC"]
+    subgraph TRACK["resume-body! mode :track — COMONADIC"]
       T1["signal change"] --> T2["resume EARLIEST track cont"]
-      T2 --> T3["truncate-stale? TRUE
-                 mark-dirty? TRUE
-                 clear-created-spins? TRUE"]
+      T2 --> T3["truncate stale conts + re-track skipped deps;
+                 re-track cont's :signal-id;
+                 mark {:completed? false :running? true} + dirty;
+                 clear :created-spins"]
       T3 --> T4["body slice RE-RUNS from track point;
                  fresh Interval (old,new,deltas) delivered"]
       T4 --> T5["cont is PERSISTENT — survives, will fire again"]
     end
-    subgraph AWAIT["await resume — MONADIC"]
+    subgraph AWAIT["resume-body! mode :await — MONADIC"]
       A1["child completes"] --> A2["resume the await cont"]
-      A2 --> A3["truncate-stale? FALSE
-                 mark-dirty? FALSE
-                 clear-created-spins? FALSE"]
+      A2 --> A3["NO truncation, NO signal re-track,
+                 NO dirty/running re-mark,
+                 NO :created-spins clear"]
       A3 --> A4["still-suspended body slice ADVANCES past await;
-                 child Result bound into continuation"]
+                 child Result bound in via the cont's :resume-fn"]
       A4 --> A5[":await-once reaped at generation bound;
                  :await-reactive persists"]
     end
 ```
 
-The two columns are exactly the comonad/monad distinction realized as
-`resume-body!` option flags. A track resume *re-runs* (comonadic
-co-bind: re-invoke the co-Kleisli arrow on a new context); an await
+The two columns are exactly the comonad/monad distinction, and the
+`mode` argument names which one. A `:track` resume *re-runs* (comonadic
+co-bind: re-invoke the co-Kleisli arrow on a new context); an `:await`
 resume *advances* (monadic bind: feed the bound value into the rest).
+`resume-body!` derives all the per-mode behavior from `mode` — the four
+behaviors are not a 4-tuple of caller-supplied flags.
 
 ### 3.5 Computation-spin lifecycle
 
@@ -718,8 +754,8 @@ stateDiagram-v2
 flowchart TD
     A[parent ExecutionContext - AtomBackend] --> B[fork-context]
     B --> C["OverlayBackend over parent backend"]
-    C --> D["fork-local state: :continuations COPIED,
-             :engine/pending [], fresh draining flag"]
+    C --> D["fork-local state: :track-subscriptions + :await-conts
+             COPIED, :engine/pending [], fresh draining flag"]
     C --> E["shared-path reads fall through to parent
              (:nodes, :engine/cancelled-tokens depth-1 CoW)"]
     D --> F[fork drains independently; writes land in overlay]
@@ -773,13 +809,13 @@ exactly once per completion, with the child's Result correctly routed
 (`:ok`→value, `:error`→propagated).
 
 **Argument.** `:spin-completion` dispatch resumes the parent's await
-cont via `resume-body!` with `:resume-fn` doing the monadic
-match (`engine/impl/simple.cljc:675-679`,
-`effects/await.cljc:129-132`). The `[parent child generation]` dedup
-prevents a double resume in one batch. The await resume passes
-`:truncate-stale? false :mark-dirty? false :clear-created-spins? false`
-because it *advances* a still-suspended body rather than re-running it —
-wiping `:created-spins` would drop the awaited child itself. **Holds.**
+cont via `resume-body!` in `:await` mode, the cont's `:resume-fn` doing
+the monadic match (`effects/await.cljc:129-132`). The
+`[parent child generation]` dedup prevents a double resume in one batch.
+`:await` mode does no truncation, no dirty/running re-mark, and no
+`:created-spins` clear, because it *advances* a still-suspended body
+rather than re-running it — wiping `:created-spins` would drop the
+awaited child itself. **Holds.**
 
 ### 4.4 `track` + `await` in one body (continuation `:order` truncation)
 
@@ -892,34 +928,56 @@ the await graph is a tree; for a DAG with shared awaited children the
 Post-regularization the engine is markedly cleaner: one `:kind` field
 discriminates the two spin worlds, one continuation `:kind` enumerates
 the four suspension flavors, one `:slice-state` map, one `resume-body!`.
-What remains:
 
-### 5.1 The continuation table still mixes comonad and monad — split it
+**Several earlier items in this part are now done** and are kept below
+as *records of completed work*, not as open proposals:
 
-**Observation.** All four cont kinds live in one flat map
-`[:continuations spin-id cont-id]`, ordered by `:order`. But `:track`
-conts are comonadic (persistent, re-run-the-body) and the three `await*`
-kinds are monadic (advance-the-slice). `truncate-stale-conts!`,
+* **§5.1 — split the continuation table** — **done.** The flat
+  `[:continuations …]` map is gone; conts live in
+  `:track-subscriptions` and `:await-conts`.
+* **§5.5 — `resume-body!` 4-flag option map → `:mode`** — **done.**
+  `resume-body!` takes a single `mode ∈ {:track :await}`.
+* **§5.6 — one `reconcile-deps!` primitive** — **done.** `record-deps!`
+  and the cleanup paths now reconcile observer edges through a single
+  `reconcile-deps!`. (The §5.6 sub-proposal to make `:subscriptions` a
+  *derived* view rather than a maintained structure is **still open**.)
+* **§5.4 — kind-driven disposal** — **partly done.** Resource-timer
+  disposal landed (timer handles are retained and cancelled on
+  disposal / `stop-context!` / cancellation). Driving caching and fork
+  cont-copying from `:kind` is still open.
+
+The genuinely-open items are **§5.2** (event-type collapse), **§5.3**
+(`:created-spins` audit), the **derived-`:subscriptions`** half of §5.6,
+and **§5.7 / §5.8**.
+
+### 5.1 The continuation table — split (done)
+
+**Status: done.** This was the highest-value normalization and it has
+landed. For completeness, the shape it replaced and the shape now:
+
+**Before.** All four cont kinds lived in one flat map
+`[:continuations spin-id cont-id]`, ordered by `:order`. `:track` conts
+are comonadic (persistent, re-run-the-body); the three `await*` kinds
+are monadic (advance-the-slice). `truncate-stale-conts!`,
 `earliest-continuation`, `clear-all-await-continuations!`, and
-`process-event! :signal-change` all re-derive this split at runtime by
-filtering on `:kind` or `:signal-id`
-(`engine/impl/simple.cljc:1256-1271`, `:1569-1600`, `:546-548`).
+`process-event! :signal-change` each re-derived this split at runtime by
+filtering on `:kind` or `:signal-id`.
 
-**Proposal (canonical continuation form).** Two structures:
+**Now.** Two structures (`engine/impl/simple.cljc:332-368`):
 
-* `:track-subscriptions[spin-id]` — a *set* of track conts (order is
-  meaningful only relative to other track conts → keep `:order`).
-* `:await-conts[spin-id]` — a *stack* of await conts (LIFO matches the
-  monadic call-stack discipline; the topmost is the live suspension).
+* `:track-subscriptions[spin-id]` — the comonadic, persistent track
+  conts of a spin.
+* `:await-conts[spin-id]` — the monadic await conts of a spin.
 
-**Payoff.** `truncate-stale-conts!` becomes "pop the await stack down to
-the resumed track cont's order" — no `:kind` filtering. `clear-all-await-continuations!`
-becomes "drop the ephemeral suffix of each await stack" — no
-`(filter #(contains? #{:await-once :external-await} (:kind %)))` scan.
-`has-live-signal-cont?` (`:1256-1271`) becomes
-`(seq (:track-subscriptions ctx spin-id))`. The comonad/monad
-distinction stops being a runtime predicate and becomes a structural
-fact. This is the single highest-value normalization.
+`add-continuation!` routes by `track-cont?` — a `case` on `:kind` with
+no `:else`. `:order` remains **one monotone sequence across both
+tables**, so a track cont and an await cont in the same body still have
+a well-defined relative order. `clear-all-await-continuations!` now
+reads `:await-conts` directly (`engine/impl/simple.cljc:1632-1702`);
+`has-live-signal-cont?` is `(seq (get-state ctx [:track-subscriptions
+spin-id]))` (`:1320-1334`). The comonad/monad distinction is now a
+*structural fact* of where a cont is stored, not a runtime `:kind`
+predicate.
 
 ### 5.2 Event-type overlap: `:deferred-delivery` / `:mailbox-post` vs `:spin-completion`
 
@@ -961,65 +1019,65 @@ stay. **Recommend:** audit whether a created spin can ever lack a
 dep/observer edge; if not, delete `:created-spins` and the
 `register-spin!` creator-update (`engine/impl/simple.cljc:1511-1515`).
 
-### 5.4 Is the computation/resource distinction fully exploited?
+### 5.4 Is the computation/resource distinction fully exploited? (partly done)
 
-The `:kind` field is now used for **re-run gating** (`register-spin!`,
-`:1493`) and *implicitly* for **id scheme** (resource = gensym,
-computation = content-addressed — but this is enforced at the
-`make-spin` arity, not by reading `:kind`). It is **not** used for:
+The `:kind` field is used for **re-run gating** (`register-spin!`) and
+*implicitly* for the **id scheme** (resource = gensym, computation =
+content-addressed — enforced at the `make-spin` arity).
 
-* **Disposal** — `full-cleanup-spin!` / `try-gc-cleanup-spin!`
-  (`:1191-1333`) treat both kinds identically. A `:resource` spin is
-  one-shot and could be eagerly disposed the moment it resolves (no
-  replay path needs it), whereas a `:computation` spin must survive for
-  cache reuse. The kind field could drive a tighter disposal policy.
+**Done — resource-timer disposal.** A `:resource` spin's real-time
+delayed entry retains its executor timer handle in
+`[:engine/timer-handles spin-id]`, and the handle is cancelled when the
+entry fires, is cancelled, or its context stops
+(`engine/impl/delayed.cljc:71-96`, `process-delayed-spins!` cleanup,
+`fire-delayed-spin!`). A completed or cancelled `sleep` no longer
+leaves a pending timer behind.
+
+**Still open.** `:kind` is *not* yet used to drive:
+
+* **Node disposal** — `full-cleanup-spin!` / `try-gc-cleanup-spin!`
+  treat both kinds identically. A `:resource` spin is one-shot and could
+  be eagerly disposed the moment it resolves (no replay path needs it),
+  whereas a `:computation` spin must survive for cache reuse.
 * **Caching** — both kinds have a `:result` slot; a `:resource` spin's
   cache is only ever read once (no B-gate replay). The slot could be
   freed on resolution for resources.
-* **Fork** — fork copies `:continuations` wholesale
-  (`context.cljc:474-492`). A `:resource` spin's in-flight continuation
-  (e.g. a `sleep` timer) is fork-copied but the underlying timer is not
-  — arguably resource conts should *not* be inherited by a fork. The
-  kind field could gate this.
+* **Fork** — fork copies the continuation tables wholesale. A
+  `:resource` spin's in-flight await cont is fork-copied; arguably
+  resource conts should not be inherited by a fork. The kind field
+  could gate this.
 
-**Proposal.** Make `:kind` the single authority: have `register-spin!`
-*assert* `(= :resource kind)` ⇒ gensym id and *drive* disposal/caching
-policy from it. Today the invariant "resource ⇒ gensym id" is split
-across `make-spin`'s arities (`spin/core.cljc:427-432`) with no central
-check.
+**Proposal (open part).** Make `:kind` the single authority: have
+`register-spin!` *assert* `(= :resource kind)` ⇒ gensym id and *drive*
+node disposal / caching / fork policy from it. Today the invariant
+"resource ⇒ gensym id" is split across `make-spin`'s arities
+(`spin/core.cljc:427-432`) with no central check.
 
-### 5.5 `resume-body!` option flags encode the comonad/monad split as data
+### 5.5 `resume-body!` 4-flag option map → `:mode` (done)
 
-**Observation.** `resume-body!` (`:363-446`) takes
-`{:truncate-stale? :mark-dirty? :clear-created-spins? :resume-fn}`. The
-*three* call sites pass exactly two combinations:
+**Status: done.** `resume-body!` previously took a four-flag option map
+`{:truncate-stale? :mark-dirty? :clear-created-spins? :resume-fn}` whose
+inhabited combinations were only two — the comonad/monad split leaked as
+a 4-tuple of booleans. It now takes a single `mode ∈ {:track :await}`
+argument and derives the per-mode behavior internally
+(`engine/impl/simple.cljc:411-…`). The `case` on `mode` has no `:else`,
+so an illegal mode throws; per-mode data is carried by the continuation
+(`:track` → `:signal-id`, `:await` → `:resume-fn`). The two modes *are*
+the co-bind and bind operations, and the call sites are now
+self-documenting (`resume-body! … :track` / `… :await`).
 
-* track resume / escalation — all-true, default `:resume-fn`
-  (`:583`, `:588`, `:1710`);
-* await resume — all-false, cont's `:resume-fn` (`:675-679`).
+### 5.6 Canonical dependency-graph form (reconcile-deps! done; derived :subscriptions open)
 
-So the four-flag option map has only **two** inhabited values. This is
-the comonad/monad distinction again, leaked as a 4-tuple of booleans.
+**Done — one `reconcile-deps!`.** Observer-edge reconciliation that was
+previously duplicated across `record-deps!` and the cleanup paths now
+flows through a single `reconcile-deps!` primitive
+(`engine/impl/simple.cljc:1078-…`), parameterized by the new dep set
+(empty for clear/cleanup, the tracked set for record).
 
-**Proposal (canonical resume form).** Replace the option map with a
-single `:mode ∈ {:track :await}` argument; `resume-body!` derives the
-four behaviors internally. The two modes *are* the co-bind and bind
-operations. This makes the call sites self-documenting and makes an
-illegal combination (e.g. `:truncate-stale? true` with an await
-`:resume-fn`) unrepresentable.
-
-### 5.6 Canonical dependency-graph form
-
-**Observation.** Observer edges are stored on `:nodes[id]:observers` and
-the *reverse* (cont) index on `:subscriptions`. `record-deps!`,
-`clear-deps!`, `full-cleanup-spin!` each independently reconcile the two
-(`:1023-1101`, `:1103-1189`, `:1191-1254`) — three near-identical
-union/difference reconciliations.
-
-**Proposal.** A single `reconcile-deps!` primitive parameterized by
-"new dep set" (empty for clear/cleanup, tracked-set for record) that
-both subsystems call. The `:subscriptions` map is *purely* a derived
-reverse index of `:continuations` — it could be a computed view rather
+**Still open — derived `:subscriptions`.** Observer edges are stored on
+`:nodes[id]:observers` and the *reverse* (cont) index on
+`:subscriptions`. The `:subscriptions` map is *purely* a derived reverse
+index of the continuation tables — it could be a computed view rather
 than a maintained structure, eliminating an entire class of
 "index drift" bugs (the `cache-result!` comment at `:1764-1769`
 documents one such latent bug already fixed).
@@ -1081,36 +1139,42 @@ the legacy `Interval` deftype vs typed-map dichotomy
    This is by design but should be stated as a *scoped* law, not an
    absolute one.
 
-**Top normalization opportunities (highest payoff first):**
+**Normalizations completed on this branch (no longer open):**
 
-1. **Split the continuation table (5.1)** into
-   `:track-subscriptions` (comonadic, persistent) and `:await-conts`
-   (monadic, stack). Removes `:kind`-filtering from four engine
-   functions; makes the comonad/monad split structural instead of a
-   runtime predicate.
+* **Split the continuation table (5.1)** into `:track-subscriptions`
+  (comonadic, persistent) and `:await-conts` (monadic). The comonad/monad
+  split is now structural, not a runtime `:kind` predicate.
+* **`resume-body!` 4-flag option map → `:mode {:track :await}` (5.5).**
+* **One `reconcile-deps!`** for observer-edge reconciliation (5.6).
+* **Resource-timer disposal (part of 5.4)** — timer handles retained
+  and cancelled on fire / cancel / context stop.
 
-2. **Replace `resume-body!`'s 4-flag option map with `:mode {:track :await}` (5.5).**
-   The four flags have only two inhabited combinations — they *are* the
-   bind/co-bind distinction. Makes illegal combinations unrepresentable.
+**Remaining normalization opportunities (highest payoff first):**
 
-3. **Make `:subscriptions` a derived view of `:continuations` (5.6),**
-   and factor `record-deps!`/`clear-deps!`/`full-cleanup-spin!` through
-   one `reconcile-deps!`. Eliminates index-drift bugs (one already
-   documented as fixed).
+1. **Make `:subscriptions` a derived view of the continuation tables
+   (5.6, open half).** The reverse index is purely derivable; making it
+   a computed view eliminates an entire class of index-drift bugs (one
+   already documented as fixed).
 
-4. **Drive disposal/caching/fork policy from `:kind` (5.4).** The kind
-   split is currently used only for re-run gating; a `:resource` spin
-   could be disposed on resolution and excluded from fork cont-copying.
+2. **Drive node disposal / caching / fork policy from `:kind` (5.4,
+   open half).** The kind split currently drives re-run gating and
+   resource-timer disposal; a `:resource` spin could additionally be
+   disposed on resolution and excluded from fork cont-copying.
 
-5. **Audit `:created-spins` for redundancy with the deps DAG (5.3);**
+3. **Audit `:created-spins` for redundancy with the deps DAG (5.3);**
    delete it if creation always implies a dep/observer edge.
 
-6. **Collapse `:deferred-delivery` + `:mailbox-post` into one
+4. **Collapse `:deferred-delivery` + `:mailbox-post` into one
    `:resource-delivery` event (5.2).**
 
-The regularization branch has already done the hard structural work
-(explicit `:kind` on nodes and conts, one `:slice-state`, one
-`resume-body!`). The remaining items are mostly about making the
-*comonad (track) vs monad (await)* duality — which is now real and
-explicit in the model — equally explicit in the *data structures*
-(5.1, 5.5) rather than re-derived at runtime.
+5. **Canonical delta form (5.7)** and the **smaller items (5.8)** —
+   `record-await-dependency!` stub, dual addressing schemes, the
+   suspected-broken `attempt` / `absolve`.
+
+The regularization branch has already done the hard structural work:
+explicit `:kind` on nodes and conts, one `:slice-state`, one
+`resume-body!` with a `:mode`, the split continuation table, and one
+`reconcile-deps!`. The *comonad (track) vs monad (await)* duality is now
+real and explicit both in the model and in the data structures — the
+remaining items (Part 5's open list) are smaller cleanups rather than
+structural debt.

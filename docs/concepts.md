@@ -1,5 +1,11 @@
 # Concepts
 
+> **Conceptual ladder — rung 1 of 5.** Read order: **`concepts.md`** →
+> `engine-walkthrough.md` → `engine.md` → `scheduling.md` →
+> `engine-formalism.md`. This rung is the *user's* model — what spins,
+> signals, and effects are and how to compose them. The later rungs open
+> up the engine internals; start here.
+
 This guide explains how spindel's pieces fit together. Read this to build a mental model before diving into specific APIs.
 
 ## The Three Primitives

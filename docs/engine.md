@@ -1,5 +1,14 @@
 # Engine Architecture
 
+> **Conceptual ladder — rung 3 of 5.** Read order:
+> `concepts.md` (use it) → `engine-walkthrough.md` (the model in plain
+> language) → **`engine.md`** (this doc — the *structural* internals:
+> state shape, addressing, CPS/trampoline, overlay backend, GC) →
+> `scheduling.md` (the *operational* internals: drain thread, event
+> types, dispatch) → `engine-formalism.md` (the rigorous companion).
+> This doc assumes the walkthrough's model and adds the implementation;
+> it does not re-teach signals/spins/track/await.
+
 This document explains how the Spindel engine works *inside*: the
 state it holds, the addressing scheme that gives spins stable identity,
 the CPS transformation that makes `spin` bodies pause-and-resume, the
@@ -9,10 +18,16 @@ that hold across all of it.
 It's the companion to [`scheduling.md`](scheduling.md), which covers
 *when* work runs (drain thread, event types, executors, topological
 dispatch). `scheduling.md` is operational; this doc is architectural.
-The two cross-reference each other.
+The two cross-reference each other, and overlap deliberately only at
+the seams (event queue, drain). *If `engine.md` and `scheduling.md`
+feel like they cover the same ground for you, that is a signal worth a
+human's judgement on whether to merge them — they are kept separate
+here as structural-vs-operational.*
 
 If you're a new user, [`concepts.md`](concepts.md) is the place to
-start — it gives the conceptual model without the implementation.
+start — it gives the conceptual model without the implementation. For
+the plain-language model of the engine itself, read
+[`engine-walkthrough.md`](engine-walkthrough.md) before this doc.
 
 ## 1. The Execution Context
 
@@ -41,7 +56,8 @@ ExecutionContext
 │         (transient — accumulates during body run, cleared at completion)
 │   :subscriptions
 │     └── <event-key> → {<spin-id> → #{cont-id…}}
-│         (reverse index of :continuations for fast event dispatch)
+│         (reverse index of the continuation tables for fast event
+│          dispatch)
 │   :atoms
 │     └── <atom-id> → {:value :watchers}
 │   :pending-callbacks
@@ -57,25 +73,50 @@ ExecutionContext
 │   :engine/cancelled-tokens — #{token…} for cont-cancellation gate
 │
 └── Fork-local state (overlay does NOT fall through)
-    :continuations
+    :track-subscriptions
       └── <spin-id> → {<cont-id> → cont-map}
+          (comonadic, persistent track continuations)
+    :await-conts
+      └── <spin-id> → {<cont-id> → cont-map}
+          (monadic await continuations)
     :engine/pending          — [event…] FIFO queue
     :engine/draining?        — CAS lock for drain-events!
     :engine/delayed-spins    — sorted-map of timer-keyed spin-ids
     :engine/timer-handles    — {<spin-id> → handle} for cancellation
 ```
 
+**Two continuation tables, not one.** A *continuation* is the reified
+"rest of the body" past a `track` or `await` call. The regularization
+split the single flat continuation map into two structures keyed by the
+comonad/monad distinction:
+
+- `:track-subscriptions[spin-id]` — the **track** continuations, which
+  are comonadic and persistent: a track cont watches a signal and
+  re-runs the body slice on every change, so it is never reaped at a
+  generation boundary.
+- `:await-conts[spin-id]` — the **await** continuations, which are
+  monadic: they advance a suspended body when an awaited child (or an
+  external resource) completes. Some are ephemeral (reaped at the
+  generation boundary), some persistent (a reactive child re-completes).
+
+Each continuation still carries a `:kind` (`:track`, `:await-reactive`,
+`:await-once`, `:external-await`) and an `:order` — and `:order` is a
+single monotone insertion sequence *across both tables*, so the
+relative order of a track cont and an await cont in the same body is
+well-defined. `add-continuation!` routes a new cont to the right table
+by its `:kind`.
+
 The fork-local set is defined in `engine/state_backend.cljc:97-110`:
-`#{:continuations :engine/pending :engine/draining?
+`#{:track-subscriptions :await-conts :engine/pending :engine/draining?
    :engine/delayed-spins :engine/timer-handles}`.
 
 The split is deliberate. Reactive **graph state** (`:nodes`,
 `:subscriptions`, `:spin-tracking`) is shared so a fork inherits its
 parent's observer wiring for free — every signal that was tracked by
 parent is still tracked by fork until the fork writes to that path.
-Reactive **execution state** (`:continuations`, `:engine/pending`,
-`:engine/draining?`) is fork-local so the fork can drain its own
-events without contending with the parent's drain.
+Reactive **execution state** (the two continuation tables,
+`:engine/pending`, `:engine/draining?`) is fork-local so the fork can
+drain its own events without contending with the parent's drain.
 
 `:engine/cancelled-tokens` is the one shared path with subtle
 fork behavior; see [§5](#5-overlay-backend).
@@ -143,8 +184,9 @@ Calling `make-fork-spin` twice from the same parent body produces
 The chain-head cursor lives in execution-context state at
 `[:addressing :chain-heads spin-id]`, **per spin**, not in a dynamic
 var. The engine seeds the slot at body entry (`seed-body-chain-head!`)
-and the await-cont map snapshots the cursor at suspend
-(`:chain-head-snap`) so the engine can restore it at resume.
+and every continuation snapshots the cursor at suspend as part of its
+`:slice-state` map (`{:bindings :chain-head :tracking}`) so the engine
+can restore it at resume.
 
 Three properties fall out of this design:
 
@@ -352,11 +394,12 @@ What happens, in order:
    ordered observer set for `<counter-id>` via topological sort over
    `signal.observers`.
 6. **Resume `doubled`.** The engine finds `<doubled>`'s earliest
-   `track` continuation in `:continuations`, seeds
-   `[:addressing :chain-heads <doubled>]` from
-   `cont.chain-head-snap`, restores `[:spin-tracking <doubled>]`
-   from `cont.tracking-snap`, and calls `cont.resolve-fn` with the
-   fresh `Interval` describing `counter`'s update.
+   `track` continuation in `:track-subscriptions`, then resumes it via
+   `resume-body!` in `:track` mode: it restores the continuation's
+   `:slice-state` — seeding `[:addressing :chain-heads <doubled>]` from
+   `:slice-state :chain-head` and `[:spin-tracking <doubled>]` from
+   `:slice-state :tracking` — and calls the continuation's `:resolve-fn`
+   with the fresh `Interval` describing `counter`'s update.
 7. **CPS body resumes.** Inside the trampoline established at
    step 6, the body slice runs from the `track` breakpoint forward.
    `iv/get-new` extracts the new value (`1`), the body computes
@@ -383,9 +426,9 @@ What happens, in order:
 The trace touches:
 
 - §1 state: `:nodes` (signal + spin update), `:engine/pending`
-  (FIFO), `:engine/current-batch` (batch metadata), `:continuations`
-  (cont resume), `:subscriptions` (find which spins await
-  `:spin/complete`).
+  (FIFO), `:engine/current-batch` (batch metadata),
+  `:track-subscriptions` (the track cont resumed here),
+  `:subscriptions` (find which spins await `:spin/complete`).
 - §2 addressing: `:chain-heads` restoration at resume.
 - §3 CPS: outer trampoline established once at body start; the
   resume `invoke-continuation` reuses it if `*in-trampoline*` is
@@ -430,7 +473,7 @@ The local-paths set
 (`engine/state_backend.cljc:97-110`):
 
 ```clojure
-#{:continuations
+#{:track-subscriptions  :await-conts
   :engine/pending  :engine/draining?
   :engine/delayed-spins  :engine/timer-handles}
 ```
@@ -490,7 +533,7 @@ A `SpinNode` carries the following status state:
 |-------|------|---------|
 | `:completed?` | bool | The body has resolved at least once (cache is non-empty). |
 | `:running?` | bool | A body slice is in flight *right now* — including suspended on a track/await/deferred. Cleared only by `cache-result!`. |
-| `:status` | `:clean` \| `:dirty` | Marked `:dirty` when a dependency changed since the last cache; the next deref / signal-change will re-execute. Reset to `:clean` after re-execution. Tested via the `PCacheable` protocol methods `clean?` / `dirty?` rather than direct keyword access. |
+| `:status` | `:clean` \| `:dirty` | Marked `:dirty` when a dependency changed since the last cache; the next deref / signal-change will re-run the body. Reset to `:clean` after the re-run. Tested via the `PCacheable` protocol methods `clean?` / `dirty?` rather than direct keyword access. |
 | `:orphaned?` | bool, ad-hoc assoc'd | Optional. The Spin Java/JS object has been GC'd but live continuations exist; preserve the node so signal events keep firing. Not a `defrecord` field — added by `try-gc-cleanup-spin!` via `assoc`. |
 
 Two surprises worth knowing:
@@ -542,8 +585,8 @@ try-gc-cleanup-spin!:
   - if there are still observers OR live signal-continuations:
       mark :orphaned? true, keep node and continuations
   - else:
-      full-cleanup-spin!  (remove from :nodes, :continuations,
-                           :subscriptions, observer lists, etc.)
+      full-cleanup-spin!  (remove from :nodes, both continuation
+                           tables, :subscriptions, observer lists, etc.)
       recursively let dep spins be eligible too
 ```
 
@@ -578,8 +621,12 @@ for the explicit-shutdown sequence.
 
 - [`concepts.md`](concepts.md) — the conceptual model without the
   implementation
+- [`engine-walkthrough.md`](engine-walkthrough.md) — the plain-language
+  model of the engine; the rung below this doc
 - [`scheduling.md`](scheduling.md) — drain thread, event types,
   executors, topological dispatch
+- [`engine-formalism.md`](engine-formalism.md) — the rigorous companion:
+  laws, algebra, correctness arguments, normalization backlog
 - [`forking.md`](forking.md) — `fork-context` / `snapshot-context`
   / `restore-snapshot` API and the full fork-resource table
 - [`incremental.md`](incremental.md) — typed delta algebra, deltaable

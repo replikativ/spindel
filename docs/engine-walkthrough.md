@@ -1,5 +1,12 @@
 # Spindel — a guided walkthrough
 
+> **Conceptual ladder — rung 2 of 5.** Read order: `concepts.md` →
+> **`engine-walkthrough.md`** → `engine.md` → `scheduling.md` →
+> `engine-formalism.md`. This rung builds the *mental model of the
+> engine* in plain language; the rungs above it explain how to *use*
+> spindel, the rungs below add implementation detail and rigor. Every
+> later doc assumes the vocabulary introduced here.
+
 The plain-language companion to `engine-formalism.md`. The formalism doc
 is precise; this one builds the mental model. Read this one first —
 after `concepts.md` (how to *use* spindel), before `engine.md` /
