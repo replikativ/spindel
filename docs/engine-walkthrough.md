@@ -1,9 +1,11 @@
 # Spindel — a guided walkthrough
 
 The plain-language companion to `engine-formalism.md`. The formalism doc
-is precise; this one builds the mental model. Read this one first.
+is precise; this one builds the mental model. Read this one first —
+after `concepts.md` (how to *use* spindel), before `engine.md` /
+`scheduling.md` (the detailed internals).
 
-The whole engine rests on one idea: **a spin is a body with checkpoints;
+The whole engine rests on one idea: **a spin is a body of checkpoints;
 a change jumps execution back to a checkpoint and runs forward from
 there.** Everything below is that idea, unfolded.
 
@@ -34,6 +36,11 @@ When a spin runs, every `track` (and every `await` — §3) drops a
 **checkpoint**: a saved bookmark — *the rest of the body, packaged so the
 engine can continue it later.*
 
+*(The engine's source and the other docs call a checkpoint a*
+**continuation** *— the standard term for "the saved rest of a
+computation." This walkthrough says* checkpoint *because it is the
+friendlier picture. Same thing.)*
+
 ```clojure
 (spin
   (let [a (track s-a)
@@ -62,8 +69,7 @@ signal.
 - `s-a` changes → resume from checkpoint 1 → run forward → `[10 1]`.
 
 A checkpoint left alone by an unrelated change stays valid — it keeps
-watching its signal. (That is exactly what `generation_staleness_test`
-pins down.)
+watching its signal.
 
 ---
 
@@ -111,11 +117,6 @@ again with the child's new value. So an await fires **once per
 completion of its child** — usually once, more if the child is reactive.
 That re-firing is what makes `parallel` reactive (§4).
 
-*(The categorical framing, if you like it: `track` is comonadic — it
-hands you a value together with its change-context. `await` is monadic —
-sequencing: do this, then with its result do the next thing. You don't
-need this to use the engine; checkpoints are enough.)*
-
 ---
 
 ## 4. parallel — many checkpoints at once
@@ -129,12 +130,11 @@ them, and gives back `[r1 r2 r3]`. It drops **one await checkpoint per
 child**, all at once:
 
 ```
-  parallel:  • checkpoint → watches c1  ┄┄▶ c1 runs ┄▶ done ┐
-             • checkpoint → watches c2  ┄┄▶ c2 runs ┄▶ done ┤
-             • checkpoint → watches c3  ┄┄▶ c3 runs ┄▶ done ┘
-                                                       │
-             all three fired ─────────────────────────▶ parallel
-                                                        completes [r1 r2 r3]
+  parallel:  • watches c1  ┄┄▶ c1 runs ┄▶ done ┐
+             • watches c2  ┄┄▶ c2 runs ┄▶ done ┤
+             • watches c3  ┄┄▶ c3 runs ┄▶ done ┘
+                                           │
+             all fired ────────────────────▶ parallel completes [r1 r2 r3]
 ```
 
 Three checkpoints, live simultaneously. As each child finishes, its
@@ -156,10 +156,8 @@ completes as soon as the *first* child finishes, and cancels the rest.
 
 ## 5. The drain queue — how a change actually travels
 
-"A signal changes → the engine resumes the checkpoints." Here is the
-*how* — and it is deliberately not immediate.
-
-The engine has **one queue of events** and processes them **one at a
+"A signal changes → checkpoints resume" — the *how* is deliberately not
+immediate. The engine has **one event queue**, worked **one event at a
 time.**
 
 - Changing a signal does **not** resume anything directly. It drops an
@@ -169,21 +167,21 @@ time.**
 - Handling *"s-b changed"* = resuming s-b's checkpoints, which re-runs
   spins. A spin finishing drops a *new* event — *"spin X completed"* —
   onto the **same** queue.
-- The drain handles that too — resuming whoever awaited X — which may
-  finish more spins — more events. The drain runs until nothing is left.
+- The drain handles that too — resuming whoever awaited X — until nothing
+  is left.
 
 ```
    change s-b
        │
        ▼
-   ┌──────────────── event queue ─────────────────┐
-   │  [s-b changed]                                │
-   └───────────────────────────────────────────────┘
-       │  drain takes one event  ◀───────────────┐
-       ▼                                         │
-   handle it: resume checkpoints, re-run spins    │  finishing a spin
-       │                                         │  drops a new event
-       └──▶ spin completed ──▶ [spin X completed]─┘
+   ┌──────────── event queue ─────────────┐
+   │  [s-b changed]                        │
+   └───────────────────────────────────────┘
+       │  drain takes one  ◀──────────────┐
+       ▼                                  │  finishing a spin
+   handle it: resume checkpoints,          │  drops a new event
+   re-run spins                            │
+       └──▶ spin completed ──▶ [X done] ───┘
 
    ... repeat until the queue is empty ...
 ```
@@ -196,32 +194,193 @@ Why a queue, instead of just calling things directly?
 - **Defined order.** A change and its ripple effects happen in a
   predictable sequence.
 - **One drainer.** A lock ensures only one drain runs at a time; a change
-  that arrives mid-drain simply adds to the queue the running drain is
+  that arrives mid-drain simply joins the queue the running drain is
   already working through.
-
-So the full path of one signal change:
-
-```
-change → event on queue → drain picks it up → checkpoints resume
-       → spins re-run → completion events → drain picks those up
-       → ... → queue empty
-```
 
 ---
 
-## 6. The whole picture
+## 6. Effects — the pattern behind track and await
 
-- A **spin** is a body with **checkpoints**.
-- `track` checkpoints watch **signals**; `await` checkpoints watch
-  **child spins**.
+You have now seen three things that drop a checkpoint: `track`, `await`,
+and (next section) `yield`. They are not three special cases. They are
+three **effects**, and "effect" is the real general concept:
+
+> **An effect is a call the `spin` wrapper recognizes and turns into a
+> checkpoint.**
+
+When the `spin` macro rewrites a body, it scans for effect calls. At each
+one it splits the body — everything *after* the call becomes the
+checkpoint — and routes the call to that effect's **handler**, the code
+that decides what to watch and when to resume:
+
+```
+  (spin  …code…  (track s)  …rest…)
+                     │
+        macro splits the body here
+                     │
+        ┌────────────┴─────────────┐
+   the track call            …rest… becomes
+   → track's handler         the checkpoint
+     (watch s, resume
+      on change)
+```
+
+So the engine does not hard-code "track" and "await." It keeps a small
+**registry** of effects, and the macro builds a body's checkpoints from
+whatever is registered. That is why you can **add your own effect**
+(`custom-effects.md`): register a symbol and a handler, and
+`(your-effect …)` becomes a checkpoint in spin bodies just like the
+built-ins.
+
+Three words name three real *stages* of one effect — keep them straight:
+
+- the **effect** — the call you write (`track`), at the source level;
+- the **breakpoint** — the macro splitting the body there, at compile
+  time;
+- the **continuation** (this doc's *checkpoint*) — the runtime suspension
+  it produces.
+
+---
+
+## 7. yield — and the second axis: push vs pull
+
+`track` and `await` both *consume* — they wait for something. `yield`
+*produces*.
+
+`(yield v)` drops a checkpoint that hands out the value `v`, then pauses
+— until someone asks for the next one. You use it inside `gen-aseq`,
+which builds a lazy **async sequence**:
+
+```clojure
+(gen-aseq
+  (yield 1)
+  (yield 2)
+  (yield 3))
+```
+
+A consumer **pulls** the sequence one step at a time with `anext`: each
+`anext` runs the body to the next `yield`, hands back
+`[value rest-of-sequence]`, and pauses again. Nothing runs until pulled.
+
+That exposes a second axis the model needs — **push vs pull**:
+
+```
+        PUSH — a signal                  PULL — an async sequence
+  change it → engine notifies            anext → consumer asks for next
+  track consumes it, body re-runs        yield produces into it
+  the engine drives                      the consumer drives
+```
+
+A signal is a stream the engine *pushes* at you; an async sequence is a
+stream you *pull*. Same "stream of values" idea — opposite direction of
+control.
+
+---
+
+## 8. Caching — why a re-run is cheap
+
+A signal change re-runs spins. If every re-run redid all the work from
+scratch, a deep reactive graph would be hopeless. It is not, because of
+**caching**.
+
+Every spin's engine record holds a **cached result** and a
+**clean / dirty** flag:
+
+- **clean** — the cache is valid; the spin's inputs have not changed
+  since it last ran.
+- **dirty** — an input changed; the cache is stale; the spin must re-run.
+
+A signal change marks only the spins *downstream of it* dirty; everything
+else stays clean. When a spin `await`s a child that is **clean**, it gets
+the cached result *immediately* — the child does not re-run. Only
+**dirty** spins actually re-run.
+
+There is a second, finer check — the **capture gate**. When a spin is
+defined *inside* another spin's body and the parent re-runs, that inner
+spin is re-encountered. The engine compares the values the inner spin
+captured from its surroundings: if they are unchanged, the inner spin is
+left clean and serves its cache; only if a captured value actually moved
+does it re-run. So re-running a parent does **not** blindly re-run all
+its children — each re-runs only if *its own* inputs moved.
+
+Together: a change re-runs the minimum — the dirty sub-graph — and
+everything else answers from cache.
+
+---
+
+## 9. Two kinds of spin
+
+Not every spin is a cacheable calculation. There are **two kinds**, and
+the engine labels each one:
+
+- A **computation spin** — the normal kind, written with the `spin`
+  macro. It is a pure-ish calculation: the same inputs give the same
+  result. It has a stable identity, it is cacheable, and it can be
+  *replayed* — re-run from scratch and land in the same place. Replay is
+  what makes fork / restore possible.
+
+- A **resource spin** — `sleep`, `parallel`, `race`, a deferred, a
+  mailbox. Its body is an *effect on the outside world*: it arms a timer,
+  starts coordination, allocates a one-shot slot. It is not a pure
+  calculation and **not replayable** — replaying it would arm the timer
+  twice. Each one is a fresh, single-use thing.
+
+The engine treats them differently exactly where it must: a computation
+spin's cache is reused and the spin replayed; a resource spin is always
+run fresh and never replayed. Labelling the two kinds explicitly is what
+lets the engine apply the right rule everywhere instead of guessing.
+
+---
+
+## 10. Errors and cancellation
+
+A spin finishes in one of **three** ways: with a **value**, with an
+**error**, or **cancelled**.
+
+**Errors travel like values, in reverse.** A spin's result is tagged
+`:ok` or `:error`. When a parent `await`s a child that finished
+`:error`, the error flows into the parent and **short-circuits** it — the
+rest of the parent's body is skipped and the parent finishes `:error`
+too. An error propagates up the await chain just as a value would, only
+down the failure track.
+
+**Cancellation is cooperative.** `cancel-spin!` *marks* a spin (and
+everything depending on it) — it does not kill anything mid-flight. Every
+effect handler checks "am I cancelled?" the instant it runs, so a
+cancelled spin stops the next time it reaches a **checkpoint**. A spin in
+a tight loop with no `track` / `await` / `yield` in it will not notice
+until the loop ends — that "cooperative, not preemptive" contract falls
+straight out of *checkpoints are the control points*. `race` and
+`parallel` use this internally — `race` cancels the losers, `parallel`
+cancels the siblings when one fails.
+
+Cancellation is really a *flavour* of error — a cancelled spin finishes
+with a cancellation-typed error — so the same up-the-chain propagation
+applies.
+
+---
+
+## 11. The whole picture
+
+- A **spin** is a body of **checkpoints**.
+- A checkpoint is created by an **effect** — `track` (watch a signal),
+  `await` (watch a child spin), `yield` (emit into a pulled sequence), or
+  any effect you register yourself.
 - A change becomes an **event**; the **drain** works the event queue one
   at a time — resuming checkpoints, re-running spins — until quiet.
-- `track` checkpoints are permanent (a signal lives forever); `await`
-  checkpoints fire once per child-completion. `parallel` is just many
-  await checkpoints held at once.
+- Re-runs are cheap: only **dirty** spins re-run; **clean** ones serve a
+  cache.
+- Spins come in two kinds — replayable **computations** and one-shot
+  **resources**.
+- A spin finishes with a **value**, an **error**, or a **cancellation**.
 
-Everything else in the engine — caching results, the two *kinds* of spin
-(replayable computations vs. one-shot resources), fork/restore, the typed
-delta algebra — is refinement layered on this skeleton. When a piece of
-the engine confuses you, come back to the one sentence: *a spin is a body
-with checkpoints; a change jumps back to a checkpoint and runs forward.*
+Two axes organize all of it:
+
+- **compute** — `track` is comonadic (a value carried with its history);
+  `await` is monadic (one step sequenced after another);
+- **stream** — a signal is **pushed** at you; an async sequence is
+  **pulled** by you.
+
+When a piece of the engine confuses you, come back to the one sentence:
+*a spin is a body of checkpoints; a change resumes a checkpoint and runs
+forward.*
