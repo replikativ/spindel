@@ -632,12 +632,14 @@
    Always succeeds - errors are captured as throwable functions."
   ([spin]
    (make-spin
-    (fn [runtime-atom _ resolve _]
+    ;; spin-fn is the arity-2 CPS continuation `(resolve reject)` — the
+    ;; signature `Spin`'s invoke calls. The wrapped spin is itself a
+    ;; `Spin`, also invoked `(spin on-ok on-err)`.
+    (fn [resolve _reject]
       ;; Always succeed with a thunk capturing either value or error
-      (let [sid (spin-id spin)
-            on-ok (fn [v] (resolve (fn [] v)))
+      (let [on-ok (fn [v] (resolve (fn [] v)))
             on-err (fn [e] (resolve (fn [] (throw e))))]
-        (spin runtime-atom sid on-ok on-err)
+        (spin on-ok on-err)
         incomplete)))))
 
 (defn absolve
@@ -646,13 +648,14 @@
    Inverse of attempt - converts wrapped errors back to thrown errors."
   ([spin]
    (make-spin
-    (fn [runtime-atom _ resolve reject]
-      (let [sid (spin-id spin)
-            on-ok (fn [thunk]
+    ;; arity-2 CPS continuation `(resolve reject)`; the wrapped spin is
+    ;; a `Spin`, invoked `(spin on-ok on-err)`.
+    (fn [resolve reject]
+      (let [on-ok (fn [thunk]
                     (try
                       (resolve (thunk))
                       (catch #?(:clj Throwable :cljs :default) e
                         (reject e))))
             on-err (fn [e] (reject e))]
-        (spin runtime-atom sid on-ok on-err)
+        (spin on-ok on-err)
         incomplete)))))
