@@ -18,6 +18,7 @@
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
+            [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.signal :refer [signal]])))
@@ -175,6 +176,113 @@
                             (is (nil? (rtp/get-state ctx [:nodes sid])) "Still cleaned")
                             (done))
                           (fn [e] (is false (str "Spin failed: " e)) (done))))))))
+
+(deftest test-try-gc-cleanup-preserves-live-external-await
+  (testing "try-gc-cleanup-spin! defers cleanup for a spin suspended on a
+            Deferred/Mailbox external resource.
+
+            Regression: without this, a fire-and-forget spawn'd spin whose
+            body is mid-await on a Deferred can have its Spin Java object
+            GC'd while the deferred has not yet been delivered. The Cleaner
+            then fires try-gc-cleanup-spin!, which used to only check for
+            observers and signal track conts — both absent for such a spin
+            — and fully reaped the node + its :external-await cont. The
+            Deferred's eventual delivery had nowhere to resume; the body's
+            continuation (which might `deliver` to an external promise)
+            never fired. Symptom in dvergr: 20% flake rate on
+            discourse/personas tests where every operation completes
+            (probes confirm) but await-spin still returns ::timeout
+            because the outer promise was never delivered."
+    (async done
+           (with-ctx [ctx]
+             (let [d (sync/create-deferred ctx)
+                   s (spin (await d))
+                   sid (spin-core/spin-id s)]
+          ;; Start the body — it suspends on the deferred await, registering
+          ;; an :external-await cont on the spin.
+               (s (fn [_]) (fn [_]))
+               (let [conts (rtp/get-state ctx [:await-conts sid])]
+                 (is (some? conts) "Body must have registered an await cont before we test GC")
+                 (is (some (fn [[_ v]] (= :external-await (:kind v))) conts)
+                     "The cont must be :external-await (Deferred path)"))
+          ;; Simulate the Spin's Cleaner firing — the user has dropped their
+          ;; reference. The fix: try-gc-cleanup-spin! should see the live
+          ;; external-await cont and DEFER cleanup (mark orphaned), not fully
+          ;; reap the node + cont.
+               (simple/try-gc-cleanup-spin! ctx sid)
+               (let [node (rtp/get-state ctx [:nodes sid])]
+                 (is (some? node)
+                     "Node must survive try-gc-cleanup: it has a live external-await pending")
+                 (is (:orphaned? node)
+                     "Node must be marked :orphaned? — fully reachable for resume but reaped on next safe pass"))
+               (is (seq (rtp/get-state ctx [:await-conts sid]))
+                   "The :external-await cont must survive — otherwise the Deferred's eventual delivery would have nowhere to resume")
+               (done))))))
+
+#?(:clj
+   ;; JVM-only: relies on `await-drain-complete!` to deterministically
+   ;; wait for the spin's resolve callback (which fires `release!`) to
+   ;; run before asserting. CLJS has no equivalent blocking primitive
+   ;; — the drain runs on the event loop after `(d :delivered)` returns,
+   ;; so an inline assertion would race with the resolve. The contract
+   ;; itself (register on spawn, release on resolve) is the same on
+   ;; both platforms and is exercised end-to-end by the JVM-only
+   ;; `test-spawn-survives-gc-mid-await-jvm` below.
+   (deftest test-spawn-registers-and-releases-keep-alive
+     (testing "spawn! holds the Spin instance in [:engine/spawned] for the
+              lifetime of its body, then releases it on body resolution"
+       (let [ctx (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* ctx]
+             (let [d (sync/create-deferred ctx)
+                   s (spin (await d))
+                   sid (spin-core/spin-id s)]
+               (sync/spawn! s)
+               ;; Body suspends on the deferred await. The spin's instance MUST
+               ;; be held in the engine's spawned-registry — otherwise GC could
+               ;; reap it mid-await.
+               (is (identical? s (get (rtp/get-state ctx [:engine/spawned]) sid))
+                   "spawn! must register the Spin in [:engine/spawned spin-id] while body is in flight")
+               ;; Deliver the deferred → body resumes → resolves → release should fire.
+               (d :delivered)
+               (simple/await-drain-complete! ctx)
+               (is (nil? (get (rtp/get-state ctx [:engine/spawned]) sid))
+                   "spawn! must release the Spin from [:engine/spawned spin-id] after body resolves")))
+           (finally
+             (ctx/stop-context! ctx)))))))
+
+#?(:clj
+   (deftest test-spawn-survives-gc-mid-await-jvm
+     (testing "A fire-and-forget (spawn! (spin … (await ext) (deliver p …))) spin
+              must survive GC while suspended on an external await. The Spin
+              instance has no caller-held reference after spawn!; without
+              spawn's keep-alive the Cleaner fires mid-body, reaps the await
+              cont, and the eventual external delivery silently never resumes
+              the body — the promise stays undelivered. This was the
+              root-cause of the dvergr discourse.llm-test flake."
+       (let [ctx (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* ctx]
+             (let [d (sync/create-deferred ctx)
+                   p (promise)]
+               ;; Fire-and-forget: the Spin instance is created inline and
+               ;; passed straight to spawn!. No caller-held ref → after this
+               ;; call returns, GC can reach the Spin unless spawn! holds it.
+               (sync/spawn! (spin (deliver p (await d))))
+               ;; Aggressively GC. With the fix, the Spin is held by
+               ;; [:engine/spawned] until its body resolves, so GC can't
+               ;; reap it mid-await. Without the fix, the Cleaner would
+               ;; fire here, full-cleanup would clear the await cont, and
+               ;; the eventual `(d :delivered)` below would have nowhere
+               ;; to resume.
+               (dotimes [_ 3] (System/gc) (Thread/sleep 50))
+               ;; Now deliver the deferred — body should resume and put
+               ;; `:delivered` on p.
+               (d :delivered)
+               (is (= :delivered (deref p 2000 ::timeout))
+                   "Body must have resumed from the await and delivered to p")))
+           (finally
+             (ctx/stop-context! ctx)))))))
 
 (deftest test-no-residual-after-bulk-cleanup
   (testing "No residual spin state after creating many spins and cleaning them"
