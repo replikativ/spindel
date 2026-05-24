@@ -216,6 +216,36 @@
    (def ^:private ^Cleaner context-cleaner
      (Cleaner/create)))
 
+#?(:clj
+   (def ^:private ^java.lang.reflect.Method virtual-thread-start-method
+     "Reflectively resolved `Thread.startVirtualThread(Runnable)` so this
+      file compiles under any JDK while only invoking the method when
+      running on JDK 21+. nil → fall back to a platform daemon thread."
+     (try
+       (.getMethod Thread "startVirtualThread"
+                   (into-array Class [Runnable]))
+       (catch NoSuchMethodException _ nil))))
+
+#?(:clj
+   (defn- ^Thread start-drain-thread!
+     "Start a daemon-style thread that runs `runnable` to completion. On
+      JDK 21+ this is a virtual thread (carrier-shared, ~few KB heap,
+      free to leak when GC takes its time); otherwise it's a classic
+      daemon platform thread.
+
+      All drain threads in spindel are long-lived but cheap when parked
+      on `.poll(drain-signal, 1, SECONDS)`. The virtual-thread variant
+      makes per-context drain threads stop being a resource concern,
+      which removes the long-standing test-suite leak (~40 daemon
+      Thread-N entries per 5-minute run before this change). See
+      doc/drain-thread-leak.md."
+     [^Runnable runnable]
+     (if-let [m virtual-thread-start-method]
+       (.invoke m nil (into-array Object [runnable]))
+       (doto (Thread. runnable)
+         (.setDaemon true)
+         (.start)))))
+
 (defn create-execution-context
   "Create a new root execution context.
 
@@ -281,24 +311,26 @@
         ;; or accumulate thread overhead in tests.
         ;;
         ;; IMPORTANT: hold ctx via WeakReference (set after construction
-        ;; below), not as a strong capture. A daemon thread is a GC root, so
-        ;; a strong reference would keep ctx reachable forever, defeating the
-        ;; Cleaner registered below and leaking the context.
+        ;; below), not as a strong capture. A virtual thread's carrier is
+        ;; a GC root only while the VT is mounted; a parked VT is held by
+        ;; its scheduler queue but treats its closures normally. Either
+        ;; way, a strong capture of `ctx` here would keep the context
+        ;; reachable forever, defeating the Cleaner registered below.
         drain-thread #?(:clj
-                        (doto (Thread.
-                               (fn []
-                                 (while @running
-                                   (try
-                                      ;; Block until signaled or 1s timeout (zero CPU while waiting)
-                                     (.poll drain-signal 1 TimeUnit/SECONDS)
-                                     (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
-                                       (when-let [c (.get wref)]
-                                         (simple/drain-events! c executor)))
-                                     (catch Throwable e
-                                        ;; Log but don't crash drain thread on Error (e.g. StackOverflowError)
-                                       (println "ERROR in background drain thread:" e))))))
-                          (.setDaemon true)
-                          (.start))
+                        (start-drain-thread!
+                          (fn []
+                            (while @running
+                              (try
+                                ;; Block until signaled or 1s timeout
+                                ;; (zero CPU while waiting).
+                                (.poll drain-signal 1 TimeUnit/SECONDS)
+                                (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
+                                  (when-let [c (.get wref)]
+                                    (simple/drain-events! c executor)))
+                                (catch Throwable e
+                                  ;; Log but don't crash drain thread on
+                                  ;; Error (e.g. StackOverflowError).
+                                  (println "ERROR in background drain thread:" e))))))
                         :cljs nil)
         ;; Build the FINAL context record (the one we return to the caller).
         ;; Both the WeakReference and the Cleaner registration MUST target
@@ -855,18 +887,16 @@
             drain-active (atom 0)
             ctx-holder #?(:clj (java.util.concurrent.atomic.AtomicReference.) :cljs nil)
             drain-thread #?(:clj
-                            (doto (Thread.
-                                   (fn []
-                                     (while @running
-                                       (try
-                                         (.poll drain-signal 1 TimeUnit/SECONDS)
-                                         (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
-                                           (when-let [c (.get wref)]
-                                             (simple/drain-events! c executor)))
-                                         (catch Exception e
-                                           (println "ERROR in background drain thread:" e))))))
-                              (.setDaemon true)
-                              (.start))
+                            (start-drain-thread!
+                              (fn []
+                                (while @running
+                                  (try
+                                    (.poll drain-signal 1 TimeUnit/SECONDS)
+                                    (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
+                                      (when-let [c (.get wref)]
+                                        (simple/drain-events! c executor)))
+                                    (catch Exception e
+                                      (println "ERROR in background drain thread:" e))))))
                             :cljs nil)
             ctx (->ExecutionContext fork-id backend-obj nil executor bindings metadata running drain-thread drain-signal drain-active)]
         #?(:clj
