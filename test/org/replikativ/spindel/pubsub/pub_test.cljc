@@ -246,12 +246,12 @@
          ;; sleeps. The pre-fix vector+rest+conj bug reverses order in batches.
          (binding [ec/*execution-context* ctx]
            (sp/spawn!
-             (spin
-               (loop [s sub]
-                 (when-let [[m r] (await (anext s))]
-                   (Thread/sleep 30)
-                   (swap! got conj (:n m))
-                   (recur r))))))
+            (spin
+             (loop [s sub]
+               (when-let [[m r] (await (anext s))]
+                 (Thread/sleep 30)
+                 (swap! got conj (:n m))
+                 (recur r))))))
          ;; Burst-post n-items.
          (binding [ec/*execution-context* ctx]
            (dotimes [i n-items]
