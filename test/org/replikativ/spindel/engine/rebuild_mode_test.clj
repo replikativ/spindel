@@ -326,6 +326,46 @@
         (finally
           (ctx/stop-context! ctx))))))
 
+(deftest test-rebuild-does-not-re-invoke-prior-body-via-stale-cont
+  (testing "After (make-x) is called twice on the same ctx (rebuild mode for
+            the second call), each invocation's child-spin body fires
+            exactly ONCE — the rebuild must NOT re-invoke the prior call's
+            child Spin instance via a stale parent await-cont.
+
+            Regression: under the original engine, the second call would
+            mark the parent dirty (captures changed → new id-log atom),
+            but the parent's await-cont from the first call survived. When
+            the second call's child completed and enqueued
+            :spin-completion, the stale cont fired the first call's CPS
+            chain, which re-invoked the first child Spin via
+            `(spin-ref noop noop)` — re-running its body against the
+            FIRST call's `id-log` atom. Symptom: one extra entry in the
+            first call's atom that should not be there. Fixed by
+            `clear-prior-body-conts!` at body re-run sites in Spin.invoke."
+    (let [ctx (ctx/create-execution-context)
+          log-1 (atom [])
+          log-2 (atom [])
+          make-model (fn [id-log]
+                       (spin
+                        (swap! id-log conj ec/*spin-id*)
+                        (let [a (spin (swap! id-log conj ec/*spin-id*) 1)
+                              b (spin (swap! id-log conj ec/*spin-id*) 2)]
+                          (+ (await a) (await b)))))]
+      (try
+        (binding [ec/*execution-context* ctx]
+          (is (= 3 @(make-model log-1))))
+        (addressing/set-chain-head! ctx nil)
+        (let [rebuild-ctx (ctx/set-execution-mode ctx :rebuild)]
+          (binding [ec/*execution-context* rebuild-ctx]
+            (is (= 3 @(make-model log-2)))))
+        ;; Each log has exactly THREE entries — outer, a, b — once.
+        (is (= 3 (count @log-1)) (str "expected 3 entries in log-1, got " @log-1))
+        (is (= 3 (count @log-2)) (str "expected 3 entries in log-2, got " @log-2))
+        ;; And the id sequences match across the two invocations.
+        (is (= @log-1 @log-2))
+        (finally
+          (ctx/stop-context! ctx))))))
+
 (deftest test-normal-mode-still-uses-cache
   (testing "Normal mode still uses cache (rebuild mode doesn't break caching)"
     (let [ctx (ctx/create-execution-context)

@@ -237,6 +237,13 @@
             ;; Execute spin body for side effects (nested spin creation, continuation registration).
             ;; Fresh per-spin chain-head slot = nested spin minting reproduces the same id
             ;; sequence as the original run (rebuild's whole purpose).
+            ;; Drop the prior body's ephemeral await conts: in rebuild mode
+            ;; await-spin resolves synchronously and does NOT overwrite the
+            ;; cont, so without this an :await-once cont from the original
+            ;; run survives, fires on the next :spin-completion, and
+            ;; re-invokes the prior body's CPS chain (which closes over
+            ;; prior-run Spin instances). See clear-ephemeral-await-conts!.
+          (simple/clear-prior-body-conts! runtime spin-id)
           (addressing/seed-body-chain-head! runtime spin-id)
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id]
@@ -299,6 +306,14 @@
             ;; as the body runs, and register-spin! re-runs any whose captured
             ;; environment changed (B) — no blanket invalidation needed.
           (simple/clear-created-spins! runtime spin-id)
+
+            ;; Drop the prior body's ephemeral await conts at the same time.
+            ;; The new body run will register fresh conts at each (await …)
+            ;; via the slow path (deterministic cont-id would overwrite
+            ;; anyway in normal mode); clearing here keeps the rebuild path
+            ;; correct too (where the sync rebuild branch doesn't register).
+            ;; Persistent :await-reactive conts (parallel/race) are kept.
+          (simple/clear-prior-body-conts! runtime spin-id)
 
             ;; Seed this body slice's per-spin chain-head slot with
             ;; `body-start-chain-head spin-id` before invoking spin-fn —
