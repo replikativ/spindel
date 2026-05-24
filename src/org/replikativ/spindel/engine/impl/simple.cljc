@@ -1414,6 +1414,37 @@
   [context spin-id]
   (boolean (seq (rtp/get-state context [:track-subscriptions spin-id]))))
 
+(defn- has-live-external-await?
+  "True if `spin-id` has any `:external-await` continuation pending —
+  the body is suspended on a Deferred, Mailbox, or plain-fn external
+  resource that has not yet fired. Such a cont holds the only path
+  back to the body's continuation; reaping it silently drops the
+  eventual delivery.
+
+  Necessary because the `Spin` Java object holds no strong reference
+  on its own continuations once the body suspends — only the user's
+  local binding does. A fire-and-forget `(spawn! (spin … (await ext)
+  …))` keeps the Spin reachable only in the caller's lexical scope;
+  once the caller stops referencing it, the Cleaner fires
+  `try-gc-cleanup-spin!`. Without this guard the cont is reaped and
+  the eventual `ext` delivery has nowhere to resume — the body's
+  continuation (which might `deliver` to an external promise) never
+  fires. The dvergr `discourse.llm-test` flake (~20 % when many
+  spawn-and-await pairs run in one JVM) reproduces this exactly.
+
+  Spin-await conts (`[:spin/complete _]`) are NOT counted here:
+  those go through the `:spin-completion` dispatch, and the awaitee
+  Spin is held alive by the cont's `:awaited-spin` field — so the
+  awaiter/awaitee pair is reachable together, and cascade cleanup
+  reaps both safely once the user drops both. External resources
+  (Deferred / Mailbox / plain-fn) are NOT held by the cont (it only
+  holds `wrapped-resolve`), so reaping the cont severs the last path
+  back to the awaiter's body."
+  [context spin-id]
+  (boolean
+   (some (fn [[_k v]] (= :external-await (:kind v)))
+         (rtp/get-state context [:await-conts spin-id]))))
+
 (defn try-gc-cleanup-spin!
   "Called from GC callback. Attempts full cleanup if safe, otherwise marks
   the spin as orphaned for deferred cleanup.
@@ -1423,22 +1454,24 @@
   2. It has no observers (no other spins depend on it)
   3. It has no live signal continuations (no `(track sig)` waiters
      bound to a still-live signal)
+  4. It has no live `:external-await` continuations (no body slice
+     suspended on a Deferred / Mailbox / plain-fn external resource
+     that has not yet fired)
 
   If any condition fails, it's marked `:orphaned? true` and a later
   cleanup pass — triggered when the last observer or signal-cont is
   torn down — will full-clean it.
 
-  Why (3) is essential: a spin with `(track sig)` in its body keeps
-  a track continuation registered in `:track-subscriptions spin-id`
-  that the engine resumes on every signal change. The cont's `:resolve-fn`
-  closes over the CPS body slice (which references `spin-id`,
-  atoms, etc.) but NOT over the `Spin` Java object itself. So the
-  Spin object can become GC-eligible (e.g. the user's `let` binding
-  goes out of scope after last use) while the reactive machinery is
-  still very much alive. Without this check, the Cleaner thread
-  would fire, `full-cleanup-spin!` would clear the cont and the
-  signal's observer registration, and subsequent signal changes
-  would silently no-op — a deeply confusing reactive drop.
+  Why (3) and (4) are essential: in both cases the cont's
+  `:resolve-fn` closes over the CPS body slice (which references
+  `spin-id`, atoms, etc.) but NOT over the `Spin` Java object
+  itself. So the Spin can become GC-eligible (the user's `let`
+  binding goes out of scope after last use) while the reactive or
+  suspended machinery is still very much alive. Without these
+  checks, the Cleaner thread fires, `full-cleanup-spin!` clears the
+  cont, and subsequent firings — signal change in (3)'s case, or
+  external-resource delivery in (4)'s case — silently no-op. Both
+  modes manifest as the awaiter never running again, with no error.
 
   Args:
     context - context record (implements PState protocol)
@@ -1449,21 +1482,24 @@
   (let [node (rtp/get-state context [:nodes spin-id])]
     (when node ;; may already be cleaned
       (let [has-observers? (seq (nodes/get-observers node))
-            live-signal-cont? (has-live-signal-cont? context spin-id)]
+            live-signal-cont? (has-live-signal-cont? context spin-id)
+            live-external-await? (has-live-external-await? context spin-id)]
         (cond
-          (or has-observers? live-signal-cont?)
-          ;; Has observers and/or live signal continuations → mark
-          ;; orphaned and defer cleanup. The Cleaner has run, so the
-          ;; Spin object itself is unreachable, but the runtime still
-          ;; needs this spin's state to fire reactive updates.
+          (or has-observers? live-signal-cont? live-external-await?)
+          ;; Has observers, live signal continuations, or live external
+          ;; awaits → mark orphaned and defer cleanup. The Cleaner has
+          ;; run, so the Spin object itself is unreachable, but the
+          ;; runtime still needs this spin's state to fire reactive
+          ;; updates or resume from a pending external delivery.
           (rtp/swap-state! context [:nodes spin-id]
                            #(when % (assoc % :orphaned? true)))
 
           :else
-          ;; No observers, no live signal continuations → safe to
-          ;; fully clean up + cascade to dependencies. Stale spin-
-          ;; completion conts (awaits of since-cleaned parents) are
-          ;; cleaned away by full-cleanup-spin!.
+          ;; No observers, no live signal continuations, no pending
+          ;; external awaits → safe to fully clean up + cascade to
+          ;; dependencies. Stale spin-completion conts (awaits of
+          ;; since-cleaned parents) are cleaned away by
+          ;; `full-cleanup-spin!`.
           (let [deps (nodes/get-deps node)
                 dep-spin-ids (:spins deps #{})]
             (full-cleanup-spin! context spin-id)
@@ -1473,7 +1509,8 @@
                 (when (and dep-node
                            (:orphaned? dep-node)
                            (empty? (nodes/get-observers dep-node))
-                           (not (has-live-signal-cont? context dep-id)))
+                           (not (has-live-signal-cont? context dep-id))
+                           (not (has-live-external-await? context dep-id)))
                   (full-cleanup-spin! context dep-id))))))))))
 
 (defn track-signal-dep!

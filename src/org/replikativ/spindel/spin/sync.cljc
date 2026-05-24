@@ -378,11 +378,38 @@
      (spawn! (spin (do-work)))
      (spawn! (spin (do-work)) {:on-error my-handler})
 
+   GC contract: `spawn!` registers the Spin instance in the context's
+   `[:engine/spawned spin-id]` slot for the duration of its body. This
+   prevents the Spin's Cleaner from firing mid-body when the caller
+   has no further reference to it — exactly the
+   `(spawn! (spin … (deliver p (await x)) …))` pattern. Without this
+   the Spin instance becomes GC-eligible the moment `spawn!` returns
+   (no caller-held local), and a `try-gc-cleanup-spin!` between
+   suspend and resume reaps the body's await cont — the eventual
+   resumption then has no continuation to fire and the body's side
+   effects (e.g. delivering to `p`) silently never happen. The slot is
+   cleared from the resolve/reject callbacks, after which a later GC
+   of the Spin object can safely clean up the now-quiescent node.
+
    Returns nil."
   ([s] (spawn! s {}))
   ([s {:keys [on-error]
        :or {on-error (fn [e] (binding [#?(:clj *out* :cljs *print-fn*)
                                        #?(:clj *err* :cljs *print-err-fn*)]
                                (println "Error in spawned spin:" e)))}}]
-   (s (fn [_]) on-error)
+   (let [ctx #?(:clj (try (ec/current-execution-context)
+                          (catch Throwable _ nil))
+                :cljs (try (ec/current-execution-context)
+                           (catch :default _ nil)))
+         sid (when ctx (spin-core/spin-id s))
+         release! (fn []
+                    (when ctx
+                      (binding [ec/*execution-context* ctx]
+                        (ec/swap-state! [:engine/spawned]
+                                        (fn [m] (dissoc m sid))))))]
+     (when ctx
+       (binding [ec/*execution-context* ctx]
+         (ec/swap-state! [:engine/spawned] (fn [m] (assoc m sid s)))))
+     (s (fn [_] (release!))
+        (fn [e] (release!) (on-error e))))
    nil))
