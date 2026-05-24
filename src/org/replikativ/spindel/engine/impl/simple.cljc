@@ -292,6 +292,56 @@
   (rtp/swap-state! context [:nodes spin-id]
                    (fn [node] (when node (assoc node :created-spins #{})))))
 
+(defn ^:no-doc clear-prior-body-conts!
+  "Drop a spin's await and track continuations at the start of a (re-)run
+  of its body. The new body re-registers everything it needs at each
+  await/track site (deterministic cont-id would have overwritten the
+  await-conts in normal mode anyway), so the prior body's conts are
+  stale by definition once we re-enter the body from scratch.
+
+  This is symmetric to `clear-created-spins!` (the prior body's child
+  spin set is invalidated) and `clear-deps!`'s observer teardown — the
+  re-run gets a clean slate. Subscription back-refs in
+  `:subscriptions [event-key]` are cleaned up so a later
+  `:spin-completion` for that key doesn't try to look up a now-missing
+  cont.
+
+  Why not narrower? The existing `clear-all-await-continuations!`
+  (called at signal-change generation boundaries) preserves
+  `:await-reactive` so parallel/race continuations survive batches.
+  That's correct for *signal-change resume* — the same body slice
+  continues from a track cont, and the reactive await is still wired
+  to the body that registered it. But at *body re-run* from scratch
+  (cache miss / dirty re-execution) the body has been abandoned: every
+  cont references the *prior* body's CPS closures (which captured the
+  prior body's child Spin instances and lexical locals). Preserving
+  them lets a later `:spin-completion` fire a stale CPS chain, which
+  re-invokes the prior body's children via `(spin-ref noop noop)` /
+  `.-spin-fn`. The symptom is an extra body run logged against the
+  prior invocation's atom — visible whenever the same body is invoked
+  twice on one context (notably `set-execution-mode :rebuild`)."
+  [context spin-id]
+  (let [conts (rtp/get-state context [:await-conts spin-id])
+        track-subs (rtp/get-state context [:track-subscriptions spin-id])]
+    (when (or (seq conts) (seq track-subs))
+      (rtp/swap-state! context []
+                       (fn [rt-state]
+                         (-> rt-state
+                             (update :await-conts dissoc spin-id)
+                             (update :track-subscriptions dissoc spin-id)
+                             ;; Drop the subscription back-refs for this spin
+                             ;; from every event-key it was subscribed to.
+                             (update :subscriptions
+                                     (fn [subs]
+                                       (reduce-kv
+                                        (fn [acc ek m]
+                                          (let [m' (dissoc m spin-id)]
+                                            (if (seq m')
+                                              (assoc acc ek m')
+                                              acc)))
+                                        {}
+                                        subs)))))))))
+
 (defn- restore-slice-state!
   "Restore a continuation's per-slice `:slice-state` snapshot so the
   resumed body slice continues consistently with where it suspended.
