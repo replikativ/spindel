@@ -71,8 +71,12 @@
   [mults-atom topic]
   (or (:mult (get @mults-atom topic))
       (let [;; Create a promise-based async sequence for this topic
-            ;; Items will be pushed when they arrive
-            topic-items-atom (atom [])
+            ;; Items will be pushed when they arrive.
+            ;; PersistentQueue is required for FIFO: vector + (rest) +
+            ;; (conj item) corrupts order because rest returns a seq,
+            ;; and conj on a seq prepends instead of appending.
+            topic-items-atom (atom #?(:clj  clojure.lang.PersistentQueue/EMPTY
+                                      :cljs cljs.core/PersistentQueue.EMPTY))
             topic-waiter-atom (atom (make-promise))  ; Single waiter promise
             topic-closed-atom (atom false)
 
@@ -83,8 +87,8 @@
                             (cond
                                ;; Check for items
                               (seq @topic-items-atom)
-                              (let [item (first @topic-items-atom)]
-                                (swap! topic-items-atom rest)
+                              (let [item (peek @topic-items-atom)]
+                                (swap! topic-items-atom pop)
                                 [item this])
 
                                ;; Closed with no items
