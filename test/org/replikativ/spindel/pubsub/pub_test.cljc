@@ -4,11 +4,14 @@
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [org.replikativ.spindel.pubsub.pub :as pub]
             [org.replikativ.spindel.pubsub.buffer :as buf]
+            [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
             [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.spin.combinators :as comb]
+            [org.replikativ.spindel.spin.sync :as sync]
+            [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.test-helpers :as th])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -215,3 +218,46 @@
            (is (= 5 (count result2)) "Second subscriber should get 5 items")
            (is (= (set (range 5)) (set result1)) "First subscriber should get all values")
            (is (= (set (range 5)) (set result2)) "Second subscriber should get all values"))))))
+
+;; =============================================================================
+;; FIFO Order Under Backpressure
+;; Regression: topic-items-atom was a vector, but (swap! atom rest) returns
+;; a ListSeq; (swap! atom conj item) on a seq prepends instead of appending,
+;; corrupting FIFO order. Fixed by switching to PersistentQueue.
+;; =============================================================================
+
+#?(:clj
+   (deftest test-pub-fifo-order-under-backpressure
+     (testing "subscriber receives messages in post order even when buffers backpressure"
+       (let [ctx     (ctx/create-execution-context)
+             [mbox m tap p sub]
+             (binding [ec/*execution-context* ctx]
+               (let [mbox (sync/create-mailbox ctx)
+                     m    (mult/mult mbox)
+                     tap  (mult/tap m (buf/fixed-buffer 2))
+                     p    (pub/pub tap :type)
+                     sub  (pub/sub p :x (buf/fixed-buffer 2))]
+                 [mbox m tap p sub]))
+             got     (atom [])
+             n-items 10]
+         ;; Slow blocking consumer behind multiple small buffers.
+         ;; topology: mailbox → mult (buf 2) → pub → sub (buf 2) → slow consumer
+         ;; Items pile up at the pub's topic-items queue while the consumer
+         ;; sleeps. The pre-fix vector+rest+conj bug reverses order in batches.
+         (binding [ec/*execution-context* ctx]
+           (sp/spawn!
+            (spin
+             (loop [s sub]
+               (when-let [[m r] (await (anext s))]
+                 (Thread/sleep 30)
+                 (swap! got conj (:n m))
+                 (recur r))))))
+         ;; Burst-post n-items.
+         (binding [ec/*execution-context* ctx]
+           (dotimes [i n-items]
+             (sync/post! mbox {:type :x :n i})))
+         ;; Wait for the slow consumer to drain (30ms × n + slack).
+         (Thread/sleep (+ 200 (* 30 n-items)))
+         (is (= n-items (count @got)) "all items delivered")
+         (is (= (vec (range n-items)) @got)
+             "items delivered in FIFO order under backpressure")))))
