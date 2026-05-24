@@ -1072,8 +1072,8 @@
 (defn ^:no-doc trigger-drain!
   "Trigger async draining of the event queue.
 
-  Schedules drain-events! to run on the executor AND wakes the background
-  drain thread via drain-signal (if present). Does not wait for completion.
+  Schedules drain-events! to run on the executor. Does not wait for
+  completion.
 
   This is called after external changes to ensure events are processed
   eventually. If draining is already in progress, the new events will
@@ -1091,10 +1091,6 @@
 
   Returns: true if scheduled, false if no executor available"
   [context executor]
-  ;; Wake background drain thread via notification queue (zero-polling)
-  #?(:clj
-     (when-let [ds (:drain-signal context)]
-       (.offer ^java.util.concurrent.LinkedBlockingQueue ds :drain)))
   (if executor
     (do
       (executor/execute! executor

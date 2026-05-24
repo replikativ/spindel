@@ -22,9 +22,7 @@
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.addressing :as addressing]
-            [incognito.edn :refer [read-string-safe]])
-  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]
-                   [java.lang.ref Cleaner WeakReference])))
+            [incognito.edn :refer [read-string-safe]]))
 
 ;; =============================================================================
 ;; Incognito Handlers for Serialization
@@ -74,12 +72,17 @@
             executor       ; Executor for scheduling (shared across forks for now)
             bindings       ; Fork-local configuration (map for spin access via *execution-context*)
             metadata       ; User-defined fork metadata (e.g., {:particle-id 123})
-            running        ; Atom controlling background drain thread lifecycle
-            drain-thread   ; Background thread that continuously drains event queue
-            drain-signal   ; LinkedBlockingQueue for waking drain thread (nil for forks)
+            running        ; Atom — flipped to false by stop-context!. drain-events!
+                           ; guards on this so post-stop drains become no-ops.
             drain-active]  ; Atom counting drain-events! calls past the running guard.
                   ; stop-context! waits for this to reach 0 before returning,
                   ; so no further drain on this context can mutate state.
+
+  ;; The engine has no standing per-context drain thread. Every enqueue
+  ;; path goes through rtp/enqueue! (the PEngine method), which atomically
+  ;; does simple/enqueue-event! + simple/trigger-drain!. trigger-drain!
+  ;; submits the drain on the context's executor (a virtual thread on
+  ;; JDK 21+), so there is no need for a standing 1 Hz safety-net poll.
 
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
@@ -212,40 +215,6 @@
 ;; Creation
 ;; =============================================================================
 
-#?(:clj
-   (def ^:private ^Cleaner context-cleaner
-     (Cleaner/create)))
-
-#?(:clj
-   (def ^:private ^java.lang.reflect.Method virtual-thread-start-method
-     "Reflectively resolved `Thread.startVirtualThread(Runnable)` so this
-      file compiles under any JDK while only invoking the method when
-      running on JDK 21+. nil → fall back to a platform daemon thread."
-     (try
-       (.getMethod Thread "startVirtualThread"
-                   (into-array Class [Runnable]))
-       (catch NoSuchMethodException _ nil))))
-
-#?(:clj
-   (defn- ^Thread start-drain-thread!
-     "Start a daemon-style thread that runs `runnable` to completion. On
-      JDK 21+ this is a virtual thread (carrier-shared, ~few KB heap,
-      free to leak when GC takes its time); otherwise it's a classic
-      daemon platform thread.
-
-      All drain threads in spindel are long-lived but cheap when parked
-      on `.poll(drain-signal, 1, SECONDS)`. The virtual-thread variant
-      makes per-context drain threads stop being a resource concern,
-      which removes the long-standing test-suite leak (~40 daemon
-      Thread-N entries per 5-minute run before this change). See
-      doc/drain-thread-leak.md."
-     [^Runnable runnable]
-     (if-let [m virtual-thread-start-method]
-       (.invoke m nil (into-array Object [runnable]))
-       (doto (Thread. runnable)
-         (.setDaemon true)
-         (.start)))))
-
 (defn create-execution-context
   "Create a new root execution context.
 
@@ -290,96 +259,51 @@
                               :engine/timer-handles {}})
         ;; Create AtomBackend for root context
         atom-backend (backend/create-atom-backend initial-rt-state)
-        ;; Create background drain thread control
+        ;; running stays true until stop-context! flips it. Without a
+        ;; standing drain thread there's nothing to interrupt — guards
+        ;; in drain-events! check this so post-stop drains no-op.
         running (atom true)
-        ;; Notification queue for waking drain thread (zero-polling)
-        drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
         ;; Counter of drains currently past the function-entry guard.
         ;; stop-context! polls this down to 0 before returning.
-        drain-active (atom 0)
-        ;; Hold a weak ref slot the drain thread reads each tick. We populate
-        ;; it with the FINAL ctx record (the one returned to the caller) so
-        ;; the Cleaner observes the same object the user holds. Holding the
-        ;; pre-assoc record A would let A become GC-eligible immediately
-        ;; (since assoc returns a new record B), causing the Cleaner to fire
-        ;; mid-execution and kill the drain thread.
-        ctx-holder #?(:clj (java.util.concurrent.atomic.AtomicReference.) :cljs nil)
-        ;; Start background drain thread (zero-polling via LinkedBlockingQueue)
-        ;; Blocks on drain-signal.poll(1s) instead of Thread/sleep 10
-        ;; Wakes instantly when trigger-drain! calls .offer(:drain)
-        ;; Uses daemon thread so leaked contexts don't prevent JVM exit
-        ;; or accumulate thread overhead in tests.
-        ;;
-        ;; IMPORTANT: hold ctx via WeakReference (set after construction
-        ;; below), not as a strong capture. A virtual thread's carrier is
-        ;; a GC root only while the VT is mounted; a parked VT is held by
-        ;; its scheduler queue but treats its closures normally. Either
-        ;; way, a strong capture of `ctx` here would keep the context
-        ;; reachable forever, defeating the Cleaner registered below.
-        drain-thread #?(:clj
-                        (start-drain-thread!
-                          (fn []
-                            (while @running
-                              (try
-                                ;; Block until signaled or 1s timeout
-                                ;; (zero CPU while waiting).
-                                (.poll drain-signal 1 TimeUnit/SECONDS)
-                                (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
-                                  (when-let [c (.get wref)]
-                                    (simple/drain-events! c executor)))
-                                (catch Throwable e
-                                  ;; Log but don't crash drain thread on
-                                  ;; Error (e.g. StackOverflowError).
-                                  (println "ERROR in background drain thread:" e))))))
-                        :cljs nil)
-        ;; Build the FINAL context record (the one we return to the caller).
-        ;; Both the WeakReference and the Cleaner registration MUST target
-        ;; this object — otherwise the pre-assoc record becomes GC-eligible
-        ;; the moment we return, the Cleaner fires, and the drain thread
-        ;; dies mid-test (even though the user still holds the returned ctx).
-        ctx (->ExecutionContext
-             fork-id
-             atom-backend
-             nil    ; No parent for root
-             executor
-             bindings
-             metadata
-             running
-             drain-thread
-             drain-signal
-             drain-active)]
-    #?(:clj
-       (do
-         (.set ^java.util.concurrent.atomic.AtomicReference ctx-holder (WeakReference. ctx))
-         ;; Register GC cleaner on the SAME object the user holds. The
-         ;; Runnable must NOT capture `ctx` — only the primitives needed to
-         ;; stop the drain thread, otherwise the Cleaner prevents GC.
-         (.register context-cleaner ctx
-                    (reify Runnable
-                      (run [_]
-                        (reset! running false)
-                        (.offer ^LinkedBlockingQueue drain-signal :stop))))))
-    ctx))
+        drain-active (atom 0)]
+    (->ExecutionContext
+     fork-id
+     atom-backend
+     nil    ; No parent for root
+     executor
+     bindings
+     metadata
+     running
+     drain-active)))
 
 (defn stop-context!
-  "Stop an execution context's background drain thread.
+  "Quiesce an execution context.
 
-  Only root contexts own the drain infrastructure; forks share the parent's,
-  so calling this on a fork is a safe no-op.
+  Only root contexts own the running/drain-active atoms; forks share
+  the parent's, so calling this on a fork is a safe no-op.
 
-  This should be called when a context is no longer needed to prevent
-  thread leaks. After stopping, the context should not be used for
-  reactive operations.
+  Since drains run on the executor (no standing drain thread), all we
+  need is:
+    1. Flip :running false → drain-events! guards on this and refuses
+       to mutate state for any drain that starts after the flip.
+    2. Cancel queued delayed-spin timers (their callbacks would post
+       events after stop, and any executor-scheduled work targeting
+       this context would just no-op anyway).
+    3. Wait for any drain *already past* the guard to finish — bounded
+       by a single event's processing time, with a 5s safety valve for
+       a deadlocked spin body.
 
-  Note: Does NOT close the executor — in-flight async callbacks may still
-  need it. Use close-context! for full cleanup including executor shutdown.
+  After this returns no further mutation can happen on this context.
+
+  Note: Does NOT close the executor — in-flight async callbacks (e.g.
+  futures returning to deliver! Deferreds) may still need it. Use
+  close-context! for full cleanup including executor shutdown.
 
   Args:
     context - ExecutionContext to stop
 
   Returns: nil"
   [context]
-  ;; Only root contexts own the drain thread; forks share parent's
   (when (nil? (:parent-ctx context))
     (when-let [running (:running context)]
       (reset! running false))
@@ -388,28 +312,14 @@
     ;; and alive-fn drops stale callbacks), so a still-armed setTimeout /
     ;; ScheduledFuture is a pure leak — cancel it now.
     (delayed/cancel-all-timers! context)
-    ;; Wake drain thread immediately so it notices running=false
-    #?(:clj
-       (when-let [ds (:drain-signal context)]
-         (.offer ^LinkedBlockingQueue ds :stop)))
 
-    ;; Deterministic shutdown contract: wait until no drain-events!
-    ;; call is past the function-entry guard for this context. Once
-    ;; this returns, the function-entry guard will reject any new
-    ;; drain (drain-events! sees :running=false and exits before
-    ;; touching state), so no further mutation can happen on this
-    ;; context.
-    ;;
-    ;; In-flight drains observe :running=false at the top of each
-    ;; loop iteration and exit with whatever's still in :pending
-    ;; left for the next legitimate drain (e.g. restore-snapshot)
-    ;; to pick up. This bounds our wait to a single event's
-    ;; processing time per active drain, not the whole queue.
-    ;;
-    ;; The 5s outer timeout is a safety valve for a deadlocked spin
-    ;; body. Reaching it indicates a real bug worth investigating;
-    ;; we'd rather return and let the caller see weirdness than
-    ;; hang forever.
+    ;; Deterministic shutdown: wait until no drain-events! call is past
+    ;; the function-entry guard for this context. In-flight drains
+    ;; observe :running=false at the top of each loop iteration and
+    ;; exit, leaving any remaining :pending events for whoever revives
+    ;; the context (e.g. restore-snapshot). The 5s outer timeout is a
+    ;; safety valve for a deadlocked spin body; reaching it indicates a
+    ;; real bug worth investigating.
     #?(:clj
        (when-let [drain-active (:drain-active context)]
          (let [deadline (+ (System/currentTimeMillis) 5000)]
@@ -417,20 +327,7 @@
              (when (and (pos? @drain-active)
                         (< (System/currentTimeMillis) deadline))
                (java.util.concurrent.locks.LockSupport/parkNanos 100000) ; 100us
-               (recur))))))
-
-    ;; Now also join the drain thread itself so its `while @running`
-    ;; loop has actually exited. drain-active=0 only proves no drain
-    ;; is past the guard *right now*; the drain thread might still be
-    ;; in its outer .poll waiting for the next signal. The signal we
-    ;; sent above wakes it, it observes :running=false, and exits.
-    ;; 200ms is fine here — the thread isn't holding any drain work
-    ;; once drain-active hit 0.
-    #?(:clj
-       (when-let [^Thread drain-thread (:drain-thread context)]
-         (try
-           (.join drain-thread 200)
-           (catch Exception _ nil)))))
+               (recur)))))))
   nil)
 
 (defn close-context!
@@ -586,10 +483,8 @@
      (:executor parent-ctx)  ; Share executor (for now)
      merged-bindings
      fork-metadata
-     (:running parent-ctx)       ; Share parent's drain thread control
-     (:drain-thread parent-ctx)  ; Share parent's drain thread
-     (:drain-signal parent-ctx)  ; Share parent's drain signal
-     (:drain-active parent-ctx)  ; Share parent's drain-active counter
+     (:running parent-ctx)        ; Share parent's lifecycle flag
+     (:drain-active parent-ctx)   ; Share parent's drain-active counter
      )))
 
 ;; =============================================================================
@@ -804,8 +699,6 @@
      (:bindings ctx)  ; Copy bindings
      (assoc (:metadata ctx) :snapshot? true)
      nil   ; No :running atom — drain-events! treats this as always-allowed
-     nil   ; No drain thread - snapshot is immutable
-     nil   ; No drain signal - snapshot is immutable
      nil)  ; No drain-active counter — no stop-context! to wait on
     ))
 
@@ -872,51 +765,17 @@
   [edn-string executor]
   (let [{:keys [backend fork-id bindings metadata]} (read-string-safe @incognito-read-handlers edn-string)
         backend-obj (backend/deserialize-backend backend @incognito-read-handlers)
-        ;; Only create drain thread for mutable backends (AtomBackend, OverlayBackend)
-        ;; ImmutableBackend doesn't support CAS operations needed by drain-events!
+        ;; AtomBackend / OverlayBackend support drain mutation; ImmutableBackend
+        ;; doesn't, so it gets a nil :running atom (drain-events! treats nil as
+        ;; always-allowed but the immutable CAS rejects the write anyway).
         backend-type (backend/backend-type backend-obj)
         mutable? (or (= backend-type :atom) (= backend-type :overlay))]
     (if mutable?
-      ;; Mutable backend - create drain thread with notification-based wakeup.
-      ;; Same pattern as create-execution-context: build the drain thread
-      ;; with a holder slot, populate it with the FINAL ctx record, so the
-      ;; drain thread observes the same object the user holds (avoids the
-      ;; pre-assoc record going GC-eligible and orphaning pending events).
-      (let [running (atom true)
-            drain-signal #?(:clj (LinkedBlockingQueue.) :cljs nil)
-            drain-active (atom 0)
-            ctx-holder #?(:clj (java.util.concurrent.atomic.AtomicReference.) :cljs nil)
-            drain-thread #?(:clj
-                            (start-drain-thread!
-                              (fn []
-                                (while @running
-                                  (try
-                                    (.poll drain-signal 1 TimeUnit/SECONDS)
-                                    (when-let [^WeakReference wref (.get ^java.util.concurrent.atomic.AtomicReference ctx-holder)]
-                                      (when-let [c (.get wref)]
-                                        (simple/drain-events! c executor)))
-                                    (catch Exception e
-                                      (println "ERROR in background drain thread:" e))))))
-                            :cljs nil)
-            ctx (->ExecutionContext fork-id backend-obj nil executor bindings metadata running drain-thread drain-signal drain-active)]
-        #?(:clj
-           (do
-             (.set ^java.util.concurrent.atomic.AtomicReference ctx-holder (WeakReference. ctx))
-             ;; Register a GC Cleaner so the daemon drain thread stops
-             ;; once the deserialized ctx is no longer reachable. Without
-             ;; this, every deserialize-context call leaked a daemon
-             ;; drain thread for the JVM's lifetime — the WeakReference
-             ;; let the ctx be GC'd but nothing ever set `running` false,
-             ;; so the loop spun on (.poll drain-signal 1s) forever.
-             ;; (Mirrors create-execution-context.)
-             (.register context-cleaner ctx
-                        (reify Runnable
-                          (run [_]
-                            (reset! running false)
-                            (.offer ^LinkedBlockingQueue drain-signal :stop))))))
-        ctx)
-      ;; Immutable backend - no drain thread
-      (->ExecutionContext fork-id backend-obj nil executor bindings metadata nil nil nil nil))))
+      (->ExecutionContext fork-id backend-obj nil executor bindings metadata
+                          (atom true)   ; running
+                          (atom 0))     ; drain-active
+      (->ExecutionContext fork-id backend-obj nil executor bindings metadata
+                          nil nil))))
 
 ;; =============================================================================
 ;; Rebuild Execution State
