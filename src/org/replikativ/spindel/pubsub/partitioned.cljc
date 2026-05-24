@@ -30,7 +30,10 @@
 ;; =============================================================================
 
 (defn- make-promise
-  "Simple promise for coordination (same pattern as mult.cljc)."
+  "Simple promise for coordination (same pattern as mult.cljc — see that
+   ns for the cross-ctx-delivery rationale behind capturing ctx at
+   await-spin construction and re-binding it around the watcher
+   invocation)."
   []
   (let [state (atom {:delivered? false :value nil :watchers []})]
     {:state state
@@ -45,15 +48,22 @@
                              value)
                          (recur))))))
      :await-spin (fn []
-                   (spin-core/make-spin
-                    (fn [resolve _reject]
-                      (loop []
-                        (let [s @state]
-                          (if (:delivered? s)
-                            (resolve (:value s))
-                            (when-not (compare-and-set! state s (update s :watchers conj resolve))
-                              (recur)))))
-                      spin-core/incomplete)))}))
+                   (let [captured-ctx (try (ec/current-execution-context)
+                                           (catch #?(:clj Throwable :cljs :default) _ nil))]
+                     (spin-core/make-spin
+                      (fn [resolve _reject]
+                        (let [wrapped (if captured-ctx
+                                        (fn [v]
+                                          (binding [ec/*execution-context* captured-ctx]
+                                            (resolve v)))
+                                        resolve)]
+                          (loop []
+                            (let [s @state]
+                              (if (:delivered? s)
+                                (wrapped (:value s))
+                                (when-not (compare-and-set! state s (update s :watchers conj wrapped))
+                                  (recur))))))
+                        spin-core/incomplete))))}))
 
 (defn- deliver-promise! [p value]
   ((:deliver! p) value))

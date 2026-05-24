@@ -158,6 +158,69 @@
         (ctx/stop-context! parent-ctx)
         (is (= {:reply "reply"} result))))))
 
+(deftest fork-ctx-mult-only-inline-roundtrip
+  (testing "Strip the pub layer. Just: source mailbox → mult → two taps.
+            One tap consumed by worker, second tap consumed by outer spin.
+            If THIS fails, the bug is in mult/fork-ctx interaction. If
+            it passes, the bug is specifically in the pub layer."
+    (reset! *trace* [])
+    (let [parent-ctx (ctx/create-execution-context)
+          done       (promise)]
+      (binding [ec/*execution-context* parent-ctx]
+        (sp/spawn!
+          (spin
+            (log-trace :outer-start)
+            (let [fork-ctx (ctx/fork-context parent-ctx)
+                  _ (log-trace :forked)
+                  source    (binding [ec/*execution-context* fork-ctx]
+                              (sync/create-mailbox fork-ctx))
+                  m         (binding [ec/*execution-context* fork-ctx]
+                              (mult/mult source))
+                  worker-tap (binding [ec/*execution-context* fork-ctx]
+                               (mult/tap m (buf/fixed-buffer 16)))
+                  result-tap (binding [ec/*execution-context* fork-ctx]
+                               (mult/tap m (buf/fixed-buffer 16)))
+                  _ (log-trace :taps-made)
+                  _worker (binding [ec/*execution-context* fork-ctx]
+                            (sp/spawn!
+                              (spin
+                                (log-trace :worker-start)
+                                (when-let [[msg _] (await (anext worker-tap))]
+                                  (log-trace :worker-got msg)
+                                  ;; Post "reply" back to source so result-tap sees it
+                                  (binding [ec/*execution-context* fork-ctx]
+                                    (sync/post! source {:k :reply :for msg}))
+                                  (log-trace :worker-posted)))))
+                  _ (log-trace :worker-spawned)
+                  _ (binding [ec/*execution-context* fork-ctx]
+                      (sync/post! source {:k :go}))
+                  _ (log-trace :posted-go)
+                  [first-msg _] (await (anext result-tap))
+                  _ (log-trace :outer-got-first first-msg)
+                  ;; If first-msg is :go, await again for :reply
+                  [r _] (if (= :reply (:k first-msg))
+                          [first-msg nil]
+                          (await (anext result-tap)))]
+              (log-trace :outer-got-final r)
+              (deliver done r)))))
+      (let [result (deref done 3000 :TIMEOUT)
+            ;; Reach into the TapSeq's internal state to see what's in result-tap's buffer
+            inspect-tap (fn [tap label]
+                          (try
+                            (let [tsa (.-tap-state-atom tap)
+                                  state @tsa
+                                  buffer (:buffer state)]
+                              (println label "buffer-count:"
+                                       (when buffer (count buffer))
+                                       "closed?:" (when-let [c (:closed? state)] @c)))
+                            (catch Throwable e
+                              (println label "inspect error:" (.getMessage e)))))]
+        (when-let [last-trace @*trace*]
+          (println "MULT-ONLY TRACE:" (pr-str last-trace)))
+        (ctx/stop-context! parent-ctx)
+        (is (= :reply (:k result))
+            "Reply should flow through second tap.")))))
+
 (deftest fork-ctx-pubsub-inline-using-with-context
   (testing "Same as failing test but NO outer spawn — uses with-context
             to bind parent-ctx around the work without an outer Spin.
