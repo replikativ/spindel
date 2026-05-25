@@ -47,6 +47,11 @@
     :runtime - Execution context (required)
     :native-spins - Map of native spins to expose (will be wrapped via boundary)
     :expose-track? - Include track effect (default true)
+    :interrupt-fn - SCI :interrupt-fn callback fired at each user-fn-body entry.
+                    Used by hosts that want responsive Thread.interrupt() pickup
+                    (e.g. dvergr's make-resource-limits, which throws when the
+                    interrupt flag is set so timeouts and user-cancels unwind
+                    the computation). Optional — omit for unbounded execution.
 
   Example:
     (def rt (ctx/create-execution-context))
@@ -65,7 +70,7 @@
                   x (await a)
                   y (await b)]
               (+ x y)))\"))  ; => 30"
-  [{:keys [runtime native-spins expose-track?]
+  [{:keys [runtime native-spins expose-track? interrupt-fn]
     :or {native-spins {}
          expose-track? true}}]
   (let [;; Wrap all native spins for SCI (BoundaryTask pattern)
@@ -109,10 +114,11 @@
 
         ;; Create SCI context
         sci-ctx (sci/init
-                 {:classes (sci-core/common-classes)
-                  :features #{:clj}
-                  :bindings wrapped-natives
-                  :namespaces namespaces})]
+                 (cond-> {:classes (sci-core/common-classes)
+                          :features #{:clj}
+                          :bindings wrapped-natives
+                          :namespaces namespaces}
+                   interrupt-fn (assoc :interrupt-fn interrupt-fn)))]
 
     ;; Load partial-cps for CPS transformation support (runs inside SCI)
     (sci-core/load-partial-cps! sci-ctx)
