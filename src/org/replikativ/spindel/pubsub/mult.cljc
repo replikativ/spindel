@@ -27,7 +27,20 @@
 (defn- make-promise
   "Create a simple promise that can be delivered once and read multiple times.
    Uses a standard Clojure atom - no runtime dependency.
-   Uses compare-and-set! instead of swap! to avoid side effects inside retry-able swap fns."
+   Uses compare-and-set! instead of swap! to avoid side effects inside retry-able swap fns.
+
+   ## Cross-ctx delivery fix
+   The watcher is the awaiter's `resolve` CPS continuation. When the
+   producer's thread invokes it via `deliver!`, the Clojure dynamic var
+   `*execution-context*` is whatever the producer has bound — often a
+   different execution context from the one that registered the
+   watcher. Without restoring the awaiter's ctx, the completion event
+   gets enqueued on the producer's ctx, where no await-cont is
+   registered for the awaiter's parent, and the parent deadlocks.
+
+   We capture `*execution-context*` at `await-spin` construction
+   (before the watcher is added) and re-establish it around the
+   watcher invocation so the spin completes against its own ctx."
   []
   (let [state (atom {:delivered? false :value nil :watchers []})]
     {:state state
@@ -44,17 +57,26 @@
                          ;; CAS failed (concurrent modification) - retry
                          (recur))))))
      :await-spin (fn []
-                   (spin-core/make-spin
-                    (fn [resolve _reject]
-                      (loop []
-                        (let [s @state]
-                          (if (:delivered? s)
-                            (resolve (:value s))
-                            ;; Try to add watcher via CAS
-                            (when-not (compare-and-set! state s (update s :watchers conj resolve))
-                              ;; CAS failed - retry (will re-check delivered? on next iteration)
-                              (recur)))))
-                      spin-core/incomplete)))}))
+                   (let [captured-ctx (try (ec/current-execution-context)
+                                           (catch #?(:clj Throwable :cljs :default) _ nil))]
+                     (spin-core/make-spin
+                      (fn [resolve _reject]
+                        ;; Wrap resolve so the completion fires against the
+                        ;; ctx that registered the await, not the producer's.
+                        (let [wrapped (if captured-ctx
+                                        (fn [v]
+                                          (binding [ec/*execution-context* captured-ctx]
+                                            (resolve v)))
+                                        resolve)]
+                          (loop []
+                            (let [s @state]
+                              (if (:delivered? s)
+                                (wrapped (:value s))
+                                ;; Try to add watcher via CAS
+                                (when-not (compare-and-set! state s (update s :watchers conj wrapped))
+                                  ;; CAS failed - retry (will re-check delivered? on next iteration)
+                                  (recur))))))
+                        spin-core/incomplete))))}))
 
 (defn- deliver-promise! [p value]
   ((:deliver! p) value))

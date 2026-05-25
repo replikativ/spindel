@@ -26,7 +26,13 @@
 ;; Internal Topic Mult Management
 ;; =============================================================================
 
-;; Simple promise (same as in mult.cljc)
+;; Simple promise (same as in mult.cljc).
+;; The await-spin captures *execution-context* at construction time and
+;; re-binds it around the watcher's resolve invocation, so a producer
+;; that delivers from a different ctx (e.g. a fork-ctx pump signaling
+;; awaiters registered on a parent ctx) still enqueues the awaiter's
+;; :spin-completion event on the awaiter's own ctx. See the same
+;; comment in mult.cljc/make-promise for details.
 (defn- make-promise
   "Create a simple promise that can be delivered once and read multiple times.
    Uses compare-and-set! instead of swap! to avoid side effects inside retry-able swap fns."
@@ -46,17 +52,24 @@
                          ;; CAS failed (concurrent modification) - retry
                          (recur))))))
      :await-spin (fn []
-                   (spin-core/make-spin
-                    (fn [resolve _reject]
-                      (loop []
-                        (let [s @state]
-                          (if (:delivered? s)
-                            (resolve (:value s))
-                            ;; Try to add watcher via CAS
-                            (when-not (compare-and-set! state s (update s :watchers conj resolve))
-                              ;; CAS failed - retry (will re-check delivered? on next iteration)
-                              (recur)))))
-                      spin-core/incomplete)))}))
+                   (let [captured-ctx (try (ec/current-execution-context)
+                                           (catch #?(:clj Throwable :cljs :default) _ nil))]
+                     (spin-core/make-spin
+                      (fn [resolve _reject]
+                        (let [wrapped (if captured-ctx
+                                        (fn [v]
+                                          (binding [ec/*execution-context* captured-ctx]
+                                            (resolve v)))
+                                        resolve)]
+                          (loop []
+                            (let [s @state]
+                              (if (:delivered? s)
+                                (wrapped (:value s))
+                                ;; Try to add watcher via CAS
+                                (when-not (compare-and-set! state s (update s :watchers conj wrapped))
+                                  ;; CAS failed - retry (will re-check delivered? on next iteration)
+                                  (recur))))))
+                        spin-core/incomplete))))}))
 
 (defn- deliver-promise! [p value]
   ((:deliver! p) value))
