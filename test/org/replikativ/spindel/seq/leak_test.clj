@@ -104,8 +104,31 @@
                0
                (:atoms state))))
 
+(defn- gc-until
+  "Force GC up to `tries` times (short pauses) until `(pred)` holds, returning
+  the final `(pred)`.
+
+  The two GC-dependent guards (#2 consumed-value release, #5 parallel
+  engine-state reclamation) rely on `System/gc`, which is advisory — a single
+  pass may not collect everything. Retrying until the expected condition holds
+  (or we give up) removes the only real flake surface; the assertion that
+  follows still fails loudly if the condition never becomes true. The
+  structural guards below take no GC and need none of this."
+  [pred tries]
+  (loop [i 0]
+    (let [ok (pred)]
+      (if (or ok (>= i tries))
+        ok
+        (do (System/gc) (Thread/sleep 80) (recur (inc i)))))))
+
 ;; =============================================================================
 ;; #1 — gen-aseq shared-term-deferred pending leak
+;;
+;; STRUCTURAL guard (deterministic, no GC/timing): `engine-undelivered-pending`
+;; reads exact engine state. Post-fix the measured value is 0 every run (the
+;; per-anext deferred is always delivered); pre-fix it was 97 after 100 items.
+;; The `<= 5` bound is an O(1)-vs-O(N) discriminator with headroom for benign
+;; transients — NOT a fuzzy threshold.
 ;; =============================================================================
 
 (deftest gen-aseq-no-shared-deferred-pending-leak
@@ -154,36 +177,36 @@
           ;; sequence head is passed straight into the driver, never bound).
           mid (drive-cps-aseq! (psq/sequence (map identity) src) k)]
       (is (some? mid) "precondition: mid-stream node exists")
-      (dotimes [_ 3] (System/gc) (Thread/sleep 50))
-      ;; Of the first k elements (all consumed before `mid`), most must be GC'd.
-      ;; NOTE: `mid` MUST stay strongly reachable across the System/gc above and
-      ;; into the assertion below — that is the whole point (a held mid-stream
-      ;; node must not pin earlier elements). It is referenced in the message
+      ;; GC-DEPENDENT guard. Of the first k elements (all consumed before the
+      ;; held `mid` node), most must be collectable — a held mid-stream node
+      ;; must not pin earlier elements. `System/gc` is advisory, so retry via
+      ;; `gc-until` rather than a fixed number of passes (removes the flake
+      ;; surface). In practice all 100 clear; `>= 0.8k` tolerates GC laziness
+      ;; while still cleanly separating fixed (0 cleared pre-fix) from released.
+      ;;
+      ;; NOTE: `mid` MUST stay strongly reachable across the GCs and into the
+      ;; assertion — that is the whole point. It is referenced in the message
       ;; expression so JVM locals-clearing keeps it live until the `is` runs;
       ;; without that reference it gets nulled early and the buffer is collected
       ;; regardless of any leak, masking the bug.
-      (let [first-k (take k refs)
-            cleared (count (filter #(nil? (.get ^WeakReference %)) first-k))]
-        (is (>= cleared (int (* 0.8 k)))
-            (str "sequence retains consumed values: only " cleared "/" k
+      (let [threshold (int (* 0.8 k))
+            cleared #(count (filter (fn [w] (nil? (.get ^WeakReference w)))
+                                    (take k refs)))]
+        (gc-until #(>= (cleared) threshold) 15)
+        (is (>= (cleared) threshold)
+            (str "sequence retains consumed values: only " (cleared) "/" k
                  " elements consumed before the held node were GC'd "
                  "(expected most — a held node must not pin earlier elements); "
                  "held node present=" (some? mid)))))))
 
 ;; =============================================================================
 ;; #5 — parallel must not accumulate per-call engine state
+;;
+;; GC-DEPENDENT guard: node/`:parallel-results` reclamation is triggered by the
+;; Spin Cleaner, so we converge via `gc-until`. Post-fix the engine-state size
+;; returns to baseline every run (measured 0 → 0); pre-fix it grew by one
+;; permanent entry per call. The `<= base + 8` bound is reclamation headroom.
 ;; =============================================================================
-
-(defn- gc-until
-  "Force GC up to `tries` times (short pauses) until `(pred)` holds. Node
-  reclamation is GC-triggered (Cleaner -> try-gc-cleanup-spin!), so we converge
-  via repeated System/gc rather than assert on a single pass."
-  [pred tries]
-  (loop [i 0]
-    (let [ok (pred)]
-      (if (or ok (>= i tries))
-        ok
-        (do (System/gc) (Thread/sleep 80) (recur (inc i)))))))
 
 (deftest parallel-does-not-accumulate-engine-state
   (testing "repeated parallel calls must not leave per-call entries in engine
@@ -211,6 +234,12 @@
 
 ;; =============================================================================
 ;; #3 — Mailbox prunes cancelled waiters
+;;
+;; STRUCTURAL guard (deterministic). Measured `:waiters` is exactly 1 every run
+;; (pre-fix ~29). The residual 1 is expected, not noise: pruning happens when
+;; the NEXT take arrives, so the final race's cancelled waiter has no successor
+;; to prune it. It stays at 1, never grows — the `<= 5` bound is O(1) headroom.
+;; (#3/#6/#7 are the same prune-on-read design and all sit at a stable 1.)
 ;; =============================================================================
 
 (deftest mailbox-prunes-cancelled-waiters
@@ -234,6 +263,10 @@
 
 ;; =============================================================================
 ;; #4 — pub does not accumulate idle (unsubscribed) topic mults
+;;
+;; STRUCTURAL guard (deterministic). Measured topic-mult count is exactly 1
+;; (the single subscribed topic) every run; pre-fix it was 40 (one per distinct
+;; topic seen). `<= 5` is O(subscribed-topics) headroom.
 ;; =============================================================================
 
 (deftest pub-does-not-accumulate-idle-topics
@@ -267,6 +300,9 @@
 
 ;; =============================================================================
 ;; #6 — Deferred prunes cancelled readers (same pattern as Mailbox #3)
+;;
+;; STRUCTURAL guard (deterministic): `:pending` is a stable 1 (the last
+;; cancelled reader, no successor to prune it); pre-fix ~10. See #3.
 ;; =============================================================================
 
 (deftest deferred-prunes-cancelled-readers
@@ -288,6 +324,9 @@
 
 ;; =============================================================================
 ;; #7 — Semaphore prunes cancelled acquirers (same pattern as Mailbox #3)
+;;
+;; STRUCTURAL guard (deterministic): `:waiting-queue` is a stable 1 (the last
+;; cancelled acquirer, no successor to prune it); pre-fix ~29. See #3.
 ;; =============================================================================
 
 (deftest semaphore-prunes-cancelled-acquirers
