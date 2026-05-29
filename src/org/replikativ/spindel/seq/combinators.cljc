@@ -1,10 +1,12 @@
 (ns org.replikativ.spindel.seq.combinators
   "Async sequence combinators and utilities"
+  (:refer-clojure :exclude [first rest reduce into sequence eduction await])
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
-            [org.replikativ.spindel.spin :as spin]
             [org.replikativ.spindel.seq.core :as core]
-            [org.replikativ.spindel.effects.reactive :refer [await]]
-            [replikativ.logging :as log]))
+            [org.replikativ.spindel.effects.await :refer [await]]
+            #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
+            [replikativ.logging :as log])
+  #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
 ;; Core Operations
@@ -16,7 +18,7 @@
   Example:
     (await (first pages))  ;=> first-page"
   [aseq]
-  (spin/spin
+  (spin
    (when-let [[v _] (await (anext aseq))]
      v)))
 
@@ -28,7 +30,7 @@
   Example:
     (await (rest pages))  ;=> rest-of-pages"
   [aseq]
-  (spin/spin
+  (spin
    (when-let [[_ rest-seq] (await (anext aseq))]
      rest-seq)))
 
@@ -46,7 +48,7 @@
     (await (reduce conj [] pages))
     (await (reduce + 0 page-counts))"
   ([rf init aseq]
-   (spin/spin
+   (spin
     (loop [acc init
            seq aseq]
       (if seq
@@ -79,7 +81,7 @@
   ([to aseq]
    (reduce conj to aseq))
   ([to xform aseq]
-   (spin/spin
+   (spin
     (let [rf (xform conj)]
       (await (reduce rf to aseq))))))
 
@@ -126,7 +128,7 @@
   (when (seq coll)
     (reify PAsyncSeq
       (anext [_]
-        (spin/spin
+        (spin
          (log/trace :seq/from-coll-emit {:value (clojure.core/first coll)})
          [(clojure.core/first coll)
           (from-coll (clojure.core/rest coll))])))))
@@ -145,7 +147,7 @@
     (defn fetch-pages [api-fn]
       (iterate-async
         (fn [cursor]
-          (spin/spin
+          (spin
             (let [{:keys [page next]} (await (api-fn cursor))]
               (if next
                 {:value page :next-state next :done? false}
