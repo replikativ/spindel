@@ -472,6 +472,7 @@
   (set-text-content! [_ el t]   (disch/set-text-content! inner el t))
   (get-element     [_ addr]     (disch/get-element inner addr))
   (set-element!    [_ addr el]  (disch/set-element! inner addr el))
+  (remove-element! [_ addr]     (disch/remove-element! inner addr))
   (remove-children-range! [this p s n]
     (disch/default-remove-children-range! this p s n))
   (insert-children! [this p cs s]
