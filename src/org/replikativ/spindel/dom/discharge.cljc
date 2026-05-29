@@ -95,6 +95,11 @@
   (set-element! [this addr el]
     "Store element reference by address keyword.")
 
+  (remove-element! [this addr]
+    "Drop the element reference for an address keyword. Called when an
+     address is unmounted, so the discharge's addr→element registry does
+     not retain detached DOM nodes for the lifetime of the tree.")
+
   (remove-children-range! [this parent start-idx count]
     "Remove multiple children starting at index. Default: call remove-child! in loop.")
 
@@ -292,13 +297,21 @@
   subtree is render-initial!'d, so it would wipe the cache of an address
   that a still-live element (a surviving keyed descendant of a churned
   parent) re-claims later in the same pass. By end-of-pass `*rendered-addrs*`
-  holds every live address, so (pending - live) is exactly the dead set."
-  []
-  (when (and *pending-evictions* *rendered-addrs*)
-    (let [live (set (keys @*rendered-addrs*))]
-      (doseq [addr @*pending-evictions*]
-        (when-not (contains? live addr)
-          (cache/evict-cache! addr))))))
+  holds every live address, so (pending - live) is exactly the dead set.
+
+  When a `discharge` is supplied we also drop its addr→element registry entry
+  for each dead address (`remove-element!`) — otherwise the registry retains
+  the detached DOM node for the lifetime of the tree (it is only ever fully
+  cleared by `unmount!`). The 0-arity form keeps the cache-only behavior for
+  callers (e.g. focused unit tests) that have no discharge in hand."
+  ([] (flush-pending-evictions! nil))
+  ([discharge]
+   (when (and *pending-evictions* *rendered-addrs*)
+     (let [live (set (keys @*rendered-addrs*))]
+       (doseq [addr @*pending-evictions*]
+         (when-not (contains? live addr)
+           (cache/evict-cache! addr)
+           (when discharge (remove-element! discharge addr))))))))
 
 ;; =============================================================================
 ;; Attribute Delta Application
@@ -898,7 +911,7 @@
       (let [result (clear-deltas-deep vdom)]
         ;; Evict caches of addresses unmounted this pass that no live
         ;; element re-claimed (deferred — see flush-pending-evictions!).
-        (flush-pending-evictions!)
+        (flush-pending-evictions! discharge)
         ;; Advance the applied-vnodes generations so memory stays
         ;; bounded while cross-cycle cached-result protection holds.
         (rotate-applied! *applied-vnodes*)
@@ -1132,6 +1145,9 @@
 
   (set-element! [_ addr el]
     (swap! elements assoc addr el))
+
+  (remove-element! [_ addr]
+    (swap! elements dissoc addr))
 
   (remove-children-range! [this parent start-idx n]
     (default-remove-children-range! this parent start-idx n))
