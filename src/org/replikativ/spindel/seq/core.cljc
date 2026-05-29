@@ -5,7 +5,6 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.spin.combinators :refer [race]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [is.simm.partial-cps.async :as async]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
@@ -71,16 +70,32 @@
      (binding [ec/*yield-handler* yield-handler]
        (cps-fn resolve-fn reject-fn))))
 
-(deftype ASeqGenerator [gen-id cps-fn shared-term-deferred resolve-fn reject-fn]
+;; `sink-atom` holds the deferred for the *current* anext step. Each anext
+;; resets it to a fresh single-shot deferred that BOTH the yield handler and
+;; the terminal resolve/reject deliver to (tagged `[:yield …]` / `[:ok …]` /
+;; `[:error …]`). The body runs until exactly one of those fires, so the
+;; step-deferred is delivered exactly once, drains its `:pending`, and becomes
+;; GC-eligible. This replaces the previous design — a single long-lived
+;; `shared-term-deferred` raced against a fresh yield-deferred each step — which
+;; stranded one never-removed `resolve` continuation on the shared deferred's
+;; `:pending` per consumed element (the cancelled race loser), accumulating
+;; unboundedly inside engine state for long/infinite generators. anext calls on
+;; a generator are strictly sequential (each yields its continuation in
+;; `rest-gen`), so a single current-step sink is sufficient.
+(deftype ASeqGenerator [gen-id cps-fn sink-atom resolve-fn reject-fn]
   PAsyncSeq
   (anext [_]
     (spin
-     (let [;; Fresh yield deferred for THIS anext call
-           yield-deferred (sync/deferred)
+     (let [;; Fresh single-shot deferred for THIS anext call.
+           step-deferred (sync/deferred)
 
-            ;; Yield handler delivers [:yield marker]
+            ;; Point the terminal resolve/reject (shared closures) at this
+            ;; step's deferred before running the body.
+           _ (reset! sink-atom step-deferred)
+
+            ;; Yield handler delivers [:yield marker] to the same deferred.
            yield-handler (fn [marker _cont]
-                           (yield-deferred [:yield marker]))
+                           (step-deferred [:yield marker]))
 
             ;; Execute CPS with yield-handler bound
             ;; IMPORTANT: Use helper function to establish binding OUTSIDE CPS transformation
@@ -89,13 +104,12 @@
             ;; happens in regular (non-CPS) code.
            _ (execute-cps-with-yield-handler! cps-fn yield-handler resolve-fn reject-fn)
 
-            ;; Race: await whichever completes first
-           result (await (race (spin (await yield-deferred))
-                               (spin (await shared-term-deferred))))]
+            ;; Await the single per-step deferred (no race, nothing to leak).
+           result (await step-deferred)]
 
         ;; Pattern match on result
        (cond
-          ;; Yield won
+          ;; Yielded a value
          (and (vector? result) (= :yield (first result)))
          (let [[_ marker] result
                yield-value (:value marker)
@@ -114,22 +128,22 @@
                rest-gen (ASeqGenerator.
                          (keyword (str (name gen-id) "-cont"))
                          wrapped-cps-fn
-                         shared-term-deferred
+                         sink-atom
                          resolve-fn
                          reject-fn)]
            [yield-value rest-gen])
 
-          ;; Termination won
+          ;; Body completed (sequence terminated)
          (and (vector? result) (= :ok (first result)))
          nil
 
-          ;; Error won
+          ;; Body raised
          (and (vector? result) (= :error (first result)))
          (throw (second result))
 
           ;; Unexpected
          :else
-         (throw (ex-info "Unexpected race result" {:result result}))))))
+         (throw (ex-info "Unexpected gen-aseq step result" {:result result}))))))
 
   Object
   (toString [_this]
@@ -157,24 +171,32 @@
    - Call resolve-fn when complete
    - Call reject-fn on error
 
-   Creates shared termination deferred and resolve/reject functions
-   that are passed to all continuations."
+   The resolve/reject closures (shared across the whole generator chain, since
+   the body's continuation captures them) deliver to whatever per-anext
+   deferred is currently installed in `sink-atom`. anext resets `sink-atom`
+   before running the body, so each step terminates into its own short-lived
+   deferred — nothing accumulates across steps."
   [cps-fn gen-id]
-  ;; Shared termination deferred for entire sequence lifetime
-  (let [shared-term-deferred (sync/deferred)
+  ;; Holds the current anext step's deferred; reset by ASeqGenerator.anext.
+  ;; A plain atom (not a fork-safe runtime atom): it's transient per-step
+  ;; coordination, deliberately kept OUT of engine state so it neither
+  ;; accumulates nor gets copied on fork.
+  (let [sink-atom (atom nil)
 
-        ;; Shared resolve-fn delivers [:ok result] to termination deferred
+        ;; resolve-fn delivers [:ok result] to the current step's deferred.
         resolve-fn (fn [result]
-                     (shared-term-deferred [:ok result])
+                     (when-let [d @sink-atom]
+                       (d [:ok result]))
                      result)
 
-        ;; Shared reject-fn delivers [:error err] to termination deferred
-        ;; Don't throw here - let the race/anext handle the error
+        ;; reject-fn delivers [:error err] to the current step's deferred.
+        ;; Don't throw here - let anext re-throw after awaiting.
         reject-fn (fn [err]
-                    (shared-term-deferred [:error err])
+                    (when-let [d @sink-atom]
+                      (d [:error err]))
                     nil)]
 
-    (ASeqGenerator. gen-id cps-fn shared-term-deferred resolve-fn reject-fn)))
+    (ASeqGenerator. gen-id cps-fn sink-atom resolve-fn reject-fn)))
 
 ;; =============================================================================
 ;; gen-aseq Macro
