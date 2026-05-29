@@ -29,27 +29,34 @@
 ;; Object Cache
 ;; =============================================================================
 
-(def ^:private object-cache
-  "UUID → JVM object. Holds non-serializable values server-side.
-  Clients reference them by UUID; navigation resolves via cache."
+(def ^:dynamic *object-cache*
+  "UUID → JVM object. Holds non-serializable values server-side; clients
+  reference them by UUID and navigation resolves via this cache.
+
+  Dynamic and per-session: `make-inspector` binds it to a fresh atom that
+  lives on the inspector instance (see `with-session-cache`), so the cache —
+  which pins arbitrary JVM objects / Datahike entities — is reclaimed when
+  the inspector is dropped, rather than accumulating in a process-global atom
+  for the JVM's lifetime. The top-level default below is a fallback for any
+  direct `summarize`/`reflect` call made outside a `make-inspector` session."
   (atom {}))
 
 (defn- cache!
   "Store object in cache, return UUID reference."
   [obj]
   (let [id (java.util.UUID/randomUUID)]
-    (swap! object-cache assoc id obj)
+    (swap! *object-cache* assoc id obj)
     id))
 
 (defn- cached
   "Retrieve object from cache by UUID."
   [id]
-  (get @object-cache id))
+  (get @*object-cache* id))
 
 (defn clear-cache!
-  "Clear the object cache. Call when inspector sessions are disposed."
+  "Clear the currently-bound object cache."
   []
-  (reset! object-cache {}))
+  (reset! *object-cache* {}))
 
 ;; =============================================================================
 ;; Protocols
@@ -246,142 +253,157 @@
         signal (atom nil)
         ;; Map path → source object for edit-back
         path-objects (atom {})
-        root-node (reflect-value root-obj :entity-id entity-id)]
+        ;; Per-session object cache. Bound around this session's closures so
+        ;; the cached refs (arbitrary JVM objects / Datahike entities) are
+        ;; reclaimed when the inspector is dropped, instead of living in a
+        ;; process-global atom for the JVM's lifetime.
+        obj-cache (atom {})
+        with-session-cache (fn [f]
+                             (fn [& args]
+                               (binding [*object-cache* obj-cache]
+                                 (apply f args))))
+        root-node (binding [*object-cache* obj-cache]
+                    (reflect-value root-obj :entity-id entity-id))]
 
     ;; Initialize root
     (swap! tree assoc [] root-node)
     (swap! path-objects assoc [] root-obj)
     (reset! signal {:op :set-root :path [] :node root-node})
 
-    {:signal signal
-     :tree tree
+    (-> {:signal signal
+         :tree tree
 
-     :navigate!
-     (fn navigate! [path]
-       (let [parent-path (vec (butlast path))
-             field-key (last path)
-             parent-node (get @tree parent-path)]
-         (when parent-node
-           (let [field (first (filter #(= field-key (:key %)) (:fields parent-node)))
-                 summary (:summary field)]
-             (when (and summary (:nav? summary))
-               (let [ref-id (:ref summary)
-                     obj (when ref-id
-                           (let [c (cached ref-id)]
-                             (if (fn? c) (c) c)))]
-                 (when obj
-                   (let [;; If parent was a Datahike entity and this is a ref,
+         :navigate!
+         (fn navigate! [path]
+           (let [parent-path (vec (butlast path))
+                 field-key (last path)
+                 parent-node (get @tree parent-path)]
+             (when parent-node
+               (let [field (first (filter #(= field-key (:key %)) (:fields parent-node)))
+                     summary (:summary field)]
+                 (when (and summary (:nav? summary))
+                   (let [ref-id (:ref summary)
+                         obj (when ref-id
+                               (let [c (cached ref-id)]
+                                 (if (fn? c) (c) c)))]
+                     (when obj
+                       (let [;; If parent was a Datahike entity and this is a ref,
                          ;; the child might also be an entity
-                         child-eid (when (and conn (map? obj) (:db/id obj))
-                                     (:db/id obj))
-                         node (reflect-value obj :entity-id child-eid)
+                             child-eid (when (and conn (map? obj) (:db/id obj))
+                                         (:db/id obj))
+                             node (reflect-value obj :entity-id child-eid)
                          ;; If parent is atom-backed, propagate editability
-                         parent-atom? (or (:atom-backed? field)
-                                          (instance? clojure.lang.Atom
-                                                     (get @path-objects parent-path)))
-                         node (if (and parent-atom? (map? obj))
-                                (update node :fields
-                                        (fn [fs] (mapv #(assoc % :editable? true
-                                                               :atom-backed? true) fs)))
-                                node)]
-                     (swap! tree assoc path node)
-                     (swap! path-objects assoc path obj)
-                     (reset! signal {:op :expand :path path :node node})
-                     node))))))))
+                             parent-atom? (or (:atom-backed? field)
+                                              (instance? clojure.lang.Atom
+                                                         (get @path-objects parent-path)))
+                             node (if (and parent-atom? (map? obj))
+                                    (update node :fields
+                                            (fn [fs] (mapv #(assoc % :editable? true
+                                                                   :atom-backed? true) fs)))
+                                    node)]
+                         (swap! tree assoc path node)
+                         (swap! path-objects assoc path obj)
+                         (reset! signal {:op :expand :path path :node node})
+                         node))))))))
 
-     :collapse!
-     (fn collapse! [path]
-       (let [remove-prefix (fn [m prefix]
-                             (into {} (remove (fn [[k _]]
-                                                (and (>= (count k) (count prefix))
-                                                     (= prefix (vec (take (count prefix) k))))))
-                                   m))]
-         (swap! tree remove-prefix path)
-         (swap! path-objects remove-prefix path)
-         (reset! signal {:op :collapse :path path})))
+         :collapse!
+         (fn collapse! [path]
+           (let [remove-prefix (fn [m prefix]
+                                 (into {} (remove (fn [[k _]]
+                                                    (and (>= (count k) (count prefix))
+                                                         (= prefix (vec (take (count prefix) k))))))
+                                       m))]
+             (swap! tree remove-prefix path)
+             (swap! path-objects remove-prefix path)
+             (reset! signal {:op :collapse :path path})))
 
-     :edit!
-     (fn edit! [path field-key new-value]
-       (let [node (get @tree path)
-             obj (get @path-objects path)
-             field (when node
-                     (first (filter #(= field-key (:key %)) (:fields node))))]
-         (when (and field (:editable? field))
-           (cond
+         :edit!
+         (fn edit! [path field-key new-value]
+           (let [node (get @tree path)
+                 obj (get @path-objects path)
+                 field (when node
+                         (first (filter #(= field-key (:key %)) (:fields node))))]
+             (when (and field (:editable? field))
+               (cond
              ;; Datahike entity: transact via conn
-             (and conn (:entity-id field))
-             (let [eid (:entity-id field)
-                   attr (:attribute field)
-                   tx-data [[:db/add eid attr new-value]]]
-               @(conn tx-data)  ;; d/transact returns future-like
+                 (and conn (:entity-id field))
+                 (let [eid (:entity-id field)
+                       attr (:attribute field)
+                       tx-data [[:db/add eid attr new-value]]]
+                   @(conn tx-data)  ;; d/transact returns future-like
                ;; Re-reflect the entity
-               (let [updated (into {} (d/datafy (d/nav obj attr new-value)))
+                   (let [updated (into {} (d/datafy (d/nav obj attr new-value)))
                      ;; For entity, re-fetch from conn
-                     fresh-obj (if entity-id obj updated)
-                     fresh-node (reflect-value fresh-obj :entity-id (:entity-id field))]
-                 (swap! tree assoc path fresh-node)
-                 (swap! path-objects assoc path fresh-obj)
-                 (reset! signal {:op :update :path path :node fresh-node})
-                 tx-data))
+                         fresh-obj (if entity-id obj updated)
+                         fresh-node (reflect-value fresh-obj :entity-id (:entity-id field))]
+                     (swap! tree assoc path fresh-node)
+                     (swap! path-objects assoc path fresh-obj)
+                     (reset! signal {:op :update :path path :node fresh-node})
+                     tx-data))
 
              ;; Atom-backed field: swap the atom
-             (or (instance? clojure.lang.Atom obj)
-                 (:atom-backed? field))
-             (let [;; Walk up to find the atom source
-                   [the-atom atom-path]
-                   (loop [p path]
-                     (let [o (get @path-objects p)]
-                       (cond
-                         (instance? clojure.lang.Atom o) [o p]
-                         (empty? p) [nil nil]
-                         :else (recur (vec (butlast p))))))
+                 (or (instance? clojure.lang.Atom obj)
+                     (:atom-backed? field))
+                 (let [;; Walk up to find the atom source
+                       [the-atom atom-path]
+                       (loop [p path]
+                         (let [o (get @path-objects p)]
+                           (cond
+                             (instance? clojure.lang.Atom o) [o p]
+                             (empty? p) [nil nil]
+                             :else (recur (vec (butlast p))))))
                    ;; Build the nested path from atom root to this field
                    ;; path=[:config] atom-path=[] → nested-keys=[:config field-key]
                    ;; path=[:team 0] atom-path=[] → nested-keys=[:team 0 field-key]
-                   nested-keys (vec (concat (drop (count atom-path) path)
-                                            [field-key]))]
-               (when the-atom
-                 (swap! the-atom assoc-in nested-keys new-value)
+                       nested-keys (vec (concat (drop (count atom-path) path)
+                                                [field-key]))]
+                   (when the-atom
+                     (swap! the-atom assoc-in nested-keys new-value)
                  ;; Re-reflect the current node from the updated atom value
-                 (let [updated-val (get-in @the-atom (drop (count atom-path) path))
-                       fresh-node (if (= path atom-path)
-                                    (reflect-value the-atom)
-                                    (reflect-value updated-val))
+                     (let [updated-val (get-in @the-atom (drop (count atom-path) path))
+                           fresh-node (if (= path atom-path)
+                                        (reflect-value the-atom)
+                                        (reflect-value updated-val))
                        ;; Mark fields editable for atom-backed nodes
-                       fresh-node (update fresh-node :fields
-                                          (fn [fields]
-                                            (mapv #(assoc % :editable? true
-                                                          :atom-backed? true) fields)))]
-                   (swap! tree assoc path fresh-node)
-                   (reset! signal {:op :update :path path :node fresh-node})
-                   nil)))
+                           fresh-node (update fresh-node :fields
+                                              (fn [fields]
+                                                (mapv #(assoc % :editable? true
+                                                              :atom-backed? true) fields)))]
+                       (swap! tree assoc path fresh-node)
+                       (reset! signal {:op :update :path path :node fresh-node})
+                       nil)))
 
              ;; Mutable Java field
-             (and (:java-field field) (not (nil? obj)))
-             (try
-               (let [f (.getDeclaredField (class obj) (:java-field field))]
-                 (.setAccessible f true)
-                 (.set f obj new-value)
-                 (let [fresh-node (reflect-value obj)]
-                   (swap! tree assoc path fresh-node)
-                   (reset! signal {:op :update :path path :node fresh-node})
-                   nil))
-               (catch Exception e
-                 (reset! signal {:op :error :path path
-                                 :error (str "Edit failed: " (.getMessage e))})
-                 nil))
+                 (and (:java-field field) (not (nil? obj)))
+                 (try
+                   (let [f (.getDeclaredField (class obj) (:java-field field))]
+                     (.setAccessible f true)
+                     (.set f obj new-value)
+                     (let [fresh-node (reflect-value obj)]
+                       (swap! tree assoc path fresh-node)
+                       (reset! signal {:op :update :path path :node fresh-node})
+                       nil))
+                   (catch Exception e
+                     (reset! signal {:op :error :path path
+                                     :error (str "Edit failed: " (.getMessage e))})
+                     nil))
 
-             :else nil))))
+                 :else nil))))
 
-     :refresh!
-     (fn refresh! [path]
-       (let [obj (get @path-objects path)]
-         (when obj
-           (let [eid (when (and conn (map? obj) (:db/id obj)) (:db/id obj))
-                 node (reflect-value obj :entity-id eid)]
-             (swap! tree assoc path node)
-             (reset! signal {:op :update :path path :node node})
-             node))))}))
+         :refresh!
+         (fn refresh! [path]
+           (let [obj (get @path-objects path)]
+             (when obj
+               (let [eid (when (and conn (map? obj) (:db/id obj)) (:db/id obj))
+                     node (reflect-value obj :entity-id eid)]
+                 (swap! tree assoc path node)
+                 (reset! signal {:op :update :path path :node node})
+                 node))))}
+        ;; Bind the per-session cache around each cache-using closure so
+        ;; navigate!/edit!/refresh! resolve refs against THIS session's cache.
+        (update :navigate! with-session-cache)
+        (update :edit! with-session-cache)
+        (update :refresh! with-session-cache))))
 
 ;; =============================================================================
 ;; Batch edit support
