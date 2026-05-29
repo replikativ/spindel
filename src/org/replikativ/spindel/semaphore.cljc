@@ -107,33 +107,45 @@
       (do-work)
       (release sem))"
   [sem]
-  (spin/make-spin
-   (fn [resolve reject]
-     (let [sem-id (.-id sem)
-           got-permit? (atom false)]  ; Capture decision atomically
+  ;; Give the acquire spin a known id up-front so the enqueued waiter can carry
+  ;; it: if this acquire is cancelled (e.g. a race/timeout loser), the waiter
+  ;; is identifiable and gets pruned — both here (on enqueue) and in `release`
+  ;; (which must not hand a permit to a cancelled acquirer).
+  (let [acquire-spin-id (keyword (gensym "sem-acquire-"))]
+    (spin/make-spin
+     (fn [resolve reject]
+       (let [sem-id (.-id sem)
+             got-permit? (atom false)  ; Capture decision atomically
+             dead-waiter? (fn [{:keys [spin-id]}]
+                            (and spin-id (ec/spin-is-cancelled? spin-id)))]
 
-       ;; Atomically try to acquire or enqueue
-       ;; Uses *execution-context* from spin context - no captured runtime!
-       (ec/swap-state! [:semaphores sem-id]
-                       (fn [state]
-                         (let [permits (:permits state)]
-                           (if (pos? permits)
-               ;; Permit available - decrement and mark as acquired
-                             (do
-                               (reset! got-permit? true)
-                               (update state :permits dec))
-               ;; No permits - add to waiting queue
-                             (update state :waiting-queue
-                                     conj {:resolve resolve
-                                           :reject reject
-                                           :timestamp #?(:clj (System/currentTimeMillis)
-                                                         :cljs (.now js/Date))})))))
+         ;; Atomically try to acquire or enqueue
+         ;; Uses *execution-context* from spin context - no captured runtime!
+         (ec/swap-state! [:semaphores sem-id]
+                         (fn [state]
+                           (let [permits (:permits state)]
+                             (if (pos? permits)
+                 ;; Permit available - decrement and mark as acquired
+                               (do
+                                 (reset! got-permit? true)
+                                 (update state :permits dec))
+                 ;; No permits - prune cancelled waiters, then enqueue ours
+                 ;; (preserve the PersistentQueue type + FIFO order)
+                               (update state :waiting-queue
+                                       (fn [q]
+                                         (conj (into (empty q) (remove dead-waiter? q))
+                                               {:resolve resolve
+                                                :reject reject
+                                                :spin-id acquire-spin-id
+                                                :timestamp #?(:clj (System/currentTimeMillis)
+                                                              :cljs (.now js/Date))})))))))
 
-       ;; If we got the permit, resolve immediately
-       (when @got-permit?
-         (spin/resume resolve :acquired))
+         ;; If we got the permit, resolve immediately
+         (when @got-permit?
+           (spin/resume resolve :acquired))
 
-       spin/incomplete))))
+         spin/incomplete))
+     acquire-spin-id)))
 
 (defn release
   "Release a permit, waking up the next waiter if any.
@@ -158,21 +170,29 @@
             max-permits (:max-permits old-state)]
 
         (cond
-          ;; Queue not empty - wake up first waiter
+          ;; Queue not empty - wake up first LIVE waiter
           (seq queue)
           (let [waiter (peek queue)
                 new-state (update old-state :waiting-queue pop)]
             (if (ec/cas-state! path old-state new-state)
-              (do
-                ;; Successfully dequeued - schedule waiter to run on executor.
-                ;; alive-fn drops the callback if the context is stopped before
-                ;; setTimeout fires (CLJS) — prevents stale resumes from
-                ;; bleeding into a freshly-created context.
-                (let [ctx ec/*execution-context*]
-                  (executor/execute! (:executor ctx)
-                                     (executor/alive-fn ctx
-                                                        #(spin/resume (:resolve waiter) :acquired))))
-                :released)
+              (if (and (:spin-id waiter)
+                       (ec/spin-is-cancelled? (:spin-id waiter)))
+                ;; The front waiter's acquire was cancelled — drop it WITHOUT
+                ;; consuming this release's permit, and look for the next live
+                ;; waiter (or fall through to incrementing permits if the
+                ;; queue drains). Handing the permit to a cancelled acquirer
+                ;; would lose it.
+                (recur)
+                (do
+                  ;; Successfully dequeued a live waiter - schedule it on the
+                  ;; executor. alive-fn drops the callback if the context is
+                  ;; stopped before setTimeout fires (CLJS) — prevents stale
+                  ;; resumes from bleeding into a freshly-created context.
+                  (let [ctx ec/*execution-context*]
+                    (executor/execute! (:executor ctx)
+                                       (executor/alive-fn ctx
+                                                          #(spin/resume (:resolve waiter) :acquired))))
+                  :released))
               ;; CAS failed - retry
               (recur)))
 
