@@ -40,6 +40,25 @@
         (is (some? (cache/get-slot-cache :el-live))
             "address still claimed in *rendered-addrs* is spared")))))
 
+(deftest flush-removes-element-registry-entry-on-unmount
+  (testing "flush-pending-evictions! drops the discharge's addr->element entry
+            for unmounted addresses, but spares addresses re-claimed live (#8)"
+    (with-ctx [_ctx]
+      (let [{:keys [discharge elements]} (disch/make-mock-discharge)]
+        ;; Register an element at each address (as render-initial! would).
+        (disch/set-element! discharge :el-dead :node-dead)
+        (disch/set-element! discharge :el-live :node-live)
+        (binding [disch/*pending-evictions* (atom #{})
+                  disch/*rendered-addrs*    (atom {:el-live {:tag :div :addr :el-live}})]
+          (#'disch/call-refs-on-unmount! {:tag :div :addr :el-dead})
+          (#'disch/call-refs-on-unmount! {:tag :div :addr :el-live})
+          ;; Pass the discharge so flush also prunes the element registry.
+          (disch/flush-pending-evictions! discharge)
+          (is (nil? (get @elements :el-dead))
+              "unmounted address must be removed from the element registry")
+          (is (= :node-live (get @elements :el-live))
+              "address still claimed by a live element must be retained"))))))
+
 (deftest eager-eviction-fallback-without-render-pass
   (testing "Outside a render pass (no *pending-evictions* binding) eviction is eager"
     (with-ctx [_ctx]

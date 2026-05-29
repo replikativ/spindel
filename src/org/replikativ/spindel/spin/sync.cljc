@@ -41,7 +41,22 @@
   (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
    ;; ATOMIC check-and-add: Use swap! to check assigned? and add to pending atomically
    ;; This prevents race where assignment happens between check and add-to-pending
-    (let [value-to-resolve (atom nil)
+    (let [current-spin-id ec/*spin-id*
+          current-cancel-token ec/*external-await-cancel-token*
+          ;; Prune already-cancelled readers whenever we add a new one — same
+          ;; cancellation-aware sweep as Mailbox's take. A cancelled await
+          ;; (race loser, cont truncation) leaves its reader in `:pending`,
+          ;; which is only flushed on delivery; a deferred that is awaited-
+          ;; then-cancelled but NEVER delivered would otherwise accumulate
+          ;; readers without bound.
+          ctx (try (ec/current-execution-context)
+                   (catch #?(:clj Throwable :cljs :default) _ nil))
+          cancelled-tokens (when ctx (ec/get-state [:engine/cancelled-tokens]))
+          dead-reader? (fn [{:keys [spin-id cancel-token]}]
+                         (or (and spin-id (ec/spin-is-cancelled? spin-id))
+                             (and cancel-token cancelled-tokens
+                                  (contains? cancelled-tokens cancel-token))))
+          value-to-resolve (atom nil)
           _result-state (swap! state-atom
                                (fn [state]
                                  (if (:assigned? state)
@@ -49,8 +64,15 @@
                                    (do
                                      (reset! value-to-resolve (:value state))
                                      state)
-                                 ;; Not assigned - add to pending
-                                   (update state :pending (fnil conj []) resolve))))]
+                                 ;; Not assigned - prune dead readers, then add ours
+                                   (update state :pending
+                                           (fn [ps]
+                                             (conj (if ctx
+                                                     (filterv (complement dead-reader?) (or ps []))
+                                                     (or ps []))
+                                                   {:spin-id current-spin-id
+                                                    :cancel-token current-cancel-token
+                                                    :resolve resolve}))))))]
       (if-let [value @value-to-resolve]
        ;; Was already assigned - resolve immediately
        ;; CRITICAL: Reset *in-trampoline* to ensure Thunks from recur are trampolined
@@ -212,6 +234,22 @@
    ;; ATOMIC check-and-take or add-to-waiters
     (let [current-spin-id ec/*spin-id*
           current-cancel-token ec/*external-await-cancel-token*
+          ;; Prune already-cancelled waiters whenever we add a new one. A
+          ;; cancelled await (race loser, signal-change cont truncation)
+          ;; leaves its waiter behind: `post-inline!` only skips/drops
+          ;; cancelled waiters when a message ARRIVES, so a mailbox that's
+          ;; taken-but-never-posted would accumulate them without bound. By
+          ;; sweeping here we bound `:waiters` to the live waiters between
+          ;; consecutive takes (the same cancelled-detection `post-inline!`
+          ;; uses: whole-spin cancellation OR a cancel-token in
+          ;; `:engine/cancelled-tokens`).
+          ctx (try (ec/current-execution-context)
+                   (catch #?(:clj Throwable :cljs :default) _ nil))
+          cancelled-tokens (when ctx (ec/get-state [:engine/cancelled-tokens]))
+          dead-waiter? (fn [{:keys [spin-id cancel-token]}]
+                         (or (and spin-id (ec/spin-is-cancelled? spin-id))
+                             (and cancel-token cancelled-tokens
+                                  (contains? cancelled-tokens cancel-token))))
           msg-to-resolve (atom ::not-found)
           _result (swap! state-atom
                          (fn [state]
@@ -221,10 +259,13 @@
                                (reset! msg-to-resolve (peek (:queue state)))
                              ;; Remove front element
                                (update state :queue pop))
-                           ;; Queue empty - add to waiters with spin-id + cancel-token
-                             (update state :waiters conj {:spin-id current-spin-id
-                                                          :cancel-token current-cancel-token
-                                                          :resolve resolve}))))]
+                           ;; Queue empty - prune dead waiters, then add ours
+                             (update state :waiters
+                                     (fn [ws]
+                                       (conj (if ctx (filterv (complement dead-waiter?) ws) ws)
+                                             {:spin-id current-spin-id
+                                              :cancel-token current-cancel-token
+                                              :resolve resolve}))))))]
 
       (if (not= ::not-found @msg-to-resolve)
        ;; Got message - resume continuation immediately

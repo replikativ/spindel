@@ -162,10 +162,15 @@
                                        :value value
                                        :pending [])))))]
 
-    ;; Notify all pending readers INLINE if this was the first assignment
+    ;; Notify all pending readers INLINE if this was the first assignment.
+    ;; Each pending entry is a `{:spin-id :cancel-token :resolve}` map (the
+    ;; Deferred 2-arity stores cancellation metadata so it can prune cancelled
+    ;; readers). The wrapped `:resolve` already no-ops if its await was
+    ;; cancelled, so we can invoke them all; the metadata is for the
+    ;; prune-on-read sweep, not needed here.
     ;; Event handler already bound *in-trampoline* false
     (when-let [pending @pending-callbacks]
-      (doseq [resolve pending]
+      (doseq [{:keys [resolve]} pending]
         (pcps-async/invoke-continuation resolve value)))
 
     ;; Return the assigned value

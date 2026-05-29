@@ -158,7 +158,10 @@
     (get @elements addr))
 
   (set-element! [_ addr el]
-    (swap! elements assoc addr el)))
+    (swap! elements assoc addr el))
+
+  (remove-element! [_ addr]
+    (swap! elements dissoc addr)))
 
 ;; =============================================================================
 ;; Constructor

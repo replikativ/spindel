@@ -74,27 +74,34 @@
         completed (atom 0)
         done? (atom false)
         spin-vec (vec spins)
-        ;; Path in runtime state for this parallel's results
-        results-path [:parallel/results parallel-spin-id]]
+        ;; Initial accumulator for child results — a LOCAL atom, not engine
+        ;; state. Its lifetime is the initial child callbacks (held by the
+        ;; children/deferreds), so it is reclaimed exactly when the initial
+        ;; fan-out finishes — no leak, and no dependence on node-teardown
+        ;; timing (which would race a GC'd-but-still-in-flight parallel).
+        ;; The in-flight accumulation is inherently unforkable anyway (the
+        ;; executor-scheduled children aren't fork-copied), so a local atom
+        ;; loses no real fork-safety here. Once the parallel completes, the
+        ;; result vector is cached on the node, and the reactive phase below
+        ;; reads/updates THAT (per-context, overlay-copied → fork-isolated).
+        results-atom (atom (vec (repeat n nil)))]
     (binding [ec/*execution-context* execution-context]
-      ;; Initialize results vector in runtime state (fork-safe)
-      (ec/swap-state! results-path (constantly (vec (repeat n nil))))
-
       (spin-core/make-spin
        (fn [resolve reject]
          ;; Start each child using CPS (no deref). The child will invoke our callbacks
          ;; when it completes; we coordinate final resolution here.
          (doseq [[i child-spin] (map-indexed vector spin-vec)]
            (let [on-ok (fn [v]
-                         ;; Update result for this child in runtime state (fork-safe)
-                         (ec/swap-state! results-path #(assoc % i v))
+                         ;; Update this child's slot in the local accumulator
+                         ;; (atomic swap! — children complete concurrently).
+                         (swap! results-atom assoc i v)
                          (when (= n (swap! completed inc))
                            ;; All children completed initially
                            (when (compare-and-set! done? false true)
                              ;; Capture initial values BEFORE registering continuations
                              ;; Used to distinguish initial completion events (already in queue)
                              ;; from re-completions (should trigger notifications)
-                             (let [initial-results (vec (ec/get-state results-path))]
+                             (let [initial-results @results-atom]
                                ;; Register continuations for reactive child re-completions
                                ;; This makes parallel reactive: when children re-run due to
                                ;; tracked signal changes, parallel will update and notify awaiters
@@ -112,14 +119,24 @@
                                                       ;; re-completions due to signal changes carry a
                                                       ;; different value.
                                                       (when (not= new-val initial-val)
-                                                        ;; Update result in runtime state (fork-safe)
-                                                        (ec/swap-state! results-path #(assoc % j new-val))
-                                                        ;; Get current results and re-cache
-                                                        (let [current-results (ec/get-state results-path)]
+                                                        ;; Reactive phase: the parallel's result vector
+                                                        ;; now lives on the node's cached result (which is
+                                                        ;; per-context engine state, overlay-copied on fork
+                                                        ;; → fork-isolated). Read the current vector, update
+                                                        ;; slot j, and re-cache. Reactive re-completions are
+                                                        ;; processed serially in the drain loop, so this
+                                                        ;; read-modify-write needs no extra atomicity.
+                                                        ;; `initial-results` is the fallback if the node
+                                                        ;; result isn't a vector yet (shouldn't happen post
+                                                        ;; initial completion, but keeps us robust).
+                                                        (let [cached (ec/spin-current-result parallel-spin-id)
+                                                              base (let [p (when cached (:payload cached))]
+                                                                     (if (vector? p) p initial-results))
+                                                              updated (assoc base j new-val)]
                                                           ;; Re-cache parallel's result to notify our awaiters
                                                           (ec/spin-cache-result!
                                                            parallel-spin-id
-                                                           (spin-core/ok current-results))
+                                                           (spin-core/ok updated))
                                                           ;; Fire completion event to resume awaiting spins
                                                           (ec/enqueue-event!
                                                            {:type :spin-completion :id parallel-spin-id}))))
@@ -156,8 +173,10 @@
                                                    :on-resume (fn [_]
                                                                 (ec/spin-current-result t-id))}]
                                      (ec/continuation-add! parallel-spin-id cont-map))))
-                               ;; Initial resolve with current results from runtime state
-                               (spin-core/resume resolve (ec/get-state results-path))))))
+                               ;; Initial resolve with the accumulated results. The
+                               ;; engine caches this vector on the parallel's node;
+                               ;; the reactive conts above update that cached value.
+                               (spin-core/resume resolve @results-atom)))))
 
                  on-err (fn [e]
                           ;; First error wins; cancel siblings and reject

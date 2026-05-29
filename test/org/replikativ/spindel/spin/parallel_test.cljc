@@ -472,3 +472,47 @@
                                    (second batch-spins)
                                    (nth batch-spins 2))]
              (is (= [25 25 25] result) "Should complete with externally created model")))))))
+
+;; =============================================================================
+;; CLJ-only: fork-isolation of a REACTIVE parallel
+;; =============================================================================
+;;
+;; Regression guard for the #5 fix (parallel results moved off a permanent
+;; engine side-key onto the spin's node). The reactive phase reads/updates the
+;; node's cached result, which is per-context (overlay-copied on fork) — so a
+;; signal change in a fork must update only the fork's parallel result and
+;; leave the parent's untouched.
+
+#?(:clj
+   (deftest test-parallel-reactive-fork-isolation
+     (testing "A reactive parallel's result updates per-context: changing a
+               tracked signal in a fork must not mutate the parent's result"
+       (let [parent (ctx/create-execution-context
+                     {:executor (sched/thread-pool-executor 4)})]
+         (try
+           (let [par (binding [ec/*execution-context* parent]
+                       (let [sig (signal 10)
+                             p   (parallel (spin (:new (track sig))) (spin :static))]
+                         @p
+                         (simple/await-drain-complete! parent)
+                         {:sig sig :p p}))
+                 {:keys [sig p]} par
+                 ;; The same `parallel` results never live in a side key.
+                 _ (is (not (contains? (rtp/get-state parent []) :parallel/results))
+                       "parallel must not create a :parallel/results engine key")
+                 fork (ctx/fork-context parent)]
+             ;; Mutate the tracked signal ONLY in the fork, then drain the fork.
+             (binding [ec/*execution-context* fork]
+               (reset! sig 99)
+               (simple/await-drain-complete! fork))
+             (let [pid          (spin-core/spin-id p)
+                   parent-result (:payload (binding [ec/*execution-context* parent]
+                                             (ec/spin-current-result pid)))
+                   fork-result   (:payload (binding [ec/*execution-context* fork]
+                                             (ec/spin-current-result pid)))]
+               (is (= [10 :static] parent-result)
+                   "parent's parallel result must be unchanged by the fork")
+               (is (= [99 :static] fork-result)
+                   "fork's parallel result must reflect the fork-local signal change")))
+           (finally
+             (ctx/close-context! parent)))))))

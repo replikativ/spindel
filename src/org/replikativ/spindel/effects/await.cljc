@@ -474,13 +474,18 @@
   and only the NEW body slice (registered by the parent's re-run)
   advances. See `cancellable-external-pair` for the design rationale."
   [deferred spin-id source-loc resolve reject]
-  (let [[wr wj _cancel-token]
+  (let [[wr wj cancel-token]
         (cancellable-external-pair
          spin-id resolve reject
          [::deferred #?(:clj (System/identityHashCode deferred)
                         :cljs (.-id deferred))]
          source-loc)]
-    (deferred wr wj))
+    ;; Thread the cancel-token into the Deferred's 2-arity (via the dynamic
+    ;; var, same as the Mailbox branch) so it can store it on the pending
+    ;; reader and prune cancelled readers — otherwise a cancelled await on a
+    ;; never-delivered deferred strands its `:pending` entry forever.
+    (binding [ec/*external-await-cancel-token* cancel-token]
+      (deferred wr wj)))
   spin-core/incomplete)
 
 (defn reactive-spin?

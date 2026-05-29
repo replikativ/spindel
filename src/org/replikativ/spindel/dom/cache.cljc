@@ -85,14 +85,21 @@
   (ec/swap-state! [:dom/attr-cache addr] (constantly attrs)))
 
 (defn evict-cache!
-  "Drop both the slot cache and attribute cache for an element address.
+  "Drop all per-address engine state for an element address.
 
-  Called when an element is unmounted so the per-address cache entries
-  do not accumulate for the lifetime of the context."
+  Called when an element is unmounted so the per-address entries do not
+  accumulate for the lifetime of the context. Covers every `[:dom/* <addr>]`
+  map the render path writes:
+  - `:dom/cache`       — slot cache
+  - `:dom/attr-cache`  — attribute cache
+  - `:dom/keyed-cache` — `ifor-each` per-call-site keyed cache
+  - `:dom/foreign`     — foreign-node marker"
   [addr]
   (when addr
     (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
-    (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))))
+    (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
+    (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
+    (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr)))))
 
 ;; =============================================================================
 ;; Attribute Reconciliation

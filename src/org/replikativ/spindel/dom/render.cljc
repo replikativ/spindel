@@ -28,6 +28,7 @@
   produce vnodes with deltas attached that are discharged to the DOM."
   (:require [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.engine.core :as ec]
             [replikativ.logging :as log]))
 
 ;; =============================================================================
@@ -96,7 +97,7 @@
               (log/trace :render/delta-update {:nodes-with-deltas (count nodes-with-deltas)})
               (doseq [node nodes-with-deltas]
                 (disch/discharge-vnode! discharge node))))
-          (disch/flush-pending-evictions!))
+          (disch/flush-pending-evictions! discharge))
 
         ;; Clear deltas for next render cycle
         ;; No ref transfer needed — cleared vnodes carry same :addr values
@@ -196,7 +197,11 @@
   "
   [container the-spin discharge]
   (let [render-effect (create-render-effect container discharge)
-        spin-id (spin-core/spin-id the-spin)]
+        spin-id (spin-core/spin-id the-spin)
+        ;; Capture the context so `:stop!` can cancel against it later, even
+        ;; if the caller invokes it with no *execution-context* bound.
+        ctx (try (ec/current-execution-context)
+                 (catch #?(:clj Throwable :cljs :default) _ nil))]
 
     (log/debug :render/start {:spin-id spin-id})
 
@@ -215,5 +220,13 @@
     {:spin-id spin-id
      :stop! (fn []
               (log/debug :render/stop {:spin-id spin-id})
-              ;; TODO: Implement cancellation
+              ;; Cancel the render spin: tears down its reactive continuations
+              ;; and signal/spin dependency subscriptions so it stops
+              ;; re-executing on signal changes, and lets the engine reclaim
+              ;; its node + conts. Without this, a stopped render keeps its
+              ;; reactive machinery (and the render-effect closure it resumes
+              ;; into) alive for the lifetime of the context.
+              (when ctx
+                (binding [ec/*execution-context* ctx]
+                  (spin-core/cancel-spin! the-spin)))
               nil)}))

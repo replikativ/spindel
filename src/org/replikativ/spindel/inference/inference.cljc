@@ -1051,7 +1051,14 @@
                new-samples (mapv (fn [[ctx lw]] [ctx lw]) particles)]
 
            (recur (inc iteration)
-                  (into all-samples new-samples))))))))
+                  ;; Retain only the tail we will actually use (the final
+                  ;; result is `(take-last (* num-particles 3) …)`). Each
+                  ;; sample pins a forked ExecutionContext, so accumulating
+                  ;; every iteration's samples would hold `num-particles *
+                  ;; num-iterations` heavy contexts at once. Trimming here
+                  ;; lets older iterations' contexts become GC-eligible.
+                  (vec (take-last (* num-particles 3)
+                                  (into all-samples new-samples))))))))))
 
 (defn get-variational-dists
   "Extract learned variational distributions from BBVI measure.

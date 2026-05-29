@@ -257,6 +257,25 @@
     (unregister-response-handler! request-id)
     (handler response)))
 
+(defn fail-all-response-handlers!
+  "Fail and remove every pending response handler.
+
+  A handler is registered per in-flight remote invocation and is otherwise
+  removed only when its `::invoke-result` arrives (`handle-response!`). If a
+  response never comes — peer disconnect, dropped message, shutdown — the
+  handler would strand forever. Call this from a disconnect/shutdown hook so
+  pending callers are failed (and the registry cleared) rather than leaking.
+
+  `error` is an error value (e.g. an ex-info) delivered to each handler as
+  `{:request-id <id> :error error}`."
+  [error]
+  (let [pending @response-handlers]
+    (reset! response-handlers {})
+    (doseq [[request-id handler] pending]
+      (try
+        (handler {:request-id request-id :error error})
+        (catch #?(:clj Throwable :cljs :default) _ nil)))))
+
 ;; =============================================================================
 ;; Utility: Throwable detection
 ;; =============================================================================

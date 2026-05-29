@@ -207,10 +207,14 @@
                 (if-let [result (await (anext source))]
                   (let [[item rest-seq] result
                         topic (topic-fn item)]
-                     ;; Ensure topic mult exists (auto-create if needed to prevent
-                     ;; race between pump and late subscribers)
-                    (ensure-topic-mult! mults-atom topic)
-                    ((:push-fn (get @mults-atom topic)) item)
+                     ;; Route only to a topic that currently has a mult (i.e.
+                     ;; ≥1 subscriber). Items for unsubscribed topics are
+                     ;; dropped — matching core.async pub and
+                     ;; `test-pub-unsubscribed-topics-dropped` — instead of
+                     ;; auto-creating a topic mult that would never be reclaimed
+                     ;; (the idle-topic leak). `sub*` is the sole mult creator.
+                    (when-let [entry (get @mults-atom topic)]
+                      ((:push-fn entry) item))
                     (recur rest-seq))
                    ;; Source exhausted
                   (do
@@ -242,8 +246,15 @@
 
   (unsub* [pub topic tap-seq]
     (let [{:keys [mults-atom]} pub]
-      (when-let [{:keys [mult]} (get @mults-atom topic)]
-        (mult/untap mult tap-seq))))
+      (when-let [{:keys [mult close-fn]} (get @mults-atom topic)]
+        (mult/untap mult tap-seq)
+        ;; Reclaim the topic once its last subscriber is gone, so a
+        ;; subscribed-then-fully-unsubscribed topic doesn't linger (and keep
+        ;; receiving/dropping pump items). A later re-subscribe re-creates it
+        ;; via `ensure-topic-mult!`.
+        (when (empty? @(:taps-atom mult))
+          (close-fn)
+          (swap! mults-atom dissoc topic)))))
 
   (unsub-all* [pub]
     (let [{:keys [mults-atom]} pub]
