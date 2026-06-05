@@ -7,7 +7,7 @@
      (require '[org.replikativ.spindel.core :as s :refer [spin signal await track]])
 
    For advanced usage, require individual namespaces directly."
-  (:refer-clojure :exclude [for atom])
+  (:refer-clojure :exclude [for atom await])
   (:require
    [org.replikativ.spindel.engine.core :as ec]
    [org.replikativ.spindel.engine.context :as ctx]

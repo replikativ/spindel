@@ -12,6 +12,7 @@
 
    Unlike core.async channels, PAsyncSeq is copy-on-read, so mult provides
    the coordination layer for synchronized fan-out."
+  (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.buffer :as buf]
             [org.replikativ.spindel.spin.core :as spin-core]
