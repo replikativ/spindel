@@ -1,6 +1,6 @@
 (ns org.replikativ.spindel.seq.core
   "Core async sequence generation - gen-aseq macro and yield"
-  (:refer-clojure :exclude [for])
+  (:refer-clojure :exclude [for await])
   (:require [is.simm.partial-cps.sequence :as pcps-seq :refer [PAsyncSeq]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]

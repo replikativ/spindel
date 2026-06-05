@@ -14,6 +14,7 @@
    fills up, the pump spin blocks. This backs up the entire source (same
    as Rama). Use dropping-buffer or sliding-buffer if independent partition
    throughput is needed."
+  (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.pubsub.buffer :as buf]

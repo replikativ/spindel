@@ -14,6 +14,7 @@
      (def p (pub source-aseq :type))
      (def events-sub (sub p :user-event))
      (def logs-sub (sub p :log-entry))"
+  (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.spin.core :as spin-core]
