@@ -387,3 +387,73 @@
         (finally
           (ctx/stop-context! ctx)
           (cleanup-temp-repo second-repo-path))))))
+
+;; =============================================================================
+;; Workspace API (collapsed composite) Tests
+;; =============================================================================
+
+(deftest test-workspace-composes
+  (testing "register! composes systems into ONE workspace composite"
+    (th/with-ctx [ctx]
+      (is (nil? (ygg/workspace)) "No workspace before any register!")
+      (ygg/register! *test-git-system*)
+      (let [ws (ygg/workspace)]
+        (is (some? ws) "Workspace exists after register!")
+        (is (= :composite (ygg-proto/system-type ws)) "Workspace is a CompositeSystem")
+        (is (= 1 (count (:systems ws))) "One sub-system in the workspace")))))
+
+(deftest test-workspace-resolution
+  (testing "system / get-system resolve a sub-system THROUGH the workspace"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid  (ygg-proto/system-id *test-git-system*)]
+        (is (identical? @yref (ygg/system sid))
+            "ygg/system returns the same instance as @yref")
+        (is (= :git (ygg-proto/system-type (ygg/system sid))))))))
+
+(deftest test-workspace-diff-merge-base
+  (testing "workspace-diff reports the fork's OWN change via per-system merge-base"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid  (ygg-proto/system-id *test-git-system*)
+            fork-handle (ygg/fork!)
+            child-ctx (:child-ctx fork-handle)]
+        ;; Commit a file inside the fork
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                wt-path (str (:worktrees-dir @yref) "/" branch-name)]
+            (spit (str wt-path "/ws-diff.txt") "fork change")
+            (sh "git" "add" "ws-diff.txt" :dir wt-path)
+            (sh "git" "commit" "-m" "ws diff commit" :dir wt-path)))
+        ;; Advance the PARENT independently — merge-base must exclude this
+        (let [repo-path (:repo-path @yref)]
+          (spit (str repo-path "/parent-only.txt") "parent advance")
+          (sh "git" "add" "parent-only.txt" :dir repo-path)
+          (sh "git" "commit" "-m" "parent advance" :dir repo-path))
+        (let [diff (ygg/workspace-diff child-ctx)
+              gdiff (get diff sid)
+              files (set (map :path (:files gdiff)))]
+          (is (some? gdiff) "workspace-diff has the git sub-system")
+          (is (contains? files "ws-diff.txt") "fork's own file is in the diff")
+          (is (not (contains? files "parent-only.txt"))
+              "parent's concurrent advance is excluded (merge-base)"))
+        (ygg/discard-fork! fork-handle)))))
+
+(deftest test-workspace-merge-transactional
+  (testing "merge-to-parent! returns :merged and lands the fork's change"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid  (ygg-proto/system-id *test-git-system*)
+            fork-handle (ygg/fork!)
+            child-ctx (:child-ctx fork-handle)]
+        (ygg/with-fork fork-handle
+          (let [branch-name (name (ygg-proto/current-branch @yref))
+                wt-path (str (:worktrees-dir @yref) "/" branch-name)]
+            (spit (str wt-path "/ws-merge.txt") "merge me")
+            (sh "git" "add" "ws-merge.txt" :dir wt-path)
+            (sh "git" "commit" "-m" "ws merge commit" :dir wt-path)))
+        (let [result (ygg/merge-to-parent! child-ctx)]
+          (is (contains? (set (:merged result)) sid)
+              "merge-to-parent! reports the merged sub-system")
+          (is (.exists (io/file (str (:repo-path @yref) "/ws-merge.txt")))
+              "fork's file landed in the parent"))))))
