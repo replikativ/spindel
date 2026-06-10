@@ -191,6 +191,26 @@
      :cljs
      (throw (ex-info "Yggdrasil not yet supported in ClojureScript" {}))))
 
+(defn unregister!
+  "Remove the system identified by `sys-id` from the current context's workspace
+   composite — the mirror of `register!`. No-op if absent. When the last system
+   is removed the workspace is cleared (so `system` returns nil). Returns true if
+   a system was removed."
+  [sys-id]
+  #?(:clj
+     (when-let [ws (ec/get-state [:external-refs workspace-key])]
+       (let [systems (:systems ws)]
+         (when (contains? systems sys-id)
+           (let [sys-map (dissoc systems sys-id)]
+             (ec/swap-state! [:external-refs workspace-key]
+                             (constantly (when (seq sys-map)
+                                           (ygc/composite (vals sys-map)
+                                                          :branch :main
+                                                          :name "spindel-workspace"))))
+             true))))
+     :cljs
+     (throw (ex-info "Yggdrasil not yet supported in ClojureScript" {}))))
+
 (defn system
   "Get a registered sub-system by id from the current context, resolved through
    the workspace. Branch-correct inside a forked context. Returns nil if absent.
