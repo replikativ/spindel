@@ -52,6 +52,16 @@
                     (e.g. dvergr's make-resource-limits, which throws when the
                     interrupt flag is set so timeouts and user-cancels unwind
                     the computation). Optional — omit for unbounded execution.
+                    (Convenience; equivalent to `:sci-opts {:interrupt-fn …}`.)
+    :sci-opts - A map merged into the `sci/init` argument, so a consumer can set
+                ANY SCI option without spindel having to thread it through one key
+                at a time — e.g. `:load-fn` (resolve `(require …)` against the
+                host's own source roots; SCI captures it at init so it can't be
+                added later via merge-opts/assoc), `:deny`, `:readers`, `:features`.
+                Spindel's own `:classes`/`:bindings`/`:namespaces` (which carry the
+                spin/await/track primitives) are merged ON TOP so they can't be
+                clobbered, but you may ADD your own classes/namespaces/bindings.
+                `:features` defaults to #{:clj} when not supplied. Optional.
 
   Example:
     (def rt (ctx/create-execution-context))
@@ -70,9 +80,10 @@
                   x (await a)
                   y (await b)]
               (+ x y)))\"))  ; => 30"
-  [{:keys [runtime native-spins expose-track? interrupt-fn]
+  [{:keys [runtime native-spins expose-track? interrupt-fn sci-opts]
     :or {native-spins {}
-         expose-track? true}}]
+         expose-track? true
+         sci-opts      {}}}]
   (let [;; Wrap all native spins for SCI (BoundaryTask pattern)
         wrapped-natives (into {}
                               (map (fn [[k v]]
@@ -113,12 +124,18 @@
                         'track-handler eff-track/track-handler}}))
 
         ;; Create SCI context
+        ;; Start from the consumer's :sci-opts (any SCI option — :load-fn, :deny,
+        ;; :readers, …), then layer spindel's essentials ON TOP so the spin/await/
+        ;; track primitives can't be clobbered while still letting a consumer ADD
+        ;; its own classes/namespaces/bindings. SCI captures these at init, which is
+        ;; why a passthrough here is the only way to supply e.g. :load-fn.
         sci-ctx (sci/init
-                 (cond-> {:classes (sci-core/common-classes)
-                          :features #{:clj}
-                          :bindings wrapped-natives
-                          :namespaces namespaces}
-                   interrupt-fn (assoc :interrupt-fn interrupt-fn)))]
+                 (-> sci-opts
+                     (cond-> interrupt-fn (assoc :interrupt-fn interrupt-fn))
+                     (update :features    #(or % #{:clj}))
+                     (update :classes     merge (sci-core/common-classes))
+                     (update :bindings    merge wrapped-natives)
+                     (update :namespaces  merge namespaces)))]
 
     ;; Load partial-cps for CPS transformation support (runs inside SCI)
     (sci-core/load-partial-cps! sci-ctx)
