@@ -42,6 +42,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             #?@(:clj [[yggdrasil.protocols :as ygg]
                       [yggdrasil.types :as ygt]
+                      [yggdrasil.gc :as ygg-gc]
                       [yggdrasil.composite :as ygc]])))
 
 ;; =============================================================================
@@ -400,7 +401,9 @@
       (when-let [parent-ctx (:parent-ctx child-ctx)]
         (let [pairs     (mergeable-pairs child-ctx parent-ctx)
               parent-ws (rtp/get-state parent-ctx [:external-refs workspace-key])]
-          ;; 1. conflict pre-check
+          ;; 1. conflict pre-check. FAIL-SAFE: if conflict detection THROWS we must
+          ;; NOT swallow it as "no conflicts" (that would blind-merge); treat the
+          ;; error itself as an indeterminate conflict so the gate aborts.
           (when-not (or (:strategy opts) (:force opts))
             (let [confs (mapcat (fn [[sid csys psys]]
                                   (when (satisfies? ygg/Mergeable csys)
@@ -408,7 +411,9 @@
                                               (ygg/conflicts csys
                                                              (ygg/snapshot-id psys)
                                                              (ygg/snapshot-id csys)))
-                                         (catch Throwable _ nil))))
+                                         (catch Throwable e
+                                           [{:system sid :indeterminate? true
+                                             :error (.getMessage e)}]))))
                                 pairs)]
               (when (seq confs)
                 (throw (ex-info "workspace merge has conflicts; aborting (pass :strategy or :force)"
@@ -428,28 +433,49 @@
                            (catch Throwable e
                              (throw (ex-info "workspace merge failed mid-way; parent workspace left unchanged"
                                              {:rollback rollback} e))))]
-            ;; 3. commit atomically, then delete child branches
-            (rtp/swap-state! parent-ctx [:external-refs workspace-key]
-                             (constantly (assoc parent-ws
-                                                :systems (merge (sub-systems parent-ctx) merged))))
-            (doseq [[_ csys psys] pairs]
-              (ygg/delete-branch! psys (ygg/current-branch csys)))
-            {:merged (vec (keys merged))}))))))
+            ;; 3. commit atomically. CARRY child-only systems too — a system
+            ;; registered in the fork has no parent counterpart in `pairs`, so
+            ;; without this merge would silently DROP it (it's on its own default
+            ;; branch, not a to-be-deleted fork branch). Then delete child branches,
+            ;; then fire :on-merge so an external registry can reconcile in-band.
+            (let [child-only (apply dissoc (sub-systems child-ctx)
+                                    (keys (sub-systems parent-ctx)))]
+              (rtp/swap-state! parent-ctx [:external-refs workspace-key]
+                               (constantly (assoc parent-ws
+                                                  :systems (merge (sub-systems parent-ctx)
+                                                                  merged child-only))))
+              (doseq [[_ csys psys] pairs]
+                (ygg/delete-branch! psys (ygg/current-branch csys)))
+              (when-let [cb (:on-merge opts)]
+                (cb {:merged (vec (keys merged)) :child-only (vec (keys child-only))
+                     :parent-ctx parent-ctx :child-ctx child-ctx}))
+              {:merged (vec (keys merged)) :child-only (vec (keys child-only))})))))))
 
 #?(:clj
    (defn discard-from-parent!
      "Discard a forked context's workspace branches without merging. Deletes each
-      sub-system's fork branch (removing git worktrees etc.). Called from parent.
+      shared sub-system's fork branch (removing git worktrees etc.). Called from
+      parent. Fork-ONLY systems (registered in the fork, e.g. an agent-created DB)
+      have no shared branch to delete and their stores are NOT removed here — the
+      `:on-discard` callback receives them so an external owner can clean up (delete
+      the store, drop a deferred registry grant) and avoid an orphaned/resurrected DB.
 
       Args:
         child-ctx - Child ExecutionContext to discard
+        opts      - {:on-discard (fn [{:keys [child-only child-ctx]}])}
 
       Returns: nil"
-     [child-ctx]
-     (when-let [parent-ctx (:parent-ctx child-ctx)]
-       (doseq [[_ csys psys] (mergeable-pairs child-ctx parent-ctx)]
-         (ygg/delete-branch! psys (ygg/current-branch csys))))
-     nil))
+     ([child-ctx] (discard-from-parent! child-ctx {}))
+     ([child-ctx opts]
+      (when-let [parent-ctx (:parent-ctx child-ctx)]
+        (doseq [[_ csys psys] (mergeable-pairs child-ctx parent-ctx)]
+          (ygg/delete-branch! psys (ygg/current-branch csys)))
+        (when-let [cb (:on-discard opts)]
+          (let [child-only (apply dissoc (sub-systems child-ctx)
+                                  (keys (sub-systems parent-ctx)))]
+            (cb {:child-only (vec (keys child-only)) :child-only-systems child-only
+                 :child-ctx child-ctx}))))
+      nil)))
 
 ;; ForkHandle variants (delegate to the ctx-based ops)
 
@@ -463,8 +489,8 @@
    (defn discard-fork!
      "Discard fork's workspace branches (ForkHandle variant of
       discard-from-parent!)."
-     [fork-handle]
-     (discard-from-parent! (:child-ctx fork-handle))))
+     ([fork-handle] (discard-fork! fork-handle {}))
+     ([fork-handle opts] (discard-from-parent! (:child-ctx fork-handle) opts))))
 
 ;; =============================================================================
 ;; Merge From Parent (Parent → Child sync)
@@ -551,3 +577,26 @@
       Example: (q ydb '[:find ?n :where [?e :user/name ?n]])"
      [ydb-ref query & args]
      (apply (requiring-resolve 'datahike.api/q) query @@ydb-ref args)))
+
+#?(:clj
+   (defn gc-system!
+     "Reclaim unreachable storage for a single yggdrasil system (e.g. a datahike
+      system's orphaned index blobs left by every transaction). Thin re-export of
+      `yggdrasil.gc/gc-system!` so callers needn't import yggdrasil internals.
+      `opts` are adapter-specific — datahike honours `:remove-before <Date>`
+      (default epoch = keep ALL history, drop only orphan garbage), git honours
+      `:grace-period-ms`; `:dry-run?` reports without deleting. Returns the
+      adapter's reclamation report."
+     ([sys] (ygg-gc/gc-system! sys {}))
+     ([sys opts] (ygg-gc/gc-system! sys opts))))
+
+#?(:clj
+   (defn gc!
+     "Reclaim unreachable storage across the CURRENT context's whole workspace —
+      every registered system (datahike kbs/msgs + git repos) GC'd as one
+      coordinated pass. The natural entry for a forked room/agent context: call it
+      on that ctx and all its stores are swept. `opts` flow to each adapter
+      (`:remove-before`, `:grace-period-ms`, `:dry-run?`). Returns {system-id →
+      report}, or nil if nothing is registered yet."
+     ([] (gc! {}))
+     ([opts] (when-let [ws (workspace)] (ygg-gc/gc-system! ws opts)))))
