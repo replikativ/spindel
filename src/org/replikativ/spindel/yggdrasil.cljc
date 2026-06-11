@@ -42,6 +42,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             #?@(:clj [[yggdrasil.protocols :as ygg]
                       [yggdrasil.types :as ygt]
+                      [yggdrasil.gc :as ygg-gc]
                       [yggdrasil.composite :as ygc]])))
 
 ;; =============================================================================
@@ -572,3 +573,26 @@
       Example: (q ydb '[:find ?n :where [?e :user/name ?n]])"
      [ydb-ref query & args]
      (apply (requiring-resolve 'datahike.api/q) query @@ydb-ref args)))
+
+#?(:clj
+   (defn gc-system!
+     "Reclaim unreachable storage for a single yggdrasil system (e.g. a datahike
+      system's orphaned index blobs left by every transaction). Thin re-export of
+      `yggdrasil.gc/gc-system!` so callers needn't import yggdrasil internals.
+      `opts` are adapter-specific — datahike honours `:remove-before <Date>`
+      (default epoch = keep ALL history, drop only orphan garbage), git honours
+      `:grace-period-ms`; `:dry-run?` reports without deleting. Returns the
+      adapter's reclamation report."
+     ([sys] (ygg-gc/gc-system! sys {}))
+     ([sys opts] (ygg-gc/gc-system! sys opts))))
+
+#?(:clj
+   (defn gc!
+     "Reclaim unreachable storage across the CURRENT context's whole workspace —
+      every registered system (datahike kbs/msgs + git repos) GC'd as one
+      coordinated pass. The natural entry for a forked room/agent context: call it
+      on that ctx and all its stores are swept. `opts` flow to each adapter
+      (`:remove-before`, `:grace-period-ms`, `:dry-run?`). Returns {system-id →
+      report}, or nil if nothing is registered yet."
+     ([] (gc! {}))
+     ([opts] (when-let [ws (workspace)] (ygg-gc/gc-system! ws opts)))))
