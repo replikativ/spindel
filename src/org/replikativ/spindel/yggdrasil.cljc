@@ -401,7 +401,9 @@
       (when-let [parent-ctx (:parent-ctx child-ctx)]
         (let [pairs     (mergeable-pairs child-ctx parent-ctx)
               parent-ws (rtp/get-state parent-ctx [:external-refs workspace-key])]
-          ;; 1. conflict pre-check
+          ;; 1. conflict pre-check. FAIL-SAFE: if conflict detection THROWS we must
+          ;; NOT swallow it as "no conflicts" (that would blind-merge); treat the
+          ;; error itself as an indeterminate conflict so the gate aborts.
           (when-not (or (:strategy opts) (:force opts))
             (let [confs (mapcat (fn [[sid csys psys]]
                                   (when (satisfies? ygg/Mergeable csys)
@@ -409,7 +411,9 @@
                                               (ygg/conflicts csys
                                                              (ygg/snapshot-id psys)
                                                              (ygg/snapshot-id csys)))
-                                         (catch Throwable _ nil))))
+                                         (catch Throwable e
+                                           [{:system sid :indeterminate? true
+                                             :error (.getMessage e)}]))))
                                 pairs)]
               (when (seq confs)
                 (throw (ex-info "workspace merge has conflicts; aborting (pass :strategy or :force)"
