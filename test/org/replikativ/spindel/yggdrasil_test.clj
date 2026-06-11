@@ -213,6 +213,40 @@
               "Branch removed after discard"))))))
 
 ;; =============================================================================
+;; Child-only systems on merge / discard + lifecycle callbacks
+;; =============================================================================
+
+(deftest test-merge-carries-child-only-system
+  (testing "a system registered ONLY in the fork is carried to the parent on merge, and :on-merge fires"
+    (th/with-ctx [ctx]
+      (ygg/register! *test-git-system*)                 ; base system, in the parent
+      (let [fork-handle (ygg/fork!)
+            child-repo  (create-temp-repo)
+            cb          (atom nil)]
+        ;; register a NEW system that exists ONLY in the fork
+        (ygg/with-fork fork-handle
+          (ygg/register! (git-adapter/create child-repo {:system-name "child-only"})))
+        (is (nil? (ygg/system "child-only")) "fork-only system is invisible in the parent before merge")
+        (ygg/merge-fork! fork-handle {:on-merge (fn [m] (reset! cb m))})
+        (is (some? (ygg/system "child-only")) "fork-only system is CARRIED into the parent on merge")
+        (is (= ["child-only"] (mapv str (:child-only @cb))) ":on-merge callback received the child-only set")
+        (cleanup-temp-repo child-repo)))))
+
+(deftest test-discard-fires-on-discard-with-child-only
+  (testing "discard fires :on-discard with the fork-only systems so an external owner can clean up"
+    (th/with-ctx [ctx]
+      (ygg/register! *test-git-system*)
+      (let [fork-handle (ygg/fork!)
+            child-repo  (create-temp-repo)
+            cb          (atom nil)]
+        (ygg/with-fork fork-handle
+          (ygg/register! (git-adapter/create child-repo {:system-name "scratch"})))
+        (ygg/discard-fork! fork-handle {:on-discard (fn [m] (reset! cb m))})
+        (is (= ["scratch"] (mapv str (:child-only @cb))) ":on-discard callback received the child-only set")
+        (is (nil? (ygg/system "scratch")) "fork-only system is not in the parent after discard")
+        (cleanup-temp-repo child-repo)))))
+
+;; =============================================================================
 ;; Nested Fork Tests
 ;; =============================================================================
 
