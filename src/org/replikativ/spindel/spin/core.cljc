@@ -594,6 +594,28 @@
   (let [cached (ec/spin-current-result (spin-id spin))]
     (boolean (and cached (error? cached)))))
 
+(defn ^:no-doc set-owned-spins!
+  "Record the child spins a fan-out combinator (`race`/`parallel`) owns during
+   its initial concurrent fan-out, so an external `cancel-spin!` of the
+   combinator cascades into those still-in-flight children.
+
+   The children are started via manual `make-spin` callbacks, NOT `await`, so
+   they sit outside the await-cont graph that `cancel-spin!` normally walks —
+   without this edge an external cancel can't reach them (the structured-
+   concurrency gap).
+
+   Stored ON the combinator's own node (`:nodes[sid]:owned-spins`), so it is
+   reclaimed for free when `full-cleanup-spin!` drops the node — no separate
+   top-level registry to keep in sync across cleanup/fork/GC sites. `spins`
+   nil/empty CLEARS the edge (called when the combinator's `done?` flips: a
+   resolved `race` is terminal, and a completed `parallel` has by then
+   registered its children as `:await-reactive` conts which the normal cascade
+   covers)."
+  [sid spins]
+  (when-let [ctx (ec/current-execution-context)]
+    (rtp/swap-state! ctx [:nodes sid :owned-spins]
+                     (constantly (when (seq spins) (vec spins))))))
+
 (defn cancel-spin!
   "Cancel a spin and all its observers (cooperative cancellation).
 
@@ -639,13 +661,36 @@
             (when-let [c! (:cancel! cont)]
               (try (c! ctx) (catch #?(:clj Throwable :cljs :default) _ nil)))
             (ec/swap-state! [:await-conts sid] (fn [m] (dissoc m cont-id))))
-        ;; Parked awaiting a child spin: cascade — cancel the child; its cancelled
-        ;; completion resumes THIS parent into reject via the normal :spin-completion
-        ;; path (which restores slice-state), so the parent's finally runs too.
+        ;; Parked awaiting a child spin (incl. a reactive aseq/PSpin): resume THIS
+        ;; parent into reject directly — the cont's :reject-fn is the parent body's
+        ;; raw reject continuation, so invoking it unwinds the parent's try/finally
+        ;; without depending on the child driving a :spin-completion resume (which a
+        ;; reactive await won't, on cancel). Then cascade-cancel the awaited child so
+        ;; it terminates too, and drop the spent cont.
         (:await-once :await-reactive)
-        (when-let [child (:awaited-spin cont)]
-          (cancel-spin! child))
-        nil))))
+        (do (try
+              (binding [ec/*execution-context* ctx
+                        ec/*spin-id*          sid
+                        pcps-async/*in-trampoline* false]
+                (when-let [rj (:reject-fn cont)] (rj err)))
+              (catch #?(:clj Throwable :cljs :default) _ nil))
+            (when-let [child (:awaited-spin cont)]
+              (cancel-spin! child))
+            (ec/swap-state! [:await-conts sid] (fn [m] (dissoc m cont-id))))
+        nil))
+    ;; (3) Cascade into combinator-owned children. A fan-out combinator
+    ;; (`race`/`parallel`) starts its children via manual `make-spin` callbacks,
+    ;; so during the initial fan-out window they are held outside the await-cont
+    ;; graph — steps (1)/(2) never reach them and they (plus any `finally` they
+    ;; guard) leak on an external cancel. The combinator records them on its node
+    ;; via `set-owned-spins!`; cancel each that is still in flight. The
+    ;; cached-result guard skips a child that already terminated (e.g. a race
+    ;; winner), so we never overwrite a completed result — and the combinator
+    ;; clears this edge when `done?` flips, so post-completion cancels find it
+    ;; empty regardless.
+    (doseq [child (ec/get-state [:nodes sid :owned-spins])]
+      (when (and child (nil? (ec/spin-current-result (spin-id child))))
+        (cancel-spin! child)))))
 
 (defn cleanup-spin!
   "Manually clean up a spin, removing it from the runtime.

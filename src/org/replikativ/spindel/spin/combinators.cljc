@@ -86,39 +86,44 @@
         ;; reads/updates THAT (per-context, overlay-copied → fork-isolated).
         results-atom (atom (vec (repeat n nil)))]
     (binding [ec/*execution-context* execution-context]
-      (spin-core/make-spin
-       (fn [resolve reject]
+      (let [parallel-spin
+            (spin-core/make-spin
+             (fn [resolve reject]
          ;; Start each child using CPS (no deref). The child will invoke our callbacks
          ;; when it completes; we coordinate final resolution here.
-         (doseq [[i child-spin] (map-indexed vector spin-vec)]
-           (let [on-ok (fn [v]
+               (doseq [[i child-spin] (map-indexed vector spin-vec)]
+                 (let [on-ok (fn [v]
                          ;; Update this child's slot in the local accumulator
                          ;; (atomic swap! — children complete concurrently).
-                         (swap! results-atom assoc i v)
-                         (when (= n (swap! completed inc))
+                               (swap! results-atom assoc i v)
+                               (when (= n (swap! completed inc))
                            ;; All children completed initially
-                           (when (compare-and-set! done? false true)
+                                 (when (compare-and-set! done? false true)
+                             ;; Initial fan-out done: from here children are tracked
+                             ;; as reactive await-conts (below), so the normal cascade
+                             ;; covers cancel — release the owned-spins ownership edge.
+                                   (spin-core/set-owned-spins! parallel-spin-id nil)
                              ;; Capture initial values BEFORE registering continuations
                              ;; Used to distinguish initial completion events (already in queue)
                              ;; from re-completions (should trigger notifications)
-                             (let [initial-results @results-atom]
+                                   (let [initial-results @results-atom]
                                ;; Register continuations for reactive child re-completions
                                ;; This makes parallel reactive: when children re-run due to
                                ;; tracked signal changes, parallel will update and notify awaiters
                                ;; Only register for actual Spins (not deferreds which are one-shot)
-                               (doseq [[j t] (map-indexed vector spin-vec)]
-                                 (when (satisfies? spin-core/PSpin t)
-                                   (let [t-id (spin-core/spin-id t)
-                                         initial-val (get initial-results j)
-                                         captured-bindings (bindings/capture-bindings)
-                                         resolve-fn (fn [new-val]
+                                     (doseq [[j t] (map-indexed vector spin-vec)]
+                                       (when (satisfies? spin-core/PSpin t)
+                                         (let [t-id (spin-core/spin-id t)
+                                               initial-val (get initial-results j)
+                                               captured-bindings (bindings/capture-bindings)
+                                               resolve-fn (fn [new-val]
                                                       ;; Child re-completed :ok — `new-val` is its
                                                       ;; payload. Only notify if it differs from the
                                                       ;; initial value: initial completion events are
                                                       ;; still in the queue and carry `initial-val`;
                                                       ;; re-completions due to signal changes carry a
                                                       ;; different value.
-                                                      (when (not= new-val initial-val)
+                                                            (when (not= new-val initial-val)
                                                         ;; Reactive phase: the parallel's result vector
                                                         ;; now lives on the node's cached result (which is
                                                         ;; per-context engine state, overlay-copied on fork
@@ -129,33 +134,33 @@
                                                         ;; `initial-results` is the fallback if the node
                                                         ;; result isn't a vector yet (shouldn't happen post
                                                         ;; initial completion, but keeps us robust).
-                                                        (let [cached (ec/spin-current-result parallel-spin-id)
-                                                              base (let [p (when cached (:payload cached))]
-                                                                     (if (vector? p) p initial-results))
-                                                              updated (assoc base j new-val)]
+                                                              (let [cached (ec/spin-current-result parallel-spin-id)
+                                                                    base (let [p (when cached (:payload cached))]
+                                                                           (if (vector? p) p initial-results))
+                                                                    updated (assoc base j new-val)]
                                                           ;; Re-cache parallel's result to notify our awaiters
-                                                          (ec/spin-cache-result!
-                                                           parallel-spin-id
-                                                           (spin-core/ok updated))
+                                                                (ec/spin-cache-result!
+                                                                 parallel-spin-id
+                                                                 (spin-core/ok updated))
                                                           ;; Fire completion event to resume awaiting spins
-                                                          (ec/enqueue-event!
-                                                           {:type :spin-completion :id parallel-spin-id}))))
-                                         reject-fn (fn [e]
+                                                                (ec/enqueue-event!
+                                                                 {:type :spin-completion :id parallel-spin-id}))))
+                                               reject-fn (fn [e]
                                                      ;; Child re-completed :error — propagate the
                                                      ;; failure. parallel re-completes :error,
                                                      ;; consistent with its fail-fast initial
                                                      ;; behavior (a re-failing child fails parallel).
-                                                     (ec/spin-cache-result!
-                                                      parallel-spin-id
-                                                      (spin-core/error e))
-                                                     (ec/enqueue-event!
-                                                      {:type :spin-completion :id parallel-spin-id}))
-                                         cont-map {:event-key [:spin/complete t-id]
+                                                           (ec/spin-cache-result!
+                                                            parallel-spin-id
+                                                            (spin-core/error e))
+                                                           (ec/enqueue-event!
+                                                            {:type :spin-completion :id parallel-spin-id}))
+                                               cont-map {:event-key [:spin/complete t-id]
                                                    ;; Persistent reactive cont — parallel re-fires when a
                                                    ;; child re-completes; never reaped at generation bounds.
-                                                   :kind :await-reactive
-                                                   :resolve-fn resolve-fn
-                                                   :reject-fn reject-fn
+                                                         :kind :await-reactive
+                                                         :resolve-fn resolve-fn
+                                                         :reject-fn reject-fn
                                                    ;; await is monadic: `:on-resume` fetches the
                                                    ;; child's cached `Result` and `:resume-fn`
                                                    ;; pattern-matches its `:variant`, routing an
@@ -165,38 +170,44 @@
                                                    ;; child would be re-cached as `(ok <the-error>)`
                                                    ;; instead of propagating the failure — see the
                                                    ;; standard await cont in effects/await.cljc.
-                                                   :resume-fn (fn [child-result]
-                                                                (if (= (:variant child-result) :ok)
-                                                                  (spin-core/resume resolve-fn (:payload child-result))
-                                                                  (spin-core/resume reject-fn (:payload child-result))))
-                                                   :bindings captured-bindings
-                                                   :on-resume (fn [_]
-                                                                (ec/spin-current-result t-id))}]
-                                     (ec/continuation-add! parallel-spin-id cont-map))))
+                                                         :resume-fn (fn [child-result]
+                                                                      (if (= (:variant child-result) :ok)
+                                                                        (spin-core/resume resolve-fn (:payload child-result))
+                                                                        (spin-core/resume reject-fn (:payload child-result))))
+                                                         :bindings captured-bindings
+                                                         :on-resume (fn [_]
+                                                                      (ec/spin-current-result t-id))}]
+                                           (ec/continuation-add! parallel-spin-id cont-map))))
                                ;; Initial resolve with the accumulated results. The
                                ;; engine caches this vector on the parallel's node;
                                ;; the reactive conts above update that cached value.
-                               (spin-core/resume resolve @results-atom)))))
+                                     (spin-core/resume resolve @results-atom)))))
 
-                 on-err (fn [e]
+                       on-err (fn [e]
                           ;; First error wins; cancel siblings and reject
-                          (when (compare-and-set! done? false true)
-                            (doseq [[j other] (map-indexed vector spin-vec)]
-                              (when (not= i j)
-                                (spin-core/cancel-spin! other)))
-                            (spin-core/resume reject e)))]
+                                (when (compare-and-set! done? false true)
+                                  (spin-core/set-owned-spins! parallel-spin-id nil)
+                                  (doseq [[j other] (map-indexed vector spin-vec)]
+                                    (when (not= i j)
+                                      (spin-core/cancel-spin! other)))
+                                  (spin-core/resume reject e)))]
              ;; Invoke child spin via execution-context scheduling to enable parallelism
              ;; Must explicitly bind *execution-context* because CLJS capture-bindings excludes it
              ;; to avoid circular references
-             (executor/execute! (:executor execution-context)
-                                (executor/alive-fn execution-context
-                                                   (fn []
-                                                     (binding [ec/*execution-context* execution-context]
-                                                       (child-spin on-ok on-err)))))))
+                   (executor/execute! (:executor execution-context)
+                                      (executor/alive-fn execution-context
+                                                         (fn []
+                                                           (binding [ec/*execution-context* execution-context]
+                                                             (child-spin on-ok on-err)))))))
 
          ;; Async coordination; parent suspends
-         spin-core/incomplete)
-       parallel-spin-id))))
+               spin-core/incomplete)
+             parallel-spin-id)]
+        ;; Ownership edge for external cancel during the initial fan-out window
+        ;; (children are started via the executor callbacks above, not via
+        ;; `await`, so they're outside the await-cont graph until `done?` flips).
+        (spin-core/set-owned-spins! parallel-spin-id spin-vec)
+        parallel-spin))))
 
 ;; =============================================================================
 ;; Delay Primitive
@@ -272,40 +283,51 @@
     (throw (ex-info "race requires at least one spin" {})))
   ;; Capture execution-context at creation time (like parallel does)
   ;; This ensures bindings are captured before any async scheduling
-  (let [execution-context (ec/current-execution-context)]
+  (let [execution-context (ec/current-execution-context)
+        ;; Generate ID upfront so we can record the ownership edge (parallel does
+        ;; the same) — lets an external cancel reach the racing children.
+        race-spin-id (keyword (gensym "race-"))
+        spin-vec (vec spins)]
     (binding [ec/*execution-context* execution-context]
-      (spin-core/make-spin
-       (fn [resolve reject]
-         (let [done? (atom false)
-               spin-vec (vec spins)]
-           (doseq [[idx t] (map-indexed vector spin-vec)]
-             (let [on-ok (fn [v]
-                           (when (compare-and-set! done? false true)
+      (let [race-spin
+            (spin-core/make-spin
+             (fn [resolve reject]
+               (let [done? (atom false)]
+                 (doseq [[idx t] (map-indexed vector spin-vec)]
+                   (let [on-ok (fn [v]
+                                 (when (compare-and-set! done? false true)
+                             ;; Race is terminal once won — release the ownership edge.
+                                   (spin-core/set-owned-spins! race-spin-id nil)
                              ;; Cancel losing spins cooperatively
                              ;; Wrap in try-catch to handle any synchronous exceptions
                              ;; from the cancellation machinery
-                             (doseq [[j other-t] (map-indexed vector spin-vec)]
-                               (when (not= idx j)
-                                 (try
-                                   (spin-core/cancel-spin! other-t)
-                                   (catch #?(:clj Throwable :cljs :default) _
+                                   (doseq [[j other-t] (map-indexed vector spin-vec)]
+                                     (when (not= idx j)
+                                       (try
+                                         (spin-core/cancel-spin! other-t)
+                                         (catch #?(:clj Throwable :cljs :default) _
                                      ;; Ignore cancellation errors - already handled
                                      ;; by the on-err callback's ex-data check
-                                     nil))))
-                             (spin-core/resume resolve v)))
-                   on-err (fn [e]
+                                           nil))))
+                                   (spin-core/resume resolve v)))
+                         on-err (fn [e]
                             ;; Ignore cancellation errors from losing spins
                             ;; (they're expected when a winner cancels them)
-                            (when-not (= spin-core/spin-cancelled (:type (ex-data e)))
-                              (when (compare-and-set! done? false true)
-                                (spin-core/resume reject e))))]
+                                  (when-not (= spin-core/spin-cancelled (:type (ex-data e)))
+                                    (when (compare-and-set! done? false true)
+                                      (spin-core/set-owned-spins! race-spin-id nil)
+                                      (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
-               (executor/execute! (:executor execution-context)
-                                  (executor/alive-fn execution-context
-                                                     (fn []
-                                                       (binding [ec/*execution-context* execution-context]
-                                                         (t on-ok on-err)))))))
-           spin-core/incomplete))))))
+                     (executor/execute! (:executor execution-context)
+                                        (executor/alive-fn execution-context
+                                                           (fn []
+                                                             (binding [ec/*execution-context* execution-context]
+                                                               (t on-ok on-err)))))))
+                 spin-core/incomplete))
+             race-spin-id)]
+        ;; Ownership edge for external cancel during the in-flight race window.
+        (spin-core/set-owned-spins! race-spin-id spin-vec)
+        race-spin))))
 
 ;; =============================================================================
 ;; Rate Control Combinators
