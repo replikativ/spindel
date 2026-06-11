@@ -30,7 +30,8 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.track :refer [track]]
-            [org.replikativ.spindel.effects.await :refer [await]]))
+            [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.core :as sp]))
 
 #?(:clj
    (deftest no-double-side-effect-after-track-resume-mid-deferred-await
@@ -314,3 +315,39 @@
            (finally
              (reset! hold [])
              (ctx/close-context! parent-ctx)))))))
+
+#?(:clj
+   (deftest cancel-unwinds-suspended-finally
+     (testing "cancel-spin! on a spin SUSPENDED at (await deferred) resumes its body
+            into the reject path so try/finally cleanup runs — the
+            structured-concurrency contract. Previously cancel only cached the
+            error + dirtied observers, stranding the parked body (finally never ran,
+            continuation + deferred reader leaked)."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [cleaned (atom false)
+               d (sync/deferred)
+               s (spin (try (await d) (finally (reset! cleaned true))))]
+           (sp/spawn! s)
+           (Thread/sleep 100)
+           (is (false? @cleaned) "finally has not run while suspended")
+           (spin-core/cancel-spin! s)
+           (Thread/sleep 150)
+           (is (true? @cleaned) "finally RAN when the suspended spin was cancelled")
+           (is (spin-core/spin-cancelled? s) "spin is marked cancelled"))))))
+
+#?(:clj
+   (deftest cancel-cascades-to-awaited-child-finally
+     (testing "cancelling a parent suspended at (await child) cascades: the child
+            (itself suspended on a deferred) is cancelled, and BOTH the child's and
+            the parent's finally blocks run."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [pf (atom false) cf (atom false)
+               d (sync/deferred)
+               child  (spin (try (await d)     (finally (reset! cf true))))
+               parent (spin (try (await child) (finally (reset! pf true))))]
+           (sp/spawn! parent)
+           (Thread/sleep 100)
+           (spin-core/cancel-spin! parent)
+           (Thread/sleep 200)
+           (is (true? @cf) "child finally ran (cascade)")
+           (is (true? @pf) "parent finally ran"))))))
