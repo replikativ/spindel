@@ -31,7 +31,7 @@
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.core :as sp])
+            [org.replikativ.spindel.core :as sp]))
 
 #?(:clj
    (deftest no-double-side-effect-after-track-resume-mid-deferred-await
