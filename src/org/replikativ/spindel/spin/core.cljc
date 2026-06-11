@@ -610,9 +610,42 @@
                      {:type spin-cancelled
                       :spin-id sid
                       :cancelled-at #?(:clj (java.util.Date.)
-                                       :cljs (js/Date.))})]
-    ;; Requires *execution-context* to be bound by caller
-    (abort-spin-chain! sid err)))
+                                       :cljs (js/Date.))})
+        ;; Requires *execution-context* to be bound by caller
+        ctx   (ec/current-execution-context)
+        conts (ec/get-state [:await-conts sid])]
+    ;; (1) Cache the cancel result + dirty observers. Makes `spin-is-cancelled?`
+    ;; true, so a RUNNING spin rejects at its next await (cooperative), and any
+    ;; awaiting parents are re-notified.
+    (abort-spin-chain! sid err)
+    ;; (2) A SUSPENDED spin will never reach another await on its own, so step (1)
+    ;; alone strands it: its body never resumes and its `try/finally` cleanup never
+    ;; runs (and the parked continuation + external reader leak). Actively unwind it
+    ;; by delivering the cancellation into its parked await continuation — the
+    ;; structured-concurrency contract (`finally`/`ensure` runs on cancel).
+    (doseq [[cont-id cont] conts]
+      (case (:kind cont)
+        ;; Parked on a Deferred / Mailbox / async-thunk: invoking the cont's reject
+        ;; continuation resumes the body into its reject path so catch/finally run.
+        ;; Then arm the external-resource cancellation gate (so a later delivery on
+        ;; the abandoned reader is a no-op) and drop the now-spent cont.
+        :external-await
+        (do (try
+              (binding [ec/*execution-context* ctx
+                        ec/*spin-id*          sid
+                        pcps-async/*in-trampoline* false]
+                (when-let [rj (:reject-fn cont)] (rj err)))
+              (catch #?(:clj Throwable :cljs :default) _ nil))
+            (when-let [c! (:cancel! cont)]
+              (try (c! ctx) (catch #?(:clj Throwable :cljs :default) _ nil)))
+            (ec/swap-state! [:await-conts sid] (fn [m] (dissoc m cont-id))))
+        ;; Parked awaiting a child spin: cascade — cancel the child; its cancelled
+        ;; completion resumes THIS parent into reject via the normal :spin-completion
+        ;; path (which restores slice-state), so the parent's finally runs too.
+        (:await-once :await-reactive)
+        (when-let [child (:awaited-spin cont)]
+          (cancel-spin! child))
+        nil))))
 
 (defn cleanup-spin!
   "Manually clean up a spin, removing it from the runtime.
