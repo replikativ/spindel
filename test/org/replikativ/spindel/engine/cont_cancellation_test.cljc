@@ -31,6 +31,9 @@
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.seq.core :refer [gen-aseq]]
+            [org.replikativ.spindel.spin.combinators :as comb]
+            [is.simm.partial-cps.sequence :refer [anext]]
             [org.replikativ.spindel.core :as sp]))
 
 #?(:clj
@@ -351,3 +354,122 @@
            (Thread/sleep 200)
            (is (true? @cf) "child finally ran (cascade)")
            (is (true? @pf) "parent finally ran"))))))
+
+#?(:clj
+   (deftest cancel-unwinds-finally-awaiting-aseq-element
+     (testing "cancel-spin! on a spin SUSPENDED at (await (anext gen)) — the exact
+            shape `dvergr.discourse/ask` uses (await one item off a bus
+            subscription's async-seq) — resumes the body into reject so try/finally
+            cleanup runs. The awaited child is an `anext` step-spin parked on its own
+            per-step deferred; cancelling the parent must unwind the parent's finally
+            (the asker-unsubscribe in dvergr) even though the parked generator never
+            yields and so never drives a normal :spin-completion resume."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [cleaned (atom false)
+               ;; A generator whose first step parks forever on an undelivered
+               ;; deferred BEFORE yielding — so (anext gen) suspends and never
+               ;; completes on its own.
+               block (sync/deferred)
+               gen   (gen-aseq
+                      (let [_ (await block)]
+                        (org.replikativ.spindel.seq.core/yield :never)))
+               consumer (spin
+                         (try
+                           (let [[item _] (await (anext gen))]
+                             item)
+                           (finally (reset! cleaned true))))]
+           (sp/spawn! consumer)
+           (Thread/sleep 120)
+           (is (false? @cleaned) "finally has not run while parked on (anext gen)")
+           (spin-core/cancel-spin! consumer)
+           (Thread/sleep 200)
+           (is (true? @cleaned)
+               "finally RAN when the spin parked on an aseq element was cancelled")
+           (is (spin-core/spin-cancelled? consumer) "spin is marked cancelled"))))))
+
+;; ===========================================================================
+;; Combinator cancellation propagation (the structured-concurrency gap):
+;; race/parallel start children via manual make-spin callbacks, so the children
+;; live outside the await-cont graph that cancel walks. The `:owned-spins`
+;; ownership edge (recorded on the combinator's node, cleared when `done?`
+;; flips) lets an external cancel of the combinator reach its in-flight
+;; children — closing the leak where `(cancel-spin! (timeout (ask …)))` left
+;; the inner ask running and its `finally` unrun.
+;; ===========================================================================
+
+#?(:clj
+   (deftest cancel-propagates-through-timeout-into-child
+     (testing "cancel of a spin awaiting (comb/timeout child …) — the exact shape
+            dvergr's background spawn-task! uses to wrap d/ask — propagates into
+            the child so the child's try/finally runs and the child is cancelled."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [cleaned (atom false)
+               d (sync/deferred)
+               child  (spin (try (await d) (finally (reset! cleaned true))))
+               parent (spin (await (comb/timeout child 60000 ::to)))]
+           (sp/spawn! parent)
+           (Thread/sleep 120)
+           (is (false? @cleaned) "child still parked before cancel")
+           (spin-core/cancel-spin! parent)
+           (Thread/sleep 220)
+           (is (true? @cleaned) "child finally RAN (cancel reached through timeout)")
+           (is (spin-core/spin-cancelled? child) "child was cancelled"))))))
+
+#?(:clj
+   (deftest cancel-propagates-through-race-into-losing-children
+     (testing "cancel of a spin awaiting (comb/race a b) — both arms parked — cancels
+            BOTH children and runs BOTH finally blocks (owned-spins reaches the
+            fan-out children that aren't in the await graph)."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [ca (atom false) cb (atom false)
+               da (sync/deferred) db (sync/deferred)
+               a (spin (try (await da) (finally (reset! ca true))))
+               b (spin (try (await db) (finally (reset! cb true))))
+               parent (spin (await (comb/race a b)))]
+           (sp/spawn! parent)
+           (Thread/sleep 120)
+           (spin-core/cancel-spin! parent)
+           (Thread/sleep 220)
+           (is (true? @ca) "race arm A finally ran")
+           (is (true? @cb) "race arm B finally ran"))))))
+
+#?(:clj
+   (deftest cancel-propagates-through-parallel-into-children
+     (testing "cancel of a spin awaiting (comb/parallel a b) during initial fan-out
+            (both arms parked) cancels both children and runs both finally blocks."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [ca (atom false) cb (atom false)
+               da (sync/deferred) db (sync/deferred)
+               a (spin (try (await da) (finally (reset! ca true))))
+               b (spin (try (await db) (finally (reset! cb true))))
+               parent (spin (await (comb/parallel a b)))]
+           (sp/spawn! parent)
+           (Thread/sleep 120)
+           (spin-core/cancel-spin! parent)
+           (Thread/sleep 220)
+           (is (true? @ca) "parallel arm A finally ran")
+           (is (true? @cb) "parallel arm B finally ran"))))))
+
+#?(:clj
+   (deftest race-winner-result-survives-later-cancel-of-completed-race
+     (testing "When a race has already resolved (winner cached), the owned-spins edge
+            was cleared as `done?` flipped — so a later cancel of the (completed)
+            race does NOT re-cancel/overwrite the winner child's cached result."
+       (binding [ec/*execution-context* (ctx/create-execution-context)]
+         (let [dwin (sync/deferred)
+               dlose (sync/deferred)
+               winner (spin (await dwin))
+               loser  (spin (await dlose))
+               r (comb/race winner loser)]
+           (sp/spawn! r)
+           (Thread/sleep 80)
+           (sync/deliver! dwin :won)
+           (Thread/sleep 150)
+           (is (= :won @r) "race resolved to the winner")
+           ;; Cancelling the already-complete race must not disturb the winner's
+           ;; cached :ok result (owned-spins was cleared when done? flipped).
+           (spin-core/cancel-spin! r)
+           (Thread/sleep 100)
+           (let [res (ec/get-state [:nodes (spin-core/spin-id winner) :result])]
+             (is (or (nil? res) (= :ok (:variant res)))
+                 "winner child's cached result was not overwritten by a stray cancel")))))))
