@@ -167,9 +167,25 @@ with no networking (`workspace_peer` pure core).
    yggdrasil-with-registry, dev via `:local/root`).*
 4. **(later)** ephemeral convergent-ref primitive (presence) on spindel interval/delta.
 
-## Decisive integration test (not yet written)
+## Decisive integration test (LANDED)
 
-Server forks a room → a peer `subscribe-store!`s and materializes the fork at its
-pinned head end-to-end. Best added to `datahike/test/datahike/kabel/integration_test.clj`
-(local datahike + src-kabel + the two-peer http-kit harness). The walker-level test
-in konserve-sync proves the substrate; this proves the wire.
+`test/org/replikativ/spindel/distributed/workspace_peer_integration_test.clj` — a
+synthetic kb+msgs composite synced over a real two-peer http-kit pair (harness
+lifted from datahike's wire test; datahike `:local/root` + `src-kabel` added to
+spindel `:test`). The server registers both stores for remote access and exports
+a checkout descriptor via `signal_sync`; the client replicates via `konserve-sync`
+(KabelWriter `d/connect`) and `attach-descriptor!`. It asserts the workspace-peer
+re-seats its `[:external-refs ::workspace]` checkout `:db → :fork` over the wire,
+driven by the real descriptor + the real replicated branch pointers. 9 assertions.
+
+Scope split, kept honest: this test proves the workspace-peer's *own* job — the
+**checkout reflection** (which branch each system is on) — with marker systems.
+Materializing branch **data** through a datahike conn is a datahike concern,
+already proven by datahike's single-store fork wire test (deferred-index
+reconstruction over the wire). A diagnostic confirmed, over this very harness,
+that the gate fires (seated + ready) and the fork pointer replicates
+(`client :branches = #{:db :fork}`).
+
+Proven now at four levels: pure gate + fork-swap (unit), callback wiring (unit),
+registry walker (konserve-sync unit), and composite checkout over a real two-peer
+wire (this) — plus datahike's single-store data-over-wire test.
