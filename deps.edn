@@ -33,6 +33,10 @@
                       ;; runtime :deps stay lean; downstream apps that use the
                       ;; wiring ns already carry konserve-sync.
                       org.replikativ/konserve-sync {:local/root "../konserve-sync"}
+                      ;; local yggdrasil (feat/cljc) carries yggdrasil.convergent
+                      ;; (PConvergent + G-Set + composite peer-join) — for the
+                      ;; spindel context peer-merge test. :test only.
+                      org.replikativ/yggdrasil {:local/root "../yggdrasil"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
