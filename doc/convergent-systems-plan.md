@@ -230,21 +230,38 @@ Surfaced while building `yggdrasil.convergent.durable` + `durable-gset`
 (commit `e6ebe9f`). For discussion — none block the G-Set landing, but several
 shape the catalog/sync/spindel work ahead.
 
-## The crux — content-addressing of PSS index nodes
-- **PSS nodes are UUID-addressed, not hash-addressed.** `KonserveStorage.store`
-  mints `(random-uuid)` per node. So when two peers independently compute the
-  SAME union, the value converges (set equality is perfect) but the *storage
-  graphs differ* — structurally-identical subtrees get different addresses on
-  each peer. There is value-convergence but **no cross-peer node dedup**.
-- This is a real divergence from the replikativ/git "content-addressed object
-  store, blind union is safe, dedup is free" ideal that motivated "registry IS a
-  G-Set". The *elements* can be content-addressed (a G-Set of hashes), but the
-  *index nodes* are not.
-- Question: do we want **hash-addressed PSS nodes** (identical subtrees dedup
-  across peers + merge orders → true content-addressing, smaller ship-sets,
-  natural GC) vs UUID-addressed (simpler, what PSS ships today)? This is the
-  biggest durable-layer design call and it couples to the ORMap
-  content-addressed-values decision. Check how datahike addresses PSS nodes.
+## The crux — content-addressing of PSS index nodes — RESOLVED (ygg `d006856`)
+- datahike content-addresses PSS nodes via `gen-address` under `:crypto-hash?`:
+  a node's address IS `(hasch/uuid content)` — Branch = hash of child addresses
+  (themselves hashes → **Merkle**), Leaf = hash of keys. It's a property of
+  `IStorage.store`, NOT of PSS. yggdrasil adopted the same in `KonserveStorage`.
+- Now identical subtrees share an address ⇒ successive versions ship
+  incrementally + independent peers dedup. Proven: two peers build the same set
+  → identical content-addressed root → cross-peer ship copies 0. The storage
+  graph converges, not just the value — what makes a durable CRDT merge cleanly.
+- `content-addressed?` is a per-store flag, **default true**. Escape hatch:
+  stores of heavy values where hashing the content outweighs the dedup win →
+  set false (random-uuid addresses, same-store structural sharing only).
+- Caveat (honest): cross-peer dedup needs the same *tree shape*; for a sorted
+  B-tree of the same elements that holds in practice, but the convergence
+  GUARANTEE comes from sync (shipping nodes), and content-addressing makes that
+  sync incremental + Merkle-verifiable.
+
+## Sync — base it on konserve-sync (don't reimplement)
+- konserve-sync ALREADY has the engine: `walkers/yggdrasil_registry` does the
+  reachability walk (`walk-pss-node-async`) + the causal fetch-gate
+  (`keyword-last`: content-addressed node blocks publish FIRST, mutable
+  `:registry/roots`/`:registry/freed` pointers LAST) + `register-store!` +
+  pubsub transport. The registry already syncs through it (2a/2b).
+- yggdrasil's `durable/ship!`+`reachable-addresses` are a worse reimplementation.
+  Plan: keep them as the **dependency-light, in-process / test** sync primitive
+  (yggdrasil stays konserve-sync-FREE), and do real distributed sync via
+  konserve-sync — **generalize `registry-walk-fn` → a content-addressed
+  PSS-store walker parameterized by the root-cell key** so it covers
+  `:crdt/roots` (durable-gset) as well as `:registry/roots`. A durable-gset store
+  then registers/subscribes exactly like the registry. The walker needs only
+  konserve + key conventions ⇒ a konserve-sync-side change; yggdrasil's only
+  obligations are content-addressing (done) + the root-cell convention.
 
 ## cljs gaps
 - **`durable-gset` is JVM-only** (`.clj`). Its add/elements/-join/flush!/
