@@ -21,11 +21,14 @@ Consequences that drive the whole plan:
   2-way / no-ancestor** (CRDT). Not two `Mergeable` protocols.
 - **Systems are the unit of fork/merge; signals are reactive projections.** You
   don't merge signals — you `track` a system; the signal re-derives.
-- **spindel needs ~zero new merge machinery.** Its existing yggdrasil
-  integration — `register!`, `pfork` (PForkable), `merge-to-parent!`, and the
-  **workspace-peer we already shipped** — handles CRDT systems for free, because
-  a CRDT *is* a system. `merge-contexts` ≡ `merge-to-parent!`; **a peer is a
-  remote fork of the context, so distributed-sync ≡ fork-merge.**
+- **spindel needs ~zero new merge machinery, and NO new merge interface.** A
+  workspace is a `CompositeSystem`; a composite is a system; so **merging two
+  contexts = joining their two workspace composites** via the system-level
+  `-join`. `merge-to-parent!` is just the special case `(-join parent child)` —
+  not a needed abstraction; the symmetric **peer** merge `(-join a b)` is the
+  same op with no parent. **A peer is a (possibly remote) replica, merged
+  symmetrically — not a child.** distributed-sync, fork-merge, and peer-merge are
+  one operation: `-join` on composites.
 - The `merge!`-on-signals verb shrinks to a thin local convenience
   (`(swap! sig #(join % delta))`) sharing the same lattice core — NOT the spine.
 
@@ -126,7 +129,7 @@ system (`yggdrasil.convergent.gset`) landed on `feat/cljc`; 4 tests/22 assertion
 system, branch-merge = join). **TODO:** a symmetric **`merge-peers!`** at the
 context level (not parent-scoped) — Layer 4.
 
-### Layer 3 — the CRDT catalog library (`convergent-crdts`, cljc leaf)
+### Layer 3 — the CRDT catalog library (`convergent`, cljc leaf)
 Port LWWR / SimpleGSet / ORMap (+ MergingORMap) as **yggdrasil conflict-free
 systems**:
 - pure lattice (record + `-join` = ported `downstream`) — ~180 LOC.
@@ -137,17 +140,30 @@ systems**:
 **Exit:** `(merge sys-a sys-b)` converges (property tests: comm/assoc/idem);
 two in-memory replicas converge regardless of op order.
 
-### Layer 4 — spindel integration (mostly free)
-- A CRDT system registered with `ygg/register!` forks via `pfork`, merges via
-  `merge-to-parent!`, reflects over the wire via the **existing workspace-peer**
-  — prove with **zero new spindel merge code**. This is the decisive spike.
-- Thin convenience: `merge!` signal verb = `(swap! sig #(join % x))` for in-graph
-  folds, sharing the catalog's lattice. Optional, small.
-- `signal_sync` `reset!` → keep as LWW-Register instance (server-authoritative
-  descriptor) OR a CRDT system — unify per the algebra.
-**Exit:** the workspace-peer integration test, extended with a presence/G-Set
-CRDT system in the composite, reflects + converges over the two-peer wire with
-no new spindel code.
+### Layer 4 — spindel integration (mostly free)  [peer-merge core LANDED]
+**`merge-to-parent!` is not needed as an abstraction, and there is no new
+context-merge interface.** The workspace is a `CompositeSystem`, a composite is a
+system, so **merging two contexts = merging their two workspace composites = a
+*system* merge via the existing `PConvergent/-join`.** The composite is now
+`PConvergent` (`yggdrasil.convergent.composite`, `d6adecd`): `-join` fans out per
+sub-system (CRDT → `-join` symmetric; versioned → 3-way, TODO). So:
+- `merge-to-parent!(child)` = the special case `(-join parent-ws child-ws)`,
+  target=parent — and the fan-out it currently *reimplements* in spindel belongs
+  in the composite. Collapse it: spindel's bespoke `merge-to-parent!` becomes a
+  thin `(-join target-ws source-ws)` + store, or is dropped.
+- symmetric **peer** merge = `(-join ws-a ws-b)` — same op, no parent.
+- **Landed (JVM):** two/three peer workspaces of G-Sets converge by `-join`,
+  symmetric/idempotent/associative, order-independent (3 tests/11 assertions,
+  `yggdrasil.convergent.composite-test`). NO new interface.
+- Remaining: (i) the spindel context holder — a trivial "read ws from ctx A & B,
+  `-join`, store" (no abstraction); (ii) wire the versioned 3-way branch of the
+  composite `-join` (needs the shared ancestor) so mixed CRDT+datahike workspaces
+  merge; (iii) reflect a CRDT system over the wire via the existing workspace-peer
+  (durable/konserve-backed CRDT — after L1 async store); (iv) thin `merge!` signal
+  verb (`(swap! sig #(join % x))`) for in-graph folds.
+**Exit:** the workspace-peer integration test, extended with a G-Set CRDT system,
+reflects + converges over the two-peer wire with no new spindel code; spindel's
+`merge-to-parent!` reduced to (or replaced by) the composite `-join`.
 
 ### Layer 5 — dvergr / simmis
 - simmis: replace `branching_sync.cljs` / `db_signal.cljc` / `projected-branch-dbs`
