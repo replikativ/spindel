@@ -13,8 +13,14 @@
         org.replikativ/kabel {:mvn/version "0.3.94"}}
 
  :aliases
- {:test {:extra-paths ["test"]
+ {:test {:extra-paths ["test" "../datahike/src-kabel"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
+                      ;; datahike (local: carries the kabel key-sort-fn keystone +
+                      ;; the src-kabel handlers via the extra-path above) for the
+                      ;; workspace-peer two-peer integration test — a synthetic
+                      ;; kb+msgs composite synced over a real kabel peer pair.
+                      ;; :test only; runtime stays datahike-free.
+                      org.replikativ/datahike {:local/root "../datahike"}
                       ;; Released Clojars artifact (group is.simm, not
                       ;; org.replikativ — distributed-scope is published from
                       ;; the simm-is org). Pulls kabel + missionary as
