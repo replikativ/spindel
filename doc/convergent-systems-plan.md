@@ -102,16 +102,29 @@ Make the registry/composite/workspace trio run on cljs.
 **Exit:** registry + composite + an in-memory system construct/branch/merge on
 cljs (shadow-cljs test), JVM path unchanged (datahike/git suites green).
 
-### Layer 2 — the conflict-free merge law in yggdrasil protocols
-Add the capability so a system can declare conflict-free 2-way merge:
-- Extend `Mergeable` (or add `ConvergentMergeable` with `-join`) +
-  `(conflict-free? sys)` / capability flag. `merge!` for a conflict-free system
-  ignores ancestor + never returns conflicts; for datahike/git it stays 3-way.
-- `merge-to-parent!` / `workspace-diff` already iterate `Mergeable` systems —
-  make them dispatch on the capability (CRDT → `-join`, no `common-ancestor`
-  call; versioned → existing 3-way).
-**Exit:** a stub in-memory conflict-free system merges via `merge-to-parent!`
-with no ancestor lookups; datahike 3-way path unaffected.
+### Layer 2 — the conflict-free merge law in yggdrasil protocols  [SLICE LANDED]
+**Merge is NOT scoped to a parent.** CRDT replicas are *peers*; the join is
+symmetric (`a∪b ≡ b∪a`), any-to-any, no privileged ancestor. So the CRDT law is
+a **separate, symmetric primitive**, distinct from the branch-oriented,
+hierarchical `merge!`/`conflicts`/`merge-to-parent!` (the versioned tree tier):
+- `yggdrasil.convergent/PConvergent` — `-join [this other]` (commutative,
+  associative, idempotent; no ancestor/conflict/parent) + `-conflict-free?`.
+  `join` folds it over peers (order-independent). **[landed]**
+- A conflict-free system MAY *also* satisfy `Mergeable` (its branch-merge is a
+  join, `conflicts` ⇒ `[]`) so it can still ride the tree machinery — but `-join`
+  is its native form, and the general distributed model merges peers with
+  `-join`, **not to a parent**.
+- Capability dispatch (`-conflict-free?`): the merge path skips `common-ancestor`
+  and never surfaces conflicts. NB the existing `merge-to-parent!` already
+  accommodates a conflict-free system (it conflict-pre-checks via `conflicts`
+  and never calls `common-ancestor` on the merge path) — so the *tree* case needs
+  **no yggdrasil change**; the new work is the **symmetric peer-merge** of
+  contexts/systems (Layer 4), which `merge-to-parent!` does NOT cover.
+**Status:** `yggdrasil.convergent` (PConvergent) + G-Set as a conflict-free
+system (`yggdrasil.convergent.gset`) landed on `feat/cljc`; 4 tests/22 assertions
+(symmetric/idempotent/associative join, conflict-free capability, valid ygg
+system, branch-merge = join). **TODO:** a symmetric **`merge-peers!`** at the
+context level (not parent-scoped) — Layer 4.
 
 ### Layer 3 — the CRDT catalog library (`convergent-crdts`, cljc leaf)
 Port LWWR / SimpleGSet / ORMap (+ MergingORMap) as **yggdrasil conflict-free
