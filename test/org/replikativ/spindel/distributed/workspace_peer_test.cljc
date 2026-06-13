@@ -81,6 +81,27 @@
              (is (false? (:reseated? g)))
              (is (= 1 (count @reseats)))))))
 
+     ;; ----------------------------------------------------------------------
+     ;; Single-writer lease
+     ;; ----------------------------------------------------------------------
+
+     (deftest test-single-writer-lease
+       (testing "writable? only for the descriptor's :owner"
+         (is (true? (wp/writable? {:owner :peer-a} :peer-a)))
+         (is (false? (wp/writable? {:owner :peer-a} :peer-b))))
+       (testing "no :owner ⇒ read-only for everyone (fork to write)"
+         (is (false? (wp/writable? {} :peer-a)))
+         (is (false? (wp/writable? {:owner :peer-a} nil))))
+       (testing "claim stamps the owner; peer-writable? reads through the peer"
+         (let [d (wp/claim (descriptor :fork {"kb" "c1"}) :peer-a)]
+           (is (= :peer-a (:owner d)))
+           (let [peer (wp/make-workspace-peer
+                       {:ctx (ctx/create-execution-context)
+                        :resolve-system-fn resolve-sys})]
+             (wp/set-descriptor! peer d)
+             (is (true? (wp/peer-writable? peer :peer-a)))
+             (is (false? (wp/peer-writable? peer :peer-b)))))))
+
      (deftest test-peer-swaps-to-fork-snapshot-isolated
        (testing "server forks the room → client re-seats to the fork branch only
                  once the fork's heads are local (the coordinated-fork swap)"

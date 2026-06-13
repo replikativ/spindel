@@ -89,6 +89,28 @@
      :statuses statuses}))
 
 ;; =============================================================================
+;; Single-writer lease (the branch-owner field)
+;; =============================================================================
+
+(defn writable?
+  "Single-writer lease check: true iff `self-id` holds the branch-owner lease
+   named by the checkout `descriptor`'s `:owner`. A descriptor with no `:owner`
+   is **read-only** for everyone (the safe default — fork to write, then claim).
+
+   This is the single-head regime made explicit: at most one peer owns a branch,
+   so its `transact!`s are unambiguous and merge is needed only at fold-to-parent.
+   The owner is part of the same `signal_sync`'d control plane as the checkout, so
+   ownership transfers (hand-off, takeover) ride the existing descriptor channel."
+  [descriptor self-id]
+  (and (some? self-id) (= self-id (:owner descriptor))))
+
+(defn claim
+  "Server/owner side: stamp `owner-id` as the branch-owner on a descriptor before
+   publishing it. Returns the descriptor with `:owner` set."
+  [descriptor owner-id]
+  (assoc descriptor :owner owner-id))
+
+;; =============================================================================
 ;; Peer state machine
 ;; =============================================================================
 
@@ -175,3 +197,8 @@
   [peer]
   (let [{:keys [descriptor head-state]} @peer]
     (gate descriptor head-state)))
+
+(defn peer-writable?
+  "Does `self-id` hold the single-writer lease for the peer's current checkout?"
+  [peer self-id]
+  (writable? (:descriptor @peer) self-id))

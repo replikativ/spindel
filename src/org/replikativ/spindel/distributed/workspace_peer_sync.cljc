@@ -23,6 +23,7 @@
   (:require [org.replikativ.spindel.distributed.workspace-peer :as wp]
             [org.replikativ.spindel.distributed.signal-sync :as ssync]
             [konserve-sync.transport.kabel-pubsub :as ks]
+            [konserve-sync.walkers.yggdrasil-registry :as regw]
             #?@(:clj [[yggdrasil.protocols :as ygg]
                       [yggdrasil.composite :as ygc]])))
 
@@ -105,8 +106,34 @@
 
 (defn export-descriptor!
   "Server side: export a checkout-descriptor `signal` (a spindel signal/atom
-   holding {:branch, :systems {id {:branch :head ..}}}) on `server-peer` under
-   `topic`, so subscribers re-seat when the room forks/advances. Thin wrapper
-   over signal_sync `export-signal!`."
+   holding {:branch, :systems {id {:branch :head ..}} [:owner peer-id]}) on
+   `server-peer` under `topic`, so subscribers re-seat when the room
+   forks/advances. Thin wrapper over signal_sync `export-signal!`."
   [server-peer topic signal]
   (ssync/export-signal! server-peer topic signal))
+
+;; =============================================================================
+;; Registry-as-synced-store (durable control plane: history / as-of)
+;; =============================================================================
+
+(defn register-registry!
+  "Server side: register a yggdrasil registry's konserve store (`registry-kv-store`,
+   i.e. `(:kv-store registry)`) for remote access under `topic`, with the registry
+   walker + the keyword-last fetch-gate ordering. Subscribers replicate the whole
+   snapshot index (durable, grow-only = a G-Set CRDT) for history/as-of."
+  [server-peer topic registry-kv-store]
+  (ks/register-store! server-peer topic registry-kv-store (regw/registry-sync-opts)))
+
+(defn subscribe-registry!
+  "Client side: replicate a registry store into `local-store`. `on-roots` fires
+   with `local-store` whenever `:registry/roots` updates — i.e. a fully-synced
+   registry view is local (the keyword-last gate guarantees the tree precedes the
+   pointer). Read it with `konserve-sync.walkers.yggdrasil-registry/read-registry-entries`
+   / `latest-by-system-branch`. `:subscribe-fn` overrides konserve-sync (tests)."
+  [client-peer topic local-store & {:keys [on-roots on-complete subscribe-fn]}]
+  (let [subscribe (or subscribe-fn ks/subscribe-store!)]
+    (subscribe client-peer topic local-store
+               {:on-key-update (fn [k _v _op]
+                                 (when (and on-roots (= k :registry/roots))
+                                   (on-roots local-store)))
+                :on-complete on-complete})))
