@@ -153,18 +153,21 @@ with no networking (`workspace_peer` pure core).
 1. **[LANDED] Keystone** — datahike-kabel `key-sort-fn` generalized to all branch
    pointers (`f1f8ed1f`); konserve-sync walker reaches every branch + fork-sync test
    (`65d5aa7`); two-peer wire test (`dfaf952e`).
-2. **[2a LANDED] Registry PSS walker** — `konserve-sync.walkers.yggdrasil-registry`
-   (`855d756`): pure-data `registry-walk-fn` (reachability) + `read-registry-entries`
-   / `latest-by-system-branch` (control-plane projection). cljc, no yggdrasil dep,
-   read-only-cljs-safe. 4 tests green. **Remaining 2b/2c:** register the registry
-   store for remote access (`register-store!` + `:walk-fn`, same keyword-last
-   `:key-sort-fn`); add a branch-owner lease (single-writer).
-3. **Workspace-peer** (spindel, `.cljc`) — checkout descriptor (`signal_sync`) +
-   per-system head-signals (`konserve-sync` `:on-key-update`) → projection spin with
-   the **pure composite gate** → re-seat `[:external-refs ::workspace]` to
-   branch-scoped conns. Makes `ygg/system` location-transparent. *Pure gate core +
-   tests land first; live wiring sits on top (needs spindel←konserve-sync dep +
-   yggdrasil-with-registry, dev via `:local/root`).*
+2. **[LANDED] Registry as a synced store** — `konserve-sync.walkers.yggdrasil-registry`:
+   pure-data `registry-walk-fn` + `read-registry-entries` / `latest-by-system-branch`
+   (`855d756`); `registry-sync-opts` = `{:walk-fn, :key-sort-fn keyword-last}` so
+   content blocks publish before the `:registry/roots`/`:registry/freed` pointers
+   (the registry fetch-gate) (`4e9ae4a`). spindel `register-registry!` /
+   `subscribe-registry!` wrap it (`ab0d035`). cljc, read-only-cljs-safe. 5 tests.
+   **Single-writer lease** (`ab0d035`): `writable?`/`peer-writable?`/`claim` gate
+   local writes on the descriptor's `:owner` (no owner ⇒ read-only — fork to write);
+   ownership rides the same `signal_sync` channel.
+3. **[LANDED] Workspace-peer** (spindel, `.cljc`) — checkout descriptor (`signal_sync`)
+   + per-system head updates (`konserve-sync` `:on-key-update`) → **pure composite
+   gate** → re-seat `[:external-refs ::workspace]` to branch-scoped conns
+   (`ygg/checkout`). Pure core (`40e2d60`) + live wiring `workspace-peer-sync`
+   (`e33506f`) + two-peer integration test (`ee591b9`). Makes `ygg/system`
+   location-transparent.
 4. **(later)** ephemeral convergent-ref primitive (presence) on spindel interval/delta.
 
 ## Decisive integration test (LANDED)
