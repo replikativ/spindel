@@ -114,17 +114,57 @@ datahike's own versioning* if ever needed.
   kabel.pubsub**. This is where "CRDTs on spindel primitives" belongs — the
   complement to konserve-sync's durable tier.
 
+## The checkout pointer is irreducible (registry-as-store does not subsume it)
+
+A subtlety the implementation surfaced: the yggdrasil **snapshot indices carry
+content + history + per-`[system, branch]` heads, but NOT "which branch is this
+room checked out to."** Concretely:
+
+- The composite index entry (`composite.clj` `commit!`) records
+  `{:composite-snap-id, :parent-ids, :timestamp, :sub-snapshots {system→snap}}`
+  — **no branch label** — and `branch!` writes *no* entry at all; only `commit!`
+  does. The current branch lives in the in-memory `current-branch-name` (set by
+  `checkout`).
+- The registry (snapshot index) *does* record `branch-name` per entry, so
+  `latest-by-system-branch` yields `{[system branch] → head}` — but that still
+  doesn't say which branch the room is *following*.
+- The client needs a **branch name** to re-seat a *writable* conn:
+  `(d/connect (assoc cfg :branch B))` (the wire-test materialization). A
+  snapshot-id alone only yields a read-only `commit-as-db`.
+
+So there is an irreducible **checkout descriptor** — `{system-id → {:store-id,
+:branch, :head, :hlc}}` — that the server computes from the composite's current
+state and reflects to the client. **Registry-as-store and the checkout
+descriptor are complementary, not either/or:** the registry/composite indices
+give durable content + history + as-of; the descriptor gives the live "which
+branch, at which head" the peer should re-seat to. The descriptor rides the
+existing **`signal_sync`** bridge (it is exactly a value to `reset!`); the
+per-system datahike stores ride `konserve-sync` for the blocks; the registry
+rides `konserve-sync` (via `registry-walk-fn`) for history/as-of.
+
+The **composite gate** is then pure: given the target descriptor and the
+locally-synced per-system head-state, expose the workspace at snapshot S only
+when every target system's local head has reached (== or descends) its pinned
+head. This is the one genuinely-new coordination function and is unit-testable
+with no networking (`workspace_peer` pure core).
+
 ## Status / build order
 
 1. **[LANDED] Keystone** — datahike-kabel `key-sort-fn` generalized to all branch
    pointers (`f1f8ed1f`); konserve-sync walker reaches every branch + fork-sync test
-   (`65d5aa7`). Verified at the walker level (fork head + blocks walked; pointers
-   sort last).
-2. **[NEXT] Registry as a synced store** — a PSS walker for konserve-sync; register
-   the yggdrasil registry store; add a branch-owner field (the single-writer lease).
-3. **Workspace-peer** (spindel, `.cljc`) — callbacks → head-signals → projection spin
-   with the composite gate; makes `ygg/system` location-transparent so apps write the
-   same code on both sides.
+   (`65d5aa7`); two-peer wire test (`dfaf952e`).
+2. **[2a LANDED] Registry PSS walker** — `konserve-sync.walkers.yggdrasil-registry`
+   (`855d756`): pure-data `registry-walk-fn` (reachability) + `read-registry-entries`
+   / `latest-by-system-branch` (control-plane projection). cljc, no yggdrasil dep,
+   read-only-cljs-safe. 4 tests green. **Remaining 2b/2c:** register the registry
+   store for remote access (`register-store!` + `:walk-fn`, same keyword-last
+   `:key-sort-fn`); add a branch-owner lease (single-writer).
+3. **Workspace-peer** (spindel, `.cljc`) — checkout descriptor (`signal_sync`) +
+   per-system head-signals (`konserve-sync` `:on-key-update`) → projection spin with
+   the **pure composite gate** → re-seat `[:external-refs ::workspace]` to
+   branch-scoped conns. Makes `ygg/system` location-transparent. *Pure gate core +
+   tests land first; live wiring sits on top (needs spindel←konserve-sync dep +
+   yggdrasil-with-registry, dev via `:local/root`).*
 4. **(later)** ephemeral convergent-ref primitive (presence) on spindel interval/delta.
 
 ## Decisive integration test (not yet written)
