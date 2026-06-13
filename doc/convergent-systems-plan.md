@@ -221,3 +221,73 @@ improved-yggdrasil systems that automatically work in spindel" is proven, and th
 rest is porting the catalog + the async sweep. If the cljs/async friction is
 worse than hoped, fall back to CRDT-as-spindel-algebra (the smaller, two-merge-
 world design) — but only then.
+
+---
+
+# Gaps log (durable G-Set build, 2026-06-13)
+
+Surfaced while building `yggdrasil.convergent.durable` + `durable-gset`
+(commit `e6ebe9f`). For discussion — none block the G-Set landing, but several
+shape the catalog/sync/spindel work ahead.
+
+## The crux — content-addressing of PSS index nodes
+- **PSS nodes are UUID-addressed, not hash-addressed.** `KonserveStorage.store`
+  mints `(random-uuid)` per node. So when two peers independently compute the
+  SAME union, the value converges (set equality is perfect) but the *storage
+  graphs differ* — structurally-identical subtrees get different addresses on
+  each peer. There is value-convergence but **no cross-peer node dedup**.
+- This is a real divergence from the replikativ/git "content-addressed object
+  store, blind union is safe, dedup is free" ideal that motivated "registry IS a
+  G-Set". The *elements* can be content-addressed (a G-Set of hashes), but the
+  *index nodes* are not.
+- Question: do we want **hash-addressed PSS nodes** (identical subtrees dedup
+  across peers + merge orders → true content-addressing, smaller ship-sets,
+  natural GC) vs UUID-addressed (simpler, what PSS ships today)? This is the
+  biggest durable-layer design call and it couples to the ORMap
+  content-addressed-values decision. Check how datahike addresses PSS nodes.
+
+## cljs gaps
+- **`durable-gset` is JVM-only** (`.clj`). Its add/elements/-join/flush!/
+  merge-peer! are synchronous konserve. The cljs durable path needs async
+  threaded through the whole G-Set API (storage.cljc's async+sync exists but the
+  G-Set ops don't use it). Deferred by the JVM-durable-now decision.
+- **Cross-peer sync on cljs is entirely unbuilt.** Even the "cljs stays
+  ephemeral but synced by shipping" fallback needs the reachability walk + ship
+  over *async* konserve — so there is a cljs sync-transport gap regardless of
+  durability. Today cljs = converge-in-memory only (the cljc catalog via
+  `ConflictFreeSystem`); no durable, no ship.
+- The storage.cljc cljs restore branch now applies the codec, but only the
+  identity codec is exercised on cljs (no cljs registry-durable test). Minor.
+
+## Sync / distribution gaps
+- **konserve-sync is not wired at the yggdrasil layer** — the decisive test
+  simulates the ship via a direct reachability walk (`ship!`). Real auto-sync
+  lives higher (2a/2b). Need to confirm the existing konserve-sync walker keys
+  off the G-Set's `:crdt/roots` cell (registry uses `:registry/roots`) — the
+  walker should be generalized over root-cell keys, or standardized.
+- **The roots cell is a plain konserve cell (LWW).** Two writers flushing the
+  same branch's root concurrently → one head pointer transiently lost (G-Set
+  recovers it via later union, but it's a wart). The root cell *itself wants to
+  be convergent* — a per-branch grow/LWW register that merges rather than
+  overwrites. The single-writer lease (2c) sidesteps this for the registry;
+  decide whether durable-gset needs the lease or a convergent root cell.
+- **`-join` (pure, same-store) vs `merge-peer!` (cross-store, ships first).**
+  Two entry points: the algebraic join assumes nodes are present; distribution
+  must ship first. Honest, but the future signal merge-strategy must pick
+  `merge-peer!` when stores differ. Decide if `-join` should auto-detect+ship
+  (then it isn't pure).
+
+## GC gaps
+- **Union orphans the pre-union root tree; nothing sweeps it.** `flush!` saves
+  the freed-set but never calls `sweep-freed!`. Unbounded growth — the original
+  datahike-index-growth problem in miniature. Need the registry's GC story
+  (reachable-from-current-roots = live; rest sweepable after a grace window).
+- Unverified whether PSS `markFreed`s superseded root nodes on re-store or they
+  just leak. Check.
+
+## Modeling / minor
+- Element codec is element-level; **ORMap with large content-addressed values**
+  will need a value-blob tier separate from the PSS key (store `hash → value`,
+  keep the hash in the leaf) — the next catalog member's main new piece.
+- durable-gset eagerly restores every branch head on open (lazy nodes, but each
+  head root is touched). Fine at expected scale.
