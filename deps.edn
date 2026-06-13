@@ -21,6 +21,12 @@
                       ;; transitive deps; needed by tests that exercise the
                       ;; spindel.distributed/* namespaces.
                       is.simm/distributed-scope {:mvn/version "0.1.2"}
+                      ;; Optional/provided dep for the workspace-peer-sync
+                      ;; wiring ns (mirrors konserve-sync's own datahike walker:
+                      ;; in src/, requires a lib that is only a :test dep). The
+                      ;; runtime :deps stay lean; downstream apps that use the
+                      ;; wiring ns already carry konserve-sync.
+                      org.replikativ/konserve-sync {:local/root "../konserve-sync"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
