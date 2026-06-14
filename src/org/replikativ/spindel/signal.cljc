@@ -2,10 +2,11 @@
   "Signal creation and manipulation"
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
-            ;; swap-signal*-explicit calls `engine.addressing/next-address!`
-            ;; fully-qualified — require it so loading signal first doesn't
-            ;; ClassNotFound when addressing isn't transitively pre-loaded.
-            [org.replikativ.spindel.engine.addressing]
+            ;; The `signal` macro's EXPANSION emits `addressing/next-address!`,
+            ;; so any ns expanding `(signal …)` needs addressing loaded. Alias it
+            ;; (not a bare require) so that dependency is visible at the use site
+            ;; and doesn't rely on the engine chain being transitively pre-loaded.
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]
             #?(:clj  [is.simm.partial-cps.async :refer [async await]]
@@ -268,14 +269,14 @@
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
         `(let [ctx# (ec/current-execution-context)
-               id# (org.replikativ.spindel.engine.addressing/next-address! ctx# "signal" ~source-loc)]
+               id# (addressing/next-address! ctx# "signal" ~source-loc)]
            (->SignalRef id# (d/clear-deltas ~initial-value)))))
      ([ctx initial-value]
       (let [source-loc {:file *file*
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
         `(let [ctx# ~ctx
-               id# (org.replikativ.spindel.engine.addressing/next-address! ctx# "signal" ~source-loc)]
+               id# (addressing/next-address! ctx# "signal" ~source-loc)]
            (->SignalRef id# (d/clear-deltas ~initial-value)))))))
 
 (defn- swap-signal*-explicit
