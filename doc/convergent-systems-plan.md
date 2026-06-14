@@ -247,8 +247,17 @@ shape the catalog/sync/spindel work ahead.
   GUARANTEE comes from sync (shipping nodes), and content-addressing makes that
   sync incremental + Merkle-verifiable.
 
-## Sync — base it on konserve-sync (don't reimplement)
-- konserve-sync ALREADY has the engine: `walkers/yggdrasil_registry` does the
+## Sync — base it on konserve-sync (don't reimplement) — DONE (ks `fe6eaaa`, ygg `3d9501d`)
+- konserve-sync `fe6eaaa`: generic `walkers/pss` (`make-pss-walk-fn` param by
+  roots-cell-key + pointer-keys) + `walkers/crdt` (`crdt-walk-fn`/`crdt-sync-opts`
+  for `:crdt/roots`/`:crdt/freed`); registry refactored onto it, surface intact.
+- ygg `3d9501d`: durable freed → `:crdt/freed`; konserve-sync added as a TEST-ONLY
+  dep. E2E test: the REAL `crdt-walk-fn` over a REAL durable-gset store → ship-set
+  EQUALS `durable/reachable-addresses` (∪ pointers) and reconstructs the set on a
+  subscriber store. Transport proven generic by konserve-sync's pubsub tests.
+- yggdrasil stays konserve-sync-FREE at runtime; `durable/ship!` is now only the
+  dep-light in-process/test primitive. Below is the original plan, now realized:
+- konserve-sync ALREADY had the engine: `walkers/yggdrasil_registry` does the
   reachability walk (`walk-pss-node-async`) + the causal fetch-gate
   (`keyword-last`: content-addressed node blocks publish FIRST, mutable
   `:registry/roots`/`:registry/freed` pointers LAST) + `register-store!` +
