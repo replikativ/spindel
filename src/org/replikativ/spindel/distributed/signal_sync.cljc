@@ -22,15 +22,49 @@
 ;; Signal Sync Strategy
 ;; =============================================================================
 
-;; `merge-fn` (optional): `(fn [current incoming] -> merged)`. When present, an
-;; incoming remote value is JOINED with the local value instead of overwriting it
-;; — so a CRDT / convergent ygg-signal converges (local + remote) rather than
-;; losing the local side under blind LWW. nil ⇒ LWW reset (the default; correct
-;; for ordinary last-writer-wins signals). A ygg-signal registers with
-;; `merge-fn = c/-join`. (Sync merge for now — in-memory convergent values + the
-;; JVM case; an async join over konserve for the durable cross-peer case is a
-;; follow-up once the merge here can suspend.)
-(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn]
+;; A convergent ygg-signal JOINS an incoming remote value with the local one (so
+;; concurrent local + remote updates converge) instead of clobbering it under
+;; blind LWW. Two join hooks, mirroring the sync/async split of the value itself:
+;;
+;;   `merge-fn`       (optional) `(fn [current incoming] -> merged)` — a SYNC
+;;                    join. In-memory convergent values + a JVM (`:sync? true`)
+;;                    durable CRDT register with `merge-fn = c/-join`.
+;;   `merge-await-fn` (optional) `(fn [current incoming] -> awaitable)` — an
+;;                    ASYNC join returning a partial-cps CPS (what `c/-join`
+;;                    returns for a durable CRDT opened `:sync? false`, i.e. a
+;;                    cljs/konserve-backed value whose join suspends on IO). The
+;;                    incoming value is committed only once the CPS resolves.
+;;
+;; At most one is set. nil/nil ⇒ LWW reset (the default; correct for ordinary
+;; last-writer-wins signals). `merge-await-fn` takes precedence when both happen
+;; to be present.
+(defn- apply-incoming!
+  "Apply an incoming remote `value` to the strategy's signal: JOIN (sync via
+   `merge-fn`, or async via `merge-await-fn`) when convergent, else LWW reset.
+   Returns a channel that yields `{:ok true}` (or `{:error e}`) once the value is
+   committed — async so a konserve-backed join can suspend before the commit."
+  [{:keys [signal-atom on-update-fn merge-fn merge-await-fn]} value]
+  (let [ch (chan 1)
+        commit! (fn [v]
+                  (try
+                    (reset! signal-atom v)
+                    (when on-update-fn (on-update-fn @signal-atom))
+                    (put! ch {:ok true})
+                    (catch #?(:clj Exception :cljs js/Error) e
+                      (put! ch {:error e})))
+                  (close! ch))]
+    (if merge-await-fn
+      ;; Async join: the CPS runs the (possibly IO-suspending) join, then we
+      ;; commit the merged value on resolve. `(merge-await-fn cur incoming)` is a
+      ;; partial-cps `(fn [resolve reject])`.
+      (let [cps (merge-await-fn @signal-atom value)]
+        (cps commit!
+             (fn [err] (put! ch {:error err}) (close! ch))))
+      ;; Sync path: an in-memory join, or LWW reset.
+      (commit! (if merge-fn (merge-fn @signal-atom value) value)))
+    ch))
+
+(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn merge-await-fn]
   proto/PSyncStrategy
 
   (-init-client-state [_]
@@ -55,30 +89,13 @@
       (close! ch)
       ch))
 
-  (-apply-handshake-item [_ {:keys [value]}]
-    ;; Client adopts server's value — JOIN with the local value when convergent,
-    ;; else LWW reset.
-    (let [ch (chan 1)]
-      (try
-        (if merge-fn (swap! signal-atom merge-fn value) (reset! signal-atom value))
-        (when on-update-fn (on-update-fn @signal-atom))
-        (put! ch {:ok true})
-        (catch #?(:clj Exception :cljs js/Error) e
-          (put! ch {:error e})))
-      (close! ch)
-      ch))
+  (-apply-handshake-item [this {:keys [value]}]
+    ;; Client adopts server's value — JOIN when convergent, else LWW reset.
+    (apply-incoming! this value))
 
-  (-apply-publish [_ {:keys [value]}]
+  (-apply-publish [this {:keys [value]}]
     ;; Client applies update from server — JOIN when convergent, else LWW reset.
-    (let [ch (chan 1)]
-      (try
-        (if merge-fn (swap! signal-atom merge-fn value) (reset! signal-atom value))
-        (when on-update-fn (on-update-fn @signal-atom))
-        (put! ch {:ok true})
-        (catch #?(:clj Exception :cljs js/Error) e
-          (put! ch {:error e})))
-      (close! ch)
-      ch)))
+    (apply-incoming! this value)))
 
 ;; =============================================================================
 ;; Server-Side API
@@ -99,12 +116,12 @@
                :watch-key        - key for add-watch (default topic)
 
   Returns: topic"
-  [peer topic signal & {:keys [batch-size watch-key merge-fn]
+  [peer topic signal & {:keys [batch-size watch-key merge-fn merge-await-fn]
                         :or {batch-size 20}}]
   (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
     ;; Register pub/sub topic with signal strategy
     (pubsub/register-topic! peer topic
-                            {:strategy (->SignalSyncStrategy signal nil merge-fn)
+                            {:strategy (->SignalSyncStrategy signal nil merge-fn merge-await-fn)
                              :batch-size batch-size})
 
     ;; Watch signal for changes, publish deltas
@@ -149,12 +166,12 @@
               :atom           - Use this atom instead of creating a new one
 
   Returns: atom holding the remote signal's value"
-  [peer topic & {:keys [initial-value on-update atom merge-fn]}]
+  [peer topic & {:keys [initial-value on-update atom merge-fn merge-await-fn]}]
   (let [;; Create local state holder
         local (or atom (clojure.core/atom initial-value))
 
         ;; Strategy that updates local atom/signal
-        strategy (->SignalSyncStrategy local on-update merge-fn)]
+        strategy (->SignalSyncStrategy local on-update merge-fn merge-await-fn)]
 
     ;; Subscribe via Kabel pub/sub
     (pubsub/subscribe! peer #{topic}

@@ -48,7 +48,19 @@
   "Signal-sync merge for a CONVERGENT ygg-signal value: JOIN the incoming remote
    value with the local one (so concurrent local + remote updates converge)
    rather than LWW-overwrite. Use as `:merge-fn` on `export-signal!` /
-   `subscribe-signal!`. (Sync `-join` — in-memory convergent + JVM; the async
-   join for the durable cross-peer case is a follow-up.)"
+   `subscribe-signal!` for a SYNC value — an in-memory convergent value or a JVM
+   (`:sync? true`) durable CRDT, whose `-join` returns the merged value directly."
+  [current incoming]
+  (yc/-join current incoming))
+
+(defn ygg-merge-await-fn
+  "Signal-sync merge for an ASYNC convergent ygg-signal value — a durable CRDT
+   opened `:sync? false` (cljs / konserve over async storage), whose `-join`
+   suspends on IO and returns a partial-cps CPS rather than a value. Use as
+   `:merge-await-fn` on `export-signal!` / `subscribe-signal!`: the incoming
+   remote value is JOINED with the local one and committed only once the join
+   resolves. (Same `c/-join` as the sync hook — the value's own sync-mode decides
+   whether it returns a value or a CPS; pick the hook to match, exactly as
+   `ygg-swap!` dispatches `swap!` vs `swap-await!` by [[async-system?]].)"
   [current incoming]
   (yc/-join current incoming))

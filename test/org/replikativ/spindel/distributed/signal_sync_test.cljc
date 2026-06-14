@@ -12,7 +12,7 @@
 (deftest merge-fn-joins-instead-of-resetting
   (testing "with merge-fn, an incoming remote value is JOINED with the local one"
     (let [a     (atom #{:x})
-          strat (ss/->SignalSyncStrategy a nil set/union)]
+          strat (ss/->SignalSyncStrategy a nil set/union nil)]
       (proto/-apply-publish strat {:value #{:y}})
       (is (= #{:x :y} @a) "convergent publish: local :x survives the remote :y")
       (proto/-apply-handshake-item strat {:value #{:z}})
@@ -21,6 +21,23 @@
 (deftest no-merge-fn-is-lww-reset
   (testing "without merge-fn, an incoming value overwrites local (LWW — default)"
     (let [a     (atom #{:x})
-          strat (ss/->SignalSyncStrategy a nil nil)]
+          strat (ss/->SignalSyncStrategy a nil nil nil)]
       (proto/-apply-publish strat {:value #{:y}})
       (is (= #{:y} @a) "LWW: remote replaces local"))))
+
+(deftest merge-await-fn-joins-after-suspension
+  (testing "with merge-await-fn (a CPS-returning join, as a durable :sync? false
+            ygg-signal yields), the incoming value is committed only once the join
+            resolves — proving the convergent join can SUSPEND on IO before commit"
+    (let [a          (atom #{:x})
+          ;; A deferred CPS join: captures `resolve` so the test can fire it
+          ;; later, modelling a konserve-backed `c/-join` that suspends on IO.
+          fire       (atom nil)
+          await-join (fn [cur incoming]
+                       (fn [resolve _reject]
+                         (reset! fire #(resolve (set/union (or cur #{}) incoming)))))
+          strat      (ss/->SignalSyncStrategy a nil nil await-join)]
+      (proto/-apply-publish strat {:value #{:y}})
+      (is (= #{:x} @a) "not yet joined — the async join is suspended awaiting IO")
+      (@fire)
+      (is (= #{:x :y} @a) "joined after the async resolve fires (local :x survives)"))))
