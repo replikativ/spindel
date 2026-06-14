@@ -9,7 +9,7 @@
                [org.replikativ.spindel.engine.context :as ctx]
                [org.replikativ.spindel.distributed.workspace-peer :as wp]
                [org.replikativ.spindel.distributed.workspace-peer-sync :as sync]
-               [konserve-sync.walkers.yggdrasil-registry :as regw])
+               [konserve-sync.walkers.crdt :as kcrdt])
      :cljs
      (:require [cljs.test :refer-macros [deftest testing is]])))
 
@@ -73,11 +73,11 @@
          (is (= :ch ret))
          (is (= :the-store (:store @captured)))
          (is (= :done (get-in @captured [:opts :on-complete])))
-         (testing "on-roots fires (with the local store) only on :registry/roots"
+         (testing "on-roots fires (with the local store) only on :crdt/roots"
            (let [oku (get-in @captured [:opts :on-key-update])]
              (oku (random-uuid) {:node :data} :assoc)     ; a block — ignored
              (is (empty? @fired))
-             (oku :registry/roots {:tsbs :addr} :assoc)   ; the pointer — fires
+             (oku :crdt/roots {:adds :a :removals :r} :assoc)  ; the pointer — fires
              (is (= [:the-store] @fired))))
-         (testing "registry-sync-opts is the server-side register bundle"
-           (is (= regw/registry-walk-fn (:walk-fn (regw/registry-sync-opts)))))))))
+         (testing "crdt-sync-opts is the server-side register bundle"
+           (is (= kcrdt/crdt-walk-fn (:walk-fn (kcrdt/crdt-sync-opts)))))))))
