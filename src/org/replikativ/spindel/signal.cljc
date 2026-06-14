@@ -3,7 +3,10 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.incremental.interval :as iv]))
+            [org.replikativ.spindel.incremental.interval :as iv]
+            #?(:clj  [is.simm.partial-cps.async :refer [async await]]
+               :cljs [is.simm.partial-cps.async :refer [await]]))
+  #?(:cljs (:require-macros [is.simm.partial-cps.async :refer [async]])))
 
 ;; =============================================================================
 ;; Batching Support
@@ -357,6 +360,38 @@
   "
   [signal-ref]
   (get-signal-value signal-ref))
+
+(defn swap-await!
+  "Async signal mutation for IO-backed / interval values (the bridge for a
+   ygg-signal whose value is a yggdrasil system).
+
+   Reads the current value, computes the new value OUTSIDE the engine swap —
+   `(await (f current & args))`, so `f` may suspend on IO (e.g. a konserve-backed
+   yggdrasil merge/commit on cljs) — then commits it and propagates reactively
+   like any signal change. Returns a partial-cps `async`: `await` it from a spin
+   (or run/deref it at the JVM REPL — it resolves synchronously when `f` is sync).
+
+   CONTRACT: `f` MUST return an *awaitable* — a partial-cps CPS value (what a
+   yggdrasil op returns in async mode). For a SYNCHRONOUS update just use `swap!`;
+   the ygg-signal wrapper dispatches `swap!` vs `swap-await!` by the value's sync
+   mode. We deliberately do NOT auto-detect: a partial-cps `async` IS a bare
+   2-arg fn, indistinguishable from a function VALUE, so a `fn?` heuristic would
+   silently mis-handle a signal whose value is a function — hence the explicit
+   async contract.
+
+   `f` carries the merge semantics (e.g. `#(p/merge! % branch)` / a CRDT `-join`);
+   the signal core stays value-agnostic. Single-machine assumption: no concurrent
+   `swap-await!` on the same signal (serialize via a semaphore when needed). The
+   commit rebinds the execution context captured at call time, since the post-IO
+   resume may land off the engine thread."
+  [signal-ref f & args]
+  (let [ctx (ec/current-execution-context)]
+    (async
+     (let [cur (deref-signal signal-ref)
+           new (await (apply f cur args))]
+       (ec/with-context ctx
+         (swap-signal*-explicit signal-ref (constantly new)))
+       new))))
 
 (defn get-signal-detailed
   "Get signal value wrapped in Interval for dual perspective access.
