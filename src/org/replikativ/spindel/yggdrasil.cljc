@@ -78,7 +78,13 @@
       sha / datahike commit) and branch an isolated writable head off it. The
       'fix a value, run it again in isolation' primitive. Versioned systems do this
       natively; a convergent system without a branch map falls back to the system
-      unchanged (snapshot fork targets versioned systems for now)."
+      unchanged (snapshot fork targets versioned systems for now).
+
+      Returns a plain branched SYSTEM (not an Overlay) — pinned at a PAST value, it
+      is for reproduce/replay/experiment, where you read or run in isolation and
+      drop the `snap-<fork>` branch rather than merge it back. So a snapshot fork
+      is NOT auto-managed by merge-to-parent! / discard-from-parent! (which act on
+      overlays); lifecycle cleanup of snapshot forks is a follow-up."
      [sys fork-id snap-id]
      (if (satisfies? ygg/Branchable sys)
        (let [new-branch (keyword (str "snap-" (name fork-id)))]
@@ -318,6 +324,14 @@
   ([opts]
    #?(:clj
       (let [parent-ctx (ec/current-execution-context)
+            ;; translate :snapshots from SYSTEM-id keys (what callers know) to the
+            ;; SIGNAL-id keys fork-context forks by.
+            snaps  (when-let [s (:snapshots opts)]
+                     (into {} (keep (fn [[sid snap]]
+                                      (when-let [sr (get (registry parent-ctx) sid)]
+                                        [(:id sr) snap])))
+                           s))
+            opts   (cond-> opts snaps (assoc :snapshots snaps))
             child-ctx  (apply ctx/fork-context parent-ctx (mapcat identity opts))
             fork-id    (:fork-id child-ctx)]
         (->ForkHandle child-ctx parent-ctx fork-id))

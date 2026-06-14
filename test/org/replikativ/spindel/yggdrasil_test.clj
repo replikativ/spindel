@@ -272,6 +272,38 @@
         (ygg/discard-fork! outer-fork)))))
 
 ;; =============================================================================
+;; Snapshot Fork Tests (pin a FIXED value — "fix a value, run in isolation")
+;; =============================================================================
+
+(deftest test-snapshot-fork-pins-fixed-value
+  (testing "fork! with :snapshots pins a system at a FIXED snapshot-id — the fork
+            sees the frozen past value, NOT the parent's later advance"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid  (ygg-proto/system-id *test-git-system*)
+            repo (:repo-path @yref)]
+        ;; state-1: commit a file, capture the snapshot-id
+        (spit (str repo "/v1.txt") "one")
+        (sh "git" "add" "v1.txt" :dir repo)
+        (sh "git" "commit" "-m" "v1" :dir repo)
+        (let [snap1 (ygg-proto/snapshot-id @yref)]
+          ;; state-2: advance the PARENT past the captured snapshot
+          (spit (str repo "/v2.txt") "two")
+          (sh "git" "add" "v2.txt" :dir repo)
+          (sh "git" "commit" "-m" "v2" :dir repo)
+          ;; snapshot-fork pinned at state-1
+          (let [fork-handle (ygg/fork! {:snapshots {sid snap1}})]
+            (ygg/with-fork fork-handle
+              (let [branch (name (ygg-proto/current-branch @yref))
+                    wt     (str (:worktrees-dir @yref) "/" branch)]
+                (is (clojure.string/starts-with? branch "snap-")
+                    "snapshot fork is on a snap-<fork> branch")
+                (is (.exists (io/file (str wt "/v1.txt")))
+                    "the pinned state-1 file is present in the fork")
+                (is (not (.exists (io/file (str wt "/v2.txt"))))
+                    "the parent's later state-2 is NOT present (frozen at the snapshot)")))))))))
+
+;; =============================================================================
 ;; ForkHandle Tests
 ;; =============================================================================
 
