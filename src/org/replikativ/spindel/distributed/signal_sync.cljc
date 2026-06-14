@@ -35,20 +35,35 @@
 ;;                    cljs/konserve-backed value whose join suspends on IO). The
 ;;                    incoming value is committed only once the CPS resolves.
 ;;
-;; At most one is set. nil/nil ⇒ LWW reset (the default; correct for ordinary
-;; last-writer-wins signals). `merge-await-fn` takes precedence when both happen
-;; to be present.
+;; Plus an OP-path hook (replikativ's op-based representation), distinct from the
+;; STATE-path joins above:
+;;
+;;   `apply-delta-fn` (optional) `(fn [current delta] -> new)` — integrate a small
+;;                    DELTA (a δ-state produced by the sender's local op) into the
+;;                    current value, rather than joining a full state. So a live
+;;                    update ships just the op (`{:delta δ}`) and the receiver
+;;                    applies it — O(δ), no full state over the wire. The matching
+;;                    SENDER hook is `export-signal!`'s `:delta-fn`. (Sync delta
+;;                    apply for now — the async/CPS apply mirrors `merge-await-fn`
+;;                    and is a follow-up.)
+;;
+;; An incoming message is `{:delta δ}` (op-path) OR `{:value v}` (state-path); the
+;; receiver dispatches on which key is present.
+;;
+;; At most one STATE hook is set. nil ⇒ LWW reset (the default; correct for
+;; ordinary last-writer-wins signals). `merge-await-fn` takes precedence when both
+;; STATE hooks are present.
 (defn- apply-incoming!
-  "Apply an incoming remote `value` to the strategy's signal: JOIN (sync via
-   `merge-fn`, or async via `merge-await-fn`) when convergent, else LWW reset.
-   Returns a channel that yields `{:ok true}` (or `{:error e}`) once the value is
-   committed — async so a konserve-backed join can suspend before the commit."
-  [{:keys [signal-atom on-update-fn merge-fn merge-await-fn]} value]
+  "Apply an incoming sync `msg` to the strategy's signal. `{:delta δ}` → OP-path
+   (`apply-delta-fn`); `{:value v}` → STATE-path (JOIN via `merge-fn`/
+   `merge-await-fn`, else LWW reset). Returns a channel yielding `{:ok true}` (or
+   `{:error e}`) once committed — async so a konserve-backed apply can suspend."
+  [{:keys [signal-atom on-update-fn merge-fn merge-await-fn apply-delta-fn]} msg]
   (let [ch (chan 1)
         commit! (fn [v]
                   (cond
-                    ;; IDEMPOTENT no-op: a convergent join that added nothing
-                    ;; returns the SAME value (the CRDT's -join returns the
+                    ;; IDEMPOTENT no-op: a convergent join/apply that added
+                    ;; nothing returns the SAME value (the CRDT op returns the
                     ;; receiver identically). Skip the reset! entirely — no
                     ;; spurious reactive tick, and (crucially) no re-publish, so a
                     ;; mutually-synced peer network does not run away re-joining
@@ -63,18 +78,21 @@
                           (catch #?(:clj Exception :cljs js/Error) e
                             (put! ch {:error e})))
                         (close! ch))))]
-    (if merge-await-fn
-      ;; Async join: the CPS runs the (possibly IO-suspending) join, then we
-      ;; commit the merged value on resolve. `(merge-await-fn cur incoming)` is a
-      ;; partial-cps `(fn [resolve reject])`.
-      (let [cps (merge-await-fn @signal-atom value)]
-        (cps commit!
-             (fn [err] (put! ch {:error err}) (close! ch))))
-      ;; Sync path: an in-memory join, or LWW reset.
-      (commit! (if merge-fn (merge-fn @signal-atom value) value)))
+    (cond
+      ;; OP-path: apply just the delta (cheap, no full state).
+      (and apply-delta-fn (contains? msg :delta))
+      (commit! (apply-delta-fn @signal-atom (:delta msg)))
+      ;; STATE-path, async join: the CPS runs the (possibly IO-suspending) join,
+      ;; then we commit on resolve. `(merge-await-fn cur incoming)` is a CPS.
+      merge-await-fn
+      (let [cps (merge-await-fn @signal-atom (:value msg))]
+        (cps commit! (fn [err] (put! ch {:error err}) (close! ch))))
+      ;; STATE-path, sync: an in-memory join, or LWW reset.
+      :else
+      (commit! (let [v (:value msg)] (if merge-fn (merge-fn @signal-atom v) v))))
     ch))
 
-(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn merge-await-fn]
+(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn merge-await-fn apply-delta-fn]
   proto/PSyncStrategy
 
   (-init-client-state [_]
@@ -100,12 +118,12 @@
       ch))
 
   (-apply-handshake-item [this {:keys [value]}]
-    ;; Client adopts server's value — JOIN when convergent, else LWW reset.
-    (apply-incoming! this value))
+    ;; Handshake always carries a full snapshot (STATE-path) — catch-up on connect.
+    (apply-incoming! this {:value value}))
 
-  (-apply-publish [this {:keys [value]}]
-    ;; Client applies update from server — JOIN when convergent, else LWW reset.
-    (apply-incoming! this value)))
+  (-apply-publish [this msg]
+    ;; A live update: {:delta δ} (OP-path) or {:value v} (STATE-path).
+    (apply-incoming! this msg)))
 
 ;; =============================================================================
 ;; Server-Side API
@@ -126,19 +144,26 @@
                :watch-key        - key for add-watch (default topic)
 
   Returns: topic"
-  [peer topic signal & {:keys [batch-size watch-key merge-fn merge-await-fn]
+  [peer topic signal & {:keys [batch-size watch-key merge-fn merge-await-fn delta-fn]
                         :or {batch-size 20}}]
   (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
     ;; Register pub/sub topic with signal strategy
     (pubsub/register-topic! peer topic
-                            {:strategy (->SignalSyncStrategy signal nil merge-fn merge-await-fn)
+                            {:strategy (->SignalSyncStrategy signal nil merge-fn merge-await-fn nil)
                              :batch-size batch-size})
 
-    ;; Watch signal for changes, publish deltas
+    ;; Watch signal for changes, publish either the OP (a δ — `delta-fn` yields the
+    ;; local op) or the full STATE. With `delta-fn`, a value carrying NO δ is a
+    ;; remote-integrated change → nothing to propagate (no echo); a value with a δ
+    ;; ships just that op. Without `delta-fn`, ship the value (LWW, as before).
     (add-watch signal wk
                (fn [_ _ old-val new-val]
                  (when (not= old-val new-val)
-                   (pubsub/publish! peer topic {:value new-val}))))
+                   (if delta-fn
+                     (when-let [d (delta-fn new-val)]
+                       (when (if (coll? d) (seq d) true)
+                         (pubsub/publish! peer topic {:delta d})))
+                     (pubsub/publish! peer topic {:value new-val})))))
 
     topic))
 
@@ -176,12 +201,14 @@
               :atom           - Use this atom instead of creating a new one
 
   Returns: atom holding the remote signal's value"
-  [peer topic & {:keys [initial-value on-update atom merge-fn merge-await-fn]}]
+  [peer topic & {:keys [initial-value on-update atom merge-fn merge-await-fn apply-delta-fn]}]
   (let [;; Create local state holder
         local (or atom (clojure.core/atom initial-value))
 
-        ;; Strategy that updates local atom/signal
-        strategy (->SignalSyncStrategy local on-update merge-fn merge-await-fn)]
+        ;; Strategy that updates local atom/signal — STATE-path (merge-fn/
+        ;; merge-await-fn) for full values + handshake, OP-path (apply-delta-fn)
+        ;; for live deltas.
+        strategy (->SignalSyncStrategy local on-update merge-fn merge-await-fn apply-delta-fn)]
 
     ;; Subscribe via Kabel pub/sub
     (pubsub/subscribe! peer #{topic}

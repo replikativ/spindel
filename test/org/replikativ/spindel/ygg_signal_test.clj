@@ -50,7 +50,7 @@
           sig     (atom g)
           changes (atom 0)
           _       (add-watch sig :c (fn [_ _ o n] (when (not= o n) (swap! changes inc))))
-          strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil)]
+          strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil nil)]
       ;; an incoming peer value that adds nothing (already contains :x)
       (let [g2 (-> (g/durable-gset "p2" :store-config {:backend :memory :id (random-uuid)}) (g/add :x))]
         (proto/-apply-publish strat {:value g2})
@@ -62,3 +62,22 @@
         (proto/-apply-publish strat {:value g3})
         (is (= 1 @changes) "a real change fires exactly once")
         (is (= #{:x :z} (g/elements @sig)))))))
+
+(deftest two-peer-op-based-sync
+  (testing "OP-based peer sync (replikativ op-based, on a durable G-Set): peer A's
+            local mutation ships JUST its δ; peer B applies the δ via apply-delta-fn
+            and converges — WITHOUT A's full state crossing the wire, no diffing,
+            and no echo of the remote op back into B's δ"
+    (let [a (atom (-> (g/durable-gset "A" :store-config {:backend :memory :id (random-uuid)}) (g/add :x)))
+          ;; B starts with :y already propagated (δ cleared) on its own store
+          b (atom (c/clear-delta (-> (g/durable-gset "B" :store-config {:backend :memory :id (random-uuid)}) (g/add :y))))
+          ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn for handshake)
+          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn nil ys/ygg-apply-delta-fn)]
+      ;; A applies a LOCAL op (clear-then-apply, as ygg-swap! does)
+      (swap! a (fn [v] (g/add (c/clear-delta v) :z)))
+      (let [a-op (ys/ygg-delta-fn @a)]
+        (is (= #{:z} a-op) "A ships only the OP (#{:z}) — not its full state #{:x :z}")
+        ;; the wire carries ONLY the δ, never A's value
+        (proto/-apply-publish b-strat {:delta a-op})
+        (is (= #{:y :z} (g/elements @b)) "B converged from the op alone: its :y + A's :z")
+        (is (nil? (ys/ygg-delta-fn @b)) "A's op did NOT echo into B's δ (won't re-publish)")))))

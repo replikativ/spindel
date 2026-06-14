@@ -78,9 +78,35 @@
    system, `swap-await!` (returns a partial-cps async — `await` it from a spin)
    for an async one. So one call covers JVM and cljs ygg-signals alike."
   [ygg-sig f & args]
-  (if (async-system? (sig/deref-signal ygg-sig))
-    (apply sig/swap-await! ygg-sig f args)
-    (apply swap! ygg-sig f args)))
+  ;; CLEAR-THEN-APPLY: drop the stored value's stale local δ before applying the
+  ;; op, so the new value's δ is EXACTLY this turn's op(s) — the unit a synced
+  ;; signal ships over the wire (`ops` / `ygg-delta-fn`). Without the clear, δs
+  ;; would accrue across propagations and re-ship already-sent ops.
+  (let [f* (fn [v] (apply f (yc/clear-delta v) args))]
+    (if (async-system? (sig/deref-signal ygg-sig))
+      (sig/swap-await! ygg-sig f*)
+      (swap! ygg-sig f*))))
+
+(defn ops
+  "The pending local δ (ops applied to ygg-signal `sig` since the last propagation)
+   — the OP perspective. A small value joinable into a peer (`set` for a G-Set,
+   `{:adds.. :removals..}` for a 2P/OR-Set, …), or nil if none. State is `@sig`;
+   ops is this. (The dual perspective lives in the value: state + δ-in-meta.)"
+  [sig]
+  (yc/delta-of (sig/deref-signal sig)))
+
+(def ygg-delta-fn
+  "Sender hook for `export-signal!`'s `:delta-fn` — extract a convergent
+   ygg-signal's local δ so a live update ships just the OP (`{:delta δ}`), not full
+   state. A remote-integrated value carries no δ ⇒ nothing to propagate (no echo)."
+  yc/delta-of)
+
+(defn ygg-apply-delta-fn
+  "Receiver hook for `subscribe-signal!`'s `:apply-delta-fn` — integrate a peer's δ
+   into the local convergent value (the OP-path, O(δ)). Returns the new value
+   without a local δ (remote ops don't re-propagate)."
+  [current delta]
+  (yc/-apply-delta current delta))
 
 (defn ygg-merge-fn
   "Signal-sync merge for a CONVERGENT ygg-signal value: JOIN the incoming remote
