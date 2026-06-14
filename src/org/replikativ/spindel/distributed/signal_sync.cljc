@@ -46,13 +46,23 @@
   [{:keys [signal-atom on-update-fn merge-fn merge-await-fn]} value]
   (let [ch (chan 1)
         commit! (fn [v]
-                  (try
-                    (reset! signal-atom v)
-                    (when on-update-fn (on-update-fn @signal-atom))
-                    (put! ch {:ok true})
-                    (catch #?(:clj Exception :cljs js/Error) e
-                      (put! ch {:error e})))
-                  (close! ch))]
+                  (cond
+                    ;; IDEMPOTENT no-op: a convergent join that added nothing
+                    ;; returns the SAME value (the CRDT's -join returns the
+                    ;; receiver identically). Skip the reset! entirely — no
+                    ;; spurious reactive tick, and (crucially) no re-publish, so a
+                    ;; mutually-synced peer network does not run away re-joining
+                    ;; equal states.
+                    (identical? v @signal-atom)
+                    (do (put! ch {:ok true :changed? false}) (close! ch))
+                    :else
+                    (do (try
+                          (reset! signal-atom v)
+                          (when on-update-fn (on-update-fn @signal-atom))
+                          (put! ch {:ok true :changed? true})
+                          (catch #?(:clj Exception :cljs js/Error) e
+                            (put! ch {:error e})))
+                        (close! ch))))]
     (if merge-await-fn
       ;; Async join: the CPS runs the (possibly IO-suspending) join, then we
       ;; commit the merged value on resolve. `(merge-await-fn cur incoming)` is a
