@@ -2,6 +2,10 @@
   "Signal creation and manipulation"
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
+            ;; swap-signal*-explicit calls `engine.addressing/next-address!`
+            ;; fully-qualified — require it so loading signal first doesn't
+            ;; ClassNotFound when addressing isn't transitively pre-loaded.
+            [org.replikativ.spindel.engine.addressing]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.interval :as iv]
             #?(:clj  [is.simm.partial-cps.async :refer [async await]]
