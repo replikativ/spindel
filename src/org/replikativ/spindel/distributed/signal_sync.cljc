@@ -24,10 +24,12 @@
 
 ;; A convergent ygg-signal JOINS/APPLIES an incoming remote update into the local
 ;; value (so concurrent local + remote updates converge) instead of clobbering it
-;; under blind LWW. ONE hook per perspective, plus a single sync/async mode flag —
-;; the yggdrasil op is `async+sync` (it returns a VALUE on JVM / a partial-cps CPS
-;; on cljs by the value's own mode), so there is no separate sync vs async hook;
-;; `async?` just tells us whether to AWAIT the result or commit it directly:
+;; under blind LWW. ONE hook per perspective, plus the standard `:sync?` mode flag
+;; (as in konserve / persistent-sorted-set / the yggdrasil durable layer: last
+;; opt, DEFAULTS TO ASYNC when absent). The yggdrasil op is `async+sync` — it
+;; returns a VALUE for `:sync? true` (JVM / in-mem) or a partial-cps CPS otherwise
+;; (durable `:sync? false` / cljs) — so there is no separate sync vs async hook;
+;; `sync?` just tells us whether to commit the result directly or await the CPS:
 ;;
 ;;   `merge-fn`       (optional) `(fn [current incoming] -> merged|CPS)` — the
 ;;                    STATE-path JOIN (`c/-join`). Full value over the wire.
@@ -35,19 +37,20 @@
 ;;                    apply (`c/-apply-delta`): a live update ships just the op
 ;;                    (`{:delta δ}`), the receiver applies it — O(δ), no full state.
 ;;                    Sender side = `export-signal!`'s `:delta-fn`.
-;;   `async?`         when true the two hooks return a partial-cps CPS (durable
-;;                    `:sync? false` / cljs) that we await before committing; when
-;;                    false they return a value committed directly.
+;;   `sync?`          true ⇒ the hooks return a value (commit directly); absent/
+;;                    false ⇒ a CPS we await before committing. Set it from the
+;;                    value's own mode (= `(not (async-system? v))`).
 ;;
 ;; An incoming message is `{:delta δ}` (op-path) OR `{:value v}` (state-path); the
 ;; receiver dispatches on which key is present. With no `merge-fn`, a `{:value}` is
-;; an LWW reset (the default; correct for ordinary last-writer-wins signals).
+;; an LWW reset (the default; correct for ordinary last-writer-wins signals) and
+;; is committed directly regardless of `sync?` (a plain value, never a CPS).
 (defn- apply-incoming!
   "Apply an incoming sync `msg` to the strategy's signal. `{:delta δ}` → OP-path
    (`apply-delta-fn`); `{:value v}` → STATE-path (`merge-fn` JOIN, else LWW reset).
    Returns a channel yielding `{:ok true}` (or `{:error e}`) once committed — async
    so a konserve-backed join/apply can suspend before the commit."
-  [{:keys [signal-atom on-update-fn merge-fn apply-delta-fn async?]} msg]
+  [{:keys [signal-atom on-update-fn merge-fn apply-delta-fn sync?]} msg]
   (let [ch (chan 1)
         commit! (fn [v]
                   (cond
@@ -67,19 +70,25 @@
                           (catch #?(:clj Exception :cljs js/Error) e
                             (put! ch {:error e})))
                         (close! ch))))
-        ;; ONE adapter for the async+sync result: a value (sync) is committed
-        ;; directly; a CPS (async) is awaited, then committed on resolve.
-        run! (fn [result]
-               (if async?
-                 (result commit! (fn [err] (put! ch {:error err}) (close! ch)))
-                 (commit! result)))]
-    (if (and apply-delta-fn (contains? msg :delta))
-      (run! (apply-delta-fn @signal-atom (:delta msg)))         ; OP-path
-      (let [v (:value msg)]
-        (run! (if merge-fn (merge-fn @signal-atom v) v))))      ; STATE-path (join / LWW)
+        ;; ONE adapter for the async+sync result: `:sync? true` ⇒ commit the value
+        ;; directly; otherwise await the CPS, then commit on resolve.
+        await-commit! (fn [result]
+                        (if sync?
+                          (commit! result)
+                          (result commit! (fn [err] (put! ch {:error err}) (close! ch)))))]
+    (cond
+      ;; OP-path: apply just the delta (cheap, no full state).
+      (and apply-delta-fn (contains? msg :delta))
+      (await-commit! (apply-delta-fn @signal-atom (:delta msg)))
+      ;; STATE-path JOIN (convergent).
+      merge-fn
+      (await-commit! (merge-fn @signal-atom (:value msg)))
+      ;; STATE-path LWW (ordinary signal): a plain value, committed directly.
+      :else
+      (commit! (:value msg)))
     ch))
 
-(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn apply-delta-fn async?]
+(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn apply-delta-fn sync?]
   proto/PSyncStrategy
 
   (-init-client-state [_]
@@ -131,12 +140,12 @@
                :watch-key        - key for add-watch (default topic)
 
   Returns: topic"
-  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn async?]
+  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn sync?]
                         :or {batch-size 20}}]
   (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
     ;; Register pub/sub topic with signal strategy
     (pubsub/register-topic! peer topic
-                            {:strategy (->SignalSyncStrategy signal nil merge-fn nil async?)
+                            {:strategy (->SignalSyncStrategy signal nil merge-fn nil sync?)
                              :batch-size batch-size})
 
     ;; Watch signal for changes, publish either the OP (a δ — `delta-fn` yields the
@@ -188,14 +197,14 @@
               :atom           - Use this atom instead of creating a new one
 
   Returns: atom holding the remote signal's value"
-  [peer topic & {:keys [initial-value on-update atom merge-fn apply-delta-fn async?]}]
+  [peer topic & {:keys [initial-value on-update atom merge-fn apply-delta-fn sync?]}]
   (let [;; Create local state holder
         local (or atom (clojure.core/atom initial-value))
 
         ;; Strategy: STATE-path (merge-fn) for full values + handshake, OP-path
-        ;; (apply-delta-fn) for live deltas; `async?` awaits a CPS result (durable
-        ;; cljs) vs commits a value directly (JVM / in-mem).
-        strategy (->SignalSyncStrategy local on-update merge-fn apply-delta-fn async?)]
+        ;; (apply-delta-fn) for live deltas; `:sync? true` commits a value directly
+        ;; (JVM / in-mem), absent/false awaits a CPS result (durable cljs).
+        strategy (->SignalSyncStrategy local on-update merge-fn apply-delta-fn sync?)]
 
     ;; Subscribe via Kabel pub/sub
     (pubsub/subscribe! peer #{topic}

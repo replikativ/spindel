@@ -50,7 +50,7 @@
           sig     (atom g)
           changes (atom 0)
           _       (add-watch sig :c (fn [_ _ o n] (when (not= o n) (swap! changes inc))))
-          strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil nil)]
+          strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil true)]
       ;; an incoming peer value that adds nothing (already contains :x)
       (let [g2 (-> (g/durable-gset "p2" :store-config {:backend :memory :id (random-uuid)}) (g/add :x))]
         (proto/-apply-publish strat {:value g2})
@@ -72,8 +72,8 @@
           ;; B starts with :y already propagated (δ cleared) on its own store
           b (atom (c/clear-delta (-> (g/durable-gset "B" :store-config {:backend :memory :id (random-uuid)}) (g/add :y))))
           ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn
-          ;; for handshake); async? false (JVM durable G-Set)
-          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn false)]
+          ;; for handshake); :sync? true (JVM durable G-Set — sync ops)
+          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn true)]
       ;; A applies a LOCAL op (clear-then-apply, as ygg-swap! does)
       (swap! a (fn [v] (g/add (c/clear-delta v) :z)))
       (let [a-op (ys/ygg-delta-fn @a)]

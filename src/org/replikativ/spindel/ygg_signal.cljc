@@ -71,6 +71,14 @@
   [sys]
   (false? (:sync? (:opts sys))))
 
+(defn sync-system?
+  "Whether `sys`'s ops run synchronously (return a value, not a CPS) — JVM /
+   in-mem / `:sync? true` durable. The `:sync?` flag to pass `export-signal!` /
+   `subscribe-signal!` for this value (the konserve/PSS convention: last opt,
+   defaults to async). The complement of [[async-system?]]."
+  [sys]
+  (not (async-system? sys)))
+
 (defn ygg-swap!
   "Mutate a ygg-signal. `f` is a yggdrasil op `(fn [sys & args] -> sys')` —
    e.g. `#(g/add % :x)`, `#(p/merge! % branch)`, `#(p/commit! % msg)`. Dispatches
@@ -114,7 +122,7 @@
    converge) rather than LWW-overwrite. Use as `:merge-fn` on `export-signal!` /
    `subscribe-signal!`. `c/-join` is `async+sync`: it returns the merged value
    directly for a JVM/in-mem value, or a partial-cps CPS for a durable
-   `:sync? false` (cljs/konserve) value — pass `:async?` (= [[async-system?]]) so
-   signal-sync awaits the CPS vs commits the value. ONE hook, both modes."
+   `:sync? false` (cljs/konserve) value — pass `:sync?` (= [[sync-system?]]) so
+   signal-sync commits the value vs awaits the CPS. ONE hook, both modes."
   [current incoming]
   (yc/-join current incoming))
