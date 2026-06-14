@@ -25,8 +25,8 @@
       (proto/-apply-publish strat {:value #{:y}})
       (is (= #{:y} @a) "LWW: remote replaces local"))))
 
-(deftest merge-await-fn-joins-after-suspension
-  (testing "with merge-await-fn (a CPS-returning join, as a durable :sync? false
+(deftest async-merge-joins-after-suspension
+  (testing "with merge-fn + async? (a CPS-returning join, as a durable :sync? false
             ygg-signal yields), the incoming value is committed only once the join
             resolves — proving the convergent join can SUSPEND on IO before commit"
     (let [a          (atom #{:x})
@@ -36,7 +36,8 @@
           await-join (fn [cur incoming]
                        (fn [resolve _reject]
                          (reset! fire #(resolve (set/union (or cur #{}) incoming)))))
-          strat      (ss/->SignalSyncStrategy a nil nil await-join nil)]
+          ;; ONE merge-fn + async? true → signal-sync awaits the CPS before commit
+          strat      (ss/->SignalSyncStrategy a nil await-join nil true)]
       (proto/-apply-publish strat {:value #{:y}})
       (is (= #{:x} @a) "not yet joined — the async join is suspended awaiting IO")
       (@fire)

@@ -71,8 +71,9 @@
     (let [a (atom (-> (g/durable-gset "A" :store-config {:backend :memory :id (random-uuid)}) (g/add :x)))
           ;; B starts with :y already propagated (δ cleared) on its own store
           b (atom (c/clear-delta (-> (g/durable-gset "B" :store-config {:backend :memory :id (random-uuid)}) (g/add :y))))
-          ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn for handshake)
-          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn nil ys/ygg-apply-delta-fn)]
+          ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn
+          ;; for handshake); async? false (JVM durable G-Set)
+          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn false)]
       ;; A applies a LOCAL op (clear-then-apply, as ygg-swap! does)
       (swap! a (fn [v] (g/add (c/clear-delta v) :z)))
       (let [a-op (ys/ygg-delta-fn @a)]
