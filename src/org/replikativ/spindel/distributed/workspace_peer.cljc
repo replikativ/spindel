@@ -114,7 +114,11 @@
 ;; Peer state machine
 ;; =============================================================================
 
-(def workspace-key ::workspace)
+;; Peer-local context-state key holding the reflected workspace value. Self-
+;; contained to the peer (NOT the dissolved ygg-signal registry) — re-seating a
+;; reflected remote workspace through `ygg/system` location-transparency is a
+;; follow-up (register the synced composite as a ygg-signal via composite-sync).
+(def workspace-key ::seated-workspace)
 
 (defn make-workspace-peer
   "Create a workspace-peer bound to execution context `ctx`.
@@ -154,7 +158,7 @@
                  (:systems descriptor))
         ws (compose-fn systems)]
     (binding [ec/*execution-context* ctx]
-      (ec/swap-state! [:external-refs workspace-key] (constantly ws)))
+      (ec/swap-state! [workspace-key] (constantly ws)))
     (when on-reseat (on-reseat ws descriptor))
     ws))
 
@@ -190,7 +194,7 @@
   "Read the workspace value currently seated in the peer's context (or nil)."
   [peer]
   (binding [ec/*execution-context* (:ctx @peer)]
-    (ec/get-state [:external-refs workspace-key])))
+    (ec/get-state [workspace-key])))
 
 (defn gate-status
   "Current gate result without mutating (for diagnostics / UI)."

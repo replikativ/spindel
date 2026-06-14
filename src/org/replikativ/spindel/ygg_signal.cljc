@@ -16,14 +16,52 @@
    fork/overlay of a ygg-signal value (request `:following`, fall back to
    `:frozen`) is the next step — it uses yggdrasil's Overlayable directly."
   (:require [org.replikativ.spindel.signal :as sig]
-            [yggdrasil.convergent :as yc]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.nodes :as nodes]
+            [yggdrasil.convergent :as yc]
+            [yggdrasil.convergent.overlay :as ovl]))
 
 (defn ygg-signal
-  "Create a signal holding the yggdrasil system `sys`. Read with `@sig` (the
-   system, then its own value ops — `elements`, `as-of`, a datahike query …);
-   mutate with `ygg-swap!`."
+  "Create a signal holding the yggdrasil system `sys`, and index it as a FORKABLE
+   signal so a context fork isolates it (overlay/snapshot) rather than sharing the
+   live store. Read the effective system with [[system-of]] (or `@yref` /
+   `ygg/system` at the context layer); mutate with `ygg-swap!`.
+
+   The value is stored as the RAW system, NON-deltaable: a yggdrasil system is a
+   record (map-like), so the signal's default deltaable wrapping would turn it into
+   a DeltaableMap and break protocol dispatch (`system-type`, `-join`, …). We seat
+   the node directly with `deltaable? false` so deref returns the system itself."
   [sys]
-  (sig/signal sys))
+  (let [s (sig/signal sys)]
+    (ec/swap-state! [:nodes (:id s)]
+                    (fn [_] (nodes/->signal-node sys nil nil false #{} 0)))
+    (ec/swap-state! [:forkable-signals] #(conj (or % #{}) (:id s)))
+    s))
+
+(defn effective-system
+  "Unwrap a ygg-signal's stored VALUE to its effective WRITABLE system: in a fork
+   the value is an Overlay (overlay-system = the isolated/branched writable
+   system); at the root it's the system itself. The deref seam — `@yref` and
+   `ygg/system` resolve through this so callers always see a plain system whether
+   or not the context is forked."
+  [v]
+  (if (ovl/overlay? v) (ovl/overlay-system v) v))
+
+(defn system-of
+  "The effective writable system held by ygg-signal `sig` in the current context
+   (unwrapping a fork's Overlay). Requires `*execution-context*` bound."
+  [sig]
+  (effective-system (sig/deref-signal sig)))
+
+(defn following-of
+  "The ygg-signal's effective READ value with live-parent following: for a
+   `:following` convergent overlay this is `join(parent-live, own-delta)` — it
+   reflects the parent's concurrent evolution AND the fork's own writes; for a
+   `:frozen`/root value it's the writable system. The reactive read a spin
+   `track`s when it wants to see the parent advance."
+  [sig]
+  (let [v (sig/deref-signal sig)]
+    (if (ovl/overlay? v) (ovl/overlay-value v) v)))
 
 (defn async-system?
   "Whether `sys` is async-backed — a durable CRDT/composite opened `:sync? false`

@@ -156,33 +156,41 @@
 ;; ----------------------------------------------------------------------------
 
 (defprotocol PForkable
-  "Protocol for external references that can be forked with execution contexts.
+  "Protocol for a SIGNAL VALUE that needs explicit forking when its host context
+  forks — a reference to external mutable state (a yggdrasil system) that the
+  overlay backend's copy-on-write does NOT isolate by itself, because the value
+  is a handle onto a shared store (a git repo, a datahike conn, a konserve CRDT).
 
-  When an ExecutionContext is forked, all registered external refs in
-  [:external-refs] are forked by calling pfork on each. This enables
-  copy-on-write semantics for external systems like git repositories,
-  databases, or file systems.
+  When an ExecutionContext is forked, every signal whose id is in
+  [:forkable-signals] is forked by calling `fork-value` on its current value and
+  writing the result as the fork-local signal node. Pure signal values (numbers,
+  maps, …) are NOT in that set and fall through the overlay unchanged.
 
   Implementations should:
-  - Return a NEW instance representing the forked state
-  - NOT mutate the original instance (value semantics)
-  - Create any necessary underlying resources (e.g., git branch)
+  - Return a NEW value representing the isolated fork (an Overlay or a branched
+    system); NOT mutate the original (value semantics)
+  - Create any necessary underlying resources (a git worktree, a datahike branch,
+    a CRDT clone)
 
-  Example implementations:
-  - Git: Create new branch, return system pointing to new branch
-  - Datahike: Create branch in database, return new connection
-  - Btrfs: Create snapshot, return system pointing to snapshot"
+  yggdrasil extends this for its systems + overlays; the default is identity."
 
-  (pfork [this fork-id]
-    "Create a forked version of this external reference.
+  (fork-value [this fork-id directive]
+    "Fork this signal value for a child context.
 
     Arguments:
-      this - The reference to fork
-      fork-id - Unique identifier for this fork (keyword)
+      this      - the current signal value (a yggdrasil system or overlay)
+      fork-id   - unique id for this fork (keyword), for naming resources
+      directive - how to fork, generic so the engine stays yggdrasil-free:
+                    {:fork :overlay :mode :following|:frozen}  ; from CURRENT head
+                    {:fork :snapshot :snapshot <snapshot-id>}  ; from a FIXED value
 
-    Returns:
-      A new instance representing the forked state.
-      Must not mutate the original.
+    Returns the forked value. Must not mutate the original."))
 
-    The fork-id can be used to generate unique names for underlying
-    resources (e.g., branch names like :main-fork-12345)."))
+(extend-protocol PForkable
+  #?(:clj Object :cljs default)
+  ;; A plain value has no external state to isolate — the overlay backend's CoW
+  ;; already gives the fork its own copy, so forking the value is identity.
+  (fork-value [this _fork-id _directive] this)
+
+  nil
+  (fork-value [_ _ _] nil))

@@ -118,8 +118,8 @@
           (let [forked-branch (ygg-proto/current-branch @yref)]
             (is (not= :main forked-branch)
                 "Fork is on different branch")
-            (is (clojure.string/starts-with? (name forked-branch) "main-fork-")
-                "Forked branch name follows convention (main-fork-<uuid>)")))
+            (is (clojure.string/starts-with? (name forked-branch) "overlay-")
+                "Forked branch is the overlay fork branch (overlay-<uuid>)")))
 
         ;; Cleanup
         (ygg/discard-fork! fork-handle)))))
@@ -264,9 +264,8 @@
               (let [inner-branch (ygg-proto/current-branch @yref)]
                 (is (not= outer-branch inner-branch)
                     "Inner fork has different branch than outer")
-                (is (clojure.string/starts-with? (name inner-branch)
-                                                 (name outer-branch))
-                    "Inner branch name derives from outer")))
+                (is (clojure.string/starts-with? (name inner-branch) "overlay-")
+                    "Inner fork is its own overlay branch (overlay-<uuid>)")))
 
             (ygg/discard-fork! inner-fork)))
 
@@ -423,26 +422,26 @@
           (cleanup-temp-repo second-repo-path))))))
 
 ;; =============================================================================
-;; Workspace API (collapsed composite) Tests
+;; Registry / per-signal API Tests
 ;; =============================================================================
 
-(deftest test-workspace-composes
-  (testing "register! composes systems into ONE workspace composite"
+(deftest test-register-creates-ygg-signal
+  (testing "register! creates a resolvable ygg-signal per system — no privileged workspace"
     (th/with-ctx [ctx]
-      (is (nil? (ygg/workspace)) "No workspace before any register!")
+      (is (empty? (ygg/registered-systems)) "Nothing registered before register!")
       (ygg/register! *test-git-system*)
-      (let [ws (ygg/workspace)]
-        (is (some? ws) "Workspace exists after register!")
-        (is (= :composite (ygg-proto/system-type ws)) "Workspace is a CompositeSystem")
-        (is (= 1 (count (:systems ws))) "One sub-system in the workspace")))))
+      (let [sid (ygg-proto/system-id *test-git-system*)]
+        (is (some? (ygg/system-signal sid)) "a ygg-signal holds the system")
+        (is (= :git (ygg-proto/system-type (ygg/system sid))) "system resolves to the git system")
+        (is (= 1 (count (ygg/registered-systems))) "one registered system")))))
 
-(deftest test-workspace-resolution
-  (testing "system / get-system resolve a sub-system THROUGH the workspace"
+(deftest test-system-resolution
+  (testing "system / get-system resolve the effective system; @yref agrees"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
             sid  (ygg-proto/system-id *test-git-system*)]
         (is (identical? @yref (ygg/system sid))
-            "ygg/system returns the same instance as @yref")
+            "ygg/system returns the same instance as @yref (root: no overlay)")
         (is (= :git (ygg-proto/system-type (ygg/system sid))))))))
 
 (deftest test-workspace-diff-merge-base
