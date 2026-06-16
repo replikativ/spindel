@@ -138,9 +138,15 @@
     opts     - Optional map:
                :batch-size       - handshake batch size (default 20)
                :watch-key        - key for add-watch (default topic)
+               :delta-fn         - extract the local δ to ship just the OP (else ship state)
+               :clear-delta-fn   - drop the just-shipped δ from the signal (OP-path only): keeps
+                                   the local δ bounded — without it deltas ACCRUE in the value's
+                                   metadata, so every op re-ships the whole accumulated δ and memory
+                                   grows unboundedly. Clearing is a pure metadata op (`=`-preserving),
+                                   so the re-seat does NOT re-fire the watch.
 
   Returns: topic"
-  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn sync?]
+  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn clear-delta-fn sync?]
                         :or {batch-size 20}}]
   (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
     ;; Register pub/sub topic with signal strategy
@@ -158,7 +164,11 @@
                    (if delta-fn
                      (when-let [d (delta-fn new-val)]
                        (when (if (coll? d) (seq d) true)
-                         (pubsub/publish! peer topic {:delta d})))
+                         (pubsub/publish! peer topic {:delta d})
+                         ;; Clear the δ we just shipped so it doesn't re-accrue + re-ship.
+                         ;; `=`-preserving (δ lives in metadata) ⇒ this re-seat's watch
+                         ;; fire short-circuits on the `(not= old new)` guard above.
+                         (when clear-delta-fn (swap! signal clear-delta-fn))))
                      (pubsub/publish! peer topic {:value new-val})))))
 
     topic))

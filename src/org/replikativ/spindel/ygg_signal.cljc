@@ -8,14 +8,14 @@
    A ygg-signal value IS the system, so you MUTATE it with the ordinary signal
    primitives — `swap!` for a sync (JVM) value, `swap-await!` (from a spin) for an
    async (cljs / konserve-IO) one: `(swap! sig #(g/conj % :x))`. (`async-system?`
-   tells you which, if a cross-platform caller needs to choose.) For distributed
-   OP-path sync, clear the prior δ in the op so the shipped δ is exactly this op —
-   `(swap! sig #(g/conj (c/clear-delta %) :x))` — or rely on the idempotent join and
-   ship the accumulated δ / full state.
+   tells you which, if a cross-platform caller needs to choose.) Mutate with a plain
+   `swap!` — for distributed OP-path sync the export clears the shipped δ for you
+   (`:clear-delta-fn ygg-clear-delta-fn`), so each op's δ is exactly that op and the
+   in-memory δ stays bounded; you needn't clear inline.
 
-   The distributed-sync hooks are `ygg-delta-fn` / `ygg-apply-delta-fn` (the OP path)
-   and `ygg-merge-fn` (the STATE-path JOIN — a remote update converges with the local
-   value rather than clobbering it under LWW); pass them to
+   The distributed-sync hooks are `ygg-delta-fn` / `ygg-apply-delta-fn` / `ygg-clear-delta-fn`
+   (the OP path) and `ygg-merge-fn` (the STATE-path JOIN — a remote update converges with
+   the local value rather than clobbering it under LWW); pass them to
    `signal-sync/export-signal!` / `subscribe-signal!`.
 
    fork/overlay of a ygg-signal value (request `:following`, fall back to
@@ -98,6 +98,13 @@
    ygg-signal's local δ so a live update ships just the OP (`{:delta δ}`), not full
    state. A remote-integrated value carries no δ ⇒ nothing to propagate (no echo)."
   yc/delta-of)
+
+(def ygg-clear-delta-fn
+  "Sender hook for `export-signal!`'s `:clear-delta-fn` — drop a convergent
+   ygg-signal's local δ once it has been shipped, so it doesn't re-accrue (in the
+   value's metadata) and re-ship on the next op. A pure `=`-preserving metadata op,
+   so the export's re-seat won't re-fire the watch."
+  yc/clear-delta)
 
 (defn ygg-apply-delta-fn
   "Receiver hook for `subscribe-signal!`'s `:apply-delta-fn` — integrate a peer's δ

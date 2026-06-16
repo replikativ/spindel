@@ -8,6 +8,7 @@
             [org.replikativ.spindel.test-helpers :refer [async with-ctx]]
             [org.replikativ.spindel.distributed.signal-sync :as ss]
             [kabel.pubsub.protocol :as proto]
+            [superv.async :as sa]
             [yggdrasil.convergent :as c]
             [yggdrasil.convergent.gset :as g]))
 
@@ -74,7 +75,9 @@
           ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn
           ;; for handshake); :sync? true (JVM durable G-Set — sync ops)
           b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn true)]
-      ;; A applies a LOCAL op (clear-then-apply, as ygg-swap! does)
+      ;; A applies a LOCAL op. The prior δ is already gone (export's :clear-delta-fn
+      ;; clears each δ once shipped); modelled here by clearing inline before the op,
+      ;; so the shipped δ is exactly this op.
       (swap! a (fn [v] (g/conj (c/clear-delta v) :z)))
       (let [a-op (ys/ygg-delta-fn @a)]
         (is (= #{:z} a-op) "A ships only the OP (#{:z}) — not its full state #{:x :z}")
@@ -82,3 +85,22 @@
         (proto/-apply-publish b-strat {:delta a-op})
         (is (= #{:y :z} (g/elements @b)) "B converged from the op alone: its :y + A's :z")
         (is (nil? (ys/ygg-delta-fn @b)) "A's op did NOT echo into B's δ (won't re-publish)")))))
+
+(deftest export-clears-delta-after-send
+  (testing "export-signal! with :clear-delta-fn drops each shipped δ, so the in-memory
+            δ stays bounded (no unbounded accrual, no re-shipping the whole history);
+            the `=`-preserving clear re-seat does NOT re-fire the watch"
+    (let [peer (atom {:volatile {:supervisor sa/S}})  ; no subscribers ⇒ publish! sends nowhere; we test the send-side clear
+          sig  (atom (g/gset "kb" :store-config {:backend :memory :id (random-uuid)}))]
+      (ss/export-signal! peer :kb/topic sig
+                         :delta-fn       ys/ygg-delta-fn
+                         :clear-delta-fn ys/ygg-clear-delta-fn
+                         :sync? true)
+      ;; a local op accrues a δ; the watch ships it then clears it
+      (swap! sig (fn [s] (g/conj s :x)))
+      (is (nil? (ys/ygg-delta-fn @sig)) "δ cleared after the export shipped it")
+      (is (= #{:x} (g/elements @sig)) "the value itself is intact")
+      ;; a second op ships ONLY its own δ — the first did NOT accrue
+      (swap! sig (fn [s] (g/conj s :y)))
+      (is (nil? (ys/ygg-delta-fn @sig)) "δ cleared again — bounded across ops")
+      (is (= #{:x :y} (g/elements @sig))))))
