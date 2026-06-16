@@ -81,7 +81,7 @@
 
 (defn ygg-swap!
   "Mutate a ygg-signal. `f` is a yggdrasil op `(fn [sys & args] -> sys')` —
-   e.g. `#(g/add % :x)`, `#(p/merge! % branch)`, `#(p/commit! % msg)`. Dispatches
+   e.g. `#(g/conj % :x)`, `#(p/merge! % branch)`, `#(p/commit! % msg)`. Dispatches
    on the value's sync-mode: a plain `swap!` (returns the new system) for a sync
    system, `swap-await!` (returns a partial-cps async — `await` it from a spin)
    for an async one. So one call covers JVM and cljs ygg-signals alike."
