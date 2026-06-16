@@ -4,17 +4,22 @@
    live inside a signal ('make yggdrasil values fit into signals as interval-style
    operations').
 
-   The signal *core* stays yggdrasil-free; this ns is the yggdrasil-aware seam:
-   - `ygg-swap!` — ONE mutate that works for sync (JVM) and async (cljs /
-     konserve-IO) systems, dispatching on the value's sync-mode: a `swap!` for a
-     sync system, `swap-await!` (await from a spin) for an async one. So the same
-     call works whether the room's KB is a JVM datahike or a browser durable CRDT.
-   - `ygg-merge-fn` — the convergent JOIN for distributed sync (a remote update
-     converges with the local value rather than clobbering it under LWW); pass it
-     as `:merge-fn` to `signal-sync/export-signal!` / `subscribe-signal!`.
+   The signal *core* stays yggdrasil-free; this ns is the yggdrasil-aware seam.
+   A ygg-signal value IS the system, so you MUTATE it with the ordinary signal
+   primitives — `swap!` for a sync (JVM) value, `swap-await!` (from a spin) for an
+   async (cljs / konserve-IO) one: `(swap! sig #(g/conj % :x))`. (`async-system?`
+   tells you which, if a cross-platform caller needs to choose.) For distributed
+   OP-path sync, clear the prior δ in the op so the shipped δ is exactly this op —
+   `(swap! sig #(g/conj (c/clear-delta %) :x))` — or rely on the idempotent join and
+   ship the accumulated δ / full state.
+
+   The distributed-sync hooks are `ygg-delta-fn` / `ygg-apply-delta-fn` (the OP path)
+   and `ygg-merge-fn` (the STATE-path JOIN — a remote update converges with the local
+   value rather than clobbering it under LWW); pass them to
+   `signal-sync/export-signal!` / `subscribe-signal!`.
 
    fork/overlay of a ygg-signal value (request `:following`, fall back to
-   `:frozen`) is the next step — it uses yggdrasil's Overlayable directly."
+   `:frozen`) uses yggdrasil's Overlayable directly."
   (:require [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
@@ -25,7 +30,7 @@
   "Create a signal holding the yggdrasil system `sys`, and index it as a FORKABLE
    signal so a context fork isolates it (overlay/snapshot) rather than sharing the
    live store. Read the effective system with [[system-of]] (or `@yref` /
-   `ygg/system` at the context layer); mutate with `ygg-swap!`.
+   `ygg/system` at the context layer); mutate with `swap!` / `swap-await!`.
 
    The value is stored as the RAW system, NON-deltaable: a yggdrasil system is a
    record (map-like), so the signal's default deltaable wrapping would turn it into
@@ -79,21 +84,6 @@
   [sys]
   (not (async-system? sys)))
 
-(defn ygg-swap!
-  "Mutate a ygg-signal. `f` is a yggdrasil op `(fn [sys & args] -> sys')` —
-   e.g. `#(g/conj % :x)`, `#(p/merge! % branch)`, `#(p/commit! % msg)`. Dispatches
-   on the value's sync-mode: a plain `swap!` (returns the new system) for a sync
-   system, `swap-await!` (returns a partial-cps async — `await` it from a spin)
-   for an async one. So one call covers JVM and cljs ygg-signals alike."
-  [ygg-sig f & args]
-  ;; CLEAR-THEN-APPLY: drop the stored value's stale local δ before applying the
-  ;; op, so the new value's δ is EXACTLY this turn's op(s) — the unit a synced
-  ;; signal ships over the wire (`ops` / `ygg-delta-fn`). Without the clear, δs
-  ;; would accrue across propagations and re-ship already-sent ops.
-  (let [f* (fn [v] (apply f (yc/clear-delta v) args))]
-    (if (async-system? (sig/deref-signal ygg-sig))
-      (sig/swap-await! ygg-sig f*)
-      (swap! ygg-sig f*))))
 
 (defn ops
   "The pending local δ (ops applied to ygg-signal `sig` since the last propagation)

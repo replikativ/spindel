@@ -1,8 +1,8 @@
 (ns org.replikativ.spindel.ygg-signal-test
-  "A yggdrasil system living inside a spindel signal: `ygg-swap!` mutates it (sync
-   path here — a JVM durable G-Set); the value is the system, read with its own
-   ops. The async path (`swap-await!` for a cljs/konserve-backed value) is proven
-   by signal-test's swap-await! tests + is the same dispatch."
+  "A yggdrasil system living inside a spindel signal: mutate it with the ordinary
+   signal primitives — `swap!` (sync, here — a JVM durable G-Set) / `swap-await!`
+   (async, a cljs/konserve value, proven by signal-test's swap-await! tests). The
+   value IS the system, read with its own ops."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.ygg-signal :as ys]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx]]
@@ -12,17 +12,17 @@
             [yggdrasil.convergent.gset :as g]))
 
 (deftest ygg-signal-sync-swap
-  (testing "a ygg-signal holds a yggdrasil system; ygg-swap! runs a yggdrasil op
-            and commits the new system (sync dispatch for a JVM value)"
+  (testing "a ygg-signal holds a yggdrasil system; a plain `swap!` runs a yggdrasil
+            op and seats the new system (the sync path — a JVM value)"
     (async done
            (with-ctx [_ctx]
              (let [gs  (g/gset "kb" :store-config {:backend :memory :id (random-uuid)})
                    sig (ys/ygg-signal gs)]
-               (is (false? (ys/async-system? gs)) "a JVM (:sync? true) system dispatches to swap!")
-               (ys/ygg-swap! sig (fn [s] (g/conj s :x)))
-               (ys/ygg-swap! sig (fn [s] (g/conj s :y)))
+               (is (false? (ys/async-system? gs)) "a JVM (:sync? true) system → plain swap!")
+               (swap! sig (fn [s] (g/conj s :x)))
+               (swap! sig (fn [s] (g/conj s :y)))
                (is (= #{:x :y} (g/elements @sig))
-                   "ygg-swap! mutated the system held in the signal")
+                   "swap! mutated the system held in the signal")
                (done))))))
 
 (deftest ygg-merge-fn-joins
