@@ -264,16 +264,20 @@
            expanded (cons 'do body)
            ;; Use :js-globals to detect CLJS (same as ioc/invert does internally)
            is-cljs? (:js-globals &env)
-           ;; Use fully qualified class name - CLJ needs Java package (underscores), CLJS uses var path
-           thunk-type (if is-cljs? 'is.simm.partial-cps.runtime/Thunk 'is.simm.partial_cps.runtime.Thunk)
+           ;; Trampoline via partial-cps's runtime/thunk? + force-thunk — an
+           ;; ns-qualified VAR reference resolves under any macro re-scoping.
+           ;; Inlining `(instance? is.simm.partial_cps.runtime.Thunk x)` (a dotted
+           ;; TYPE symbol) broke on cljs when re-scoped (e.g. by cljs.test/async);
+           ;; partial-cps now provides the helpers centrally, so the old is-cljs?
+           ;; thunk-type branch is gone.
            cps-fn-code `(fn [~r ~e]
                           (try
                             (if is.simm.partial-cps.async/*in-trampoline*
                               ~(ioc/invert params expanded)
                               (binding [is.simm.partial-cps.async/*in-trampoline* true]
                                 (loop [result# ~(ioc/invert params expanded)]
-                                  (if (instance? ~thunk-type result#)
-                                    (recur ((.-f result#)))
+                                  (if (is.simm.partial-cps.runtime/thunk? result#)
+                                    (recur (is.simm.partial-cps.runtime/force-thunk result#))
                                     result#))))
                             (catch ~(if is-cljs? :default `Throwable) t# (~e t#))))]
 
