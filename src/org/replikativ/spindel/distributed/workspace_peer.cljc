@@ -41,7 +41,7 @@
    datahike, or yggdrasil require (the app already holds the peers + cfgs):
      :resolve-system-fn (fn [system-id branch] -> ygg-system)   ; branch-scoped
      :compose-fn        (fn [{system-id -> ygg-system}] -> workspace-value)
-   On the JVM the app passes `#(ygc/composite (vals %) :branch B …)`; the seated
+   On the JVM the app passes `#(ygc/composite (vals %) {:branch B …})`; the seated
    value is whatever `ygg/system` resolves through (a CompositeSystem)."
   (:require [org.replikativ.spindel.engine.core :as ec]))
 

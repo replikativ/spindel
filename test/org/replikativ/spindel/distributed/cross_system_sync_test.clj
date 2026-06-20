@@ -98,7 +98,7 @@
           (d/transact s-dh schema)
           (d/transact s-dh [{:item/name "dh-trunk"}])
           ;; ---- SERVER: a yggdrasil durable G-Set, persisted to its file store ----
-          (let [s-ygg0 (g/gset (str ygg-id) :store-config s-ygg-cfg :sync? true)
+          (let [s-ygg0 (g/gset (str ygg-id) {:store-config s-ygg-cfg :sync? true})
                 s-ygg1 (-> s-ygg0 (g/conj :alpha) (g/conj :beta))
                 s-ygg  (g/flush! s-ygg1)            ; write nodes + :crdt/roots to the store
                 s-ygg-store (:kv-store s-ygg)
@@ -141,7 +141,7 @@
                 "yggdrasil :crdt/roots cell replicated to client")
             (is (poll-until
                  #(= #{:alpha :beta}
-                     (try (g/elements (g/gset (str ygg-id) :kv-store c-ygg-store :sync? true))
+                     (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store :sync? true}))
                           (catch Throwable _ #{})))
                  10000)
                 "client reconstructs the yggdrasil G-Set from nodes synced via the
@@ -155,7 +155,7 @@
                   "datahike live update replicated")
               (is (poll-until
                    #(= #{:alpha :beta :gamma}
-                       (try (g/elements (g/gset (str ygg-id) :kv-store c-ygg-store :sync? true))
+                       (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store :sync? true}))
                             (catch Throwable _ #{})))
                    10000)
                   "yggdrasil live update replicated over the same wire"))

@@ -48,7 +48,7 @@
       CompositeSystem on `branch` — the value `ygg/system` resolves through."
      [branch]
      (fn [systems-map]
-       (ygc/composite (vals systems-map) :branch branch :name "spindel-workspace"))))
+       (ygc/composite (vals systems-map) {:branch branch :name "spindel-workspace"}))))
 
 ;; =============================================================================
 ;; konserve-sync :on-key-update -> head update

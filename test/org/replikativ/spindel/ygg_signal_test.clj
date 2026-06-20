@@ -17,7 +17,7 @@
             op and seats the new system (the sync path — a JVM value)"
     (async done
            (with-ctx [_ctx]
-             (let [gs  (g/gset "kb" :store-config {:backend :memory :id (random-uuid)})
+             (let [gs  (g/gset "kb" {:store-config {:backend :memory :id (random-uuid)}})
                    sig (ys/ygg-signal gs)]
                (is (false? (ys/async-system? gs)) "a JVM (:sync? true) system → plain swap!")
                (swap! sig (fn [s] (g/conj s :x)))
@@ -28,17 +28,17 @@
 
 (deftest ygg-merge-fn-joins
   (testing "ygg-merge-fn JOINs two convergent system values (for signal-sync)"
-    (let [a (-> (g/gset "a" :store-config {:backend :memory :id (random-uuid)}) (g/conj :x))
-          b (-> (g/gset "b" :store-config {:backend :memory :id (random-uuid)}) (g/conj :y))]
+    (let [a (-> (g/gset "a" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x))
+          b (-> (g/gset "b" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :y))]
       (is (= #{:x :y} (g/elements (ys/ygg-merge-fn a b)))
           "convergent join, not LWW — both sides survive"))))
 
 (deftest convergent-join-no-op-is-identical
   (testing "issue-2 substrate: a -join that adds nothing returns the receiver
             IDENTICAL (observable lattice no-op), and a real join returns a new value"
-    (let [a (-> (g/gset "a" :store-config {:backend :memory :id (random-uuid)}) (g/conj :x) (g/conj :y))
-          b (-> (g/gset "b" :store-config {:backend :memory :id (random-uuid)}) (g/conj :x))
-          z (-> (g/gset "z" :store-config {:backend :memory :id (random-uuid)}) (g/conj :z))]
+    (let [a (-> (g/gset "a" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x) (g/conj :y))
+          b (-> (g/gset "b" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x))
+          z (-> (g/gset "z" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :z))]
       (is (identical? a (c/-join a b)) "join with a subset is a no-op → SAME object")
       (is (not (identical? a (c/-join a z))) "join that adds :z → a new value")
       (is (= #{:x :y :z} (g/elements (c/-join a z)))))))
@@ -47,19 +47,19 @@
   (testing "issue-2 runaway guard: through signal-sync, a no-op convergent join
             does NOT re-commit/re-publish — mutually-synced peers don't loop
             forever re-joining equal states; a real change fires exactly once"
-    (let [g       (-> (g/gset "kb" :store-config {:backend :memory :id (random-uuid)}) (g/conj :x))
+    (let [g       (-> (g/gset "kb" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x))
           sig     (atom g)
           changes (atom 0)
           _       (add-watch sig :c (fn [_ _ o n] (when (not= o n) (swap! changes inc))))
           strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil true)]
       ;; an incoming peer value that adds nothing (already contains :x)
-      (let [g2 (-> (g/gset "p2" :store-config {:backend :memory :id (random-uuid)}) (g/conj :x))]
+      (let [g2 (-> (g/gset "p2" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x))]
         (proto/-apply-publish strat {:value g2})
         (is (zero? @changes) "no-op join must NOT change the signal (no re-publish runaway)")
         (is (identical? g @sig) "the signal still holds the SAME object")
         (is (= #{:x} (g/elements @sig))))
       ;; an incoming peer value that adds :z — a real change fires exactly once
-      (let [g3 (-> (g/gset "p3" :store-config {:backend :memory :id (random-uuid)}) (g/conj :z))]
+      (let [g3 (-> (g/gset "p3" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :z))]
         (proto/-apply-publish strat {:value g3})
         (is (= 1 @changes) "a real change fires exactly once")
         (is (= #{:x :z} (g/elements @sig)))))))
@@ -69,9 +69,9 @@
             local mutation ships JUST its δ; peer B applies the δ via apply-delta-fn
             and converges — WITHOUT A's full state crossing the wire, no diffing,
             and no echo of the remote op back into B's δ"
-    (let [a (atom (-> (g/gset "A" :store-config {:backend :memory :id (random-uuid)}) (g/conj :x)))
+    (let [a (atom (-> (g/gset "A" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x)))
           ;; B starts with :y already propagated (δ cleared) on its own store
-          b (atom (c/clear-delta (-> (g/gset "B" :store-config {:backend :memory :id (random-uuid)}) (g/conj :y))))
+          b (atom (c/clear-delta (-> (g/gset "B" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :y))))
           ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn
           ;; for handshake); :sync? true (JVM durable G-Set — sync ops)
           b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn true)]
@@ -91,7 +91,7 @@
             δ stays bounded (no unbounded accrual, no re-shipping the whole history);
             the `=`-preserving clear re-seat does NOT re-fire the watch"
     (let [peer (atom {:volatile {:supervisor sa/S}})  ; no subscribers ⇒ publish! sends nowhere; we test the send-side clear
-          sig  (atom (g/gset "kb" :store-config {:backend :memory :id (random-uuid)}))]
+          sig  (atom (g/gset "kb" {:store-config {:backend :memory :id (random-uuid)}}))]
       (ss/export-signal! peer :kb/topic sig
                          :delta-fn       ys/ygg-delta-fn
                          :clear-delta-fn ys/ygg-clear-delta-fn

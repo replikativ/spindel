@@ -38,7 +38,7 @@
   (with-open [^ServerSocket ss (ServerSocket. 0)] (.getLocalPort ss)))
 
 (defn- mem-gset [id]
-  (g/gset id :store-config {:backend :memory :id (random-uuid)}))
+  (g/gset id {:store-config {:backend :memory :id (random-uuid)}}))
 
 (deftest server-to-client-gset-op-sync
   (testing "a server-side G-Set's ops propagate as δ over a real websocket; the
