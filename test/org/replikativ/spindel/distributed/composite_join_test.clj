@@ -18,7 +18,7 @@
     (binding [ec/*execution-context* c]
       ;; value-semantic: build the seeded G-Set value, register it once (the CRDT
       ;; is an immutable value; mutating a fetched handle in place is a no-op now).
-      (yg/register! (reduce gs/add (gs/gset id) elems)))
+      (yg/register! (reduce gs/conj (gs/gset id) elems)))
     c))
 
 (defn- system-in [c id]
@@ -61,13 +61,13 @@
   (testing "peers with two systems each — every matching system joins per-signal"
     (let [a (let [c (ctx/create-execution-context)]
               (binding [ec/*execution-context* c]
-                (yg/register! (gs/add (gs/gset "kb") :a))
-                (yg/register! (gs/add (gs/gset "tags") :red)))
+                (yg/register! (gs/conj (gs/gset "kb") :a))
+                (yg/register! (gs/conj (gs/gset "tags") :red)))
               c)
           b (let [c (ctx/create-execution-context)]
               (binding [ec/*execution-context* c]
-                (yg/register! (gs/add (gs/gset "kb") :b))
-                (yg/register! (gs/add (gs/gset "tags") :blue)))
+                (yg/register! (gs/conj (gs/gset "kb") :b))
+                (yg/register! (gs/conj (gs/gset "tags") :blue)))
               c)]
       (is (= #{:a :b} (gs/elements (c/-join (system-in a "kb") (system-in b "kb")))))
       (is (= #{:red :blue} (gs/elements (c/-join (system-in a "tags") (system-in b "tags"))))))))
