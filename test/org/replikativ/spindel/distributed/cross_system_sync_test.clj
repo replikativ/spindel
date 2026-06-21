@@ -13,7 +13,7 @@
        PSS reachability walker.
 
    Both replicate to the client; the client reconstructs both — the datahike DB
-   resolves its storage by :storage-id, the yggdrasil G-Set restores its root
+   resolves its storage by :pss/storage-id, the yggdrasil G-Set restores its root
    from the synced nodes. This is the replikativ p2p vision: heterogeneous
    databases over one wire, deserialized by one canonical PSS codec.
 
