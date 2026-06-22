@@ -49,49 +49,55 @@
   "Apply an incoming sync `msg` to the strategy's signal. `{:delta δ}` → OP-path
    (`apply-delta-fn`); `{:value v}` → STATE-path (`merge-fn` JOIN, else LWW reset).
    Returns a channel yielding `{:ok true}` (or `{:error e}`) once committed — async
-   so a konserve-backed join/apply can suspend before the commit."
+   so a konserve-backed join/apply can suspend before the commit.
+
+   The convergent paths integrate via an ATOMIC `swap-vals!` (sync) so a concurrent
+   LOCAL `swap!` on the same signal is not lost to a blind reset! of a value computed
+   from a stale read — which would silently drop a peer's own write (the hub never
+   echoes a peer its own δ, so the loss would be permanent). `apply-delta-fn`/
+   `merge-fn` are pure CRDT ops, safe under CAS retry. The async (durable/cljs) path
+   is single-threaded, so compute-then-reset there is race-free."
   [{:keys [signal-atom on-update-fn merge-fn apply-delta-fn sync?]} msg]
   (let [ch (chan 1)
-        commit! (fn [v]
-                  (cond
-                    ;; IDEMPOTENT no-op: a convergent join/apply that added
-                    ;; nothing returns the SAME value (the CRDT op returns the
-                    ;; receiver identically). Skip the reset! entirely — no
-                    ;; spurious reactive tick, and (crucially) no re-publish, so a
-                    ;; mutually-synced peer network does not run away re-joining
-                    ;; equal states.
-                    (identical? v @signal-atom)
+        ;; IDEMPOTENT no-op: a convergent op that added nothing returns the receiver
+        ;; identically ⇒ no reactive tick and (crucially) no re-publish, so a
+        ;; mutually-synced network does not run away re-joining equal states.
+        finish! (fn [old new]
+                  (if (identical? old new)
                     (do (put! ch {:ok true :changed? false}) (close! ch))
-                    :else
-                    (do (try
-                          (reset! signal-atom v)
-                          (when on-update-fn (on-update-fn @signal-atom))
-                          (put! ch {:ok true :changed? true})
-                          (catch #?(:clj Exception :cljs js/Error) e
-                            (put! ch {:error e})))
+                    (do (when on-update-fn (on-update-fn new))
+                        (put! ch {:ok true :changed? true})
                         (close! ch))))
-        ;; ONE adapter for the async+sync result: `:sync? true` ⇒ commit the value
-        ;; directly; otherwise await the CPS, then commit on resolve.
-        await-commit! (fn [result]
-                        (if sync?
-                          (commit! result)
-                          (result commit! (fn [err] (put! ch {:error err}) (close! ch)))))]
+        commit! (fn [integrate]
+                  (try
+                    (if sync?
+                      ;; atomic recompute against the live value
+                      (let [[old new] (swap-vals! signal-atom integrate)]
+                        (finish! old new))
+                      ;; async CPS: compute then await then reset (single-threaded)
+                      (let [old @signal-atom]
+                        ((integrate old)
+                         (fn [v] (reset! signal-atom v) (finish! old v))
+                         (fn [err] (put! ch {:error err}) (close! ch)))))
+                    (catch #?(:clj Exception :cljs js/Error) e
+                      (put! ch {:error e}) (close! ch))))]
     (cond
       ;; OP-path: apply just the delta (cheap, no full state).
-      (and apply-delta-fn (contains? msg :delta))
-      (await-commit! (apply-delta-fn @signal-atom (:delta msg)))
-      ;; A δ we can't apply (no apply-delta-fn on this perspective) — IGNORE it.
-      ;; Do NOT fall through to the LWW branch, which would `commit! (:value msg)`
-      ;; = reset the signal to nil and clobber state. (Matters once a peer both
-      ;; publishes δ AND is, on some topics, a value-only subscriber.)
       (contains? msg :delta)
-      (do (put! ch {:ok true :changed? false}) (close! ch))
+      (if apply-delta-fn
+        (commit! (fn [cur] (apply-delta-fn cur (:delta msg))))
+        ;; A δ we can't apply (no apply-delta-fn on this perspective) — IGNORE it.
+        ;; Do NOT fall through to the LWW branch (which would reset the signal to
+        ;; nil and clobber state).
+        (do (put! ch {:ok true :changed? false}) (close! ch)))
       ;; STATE-path JOIN (convergent).
       merge-fn
-      (await-commit! (merge-fn @signal-atom (:value msg)))
+      (commit! (fn [cur] (merge-fn cur (:value msg))))
       ;; STATE-path LWW (ordinary signal): a plain value, committed directly.
       :else
-      (commit! (:value msg)))
+      (let [old @signal-atom]
+        (reset! signal-atom (:value msg))
+        (finish! old (:value msg))))
     ch))
 
 ;; `state-fn` (optional): project the local value to a SERIALIZABLE full-state
