@@ -51,7 +51,7 @@
           sig     (atom g)
           changes (atom 0)
           _       (add-watch sig :c (fn [_ _ o n] (when (not= o n) (swap! changes inc))))
-          strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil true)]
+          strat   (ss/->SignalSyncStrategy sig nil (fn [cur incoming] (c/-join cur incoming)) nil true nil)]
       ;; an incoming peer value that adds nothing (already contains :x)
       (let [g2 (-> (g/gset "p2" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :x))]
         (proto/-apply-publish strat {:value g2})
@@ -74,7 +74,7 @@
           b (atom (c/clear-delta (-> (g/gset "B" {:store-config {:backend :memory :id (random-uuid)}}) (g/conj :y))))
           ;; B's subscriber strategy: OP-path apply-delta-fn (+ STATE-path merge-fn
           ;; for handshake); :sync? true (JVM durable G-Set — sync ops)
-          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn true)]
+          b-strat (ss/->SignalSyncStrategy b nil ys/ygg-merge-fn ys/ygg-apply-delta-fn true nil)]
       ;; A applies a LOCAL op. The prior δ is already gone (export's :clear-delta-fn
       ;; clears each δ once shipped); modelled here by clearing inline before the op,
       ;; so the shipped δ is exactly this op.

@@ -80,6 +80,12 @@
       ;; OP-path: apply just the delta (cheap, no full state).
       (and apply-delta-fn (contains? msg :delta))
       (await-commit! (apply-delta-fn @signal-atom (:delta msg)))
+      ;; A δ we can't apply (no apply-delta-fn on this perspective) — IGNORE it.
+      ;; Do NOT fall through to the LWW branch, which would `commit! (:value msg)`
+      ;; = reset the signal to nil and clobber state. (Matters once a peer both
+      ;; publishes δ AND is, on some topics, a value-only subscriber.)
+      (contains? msg :delta)
+      (do (put! ch {:ok true :changed? false}) (close! ch))
       ;; STATE-path JOIN (convergent).
       merge-fn
       (await-commit! (merge-fn @signal-atom (:value msg)))
@@ -88,34 +94,52 @@
       (commit! (:value msg)))
     ch))
 
-(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn apply-delta-fn sync?]
+;; `state-fn` (optional): project the local value to a SERIALIZABLE full-state
+;; snapshot for the connect handshake (catch-up). A convergent CRDT *value* is not
+;; wire-serializable (it carries stores + a comparator/join fn), so a late/
+;; reconnecting joiner cannot receive the raw record — but it CAN receive the
+;; value's plain-data projection (`g/elements` for a G-Set, the OR-map's map, …)
+;; and apply it as a δ into its own empty replica. With `state-fn`, the handshake
+;; ships `{:type :snapshot :delta (state-fn current)}` (plain data) and the joiner
+;; integrates it via `apply-delta-fn` — exactly the replikativ metadata-catch-up.
+;; Without it, the handshake ships the raw value (`{:value}`) — fine for ordinary
+;; serializable LWW signals.
+(defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn apply-delta-fn sync? state-fn]
   proto/PSyncStrategy
 
   (-init-client-state [_]
-    ;; Client sends its current value hash, or closes channel if no state
+    ;; Client sends the hash of its current (plain-projected) value, or closes if none.
     (let [ch (chan 1)
           current @signal-atom]
       (if (some? current)
-        (do (put! ch {:hash (hash current)})
+        (do (put! ch {:hash (hash (if state-fn (state-fn current) current))})
             (close! ch))
         (close! ch))
       ch))
 
   (-handshake-items [_ client-state]
-    ;; Server sends current value if client doesn't have it
+    ;; Server sends its current value if the client doesn't already have it. With
+    ;; `state-fn` the snapshot is the plain-data projection shipped as a δ (so a
+    ;; non-serializable CRDT value still crosses); otherwise the raw value.
     (let [ch (chan 1)
           current @signal-atom
-          client-hash (:hash client-state)]
+          client-hash (:hash client-state)
+          snap (if state-fn (state-fn current) current)]
       (when (and (some? current)
                  (or (nil? client-hash)
-                     (not= (hash current) client-hash)))
-        (put! ch {:type :snapshot :value current}))
+                     (not= (hash snap) client-hash)))
+        (put! ch (if state-fn
+                   {:type :snapshot :delta snap}
+                   {:type :snapshot :value current})))
       (close! ch)
       ch))
 
-  (-apply-handshake-item [this {:keys [value]}]
-    ;; Handshake always carries a full snapshot (STATE-path) — catch-up on connect.
-    (apply-incoming! this {:value value}))
+  (-apply-handshake-item [this item]
+    ;; Catch-up on connect: a plain-data `:delta` snapshot (OP-path, convergent) or
+    ;; a full `:value` snapshot (STATE-path).
+    (apply-incoming! this (if (contains? item :delta)
+                            {:delta (:delta item)}
+                            {:value (:value item)})))
 
   (-apply-publish [this msg]
     ;; A live update: {:delta δ} (OP-path) or {:value v} (STATE-path).
@@ -124,6 +148,22 @@
 ;; =============================================================================
 ;; Server-Side API
 ;; =============================================================================
+
+;; A watch that ships the local δ (or full value) on every change — the publishing
+;; half shared by export-signal! and sync-signal!.
+(defn- attach-publish-watch! [peer topic signal wk delta-fn clear-delta-fn]
+  (add-watch signal wk
+             (fn [_ _ old-val new-val]
+               (when (not= old-val new-val)
+                 (if delta-fn
+                   (when-let [d (delta-fn new-val)]
+                     (when (if (coll? d) (seq d) true)
+                       (pubsub/publish! peer topic {:delta d})
+                       ;; Clear the δ we just shipped so it doesn't re-accrue + re-ship.
+                       ;; `=`-preserving (δ lives in metadata) ⇒ this re-seat's watch
+                       ;; fire short-circuits on the `(not= old new)` guard above.
+                       (when clear-delta-fn (swap! signal clear-delta-fn))))
+                   (pubsub/publish! peer topic {:value new-val}))))))
 
 (defn export-signal!
   "Export a Spindel signal as a Kabel pub/sub topic.
@@ -146,32 +186,70 @@
                                    so the re-seat does NOT re-fire the watch.
 
   Returns: topic"
-  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn clear-delta-fn sync?]
+  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn clear-delta-fn sync? state-fn]
                         :or {batch-size 20}}]
   (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
     ;; Register pub/sub topic with signal strategy
     (pubsub/register-topic! peer topic
-                            {:strategy (->SignalSyncStrategy signal nil merge-fn nil sync?)
+                            {:strategy (->SignalSyncStrategy signal nil merge-fn nil sync? state-fn)
                              :batch-size batch-size})
 
     ;; Watch signal for changes, publish either the OP (a δ — `delta-fn` yields the
     ;; local op) or the full STATE. With `delta-fn`, a value carrying NO δ is a
     ;; remote-integrated change → nothing to propagate (no echo); a value with a δ
     ;; ships just that op. Without `delta-fn`, ship the value (LWW, as before).
-    (add-watch signal wk
-               (fn [_ _ old-val new-val]
-                 (when (not= old-val new-val)
-                   (if delta-fn
-                     (when-let [d (delta-fn new-val)]
-                       (when (if (coll? d) (seq d) true)
-                         (pubsub/publish! peer topic {:delta d})
-                         ;; Clear the δ we just shipped so it doesn't re-accrue + re-ship.
-                         ;; `=`-preserving (δ lives in metadata) ⇒ this re-seat's watch
-                         ;; fire short-circuits on the `(not= old new)` guard above.
-                         (when clear-delta-fn (swap! signal clear-delta-fn))))
-                     (pubsub/publish! peer topic {:value new-val})))))
+    (attach-publish-watch! peer topic signal wk delta-fn clear-delta-fn)
 
     topic))
+
+(defn sync-signal!
+  "BIDIRECTIONAL convergent sync of a signal over a kabel pub/sub topic — the
+   symmetric union of `export-signal!` (publish the local δ) and `subscribe-signal!`
+   (apply a remote δ) on ONE shared `signal`. EVERY peer calls this; the kabel hub
+   relays each peer's δ to all the others (`pubsub.cljc` applies an incoming publish
+   to the local strategy AND, on the topic owner, re-fans it to the other
+   subscribers), and each peer integrates it via `apply-delta-fn` (OP-path) or
+   `merge-fn` (STATE-path / handshake).
+
+   No runaway: the CRDT join is idempotent (an apply that adds nothing returns the
+   receiver `identical?` → `apply-incoming!` skips the reset! and re-publish), an
+   integrated remote value carries no δ (`delta-fn` → nil → the watch publishes
+   nothing), and `clear-delta-fn` bounds the shipped δ.
+
+   TOPOLOGY: kabel.pubsub forwards only from the topic OWNER, so pass `:owner? true`
+   on exactly ONE peer (the hub/server — it `register-topic!`s); every other peer
+   omits it and `subscribe!`s. The owner still publishes + applies like everyone
+   else; it is just additionally the relay.
+
+   opts:
+     :owner?          this peer owns the topic (register-topic!) vs subscribe!
+     :merge-fn        STATE-path JOIN `(fn [cur incoming])` — used for the connect
+                      handshake (catch-up); for a non-serializable CRDT value start
+                      the signal at the empty replica and rely on the δ path instead.
+     :apply-delta-fn  OP-path apply `(fn [cur δ])` (`c/-apply-delta`).
+     :delta-fn        extract the local δ to ship just the op (else ship full value).
+     :clear-delta-fn  drop the just-shipped δ (keeps it bounded).
+     :sync?           true ⇒ hooks return a value (JVM/in-mem); absent ⇒ await a CPS.
+     :batch-size :watch-key  as in export-signal!."
+  [peer topic signal & {:keys [owner? batch-size watch-key merge-fn apply-delta-fn delta-fn clear-delta-fn sync? state-fn]
+                        :or {batch-size 20}}]
+  (let [wk       (or watch-key (keyword "signal-sync" (name topic)))
+        strategy (->SignalSyncStrategy signal nil merge-fn apply-delta-fn sync? state-fn)]
+    (if owner?
+      (pubsub/register-topic! peer topic {:strategy strategy :batch-size batch-size})
+      (pubsub/subscribe! peer #{topic} {:strategies {topic strategy}}))
+    (attach-publish-watch! peer topic signal wk delta-fn clear-delta-fn)
+    topic))
+
+(defn unsync-signal!
+  "Stop a bidirectional sync: remove the publish watch and detach the topic
+   (unregister if owner, else unsubscribe)."
+  [peer topic signal & {:keys [owner? watch-key]}]
+  (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
+    (remove-watch signal wk)
+    (if owner?
+      (pubsub/unregister-topic! peer topic)
+      (pubsub/unsubscribe! peer #{topic}))))
 
 (defn unexport-signal!
   "Stop exporting a signal. Removes watch and unregisters topic.
@@ -207,14 +285,14 @@
               :atom           - Use this atom instead of creating a new one
 
   Returns: atom holding the remote signal's value"
-  [peer topic & {:keys [initial-value on-update atom merge-fn apply-delta-fn sync?]}]
+  [peer topic & {:keys [initial-value on-update atom merge-fn apply-delta-fn sync? state-fn]}]
   (let [;; Create local state holder
         local (or atom (clojure.core/atom initial-value))
 
         ;; Strategy: STATE-path (merge-fn) for full values + handshake, OP-path
         ;; (apply-delta-fn) for live deltas; `:sync? true` commits a value directly
         ;; (JVM / in-mem), absent/false awaits a CPS result (durable cljs).
-        strategy (->SignalSyncStrategy local on-update merge-fn apply-delta-fn sync?)]
+        strategy (->SignalSyncStrategy local on-update merge-fn apply-delta-fn sync? state-fn)]
 
     ;; Subscribe via Kabel pub/sub
     (pubsub/subscribe! peer #{topic}

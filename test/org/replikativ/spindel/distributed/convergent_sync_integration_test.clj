@@ -18,9 +18,9 @@
        non-serializable value (handshake is STATE-path; it would fail to serialize);
      • every mutation propagates as a δ (`delta-fn`) that the client applies
        (`apply-delta-fn`) into its OWN locally-constructed empty replica.
-   This is the server-authoritative → browser-reflects direction. Bidirectional
-   OP-sync would need `export-signal!` to also wire an `apply-delta-fn` into the
-   server-side strategy (it currently registers it as nil) — a follow-up."
+   This is the server-authoritative → browser-reflects direction. The BIDIRECTIONAL
+   counterpart is `signal-sync/sync-signal!` (both peers publish + apply on a shared
+   atom; the kabel hub relays) — see bidirectional-sync-test."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.core.async :refer [timeout]]
             [kabel.peer :as peer]
@@ -66,7 +66,7 @@
               client-sig (atom (mem-gset "client"))
               _ (<?? S (pubsub/subscribe! client #{topic}
                          {:strategies {topic (ss/->SignalSyncStrategy
-                                              client-sig nil nil ys/ygg-apply-delta-fn true)}}))
+                                              client-sig nil nil ys/ygg-apply-delta-fn true nil)}}))
               _ (<?? S (timeout 500))]
 
           ;; first op: nil → G-Set #{:x}; the δ #{:x} crosses the wire

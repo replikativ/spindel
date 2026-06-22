@@ -37,7 +37,8 @@
             [is.simm.distributed-scope :as ds]
             [superv.async :refer [<?? S]]
             [yggdrasil.convergent.gset :as g]
-            [yggdrasil.convergent.durable :as durable]))
+            [yggdrasil.convergent.durable :as durable]
+            [yggdrasil.storage :as ygg-storage]))
 
 (def server-id #uuid "10000000-0000-0000-0000-0000000000c1")
 (def client-id #uuid "20000000-0000-0000-0000-0000000000c2")
@@ -68,8 +69,12 @@
 
 ;; konserve-sync opts for a durable-CRDT PSS store: reachability walker rooted at
 ;; the :crdt/roots cell (+ the freed pointer) + the root-last fetch-gate ordering.
+;; `node-child-addresses` is the OBJECT-aware projector — KonserveStorage's k/get
+;; returns PSS Leaf/Branch objects, so the walker must project (not keyword-access)
+;; each node's children, else it ships only the root for any multi-node tree.
 (def ^:private ygg-sync-opts
-  (ks-pss/make-pss-sync-opts :crdt/roots #{:crdt/roots :crdt/freed}))
+  (ks-pss/make-pss-sync-opts :crdt/roots #{:crdt/roots :crdt/freed}
+                             ygg-storage/node-child-addresses))
 
 (defn- dh-item-names
   "Read all :item/name values from a datahike conn (empty if none / not yet synced)."
@@ -98,7 +103,7 @@
           (d/transact s-dh schema)
           (d/transact s-dh [{:item/name "dh-trunk"}])
           ;; ---- SERVER: a yggdrasil durable G-Set, persisted to its file store ----
-          (let [s-ygg0 (g/gset (str ygg-id) {:store-config s-ygg-cfg :sync? true})
+          (let [s-ygg0 (g/gset (str ygg-id) {:store-config s-ygg-cfg} {:sync? true})
                 s-ygg1 (-> s-ygg0 (g/conj :alpha) (g/conj :beta))
                 s-ygg  (g/flush! s-ygg1)            ; write nodes + :crdt/roots to the store
                 s-ygg-store (:kv-store s-ygg)
@@ -128,7 +133,7 @@
                 c-dh (<!! (d/connect c-dh-cfg {:sync? false}))
 
                 ;; ---- CLIENT: a local yggdrasil store; subscribe it to the remote ----
-                c-ygg-store (:kv-store (durable/open c-ygg-cfg {:sync? true}))
+                c-ygg-store (:kv-store (durable/open c-ygg-cfg {} {:sync? true}))
                 _ (<?? S (sync/subscribe-store! client-peer ygg-topic c-ygg-store ygg-sync-opts))]
 
             ;; ---- datahike replicates: the trunk datom lands on the client ----
@@ -141,7 +146,7 @@
                 "yggdrasil :crdt/roots cell replicated to client")
             (is (poll-until
                  #(= #{:alpha :beta}
-                     (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store :sync? true}))
+                     (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store} {:sync? true}))
                           (catch Throwable _ #{})))
                  10000)
                 "client reconstructs the yggdrasil G-Set from nodes synced via the
@@ -155,10 +160,29 @@
                   "datahike live update replicated")
               (is (poll-until
                    #(= #{:alpha :beta :gamma}
-                       (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store :sync? true}))
+                       (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store} {:sync? true}))
                             (catch Throwable _ #{})))
                    10000)
-                  "yggdrasil live update replicated over the same wire"))
+                  "yggdrasil live update replicated over the same wire")
+
+              ;; ---- MULTI-NODE: a bulk write forces PSS BRANCH nodes. The walker
+              ;; must follow each node's OBJECT child-addresses to ship the whole
+              ;; tree; with bare `:addresses` it would ship only the root branch and
+              ;; the client could not reconstruct. This is the end-to-end regression
+              ;; for the konserve-sync `:addresses-fn` fix. ----
+              (let [bulk     (map #(keyword (str "k" %)) (range 200))
+                    s-ygg2   (g/flush! (reduce g/conj s-ygg' bulk))
+                    expected (into #{:alpha :beta :gamma} bulk)]
+                (is (= expected (g/elements s-ygg2)) "server G-Set holds 203 elements")
+                (is (poll-until
+                     #(= expected
+                         (try (g/elements (g/gset (str ygg-id) {:kv-store c-ygg-store} {:sync? true}))
+                              (catch Throwable _ #{})))
+                     20000)
+                    "client reconstructs the MULTI-NODE G-Set — the walker followed
+                     object child-addresses across the wire (regression)")
+                (is (> (count (<!! (k/keys c-ygg-store))) 4)
+                    "a real multi-node tree (>1 node) crossed the wire, not just the root")))
 
             ;; cleanup
             (release c-dh)

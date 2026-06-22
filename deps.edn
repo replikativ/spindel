@@ -37,6 +37,12 @@
                       ;; (PConvergent + G-Set + composite peer-join) — for the
                       ;; spindel context peer-merge test. :test only.
                       org.replikativ/yggdrasil {:local/root "../yggdrasil"}
+                      ;; Pin PSS to local here: local datahike pins :local/root
+                      ;; while released yggdrasil pins an :mvn version — tools.deps
+                      ;; can't compare the two transitively, so name it directly at
+                      ;; top level (local always wins). Also carries the diff-buf
+                      ;; overlay not yet in the released artifact.
+                      org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
