@@ -23,6 +23,7 @@
             [org.replikativ.spindel.distributed.signal-sync :as ss]
             [org.replikativ.spindel.ygg-signal :as ys]
             [yggdrasil.convergent.gset :as g]
+            [yggdrasil.convergent.cdvcs :as cd]
             [superv.async :refer [S <??]]
             [hasch.core :refer [uuid]])
   (:import (java.net ServerSocket)))
@@ -54,6 +55,25 @@
                    :clear-delta-fn ys/ygg-clear-delta-fn
                    :apply-delta-fn ys/ygg-apply-delta-fn
                    :state-fn       g/elements
+                   :sync?          true))
+
+(defn- mem-cdvcs [author]
+  (cd/cdvcs "doc" {:author author :store-config {:backend :memory :id (random-uuid)}} {:sync? true}))
+
+;; CDVCS uses the SAME convergent hooks as the G-Set — its δ is a set of full,
+;; self-contained commits (no blob fetch). No state-fn here: both peers start from
+;; the shared content-addressed base, so no handshake snapshot is needed.
+(defn- sync-cdvcs! [peer topic sig owner?]
+  (ss/sync-signal! peer topic sig
+                   :owner?         owner?
+                   :delta-fn       ys/ygg-delta-fn
+                   :clear-delta-fn ys/ygg-clear-delta-fn
+                   :apply-delta-fn ys/ygg-apply-delta-fn
+                   ;; full-delta = the serializable plain-data projection for the
+                   ;; connect handshake. WITHOUT it the handshake ships the raw
+                   ;; (non-serializable) CDVCS record and transit throws inside
+                   ;; kabel's send loop, killing the owner→subscriber direction.
+                   :state-fn       cd/full-delta
                    :sync?          true))
 
 (deftest bidirectional-two-writer-convergence
@@ -211,3 +231,44 @@
         (finally
           (<?? S (peer/stop server))
           (rm-rf s-path) (rm-rf c-path))))))
+
+(deftest cdvcs-bidirectional-converges-and-resolves
+  (testing "two CDVCS peers commit on the shared base; their δs (sets of FULL,
+            self-contained commits) cross the wire both ways and the peers CONVERGE
+            to the same frontier — whatever the delivery order (a correct CRDT is
+            order-independent: if a peer observes the other's commit first the lineage
+            is linear, else it lifts a 2-head conflict; either way SEC holds). When a
+            conflict is lifted, an authored merge δ resolves both to one head.
+            replikativ CDVCS over the wire, carried by signal-sync alone."
+    (let [port    (free-port)
+          url     (str "ws://localhost:" port)
+          sid     (uuid :cd-srv)
+          topic   :cd/doc
+          handler (http-kit/create-http-kit-handler! S url sid)
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+      (<?? S (peer/start server))
+      (try
+        (let [server-sig (atom (mem-cdvcs "server"))
+              _   (sync-cdvcs! server topic server-sig true)
+              client (peer/client-peer S (uuid :cd-cli) (pubsub/make-pubsub-peer-middleware {}) transit)
+              _   (<?? S (peer/connect S client url))
+              _   (<?? S (timeout 800))
+              client-sig (atom (mem-cdvcs "client"))
+              _   (sync-cdvcs! client topic client-sig false)
+              _   (<?? S (timeout 500))]
+          (swap! server-sig (fn [c] (cd/commit c "server" [[:assoc :s 1]])))
+          (swap! client-sig (fn [c] (cd/commit c "client" [[:assoc :c 1]])))
+          (<?? S (timeout 1500))
+          ;; the CRDT property — convergence, regardless of who saw whose commit first
+          (is (= (cd/heads @server-sig) (cd/heads @client-sig))
+              "both peers converged to the same frontier (order-independent SEC)")
+          ;; if the writes genuinely diverged, an authored merge resolves + propagates
+          (when (cd/multiple-heads? @server-sig)
+            (swap! server-sig (fn [c] (cd/merge c "server" c)))
+            (<?? S (timeout 1500))
+            (is (= 1 (count (cd/heads @server-sig))) "merge resolved the server to one head")
+            (is (= (cd/heads @server-sig) (cd/heads @client-sig))
+                "the merge δ propagated — the client resolved to the same head"))
+          (<?? S (peer/stop client)))
+        (finally
+          (<?? S (peer/stop server)))))))
