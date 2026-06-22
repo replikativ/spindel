@@ -15,6 +15,7 @@
    is the server↔browser BIDIRECTIONAL convergence proof at the transport level."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.core.async :refer [timeout]]
+            [clojure.java.io :as io]
             [kabel.peer :as peer]
             [kabel.http-kit :as http-kit]
             [kabel.middleware.transit :refer [transit]]
@@ -31,6 +32,17 @@
 
 (defn- mem-gset [id]
   (g/gset id {:store-config {:backend :memory :id (random-uuid)}}))
+
+(defn- temp-dir [prefix]
+  (.getAbsolutePath (io/file (System/getProperty "java.io.tmpdir")
+                             (str prefix "-" (System/currentTimeMillis) "-" (rand-int 100000)))))
+
+(defn- rm-rf [path]
+  (let [d (io/file path)]
+    (when (.exists d) (doseq [f (reverse (file-seq d))] (.delete f)))))
+
+(defn- file-gset [id path]
+  (g/gset id {:store-config {:backend :file :path path :id (random-uuid)}} {:sync? true}))
 
 ;; Both peers wire the SAME convergent hooks; only :owner? differs (the topic owner
 ;; is the relay hub). state-fn = g/elements ships the plain element set for the
@@ -160,3 +172,42 @@
             (<?? S (peer/stop client))))
         (finally
           (<?? S (peer/stop server)))))))
+
+(deftest durable-gset-bidirectional-and-persists
+  (testing "bidirectional convergence for a DURABLE (file-backed) G-Set: the δ is
+            plain data (elements), so each peer re-materializes the SAME
+            content-addressed PSS nodes from it (content-address dedup gives node
+            sharing for free — no separate node-push channel needed for a G-Set).
+            After convergence each peer's store is independently durable."
+    (let [port    (free-port)
+          url     (str "ws://localhost:" port)
+          sid     (uuid :dur-srv)
+          topic   :dur/gset
+          s-path  (temp-dir "bidi-sygg")
+          c-path  (temp-dir "bidi-cygg")
+          handler (http-kit/create-http-kit-handler! S url sid)
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+      (<?? S (peer/start server))
+      (try
+        (let [server-sig (atom (file-gset "server" s-path))
+              _   (sync-gset! server topic server-sig true)
+              client (peer/client-peer S (uuid :dur-cli) (pubsub/make-pubsub-peer-middleware {}) transit)
+              _   (<?? S (peer/connect S client url))
+              _   (<?? S (timeout 800))
+              client-sig (atom (file-gset "client" c-path))
+              _   (sync-gset! client topic client-sig false)
+              _   (<?? S (timeout 500))]
+          (swap! server-sig (fn [s] (g/conj s :sx)))
+          (swap! client-sig (fn [s] (g/conj s :cy)))
+          (<?? S (timeout 1500))
+          (is (= #{:sx :cy} (g/elements @server-sig)) "durable server converged on the union")
+          (is (= #{:sx :cy} (g/elements @client-sig)) "durable client converged on the union")
+          ;; persist + reopen each store independently → the converged value survives
+          (g/flush! @server-sig)
+          (g/flush! @client-sig)
+          (is (= #{:sx :cy} (g/elements (file-gset "server" s-path))) "server store is durable")
+          (is (= #{:sx :cy} (g/elements (file-gset "client" c-path))) "client store is durable")
+          (<?? S (peer/stop client)))
+        (finally
+          (<?? S (peer/stop server))
+          (rm-rf s-path) (rm-rf c-path))))))
