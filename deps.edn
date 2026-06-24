@@ -15,10 +15,10 @@
  :aliases
  {:test {:extra-paths ["test" "../datahike/src-kabel"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
-                      ;; datahike (local: carries the kabel key-sort-fn keystone +
-                      ;; the src-kabel handlers via the extra-path above) for the
-                      ;; workspace-peer two-peer integration test — a synthetic
-                      ;; kb+msgs composite synced over a real kabel peer pair.
+                      ;; LOCAL (CI must clone ../datahike): the kabel handlers used by
+                      ;; cross-system-sync + workspace-peer-integration tests live in
+                      ;; ../datahike/src-kabel (the :extra-path above) and are NOT in the
+                      ;; published datahike jar — so this can't flip to an :mvn version.
                       ;; :test only; runtime stays datahike-free.
                       org.replikativ/datahike {:local/root "../datahike"}
                       ;; Released Clojars artifact (group is.simm, not
@@ -27,22 +27,18 @@
                       ;; transitive deps; needed by tests that exercise the
                       ;; spindel.distributed/* namespaces.
                       is.simm/distributed-scope {:mvn/version "0.1.2"}
-                      ;; Optional/provided dep for the workspace-peer-sync
-                      ;; wiring ns (mirrors konserve-sync's own datahike walker:
-                      ;; in src/, requires a lib that is only a :test dep). The
-                      ;; runtime :deps stay lean; downstream apps that use the
-                      ;; wiring ns already carry konserve-sync.
-                      org.replikativ/konserve-sync {:local/root "../konserve-sync"}
-                      ;; local yggdrasil (feat/cljc) carries yggdrasil.convergent
-                      ;; (PConvergent + G-Set + composite peer-join) — for the
-                      ;; spindel context peer-merge test. :test only.
+                      ;; Provided/optional dep for workspace-peer-sync (resolved via
+                      ;; requiring-resolve in src/, so runtime :deps stay lean); the
+                      ;; :test classpath needs it present. Released artifact.
+                      org.replikativ/konserve-sync {:mvn/version "0.1.30"}
+                      ;; LOCAL (CI must clone ../yggdrasil): src/ requires the 0.3
+                      ;; convergent/overlay nss, which exist ONLY on the local 0.3
+                      ;; tree (PR #7) — not yet on Clojars. Flip to {:mvn/version "0.3.x"}
+                      ;; the moment yggdrasil 0.3 publishes; that turns CI green.
                       org.replikativ/yggdrasil {:local/root "../yggdrasil"}
-                      ;; Pin PSS to local here: local datahike pins :local/root
-                      ;; while released yggdrasil pins an :mvn version — tools.deps
-                      ;; can't compare the two transitively, so name it directly at
-                      ;; top level (local always wins). Also carries the diff-buf
-                      ;; overlay not yet in the released artifact.
-                      org.replikativ/persistent-sorted-set {:local/root "../persistent-sorted-set"}
+                      ;; canonical handlers + MST, released in 0.4.126 (same version
+                      ;; yggdrasil 0.3 pins; the diff-buf overlay is not used here).
+                      org.replikativ/persistent-sorted-set {:mvn/version "0.4.126"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
