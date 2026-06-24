@@ -3,7 +3,7 @@
    forks/advances a room, a subscribing peer re-seats its peer-local workspace
    seat (`::seated-workspace`) to the same branch + head, snapshot-isolated.
 
-   Layering (see doc/distributed-context-reflection.md):
+   Layering:
 
      transport          (app owns)  konserve-sync per-system stores + registry,
                                      kabel.pubsub, signal_sync for the descriptor

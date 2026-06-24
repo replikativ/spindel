@@ -10,7 +10,7 @@
    already carry konserve-sync. The pure gate (`workspace-peer`) has no such
    dependency.
 
-   Layering recap (doc/distributed-context-reflection.md):
+   Layering recap:
      konserve-sync store  --:on-key-update-->  apply-head-update!  ┐
      signal_sync desc     --on-update------->  set-descriptor!     ┴-> gate -> re-seat
 
