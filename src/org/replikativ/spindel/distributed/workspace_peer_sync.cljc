@@ -22,11 +22,21 @@
    glue."
   (:require [org.replikativ.spindel.distributed.workspace-peer :as wp]
             [org.replikativ.spindel.distributed.signal-sync :as ssync]
-            [konserve-sync.transport.kabel-pubsub :as ks]
-            [konserve-sync.walkers.crdt :as kcrdt]
-            [konserve-sync.walkers.yggdrasil-registry :as regw]
             #?@(:clj [[yggdrasil.protocols :as ygg]
                       [yggdrasil.composite :as ygc]])))
+
+;; konserve-sync is a PROVIDED/optional dep: only on the classpath of apps that use this
+;; wiring (dvergr, simmis), NOT in spindel's runtime :deps. Resolve its fns LAZILY via
+;; `requiring-resolve` so this ns loads/AOT-compiles against runtime :deps alone. (JVM
+;; server-transport wiring; a proper cljc/cljs split of this ns is a separate follow-up.)
+#?(:clj
+   (do
+     (defn- ks-subscribe-store! [& args]
+       (apply (requiring-resolve 'konserve-sync.transport.kabel-pubsub/subscribe-store!) args))
+     (defn- ks-register-store! [& args]
+       (apply (requiring-resolve 'konserve-sync.transport.kabel-pubsub/register-store!) args))
+     (defn- kcrdt-sync-opts []
+       ((requiring-resolve 'konserve-sync.walkers.crdt/crdt-sync-opts)))))
 
 ;; =============================================================================
 ;; yggdrasil-based resolve / compose defaults
@@ -83,7 +93,7 @@
    `subscribe-store!` (for tests). Returns the subscribe channel."
   [peer client-peer system-id topic local-store
    & {:keys [subscribe-fn head-token-fn branch-key? on-complete]}]
-  (let [subscribe (or subscribe-fn ks/subscribe-store!)
+  (let [subscribe (or subscribe-fn ks-subscribe-store!)
         on-key-update (head-update-handler
                        peer system-id
                        :head-token-fn (or head-token-fn identity)
@@ -125,7 +135,7 @@
    the whole snapshot index for history/as-of and project live = adds − removals
    with `regw/read-registry-entries`."
   [server-peer topic registry-kv-store]
-  (ks/register-store! server-peer topic registry-kv-store (kcrdt/crdt-sync-opts)))
+  (ks-register-store! server-peer topic registry-kv-store (kcrdt-sync-opts)))
 
 (defn subscribe-registry!
   "Client side: replicate a registry store into `local-store`. `on-roots` fires
@@ -134,7 +144,7 @@
    pointer). Read it with `konserve-sync.walkers.yggdrasil-registry/read-registry-entries`
    / `latest-by-system-branch`. `:subscribe-fn` overrides konserve-sync (tests)."
   [client-peer topic local-store & {:keys [on-roots on-complete subscribe-fn]}]
-  (let [subscribe (or subscribe-fn ks/subscribe-store!)]
+  (let [subscribe (or subscribe-fn ks-subscribe-store!)]
     (subscribe client-peer topic local-store
                {:on-key-update (fn [k _v _op]
                                  (when (and on-roots (= k :crdt/roots))
