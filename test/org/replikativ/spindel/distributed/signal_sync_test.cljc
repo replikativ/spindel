@@ -25,6 +25,22 @@
       (proto/-apply-publish strat {:value #{:y}})
       (is (= #{:y} @a) "LWW: remote replaces local"))))
 
+(deftest op-only-convergent-ignores-value-never-clobbers
+  (testing "an OP-only convergent subscriber (apply-delta-fn set, merge-fn NIL) must NOT
+            LWW-reset on an incoming {:value} (e.g. a connect-handshake snapshot) — that
+            would clobber concurrent local state. The value is ignored; convergence rides
+            the δ path. (Regression for the handshake-{:value} LWW footgun.)"
+    (let [a       (atom #{:x})
+          apply-δ (fn [cur d] (set/union (or cur #{}) d))
+          strat   (ss/->SignalSyncStrategy a nil nil apply-δ true nil)]
+      ;; pre-fix: a raw {:value} (no :delta) fell through to LWW reset → clobbered :x
+      (proto/-apply-handshake-item strat {:value #{:y}})
+      (is (= #{:x} @a) "value IGNORED — local :x survives (footgun closed)")
+      (proto/-apply-publish strat {:value #{:w}})
+      (is (= #{:x} @a) "a live {:value} is ignored too — only the δ path mutates")
+      (proto/-apply-publish strat {:delta #{:z}})
+      (is (= #{:x :z} @a) "the δ/OP path still applies normally"))))
+
 (deftest async-merge-joins-after-suspension
   (testing "with merge-fn + :sync? false (a CPS-returning join, as a durable :sync? false
             ygg-signal yields), the incoming value is committed only once the join

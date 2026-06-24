@@ -1,8 +1,8 @@
 (ns org.replikativ.spindel.distributed.workspace-peer-integration-test
   "DECISIVE two-peer proof of coordinated-fork-over-the-wire at the WORKSPACE
    level: a server forks a synthetic composite room (two datahike systems —
-   kb + msgs); a subscribing client's workspace-peer re-seats its
-   [:external-refs ::workspace] to the fork, snapshot-isolated, and
+   kb + msgs); a subscribing client's workspace-peer re-seats its peer-local
+   workspace seat (`::seated-workspace`) to the fork, snapshot-isolated, and
    `ygg/system` resolves the branch-correct synced sub-systems.
 
    This complements the unit tests (pure gate + callback translation) and the

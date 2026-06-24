@@ -364,7 +364,7 @@
                (when base (ygg/diff fsys base fsnap)))
              (catch Throwable _ nil))
            (try (ygg/diff fsys psnap fsnap)
-                (catch Throwable t (ygt/->DiffError psnap fsnap (.getMessage t))))))))
+                (catch Throwable t (ygt/diff-error psnap fsnap (.getMessage t))))))))
 
 #?(:clj
    (defn workspace-diff
@@ -542,7 +542,7 @@
                 ;; repoint: if cval is an overlay, update its writable system in
                 ;; place; else repoint the node.
                 (if (ovl/overlay? cval)
-                  (reset! (:local-writes cval) m)
+                  (ovl/reseat-overlay! cval m)
                   (set-node-value! child-ctx sig-ref m)))))))
       nil)))
 

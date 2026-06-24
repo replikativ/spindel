@@ -14,9 +14,8 @@
     (spin (let [v (:new (track proxy))] (render v)))"
   (:require [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
-            #?(:clj [clojure.core.async :as a :refer [chan put! close! go <! >!]]
-               :cljs [cljs.core.async :as a :refer [chan put! close!]]))
-  #?(:cljs (:require-macros [cljs.core.async.macros :refer [go]])))
+            #?(:clj  [clojure.core.async :as a :refer [chan put! close!]]
+               :cljs [cljs.core.async :as a :refer [chan put! close!]])))
 
 ;; =============================================================================
 ;; Signal Sync Strategy
@@ -90,10 +89,18 @@
         ;; Do NOT fall through to the LWW branch (which would reset the signal to
         ;; nil and clobber state).
         (do (put! ch {:ok true :changed? false}) (close! ch)))
-      ;; STATE-path JOIN (convergent).
+      ;; STATE-path JOIN (convergent): a value we know how to merge.
       merge-fn
       (commit! (fn [cur] (merge-fn cur (:value msg))))
-      ;; STATE-path LWW (ordinary signal): a plain value, committed directly.
+      ;; CONVERGENT but OP-only (apply-delta-fn set, no merge-fn): a raw {:value}
+      ;; (e.g. a connect-handshake snapshot) would LWW-CLOBBER concurrent local
+      ;; state. The presence of a convergent hook marks this signal convergent, so
+      ;; we must NEVER blind-reset it — IGNORE the value; convergence rides the
+      ;; δ/state-fn path. (Wire `state-fn` so the handshake ships a joinable δ, not
+      ;; a raw value — see SignalSyncStrategy's state-fn note + `sync-signal!`.)
+      apply-delta-fn
+      (do (put! ch {:ok true :changed? false}) (close! ch))
+      ;; STATE-path LWW (ordinary, non-convergent signal): a plain value, set directly.
       :else
       (let [old @signal-atom]
         (reset! signal-atom (:value msg))
@@ -190,6 +197,13 @@
                                    metadata, so every op re-ships the whole accumulated δ and memory
                                    grows unboundedly. Clearing is a pure metadata op (`=`-preserving),
                                    so the re-seat does NOT re-fire the watch.
+               :merge-fn         - JOIN an incoming remote {:value} into the local one (convergent
+                                   STATE-path). Pass it for CRDT signals so an incoming value is
+                                   merged, never LWW-reset. (`sync-signal!` wires this for you.)
+               :state-fn         - project the local value to a serializable snapshot for the
+                                   connect handshake (a non-serializable CRDT value ships its
+                                   plain-data projection as a δ instead of a raw value).
+               :sync?            - run the strategy's apply path synchronously (JVM) vs async.
 
   Returns: topic"
   [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn clear-delta-fn sync? state-fn]

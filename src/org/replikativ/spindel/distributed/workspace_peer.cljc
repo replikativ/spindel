@@ -1,7 +1,7 @@
 (ns org.replikativ.spindel.distributed.workspace-peer
   "Reflect a yggdrasil composite *workspace* between peers: when the server
-   forks/advances a room, a subscribing peer re-seats its `[:external-refs
-   ::workspace]` to the same branch + head, snapshot-isolated.
+   forks/advances a room, a subscribing peer re-seats its peer-local workspace
+   seat (`::seated-workspace`) to the same branch + head, snapshot-isolated.
 
    Layering (see doc/distributed-context-reflection.md):
 
@@ -128,9 +128,9 @@
      :resolve-system-fn (fn [system-id branch] -> ygg-system) (req) — build/look
                         up the locally-synced, branch-scoped sub-system.
      :compose-fn        (fn [{system-id -> ygg-system}] -> workspace-value)
-                        — combine resolved systems into the value stored at
-                        [:external-refs ::workspace]. Defaults to the systems map
-                        (useful for tests); JVM apps pass a CompositeSystem builder.
+                        — combine resolved systems into the value stored at the
+                        peer-local workspace seat (`::seated-workspace`). Defaults to
+                        the systems map (tests); JVM apps pass a CompositeSystem builder.
      :on-reseat         (fn [workspace-value descriptor]) optional — fired after a
                         successful re-seat (e.g. to notify UI / log).
 

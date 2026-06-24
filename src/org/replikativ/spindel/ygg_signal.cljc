@@ -23,6 +23,7 @@
   (:require [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
+            [yggdrasil.protocols :as ygg]
             [yggdrasil.convergent :as yc]
             [yggdrasil.convergent.overlay :as ovl]))
 
@@ -72,17 +73,18 @@
   "Whether `sys` is async-backed — a durable CRDT/composite opened `:sync? false`
    (cljs / konserve over async storage), whose ops return a partial-cps CPS. Such
    a value must be mutated via `swap-await!`; a sync system (JVM datahike/git/CRDT
-   — no `:opts` or `:sync? true`) takes a plain `swap!`."
+   — no `:opts` or `:sync? true`) takes a plain `swap!`. Delegates to yggdrasil's
+   supported predicate (`ygg/system-async?`) — do not peek `(:opts sys)` here."
   [sys]
-  (false? (:sync? (:opts sys))))
+  (ygg/system-async? sys))
 
 (defn sync-system?
   "Whether `sys`'s ops run synchronously (return a value, not a CPS) — JVM /
    in-mem / `:sync? true` durable. The `:sync?` flag to pass `export-signal!` /
-   `subscribe-signal!` for this value (the konserve/PSS convention: last opt,
-   defaults to async). The complement of [[async-system?]]."
+   `subscribe-signal!` for this value. The complement of [[async-system?]];
+   delegates to `ygg/system-sync?`."
   [sys]
-  (not (async-system? sys)))
+  (ygg/system-sync? sys))
 
 
 (defn ops
