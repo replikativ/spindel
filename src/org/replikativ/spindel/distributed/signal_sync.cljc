@@ -38,7 +38,8 @@
 ;;                    Sender side = `export-signal!`'s `:delta-fn`.
 ;;   `sync?`          true ⇒ the hooks return a value (commit directly); absent/
 ;;                    false ⇒ a CPS we await before committing. Set it from the
-;;                    value's own mode (= `(not (async-system? v))`).
+;;                    caller's platform (JVM sync / cljs async) — the same `:sync?`
+;;                    the convergent ops default to (a system carries no mode).
 ;;
 ;; An incoming message is `{:delta δ}` (op-path) OR `{:value v}` (state-path); the
 ;; receiver dispatches on which key is present. With no `merge-fn`, a `{:value}` is

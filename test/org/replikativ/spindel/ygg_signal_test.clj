@@ -19,7 +19,8 @@
            (with-ctx [_ctx]
              (let [gs  (g/gset "kb" {:store-config {:backend :memory :id (random-uuid)}})
                    sig (ys/ygg-signal gs)]
-               (is (false? (ys/async-system? gs)) "a JVM (:sync? true) system → plain swap!")
+               ;; a JVM system → plain `swap!` (its ops default to sync; a system
+               ;; carries no mode — async-system?/sync-system? were removed).
                (swap! sig (fn [s] (g/conj s :x)))
                (swap! sig (fn [s] (g/conj s :y)))
                (is (= #{:x :y} (g/elements @sig))

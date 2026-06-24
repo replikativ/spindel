@@ -7,8 +7,9 @@
    The signal *core* stays yggdrasil-free; this ns is the yggdrasil-aware seam.
    A ygg-signal value IS the system, so you MUTATE it with the ordinary signal
    primitives — `swap!` for a sync (JVM) value, `swap-await!` (from a spin) for an
-   async (cljs / konserve-IO) one: `(swap! sig #(g/conj % :x))`. (`async-system?`
-   tells you which, if a cross-platform caller needs to choose.) Mutate with a plain
+   async (cljs / konserve-IO) one: `(swap! sig #(g/conj % :x))`. A system no longer
+   carries an execution mode — each op picks `:sync?` per call (default: JVM sync /
+   cljs async); the caller knows its platform. Mutate with a plain
    `swap!` — for distributed OP-path sync the export clears the shipped δ for you
    (`:clear-delta-fn ygg-clear-delta-fn`), so each op's δ is exactly that op and the
    in-memory δ stays bounded; you needn't clear inline.
@@ -23,7 +24,6 @@
   (:require [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
-            [yggdrasil.protocols :as ygg]
             [yggdrasil.convergent :as yc]
             [yggdrasil.convergent.overlay :as ovl]))
 
@@ -69,23 +69,11 @@
   (let [v (sig/deref-signal sig)]
     (if (ovl/overlay? v) (ovl/overlay-value v) v)))
 
-(defn async-system?
-  "Whether `sys` is async-backed — a durable CRDT/composite opened `:sync? false`
-   (cljs / konserve over async storage), whose ops return a partial-cps CPS. Such
-   a value must be mutated via `swap-await!`; a sync system (JVM datahike/git/CRDT
-   — no `:opts` or `:sync? true`) takes a plain `swap!`. Delegates to yggdrasil's
-   supported predicate (`ygg/system-async?`) — do not peek `(:opts sys)` here."
-  [sys]
-  (ygg/system-async? sys))
-
-(defn sync-system?
-  "Whether `sys`'s ops run synchronously (return a value, not a CPS) — JVM /
-   in-mem / `:sync? true` durable. The `:sync?` flag to pass `export-signal!` /
-   `subscribe-signal!` for this value. The complement of [[async-system?]];
-   delegates to `ygg/system-sync?`."
-  [sys]
-  (ygg/system-sync? sys))
-
+;; NOTE: the per-system predicates `async-system?`/`sync-system?` were REMOVED — a
+;; yggdrasil system no longer carries an execution mode (yggdrasil dropped the
+;; `:opts {:sync?}` field). The platform default (JVM sync / cljs async) is the
+;; mode for a `swap!` vs `swap-await!` decision, and the same value is what you pass
+;; as the SignalSyncStrategy's `:sync?` — the caller knows its own platform.
 
 (defn ops
   "The pending local δ (ops applied to ygg-signal `sig` since the last propagation)
@@ -111,9 +99,15 @@
 (defn ygg-apply-delta-fn
   "Receiver hook for `subscribe-signal!`'s `:apply-delta-fn` — integrate a peer's δ
    into the local convergent value (the OP-path, O(δ)). Returns the new value
-   without a local δ (remote ops don't re-propagate)."
-  [current delta]
-  (yc/-apply-delta current delta))
+   without a local δ (remote ops don't re-propagate).
+
+   Dual-arity: pass the SYMBOL (2-arity hook) to use the PLATFORM default mode — which
+   already matches the SignalSyncStrategy's `:sync?` in both normal deployments (JVM
+   sync, cljs async). For an async-on-JVM ygg-signal (durable `:sync? false` on the
+   JVM, whose `-apply-delta` must return a CPS), pass `(ygg-apply-delta-fn false)` so
+   the hook threads that mode explicitly (matching the strategy's `:sync? false`)."
+  ([sync?] (fn [current delta] (yc/-apply-delta current delta {:sync? sync?})))
+  ([current delta] (yc/-apply-delta current delta)))
 
 (defn ygg-merge-fn
   "Signal-sync STATE-path merge for a CONVERGENT ygg-signal value: JOIN the
@@ -121,7 +115,12 @@
    converge) rather than LWW-overwrite. Use as `:merge-fn` on `export-signal!` /
    `subscribe-signal!`. `c/-join` is `async+sync`: it returns the merged value
    directly for a JVM/in-mem value, or a partial-cps CPS for a durable
-   `:sync? false` (cljs/konserve) value — pass `:sync?` (= [[sync-system?]]) so
-   signal-sync commits the value vs awaits the CPS. ONE hook, both modes."
-  [current incoming]
-  (yc/-join current incoming))
+   `:sync? false` (cljs/konserve) value — so signal-sync commits the value vs awaits
+   the CPS based on its `:sync?` field.
+
+   Dual-arity: pass the SYMBOL (2-arity hook) for the PLATFORM default mode (JVM sync
+   / cljs async — which matches the strategy's `:sync?` in both normal deployments).
+   For an async-on-JVM value, pass `(ygg-merge-fn false)` to thread that mode into the
+   join explicitly so it returns a CPS (matching the strategy's `:sync? false`)."
+  ([sync?] (fn [current incoming] (yc/-join current incoming {:sync? sync?})))
+  ([current incoming] (yc/-join current incoming)))
