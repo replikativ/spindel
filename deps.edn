@@ -13,14 +13,15 @@
         org.replikativ/kabel {:mvn/version "0.3.94"}}
 
  :aliases
- {:test {:extra-paths ["test" "../datahike/src-kabel"]
+ {:test {:extra-paths ["test"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
-                      ;; LOCAL (CI must clone ../datahike): the kabel handlers used by
-                      ;; cross-system-sync + workspace-peer-integration tests live in
-                      ;; ../datahike/src-kabel (the :extra-path above) and are NOT in the
-                      ;; published datahike jar — so this can't flip to an :mvn version.
-                      ;; :test only; runtime stays datahike-free.
-                      org.replikativ/datahike {:local/root "../datahike"}
+                      ;; datahike's kabel-writer client (datahike.kabel.*), used by the
+                      ;; cross-system-sync + workspace-peer-integration tests, SHIPS in the
+                      ;; published datahike jar (src-kabel is one of its build src-dirs), so
+                      ;; this is a plain :mvn dep — no sibling checkout / CI clone. The
+                      ;; handlers' deps are satisfied by kabel (a main dep) + distributed-scope
+                      ;; + konserve-sync (below). :test only; runtime stays datahike-free.
+                      org.replikativ/datahike {:mvn/version "0.8.1704"}
                       ;; Released Clojars artifact (group is.simm, not
                       ;; org.replikativ — distributed-scope is published from
                       ;; the simm-is org). Pulls kabel + missionary as
