@@ -65,8 +65,8 @@
               ;; the client holds its OWN empty replica; OP-path subscribe (apply-delta-fn)
               client-sig (atom (mem-gset "client"))
               _ (<?? S (pubsub/subscribe! client #{topic}
-                         {:strategies {topic (ss/->SignalSyncStrategy
-                                              client-sig nil nil ys/ygg-apply-delta-fn true nil)}}))
+                                          {:strategies {topic (ss/->SignalSyncStrategy
+                                                               client-sig nil nil ys/ygg-apply-delta-fn true nil)}}))
               _ (<?? S (timeout 500))]
 
           ;; first op: nil → G-Set #{:x}; the δ #{:x} crosses the wire
