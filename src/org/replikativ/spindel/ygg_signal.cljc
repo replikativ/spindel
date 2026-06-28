@@ -38,7 +38,13 @@
    a DeltaableMap and break protocol dispatch (`system-type`, `-join`, …). We seat
    the node directly with `deltaable? false` so deref returns the system itself."
   [sys]
-  (let [s (sig/signal sys)]
+  ;; Seed the SignalRef with `nil`, NOT `sys`: we seat the node directly below, so
+  ;; the generic lazy-init seed (`ensure-signal-initialized!`) is never needed — and
+  ;; if it ever fired it would `wrap-deltaable` the system record into a DeltaableMap
+  ;; and break protocol dispatch (the very thing the direct `deltaable? false` seat
+  ;; avoids). A nil seed also keeps the registry handle a pure `{id}` pointer instead
+  ;; of pinning a strong ref to the raw root system (store/conn/repo).
+  (let [s (sig/signal nil)]
     (ec/swap-state! [:nodes (:id s)]
                     (fn [_] (nodes/->signal-node sys nil nil false #{} 0)))
     (ec/swap-state! [:forkable-signals] #(conj (or % #{}) (:id s)))
@@ -124,3 +130,30 @@
    join explicitly so it returns a CPS (matching the strategy's `:sync? false`)."
   ([sync?] (fn [current incoming] (yc/-join current incoming {:sync? sync?})))
   ([current incoming] (yc/-join current incoming)))
+
+(defn sync-opts
+  "The signal-sync strategy opts for syncing yggdrasil system `sys` over kabel —
+   DERIVED from the system's convergent protocols, so a caller can't mismatch the
+   wire paths to the system's actual capabilities. Pass the result to
+   `signal-sync/sync-signal!` (or `export-signal!` / `subscribe-signal!`):
+
+     (sync-signal! peer topic sig (sync-opts @sig :sync? true))
+
+   The capability → wire-path mapping (this is the single home for it):
+     PConvergent (`-join`)        → STATE-path  : :merge-fn (handshake / full value)
+     PDeltaApply (`-apply-delta`) → OP-path     : :apply-delta-fn + :delta-fn + :clear-delta-fn
+     neither                      → LWW         : no hooks (signal-sync resets directly)
+
+   NOTE: this maps the convergent protocols, NOT yggdrasil's `Mergeable` capability —
+   that is the 3-way ancestor merge (branch merge-to-parent), which throws on conflict;
+   distributed sync needs `-join`'s symmetric, no-ancestor convergence.
+
+   `sync?` threads the platform mode into the hooks AND becomes the strategy's
+   `:sync?` (JVM sync / cljs async — the join/apply returns a value vs a CPS
+   accordingly). A non-convergent `sys` yields `{:sync? sync?}` → plain LWW."
+  [sys & {:keys [sync?]}]
+  (cond-> {:sync? sync?}
+    (satisfies? yc/PConvergent sys) (assoc :merge-fn (ygg-merge-fn sync?))
+    (satisfies? yc/PDeltaApply sys) (assoc :apply-delta-fn (ygg-apply-delta-fn sync?)
+                                           :delta-fn ygg-delta-fn
+                                           :clear-delta-fn ygg-clear-delta-fn)))

@@ -59,6 +59,14 @@
    is single-threaded, so compute-then-reset there is race-free."
   [{:keys [signal-atom on-update-fn merge-fn apply-delta-fn sync?]} msg]
   (let [ch (chan 1)
+        ;; The strategy's KIND, named once: a signal is CONVERGENT iff it carries any
+        ;; conflict-resolving hook (STATE-path `merge-fn` and/or OP-path
+        ;; `apply-delta-fn`); otherwise it is an ordinary LWW signal. A convergent
+        ;; signal is NEVER blind-reset — the `:else` LWW branch is reachable only when
+        ;; `(not convergent?)`, so a wire message we can't integrate is dropped, never
+        ;; clobbered. (This is the transport-level kind; the yggdrasil protocol →
+        ;; hook mapping lives in the `ygg-signal` seam, see `ygg-signal/sync-opts`.)
+        convergent? (boolean (or merge-fn apply-delta-fn))
         ;; IDEMPOTENT no-op: a convergent op that added nothing returns the receiver
         ;; identically ⇒ no reactive tick and (crucially) no re-publish, so a
         ;; mutually-synced network does not run away re-joining equal states.
@@ -93,13 +101,13 @@
       ;; STATE-path JOIN (convergent): a value we know how to merge.
       merge-fn
       (commit! (fn [cur] (merge-fn cur (:value msg))))
-      ;; CONVERGENT but OP-only (apply-delta-fn set, no merge-fn): a raw {:value}
-      ;; (e.g. a connect-handshake snapshot) would LWW-CLOBBER concurrent local
-      ;; state. The presence of a convergent hook marks this signal convergent, so
-      ;; we must NEVER blind-reset it — IGNORE the value; convergence rides the
-      ;; δ/state-fn path. (Wire `state-fn` so the handshake ships a joinable δ, not
-      ;; a raw value — see SignalSyncStrategy's state-fn note + `sync-signal!`.)
-      apply-delta-fn
+      ;; CONVERGENT but no merge-fn for this {:value} (e.g. an OP-only signal taking a
+      ;; connect-handshake snapshot): blind-resetting would LWW-CLOBBER concurrent
+      ;; local state, so we IGNORE it — convergence rides the δ/state-fn path. (Wire
+      ;; `state-fn` so the handshake ships a joinable δ, not a raw value — see
+      ;; SignalSyncStrategy's state-fn note + `sync-signal!`.) Gated on the named
+      ;; `convergent?` kind so the LWW `:else` is unreachable for convergent signals.
+      convergent?
       (do (put! ch {:ok true :changed? false}) (close! ch))
       ;; STATE-path LWW (ordinary, non-convergent signal): a plain value, set directly.
       :else
