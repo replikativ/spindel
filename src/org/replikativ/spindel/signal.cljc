@@ -91,7 +91,7 @@
 ;;  :deltaable? boolean               ; Explicit flag: can this signal track deltas?
 ;;  :observers #{spin-ids}}
 
-(declare swap-signal*-explicit get-signal-value)
+(declare swap-signal*-explicit get-signal-value compare-and-set-signal!)
 
 (defrecord SignalRef [id initial-value]
   Object
@@ -120,10 +120,8 @@
        (reset [this newval]
               (swap-signal*-explicit this (constantly newval)))
 
-       (compareAndSet [_ _ _]
-         ;; CAS not yet supported for signals
-                      (throw (UnsupportedOperationException.
-                              "compareAndSet not yet supported on signals")))]
+       (compareAndSet [this oldv newv]
+                      (compare-and-set-signal! this oldv newv))]
 
       :cljs
       [IDeref
@@ -366,6 +364,55 @@
   [signal-ref]
   (get-signal-value signal-ref))
 
+(defn compare-and-set-signal!
+  "Atomically install `newval` iff the signal's current value is `identical?` to
+   `oldval` — atom-CAS semantics, where `oldval` is the exact object the caller just
+   read. Returns true on success, false if the value changed under it.
+
+   The compare + install are ONE atomic step over the engine's `cas-state!` on the
+   signal node (the same runtime CAS the engine exposes for 'advanced CAS patterns'),
+   so a concurrent write can never be lost — no extra lock or coordination state, just
+   the runtime's own atomicity. On success it bumps the generation and enqueues a
+   reactive change like any `swap!`. This is the primitive a race-free
+   read→await→commit uses (`swap-await!`): a false return means re-read and re-merge."
+  [signal-ref oldval newval]
+  (ensure-signal-initialized! signal-ref)
+  (let [id (:id signal-ref)]
+    (loop []
+      (let [old-node (ec/get-state [:nodes id])]
+        (cond
+          (nil? old-node) false
+          (not (identical? (nodes/get-value old-node) oldval)) false
+          :else
+          (let [deltas      (d/get-deltas newval)
+                clean-value (d/clear-deltas newval)
+                new-node    (nodes/->signal-node clean-value
+                                                 (nodes/get-value old-node)
+                                                 deltas
+                                                 (:deltaable? old-node)
+                                                 (nodes/get-observers old-node)
+                                                 (inc (or (:generation old-node) 0)))]
+            ;; cas-state! guards on node identity; a losing race (node replaced, even
+            ;; with an =-value) re-checks the value identity above and retries — a
+            ;; bounded sync loop (no await inside ⇒ no partial-cps loop/recur hazard).
+            (if (ec/cas-state! [:nodes id] old-node new-node)
+              (do (ec/enqueue-event! {:type :signal-change :id id}) true)
+              (recur))))))))
+
+(defn signal-ref?
+  "True if `x` is a spindel SignalRef (runtime-backed signal) vs a plain atom."
+  [x]
+  (instance? SignalRef x))
+
+(defn cas!
+  "Compare-and-set across both signal kinds: install `newval` iff the current value is
+   the just-read `oldval`; returns boolean. A spindel `SignalRef` goes through the
+   runtime-atomic `compare-and-set-signal!`; a plain atom uses core `compare-and-set!`."
+  [signal oldval newval]
+  (if (signal-ref? signal)
+    (compare-and-set-signal! signal oldval newval)
+    (compare-and-set! signal oldval newval)))
+
 (defn swap-await!
   "Async signal mutation for IO-backed / interval values (the bridge for a
    ygg-signal whose value is a yggdrasil system).
@@ -385,18 +432,27 @@
    async contract.
 
    `f` carries the merge semantics (e.g. `#(p/merge! % branch)` / a CRDT `-join`);
-   the signal core stays value-agnostic. Single-machine assumption: no concurrent
-   `swap-await!` on the same signal (serialize via a semaphore when needed). The
-   commit rebinds the execution context captured at call time, since the post-IO
-   resume may land off the engine thread."
+   the signal core stays value-agnostic. RACE-FREE: the commit is a `compare-and-set-
+   signal!` against the value read before the await, so a concurrent `swap!`/
+   `swap-await!` landing during the IO is detected and `f` re-run against the fresh
+   value (the CRDT merge is idempotent/commutative ⇒ the retry converges, nothing is
+   lost). No lock or extra state — the signal's own atomic node-CAS is the only
+   primitive. The commit rebinds the execution context captured at call time, since
+   the post-IO resume may land off the engine thread."
   [signal-ref f & args]
   (let [ctx (ec/current-execution-context)]
-    (async
-     (let [cur (deref-signal signal-ref)
-           new (await (apply f cur args))]
-       (ec/with-context ctx
-         (swap-signal*-explicit signal-ref (constantly new)))
-       new))))
+    (letfn [(attempt []
+              (async
+               (let [cur (deref-signal signal-ref)
+                     new (await (apply f cur args))]
+                 (ec/with-context ctx
+                   (if (compare-and-set-signal! signal-ref cur new)
+                     new
+                     ;; a write landed during the await — re-merge against the new
+                     ;; current. Function recursion, NOT loop/recur: recur across an
+                     ;; await can hang in partial-cps.
+                     (await (attempt)))))))]
+      (attempt))))
 
 (defn get-signal-detailed
   "Get signal value wrapped in Interval for dual perspective access.

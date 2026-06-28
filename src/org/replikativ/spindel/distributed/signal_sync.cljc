@@ -14,6 +14,8 @@
     (spin (let [v (:new (track proxy))] (render v)))"
   (:require [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
+            [org.replikativ.spindel.signal :as sig]
+            [org.replikativ.spindel.engine.core :as ec]
             #?(:clj  [clojure.core.async :as a :refer [chan put! close!]]
                :cljs [cljs.core.async :as a :refer [chan put! close!]])))
 
@@ -51,12 +53,14 @@
    Returns a channel yielding `{:ok true}` (or `{:error e}`) once committed — async
    so a konserve-backed join/apply can suspend before the commit.
 
-   The convergent paths integrate via an ATOMIC `swap-vals!` (sync) so a concurrent
-   LOCAL `swap!` on the same signal is not lost to a blind reset! of a value computed
-   from a stale read — which would silently drop a peer's own write (the hub never
-   echoes a peer its own δ, so the loss would be permanent). `apply-delta-fn`/
-   `merge-fn` are pure CRDT ops, safe under CAS retry. The async (durable/cljs) path
-   is single-threaded, so compute-then-reset there is race-free."
+   Both commit paths are race-free so a concurrent LOCAL `swap!` (or another apply) on
+   the same signal is never lost — which would silently drop a peer's own write (the
+   hub never echoes a peer its own δ, so the loss would be permanent). The sync path
+   uses an atomic `swap-vals!`. The async (durable/cljs) path commits via
+   `compare-and-set` and re-merges on a losing race: `await` is a cooperative yield
+   point, so 'single-threaded' does NOT mean non-interleaved — a write landing during
+   the suspension is detected by the CAS and the op re-run. `apply-delta-fn`/`merge-fn`
+   are idempotent/commutative CRDT ops, safe under retry."
   [{:keys [signal-atom on-update-fn merge-fn apply-delta-fn sync?]} msg]
   (let [ch (chan 1)
         ;; The strategy's KIND, named once: a signal is CONVERGENT iff it carries any
@@ -76,19 +80,39 @@
                     (do (when on-update-fn (on-update-fn new))
                         (put! ch {:ok true :changed? true})
                         (close! ch))))
+        fail!   (fn [e] (put! ch {:error e}) (close! ch))
         commit! (fn [integrate]
-                  (try
-                    (if sync?
-                      ;; atomic recompute against the live value
+                  (if sync?
+                    ;; sync: one atomic swap-vals!, no suspension ⇒ no interleaving.
+                    (try
                       (let [[old new] (swap-vals! signal-atom integrate)]
                         (finish! old new))
-                      ;; async CPS: compute then await then reset (single-threaded)
-                      (let [old @signal-atom]
-                        ((integrate old)
-                         (fn [v] (reset! signal-atom v) (finish! old v))
-                         (fn [err] (put! ch {:error err}) (close! ch)))))
-                    (catch #?(:clj Exception :cljs js/Error) e
-                      (put! ch {:error e}) (close! ch))))]
+                      (catch #?(:clj Exception :cljs js/Error) e (fail! e)))
+                    ;; async: the konserve-backed join suspends before the commit, so a
+                    ;; concurrent apply OR a local swap! could land in between. Commit via
+                    ;; compare-and-set and re-merge on a losing race — nothing is lost (the
+                    ;; CRDT op is idempotent/commutative). For a SignalRef the read/CAS need
+                    ;; the execution context bound at entry (the existing @signal-atom read
+                    ;; relied on it); capture it and rebind across the post-IO resume, which
+                    ;; may land off the engine thread. `sig/cas!` dispatches SignalRef vs
+                    ;; plain atom.
+                    ;; Only a SignalRef's read/CAS need an execution context; a plain
+                    ;; atom (the kabel-land case) has none bound — don't demand one.
+                    (let [ctx    (when (sig/signal-ref? signal-atom) (ec/current-execution-context))
+                          rebind (fn [thunk] (if ctx (ec/with-context ctx (thunk)) (thunk)))]
+                      (letfn [(attempt []
+                                (try
+                                  (let [old (rebind (fn [] @signal-atom))]
+                                    ((integrate old)
+                                     (fn [new]
+                                       (try
+                                         (if (rebind (fn [] (sig/cas! signal-atom old new)))
+                                           (finish! old new)
+                                           (attempt))   ; value moved mid-await — re-integrate
+                                         (catch #?(:clj Exception :cljs js/Error) e (fail! e))))
+                                     fail!))
+                                  (catch #?(:clj Exception :cljs js/Error) e (fail! e))))]
+                        (attempt)))))]
     (cond
       ;; OP-path: apply just the delta (cheap, no full state).
       (contains? msg :delta)
