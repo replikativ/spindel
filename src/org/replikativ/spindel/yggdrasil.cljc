@@ -18,7 +18,7 @@
      (`PForkable/fork-value`): the default OVERLAY fork from the current head
      (`:following`, degrading to `:frozen` for versioned git/datahike), or a
      SNAPSHOT fork that pins a fixed snapshot-id (`fork-context … :snapshots`).
-   - workspace-diff / workspace-conflicts: per-system delta of a fork vs its
+   - context-diff / context-conflicts: per-system delta of a fork vs its
      parent, using each system's own merge-base.
    - merge-to-parent! / discard-from-parent!: parent-controlled merge-down /
      discard of the fork's per-system overlays.
@@ -54,7 +54,16 @@
 ;; Index keys
 ;; =============================================================================
 
-;; [:ygg-signals]      {system-id -> SignalRef}  — the resolution registry.
+;; [:ygg-signals]      {system-id -> SignalRef}  — an ADDRESSING INDEX (yggdrasil
+;;                                                  system-id → which signal holds
+;;                                                  it), NOT a parallel signal store:
+;;                                                  the systems are ordinary forkable
+;;                                                  signal nodes in [:nodes]. It only
+;;                                                  exists to resolve/enumerate a
+;;                                                  system by its DOMAIN id (`system`,
+;;                                                  `registered-systems`, the by-id
+;;                                                  YggRef); `@yref` alone wouldn't
+;;                                                  need it.
 ;; [:forkable-signals] #{signal-id …}            — the engine's fork hook (set by
 ;;                                                  ygg-signal); fork-context forks
 ;;                                                  each of these signal values.
@@ -367,7 +376,7 @@
                 (catch Throwable t (ygt/diff-error psnap fsnap (.getMessage t))))))))
 
 #?(:clj
-   (defn workspace-diff
+   (defn context-diff
      "Per-system delta of a forked context vs its parent — the unified diff a
       reviewer reads: {system-id -> typed yggdrasil delta (GitDiff / DatahikeDiff /
       DiffError)}. nil when the context has no parent. Non-Mergeable systems are
@@ -383,7 +392,7 @@
              (shared-pairs child-ctx parent-ctx)))))
 
 #?(:clj
-   (defn workspace-conflicts
+   (defn context-conflicts
      "Per-system conflicts of a forked context vs its parent, each tagged
       `:system`. nil when the context has no parent."
      [child-ctx]
@@ -399,8 +408,6 @@
                                 (catch Throwable _ nil))))))
              (shared-pairs child-ctx parent-ctx)))))
 
-;; context-diff: backwards-compatible alias.
-#?(:clj (def context-diff workspace-diff))
 
 ;; =============================================================================
 ;; Merge / Discard (Parent-Controlled)
@@ -445,7 +452,7 @@
                                                :error (.getMessage e)}])))))
                                 pairs)]
               (when (seq confs)
-                (throw (ex-info "workspace merge has conflicts; aborting (pass :strategy or :force)"
+                (throw (ex-info "context merge has conflicts; aborting (pass :strategy or :force)"
                                 {:conflicts (vec confs)})))))
           ;; 2. merge each overlay down, repoint the parent ygg-signal, discard.
           (let [merged (reduce

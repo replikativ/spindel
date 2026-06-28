@@ -476,8 +476,8 @@
             "ygg/system returns the same instance as @yref (root: no overlay)")
         (is (= :git (ygg-proto/system-type (ygg/system sid))))))))
 
-(deftest test-workspace-diff-merge-base
-  (testing "workspace-diff reports the fork's OWN change via per-system merge-base"
+(deftest test-context-diff-merge-base
+  (testing "context-diff reports the fork's OWN change via per-system merge-base"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
             sid  (ygg-proto/system-id *test-git-system*)
@@ -495,10 +495,10 @@
           (spit (str repo-path "/parent-only.txt") "parent advance")
           (sh "git" "add" "parent-only.txt" :dir repo-path)
           (sh "git" "commit" "-m" "parent advance" :dir repo-path))
-        (let [diff (ygg/workspace-diff child-ctx)
+        (let [diff (ygg/context-diff child-ctx)
               gdiff (get diff sid)
               files (set (map :path (:files gdiff)))]
-          (is (some? gdiff) "workspace-diff has the git sub-system")
+          (is (some? gdiff) "context-diff has the git sub-system")
           (is (contains? files "ws-diff.txt") "fork's own file is in the diff")
           (is (not (contains? files "parent-only.txt"))
               "parent's concurrent advance is excluded (merge-base)"))
