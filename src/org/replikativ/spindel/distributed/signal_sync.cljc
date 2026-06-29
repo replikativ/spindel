@@ -83,10 +83,19 @@
         fail!   (fn [e] (put! ch {:error e}) (close! ch))
         commit! (fn [integrate]
                   (if sync?
-                    ;; sync: one atomic swap-vals!, no suspension ⇒ no interleaving.
+                    ;; sync: integrate returns a value. Commit via an atomic compare-and-set
+                    ;; retry — `cas!`/`cas-read` work on a SignalRef AND a plain atom, whereas
+                    ;; `swap-vals!` throws on a SignalRef (IAtom, not IAtom2). Fully synchronous
+                    ;; (no await ⇒ no partial-cps loop/recur hazard). `cas-read` returns the RAW
+                    ;; value `cas!` compares against (not `@`, which is unwrapped for a SignalRef
+                    ;; and would never match).
                     (try
-                      (let [[old new] (swap-vals! signal-atom integrate)]
-                        (finish! old new))
+                      (loop []
+                        (let [old (sig/cas-read signal-atom)
+                              new (integrate old)]
+                          (if (sig/cas! signal-atom old new)
+                            (finish! old new)
+                            (recur))))
                       (catch #?(:clj Exception :cljs js/Error) e (fail! e)))
                     ;; async: the konserve-backed join suspends before the commit, so a
                     ;; concurrent apply OR a local swap! could land in between. Commit via
@@ -102,7 +111,7 @@
                           rebind (fn [thunk] (if ctx (ec/with-context ctx (thunk)) (thunk)))]
                       (letfn [(attempt []
                                 (try
-                                  (let [old (rebind (fn [] @signal-atom))]
+                                  (let [old (rebind (fn [] (sig/cas-read signal-atom)))]
                                     ((integrate old)
                                      (fn [new]
                                        (try

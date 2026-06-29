@@ -453,6 +453,19 @@
     (compare-and-set-signal! signal oldval newval)
     (compare-and-set! signal oldval newval)))
 
+(defn cas-read
+  "The CAS-comparable current value of `signal` — the exact representation `cas!`
+   compares against. For a SignalRef this is the RAW (un-unwrapped) value: the node
+   stores a deltaable-wrapped value and `compare-and-set-signal!` compares it by
+   `identical?`, whereas `@signal` returns the UNWRAPPED value, which would never
+   match (`identical?` and even `=` differ across the wrap). For a plain atom it is
+   just `@`. Use `(cas! signal (cas-read signal) new)` for a correct read→commit on
+   either kind."
+  [signal]
+  (if (signal-ref? signal)
+    (deref-signal signal)
+    @signal))
+
 (defn swap-await!
   "Async signal mutation for IO-backed / interval values (the bridge for a
    ygg-signal whose value is a yggdrasil system).

@@ -7,6 +7,9 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [clojure.set :as set]
             [kabel.pubsub.protocol :as proto]
+            [org.replikativ.spindel.core :as s]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.distributed.signal-sync :as ss]))
 
 (deftest merge-fn-joins-instead-of-resetting
@@ -59,3 +62,20 @@
       (is (= #{:x} @a) "not yet joined — the async join is suspended awaiting IO")
       (@fire)
       (is (= #{:x :y} @a) "joined after the async resolve fires (local :x survives)"))))
+
+(deftest signalref-convergent-receive-commits
+  (testing "apply-incoming! on a SignalRef (sync? true, deltaable value) commits via
+            cas-read/cas! — was a HANG (cas! compared @ unwrapped vs the raw node value)
+            or a THROW (swap-vals! needs IAtom2; SignalRef is IAtom). Plain-atom callers
+            were unaffected, which is why it stayed latent."
+    (let [c (ctx/create-execution-context)]
+      (try
+        (binding [ec/*execution-context* c]
+          (let [sg    (s/signal #{:x})
+                _     @sg                                   ; force node init
+                strat (ss/->SignalSyncStrategy sg nil set/union nil true nil)]
+            (proto/-apply-publish strat {:value #{:y}})
+            (is (= #{:x :y} @sg) "SignalRef convergent receive joins; local :x survives")
+            (proto/-apply-handshake-item strat {:value #{:z}})
+            (is (= #{:x :y :z} @sg) "handshake adopt joins too")))
+        (finally (ctx/stop-context! c))))))
