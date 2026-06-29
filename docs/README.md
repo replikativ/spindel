@@ -21,7 +21,7 @@ with **Getting Started**, then **Concepts**.
 - **[Atoms](atoms.md)** — fork-safe, runtime-backed atoms
 - **[Forking](forking.md)** — O(1) copy-on-write contexts: `fork-context`, `snapshot-context`, `restore-snapshot`, serialization
 - **[Pub/Sub](pubsub.md)** — `mult`, `pub`, buffers, async-sequence fan-out
-- **[Distributed](distributed.md)** — `defn-spin-remote`, `spin-remote`, the spin↔channel bridge, distributed-scope integration
+- **[Distributed](distributed.md)** — `defn-spin-remote`, `spin-remote`, the spin↔channel bridge, distributed-scope integration; convergent signal sync; workspace reflection + cross-system forking (`wire-topology!`, `fork-remote!`/`merge-fork-remote!`)
 - **[SCI Integration](sci-integration.md)** — sandboxed spin execution via the Small Clojure Interpreter
 
 ## Internals & Reference

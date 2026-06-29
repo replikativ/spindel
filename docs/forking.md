@@ -109,6 +109,33 @@ fork reads the parent's value (because the dependency is unchanged in the
 fork too), or the fork has its own copy (because the dependency moved in
 the fork).
 
+### Forking with an un-drained change
+
+There is one subtlety when you fork while a signal change is still
+**pending** (swapped but not yet drained). `fork-context` resets
+`:engine/pending` to `[]`, so the fork drops that eager recompute trigger.
+This is safe for the **reactive** programming model: a spin in the fork
+that observes a stale-clean derived spin via `await`/`track` recomputes it
+against the new value — the generation guard refuses the awaited spin's
+stale fast-path. Spin recompute is driven by the per-spin `:dirty` flag
+plus that generation guard, *not* by the pending queue, so quiescence
+before forking is an **optimization, not a correctness requirement**.
+
+The exception is the discouraged path: a raw `@deref` of a stale-clean
+spin returns the cached value without recomputing (the
+[don't-`@deref`-spins-outside-the-REPL rule](getting-started.md)) — and
+across a fork that staleness is *permanent* (the parent eventually drains
+and re-dirties; the fork dropped its copy of the pending event and won't).
+Observe forked spins reactively (`await`/`track`), never with `@`.
+
+### Cross-system / distributed fork
+
+The same O(1) copy-on-write idea is lifted across peers over yggdrasil
+branches by `fork-remote!` / `merge-fork-remote!`: branch off a *followed*
+remote checkout into an isolated single-writer branch, write, then merge
+back on demand via the `:fork-of` merge-base. See
+[Distributed → Workspace Reflection & Cross-System Forking](distributed.md#workspace-reflection--cross-system-forking).
+
 ## Snapshots
 
 Snapshots create an immutable copy of a context's state. Unlike forks, snapshots are completely independent (no parent reference).
