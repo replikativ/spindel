@@ -323,11 +323,11 @@
 (defn subscribe-signal!
   "Subscribe to a remote signal via Kabel pub/sub.
 
-  Returns an atom that is kept in sync with the server's signal.
-  The atom can be used as a Spindel signal via (track proxy).
-
-  For Spindel signal integration, pass :runtime and the returned
-  value will be a proper Spindel signal.
+  Returns a plain atom kept in sync with the server's signal — a value holder.
+  Read it with `@proxy`; for change notifications use `:on-update`. NOTE: a plain
+  atom is NOT reactively trackable in a spin (`track` requires a SignalRef). To
+  consume the remote value reactively, pass your own SignalRef as `:atom` (a pure
+  subscriber never adds a watch, so a SignalRef is safe here) and `track` that.
 
   Args:
     peer    - Kabel client peer atom
@@ -335,9 +335,13 @@
     opts    - Optional map:
               :initial-value  - Initial value before handshake (default nil)
               :on-update      - (fn [new-val]) callback on each update
-              :atom           - Use this atom instead of creating a new one
+              :atom           - Hold state in this atom/SignalRef instead of a fresh atom
+              :merge-fn       - STATE-path JOIN for convergent values (else LWW)
+              :apply-delta-fn - OP-path apply for live deltas (`{:delta δ}`)
+              :sync?          - true ⇒ hooks return a value; absent ⇒ await a CPS
+              :state-fn       - project to a serializable handshake snapshot
 
-  Returns: atom holding the remote signal's value"
+  Returns: the atom (or SignalRef) holding the remote signal's value"
   [peer topic & {:keys [initial-value on-update atom merge-fn apply-delta-fn sync? state-fn]}]
   (let [;; Create local state holder
         local (or atom (clojure.core/atom initial-value))

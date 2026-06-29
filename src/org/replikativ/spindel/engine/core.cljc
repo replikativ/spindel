@@ -315,6 +315,27 @@
   (let [ctx (current-execution-context)]
     (rtp/get-state ctx path)))
 
+(defn notify-listeners!
+  "Fire the watch/egress listeners registered for reference `ref` (id `id`) with the
+   classic `(key ref old new)` watch arity. Listeners live at the fork-local path
+   `[:listeners id]`, so this reads the BOUND context's set — a fork swap fires the
+   fork's listeners (none, unless the fork added its own), never the parent's.
+
+   MUST be called AFTER the value commit (swap-state!/cas-state!) returns — never
+   inside the swap fn, which can CAS-retry and would double-fire. Exception-isolated
+   so a misbehaving listener can't break the runtime. Shared by SignalRef and
+   RuntimeAtom — the one watch mechanism for both context-backed reference types."
+  [ref id old new]
+  (doseq [[k f] (get-state [:listeners id])]
+    (try
+      (f k ref old new)
+      (catch #?(:clj Throwable :cljs :default) e
+        ;; Don't let a listener exception break the runtime (matches the old
+        ;; atom-watcher dispatch behavior).
+        #?(:clj (.printStackTrace ^Throwable e)
+           :cljs (js/console.error "Listener error:" e)))))
+  nil)
+
 (defn cas-state!
   "Low-level compare-and-set for advanced CAS patterns.
 

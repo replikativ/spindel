@@ -121,7 +121,24 @@
               (swap-signal*-explicit this (constantly newval)))
 
        (compareAndSet [this oldv newv]
-                      (compare-and-set-signal! this oldv newv))]
+                      (compare-and-set-signal! this oldv newv))
+
+       clojure.lang.IRef
+       ;; Watchable: standard add-watch/remove-watch as an outward-egress hook
+       ;; (e.g. signal-sync publishing). Listeners live at the FORK-LOCAL
+       ;; [:listeners id] and fire at the swap commit site (see swap-signal*-explicit
+       ;; / compare-and-set-signal!), so a fork swap fires the fork's listeners only.
+       ;; Egress only — do NOT read/swap other signals from a listener.
+       (setValidator [_ _]
+                     (throw (UnsupportedOperationException. "Validators not supported on signals")))
+       (getValidator [_] nil)
+       (getWatches [_] (ec/get-state [:listeners id]))
+       (addWatch [this k f]
+                 (ec/swap-state! [:listeners id] (fn [w] (assoc w k f)))
+                 this)
+       (removeWatch [this k]
+                    (ec/swap-state! [:listeners id] (fn [w] (dissoc w k)))
+                    this)]
 
       :cljs
       [IDeref
@@ -142,7 +159,19 @@
 
        IReset
        (-reset! [this newval]
-                (swap-signal*-explicit this (constantly newval)))]))
+                (swap-signal*-explicit this (constantly newval)))
+
+       IWatchable
+       ;; See the :clj IRef note — fork-local egress listeners, fired at the commit site.
+       (-add-watch [this k f]
+                   (ec/swap-state! [:listeners id] (fn [w] (assoc w k f)))
+                   this)
+       (-remove-watch [this k]
+                      (ec/swap-state! [:listeners id] (fn [w] (dissoc w k)))
+                      this)
+       (-notify-watches [this old new]
+                        (ec/notify-listeners! this id old new)
+                        this)]))
 
 ;; Resolve print-method dispatch ambiguity. SignalRef is a defrecord —
 ;; so it is BOTH clojure.lang.IRecord and clojure.lang.IPersistentMap —
@@ -307,6 +336,11 @@
         ;; Normal: enqueue engine event for reactive propagation
         (ec/enqueue-event! {:type :signal-change :id id}))
 
+      ;; Fire outward-egress listeners (add-watch) AFTER the commit. Per-swap even
+      ;; under batching (atom-watch contract). No-op when there are no listeners.
+      (when new-node
+        (ec/notify-listeners! signal-ref id (:old-snapshot new-node) (nodes/get-value new-node)))
+
       ;; Return new snapshot
       (nodes/get-value new-node))))
 
@@ -320,28 +354,32 @@
         changed? (volatile! false)]
 
     ;; Update signal value in [:nodes id] using SignalNode (Phase 1B)
-    (ec/swap-state! [:nodes id]
-                    (fn [old-node]
-                      (when old-node
-                        (let [old-value (nodes/get-value old-node)
-                              new-value (apply f old-value args)
-                              deltas (d/get-deltas new-value)
-                              clean-value (d/clear-deltas new-value)
+    (let [new-node (ec/swap-state! [:nodes id]
+                                   (fn [old-node]
+                                     (when old-node
+                                       (let [old-value (nodes/get-value old-node)
+                                             new-value (apply f old-value args)
+                                             deltas (d/get-deltas new-value)
+                                             clean-value (d/clear-deltas new-value)
                 ;; Increment generation for O(1) identity-based caching
-                              old-generation (or (:generation old-node) 0)]
-                          (vreset! changed? (not= old-value clean-value))
-                          (nodes/->signal-node clean-value
-                                               old-value
-                                               deltas
-                                               (:deltaable? old-node)
-                                               (nodes/get-observers old-node)
-                                               (inc old-generation))))))
+                                             old-generation (or (:generation old-node) 0)]
+                                         (vreset! changed? (not= old-value clean-value))
+                                         (nodes/->signal-node clean-value
+                                                              old-value
+                                                              deltas
+                                                              (:deltaable? old-node)
+                                                              (nodes/get-observers old-node)
+                                                              (inc old-generation))))))]
 
-    ;; Enqueue engine event
-    (ec/enqueue-event! {:type :signal-change :id id})
+      ;; Enqueue engine event
+      (ec/enqueue-event! {:type :signal-change :id id})
 
-    ;; Return changed flag
-    @changed?))
+      ;; Fire outward-egress listeners after the commit
+      (when new-node
+        (ec/notify-listeners! signal-ref id (:old-snapshot new-node) (nodes/get-value new-node)))
+
+      ;; Return changed flag
+      @changed?)))
 
 (defn swap-signal-changed?
   "Like swap! but returns boolean indicating if the signal value changed.
@@ -396,7 +434,9 @@
             ;; with an =-value) re-checks the value identity above and retries — a
             ;; bounded sync loop (no await inside ⇒ no partial-cps loop/recur hazard).
             (if (ec/cas-state! [:nodes id] old-node new-node)
-              (do (ec/enqueue-event! {:type :signal-change :id id}) true)
+              (do (ec/enqueue-event! {:type :signal-change :id id})
+                  (ec/notify-listeners! signal-ref id oldval clean-value)
+                  true)
               (recur))))))))
 
 (defn signal-ref?

@@ -65,7 +65,11 @@
                (is (some? atom-state))
                (is (= [1 2 3] (:value atom-state)))
                (is (= {:doc "Test"} (:meta atom-state)))
-               (is (map? (:watchers atom-state)))
+               ;; Watchers no longer live inside the [:atoms id] entry — they are
+               ;; stored separately at the fork-local [:listeners id] path.
+               (is (nil? (:watchers atom-state)))
+               (add-watch my-atom :k (fn [_ _ _ _] nil))
+               (is (contains? (backend/backend-read (:backend ctx) [:listeners atom-id]) :k))
                (done))))))
 
 (deftest test-atom-in-spin-context
@@ -229,3 +233,67 @@
                  (is (= 1 (count @watch-calls-3))))))
            (finally
              (ctx/stop-context! exec-ctx)))))))
+
+;; =============================================================================
+;; Fork × watch — the crossings the suite never exercised (regression guards for
+;; the RuntimeAtom fork-watcher bug fixed by moving watchers to the fork-local
+;; [:listeners id] path with swap-site firing).
+;; =============================================================================
+
+(deftest test-fork-watcher-fires-on-fork-mutation
+  (testing "a watcher added IN a fork fires for the fork's own mutation (was silently dead)"
+    (async done
+           (with-ctx [root]
+             (let [a     (ratom/create-atom 0)
+                   calls (clojure.core/atom [])
+                   fork  (ctx/fork-context root)]
+               (binding [ec/*execution-context* fork]
+                 (add-watch a :fk (fn [_ _ o n] (clojure.core/swap! calls conj [o n])))
+                 (swap! a inc))
+               (is (= [[0 1]] @calls) "fork watcher observed the fork's own mutation")
+               (done))))))
+
+(deftest test-fork-watcher-parent-stays-silent
+  (testing "a parent watcher does NOT fire on a fork mutation (no egress leak), but still fires on its own"
+    (async done
+           (with-ctx [root]
+             (let [a     (ratom/create-atom 0)
+                   calls (clojure.core/atom [])]
+               (add-watch a :root (fn [_ _ o n] (clojure.core/swap! calls conj [o n])))
+               (let [fork (ctx/fork-context root)]
+                 (binding [ec/*execution-context* fork] (swap! a inc))   ; fork mutation
+                 (is (= [] @calls) "parent watcher stays silent on a fork mutation"))
+               (swap! a inc)                                             ; root mutation
+               (is (= [[0 1]] @calls) "parent watcher still fires on its own mutation")
+               (done))))))
+
+(deftest test-fork-watcher-independence
+  (testing "root and fork watchers are isolated in both directions"
+    (async done
+           (with-ctx [root]
+             (let [a    (ratom/create-atom 0)
+                   rc   (clojure.core/atom [])
+                   fc   (clojure.core/atom [])
+                   fork (ctx/fork-context root)]
+               (add-watch a :root (fn [_ _ o n] (clojure.core/swap! rc conj [o n])))
+               (binding [ec/*execution-context* fork]
+                 (add-watch a :fk (fn [_ _ o n] (clojure.core/swap! fc conj [o n])))
+                 (swap! a inc))                  ; fork: 0 -> 1
+               (swap! a inc)                     ; root: 0 -> 1
+               (is (= [[0 1]] @rc) "root watcher saw only the root mutation")
+               (is (= [[0 1]] @fc) "fork watcher saw only the fork mutation")
+               (done))))))
+
+(deftest test-restored-context-watcher-without-prior-atom
+  (testing "a watcher on a restored (snapshot) context fires WITHOUT a fresh create-atom first
+            (the lazy-install fragility is gone — firing is at the swap site)"
+    (async done
+           (with-ctx [root]
+             (let [a        (ratom/create-atom 0)
+                   restored (ctx/restore-snapshot (ctx/snapshot-context root))
+                   calls    (clojure.core/atom [])]
+               (binding [ec/*execution-context* restored]
+                 (add-watch a :w (fn [_ _ o n] (clojure.core/swap! calls conj [o n])))
+                 (swap! a inc))
+               (is (= [[0 1]] @calls) "restored-context watcher fired with no prior create-atom")
+               (done))))))

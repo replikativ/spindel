@@ -5,6 +5,8 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.signal :as sig]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
@@ -54,3 +56,26 @@
                ;; CAS fails (value moved #{} -> #{:b}), so f re-runs against #{:b}.
                (swap! s conj :b)
                (@gate))))))
+
+;; =============================================================================
+;; SignalRef is now watchable (IRef/IWatchable), with fork-correct egress firing.
+;; =============================================================================
+
+(deftest test-signalref-watchable-and-fork-correct
+  (testing "add-watch on a SignalRef fires at the commit site; a fork's own watcher
+            fires for the fork's mutation and the parent's stays silent (no leak)"
+    (async done
+           (with-ctx [root]
+             (let [s    (sig/signal 0)
+                   rc   (clojure.core/atom [])
+                   fc   (clojure.core/atom [])]
+               (add-watch s :root (fn [_ _ o n] (clojure.core/swap! rc conj [o n])))
+               (let [fork (ctx/fork-context root)]
+                 (binding [ec/*execution-context* fork]
+                   (add-watch s :fk (fn [_ _ o n] (clojure.core/swap! fc conj [o n])))
+                   (swap! s inc))                 ; fork: 0 -> 1
+                 (is (= [] @rc) "parent watcher silent on fork mutation (no egress leak)")
+                 (is (= [[0 1]] @fc) "fork's own watcher fired"))
+               (swap! s inc)                       ; root: 0 -> 1
+               (is (= [[0 1]] @rc) "parent watcher fires on its own mutation")
+               (done))))))

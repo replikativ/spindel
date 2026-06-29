@@ -88,9 +88,22 @@ reclaim.
 
 ## Watches and forks
 
-`add-watch` registers the watcher inside the context state, so it forks
-along with the atom. A watcher added in a fork only fires for mutations
-within that fork; the parent does not see it.
+A watcher is **side-effecting egress** (notify/publish), so it is stored at the
+**fork-local** `[:listeners id]` path and fired synchronously at the swap commit
+site. Two consequences:
+
+- A watcher added in a fork only fires for mutations **within that fork**; the
+  parent does not see it.
+- A fork does **not** inherit the parent's watchers, so a fork's (speculative)
+  mutation never fires the parent's watcher — it can't leak fork-private state out
+  through the parent's egress. A fork that wants to egress adds its own watcher.
+
+The same `[:listeners id]` mechanism backs `add-watch` on spindel **signals**
+(`SignalRef`) too — one fork-correct watch mechanism for both reference types.
+
+Listeners are closures, so they are **dropped on `serialize-context`** (like
+continuations); re-establish them by re-adding watches after `restore-snapshot` /
+`deserialize-context`.
 
 ## Atoms inside spin bodies
 
