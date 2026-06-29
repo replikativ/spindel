@@ -102,6 +102,36 @@
              (is (true? (wp/peer-writable? peer :peer-a)))
              (is (false? (wp/peer-writable? peer :peer-b)))))))
 
+     ;; ----------------------------------------------------------------------
+     ;; Fork lineage (pure descriptor algebra)
+     ;; ----------------------------------------------------------------------
+
+     (deftest test-fork-descriptor
+       (testing "fork-descriptor re-points systems to the fork branch, claims the
+                 owner, and anchors :fork-of to the parent's per-system heads"
+         (let [parent (-> (descriptor :main {"kb" "c1" "msgs" "c2"})
+                          (assoc :descriptor-topic :room/foo)
+                          (assoc-in [:systems "kb" :topic] :room/foo-kb)
+                          (assoc-in [:systems "msgs" :topic] :room/foo-msgs))
+               fork   (wp/fork-descriptor parent :fork-1 :peer-a)]
+           (is (= :fork-1 (:branch fork)))
+           (is (= :peer-a (:owner fork)))
+           (testing ":fork-of anchors the parent branch + per-system base heads (LCA)"
+             (is (= {:branch :main :heads {"kb" "c1" "msgs" "c2"}} (:fork-of fork))))
+           (testing "each system re-pointed to the fork branch; head + store topic carried over"
+             (is (= :fork-1 (get-in fork [:systems "kb" :branch])))
+             (is (= "c1" (get-in fork [:systems "kb" :head]))
+                 "head stays at the parent (the fork starts there — structural sharing)")
+             (is (= :room/foo-kb (get-in fork [:systems "kb" :topic])) "store topic preserved"))
+           (testing "descriptor-topic preserved"
+             (is (= :room/foo (:descriptor-topic fork))))
+           (testing "a peer seated on the fork descriptor is writable only by the claimed owner"
+             (let [peer (wp/make-workspace-peer
+                         {:ctx (ctx/create-execution-context) :resolve-system-fn resolve-sys})]
+               (wp/set-descriptor! peer fork)
+               (is (true? (wp/peer-writable? peer :peer-a)))
+               (is (false? (wp/peer-writable? peer :peer-b))))))))
+
      (deftest test-peer-swaps-to-fork-snapshot-isolated
        (testing "server forks the room → client re-seats to the fork branch only
                  once the fork's heads are local (the coordinated-fork swap)"

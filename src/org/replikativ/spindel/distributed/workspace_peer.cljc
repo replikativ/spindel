@@ -23,12 +23,26 @@
    1. **Checkout descriptor** (what the server wants the client at) — rides the
       `signal_sync` bridge:
         {:branch  <kw>
-         :systems {system-id {:store-id .. :branch <kw> :head <token> :hlc ..}}}
+         :owner   <peer-id>            ; optional — the single-writer lease (claim)
+         :systems {system-id {:store-id .. :branch <kw> :head <token> :hlc ..
+                              :topic <kw>}}}   ; :topic = the system's konserve-sync store topic
       The descriptor is irreducible: the snapshot indices carry content +
       history + per-[system,branch] heads, but NOT which branch a room is
       *checked out* to, and a client needs a branch name to re-seat a writable
       conn. (composite.clj's `commit!` entry has no branch; `branch!` writes no
       entry; the branch lives in in-memory `current-branch-name`.)
+
+      Optional fields turn the checkout descriptor into a full SUBSCRIPTION
+      TOPOLOGY — pure data that can be shipped and replayed to wire a peer into
+      the same sync mesh the original had (see `fork-descriptor` +
+      `workspace-peer-sync/wire-topology!`):
+        :systems …{:topic <kw>         ; each system's konserve-sync store topic
+                   :role  <kw>}        ; :subscriber (default — one-way store FOLLOW)
+                                       ; | :bidirectional (convergent live SYNC, for
+                                       ;   CRDT systems; carries an :owner? for the hub)
+        :descriptor-topic <kw>         ; the signal_sync topic carrying THIS descriptor
+        :fork-of {:branch <kw>         ; lineage anchor for a fork (see fork-descriptor):
+                  :heads {system-id <token>}}  ;   per-system base head = the merge-base/LCA
 
    2. **Head updates** (what's actually synced locally) — each system store's
       konserve-sync `:on-key-update` for the branch-pointer key. Because the
@@ -109,6 +123,32 @@
    publishing it. Returns the descriptor with `:owner` set."
   [descriptor owner-id]
   (assoc descriptor :owner owner-id))
+
+;; =============================================================================
+;; Fork lineage (pure descriptor algebra)
+;; =============================================================================
+
+(defn fork-descriptor
+  "Derive a FORK checkout descriptor from a parent `descriptor`: a fresh writable
+   `fork-branch` claimed by `owner-id`, anchored to the parent's per-system heads
+   via `:fork-of` (the merge-base/LCA for a later fold-to-parent). Each system is
+   carried over re-pointed to `fork-branch`, keeping its store `:topic`; its `:head`
+   stays at the PARENT head — the fork starts there, and because the store is
+   content-addressed with structural sharing, a peer already following the parent
+   needs no new blocks, only the new branch pointer (the O(1) distributed fork).
+
+   Pure data: shippable over signal_sync and replayable via
+   `workspace-peer-sync/wire-topology!`. The branch is created locally with
+   `ygg/branch!`; this only computes the descriptor that names it."
+  [descriptor fork-branch owner-id]
+  (let [systems (:systems descriptor)]
+    (-> descriptor
+        (assoc :branch fork-branch
+               :owner owner-id
+               :fork-of {:branch (:branch descriptor)
+                         :heads (reduce-kv (fn [m sid s] (assoc m sid (:head s))) {} systems)})
+        (assoc :systems (reduce-kv (fn [m sid s] (assoc m sid (assoc s :branch fork-branch)))
+                                   {} systems)))))
 
 ;; =============================================================================
 ;; Peer state machine
