@@ -81,47 +81,34 @@
                         (put! ch {:ok true :changed? true})
                         (close! ch))))
         fail!   (fn [e] (put! ch {:error e}) (close! ch))
+        ;; Commit `(integrate old)` against the signal via an atomic compare-and-set,
+        ;; re-integrating on a losing race (a concurrent local swap! or another apply
+        ;; landing in between) — nothing is lost, the CRDT op is idempotent/commutative.
+        ;; `cas!`/`cas-read` work on a SignalRef AND a plain atom, whereas `swap-vals!`
+        ;; throws on a SignalRef (IAtom, not IAtom2); `cas-read` returns the RAW value
+        ;; `cas!` compares against (not `@`, which is unwrapped for a SignalRef and would
+        ;; never match). `integrate` returns a VALUE (sync?, JVM/in-mem) or a partial-cps
+        ;; CPS (async, durable/cljs — the konserve-backed join suspends before commit);
+        ;; `run` normalizes both to "call k with the integrated value". Only the async
+        ;; SignalRef path needs the execution context rebound across the post-IO resume
+        ;; (it may land off the engine thread); the sync path stays on the calling thread.
         commit! (fn [integrate]
-                  (if sync?
-                    ;; sync: integrate returns a value. Commit via an atomic compare-and-set
-                    ;; retry — `cas!`/`cas-read` work on a SignalRef AND a plain atom, whereas
-                    ;; `swap-vals!` throws on a SignalRef (IAtom, not IAtom2). Fully synchronous
-                    ;; (no await ⇒ no partial-cps loop/recur hazard). `cas-read` returns the RAW
-                    ;; value `cas!` compares against (not `@`, which is unwrapped for a SignalRef
-                    ;; and would never match).
-                    (try
-                      (loop []
-                        (let [old (sig/cas-read signal-atom)
-                              new (integrate old)]
-                          (if (sig/cas! signal-atom old new)
-                            (finish! old new)
-                            (recur))))
-                      (catch #?(:clj Exception :cljs js/Error) e (fail! e)))
-                    ;; async: the konserve-backed join suspends before the commit, so a
-                    ;; concurrent apply OR a local swap! could land in between. Commit via
-                    ;; compare-and-set and re-merge on a losing race — nothing is lost (the
-                    ;; CRDT op is idempotent/commutative). For a SignalRef the read/CAS need
-                    ;; the execution context bound at entry (the existing @signal-atom read
-                    ;; relied on it); capture it and rebind across the post-IO resume, which
-                    ;; may land off the engine thread. `sig/cas!` dispatches SignalRef vs
-                    ;; plain atom.
-                    ;; Only a SignalRef's read/CAS need an execution context; a plain
-                    ;; atom (the kabel-land case) has none bound — don't demand one.
-                    (let [ctx    (when (sig/signal-ref? signal-atom) (ec/current-execution-context))
-                          rebind (fn [thunk] (if ctx (ec/with-context ctx (thunk)) (thunk)))]
-                      (letfn [(attempt []
-                                (try
-                                  (let [old (rebind (fn [] (sig/cas-read signal-atom)))]
-                                    ((integrate old)
-                                     (fn [new]
-                                       (try
-                                         (if (rebind (fn [] (sig/cas! signal-atom old new)))
-                                           (finish! old new)
-                                           (attempt))   ; value moved mid-await — re-integrate
-                                         (catch #?(:clj Exception :cljs js/Error) e (fail! e))))
-                                     fail!))
-                                  (catch #?(:clj Exception :cljs js/Error) e (fail! e))))]
-                        (attempt)))))]
+                  (let [ctx    (when (and (not sync?) (sig/signal-ref? signal-atom))
+                                 (ec/current-execution-context))
+                        rebind (fn [thunk] (if ctx (ec/with-context ctx (thunk)) (thunk)))
+                        run    (fn [integrated k] (if sync? (k integrated) (integrated k fail!)))]
+                    (letfn [(attempt []
+                              (try
+                                (let [old (rebind (fn [] (sig/cas-read signal-atom)))]
+                                  (run (integrate old)
+                                       (fn [new]
+                                         (try
+                                           (if (rebind (fn [] (sig/cas! signal-atom old new)))
+                                             (finish! old new)
+                                             (attempt))   ; value moved mid-commit — re-integrate
+                                           (catch #?(:clj Exception :cljs js/Error) e (fail! e))))))
+                                (catch #?(:clj Exception :cljs js/Error) e (fail! e))))]
+                      (attempt))))]
     (cond
       ;; OP-path: apply just the delta (cheap, no full state).
       (contains? msg :delta)
@@ -190,11 +177,10 @@
       ch))
 
   (-apply-handshake-item [this item]
-    ;; Catch-up on connect: a plain-data `:delta` snapshot (OP-path, convergent) or
-    ;; a full `:value` snapshot (STATE-path).
-    (apply-incoming! this (if (contains? item :delta)
-                            {:delta (:delta item)}
-                            {:value (:value item)})))
+    ;; Catch-up on connect: a snapshot is already {:delta …} (OP-path, convergent)
+    ;; or {:value …} (STATE-path) — plus a :type tag apply-incoming! ignores — so
+    ;; dispatch on it directly (apply-incoming! keys on :delta / :value).
+    (apply-incoming! this item))
 
   (-apply-publish [this msg]
     ;; A live update: {:delta δ} (OP-path) or {:value v} (STATE-path).
@@ -219,6 +205,8 @@
                        ;; fire short-circuits on the `(not= old new)` guard above.
                        (when clear-delta-fn (swap! signal clear-delta-fn))))
                    (pubsub/publish! peer topic {:value new-val}))))))
+
+(declare sync-signal!)
 
 (defn export-signal!
   "Export a Spindel signal as a Kabel pub/sub topic.
@@ -248,21 +236,12 @@
                :sync?            - run the strategy's apply path synchronously (JVM) vs async.
 
   Returns: topic"
-  [peer topic signal & {:keys [batch-size watch-key merge-fn delta-fn clear-delta-fn sync? state-fn]
-                        :or {batch-size 20}}]
-  (let [wk (or watch-key (keyword "signal-sync" (name topic)))]
-    ;; Register pub/sub topic with signal strategy
-    (pubsub/register-topic! peer topic
-                            {:strategy (->SignalSyncStrategy signal nil merge-fn nil sync? state-fn)
-                             :batch-size batch-size})
-
-    ;; Watch signal for changes, publish either the OP (a δ — `delta-fn` yields the
-    ;; local op) or the full STATE. With `delta-fn`, a value carrying NO δ is a
-    ;; remote-integrated change → nothing to propagate (no echo); a value with a δ
-    ;; ships just that op. Without `delta-fn`, ship the value (LWW, as before).
-    (attach-publish-watch! peer topic signal wk delta-fn clear-delta-fn)
-
-    topic))
+  ;; export-signal! is publish-only `sync-signal!`: the owner of the topic, with no
+  ;; apply-delta-fn (it ships δ/state out but does not OP-apply incoming δ — a
+  ;; passed merge-fn still JOINs incoming {:value} on the STATE-path). Forwarding
+  ;; keeps a SINGLE register-topic! + attach-publish-watch! path (see sync-signal!).
+  [peer topic signal & opts]
+  (apply sync-signal! peer topic signal :owner? true opts))
 
 (defn sync-signal!
   "BIDIRECTIONAL convergent sync of a signal over a kabel pub/sub topic — the
