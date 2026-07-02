@@ -14,6 +14,7 @@
      (write on the fork)  → isolated from the parent branch
      merge-fork-remote!   → checkout parent, ygg/merge! the fork branch back in"
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.core.async :refer [<!!]]
             [datahike.api :as d]
             [yggdrasil.adapters.datahike :as dha]
             [yggdrasil.protocols :as p]
@@ -51,7 +52,7 @@
                                :systems {"kb" {:branch parent-branch :head parent-head}}}]
 
             ;; ---- FORK: create :fork-1 locally + re-seat the peer onto it ----
-            (let [fork-desc (sync/fork-remote! peer parent-desc :fork-1 :client lookup)]
+            (let [fork-desc (<!! (sync/fork-remote! peer parent-desc :fork-1 :client lookup))]
               (is (= :fork-1 (:branch fork-desc)))
               (is (= {:branch parent-branch :heads {"kb" parent-head}} (:fork-of fork-desc))
                   ":fork-of anchors the parent branch + head (the merge-base/LCA)")
@@ -65,7 +66,7 @@
                 (is (= #{"trunk"} (item-names (:conn (p/checkout sys parent-branch))))))
 
               ;; ---- MERGE the fork back into the parent branch ----
-              (let [res (sync/merge-fork-remote! fork-desc lookup)]
+              (let [res (<!! (sync/merge-fork-remote! fork-desc lookup))]
                 (testing "no conflicts; the parent branch now carries the fork's edit"
                   (is (empty? (:conflicts res)))
                   (is (contains? (:merged res) "kb"))

@@ -31,9 +31,12 @@
    carries konserve-sync. The pure gate (`workspace-peer`) has no such dependency."
   (:require [org.replikativ.spindel.distributed.workspace-peer :as wp]
             [org.replikativ.spindel.distributed.signal-sync :as ssync]
+            [is.simm.partial-cps.core-async :as cps]
             [org.replikativ.spindel.ygg-signal :as ys]
             [yggdrasil.protocols :as ygg]
-            [yggdrasil.composite :as ygc]))
+            [yggdrasil.composite :as ygc]
+            #?(:clj  [clojure.core.async :refer [go <!]]
+               :cljs [cljs.core.async :refer [<!] :refer-macros [go]])))
 
 ;; konserve-sync transport batteries. The default subscribe/register/sync-opts are a
 ;; JVM convenience resolved LAZILY via `requiring-resolve` (konserve-sync stays a
@@ -98,7 +101,7 @@
   [peer system-id & {:keys [branch-key? head-token-fn]
                      :or {branch-key? keyword? head-token-fn identity}}]
   (fn [k v _op]
-    (when (and (branch-key? k) (not= k :branches))
+    (when (and (branch-key? k) (not (#{:branches :crdt/branches} k)))
       (wp/apply-head-update! peer system-id k (head-token-fn v)))))
 
 ;; =============================================================================
@@ -232,9 +235,16 @@
    isolated; `wire-topology!` is for FOLLOWING a remote checkout, the complement
    to forking one.
 
+   ASYNC / PEER-SYMMETRIC: returns a CHANNEL (the caller `<!`/`<!!`s it). Every
+   `ygg/branch!` is normalized through `cps/->chan`, so it works for a JVM-blocking
+   datahike branch (resolves immediately) AND a cljs async convergent/durable branch
+   (suspends) — one code path, any peer. The lease (`:owner`) is the authority, not
+   the platform. (datahike-on-cljs additionally needs the yggdrasil adapter's async
+   port; convergent-branchable systems like CDVCS work today.)
+
    DI: `system-lookup` (system-id -> local ygg-system) for `branch!`; `branch-fn`
-   overrides `ygg/branch!` (tests / functional adapters). Returns the fork
-   descriptor.
+   overrides `ygg/branch!` (tests / functional adapters). The channel yields the
+   fork descriptor (or an error value if a `branch!` fails).
 
    NB: assumes STATEFUL adapters (datahike) where `branch!` side-effects the
    shared backend so a later `checkout fork-branch` finds it. For a functional
@@ -243,13 +253,19 @@
   [peer descriptor fork-branch owner-id system-lookup & {:keys [branch-fn]}]
   (let [fork-desc (wp/fork-descriptor descriptor fork-branch owner-id)
         branch!   (or branch-fn (fn [sys b] (ygg/branch! sys b)))]
-    (wp/set-descriptor! peer fork-desc)
-    (doseq [[sid s] (:systems descriptor)]
-      (branch! (system-lookup sid) fork-branch)
-      ;; a locally-created branch's head is present immediately — feed the gate
-      ;; the parent head it now points at (fork-descriptor kept :head at parent)
-      (wp/apply-head-update! peer sid fork-branch (:head s)))
-    fork-desc))
+    (go
+      (try
+        (wp/set-descriptor! peer fork-desc)
+        (loop [ps (seq (:systems descriptor))]
+          (if-not ps
+            fork-desc
+            (let [[sid s] (first ps)]
+              ;; await branch! (sync value on JVM, async on cljs) before recording
+              ;; the head — the branch must exist before the gate re-seats onto it.
+              (cps/unwrap-result (<! (cps/->chan (branch! (system-lookup sid) fork-branch))))
+              (wp/apply-head-update! peer sid fork-branch (:head s))
+              (recur (next ps)))))
+        (catch #?(:clj Throwable :cljs :default) e e)))))
 
 (defn merge-fork-remote!
   "Fold a fork created by `fork-remote!` back into its parent branch — the
@@ -273,42 +289,62 @@
    (parent-sys parent-snap fork-snap -> seq, default `ygg/conflicts`). `opts`:
    `:strategy`/`:force`/`:message` pass through to the merge.
 
-   Returns {:merged {sid merged-system} :conflicts {sid [conflict…]}}. On success
-   the parent branch carries the merged head — advance/publish it via the existing
-   descriptor channel (the owner re-exports the parent checkout); extract a head
-   token with `ygg/snapshot-id`."
+   ASYNC / PEER-SYMMETRIC: returns a CHANNEL (caller `<!`/`<!!`s it) yielding
+   {:merged {sid merged-system} :conflicts {sid [conflict…]}}. Every ygg op
+   (`checkout`/`snapshot-id`/`conflicts`/`merge!`) is normalized through `cps/->chan`
+   — sync values on the JVM, async on cljs — one code path, any peer. On success the
+   parent branch carries the merged head — advance/publish it via the descriptor
+   channel; extract a head token with `ygg/snapshot-id`.
+
+   DI: `system-lookup` (system-id -> local base ygg-system); `checkout-fn`
+   (sys branch -> branch-scoped system, default `ygg/checkout`); `snapshot-id-fn`
+   (sys -> snapshot id, default `ygg/snapshot-id`); `merge-fn`
+   (parent-sys fork-branch opts -> merged-sys, default `ygg/merge!`); `conflicts-fn`
+   (parent-sys parent-snap fork-snap -> seq, default `ygg/conflicts`). Each may return
+   a value | core.async channel | partial-cps CPS. `opts`: `:strategy`/`:force`/
+   `:message` pass through; `:strategy`/`:force` skip the fail-safe conflict pre-check."
   [fork-desc system-lookup & {:keys [checkout-fn snapshot-id-fn merge-fn conflicts-fn opts]}]
   (let [parent-branch (get-in fork-desc [:fork-of :branch])
         fork-branch   (:branch fork-desc)
         checkout      (or checkout-fn (fn [sys b] (ygg/checkout sys (as-branch b))))
         snap-id       (or snapshot-id-fn (fn [sys] (ygg/snapshot-id sys)))
         merge!        (or merge-fn (fn [psys src o] (ygg/merge! psys src o)))
-        conflicts     (or conflicts-fn (fn [psys a b] (ygg/conflicts psys a b)))
-        sides         (reduce-kv
-                       (fn [acc sid _]
-                         (let [base (system-lookup sid)]
-                           (assoc acc sid {:parent (checkout base parent-branch)
-                                           :fork   (checkout base fork-branch)})))
-                       {}
-                       (:systems fork-desc))
-        ;; FAIL-SAFE conflict pre-check (skipped under :strategy/:force)
-        confs (when-not (or (:strategy opts) (:force opts))
-                (reduce-kv
-                 (fn [acc sid {:keys [parent fork]}]
-                   (let [cs (try (seq (conflicts parent (snap-id parent) (snap-id fork)))
-                                 (catch #?(:clj Throwable :cljs :default) e
-                                   [{:system sid :indeterminate? true :error (ex-message e)}]))]
-                     (cond-> acc cs (assoc sid (vec cs)))))
-                 {}
-                 sides))]
-    (if (seq confs)
-      {:merged {} :conflicts confs}
-      (reduce-kv
-       ;; merge the fork BRANCH (by name) into the checked-out parent system
-       (fn [acc sid {:keys [parent]}]
-         (assoc-in acc [:merged sid] (merge! parent fork-branch (or opts {}))))
-       {:merged {} :conflicts {}}
-       sides))))
+        conflicts     (or conflicts-fn (fn [psys a b] (ygg/conflicts psys a b)))]
+    (go
+      (try
+        ;; check out both branches per system (await each)
+        (let [sides (loop [acc {} ps (seq (:systems fork-desc))]
+                      (if-not ps
+                        acc
+                        (let [[sid _] (first ps)
+                              base   (system-lookup sid)
+                              parent (cps/unwrap-result (<! (cps/->chan (checkout base parent-branch))))
+                              fork   (cps/unwrap-result (<! (cps/->chan (checkout base fork-branch))))]
+                          (recur (assoc acc sid {:parent parent :fork fork}) (next ps)))))
+              ;; FAIL-SAFE conflict pre-check (skipped under :strategy/:force)
+              confs (if (or (:strategy opts) (:force opts))
+                      {}
+                      (loop [acc {} ps (seq sides)]
+                        (if-not ps
+                          acc
+                          (let [[sid {:keys [parent fork]}] (first ps)
+                                cs (try
+                                     (let [pa (cps/unwrap-result (<! (cps/->chan (snap-id parent))))
+                                           fa (cps/unwrap-result (<! (cps/->chan (snap-id fork))))]
+                                       (seq (cps/unwrap-result (<! (cps/->chan (conflicts parent pa fa))))))
+                                     (catch #?(:clj Throwable :cljs :default) e
+                                       [{:system sid :indeterminate? true :error (ex-message e)}]))]
+                            (recur (cond-> acc cs (assoc sid (vec cs))) (next ps))))))]
+          (if (seq confs)
+            {:merged {} :conflicts confs}
+            (loop [acc {:merged {} :conflicts {}} ps (seq sides)]
+              (if-not ps
+                acc
+                (let [[sid {:keys [parent]}] (first ps)
+                      ;; merge the fork BRANCH (by name) into the checked-out parent
+                      merged (cps/unwrap-result (<! (cps/->chan (merge! parent fork-branch (or opts {})))))]
+                  (recur (assoc-in acc [:merged sid] merged) (next ps)))))))
+        (catch #?(:clj Throwable :cljs :default) e {:merged {} :conflicts {} :error e})))))
 
 ;; =============================================================================
 ;; Server-side: publish the checkout descriptor
@@ -338,14 +374,15 @@
 
 (defn subscribe-registry!
   "Client side: replicate a registry store into `local-store`. `on-roots` fires
-   with `local-store` whenever `:crdt/roots` updates — i.e. a fully-synced
-   registry view is local (the keyword-last gate guarantees the trees precede the
-   pointer). Read it with `konserve-sync.walkers.yggdrasil-registry/read-registry-entries`
-   / `latest-by-system-branch`. `:subscribe-fn` overrides konserve-sync (tests)."
+   with `local-store` whenever a `:crdt.head/<branch>` cell updates — i.e. a
+   fully-synced registry view is local (the keyword-last gate guarantees the trees
+   precede the head pointer). Read it with
+   `konserve-sync.walkers.yggdrasil-registry/read-registry-entries` /
+   `latest-by-system-branch`. `:subscribe-fn` overrides konserve-sync (tests)."
   [client-peer topic local-store & {:keys [on-roots on-complete subscribe-fn]}]
   (let [subscribe (or subscribe-fn ks-subscribe-store!)]
     (subscribe client-peer topic local-store
                {:on-key-update (fn [k _v _op]
-                                 (when (and on-roots (= k :crdt/roots))
+                                 (when (and on-roots (keyword? k) (= "crdt.head" (namespace k)))
                                    (on-roots local-store)))
                 :on-complete on-complete})))

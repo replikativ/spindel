@@ -57,7 +57,13 @@
      :compose-fn        (fn [{system-id -> ygg-system}] -> workspace-value)
    On the JVM the app passes `#(ygc/composite (vals %) {:branch B …})`; the seated
    value is whatever `ygg/system` resolves through (a CompositeSystem)."
-  (:require [org.replikativ.spindel.engine.core :as ec]))
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [is.simm.partial-cps.core-async :as cps]
+            #?(:clj  [clojure.core.async :refer [chan put! close! go go-loop <! timeout dropping-buffer]]
+               :cljs [cljs.core.async :refer [chan put! close! <! timeout dropping-buffer]
+                      :refer-macros [go go-loop]])))
+
+(declare reseat! do-reseat-async! start-reseat-loop!)
 
 ;; =============================================================================
 ;; Pure composite gate (the one genuinely-new coordination function)
@@ -172,20 +178,35 @@
                         peer-local workspace seat (`::seated-workspace`). Defaults to
                         the systems map (tests); JVM apps pass a CompositeSystem builder.
      :on-reseat         (fn [workspace-value descriptor]) optional — fired after a
-                        successful re-seat (e.g. to notify UI / log).
+                        successful re-seat (e.g. to notify UI / log). On an async
+                        peer it fires on the reseat go-block, not synchronously.
+     :sync?             whether `resolve-system-fn` runs synchronously. Defaults to
+                        the platform (JVM true / cljs false). When true the reseat is
+                        inline; when false it runs on a per-peer SERIAL go-loop that
+                        normalizes a value | core.async channel | partial-cps CPS from
+                        `resolve-system-fn` via `cps/->chan` (async storage on cljs).
+                        `current-workspace` then reads the LAST seated value
+                        (eventually-consistent); poll it / use `:on-reseat`.
 
    Returns an atom holding the peer state; drive it with `set-descriptor!` and
-   `apply-head-update!`."
-  [{:keys [ctx resolve-system-fn compose-fn on-reseat]}]
+   `apply-head-update!`. For an async peer, `stop-peer!` ends its reseat loop."
+  [{:keys [ctx resolve-system-fn compose-fn on-reseat sync?]}]
   (assert ctx ":ctx is required")
   (assert resolve-system-fn ":resolve-system-fn is required")
-  (atom {:ctx ctx
-         :resolve-system-fn resolve-system-fn
-         :compose-fn (or compose-fn identity)
-         :on-reseat on-reseat
-         :descriptor nil
-         :head-state {}
-         :seated nil}))      ; the descriptor currently reflected in the workspace
+  (let [sync?     (if (some? sync?) sync? #?(:clj true :cljs false))
+        reseat-ch (when-not sync? (chan (dropping-buffer 1)))
+        peer      (atom {:ctx ctx
+                         :resolve-system-fn resolve-system-fn
+                         :compose-fn (or compose-fn identity)
+                         :on-reseat on-reseat
+                         :sync? sync?
+                         :reseat-ch reseat-ch
+                         :descriptor nil
+                         :head-state {}
+                         :seated nil       ; the descriptor currently reflected
+                         :last-reseat-error nil})]
+    (when reseat-ch (start-reseat-loop! peer reseat-ch))
+    peer))
 
 (defn- reseat!
   "Build the workspace value for `descriptor` and swap it into the context.
@@ -202,18 +223,78 @@
     (when on-reseat (on-reseat ws descriptor))
     ws))
 
-(defn- maybe-reseat!
-  "Recompute the gate from current peer state; if ready and the target differs
-   from what's already seated, re-seat the workspace. Returns the gate result
-   (with :reseated? added)."
+(defn- resolve-systems
+  "Resolve every system in `descriptor` via `resolve-system-fn`, normalizing each
+   value | core.async channel | partial-cps CPS through `cps/->chan`. Returns a
+   channel delivering the {system-id -> system} map (or re-throwing into the caller's
+   try/catch on a resolve error)."
+  [resolve-system-fn descriptor]
+  (go
+    (try
+      (loop [acc {} ps (seq (:systems descriptor))]
+        (if-not ps
+          acc
+          (let [[sid {:keys [branch]}] (first ps)
+                sys (cps/unwrap-result (<! (cps/->chan (resolve-system-fn sid branch))))]
+            (recur (assoc acc sid sys) (next ps)))))
+      ;; return the error as a VALUE (an exception inside a go won't surface on <!)
+      (catch #?(:clj Throwable :cljs :default) e e))))
+
+(defn- do-reseat-async!
+  "Async serial reseat (`:sync? false` peers — async storage on cljs). Re-reads peer
+   state, gate-checks, resolves the systems, and seats — but ONLY if, AFTER the async
+   resolve, the descriptor is STILL current AND the gate is STILL ready (a head can
+   advance past the pinned head meanwhile, and seating then would expose content ahead
+   of the agreed checkpoint). A resolve error is recorded and the loop re-nudged (with
+   backoff) so a transient failure retries while the gate stays ready. Returns a channel
+   that closes when done."
   [peer]
-  (let [{:keys [descriptor head-state seated]} @peer
+  (go
+    (let [{:keys [descriptor head-state seated ctx compose-fn on-reseat resolve-system-fn]} @peer]
+      (when (and (:ready? (gate descriptor head-state)) (not= descriptor seated))
+        (let [result (<! (resolve-systems resolve-system-fn descriptor))]
+          (cond
+            (cps/error? result)
+            (do (swap! peer assoc :last-reseat-error result)
+                (when-let [ch (:reseat-ch @peer)]
+                  (go (<! (timeout 100)) (put! ch :retry))))
+
+            (let [{d :descriptor hs :head-state} @peer]
+              (and (= descriptor d) (:ready? (gate descriptor hs))))
+            (let [ws (compose-fn result)]
+              (binding [ec/*execution-context* ctx]
+                (ec/swap-state! [workspace-key] (constantly ws)))
+              (swap! peer assoc :seated descriptor :last-reseat-error nil)
+              (when on-reseat (on-reseat ws descriptor)))))))
+    nil))
+
+(defn- start-reseat-loop!
+  "One SERIAL reseat consumer per async peer: each nudge re-evaluates + (re)seats,
+   one at a time (so concurrent resolves can't race). The `dropping-buffer 1` channel
+   collapses bursts of nudges into a single re-check; a closed channel (nil) stops it."
+  [peer reseat-ch]
+  (go-loop []
+    (when (some? (<! reseat-ch))
+      (<! (do-reseat-async! peer))
+      (recur))))
+
+(defn- maybe-reseat!
+  "Recompute the gate. A SYNC peer (JVM default) re-seats INLINE when ready+changed —
+   today's behaviour, byte-identical. An ASYNC peer nudges its serial reseat loop and
+   the seat completes later. Returns the gate result (`:reseated?` is true only on a
+   completed sync re-seat; async re-seats are observed via `:on-reseat`/`current-workspace`)."
+  [peer]
+  (let [{:keys [sync? reseat-ch descriptor head-state seated]} @peer
         g (gate descriptor head-state)]
-    (if (and (:ready? g) (not= descriptor seated))
-      (do (reseat! @peer descriptor)
-          (swap! peer assoc :seated descriptor)
-          (assoc g :reseated? true))
-      (assoc g :reseated? false))))
+    (if sync?
+      (if (and (:ready? g) (not= descriptor seated))
+        (do (reseat! @peer descriptor)
+            (swap! peer assoc :seated descriptor)
+            (assoc g :reseated? true))
+        (assoc g :reseated? false))
+      (do (when (and reseat-ch (:ready? g) (not= descriptor seated))
+            (put! reseat-ch :tick))
+          (assoc g :reseated? false)))))
 
 (defn set-descriptor!
   "Set the target checkout descriptor (from the signal_sync'd control plane).
@@ -231,10 +312,21 @@
   (maybe-reseat! peer))
 
 (defn current-workspace
-  "Read the workspace value currently seated in the peer's context (or nil)."
+  "Read the workspace value currently seated in the peer's context (or nil). For an
+   async peer this is the LAST seated value (eventually-consistent — the next reseat
+   may still be in flight); poll it or use `:on-reseat`."
   [peer]
   (binding [ec/*execution-context* (:ctx @peer)]
     (ec/get-state [workspace-key])))
+
+(defn stop-peer!
+  "Stop an async peer's serial reseat loop (no-op for a sync peer). Call on shutdown
+   so the consumer go-loop exits and stops observing nudges."
+  [peer]
+  (when-let [ch (:reseat-ch @peer)]
+    (close! ch)
+    (swap! peer assoc :reseat-ch nil))
+  peer)
 
 (defn gate-status
   "Current gate result without mutating (for diagnostics / UI)."

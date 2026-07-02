@@ -73,7 +73,7 @@
 ;; returns PSS Leaf/Branch objects, so the walker must project (not keyword-access)
 ;; each node's children, else it ships only the root for any multi-node tree.
 (def ^:private ygg-sync-opts
-  (ks-pss/make-pss-sync-opts :crdt/roots #{:crdt/roots :crdt/freed}
+  (ks-pss/make-pss-sync-opts :crdt/branches ks-pss/default-head-key true
                              ygg-storage/node-child-addresses))
 
 (defn- dh-item-names
@@ -142,7 +142,7 @@
 
             ;; ---- yggdrasil replicates: the :crdt/roots cell + all nodes land,
             ;; and the client reconstructs the SAME G-Set value from synced nodes.
-            (is (poll-until #(seq (<!! (k/get c-ygg-store :crdt/roots))) 10000)
+            (is (poll-until #(seq (<!! (k/get c-ygg-store :crdt.head/main))) 10000)
                 "yggdrasil :crdt/roots cell replicated to client")
             (is (poll-until
                  #(= #{:alpha :beta}

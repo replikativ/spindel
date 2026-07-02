@@ -123,14 +123,112 @@ For a **convergent** CRDT the sync is *δ-based and idempotent*: only the
 operation crosses the wire (`:delta-fn`), the receiver applies it
 (`:apply-delta-fn`), and an apply that adds nothing returns the receiver
 `identical?` (no reactive tick, no re-publish — a mutually-synced network
-never runs away). A late joiner is caught up by a serializable handshake
-projection (`:state-fn`), since a CRDT *value* (carrying stores + a
-join fn) is not itself wire-serializable.
+never runs away). A joiner (or reconnecting peer) with prior writes is
+reconciled by a **symmetric handshake**: on connect it ships its own
+serializable projection (`:state-fn`), the owner *integrates* it and
+replies with the merged result — so two peers that each wrote **before**
+connecting both converge to the union in one round-trip, not just
+owner→joiner. (A CRDT *value* — carrying stores + a join fn — is not
+itself wire-serializable, hence the plain-data `:state-fn` projection.)
+
+### `:owner?` is a RELAY role, not write authority
+
+`:owner?` on `sync-signal!` designates the single peer that
+`register-topic!`s — the **kabel pub/sub relay hub**. kabel forwards a
+publish only from the topic owner, so the topology is a **star**: every
+peer's δ reaches the owner, which re-fans it to the other subscribers.
+The owner otherwise publishes and applies exactly like every other peer;
+it is *just additionally the relay*. Default topology is **one
+star-relay per topic**.
+
+This is deliberately distinct from the descriptor's `:owner` (below),
+which is a **single-writer lease** — actual write *authority*, gating who
+may mutate a non-convergent system (datahike's transactor). Convergent
+CRDTs need **no** write authority: any peer writes concurrently and
+`-join` reconciles, so for them `:owner?` is *purely* transport. Recovering
+replikativ as a special case is exactly this: heads/δ over the pub/sub
+relay, content-addressed values over konserve-sync — with no privileged
+writer.
 
 The convergent hooks don't have to be written by hand — for a yggdrasil
 system, `ygg-signal/sync-opts` derives them from the system's CRDT
 protocols (`PConvergent → :merge-fn`, `PDeltaApply → :apply-delta-fn`
 + `:delta-fn` + `:clear-delta-fn`).
+
+## The unified sync model — one serializer, one way
+
+A yggdrasil CRDT **lives in a signal**; convergence is internal to the
+datatype (`-join`), so nothing about syncing is peer-specific. There is
+**one way to sync**, and the only per-datatype differences are *how an
+update is applied* (`-join` / `-apply-delta`) and *handshake symmetry*.
+
+Two cooperating transports ride **one Fressian serializer**
+(`yggdrasil.wire`, the canonical PSS codec datahike/stratum/proximum also
+use — so every system shares one socket):
+
+| Transport | Ships | What it is |
+|-----------|-------|------------|
+| **konserve-sync** | the content-addressed **nodes** (+ optionally the `:crdt/roots` head cell) | the *state* substrate — a reachability walk with a fetch-gate + immutable-skip echo-termination |
+| **signal-sync** | the **value** (the CRDT root, via the `ygg/system` codec) and/or the **δ** (the op) | the *head/op* over kabel pub/sub |
+
+"Send both" is cheap and idiomatic: konserve-sync makes the nodes present,
+so a peer has both **cheap full-state access** (reconstruct the value from
+the root) and **cheap increments** (apply a δ) whenever it needs either.
+
+**A CRDT value serializes itself.** `yggdrasil.fressian`'s `ygg/system`
+codec writes a system as `{plain fields + each PSS field's
+content-addressed ROOT address}` and reconstructs it against the store the
+nodes were synced into. So the connect handshake ships the *value* (the
+root) — no hand-written `state-fn` projection needed. Flush is async and
+belongs **upstream** (the mutation, or the publish/handshake seam); the
+Fressian write handler then reads the realized root synchronously
+(datahike's `safe-root` contract). Cross-platform: the codec is `.cljc`, so
+a browser peer ships/receives values over the same wire as the JVM.
+
+### Composing the primitives (a durable convergent peer)
+
+```clojure
+;; ONE Fressian serializer for a peer: PSS nodes/roots + ygg/system values,
+;; resolving a received value's storage against this peer's local store.
+(require '[yggdrasil.wire :as wire]
+         '[kabel.middleware.fressian :refer [fressian]])
+(defn wire-mw [storage]
+  (fn [cfg] (fressian (atom (wire/read-handlers {:resolve-storage (constantly storage)}))
+                      (atom (wire/write-handlers)) cfg)))
+
+;; nodes over konserve-sync (ship nodes only — pointer-keys #{} — so two peers
+;; syncing into their own stores don't clobber each other's :crdt/roots head):
+(require '[konserve-sync.core :as ks] '[konserve-sync.walkers.pss :as ks-pss]
+         '[yggdrasil.storage :as ygg-storage])
+(def nodes-only (ks-pss/make-pss-sync-opts :crdt/roots #{} ygg-storage/node-child-addresses))
+(ks/register-store! peer node-topic my-store nodes-only)     ; owner
+(ks/subscribe-store! other-peer node-topic their-mirror nodes-only)
+
+;; value/δ over signal-sync (the CRDT lives in a signal; -join auto-merges):
+(require '[org.replikativ.spindel.distributed.signal-sync :as ss]
+         '[org.replikativ.spindel.ygg-signal :as ys])
+(ss/sync-signal! peer value-topic my-signal :owner? true :merge-fn (ys/ygg-merge-fn true) :sync? true)
+```
+
+### Topology & durability
+
+- **Star-relay per topic** (no kabel change). `:owner?` marks the pub/sub
+  relay hub — *not* the ws-server and *not* a writer. kabel's pubsub
+  middleware is symmetric, so in a 2-peer mesh each peer can own its own
+  node topic and the other subscribes (mutual sync, no privileged writer).
+  N peers converge through the hub; true N-peer gossip (non-owner relays)
+  would need a kabel change and is out of scope.
+- **Durability**: everything is content-addressed on disk. A cold restart
+  (reopen from the path with fresh caches — or a fresh process) reconstructs
+  the full value from nodes + head, never from an in-memory cache.
+
+### spindel ships primitives, not a p2p system
+
+These are building blocks — the value/δ/node paths, the symmetric handshake,
+the durability contract. spindel is a library; an application (e.g. dvergr)
+composes them into a plug-and-play p2p system. The tests
+(`distributed/ygg_value_wire_test`, `bidirectional_value_mesh_test`,
+`durable_restart_test`, `bidirectional_sync_test`) are the worked examples.
 
 ## Workspace Reflection & Cross-System Forking
 

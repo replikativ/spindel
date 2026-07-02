@@ -25,8 +25,9 @@
             [clojure.core.async :refer [timeout]]
             [kabel.peer :as peer]
             [kabel.http-kit :as http-kit]
-            [kabel.middleware.transit :refer [transit]]
+            [kabel.middleware.fressian :refer [fressian]]
             [kabel.pubsub :as pubsub]
+            [yggdrasil.wire :as wire]
             [org.replikativ.spindel.distributed.signal-sync :as ss]
             [org.replikativ.spindel.ygg-signal :as ys]
             [yggdrasil.convergent.gset :as g]
@@ -40,6 +41,15 @@
 (defn- mem-gset [id]
   (g/gset id {:store-config {:backend :memory :id (random-uuid)}}))
 
+;; ONE fressian serializer per peer: PSS nodes/roots + ygg/system values (the CRDT record
+;; ships as its projection), resolving a received value against this peer's storage. Replaces
+;; bare transit, which cannot serialize a yggdrasil system value.
+(defn- wire-middleware [storage]
+  (fn [peer-config]
+    (fressian (atom (wire/read-handlers {:resolve-storage (constantly storage)}))
+              (atom (wire/write-handlers))
+              peer-config)))
+
 (deftest server-to-client-gset-op-sync
   (testing "a server-side G-Set's ops propagate as δ over a real websocket; the
             client's independent replica converges, and the shipped δ is cleared"
@@ -49,8 +59,10 @@
           cid     (uuid :conv-cli)
           topic   :conv/gset
           handler (http-kit/create-http-kit-handler! S url sid)
-          ;; pub/sub middleware + transit serializer = the minimal wire for signal_sync
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          ;; pub/sub middleware + fressian serializer = the minimal wire for signal_sync.
+          ;; The server ships only δ (plain data), so its wire needs no storage resolver.
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware nil))]
       (<?? S (peer/start server))
       (try
         (let [;; server signal starts nil → the handshake ships no (non-serializable) snapshot
@@ -59,11 +71,12 @@
                                    :delta-fn       ys/ygg-delta-fn
                                    :clear-delta-fn ys/ygg-clear-delta-fn
                                    :sync?          true)
-              client (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {}) transit)
-              _ (<?? S (peer/connect S client url))
-              _ (<?? S (timeout 800))
               ;; the client holds its OWN empty replica; OP-path subscribe (apply-delta-fn)
               client-sig (atom (mem-gset "client"))
+              client (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {})
+                                       (wire-middleware (:storage @client-sig)))
+              _ (<?? S (peer/connect S client url))
+              _ (<?? S (timeout 800))
               _ (<?? S (pubsub/subscribe! client #{topic}
                                           {:strategies {topic (ss/->SignalSyncStrategy
                                                                client-sig nil nil ys/ygg-apply-delta-fn true nil)}}))

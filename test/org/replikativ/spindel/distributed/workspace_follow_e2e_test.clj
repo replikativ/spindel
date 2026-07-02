@@ -54,14 +54,15 @@
   (fressian (atom fh/read-handlers) (atom fh/write-handlers) peer-config))
 
 (def ^:private ygg-sync-opts
-  (ks-pss/make-pss-sync-opts :crdt/roots #{:crdt/roots :crdt/freed}
+  (ks-pss/make-pss-sync-opts :crdt/branches ks-pss/default-head-key true
                              ygg-storage/node-child-addresses))
 
 (def ^:private server-id #uuid "30000000-0000-0000-0000-0000000000f1")
 (def ^:private client-id #uuid "30000000-0000-0000-0000-0000000000f2")
 
-;; content-addressed roots → normalize to a stable comparable token
-(defn- roots-token [roots] (set (map str roots)))
+;; a head cell is {:root <fused-node> :parents …}; its STABLE cross-peer token is the
+;; root node's content-address (identical on both peers; the object-str is not).
+(defn- roots-token [head] (when-let [r (:root head)] (str (ygg-storage/node-address r))))
 
 (deftest wire-topology-subscriber-follow-over-kabel
   (testing "the G-Set store replicates over kabel; wire-topology!'s :subscriber path
@@ -79,7 +80,7 @@
         (let [s-ygg        (g/flush! (-> (g/gset (str ygg-id) {:store-config s-cfg} {:sync? true})
                                          (g/conj :alpha) (g/conj :beta)))
               s-store      (:kv-store s-ygg)
-              target-head  (roots-token (<!! (k/get s-store :crdt/roots)))
+              target-head  (roots-token (<!! (k/get s-store :crdt.head/main)))
               handler      (create-http-kit-handler! S url server-id)
               server-peer  (peer/server-peer S handler server-id
                                              (comp (sync/server-middleware) ds/remote-middleware)
@@ -98,9 +99,9 @@
                             {:ctx ctx
                              :resolve-system-fn (fn [_sid _branch]
                                                   (g/gset (str ygg-id) {:kv-store c-store} {:sync? true}))})
-              descriptor   {:branch  :crdt/roots
+              descriptor   {:branch  :crdt.head/main
                             :owner   :server
-                            :systems {"set" {:branch :crdt/roots :head target-head :topic ygg-topic}}}]
+                            :systems {"set" {:branch :crdt.head/main :head target-head :topic ygg-topic}}}]
           ;; local checkout intent (in dvergr this rides signal_sync; see ns docstring)
           (wp/set-descriptor! wpeer descriptor)
           ;; FOLLOW: wire the :subscriber store subscription through wire-topology!
@@ -111,7 +112,7 @@
                                        (<?? S (sync/subscribe-store! cp topic store opts)))
                        :sync-opts-lookup (constantly ygg-sync-opts)
                        :head-token-fn roots-token
-                       :branch-key? #{:crdt/roots})]
+                       :branch-key? #{:crdt.head/main})]
             (is (contains? (:stores wired) "set") "the :subscriber system was store-wired"))
 
           (is (poll-until #(some? (wp/current-workspace wpeer)) 15000)

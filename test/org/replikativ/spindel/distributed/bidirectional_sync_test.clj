@@ -18,8 +18,9 @@
             [clojure.java.io :as io]
             [kabel.peer :as peer]
             [kabel.http-kit :as http-kit]
-            [kabel.middleware.transit :refer [transit]]
+            [kabel.middleware.fressian :refer [fressian]]
             [kabel.pubsub :as pubsub]
+            [yggdrasil.wire :as wire]
             [org.replikativ.spindel.distributed.signal-sync :as ss]
             [org.replikativ.spindel.ygg-signal :as ys]
             [yggdrasil.convergent.gset :as g]
@@ -44,6 +45,15 @@
 
 (defn- file-gset [id path]
   (g/gset id {:store-config {:backend :file :path path :id (random-uuid)}} {:sync? true}))
+
+;; ONE fressian serializer per peer: PSS nodes/roots + ygg/system values (the CRDT record
+;; ships as its projection), resolving a received value against this peer's storage. Replaces
+;; bare transit, which cannot serialize a yggdrasil system value.
+(defn- wire-middleware [storage]
+  (fn [peer-config]
+    (fressian (atom (wire/read-handlers {:resolve-storage (constantly storage)}))
+              (atom (wire/write-handlers))
+              peer-config)))
 
 ;; Both peers wire the SAME convergent hooks; only :owner? differs (the topic owner
 ;; is the relay hub). state-fn = g/elements ships the plain element set for the
@@ -84,16 +94,18 @@
           sid     (uuid :bidi-srv)
           cid     (uuid :bidi-cli)
           topic   :bidi/gset
+          server-sig (atom (mem-gset "server"))
           handler (http-kit/create-http-kit-handler! S url sid)
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
       (<?? S (peer/start server))
       (try
-        (let [server-sig (atom (mem-gset "server"))
-              _          (sync-gset! server topic server-sig true)   ; owner = hub
-              client     (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {}) transit)
+        (let [_          (sync-gset! server topic server-sig true)   ; owner = hub
+              client-sig (atom (mem-gset "client"))
+              client     (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {})
+                                           (wire-middleware (:storage @client-sig)))
               _          (<?? S (peer/connect S client url))
               _          (<?? S (timeout 800))
-              client-sig (atom (mem-gset "client"))
               _          (sync-gset! client topic client-sig false)
               _          (<?? S (timeout 500))]
 
@@ -129,19 +141,22 @@
           url     (str "ws://localhost:" port)
           sid     (uuid :fan-srv)
           topic   :fan/gset
+          server-sig (atom (mem-gset "server"))
           handler (http-kit/create-http-kit-handler! S url sid)
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
       (<?? S (peer/start server))
       (try
-        (let [server-sig (atom (mem-gset "server"))
-              _   (sync-gset! server topic server-sig true)
-              c1  (peer/client-peer S (uuid :fan-c1) (pubsub/make-pubsub-peer-middleware {}) transit)
-              c2  (peer/client-peer S (uuid :fan-c2) (pubsub/make-pubsub-peer-middleware {}) transit)
+        (let [_   (sync-gset! server topic server-sig true)
+              c1-sig (atom (mem-gset "c1"))
+              c2-sig (atom (mem-gset "c2"))
+              c1  (peer/client-peer S (uuid :fan-c1) (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @c1-sig)))
+              c2  (peer/client-peer S (uuid :fan-c2) (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @c2-sig)))
               _   (<?? S (peer/connect S c1 url))
               _   (<?? S (peer/connect S c2 url))
               _   (<?? S (timeout 800))
-              c1-sig (atom (mem-gset "c1"))
-              c2-sig (atom (mem-gset "c2"))
               _   (sync-gset! c1 topic c1-sig false)
               _   (sync-gset! c2 topic c2-sig false)
               _   (<?? S (timeout 500))]
@@ -167,20 +182,22 @@
           url     (str "ws://localhost:" port)
           sid     (uuid :lj-srv)
           topic   :lj/gset
+          server-sig (atom (mem-gset "server"))
           handler (http-kit/create-http-kit-handler! S url sid)
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
       (<?? S (peer/start server))
       (try
-        (let [server-sig (atom (mem-gset "server"))
-              _ (sync-gset! server topic server-sig true)]
+        (let [_ (sync-gset! server topic server-sig true)]
           ;; build up state with NO subscriber connected yet
           (swap! server-sig (fn [s] (-> s (g/conj :a) (g/conj :b) (g/conj :c))))
           (is (= #{:a :b :c} (g/elements @server-sig)))
           ;; the late joiner connects only now
-          (let [client     (peer/client-peer S (uuid :lj-cli) (pubsub/make-pubsub-peer-middleware {}) transit)
+          (let [client-sig (atom (mem-gset "late"))
+                client     (peer/client-peer S (uuid :lj-cli) (pubsub/make-pubsub-peer-middleware {})
+                                             (wire-middleware (:storage @client-sig)))
                 _          (<?? S (peer/connect S client url))
                 _          (<?? S (timeout 800))
-                client-sig (atom (mem-gset "late"))
                 _          (sync-gset! client topic client-sig false)
                 _          (<?? S (timeout 1200))]
             (is (= #{:a :b :c} (g/elements @client-sig))
@@ -190,6 +207,39 @@
             (<?? S (timeout 1000))
             (is (= #{:a :b :c :d} (g/elements @client-sig)) "live δ after catch-up still applies")
             (<?? S (peer/stop client))))
+        (finally
+          (<?? S (peer/stop server)))))))
+
+(deftest both-peers-prior-writes-reconcile-on-connect
+  (testing "SYMMETRIC handshake: two peers EACH holding prior writes (made BEFORE
+            connecting) converge to the union on connect, with NO post-connect write.
+            The connecting peer's state now reaches the owner too — not just
+            owner→joiner. Under the old one-way handshake the owner would stay missing
+            the joiner's :b until some later write triggered a publish."
+    (let [port    (free-port)
+          url     (str "ws://localhost:" port)
+          sid     (uuid :sym-srv)
+          topic   :sym/gset
+          server-sig (atom (-> (mem-gset "server") (g/conj :a)))   ; owner's prior write
+          handler (http-kit/create-http-kit-handler! S url sid)
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
+      (<?? S (peer/start server))
+      (try
+        (let [_   (sync-gset! server topic server-sig true)
+              client-sig (atom (-> (mem-gset "client") (g/conj :b)))  ; joiner's prior write
+              client (peer/client-peer S (uuid :sym-cli) (pubsub/make-pubsub-peer-middleware {})
+                                       (wire-middleware (:storage @client-sig)))
+              _   (<?? S (peer/connect S client url))
+              _   (<?? S (timeout 800))]
+          ;; subscribe → handshake fires; deliberately NO post-connect writes
+          (sync-gset! client topic client-sig false)
+          (<?? S (timeout 1200))
+          (is (= #{:a :b} (g/elements @client-sig))
+              "joiner caught up to the owner's :a (owner→joiner, as before)")
+          (is (= #{:a :b} (g/elements @server-sig))
+              "owner ALSO caught up to the joiner's :b ON CONNECT — the symmetric direction")
+          (<?? S (peer/stop client)))
         (finally
           (<?? S (peer/stop server)))))))
 
@@ -205,16 +255,18 @@
           topic   :dur/gset
           s-path  (temp-dir "bidi-sygg")
           c-path  (temp-dir "bidi-cygg")
+          server-sig (atom (file-gset "server" s-path))
           handler (http-kit/create-http-kit-handler! S url sid)
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
       (<?? S (peer/start server))
       (try
-        (let [server-sig (atom (file-gset "server" s-path))
-              _   (sync-gset! server topic server-sig true)
-              client (peer/client-peer S (uuid :dur-cli) (pubsub/make-pubsub-peer-middleware {}) transit)
+        (let [_   (sync-gset! server topic server-sig true)
+              client-sig (atom (file-gset "client" c-path))
+              client (peer/client-peer S (uuid :dur-cli) (pubsub/make-pubsub-peer-middleware {})
+                                       (wire-middleware (:storage @client-sig)))
               _   (<?? S (peer/connect S client url))
               _   (<?? S (timeout 800))
-              client-sig (atom (file-gset "client" c-path))
               _   (sync-gset! client topic client-sig false)
               _   (<?? S (timeout 500))]
           (swap! server-sig (fn [s] (g/conj s :sx)))
@@ -244,16 +296,18 @@
           url     (str "ws://localhost:" port)
           sid     (uuid :cd-srv)
           topic   :cd/doc
+          server-sig (atom (mem-cdvcs "server"))
           handler (http-kit/create-http-kit-handler! S url sid)
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
       (<?? S (peer/start server))
       (try
-        (let [server-sig (atom (mem-cdvcs "server"))
-              _   (sync-cdvcs! server topic server-sig true)
-              client (peer/client-peer S (uuid :cd-cli) (pubsub/make-pubsub-peer-middleware {}) transit)
+        (let [_   (sync-cdvcs! server topic server-sig true)
+              client-sig (atom (mem-cdvcs "client"))
+              client (peer/client-peer S (uuid :cd-cli) (pubsub/make-pubsub-peer-middleware {})
+                                       (wire-middleware (:storage @client-sig)))
               _   (<?? S (peer/connect S client url))
               _   (<?? S (timeout 800))
-              client-sig (atom (mem-cdvcs "client"))
               _   (sync-cdvcs! client topic client-sig false)
               _   (<?? S (timeout 500))]
           (swap! server-sig (fn [c] (cd/commit c "server" [[:assoc :s 1]])))

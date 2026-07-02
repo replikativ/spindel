@@ -55,9 +55,10 @@
 
    Both commit paths are race-free so a concurrent LOCAL `swap!` (or another apply) on
    the same signal is never lost — which would silently drop a peer's own write (the
-   hub never echoes a peer its own δ, so the loss would be permanent). The sync path
-   uses an atomic `swap-vals!`. The async (durable/cljs) path commits via
-   `compare-and-set` and re-merges on a losing race: `await` is a cooperative yield
+   hub never echoes a peer its own δ, so the loss would be permanent). BOTH paths commit
+   through the same `cas-read`+`cas!` loop (`compare-and-set`), re-integrating on a
+   losing race — NOT `swap-vals!` (which throws on a SignalRef: it is IAtom, not IAtom2).
+   This matters most on the async (durable/cljs) path: `await` is a cooperative yield
    point, so 'single-threaded' does NOT mean non-interleaved — a write landing during
    the suspension is detected by the CAS and the op re-run. `apply-delta-fn`/`merge-fn`
    are idempotent/commutative CRDT ops, safe under retry."
@@ -130,6 +131,11 @@
       convergent?
       (do (put! ch {:ok true :changed? false}) (close! ch))
       ;; STATE-path LWW (ordinary, non-convergent signal): a plain value, set directly.
+      ;; This read-then-`reset!` is deliberately NON-atomic — unlike the convergent
+      ;; `commit!` paths above, LWW semantics ARE last-writer-wins, so a concurrent
+      ;; local `swap!` racing this reset is acceptable by definition (one of the two
+      ;; writes wins; neither is a CRDT op that must be preserved). Only convergent
+      ;; signals need the CAS loop (losing a peer's un-echoed δ would be permanent).
       :else
       (let [old @signal-atom]
         (reset! signal-atom (:value msg))
@@ -150,31 +156,46 @@
   proto/PSyncStrategy
 
   (-init-client-state [_]
-    ;; Client sends the hash of its current (plain-projected) value, or closes if none.
-    (let [ch (chan 1)
-          current @signal-atom]
-      (if (some? current)
-        (do (put! ch {:hash (hash (if state-fn (state-fn current) current))})
-            (close! ch))
-        (close! ch))
-      ch))
-
-  (-handshake-items [_ client-state]
-    ;; Server sends its current value if the client doesn't already have it. With
-    ;; `state-fn` the snapshot is the plain-data projection shipped as a δ (so a
-    ;; non-serializable CRDT value still crosses); otherwise the raw value.
+    ;; The connecting peer ships its PROJECTION (a joinable δ for a convergent value,
+    ;; else the raw value), not just a hash — so the owner can INTEGRATE it during the
+    ;; handshake. That makes the connect catch-up BIDIRECTIONAL (replikativ-style): two
+    ;; peers each holding prior writes converge to the union, not only owner→joiner. The
+    ;; `:hash` still lets the owner skip a no-op reply. (Convergent join is idempotent/
+    ;; commutative, so the owner integrating + the joiner re-receiving is safe.)
     (let [ch (chan 1)
           current @signal-atom
-          client-hash (:hash client-state)
-          snap (if state-fn (state-fn current) current)]
-      (when (and (some? current)
-                 (or (nil? client-hash)
-                     (not= (hash snap) client-hash)))
-        (put! ch (if state-fn
-                   {:type :snapshot :delta snap}
-                   {:type :snapshot :value current})))
+          snap (when (some? current) (if state-fn (state-fn current) current))]
+      (when (some? snap)
+        (put! ch (cond-> {:hash (hash snap)}
+                   state-fn       (assoc :delta snap)      ; convergent → joinable δ
+                   (not state-fn) (assoc :value current)))) ; serializable / LWW value
       (close! ch)
       ch))
+
+  (-handshake-items [this client-state]
+    ;; SYMMETRIC catch-up: integrate the connecting peer's projection into OUR signal
+    ;; (the direction that was missing — `apply-incoming!`, the same idempotent path
+    ;; live publishes use) AND reply with OUR snapshot, so after one round-trip both
+    ;; sides hold the union. Crucially we reply our PRE-integration snapshot (captured
+    ;; here, before `apply-incoming!`), NOT the post-join value: the joiner integrates
+    ;; our OWN state, whose nodes it has already synced (konserve-sync), rather than our
+    ;; post-join union whose freshly-created nodes may not be shipped yet. Convergence
+    ;; is symmetric — each side joins the other's own state. Integrating a remote value
+    ;; carries no local δ ⇒ no echo on our watch.
+    (let [out     (chan 1)
+          current @signal-atom
+          snap    (if state-fn (state-fn current) current)
+          reply!  (fn []
+                    (when (and (some? snap) (not= (hash snap) (:hash client-state)))
+                      (put! out (if state-fn
+                                  {:type :snapshot :delta snap}
+                                  {:type :snapshot :value current})))
+                    (close! out))]
+      (if (or (contains? client-state :delta) (contains? client-state :value))
+        ;; integrate the joiner's state, THEN reply our pre-captured snapshot
+        (a/take! (apply-incoming! this client-state) (fn [_] (reply!)))
+        (reply!))
+      out))
 
   (-apply-handshake-item [this item]
     ;; Catch-up on connect: a snapshot is already {:delta …} (OP-path, convergent)

@@ -5,9 +5,11 @@
         org.clojure/tools.analyzer.jvm {:mvn/version "1.3.2"}
         riddley/riddley {:mvn/version "0.2.0"}
         org.replikativ/logging {:mvn/version "0.1.3"}
-        is.simm/partial-cps {:mvn/version "0.1.59"}
-        org.replikativ/yggdrasil {:mvn/version "0.3.31"}
-        org.replikativ/hasch {:mvn/version "0.3.97"}
+        ;; 0.1.60 ships the optional core.async adapter (is.simm.partial-cps.core-async)
+        ;; that distributed.cps delegates to.
+        is.simm/partial-cps {:mvn/version "0.1.60"}
+        org.replikativ/yggdrasil {:mvn/version "0.3.34"}
+        org.replikativ/hasch {:mvn/version "0.4.99"}
         org.clojure/core.async {:mvn/version "1.6.681"}
         anglican/anglican {:mvn/version "1.1.0"}
         org.replikativ/kabel {:mvn/version "0.3.94"}}
@@ -31,14 +33,26 @@
                       ;; Provided/optional dep for workspace-peer-sync (resolved via
                       ;; requiring-resolve in src/, so runtime :deps stay lean); the
                       ;; :test classpath needs it present. Released artifact.
-                      org.replikativ/konserve-sync {:mvn/version "0.1.30"}
-                      ;; PSS pinned to match what yggdrasil 0.3.31 pins (canonical
+                      org.replikativ/konserve-sync {:mvn/version "0.1.31"}
+                      ;; PSS pinned to match what yggdrasil 0.3.34 pins (canonical
                       ;; handlers + MST + the cljs MST oversized-node iterator fix).
                       org.replikativ/persistent-sorted-set {:mvn/version "0.4.130"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
+
+  ;; runs the cross-runtime JVM kabel server with the :test classpath; use as
+  ;; `clojure -M:test:cross-server` (this alias's :main-opts override :test's).
+  :cross-server {:main-opts ["-m" "org.replikativ.spindel.distributed.cross-runtime-server"]}
+
+  ;; JVM kabel server for the cross-runtime FORK/MERGE proof (observes the cljs peer's
+  ;; merge result). Use `clojure -M:test:cross-fork-server`.
+  :cross-fork-server {:main-opts ["-m" "org.replikativ.spindel.distributed.cross-runtime-fork-server"]}
+
+  ;; JVM kabel server for the DURABLE cross-runtime proof (file-backed G-Set, exports
+  ;; value+nodes over one fressian wire). Use `clojure -M:test:cross-durable-server`.
+  :cross-durable-server {:main-opts ["-m" "org.replikativ.spindel.distributed.cross-runtime-durable-server"]}
 
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}
@@ -58,7 +72,16 @@
 
   :cljs {:extra-paths ["test"]
          :extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"}
-                      org.clojure/test.check {:mvn/version "1.1.1"}}}
+                      org.clojure/test.check {:mvn/version "1.1.1"}
+                      ;; datahike on the cljs classpath: the cross-runtime FORK client creates
+                      ;; a REAL datahike (memory) system on node. datahike is :test-only on the
+                      ;; JVM, so the shadow build needs it pulled in here too.
+                      org.replikativ/datahike {:mvn/version "0.8.1708"}
+                      org.replikativ/persistent-sorted-set {:mvn/version "0.4.130"}
+                      ;; the DURABLE cross-runtime client (cross-runtime-durable-client)
+                      ;; syncs a node-filestore-backed G-Set's NODES over konserve-sync;
+                      ;; on the JVM konserve-sync is :test-only, so the shadow build needs it here.
+                      org.replikativ/konserve-sync {:mvn/version "0.1.31"}}}
 
   ;; Code formatting check (CI uses this; clj -M:format)
   :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}

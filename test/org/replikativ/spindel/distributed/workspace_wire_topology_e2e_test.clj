@@ -17,7 +17,8 @@
             [kabel.peer :as peer]
             [kabel.http-kit :as http-kit]
             [kabel.pubsub :as pubsub]
-            [kabel.middleware.transit :refer [transit]]
+            [kabel.middleware.fressian :refer [fressian]]
+            [yggdrasil.wire :as wire]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.distributed.workspace-peer :as wp]
             [org.replikativ.spindel.distributed.workspace-peer-sync :as sync]
@@ -32,6 +33,15 @@
 (defn- mem-gset [id]
   (g/gset id {:store-config {:backend :memory :id (random-uuid)}}))
 
+;; ONE fressian serializer per peer: PSS nodes/roots + ygg/system values (the CRDT record
+;; ships as its projection), resolving a received value against this peer's storage. Replaces
+;; bare transit, which cannot serialize a yggdrasil system value.
+(defn- wire-middleware [storage]
+  (fn [peer-config]
+    (fressian (atom (wire/read-handlers {:resolve-storage (constantly storage)}))
+              (atom (wire/write-handlers))
+              peer-config)))
+
 (deftest wire-topology-bidirectional-role-over-kabel
   (testing "a descriptor marking a system :role :bidirectional drives the client's
             wire-topology! to convergent-sync it (sync-system!); concurrent writes
@@ -41,19 +51,21 @@
           sid     (uuid :wt-srv)
           cid     (uuid :wt-cli)
           topic   :wt/gset
+          server-sig (atom (mem-gset "server"))
           handler (http-kit/create-http-kit-handler! S url sid)
-          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {}) transit)]
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware (:storage @server-sig)))]
       (<?? S (peer/start server))
       (try
-        (let [server-sig (atom (mem-gset "server"))
-              ;; SERVER (owner/hub): sync-system! directly, with the serializable
+        (let [;; SERVER (owner/hub): sync-system! directly, with the serializable
               ;; connect-handshake projection (g/elements).
               _          (sync/sync-system! server topic server-sig
                                             :owner? true :sync? true :state-fn g/elements)
-              client     (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {}) transit)
+              client-sig (atom (mem-gset "client"))
+              client     (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {})
+                                           (wire-middleware (:storage @client-sig)))
               _          (<?? S (peer/connect S client url))
               _          (<?? S (timeout 800))
-              client-sig (atom (mem-gset "client"))
               ctx        (ctx/create-execution-context)
               wpeer      (wp/make-workspace-peer
                           {:ctx ctx :resolve-system-fn (fn [_ _] nil)})
