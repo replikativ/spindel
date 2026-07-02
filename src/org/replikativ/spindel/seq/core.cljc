@@ -18,12 +18,21 @@
 ;; Extend nil to PAsyncSeq (spin-based anext)
 ;; =============================================================================
 
+;; nil terminates an async sequence. Return a PLAIN partial-cps thunk (as
+;; partial-cps.sequence's own nil impl and every other extension here do) — NOT a
+;; `make-spin`. `make-spin` calls `spin-register!` → `current-execution-context`,
+;; which THROWS when no spindel context is bound. Because `PAsyncSeq` is a SHARED
+;; protocol (referred from partial-cps.sequence) and `extend-type` is global
+;; last-writer-wins, a spin-based nil terminator poisoned EVERY partial-cps
+;; async-seq iteration (e.g. konserve/PSS drains inside a durable yggdrasil op)
+;; that runs OUTSIDE a bound spindel context — the exact cljs failure of a durable
+;; convergent fork/merge driven async. A plain thunk needs no context and is
+;; `await`-able identically (the ifn-await path).
 (extend-type nil
   PAsyncSeq
   (anext [_]
-    (spin-core/make-spin
-     (fn [resolve _reject]
-       (resolve nil)))))
+    (fn [resolve _reject]
+      (resolve nil))))
 
 ;; =============================================================================
 ;; yield - Breakpoint for async sequence generation
