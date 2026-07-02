@@ -5,9 +5,12 @@
    `:following`-overlay footguns (empty-delta reads, Overlay write NPE, merge fn-seating).
    Overlays remain reachable via `:convergent-fork :overlay`.
 
-   JVM-only for now: durable `branch!`/`checkout` are async on cljs and the engine's
-   `fork-context` is synchronous, so durable branch-fork is JVM-first until the async
-   fork-context lift lands (the in-mem ConflictFreeSystem forks sync on both platforms)."
+   JVM-flavoured suite (uses `with-fork` + `swap!`, both JVM-only): the bridge fork/merge
+   fns are now `async+sync`, so durable branch-fork ALSO works on cljs (the engine's
+   `fork-context` stays synchronous; the async lives in `fork!`'s awaited post-pass +
+   the merge/discard loops). The cross-platform proof lives in
+   `ygg-convergent-fork-portable-test` (a `.cljc` `deftest-async` exercising the real
+   cljs async path); this JVM suite keeps the ergonomic sync surface."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.yggdrasil :as ygg]

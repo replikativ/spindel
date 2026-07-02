@@ -23,6 +23,15 @@
    - merge-to-parent! / discard-from-parent!: parent-controlled merge-down /
      discard of the fork's per-system overlays.
 
+   ASYNC+SYNC (portability, Design B): the engine stays synchronous and every
+   fn that drives a DURABLE yggdrasil op (`fork!`, merge/discard/diff/conflicts)
+   is written `async+sync` — SYNC on the JVM (returns a value, byte-identical to
+   before) and a partial-cps CONTINUATION on cljs (each durable call `await`ed).
+   So a DURABLE convergent-CRDT BRANCH fork works on cljs too; call these fns
+   inside a partial-cps `async` and `await` (`<?`) their result on cljs. Plain
+   engine reads (`system`, `@yref`, `registered-systems`, `set-node-value!`) stay
+   synchronous. Snapshot forks remain JVM-first (see `fork-value`).
+
    Naming convention: Prefix YggRef vars with 'y' (e.g., ygit, ydb) to signal
    deref needed.
 
@@ -53,7 +62,12 @@
             [yggdrasil.convergent :as yc]
             [yggdrasil.convergent.overlay :as ovl]
             [clojure.string :as str]
-            #?@(:clj [[yggdrasil.gc :as ygg-gc]])))
+            #?(:clj  [is.simm.partial-cps.async :refer [async await]]
+               :cljs [is.simm.partial-cps.async :refer [await]])
+            #?(:clj [yggdrasil.macros :refer [async+sync]])
+            #?@(:clj [[yggdrasil.gc :as ygg-gc]]))
+  #?(:cljs (:require-macros [yggdrasil.macros :refer [async+sync]]
+                            [is.simm.partial-cps.async :refer [async]])))
 
 ;; =============================================================================
 ;; Index keys
@@ -123,8 +137,12 @@
   "BRANCH fork (the DEFAULT for convergent systems): a REAL branched system as the
    fork value — inherits the parent tip, so `@kref`/`g/elements`/`g/conj` operate on
    it directly (no overlay footguns). `fork-id` is the engine-assigned `:fork-<uuid>`
-   keyword, used as the branch name. Threads the platform default mode (JVM sync;
-   durable branch-fork on cljs is async — a follow-up lifts the sync engine hook)."
+   keyword, used as the branch name.
+
+   JVM-ONLY: the engine's `fork-value` hook is synchronous, but durable `branch!`/
+   `checkout` are SYNC on the JVM (values) and ASYNC on cljs (CPS). So on the JVM
+   `fork-value` branch-forks here directly; on cljs `fork-value` DEFERS (returns the
+   parent system unchanged) and `fork!` finishes the branch in an AWAITED post-pass."
   [sys fork-id]
   (-> sys (ygg/branch! fork-id) (ygg/checkout fork-id)))
 
@@ -139,16 +157,22 @@
       (ovl/overlay? this)
       (rtp/fork-value (ovl/overlay-system this) fork-id directive)
 
-      ;; SNAPSHOT fork (pin a fixed value) — any Snapshotable, versioned or convergent
+      ;; SNAPSHOT fork (pin a fixed value) — any Snapshotable, versioned or convergent.
+      ;; JVM-FIRST: `snapshot-fork` calls durable `branch!`/`checkout` synchronously, which
+      ;; only yields a value on the JVM (cljs returns a CPS). Snapshot forks stay JVM-first;
+      ;; the async lift (Design B) covers the DEFAULT branch-fork path, not snapshot forks.
       (and (= :snapshot (:fork directive)) (satisfies? ygg/Snapshotable this))
       (snapshot-fork this fork-id (:snapshot directive))
 
       ;; CONVERGENT + genuinely branchable → BRANCH fork by DEFAULT.
       ;; `:convergent-fork :overlay` forces the (optional) live-:following overlay.
+      ;; `fork-value` is a SYNC engine hook, but durable branch-fork is async on cljs, so
+      ;; on cljs we DEFER (return `this` unchanged) and let `fork!`'s awaited post-pass
+      ;; branch it; the JVM branch-forks here directly (a value).
       (convergent-branchable? this)
       (if (= :overlay (:convergent-fork directive))
         (overlay-fork this directive)
-        (branch-fork this fork-id))
+        #?(:clj (branch-fork this fork-id) :cljs this))
 
       ;; CONVERGENT but not branchable (cdvcs) → overlay if it has one, else FAIL LOUD
       ;; (rather than NPE deep in a GSet op on a non-branchable value).
@@ -379,18 +403,39 @@
        (merge-fork! fork))"
   ([] (fork! {}))
   ([opts]
-   (let [parent-ctx (ec/current-execution-context)
-         ;; translate :snapshots from SYSTEM-id keys (what callers know) to the
-         ;; SIGNAL-id keys fork-context forks by.
-         snaps  (when-let [s (:snapshots opts)]
-                  (into {} (keep (fn [[sid snap]]
-                                   (when-let [sr (get (registry parent-ctx) sid)]
-                                     [(:id sr) snap])))
-                        s))
-         opts   (cond-> opts snaps (assoc :snapshots snaps))
-         child-ctx  (apply ctx/fork-context parent-ctx (mapcat identity opts))
-         fork-id    (:fork-id child-ctx)]
-     (->ForkHandle child-ctx parent-ctx fork-id))))
+   (async+sync
+    (:sync? (merge yc/default-opts opts))
+    (async
+     (let [parent-ctx (ec/current-execution-context)
+           ;; translate :snapshots from SYSTEM-id keys (what callers know) to the
+           ;; SIGNAL-id keys fork-context forks by.
+           snaps  (when-let [s (:snapshots opts)]
+                    (into {} (keep (fn [[sid snap]]
+                                     (when-let [sr (get (registry parent-ctx) sid)]
+                                       [(:id sr) snap])))
+                          s))
+           fopts  (cond-> opts snaps (assoc :snapshots snaps))
+           child-ctx  (apply ctx/fork-context parent-ctx (mapcat identity fopts))
+           fork-id    (:fork-id child-ctx)
+           popts  (merge yc/default-opts opts)]
+       ;; POST-PASS (Design B async lift): the engine's `fork-context`/`fork-value`
+       ;; hook is SYNCHRONOUS, so a convergent BRANCH fork — durable `branch!`/`checkout`
+       ;; that only yield a value synchronously on the JVM — is done here, AWAITED, over
+       ;; the parent's branchable-convergent signals. On the JVM `fork-value` already
+       ;; branched each (its `current-branch` is a `fork-<uuid>`), so the guard makes this
+       ;; a NO-OP; on cljs `fork-value` deferred (left the parent value), so this branches
+       ;; each and seats the branched system as the fork's value. ONE code path, both
+       ;; platforms (async+sync collapses to `do` on the JVM).
+       (loop [ps (seq (shared-pairs child-ctx parent-ctx))]
+         (when ps
+           (let [[_sid sig-ref cval _psys] (first ps)]
+             (when (and (convergent-branchable? cval)
+                        (not (fork-branch-name? (ygg/current-branch cval))))
+               (let [_        (await (ygg/branch! cval fork-id (ygg/current-branch cval) popts))
+                     branched (await (ygg/checkout cval fork-id popts))]
+                 (set-node-value! child-ctx sig-ref branched))))
+           (recur (next ps))))
+       (->ForkHandle child-ctx parent-ctx fork-id))))))
 
 ;; `with-fork` is a JVM-only convenience macro. On cljs use the engine form it
 ;; expands to directly: `(ec/with-context (:child-ctx fork) …)`.
@@ -412,15 +457,25 @@
    Resolves everything to SNAPSHOT-IDS (git sha / datahike db hash). `fsys` is
    the fork's writable system (the overlay's overlay-system)."
   [fsys psys]
-  (let [psnap (ygg/snapshot-id psys)
-        fsnap (ygg/snapshot-id fsys)]
-    (or (try
-          (let [base (ygg/common-ancestor fsys psnap fsnap)]
-            (when base (ygg/diff fsys base fsnap)))
-          (catch #?(:clj Throwable :cljs :default) _ nil))
-        (try (ygg/diff fsys psnap fsnap)
-             (catch #?(:clj Throwable :cljs :default) t
-               (ygt/diff-error psnap fsnap (ex-message t)))))))
+  (async+sync
+   (:sync? yc/default-opts)
+   (async
+    (let [psnap (await (ygg/snapshot-id psys))
+          fsnap (await (ygg/snapshot-id fsys))]
+      ;; `snapshot-id`/`common-ancestor` are always-async (await). `diff` is a plain value
+      ;; for conflict-free convergent CRDTs (`{}`) but async CPS for versioned systems —
+      ;; await ONLY when it is a continuation (a fn).
+      (or (try
+            (let [base (await (ygg/common-ancestor fsys psnap fsnap))]
+              (when base
+                (let [d (ygg/diff fsys base fsnap)]
+                  (if (fn? d) (await d) d))))
+            (catch #?(:clj Throwable :cljs :default) _ nil))
+          (try
+            (let [d (ygg/diff fsys psnap fsnap)]
+              (if (fn? d) (await d) d))
+            (catch #?(:clj Throwable :cljs :default) t
+              (ygt/diff-error psnap fsnap (ex-message t)))))))))
 
 (defn context-diff
   "Per-system delta of a forked context vs its parent — the unified diff a
@@ -428,30 +483,47 @@
    DiffError)}. nil when the context has no parent. Non-Mergeable systems are
    omitted."
   [child-ctx]
-  (when-let [parent-ctx (:parent-ctx child-ctx)]
-    (into {}
-          (keep (fn [[sid _ cval psys]]
-                  (let [fsys (ys/effective-system cval)]
-                    (when (and (satisfies? ygg/Mergeable fsys)
-                               (satisfies? ygg/Graphable fsys))
-                      [sid (system-merge-base-diff fsys psys)]))))
-          (shared-pairs child-ctx parent-ctx))))
+  (async+sync
+   (:sync? yc/default-opts)
+   (async
+    (when-let [parent-ctx (:parent-ctx child-ctx)]
+      ;; accumulating loop (not `into`/`keep`) — `system-merge-base-diff` is awaited.
+      (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc {}]
+        (if ps
+          (let [[sid _ cval psys] (first ps)
+                fsys (ys/effective-system cval)
+                acc* (if (and (satisfies? ygg/Mergeable fsys)
+                              (satisfies? ygg/Graphable fsys))
+                       (assoc acc sid (await (system-merge-base-diff fsys psys)))
+                       acc)]
+            (recur (next ps) acc*))
+          acc))))))
 
 (defn context-conflicts
   "Per-system conflicts of a forked context vs its parent, each tagged
    `:system`. nil when the context has no parent."
   [child-ctx]
-  (when-let [parent-ctx (:parent-ctx child-ctx)]
-    (into []
-          (mapcat (fn [[sid _ cval psys]]
-                    (let [fsys (ys/effective-system cval)]
-                      (when (satisfies? ygg/Mergeable fsys)
-                        (try (map #(assoc % :system sid)
-                                  (ygg/conflicts psys
-                                                 (ygg/snapshot-id psys)
-                                                 (ygg/snapshot-id fsys)))
-                             (catch #?(:clj Throwable :cljs :default) _ nil))))))
-          (shared-pairs child-ctx parent-ctx))))
+  (async+sync
+   (:sync? yc/default-opts)
+   (async
+    (when-let [parent-ctx (:parent-ctx child-ctx)]
+      ;; accumulating loop (not `into`/`mapcat`) — `snapshot-id` is awaited, `conflicts`
+      ;; awaited only when it is a continuation (versioned) vs a plain value (convergent).
+      (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc []]
+        (if ps
+          (let [[sid _ cval psys] (first ps)
+                fsys (ys/effective-system cval)
+                more (if (satisfies? ygg/Mergeable fsys)
+                       (try
+                         (let [pres (ygg/conflicts psys
+                                                   (await (ygg/snapshot-id psys))
+                                                   (await (ygg/snapshot-id fsys)))
+                               cs   (if (fn? pres) (await pres) pres)]
+                           (mapv #(assoc % :system sid) cs))
+                         (catch #?(:clj Throwable :cljs :default) _ nil))
+                       nil)]
+            (recur (next ps) (into acc (or more []))))
+          acc))))))
 
 ;; =============================================================================
 ;; Merge / Discard (Parent-Controlled)
@@ -478,66 +550,81 @@
    Returns: {:merged [sys-id …] :child-only [sys-id …]} or nil if no parent."
   ([child-ctx] (merge-to-parent! child-ctx {}))
   ([child-ctx opts]
-   (when-let [parent-ctx (:parent-ctx child-ctx)]
-     (let [pairs (shared-pairs child-ctx parent-ctx)]
-       ;; 1. conflict pre-check (FAIL-SAFE: a throwing detector counts as an
-       ;; indeterminate conflict so the gate aborts rather than blind-merges).
-       (when-not (or (:strategy opts) (:force opts))
-         (let [confs (mapcat (fn [[sid _ cval psys]]
-                               (let [fsys (ys/effective-system cval)]
-                                 (when (satisfies? ygg/Mergeable fsys)
-                                   (try (map #(assoc % :system sid)
-                                             (ygg/conflicts psys
-                                                            (ygg/snapshot-id psys)
-                                                            (ygg/snapshot-id fsys)))
-                                        (catch #?(:clj Throwable :cljs :default) e
-                                          [{:system sid :indeterminate? true
-                                            :error (ex-message e)}])))))
-                             pairs)]
-           (when (seq confs)
-             (throw (ex-info "context merge has conflicts; aborting (pass :strategy or :force)"
-                             {:conflicts (vec confs)})))))
-       ;; 2. merge each overlay down, repoint the parent ygg-signal, discard.
-       (let [merged (reduce
-                     (fn [acc [sid sig-ref cval psys]]
-                       (cond
-                         ;; OVERLAY fork (convergent :overlay opt + datahike/git): join back.
-                         (ovl/overlay? cval)
-                         (let [m (ygg/merge-down! cval opts)]
-                           (set-node-value! parent-ctx sig-ref m)
-                           (ygg/discard! cval)
-                           (conj acc sid))
+   (async+sync
+    (:sync? (merge yc/default-opts opts))
+    (async
+     (when-let [parent-ctx (:parent-ctx child-ctx)]
+       (let [pairs (shared-pairs child-ctx parent-ctx)]
+         ;; 1. conflict pre-check (FAIL-SAFE: a throwing detector counts as an
+         ;; indeterminate conflict so the gate aborts rather than blind-merges).
+         ;; `snapshot-id` is always-async (await it); `conflicts` is a plain value for
+         ;; conflict-free convergent CRDTs (`[]`) but async CPS for versioned systems —
+         ;; await ONLY when it is a continuation (a fn), else use it directly.
+         (when-not (or (:strategy opts) (:force opts))
+           (let [confs (loop [ps (seq pairs) acc []]
+                         (if ps
+                           (let [[sid _ cval psys] (first ps)
+                                 fsys (ys/effective-system cval)
+                                 more (if (satisfies? ygg/Mergeable fsys)
+                                        (try
+                                          (let [pres (ygg/conflicts psys
+                                                                    (await (ygg/snapshot-id psys))
+                                                                    (await (ygg/snapshot-id fsys)))
+                                                cs   (if (fn? pres) (await pres) pres)]
+                                            (mapv #(assoc % :system sid) cs))
+                                          (catch #?(:clj Throwable :cljs :default) e
+                                            [{:system sid :indeterminate? true
+                                              :error (ex-message e)}]))
+                                        [])]
+                             (recur (next ps) (into acc more)))
+                           acc))]
+             (when (seq confs)
+               (throw (ex-info "context merge has conflicts; aborting (pass :strategy or :force)"
+                               {:conflicts (vec confs)})))))
+         ;; 2. merge each overlay down, repoint the parent ygg-signal, discard.
+         ;; ROLLBACK SEMANTICS PRESERVED: each merged value is COMPUTED first, and the
+         ;; parent ygg-signal is repointed only AFTER; a throwing/rejecting durable op
+         ;; leaves that system's parent untouched and propagates (git/datahike have no
+         ;; cross-store 2PC — the pre-check makes mid-merge failure unlikely).
+         (let [merged (loop [ps (seq pairs) acc []]
+                        (if ps
+                          (let [[sid sig-ref cval psys] (first ps)
+                                acc* (cond
+                                       ;; OVERLAY fork (convergent :overlay opt + datahike/git): join back.
+                                       (ovl/overlay? cval)
+                                       (let [m (await (ygg/merge-down! cval opts))]
+                                         (set-node-value! parent-ctx sig-ref m)
+                                         (ygg/discard! cval)
+                                         (conj acc sid))
 
-                         ;; BRANCH-forked convergent: `cval` is a real system on `:fork-<uuid>`.
-                         ;; Check out the parent branch (loads its LIVE head for durable stores),
-                         ;; `merge!` the fork branch in, drop the fork branch. Thread `:sync?` —
-                         ;; `opts` is a merge-opts map without it, else the JVM async branch would
-                         ;; seat a CPS continuation as the parent's value.
-                         (and (satisfies? yc/PConvergent cval)
-                              (fork-branch-name? (ygg/current-branch cval)))
-                         (let [mopts   (merge yc/default-opts opts)
-                               fbranch (ygg/current-branch cval)
-                               pbranch (ygg/current-branch psys)
-                               m       (-> cval
-                                           (ygg/checkout pbranch mopts)
-                                           (ygg/merge! fbranch mopts)
-                                           (ygg/delete-branch! fbranch mopts))]
-                           (set-node-value! parent-ctx sig-ref m)
-                           (conj acc sid))
+                                       ;; BRANCH-forked convergent: `cval` is a real system on `:fork-<uuid>`.
+                                       ;; Check out the parent branch (loads its LIVE head for durable stores),
+                                       ;; `merge!` the fork branch in, drop the fork branch. Await each (can't
+                                       ;; thread-first through CPS on cljs); `mopts` threads `:sync?`.
+                                       (and (satisfies? yc/PConvergent cval)
+                                            (fork-branch-name? (ygg/current-branch cval)))
+                                       (let [mopts   (merge yc/default-opts opts)
+                                             fbranch (ygg/current-branch cval)
+                                             pbranch (ygg/current-branch psys)
+                                             co      (await (ygg/checkout cval pbranch mopts))
+                                             mg      (await (ygg/merge! co fbranch mopts))
+                                             m       (await (ygg/delete-branch! mg fbranch mopts))]
+                                         (set-node-value! parent-ctx sig-ref m)
+                                         (conj acc sid))
 
-                         :else acc))
-                     []
-                     pairs)
-             ;; 3. carry child-only systems into the parent registry + nodes.
-             co (child-only child-ctx parent-ctx)]
-         (doseq [[sid sig-ref] co]
-           (rtp/swap-state! parent-ctx [registry-key] #(assoc (or % {}) sid sig-ref))
-           (rtp/swap-state! parent-ctx [:forkable-signals] #(conj (or % #{}) (:id sig-ref)))
-           (set-node-value! parent-ctx sig-ref (node-value child-ctx sig-ref)))
-         (when-let [cb (:on-merge opts)]
-           (cb {:merged merged :child-only (vec (keys co))
-                :parent-ctx parent-ctx :child-ctx child-ctx}))
-         {:merged merged :child-only (vec (keys co))})))))
+                                       :else acc)]
+                            (recur (next ps) acc*))
+                          acc))
+               ;; 3. carry child-only systems into the parent registry + nodes.
+               co (child-only child-ctx parent-ctx)]
+           (doseq [[sid sig-ref] co]
+             (rtp/swap-state! parent-ctx [registry-key] #(assoc (or % {}) sid sig-ref))
+             (rtp/swap-state! parent-ctx [:forkable-signals] #(conj (or % #{}) (:id sig-ref)))
+             (set-node-value! parent-ctx sig-ref (node-value child-ctx sig-ref)))
+           (when-let [cb (:on-merge opts)]
+             (cb {:merged merged :child-only (vec (keys co))
+                  :parent-ctx parent-ctx :child-ctx child-ctx}))
+           {:merged merged :child-only (vec (keys co))})))))))
 
 (defn discard-from-parent!
   "Discard a forked context's per-system overlays without merging — `discard!`
@@ -552,23 +639,31 @@
    Returns: nil"
   ([child-ctx] (discard-from-parent! child-ctx {}))
   ([child-ctx opts]
-   (when-let [parent-ctx (:parent-ctx child-ctx)]
-     (doseq [[_ _ cval _] (shared-pairs child-ctx parent-ctx)]
-       (cond
-         (ovl/overlay? cval) (ygg/discard! cval)
-         ;; branch-forked convergent: drop the fork branch (its nodes GC later).
-         (and (satisfies? yc/PConvergent cval)
-              (fork-branch-name? (ygg/current-branch cval)))
-         (ygg/delete-branch! cval (ygg/current-branch cval) (merge yc/default-opts opts))))
-     (when-let [cb (:on-discard opts)]
-       (let [co (child-only child-ctx parent-ctx)]
-         (cb {:child-only (vec (keys co))
-              :child-only-systems (into {} (keep (fn [[sid sr]]
-                                                   (when-let [s (ys/effective-system (node-value child-ctx sr))]
-                                                     [sid s])))
-                                        co)
-              :child-ctx child-ctx}))))
-   nil))
+   (async+sync
+    (:sync? (merge yc/default-opts opts))
+    (async
+     (when-let [parent-ctx (:parent-ctx child-ctx)]
+       ;; `discard!` on an overlay is a synchronous no-op (returns nil); `delete-branch!`
+       ;; is async — await it. Loop (not doseq) so the await threads on cljs.
+       (loop [ps (seq (shared-pairs child-ctx parent-ctx))]
+         (when ps
+           (let [[_ _ cval _] (first ps)]
+             (cond
+               (ovl/overlay? cval) (ygg/discard! cval)
+               ;; branch-forked convergent: drop the fork branch (its nodes GC later).
+               (and (satisfies? yc/PConvergent cval)
+                    (fork-branch-name? (ygg/current-branch cval)))
+               (await (ygg/delete-branch! cval (ygg/current-branch cval) (merge yc/default-opts opts)))))
+           (recur (next ps))))
+       (when-let [cb (:on-discard opts)]
+         (let [co (child-only child-ctx parent-ctx)]
+           (cb {:child-only (vec (keys co))
+                :child-only-systems (into {} (keep (fn [[sid sr]]
+                                                     (when-let [s (ys/effective-system (node-value child-ctx sr))]
+                                                       [sid s])))
+                                          co)
+                :child-ctx child-ctx}))))
+     nil))))
 
 ;; ForkHandle variants (delegate to the ctx-based ops)
 
@@ -599,25 +694,31 @@
    Returns: nil"
   ([child-ctx] (merge-from-parent! child-ctx {}))
   ([child-ctx opts]
-   (when-let [parent-ctx (:parent-ctx child-ctx)]
-     (doseq [[_ sig-ref cval psys] (shared-pairs child-ctx parent-ctx)]
-       (let [fsys (ys/effective-system cval)]
-         (when (and (satisfies? ygg/Branchable fsys)
-                    (satisfies? ygg/Mergeable fsys))
-           (let [cbranch (ygg/current-branch fsys)
-                 pbranch (ygg/current-branch psys)
-                 ;; thread :sync? — `opts` is a merge-opts map without it; else the
-                 ;; JVM async branch seats a CPS continuation (the finding-#3 twin).
-                 mopts   (merge yc/default-opts {:message (str "Merge from " (name pbranch))} opts)
-                 m (-> fsys
-                       (ygg/checkout cbranch mopts)
-                       (ygg/merge! pbranch mopts))]
-             ;; repoint: if cval is an overlay, update its writable system in
-             ;; place; else repoint the node.
-             (if (ovl/overlay? cval)
-               (ovl/reseat-overlay! cval m)
-               (set-node-value! child-ctx sig-ref m)))))))
-   nil))
+   (async+sync
+    (:sync? (merge yc/default-opts opts))
+    (async
+     (when-let [parent-ctx (:parent-ctx child-ctx)]
+       ;; Loop (not doseq) so `checkout`/`merge!` await-thread on cljs.
+       (loop [ps (seq (shared-pairs child-ctx parent-ctx))]
+         (when ps
+           (let [[_ sig-ref cval psys] (first ps)
+                 fsys (ys/effective-system cval)]
+             (when (and (satisfies? ygg/Branchable fsys)
+                        (satisfies? ygg/Mergeable fsys))
+               (let [cbranch (ygg/current-branch fsys)
+                     pbranch (ygg/current-branch psys)
+                     ;; thread :sync? — `opts` is a merge-opts map without it; else the
+                     ;; JVM async branch seats a CPS continuation (the finding-#3 twin).
+                     mopts   (merge yc/default-opts {:message (str "Merge from " (name pbranch))} opts)
+                     co      (await (ygg/checkout fsys cbranch mopts))
+                     m       (await (ygg/merge! co pbranch mopts))]
+                 ;; repoint: if cval is an overlay, update its writable system in
+                 ;; place; else repoint the node. (both sync)
+                 (if (ovl/overlay? cval)
+                   (ovl/reseat-overlay! cval m)
+                   (set-node-value! child-ctx sig-ref m)))))
+           (recur (next ps)))))
+     nil))))
 
 (defn merge-fork-from-parent!
   "Merge parent's current state into a fork (ForkHandle variant)."
