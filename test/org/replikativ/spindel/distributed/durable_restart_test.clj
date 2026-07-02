@@ -38,8 +38,9 @@
               "reopened value reconstructs identically from disk"))
         (finally (rm-rf path))))))
 
-;; The write form run in a SEPARATE `clojure` process (fresh JVM) against ../yggdrasil,
-;; so the test JVM never touches the nodes/caches — a real cross-process durability proof.
+;; The write form run in a SEPARATE `clojure` process (fresh JVM) using THIS project's
+;; classpath (spindel depends on released yggdrasil), so the test JVM never touches the
+;; nodes/caches — a real cross-process durability proof.
 (defn- write-in-subprocess-form [id path]
   (pr-str
    `(do (require '[yggdrasil.convergent.gset :as ~'g])
@@ -53,9 +54,9 @@
     (let [path (temp-dir "restart-sp")
           id   #uuid "d0000000-0000-0000-0000-0000000000e2"
           cfg  {:backend :file :path path :id id}
-          ;; run the writer in ../yggdrasil so it uses yggdrasil's own classpath.
-          {:keys [exit out err]} (sh "clojure" "-M" "-e" (write-in-subprocess-form id path)
-                                     :dir "../yggdrasil")]
+          ;; run the writer with THIS project's deps (released yggdrasil on the classpath) —
+          ;; a fresh JVM in the current project dir, no local sibling-path assumption.
+          {:keys [exit out err]} (sh "clojure" "-M" "-e" (write-in-subprocess-form id path))]
       (try
         (is (zero? exit) (str "subprocess writer exited cleanly; out=" out " err=" err))
         (is (re-find #"SUBPROC-WROTE" (str out)) "subprocess reported it wrote")
