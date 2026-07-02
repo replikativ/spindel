@@ -400,7 +400,7 @@
   - Fork-local state (continuations, engine queue/timers) doesn't fall back
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
-  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots]
+  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork]
                  :or {state-updates {}
                       bindings {}
                       metadata nil
@@ -431,7 +431,9 @@
                            (if-let [pnode (rtp/get-state parent-ctx [:nodes sig-id])]
                              (let [directive  (if-let [snap (get snapshots sig-id)]
                                                 {:fork :snapshot :snapshot snap}
-                                                {:fork :overlay :mode mode})
+                                                ;; :convergent-fork (:branch default | :overlay) is
+                                                ;; opaque to the engine; the ygg bridge interprets it.
+                                                {:fork :overlay :mode mode :convergent-fork convergent-fork})
                                    forked-val (rtp/fork-value (nodes/get-value pnode)
                                                               fork-id directive)]
                                (assoc! m sig-id
