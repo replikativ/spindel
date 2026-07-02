@@ -8,7 +8,7 @@
         ;; 0.1.60 ships the optional core.async adapter (is.simm.partial-cps.core-async)
         ;; that distributed.cps delegates to.
         is.simm/partial-cps {:mvn/version "0.1.60"}
-        org.replikativ/yggdrasil {:mvn/version "0.3.34"}
+        org.replikativ/yggdrasil {:mvn/version "0.3.35"}
         org.replikativ/hasch {:mvn/version "0.4.99"}
         org.clojure/core.async {:mvn/version "1.6.681"}
         anglican/anglican {:mvn/version "1.1.0"}
