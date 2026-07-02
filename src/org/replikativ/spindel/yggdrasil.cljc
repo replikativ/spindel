@@ -50,7 +50,9 @@
             ;; yggdrasil.gc is JVM-only (it backs gc!/gc-system!, which stay :clj).
             [yggdrasil.protocols :as ygg]
             [yggdrasil.types :as ygt]
+            [yggdrasil.convergent :as yc]
             [yggdrasil.convergent.overlay :as ovl]
+            [clojure.string :as str]
             #?@(:clj [[yggdrasil.gc :as ygg-gc]])))
 
 ;; =============================================================================
@@ -101,20 +103,67 @@
       (-> sys (ygg/branch! new-branch snap-id) (ygg/checkout new-branch)))
     sys))
 
+(defn- caps [sys]
+  (when (satisfies? ygg/SystemIdentity sys) (ygg/capabilities sys)))
+
+(defn- convergent-branchable?
+  "A convergent system that is GENUINELY branchable — the CAPABILITY, not mere
+   protocol satisfaction (cdvcs satisfies Branchable as no-ops but is `:branchable
+   false`). These fork as a real yggdrasil BRANCH."
+  [sys]
+  (and (satisfies? yc/PConvergent sys)
+       (boolean (:branchable (caps sys)))))
+
+(defn- fork-branch-name?
+  "True if `b` is a fork branch (engine fork-ids are `:fork-<uuid>` keywords)."
+  [b]
+  (and b (str/starts-with? (name b) "fork-")))
+
+(defn- branch-fork
+  "BRANCH fork (the DEFAULT for convergent systems): a REAL branched system as the
+   fork value — inherits the parent tip, so `@kref`/`g/elements`/`g/conj` operate on
+   it directly (no overlay footguns). `fork-id` is the engine-assigned `:fork-<uuid>`
+   keyword, used as the branch name. Threads the platform default mode (JVM sync;
+   durable branch-fork on cljs is async — a follow-up lifts the sync engine hook)."
+  [sys fork-id]
+  (-> sys (ygg/branch! fork-id) (ygg/checkout fork-id)))
+
 ;; `Object`/`default`: extend the engine's PForkable to ALL values so a forkable
-;; ygg-signal's value is overlay/snapshot-forked; non-yggdrasil values fall to
+;; ygg-signal's value is branch/overlay/snapshot-forked; non-yggdrasil values fall to
 ;; identity. cljs has no `Object` root — use the `default` dispatch.
 (extend-protocol rtp/PForkable
   #?(:clj Object :cljs default)
   (fork-value [this fork-id directive]
     (cond
       ;; nested fork (fork of a fork) → fork the overlay's effective system
-      (ovl/overlay? this) (rtp/fork-value (ovl/overlay-system this) fork-id directive)
-      ;; a yggdrasil system → overlay (default) or snapshot fork
+      (ovl/overlay? this)
+      (rtp/fork-value (ovl/overlay-system this) fork-id directive)
+
+      ;; SNAPSHOT fork (pin a fixed value) — any Snapshotable, versioned or convergent
+      (and (= :snapshot (:fork directive)) (satisfies? ygg/Snapshotable this))
+      (snapshot-fork this fork-id (:snapshot directive))
+
+      ;; CONVERGENT + genuinely branchable → BRANCH fork by DEFAULT.
+      ;; `:convergent-fork :overlay` forces the (optional) live-:following overlay.
+      (convergent-branchable? this)
+      (if (= :overlay (:convergent-fork directive))
+        (overlay-fork this directive)
+        (branch-fork this fork-id))
+
+      ;; CONVERGENT but not branchable (cdvcs) → overlay if it has one, else FAIL LOUD
+      ;; (rather than NPE deep in a GSet op on a non-branchable value).
+      (satisfies? yc/PConvergent this)
+      (if (satisfies? ygg/Overlayable this)
+        (overlay-fork this directive)
+        (throw (ex-info "Cannot fork this convergent system: neither :branchable (no branch-fork) nor Overlayable (no overlay-fork)."
+                        {:system-type (ygg/system-type this)
+                         :system-id   (ygg/system-id this)
+                         :hint "Implement Branchable or Overlayable for it, or fork a branchable convergent CRDT."})))
+
+      ;; VERSIONED, non-convergent (datahike/git) → existing overlay path (UNCHANGED)
       (satisfies? ygg/Snapshotable this)
-      (if (= :snapshot (:fork directive))
-        (snapshot-fork this fork-id (:snapshot directive))
-        (overlay-fork this directive))
+      (overlay-fork this directive)
+
       ;; not a yggdrasil value → identity (the engine default)
       :else this)))
 
@@ -313,6 +362,10 @@
    opts (optional): forwarded to `ctx/fork-context` —
      :mode      :following (default) | :frozen — overlay fork relation to parent
      :snapshots {system-id -> snapshot-id} — pin those systems at fixed values
+     :convergent-fork :branch (default) | :overlay — a CONVERGENT CRDT forks as a
+       real yggdrasil BRANCH by default (the natural CRDT API works in the fork: read
+       `@ref`, write `g/conj`, `merge-fork!` folds back). `:overlay` forces the live-
+       `:following` overlay workspace instead. datahike/git always overlay-fork.
 
    Permission model:
    - An agent CAN fork from its current context (creating children).
@@ -446,13 +499,33 @@
                              {:conflicts (vec confs)})))))
        ;; 2. merge each overlay down, repoint the parent ygg-signal, discard.
        (let [merged (reduce
-                     (fn [acc [sid sig-ref cval _psys]]
-                       (if (ovl/overlay? cval)
+                     (fn [acc [sid sig-ref cval psys]]
+                       (cond
+                         ;; OVERLAY fork (convergent :overlay opt + datahike/git): join back.
+                         (ovl/overlay? cval)
                          (let [m (ygg/merge-down! cval opts)]
                            (set-node-value! parent-ctx sig-ref m)
                            (ygg/discard! cval)
                            (conj acc sid))
-                         acc))
+
+                         ;; BRANCH-forked convergent: `cval` is a real system on `:fork-<uuid>`.
+                         ;; Check out the parent branch (loads its LIVE head for durable stores),
+                         ;; `merge!` the fork branch in, drop the fork branch. Thread `:sync?` —
+                         ;; `opts` is a merge-opts map without it, else the JVM async branch would
+                         ;; seat a CPS continuation as the parent's value.
+                         (and (satisfies? yc/PConvergent cval)
+                              (fork-branch-name? (ygg/current-branch cval)))
+                         (let [mopts   (merge yc/default-opts opts)
+                               fbranch (ygg/current-branch cval)
+                               pbranch (ygg/current-branch psys)
+                               m       (-> cval
+                                           (ygg/checkout pbranch mopts)
+                                           (ygg/merge! fbranch mopts)
+                                           (ygg/delete-branch! fbranch mopts))]
+                           (set-node-value! parent-ctx sig-ref m)
+                           (conj acc sid))
+
+                         :else acc))
                      []
                      pairs)
              ;; 3. carry child-only systems into the parent registry + nodes.
@@ -481,7 +554,12 @@
   ([child-ctx opts]
    (when-let [parent-ctx (:parent-ctx child-ctx)]
      (doseq [[_ _ cval _] (shared-pairs child-ctx parent-ctx)]
-       (when (ovl/overlay? cval) (ygg/discard! cval)))
+       (cond
+         (ovl/overlay? cval) (ygg/discard! cval)
+         ;; branch-forked convergent: drop the fork branch (its nodes GC later).
+         (and (satisfies? yc/PConvergent cval)
+              (fork-branch-name? (ygg/current-branch cval)))
+         (ygg/delete-branch! cval (ygg/current-branch cval) (merge yc/default-opts opts))))
      (when-let [cb (:on-discard opts)]
        (let [co (child-only child-ctx parent-ctx)]
          (cb {:child-only (vec (keys co))
@@ -528,10 +606,12 @@
                     (satisfies? ygg/Mergeable fsys))
            (let [cbranch (ygg/current-branch fsys)
                  pbranch (ygg/current-branch psys)
+                 ;; thread :sync? — `opts` is a merge-opts map without it; else the
+                 ;; JVM async branch seats a CPS continuation (the finding-#3 twin).
+                 mopts   (merge yc/default-opts {:message (str "Merge from " (name pbranch))} opts)
                  m (-> fsys
-                       (ygg/checkout cbranch)
-                       (ygg/merge! pbranch
-                                   (merge {:message (str "Merge from " (name pbranch))} opts)))]
+                       (ygg/checkout cbranch mopts)
+                       (ygg/merge! pbranch mopts))]
              ;; repoint: if cval is an overlay, update its writable system in
              ;; place; else repoint the node.
              (if (ovl/overlay? cval)
