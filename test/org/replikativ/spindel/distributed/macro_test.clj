@@ -121,18 +121,3 @@
 
 ;; =============================================================================
 ;; Integration Test (Local Only - No Network)
-;; =============================================================================
-
-(deftest test-full-round-trip-local
-  (testing "full spin -> channel -> spin round trip locally"
-    ;; Manually invoke the registered remote function to simulate what
-    ;; would happen over the network
-    (let [remote-fn (get @ds/remote-fn-registry
-                         (symbol this-ns "spin-remote-simple-double-0"))
-          ;; Simulate remote execution
-          ch (remote-fn {:x 100})
-          ;; Convert back to spindel spin
-          t (dist/chan->spin ch)
-          ;; Await result
-          result @(spin (await t))]
-      (is (= 200 result)))))

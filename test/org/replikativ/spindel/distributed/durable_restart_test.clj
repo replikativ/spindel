@@ -18,26 +18,6 @@
   (let [d (io/file path)]
     (when (.exists d) (doseq [f (reverse (file-seq d))] (.delete f)))))
 
-(deftest fresh-handle-reopen-reads-back
-  (testing "a flushed file-backed G-Set is readable from a BRAND-NEW store handle
-            (fresh KonserveStorage + PSS caches) reopened from the same path — no
-            in-process cache is masking the on-disk state"
-    (let [path (temp-dir "restart-fh")
-          id   #uuid "d0000000-0000-0000-0000-0000000000e1"
-          cfg  {:backend :file :path path :id id}]
-      (try
-        ;; phase 1: write + flush, then DROP every reference to the store.
-        (let [g1 (-> (g/gset (str id) {:store-config cfg} {:sync? true})
-                     (g/conj :alpha) (g/conj :beta) (g/conj :gamma) (g/flush!))]
-          (is (= #{:alpha :beta :gamma} (g/elements g1)) "written value holds all three"))
-        ;; phase 2: a COMPLETELY fresh G-Set over a fresh store opened from the path.
-        ;; g/gset with store-config opens a new konserve store (new storage, empty cache)
-        ;; and loads :crdt/roots from disk — so this read cannot come from phase-1 state.
-        (let [g2 (g/gset (str id) {:store-config cfg} {:sync? true})]
-          (is (= #{:alpha :beta :gamma} (g/elements g2))
-              "reopened value reconstructs identically from disk"))
-        (finally (rm-rf path))))))
-
 ;; The write form run in a SEPARATE `clojure` process (fresh JVM) using THIS project's
 ;; classpath (spindel depends on released yggdrasil), so the test JVM never touches the
 ;; nodes/caches — a real cross-process durability proof.

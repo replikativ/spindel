@@ -326,3 +326,46 @@
           (<?? S (peer/stop client)))
         (finally
           (<?? S (peer/stop server)))))))
+
+(deftest server-to-client-op-path-via-export-signal
+  (testing "server-authoritative OP path (the one-directional complement to the bidirectional
+            tests above): `export-signal!` is publish-only; the server signal starts nil so the
+            subscribe handshake ships no (non-serializable) STATE snapshot; each mutation crosses
+            as a δ the client applies into its OWN empty replica, and the shipped δ is cleared
+            after send (bounded end-to-end)."
+    (let [port    (free-port)
+          url     (str "ws://localhost:" port)
+          sid     (uuid :conv-srv)
+          cid     (uuid :conv-cli)
+          topic   :conv/gset
+          handler (http-kit/create-http-kit-handler! S url sid)
+          ;; server ships only δ (plain data) → its wire needs no storage resolver
+          server  (peer/server-peer S handler sid (pubsub/make-pubsub-peer-middleware {})
+                                    (wire-middleware nil))]
+      (<?? S (peer/start server))
+      (try
+        (let [server-sig (atom nil)   ; nil → handshake ships no non-serializable snapshot
+              _ (ss/export-signal! server topic server-sig
+                                   :delta-fn       ys/ygg-delta-fn
+                                   :clear-delta-fn ys/ygg-clear-delta-fn
+                                   :sync?          true)
+              client-sig (atom (mem-gset "client"))  ; the client's OWN empty replica
+              client (peer/client-peer S cid (pubsub/make-pubsub-peer-middleware {})
+                                       (wire-middleware (:storage @client-sig)))
+              _ (<?? S (peer/connect S client url))
+              _ (<?? S (timeout 800))
+              _ (<?? S (pubsub/subscribe! client #{topic}
+                                          {:strategies {topic (ss/->SignalSyncStrategy
+                                                               client-sig nil nil ys/ygg-apply-delta-fn true nil)}}))
+              _ (<?? S (timeout 500))]
+          (reset! server-sig (g/conj (mem-gset "server") :x))
+          (<?? S (timeout 1000))
+          (is (= #{:x} (g/elements @client-sig)) "client converged on :x from a δ over the wire")
+          (is (nil? (ys/ygg-delta-fn @server-sig)) "server δ cleared after send — bounded")
+          (swap! server-sig (fn [s] (g/conj s :y)))
+          (<?? S (timeout 1000))
+          (is (= #{:x :y} (g/elements @client-sig)) "client converged on the union from the δ alone")
+          (is (nil? (ys/ygg-delta-fn @server-sig)) "δ cleared again — bounded across successive ops")
+          (<?? S (peer/stop client)))
+        (finally
+          (<?? S (peer/stop server)))))))
