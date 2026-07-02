@@ -2,8 +2,16 @@
   "Signal creation and manipulation"
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
+            ;; The `signal` macro's EXPANSION emits `addressing/next-address!`,
+            ;; so any ns expanding `(signal …)` needs addressing loaded. Alias it
+            ;; (not a bare require) so that dependency is visible at the use site
+            ;; and doesn't rely on the engine chain being transitively pre-loaded.
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.incremental.interval :as iv]))
+            [org.replikativ.spindel.incremental.interval :as iv]
+            #?(:clj  [is.simm.partial-cps.async :refer [async await]]
+               :cljs [is.simm.partial-cps.async :refer [await]]))
+  #?(:cljs (:require-macros [is.simm.partial-cps.async :refer [async]])))
 
 ;; =============================================================================
 ;; Batching Support
@@ -83,7 +91,7 @@
 ;;  :deltaable? boolean               ; Explicit flag: can this signal track deltas?
 ;;  :observers #{spin-ids}}
 
-(declare swap-signal*-explicit get-signal-value)
+(declare swap-signal*-explicit get-signal-value compare-and-set-signal!)
 
 (defrecord SignalRef [id initial-value]
   Object
@@ -112,10 +120,25 @@
        (reset [this newval]
               (swap-signal*-explicit this (constantly newval)))
 
-       (compareAndSet [_ _ _]
-         ;; CAS not yet supported for signals
-                      (throw (UnsupportedOperationException.
-                              "compareAndSet not yet supported on signals")))]
+       (compareAndSet [this oldv newv]
+                      (compare-and-set-signal! this oldv newv))
+
+       clojure.lang.IRef
+       ;; Watchable: standard add-watch/remove-watch as an outward-egress hook
+       ;; (e.g. signal-sync publishing). Listeners live at the FORK-LOCAL
+       ;; [:listeners id] and fire at the swap commit site (see swap-signal*-explicit
+       ;; / compare-and-set-signal!), so a fork swap fires the fork's listeners only.
+       ;; Egress only — do NOT read/swap other signals from a listener.
+       (setValidator [_ _]
+                     (throw (UnsupportedOperationException. "Validators not supported on signals")))
+       (getValidator [_] nil)
+       (getWatches [_] (ec/get-state [:listeners id]))
+       (addWatch [this k f]
+                 (ec/swap-state! [:listeners id] (fn [w] (assoc w k f)))
+                 this)
+       (removeWatch [this k]
+                    (ec/swap-state! [:listeners id] (fn [w] (dissoc w k)))
+                    this)]
 
       :cljs
       [IDeref
@@ -136,7 +159,19 @@
 
        IReset
        (-reset! [this newval]
-                (swap-signal*-explicit this (constantly newval)))]))
+                (swap-signal*-explicit this (constantly newval)))
+
+       IWatchable
+       ;; See the :clj IRef note — fork-local egress listeners, fired at the commit site.
+       (-add-watch [this k f]
+                   (ec/swap-state! [:listeners id] (fn [w] (assoc w k f)))
+                   this)
+       (-remove-watch [this k]
+                      (ec/swap-state! [:listeners id] (fn [w] (dissoc w k)))
+                      this)
+       (-notify-watches [this old new]
+                        (ec/notify-listeners! this id old new)
+                        this)]))
 
 ;; Resolve print-method dispatch ambiguity. SignalRef is a defrecord —
 ;; so it is BOTH clojure.lang.IRecord and clojure.lang.IPersistentMap —
@@ -261,14 +296,14 @@
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
         `(let [ctx# (ec/current-execution-context)
-               id# (org.replikativ.spindel.engine.addressing/next-address! ctx# "signal" ~source-loc)]
+               id# (addressing/next-address! ctx# "signal" ~source-loc)]
            (->SignalRef id# (d/clear-deltas ~initial-value)))))
      ([ctx initial-value]
       (let [source-loc {:file *file*
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
         `(let [ctx# ~ctx
-               id# (org.replikativ.spindel.engine.addressing/next-address! ctx# "signal" ~source-loc)]
+               id# (addressing/next-address! ctx# "signal" ~source-loc)]
            (->SignalRef id# (d/clear-deltas ~initial-value)))))))
 
 (defn- swap-signal*-explicit
@@ -301,6 +336,11 @@
         ;; Normal: enqueue engine event for reactive propagation
         (ec/enqueue-event! {:type :signal-change :id id}))
 
+      ;; Fire outward-egress listeners (add-watch) AFTER the commit. Per-swap even
+      ;; under batching (atom-watch contract). No-op when there are no listeners.
+      (when new-node
+        (ec/notify-listeners! signal-ref id (:old-snapshot new-node) (nodes/get-value new-node)))
+
       ;; Return new snapshot
       (nodes/get-value new-node))))
 
@@ -314,28 +354,32 @@
         changed? (volatile! false)]
 
     ;; Update signal value in [:nodes id] using SignalNode (Phase 1B)
-    (ec/swap-state! [:nodes id]
-                    (fn [old-node]
-                      (when old-node
-                        (let [old-value (nodes/get-value old-node)
-                              new-value (apply f old-value args)
-                              deltas (d/get-deltas new-value)
-                              clean-value (d/clear-deltas new-value)
+    (let [new-node (ec/swap-state! [:nodes id]
+                                   (fn [old-node]
+                                     (when old-node
+                                       (let [old-value (nodes/get-value old-node)
+                                             new-value (apply f old-value args)
+                                             deltas (d/get-deltas new-value)
+                                             clean-value (d/clear-deltas new-value)
                 ;; Increment generation for O(1) identity-based caching
-                              old-generation (or (:generation old-node) 0)]
-                          (vreset! changed? (not= old-value clean-value))
-                          (nodes/->signal-node clean-value
-                                               old-value
-                                               deltas
-                                               (:deltaable? old-node)
-                                               (nodes/get-observers old-node)
-                                               (inc old-generation))))))
+                                             old-generation (or (:generation old-node) 0)]
+                                         (vreset! changed? (not= old-value clean-value))
+                                         (nodes/->signal-node clean-value
+                                                              old-value
+                                                              deltas
+                                                              (:deltaable? old-node)
+                                                              (nodes/get-observers old-node)
+                                                              (inc old-generation))))))]
 
-    ;; Enqueue engine event
-    (ec/enqueue-event! {:type :signal-change :id id})
+      ;; Enqueue engine event
+      (ec/enqueue-event! {:type :signal-change :id id})
 
-    ;; Return changed flag
-    @changed?))
+      ;; Fire outward-egress listeners after the commit
+      (when new-node
+        (ec/notify-listeners! signal-ref id (:old-snapshot new-node) (nodes/get-value new-node)))
+
+      ;; Return changed flag
+      @changed?)))
 
 (defn swap-signal-changed?
   "Like swap! but returns boolean indicating if the signal value changed.
@@ -357,6 +401,111 @@
   "
   [signal-ref]
   (get-signal-value signal-ref))
+
+(defn compare-and-set-signal!
+  "Atomically install `newval` iff the signal's current value is `identical?` to
+   `oldval` — atom-CAS semantics, where `oldval` is the exact object the caller just
+   read. Returns true on success, false if the value changed under it.
+
+   The compare + install are ONE atomic step over the engine's `cas-state!` on the
+   signal node (the same runtime CAS the engine exposes for 'advanced CAS patterns'),
+   so a concurrent write can never be lost — no extra lock or coordination state, just
+   the runtime's own atomicity. On success it bumps the generation and enqueues a
+   reactive change like any `swap!`. This is the primitive a race-free
+   read→await→commit uses (`swap-await!`): a false return means re-read and re-merge."
+  [signal-ref oldval newval]
+  (ensure-signal-initialized! signal-ref)
+  (let [id (:id signal-ref)]
+    (loop []
+      (let [old-node (ec/get-state [:nodes id])]
+        (cond
+          (nil? old-node) false
+          (not (identical? (nodes/get-value old-node) oldval)) false
+          :else
+          (let [deltas      (d/get-deltas newval)
+                clean-value (d/clear-deltas newval)
+                new-node    (nodes/->signal-node clean-value
+                                                 (nodes/get-value old-node)
+                                                 deltas
+                                                 (:deltaable? old-node)
+                                                 (nodes/get-observers old-node)
+                                                 (inc (or (:generation old-node) 0)))]
+            ;; cas-state! guards on node identity; a losing race (node replaced, even
+            ;; with an =-value) re-checks the value identity above and retries — a
+            ;; bounded sync loop (no await inside ⇒ no partial-cps loop/recur hazard).
+            (if (ec/cas-state! [:nodes id] old-node new-node)
+              (do (ec/enqueue-event! {:type :signal-change :id id})
+                  (ec/notify-listeners! signal-ref id oldval clean-value)
+                  true)
+              (recur))))))))
+
+(defn signal-ref?
+  "True if `x` is a spindel SignalRef (runtime-backed signal) vs a plain atom."
+  [x]
+  (instance? SignalRef x))
+
+(defn cas!
+  "Compare-and-set across both signal kinds: install `newval` iff the current value is
+   the just-read `oldval`; returns boolean. A spindel `SignalRef` goes through the
+   runtime-atomic `compare-and-set-signal!`; a plain atom uses core `compare-and-set!`."
+  [signal oldval newval]
+  (if (signal-ref? signal)
+    (compare-and-set-signal! signal oldval newval)
+    (compare-and-set! signal oldval newval)))
+
+(defn cas-read
+  "The CAS-comparable current value of `signal` — the exact representation `cas!`
+   compares against. For a SignalRef this is the RAW (un-unwrapped) value: the node
+   stores a deltaable-wrapped value and `compare-and-set-signal!` compares it by
+   `identical?`, whereas `@signal` returns the UNWRAPPED value, which would never
+   match (`identical?` and even `=` differ across the wrap). For a plain atom it is
+   just `@`. Use `(cas! signal (cas-read signal) new)` for a correct read→commit on
+   either kind."
+  [signal]
+  (if (signal-ref? signal)
+    (deref-signal signal)
+    @signal))
+
+(defn swap-await!
+  "Async signal mutation for IO-backed / interval values (the bridge for a
+   ygg-signal whose value is a yggdrasil system).
+
+   Reads the current value, computes the new value OUTSIDE the engine swap —
+   `(await (f current & args))`, so `f` may suspend on IO (e.g. a konserve-backed
+   yggdrasil merge/commit on cljs) — then commits it and propagates reactively
+   like any signal change. Returns a partial-cps `async`: `await` it from a spin
+   (or run/deref it at the JVM REPL — it resolves synchronously when `f` is sync).
+
+   CONTRACT: `f` MUST return an *awaitable* — a partial-cps CPS value (what a
+   yggdrasil op returns in async mode). For a SYNCHRONOUS update just use `swap!`;
+   the ygg-signal wrapper dispatches `swap!` vs `swap-await!` by the value's sync
+   mode. We deliberately do NOT auto-detect: a partial-cps `async` IS a bare
+   2-arg fn, indistinguishable from a function VALUE, so a `fn?` heuristic would
+   silently mis-handle a signal whose value is a function — hence the explicit
+   async contract.
+
+   `f` carries the merge semantics (e.g. `#(p/merge! % branch)` / a CRDT `-join`);
+   the signal core stays value-agnostic. RACE-FREE: the commit is a `compare-and-set-
+   signal!` against the value read before the await, so a concurrent `swap!`/
+   `swap-await!` landing during the IO is detected and `f` re-run against the fresh
+   value (the CRDT merge is idempotent/commutative ⇒ the retry converges, nothing is
+   lost). No lock or extra state — the signal's own atomic node-CAS is the only
+   primitive. The commit rebinds the execution context captured at call time, since
+   the post-IO resume may land off the engine thread."
+  [signal-ref f & args]
+  (let [ctx (ec/current-execution-context)]
+    (letfn [(attempt []
+              (async
+               (let [cur (deref-signal signal-ref)
+                     new (await (apply f cur args))]
+                 (ec/with-context ctx
+                   (if (compare-and-set-signal! signal-ref cur new)
+                     new
+                     ;; a write landed during the await — re-merge against the new
+                     ;; current. Function recursion, NOT loop/recur: recur across an
+                     ;; await can hang in partial-cps.
+                     (await (attempt)))))))]
+      (attempt))))
 
 (defn get-signal-detailed
   "Get signal value wrapped in Interval for dual perspective access.

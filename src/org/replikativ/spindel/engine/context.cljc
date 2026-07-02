@@ -400,11 +400,12 @@
   - Fork-local state (continuations, engine queue/timers) doesn't fall back
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
-  [parent-ctx & {:keys [state-updates bindings metadata process-id]
+  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots]
                  :or {state-updates {}
                       bindings {}
                       metadata nil
-                      process-id nil}}]
+                      process-id nil
+                      mode :following}}]
   (let [fork-id (keyword (str "fork-" (random-uuid)))
         ;; Copy parent's continuations — both kinds — so the fork inherits
         ;; the parent's reactive subscriptions. Without this, spins
@@ -414,28 +415,48 @@
         parent-track-subscriptions (rtp/get-state parent-ctx [:track-subscriptions])
         parent-await-conts (rtp/get-state parent-ctx [:await-conts])
 
-        ;; Fork external refs - pure map transformation
-        ;; Each entry in [:external-refs] must implement PForkable
-        parent-external-refs (rtp/get-state parent-ctx [:external-refs])
-        forked-external-refs (when (seq parent-external-refs)
-                               (persistent!
-                                (reduce-kv
-                                 (fn [m ref-id ref]
-                                   (assoc! m ref-id (rtp/pfork ref fork-id)))
-                                 (transient {})
-                                 parent-external-refs)))
+        ;; Fork the forkable signals — those whose value is external mutable
+        ;; state the overlay CoW can't isolate (a yggdrasil system). For each id
+        ;; in [:forkable-signals] we `fork-value` the parent's node value and
+        ;; write the result as the fork-local [:nodes id] node, so the SAME
+        ;; SignalRef resolves to the isolated fork here and the original in the
+        ;; parent. `:snapshots` (per-id) picks a SNAPSHOT fork (pin a fixed value)
+        ;; over the default OVERLAY fork (from current head, `mode` :following→
+        ;; :frozen). Pure signals aren't in the set and fall through unchanged.
+        forkable-ids (rtp/get-state parent-ctx [:forkable-signals])
+        forked-nodes (when (seq forkable-ids)
+                       (persistent!
+                        (reduce
+                         (fn [m sig-id]
+                           (if-let [pnode (rtp/get-state parent-ctx [:nodes sig-id])]
+                             (let [directive  (if-let [snap (get snapshots sig-id)]
+                                                {:fork :snapshot :snapshot snap}
+                                                {:fork :overlay :mode mode})
+                                   forked-val (rtp/fork-value (nodes/get-value pnode)
+                                                              fork-id directive)]
+                               (assoc! m sig-id
+                                       (nodes/->signal-node
+                                        forked-val nil nil (:deltaable? pnode)
+                                        (nodes/get-observers pnode)
+                                        (inc (or (:generation pnode) 0)))))
+                             m))
+                         (transient {})
+                         forkable-ids)))
 
-        ;; Initialize fork-local state (engine state, continuations, external-refs)
-        fork-local-state (merge
-                          {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
-                           :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
-                           :engine/pending []
-                           :engine/draining? false
-                           :engine/delayed-spins (sorted-map)
-                           :engine/timer-handles {}}
-                          (when forked-external-refs
-                            {:external-refs forked-external-refs})  ; ← Include forked refs
-                          state-updates)
+        ;; Initialize fork-local state (engine state, continuations, forked nodes)
+        fork-local-state (cond-> (merge
+                                  {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
+                                   :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
+                                   :engine/pending []
+                                   :engine/draining? false
+                                   :engine/delayed-spins (sorted-map)
+                                   :engine/timer-handles {}}
+                                  state-updates)
+                           ;; Merge forked nodes UNDER :nodes (entity-level
+                           ;; overrides — every other node still falls through to
+                           ;; the parent), respecting any :nodes in state-updates.
+                           (seq forked-nodes)
+                           (update :nodes merge forked-nodes))
 
         ;; Create overlay backend over parent's backend
         overlay-backend (backend/create-overlay-backend

@@ -117,6 +117,18 @@ and `await-drain-complete!` (the REPL barrier in `engine.impl.simple`
   [`distributed-scope`](https://github.com/simm-is/distributed-scope)
   for kabel-WebSocket transport.
 
+## Built with Spindel
+
+Demo applications running on Spindel in the wild:
+
+- **[SaltRim](https://saltrim.michelada.uno)** ([source](https://github.com/michelada-uno/saltrim))
+  — a collaborative spreadsheet: formulas recompute reactively through Spindel's
+  dependency graph, with git-style branching/merging of the sheet. ClojureScript +
+  [Datastar](https://data-star.dev) (SSE hypermedia) frontend, Datahike persistence.
+- **[CIID — Cuba–Ireland Immigration Database](https://gisellegonzalezgarcia.github.io/ciid/)**
+  — an interactive immigration-records web application on Spindel's reactive runtime,
+  backed by **client-side Datahike** in the browser.
+
 ## Status
 
 Beta. JVM: **772 tests / 2606 assertions** passing; CLJS:
@@ -155,7 +167,7 @@ index. The essentials:
 | [Engine](docs/engine.md) | State shape, addressing, CPS / trampoline, executors, drain loop, overlay backend, GC. The implementation deep-dive. |
 | [Engine Formalism](docs/engine-formalism.md) | Algebraic properties, flow diagrams, correctness laws. |
 | [Pub/Sub](docs/pubsub.md) | `mult`, `pub`, buffers, async-sequence-based fan-out. |
-| [Distributed](docs/distributed.md) | `defn-spin-remote`, `spin-remote`, spin↔channel bridge, distributed-scope integration. |
+| [Distributed](docs/distributed.md) | `defn-spin-remote`, `spin-remote`, spin↔channel bridge; convergent signal sync; workspace reflection + cross-system forking. |
 | [SCI Integration](docs/sci-integration.md) | Sandboxed spin execution via the Small Clojure Interpreter. |
 
 For contributor patterns and AI-assistant guidance (do's/don'ts when

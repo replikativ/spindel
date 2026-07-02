@@ -118,8 +118,8 @@
           (let [forked-branch (ygg-proto/current-branch @yref)]
             (is (not= :main forked-branch)
                 "Fork is on different branch")
-            (is (clojure.string/starts-with? (name forked-branch) "main-fork-")
-                "Forked branch name follows convention (main-fork-<uuid>)")))
+            (is (clojure.string/starts-with? (name forked-branch) "overlay-")
+                "Forked branch is the overlay fork branch (overlay-<uuid>)")))
 
         ;; Cleanup
         (ygg/discard-fork! fork-handle)))))
@@ -264,13 +264,44 @@
               (let [inner-branch (ygg-proto/current-branch @yref)]
                 (is (not= outer-branch inner-branch)
                     "Inner fork has different branch than outer")
-                (is (clojure.string/starts-with? (name inner-branch)
-                                                 (name outer-branch))
-                    "Inner branch name derives from outer")))
+                (is (clojure.string/starts-with? (name inner-branch) "overlay-")
+                    "Inner fork is its own overlay branch (overlay-<uuid>)")))
 
             (ygg/discard-fork! inner-fork)))
 
         (ygg/discard-fork! outer-fork)))))
+
+;; =============================================================================
+;; Snapshot Fork Tests (pin a FIXED value — "fix a value, run in isolation")
+;; =============================================================================
+
+(deftest test-snapshot-fork-pins-fixed-value
+  (testing "fork! with :snapshots pins a system at a FIXED snapshot-id — the fork
+            sees the frozen past value, NOT the parent's later advance"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid  (ygg-proto/system-id *test-git-system*)
+            repo (:repo-path @yref)]
+        ;; state-1: commit a file, capture the snapshot-id
+        (spit (str repo "/v1.txt") "one")
+        (sh "git" "add" "v1.txt" :dir repo)
+        (sh "git" "commit" "-m" "v1" :dir repo)
+        (let [snap1 (ygg-proto/snapshot-id @yref)]
+          ;; state-2: advance the PARENT past the captured snapshot
+          (spit (str repo "/v2.txt") "two")
+          (sh "git" "add" "v2.txt" :dir repo)
+          (sh "git" "commit" "-m" "v2" :dir repo)
+          ;; snapshot-fork pinned at state-1
+          (let [fork-handle (ygg/fork! {:snapshots {sid snap1}})]
+            (ygg/with-fork fork-handle
+              (let [branch (name (ygg-proto/current-branch @yref))
+                    wt     (str (:worktrees-dir @yref) "/" branch)]
+                (is (clojure.string/starts-with? branch "snap-")
+                    "snapshot fork is on a snap-<fork> branch")
+                (is (.exists (io/file (str wt "/v1.txt")))
+                    "the pinned state-1 file is present in the fork")
+                (is (not (.exists (io/file (str wt "/v2.txt"))))
+                    "the parent's later state-2 is NOT present (frozen at the snapshot)")))))))))
 
 ;; =============================================================================
 ;; ForkHandle Tests
@@ -423,30 +454,30 @@
           (cleanup-temp-repo second-repo-path))))))
 
 ;; =============================================================================
-;; Workspace API (collapsed composite) Tests
+;; Registry / per-signal API Tests
 ;; =============================================================================
 
-(deftest test-workspace-composes
-  (testing "register! composes systems into ONE workspace composite"
+(deftest test-register-creates-ygg-signal
+  (testing "register! creates a resolvable ygg-signal per system — no privileged workspace"
     (th/with-ctx [ctx]
-      (is (nil? (ygg/workspace)) "No workspace before any register!")
+      (is (empty? (ygg/registered-systems)) "Nothing registered before register!")
       (ygg/register! *test-git-system*)
-      (let [ws (ygg/workspace)]
-        (is (some? ws) "Workspace exists after register!")
-        (is (= :composite (ygg-proto/system-type ws)) "Workspace is a CompositeSystem")
-        (is (= 1 (count (:systems ws))) "One sub-system in the workspace")))))
+      (let [sid (ygg-proto/system-id *test-git-system*)]
+        (is (some? (ygg/system-signal sid)) "a ygg-signal holds the system")
+        (is (= :git (ygg-proto/system-type (ygg/system sid))) "system resolves to the git system")
+        (is (= 1 (count (ygg/registered-systems))) "one registered system")))))
 
-(deftest test-workspace-resolution
-  (testing "system / get-system resolve a sub-system THROUGH the workspace"
+(deftest test-system-resolution
+  (testing "system / get-system resolve the effective system; @yref agrees"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
             sid  (ygg-proto/system-id *test-git-system*)]
         (is (identical? @yref (ygg/system sid))
-            "ygg/system returns the same instance as @yref")
+            "ygg/system returns the same instance as @yref (root: no overlay)")
         (is (= :git (ygg-proto/system-type (ygg/system sid))))))))
 
-(deftest test-workspace-diff-merge-base
-  (testing "workspace-diff reports the fork's OWN change via per-system merge-base"
+(deftest test-context-diff-merge-base
+  (testing "context-diff reports the fork's OWN change via per-system merge-base"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
             sid  (ygg-proto/system-id *test-git-system*)
@@ -464,10 +495,10 @@
           (spit (str repo-path "/parent-only.txt") "parent advance")
           (sh "git" "add" "parent-only.txt" :dir repo-path)
           (sh "git" "commit" "-m" "parent advance" :dir repo-path))
-        (let [diff (ygg/workspace-diff child-ctx)
+        (let [diff (ygg/context-diff child-ctx)
               gdiff (get diff sid)
               files (set (map :path (:files gdiff)))]
-          (is (some? gdiff) "workspace-diff has the git sub-system")
+          (is (some? gdiff) "context-diff has the git sub-system")
           (is (contains? files "ws-diff.txt") "fork's own file is in the diff")
           (is (not (contains? files "parent-only.txt"))
               "parent's concurrent advance is excluded (merge-base)"))

@@ -28,18 +28,7 @@
     "Dereference entire state map (for inspection/serialization).")
 
   (backend-type [backend]
-    "Return backend type keyword (:atom, :ref, :immutable, :overlay).")
-
-  (install-atom-watcher! [backend]
-    "Install global watcher for RuntimeAtom change notifications.
-
-    When any atom value changes, this watcher calls that atom's registered watchers.
-    Installed once per backend, idempotent via add-watch (safe to call multiple times).
-
-    Implementation:
-    - AtomBackend: Installs watcher on state-atom
-    - OverlayBackend: Delegates to parent backend
-    - ImmutableBackend: No-op (immutable, no watchers needed)"))
+    "Return backend type keyword (:atom, :ref, :immutable, :overlay)."))
 
 ;; =============================================================================
 ;; AtomBackend - Default async state
@@ -62,28 +51,7 @@
     @state-atom)
 
   (backend-type [_]
-    :atom)
-
-  (install-atom-watcher! [_]
-    ;; Install global watcher on state-atom to dispatch to individual atom watchers
-    ;; add-watch is idempotent with the same key, so safe to call multiple times
-    (add-watch state-atom ::atom-watcher
-               (fn [_ _ old-state new-state]
-        ;; Dispatch to atoms whose values changed
-                 (doseq [[atom-id new-atom-state] (:atoms new-state)
-                         :let [old-atom-state (get (:atoms old-state) atom-id)
-                               old-value (:value old-atom-state)
-                               new-value (:value new-atom-state)]
-                         :when (not= old-value new-value)]
-          ;; Value changed - notify this atom's watchers
-                   (doseq [[watch-key watch-fn] (:watchers new-atom-state)]
-                     (try
-                       (watch-fn watch-key atom-id old-value new-value)
-                       (catch #?(:clj Throwable :cljs :default) e
-                ;; Don't let watcher exceptions break runtime
-                         #?(:clj (.printStackTrace e)
-                            :cljs (js/console.error "Atom watcher error:" e))))))))
-    nil))
+    :atom))
 
 (defn create-atom-backend
   "Create AtomBackend with initial state."
@@ -105,9 +73,15 @@
   - :nodes - Signal and spin nodes (shared observer graph for reactive invalidation)
   - :spin-tracking - Dependency tracking (transient accumulator)
   - :subscriptions - Event subscriptions
-  - :atoms - Runtime atoms"
+  - :atoms - Runtime atoms
+
+  :listeners is fork-local AND deliberately NOT copied into a fork by
+  `fork-context` (unlike :await-conts) — so a fork starts with ZERO listeners.
+  This is load-bearing: a listener is side-effecting egress (publish/notify), so a
+  fork must not inherit-then-fire the parent's listener on a fork-private mutation
+  (that would leak speculative state). A fork that wants to egress adds its own."
   #{:track-subscriptions :await-conts :engine/pending :engine/draining?
-    :engine/delayed-spins :engine/timer-handles})
+    :engine/delayed-spins :engine/timer-handles :listeners})
 
 (defn fork-local-path?
   "Check if path is fork-local (should not fall back to parent).
@@ -132,13 +106,6 @@
           overlay-val
           (when parent-backend
             (backend-read parent-backend path))))))
-
-  (install-atom-watcher! [_]
-    ;; Delegate to parent - the watcher is installed on the root backend's state-atom
-    ;; This ensures all forks share the same watcher (memory efficient)
-    (when parent-backend
-      (install-atom-watcher! parent-backend))
-    nil)
 
   (backend-write! [this path f]
     ;; All writes go to overlay
@@ -357,11 +324,7 @@
     state-map)
 
   (backend-type [_]
-    :immutable)
-
-  (install-atom-watcher! [_]
-    ;; No-op - immutable backends don't need watchers
-    nil))
+    :immutable))
 
 (defn create-immutable-backend
   "Create ImmutableBackend from state map."
@@ -389,9 +352,10 @@
   [backend]
   (when (= (backend-type backend) :immutable)
     (let [state (backend-deref backend)
-          ;; Remove continuations — both kinds — they contain
-          ;; non-serializable closures.
-          serializable-state (dissoc state :track-subscriptions :await-conts)]
+          ;; Remove continuations AND listeners — both contain non-serializable
+          ;; closures (re-established by re-running spins / re-adding watches /
+          ;; re-exporting signals after restore).
+          serializable-state (dissoc state :track-subscriptions :await-conts :listeners)]
       (pr-str {:state serializable-state
                :metadata (:metadata backend)}))))
 

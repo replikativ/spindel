@@ -46,6 +46,23 @@
                (is (= 42 @counter))
                (done))))))
 
+(deftest test-swap-await-async-f
+  (testing "swap-await! awaits an async (CPS-returning) f BEFORE committing — the
+            IO-backed / yggdrasil-merge path; `f` returns an awaitable, and the
+            commit rebinds the execution context captured at call time"
+    (async done
+           (with-ctx [_ctx]
+             (let [counter   (sig/signal 10)
+                   ;; a raw partial-cps CPS value: resolves (* c 2) asynchronously
+                   async-x2  (fn [c] (fn [resolve _reject] (resolve (* c 2))))]
+               (run-spin!
+                (spin (await (sig/swap-await! counter async-x2)))
+                (fn [result]
+                  (is (= 20 result) "awaited the async f then committed")
+                  (is (= 20 @counter))
+                  (done))
+                (fn [e] (is false (str "swap-await! errored: " e)) (done))))))))
+
 (deftest test-signal-swap-changed
   (testing "swap-signal-changed? detects value changes"
     (async done

@@ -1,7 +1,6 @@
 (ns org.replikativ.spindel.atom
   (:refer-clojure :exclude [atom])
-  (:require [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.state-backend :as backend]))
+  (:require [org.replikativ.spindel.engine.core :as ec]))
 
 ;; Fork-safe atoms that store state inside the runtime.
 ;; API is 100% compatible with clojure.core/atom for easy migration.
@@ -28,25 +27,25 @@
         (fn [held-value]
           (let [{:keys [atom-id runtime]} held-value]
             (binding [ec/*execution-context* runtime]
-              (ec/swap-state! [:atoms]
-                              (fn [atoms] (dissoc atoms atom-id))))))))))
+              (ec/swap-state! [:atoms]     (fn [atoms] (dissoc atoms atom-id)))
+              (ec/swap-state! [:listeners] (fn [ls] (dissoc ls atom-id))))))))))
 
 ;; =============================================================================
-;; Rebuilt file to resolve prior parse NPE.
-;; Global Watcher - Dispatches to Individual Atom Watchers
+;; Watch dispatch — swap-site firing (shared with SignalRef via ec/notify-listeners!)
 ;; =============================================================================
 
-(defn- install-atom-watcher!
-  "Install global watcher on runtime state backend to dispatch to individual atom watchers.
-
-  When any atom value changes, this watcher calls that atom's registered watchers.
-  Installed once per backend, called automatically on first create-atom.
-
-  Delegates to PStateBackend protocol for proper backend abstraction.
-  Note: add-watch is idempotent with the same key, so calling multiple times is safe."
-  [rt]
-  ;; Delegate to backend protocol - works with all backend types
-  (backend/install-atom-watcher! (:backend rt)))
+(defn- swap-and-notify!
+  "Apply value-fn `f` to the atom's value at [:atoms id :value], then fire its
+   listeners with the classic (key ref old new) arity. `old` is captured atomically
+   INSIDE the swap; firing happens AFTER the swap returns (never inside it — a swap
+   fn can be retried). Listeners live at the fork-local [:listeners id], so a fork
+   swap fires the fork's listeners only. Returns the new value."
+  [ref id f]
+  (let [ov (volatile! nil)
+        nv (ec/swap-state! [:atoms id :value]
+                           (fn [old] (vreset! ov old) (f old)))]
+    (ec/notify-listeners! ref id @ov nv)
+    nv))
 
 ;; =============================================================================
 ;; RuntimeAtom - Atom that stores state in runtime
@@ -70,31 +69,28 @@
                "Validators not yet supported on runtime atoms")))
      (getValidator [_this] nil)
      (getWatches [_this]
-       (ec/get-state [:atoms id :watchers]))
+       (ec/get-state [:listeners id]))
      (addWatch [this key f]
-       (ec/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:listeners id]
                        (fn [watchers] (assoc watchers key f)))
        this)
      (removeWatch [this key]
-       (ec/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:listeners id]
                        (fn [watchers] (dissoc watchers key)))
        this)
 
      clojure.lang.IAtom
-     (swap [_this f]
-       (ec/swap-state! [:atoms id :value] f))
-     (swap [_this f arg]
-       (ec/swap-state! [:atoms id :value]
-                       (fn [v] (f v arg))))
-     (swap [_this f arg1 arg2]
-       (ec/swap-state! [:atoms id :value]
-                       (fn [v] (f v arg1 arg2))))
-     (swap [_this f x y args]
-       (ec/swap-state! [:atoms id :value]
-                       (fn [v] (apply f v x y args))))
+     (swap [this f]
+       (swap-and-notify! this id f))
+     (swap [this f arg]
+       (swap-and-notify! this id (fn [v] (f v arg))))
+     (swap [this f arg1 arg2]
+       (swap-and-notify! this id (fn [v] (f v arg1 arg2))))
+     (swap [this f x y args]
+       (swap-and-notify! this id (fn [v] (apply f v x y args))))
 
-     (reset [_this newval]
-       (ec/swap-state! [:atoms id :value] (constantly newval)))
+     (reset [this newval]
+       (swap-and-notify! this id (constantly newval)))
 
      (compareAndSet [_this _oldval _newval]
        ;; CAS not supported for now (could add with custom logic if needed)
@@ -114,30 +110,27 @@
 
      IWatchable
      (-add-watch [this key f]
-       (ec/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:listeners id]
                        (fn [watchers] (assoc watchers key f)))
        this)
      (-remove-watch [this key]
-       (ec/swap-state! [:atoms id :watchers]
+       (ec/swap-state! [:listeners id]
                        (fn [watchers] (dissoc watchers key)))
        this)
 
      IReset
-     (-reset! [_this newval]
-       (ec/swap-state! [:atoms id :value] (constantly newval)))
+     (-reset! [this newval]
+       (swap-and-notify! this id (constantly newval)))
 
      ISwap
-     (-swap! [_this f]
-       (ec/swap-state! [:atoms id :value] f))
-     (-swap! [_this f a]
-       (ec/swap-state! [:atoms id :value]
-                       (fn [v] (f v a))))
-     (-swap! [_this f a b]
-       (ec/swap-state! [:atoms id :value]
-                       (fn [v] (f v a b))))
-     (-swap! [_this f a b xs]
-       (ec/swap-state! [:atoms id :value]
-                       (fn [v] (apply f v a b xs))))))
+     (-swap! [this f]
+       (swap-and-notify! this id f))
+     (-swap! [this f a]
+       (swap-and-notify! this id (fn [v] (f v a))))
+     (-swap! [this f a b]
+       (swap-and-notify! this id (fn [v] (f v a b))))
+     (-swap! [this f a b xs]
+       (swap-and-notify! this id (fn [v] (apply f v a b xs))))))
 
 ;; =============================================================================
 ;; Public API
@@ -168,14 +161,11 @@
         atom-id (keyword (gensym "atom-"))
         runtime-atom-obj (->RuntimeAtom atom-id)]  ; No runtime captured!
 
-    ;; Install global watcher if needed (auto-install on first use)
-    (install-atom-watcher! runtime)
-
-    ;; Initialize state in runtime (value, watchers, and metadata all fork-safe)
+    ;; Initialize state in runtime (value + metadata, fork-safe). Watchers live
+    ;; separately at the fork-local [:listeners atom-id] (added by add-watch).
     (binding [ec/*execution-context* runtime]
       (ec/swap-state! [:atoms atom-id]
                       (fn [_] {:value initial-value
-                               :watchers {}
                                :meta meta})))
 
     ;; Register for GC cleanup (remove from runtime when atom is GC'd)
@@ -188,10 +178,10 @@
                   runtime-atom-obj
                   (reify Runnable
                     (run [_]
-                      ;; Remove from runtime when GC'd
+                      ;; Remove from runtime when GC'd (value + any listeners)
                       (binding [ec/*execution-context* runtime]
-                        (ec/swap-state! [:atoms]
-                                        (fn [atoms] (dissoc atoms atom-id)))))))
+                        (ec/swap-state! [:atoms]     (fn [atoms] (dissoc atoms atom-id)))
+                        (ec/swap-state! [:listeners] (fn [ls] (dissoc ls atom-id)))))))
        :cljs
        ;; Register with FinalizationRegistry when available so the
        ;; runtime's :atoms entry is reclaimed once nothing references the

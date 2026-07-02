@@ -9,6 +9,7 @@
                [org.replikativ.spindel.engine.core :as ec]
                [org.replikativ.spindel.signal :as sig]
                [org.replikativ.spindel.spin.cps :refer [spin]]
+               [org.replikativ.spindel.effects.await :refer [await]]
                [org.replikativ.spindel.effects.track :refer [track]])
      :cljs
      (:require [cljs.test :refer-macros [deftest testing is]])))
@@ -137,6 +138,69 @@
                  (binding [ec/*execution-context* ctx-main]
                    (is (= 0 @counter))
                    (is (= 0 @doubled-main))))))
+           (finally
+             (ctx/stop-context! ctx-main)))))))
+
+;; =============================================================================
+;; Un-quiesced Fork (fork-at-any-moment correctness)
+;; =============================================================================
+
+#?(:clj
+   (deftest test-fork-mid-propagation-reactive-recomputes
+     (testing "Forking with an UN-DRAINED signal change is safe for the reactive
+               (await/track) programming model. A swap bumps the signal's value +
+               :generation atomically in [:nodes] (signal.cljc:316-337) and
+               enqueues a :signal-change; fork-context resets :engine/pending to
+               [] (context.cljc:94), so the fork drops that eager recompute
+               trigger. But a spin in the fork that OBSERVES a stale-clean
+               derived spin via `await`/`track` recomputes it against the new
+               value — the generation guard refuses the awaited spin's stale
+               fast-path. (Raw @deref of the stale-clean spin returns its cache
+               without recomputing — the documented REPL-only footgun, asserted
+               here so the boundary is explicit. Quiescing before the fork, or
+               observing reactively, both avoid it.)"
+       (let [ctx-main (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* ctx-main]
+             (let [counter (sig/signal 0)
+                   doubled (spin
+                            (let [{:keys [new]} (track counter)]
+                              (* 2 new)))]
+               ;; Prime doubled's cache at counter=0 (tracks counter@old-gen).
+               (is (= 0 @doubled))
+
+               ;; Mutate WITHOUT draining the dependent spin: counter's value +
+               ;; generation advance and a :signal-change is enqueued, but we
+               ;; never deref `doubled`, so its cache stays clean at the old gen.
+               (swap! counter inc)              ; counter = 1, :signal-change pending
+
+               ;; Fork at this exact un-quiesced instant — pending is dropped.
+               (let [ctx-fork (ctx/fork-context ctx-main)]
+                 (binding [ec/*execution-context* ctx-fork]
+                   (is (= 1 @counter) "fork sees the post-swap signal value")
+
+                   ;; NB: raw @deref of the pre-cached `doubled` here is the
+                   ;; discouraged REPL-only path AND racy — it returns the stale
+                   ;; clean cache (0) only until the parent's async executor drains
+                   ;; its :signal-change and re-dirties the node, which the fork
+                   ;; then reads through CoW fall-through (→ 2). We deliberately do
+                   ;; NOT assert it; the sanctioned reactive path below is what's
+                   ;; deterministic and correct.
+
+                   ;; Sanctioned reactive observation recomputes correctly:
+                   (let [fresh   (spin (let [{:keys [new]} (track counter)]
+                                         (* 10 new)))
+                         ;; awaiting the stale-cached `doubled` re-runs it against
+                         ;; counter=1 (generation guard) → 2, so via-old = 102.
+                         via-old (spin (+ 100 (await doubled)))]
+                     (is (= 10 @fresh) "fresh spin reads the new signal value")
+                     (is (= 102 @via-old)
+                         "reactive await recomputes the pre-cached spin (gen guard) — not stale 100")))
+
+                 ;; Isolation: a fork mutation does not leak into the parent.
+                 (binding [ec/*execution-context* ctx-fork]
+                   (swap! counter #(+ % 10)))   ; fork: counter = 11
+                 (is (= 1 @counter) "parent unaffected by fork mutation"))))
            (finally
              (ctx/stop-context! ctx-main)))))))
 

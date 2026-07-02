@@ -100,6 +100,23 @@ Reactive **execution state** (the two continuation tables,
 `:engine/pending`, `:engine/draining?`) is fork-local so the fork can
 drain its own events without contending with the parent's drain.
 
+> **Forking with an un-drained change.** Because `:engine/pending` is
+> fork-local, `fork-context` starts the fork with an empty queue — so a
+> `:signal-change` that the parent enqueued but has not yet drained is
+> *dropped* on the fork side. This is safe for the reactive model: spin
+> staleness is tracked by the per-`SpinNode` `:dirty` flag **plus the
+> `:generation` guard** (a spin caches the generations of the signals it
+> read and refuses its fast-path on a mismatch), neither of which lives in
+> the pending queue. So a fork spin that `await`/`track`s a stale-clean
+> spin recomputes against the new value via the generation guard — the
+> dropped event was only the *eager* recompute trigger, reconstructed
+> lazily on demand. Quiescence before forking is therefore an
+> optimization, not a correctness requirement. (The exception is a raw
+> `@deref` of a stale-clean spin, which returns the clean cache without
+> recomputing — the discouraged out-of-spin path; across a fork that
+> staleness is permanent rather than eventually-consistent, since the fork
+> never drains the dropped event.)
+
 `:engine/cancelled-tokens` is the one shared path with subtle
 fork behavior; see [§8](#8-overlay-backend).
 

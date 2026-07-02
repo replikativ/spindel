@@ -825,3 +825,54 @@ Distributed function definition.
 `scope` is either a `peer-id` or `[peer-id context-id]`.
 
 All free variables in `spin-remote` body must be declared in the explicit args vector (compile-time validation).
+
+---
+
+## `spindel.distributed.signal-sync`
+
+Convergent signal replication over kabel pub/sub. See [Distributed → Signal Sync](distributed.md#signal-sync-convergent-replication).
+
+| Function | Description |
+|----------|-------------|
+| `(export-signal! peer topic signal & opts)` | Publish-only: own the topic, publish the signal's changes (a thin `sync-signal! :owner? true`). |
+| `(subscribe-signal! peer topic & opts)` | Subscribe a remote signal into a local holder atom (or supplied `:atom`); `:on-update` for changes. |
+| `(sync-signal! peer topic signal & opts)` | Bidirectional convergent sync — every peer calls it; exactly one is `:owner?` (the relay hub). Opts: `:merge-fn` `:apply-delta-fn` `:delta-fn` `:clear-delta-fn` `:state-fn` `:sync?`. |
+| `(unsync-signal! / unexport-signal! / unsubscribe-signal! ...)` | Tear down the corresponding wiring. |
+
+## `spindel.ygg-signal`
+
+A yggdrasil system held as a signal value.
+
+| Function | Description |
+|----------|-------------|
+| `(ygg-signal system)` | Wrap a system as a (non-deltaable) SignalRef; `@` returns the raw system. |
+| `(system-of signal)` | Unwrap to the effective (writable) system. |
+| `(sync-opts system & {:keys [sync?]})` | Derive `sync-signal!` hooks from the system's CRDT protocols (`PConvergent → :merge-fn`, `PDeltaApply → :apply-delta-fn` + `:delta-fn` + `:clear-delta-fn`). |
+
+## `spindel.distributed.workspace-peer`
+
+Pure gate + checkout/topology descriptor + single-writer lease (no transport deps).
+
+| Function | Description |
+|----------|-------------|
+| `(make-workspace-peer {:ctx :resolve-system-fn :compose-fn :on-reseat})` | Create a peer that re-seats `::seated-workspace` when its gate is satisfied. |
+| `(set-descriptor! peer descriptor)` | Set the target checkout descriptor; re-evaluates the gate. |
+| `(apply-head-update! peer system-id branch head-token)` | Record a locally-synced branch head; re-evaluates the gate. |
+| `(gate descriptor head-state)` | Pure fetch-gate: `{:ready? :pending :statuses}`. |
+| `(fork-descriptor descriptor fork-branch owner-id)` | Pure: derive a FORK descriptor (fresh branch, claim, `:fork-of` LCA anchor). |
+| `(writable? / peer-writable? / claim ...)` | Single-writer lease over the descriptor's `:owner`. |
+| `(current-workspace peer)` / `(gate-status peer)` | Read the seated workspace / current gate result. |
+
+## `spindel.distributed.workspace-peer-sync`
+
+Live wiring (konserve-sync + signal_sync glue). Fully `.cljc`; the konserve-sync transport defaults resolve via `requiring-resolve` on the JVM, and cljs callers inject `:subscribe-fn`.
+
+| Function | Description |
+|----------|-------------|
+| `(wire-topology! peer client-peer descriptor store-lookup & opts)` | Replay a descriptor's subscription topology; dispatches per-system `:role` — `:subscriber` → `attach-store!`, `:bidirectional` → `sync-system!`. Opts: `:signal-lookup` `:head-token-fn` `:branch-key?` `:subscribe-fn` `:sync?` `:sync-fn`. |
+| `(sync-system! client-peer topic ygg-signal & opts)` | Bidirectionally sync a convergent system (derives `ys/sync-opts`, `sync-signal!`s it). |
+| `(fork-remote! peer descriptor fork-branch owner-id system-lookup & opts)` | Isolated single-writer local fork: `ygg/branch!` + claim + reseat. |
+| `(merge-fork-remote! fork-desc system-lookup & opts)` | Fold the fork branch back into the parent (`ygg/merge!`; fail-safe `ygg/conflicts` pre-check unless `:force`/`:strategy`). |
+| `(attach-store! / attach-descriptor! / export-descriptor! ...)` | Lower-level konserve-sync store + signal_sync descriptor wiring. |
+| `(checkout-resolver lookup-fn)` / `(composite-composer branch)` | Default `:resolve-system-fn` / `:compose-fn` builders (`ygg/checkout` + `ygc/composite`). |
+| `(register-registry! / subscribe-registry! ...)` | Durable registry control-plane sync. |

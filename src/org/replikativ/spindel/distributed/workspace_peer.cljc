@@ -1,0 +1,340 @@
+(ns org.replikativ.spindel.distributed.workspace-peer
+  "Reflect a yggdrasil composite *workspace* between peers: when the server
+   forks/advances a room, a subscribing peer re-seats its peer-local workspace
+   seat (`::seated-workspace`) to the same branch + head, snapshot-isolated.
+
+   Layering:
+
+     transport          (app owns)  konserve-sync per-system stores + registry,
+                                     kabel.pubsub, signal_sync for the descriptor
+       │ callbacks
+       ▼
+     workspace-peer     (this ns)   pure GATE + a small state machine that, when
+                                     every target system's local head has reached
+                                     its pinned head, re-seats the workspace.
+       │ ec/swap-state!
+       ▼
+     ygg/system         (location-transparent — apps write the same code on both
+                         sides; the sub-system they deref is the locally-synced,
+                         branch-correct one)
+
+   Two inputs drive the peer:
+
+   1. **Checkout descriptor** (what the server wants the client at) — rides the
+      `signal_sync` bridge:
+        {:branch  <kw>
+         :owner   <peer-id>            ; optional — the single-writer lease (claim)
+         :systems {system-id {:store-id .. :branch <kw> :head <token> :hlc ..
+                              :topic <kw>}}}   ; :topic = the system's konserve-sync store topic
+      The descriptor is irreducible: the snapshot indices carry content +
+      history + per-[system,branch] heads, but NOT which branch a room is
+      *checked out* to, and a client needs a branch name to re-seat a writable
+      conn. (composite.clj's `commit!` entry has no branch; `branch!` writes no
+      entry; the branch lives in in-memory `current-branch-name`.)
+
+      Optional fields turn the checkout descriptor into a full SUBSCRIPTION
+      TOPOLOGY — pure data that can be shipped and replayed to wire a peer into
+      the same sync mesh the original had (see `fork-descriptor` +
+      `workspace-peer-sync/wire-topology!`):
+        :systems …{:topic <kw>         ; each system's konserve-sync store topic
+                   :role  <kw>}        ; :subscriber (default — one-way store FOLLOW)
+                                       ; | :bidirectional (convergent live SYNC, for
+                                       ;   CRDT systems; carries an :owner? for the hub)
+        :descriptor-topic <kw>         ; the signal_sync topic carrying THIS descriptor
+        :fork-of {:branch <kw>         ; lineage anchor for a fork (see fork-descriptor):
+                  :heads {system-id <token>}}  ;   per-system base head = the merge-base/LCA
+
+   2. **Head updates** (what's actually synced locally) — each system store's
+      konserve-sync `:on-key-update` for the branch-pointer key. Because the
+      datahike/registry `:key-sort-fn` publishes content blocks before the
+      mutable pointer, an `:on-key-update` for the branch key means \"that
+      commit's blocks are fully local\" — the per-store fetch-gate. The app
+      forwards it via `apply-head-update!`.
+
+   The peer is **dependency-injected** so this namespace needs no konserve-sync,
+   datahike, or yggdrasil require (the app already holds the peers + cfgs):
+     :resolve-system-fn (fn [system-id branch] -> ygg-system)   ; branch-scoped
+     :compose-fn        (fn [{system-id -> ygg-system}] -> workspace-value)
+   On the JVM the app passes `#(ygc/composite (vals %) {:branch B …})`; the seated
+   value is whatever `ygg/system` resolves through (a CompositeSystem)."
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [is.simm.partial-cps.core-async :as cps]
+            #?(:clj  [clojure.core.async :refer [chan put! close! go go-loop <! timeout dropping-buffer]]
+               :cljs [cljs.core.async :refer [chan put! close! <! timeout dropping-buffer]
+                      :refer-macros [go go-loop]])))
+
+(declare reseat! do-reseat-async! start-reseat-loop!)
+
+;; =============================================================================
+;; Pure composite gate (the one genuinely-new coordination function)
+;; =============================================================================
+
+(defn merge-head-update
+  "Fold a single store's freshly-synced branch head into head-state.
+   head-state shape: {system-id {branch head-token}}."
+  [head-state system-id branch head-token]
+  (assoc-in head-state [system-id branch] head-token))
+
+(defn gate
+  "Pure composite fetch-gate. Given the checkout `descriptor` and the locally
+   synced `head-state`, decide whether the workspace may be exposed at the
+   target snapshot yet.
+
+   Returns:
+     {:ready?    bool                ; every target system reached its pinned head
+      :pending   #{system-id …}      ; systems whose local head has NOT yet caught up
+      :statuses  {system-id {:target t :local l :reached? bool}}}
+
+   `:reached?` is head-token equality. Under single-writer with a per-commit
+   descriptor that is the correct gate: the descriptor advances monotonically as
+   commits land, and `:key-sort-fn` guarantees a branch-pointer head update only
+   fires once that commit's blocks are present. A transient where the descriptor
+   still names head C while the store already advanced to C' simply isn't
+   `ready?` until the descriptor catches up to C' (which it does, per commit)."
+  [descriptor head-state]
+  (let [systems (:systems descriptor)
+        statuses (reduce-kv
+                  (fn [acc sid {:keys [branch head]}]
+                    (let [local (get-in head-state [sid branch])]
+                      (assoc acc sid {:target head
+                                      :local local
+                                      :reached? (and (some? local) (= local head))})))
+                  {}
+                  systems)
+        pending (into #{}
+                      (comp (remove (comp :reached? val)) (map key))
+                      statuses)]
+    {:ready? (and (seq systems) (empty? pending))
+     :pending pending
+     :statuses statuses}))
+
+;; =============================================================================
+;; Single-writer lease (the branch-owner field)
+;; =============================================================================
+
+(defn writable?
+  "Single-writer lease check: true iff `self-id` holds the branch-owner lease
+   named by the checkout `descriptor`'s `:owner`. A descriptor with no `:owner`
+   is **read-only** for everyone (the safe default — fork to write, then claim).
+
+   This is the single-head regime made explicit: at most one peer owns a branch,
+   so its `transact!`s are unambiguous and merge is needed only at fold-to-parent.
+   The owner is part of the same `signal_sync`'d control plane as the checkout, so
+   ownership transfers (hand-off, takeover) ride the existing descriptor channel."
+  [descriptor self-id]
+  (and (some? self-id) (= self-id (:owner descriptor))))
+
+(defn claim
+  "Server/owner side: stamp `owner-id` as the branch-owner on a descriptor before
+   publishing it. Returns the descriptor with `:owner` set."
+  [descriptor owner-id]
+  (assoc descriptor :owner owner-id))
+
+;; =============================================================================
+;; Fork lineage (pure descriptor algebra)
+;; =============================================================================
+
+(defn fork-descriptor
+  "Derive a FORK checkout descriptor from a parent `descriptor`: a fresh writable
+   `fork-branch` claimed by `owner-id`, anchored to the parent's per-system heads
+   via `:fork-of` (the merge-base/LCA for a later fold-to-parent). Each system is
+   carried over re-pointed to `fork-branch`, keeping its store `:topic`; its `:head`
+   stays at the PARENT head — the fork starts there, and because the store is
+   content-addressed with structural sharing, a peer already following the parent
+   needs no new blocks, only the new branch pointer (the O(1) distributed fork).
+
+   Pure data: shippable over signal_sync and replayable via
+   `workspace-peer-sync/wire-topology!`. The branch is created locally with
+   `ygg/branch!`; this only computes the descriptor that names it."
+  [descriptor fork-branch owner-id]
+  (let [systems (:systems descriptor)]
+    (-> descriptor
+        (assoc :branch fork-branch
+               :owner owner-id
+               :fork-of {:branch (:branch descriptor)
+                         :heads (reduce-kv (fn [m sid s] (assoc m sid (:head s))) {} systems)})
+        (assoc :systems (reduce-kv (fn [m sid s] (assoc m sid (assoc s :branch fork-branch)))
+                                   {} systems)))))
+
+;; =============================================================================
+;; Peer state machine
+;; =============================================================================
+
+;; Peer-local context-state key holding the reflected workspace value. Self-
+;; contained to the peer (NOT the dissolved ygg-signal registry) — re-seating a
+;; reflected remote workspace through `ygg/system` location-transparency is a
+;; follow-up (register the synced composite as a ygg-signal via composite-sync).
+(def workspace-key ::seated-workspace)
+
+(defn make-workspace-peer
+  "Create a workspace-peer bound to execution context `ctx`.
+
+   opts:
+     :ctx               the execution context to re-seat the workspace into (req)
+     :resolve-system-fn (fn [system-id branch] -> ygg-system) (req) — build/look
+                        up the locally-synced, branch-scoped sub-system.
+     :compose-fn        (fn [{system-id -> ygg-system}] -> workspace-value)
+                        — combine resolved systems into the value stored at the
+                        peer-local workspace seat (`::seated-workspace`). Defaults to
+                        the systems map (tests); JVM apps pass a CompositeSystem builder.
+     :on-reseat         (fn [workspace-value descriptor]) optional — fired after a
+                        successful re-seat (e.g. to notify UI / log). On an async
+                        peer it fires on the reseat go-block, not synchronously.
+     :sync?             whether `resolve-system-fn` runs synchronously. Defaults to
+                        the platform (JVM true / cljs false). When true the reseat is
+                        inline; when false it runs on a per-peer SERIAL go-loop that
+                        normalizes a value | core.async channel | partial-cps CPS from
+                        `resolve-system-fn` via `cps/->chan` (async storage on cljs).
+                        `current-workspace` then reads the LAST seated value
+                        (eventually-consistent); poll it / use `:on-reseat`.
+
+   Returns an atom holding the peer state; drive it with `set-descriptor!` and
+   `apply-head-update!`. For an async peer, `stop-peer!` ends its reseat loop."
+  [{:keys [ctx resolve-system-fn compose-fn on-reseat sync?]}]
+  (assert ctx ":ctx is required")
+  (assert resolve-system-fn ":resolve-system-fn is required")
+  (let [sync?     (if (some? sync?) sync? #?(:clj true :cljs false))
+        reseat-ch (when-not sync? (chan (dropping-buffer 1)))
+        peer      (atom {:ctx ctx
+                         :resolve-system-fn resolve-system-fn
+                         :compose-fn (or compose-fn identity)
+                         :on-reseat on-reseat
+                         :sync? sync?
+                         :reseat-ch reseat-ch
+                         :descriptor nil
+                         :head-state {}
+                         :seated nil       ; the descriptor currently reflected
+                         :last-reseat-error nil})]
+    (when reseat-ch (start-reseat-loop! peer reseat-ch))
+    peer))
+
+(defn- reseat!
+  "Build the workspace value for `descriptor` and swap it into the context.
+   Returns the seated workspace value."
+  [{:keys [ctx resolve-system-fn compose-fn on-reseat]} descriptor]
+  (let [systems (reduce-kv
+                 (fn [acc sid {:keys [branch]}]
+                   (assoc acc sid (resolve-system-fn sid branch)))
+                 {}
+                 (:systems descriptor))
+        ws (compose-fn systems)]
+    (binding [ec/*execution-context* ctx]
+      (ec/swap-state! [workspace-key] (constantly ws)))
+    (when on-reseat (on-reseat ws descriptor))
+    ws))
+
+(defn- resolve-systems
+  "Resolve every system in `descriptor` via `resolve-system-fn`, normalizing each
+   value | core.async channel | partial-cps CPS through `cps/->chan`. Returns a
+   channel delivering the {system-id -> system} map (or re-throwing into the caller's
+   try/catch on a resolve error)."
+  [resolve-system-fn descriptor]
+  (go
+    (try
+      (loop [acc {} ps (seq (:systems descriptor))]
+        (if-not ps
+          acc
+          (let [[sid {:keys [branch]}] (first ps)
+                sys (cps/unwrap-result (<! (cps/->chan (resolve-system-fn sid branch))))]
+            (recur (assoc acc sid sys) (next ps)))))
+      ;; return the error as a VALUE (an exception inside a go won't surface on <!)
+      (catch #?(:clj Throwable :cljs :default) e e))))
+
+(defn- do-reseat-async!
+  "Async serial reseat (`:sync? false` peers — async storage on cljs). Re-reads peer
+   state, gate-checks, resolves the systems, and seats — but ONLY if, AFTER the async
+   resolve, the descriptor is STILL current AND the gate is STILL ready (a head can
+   advance past the pinned head meanwhile, and seating then would expose content ahead
+   of the agreed checkpoint). A resolve error is recorded and the loop re-nudged (with
+   backoff) so a transient failure retries while the gate stays ready. Returns a channel
+   that closes when done."
+  [peer]
+  (go
+    (let [{:keys [descriptor head-state seated ctx compose-fn on-reseat resolve-system-fn]} @peer]
+      (when (and (:ready? (gate descriptor head-state)) (not= descriptor seated))
+        (let [result (<! (resolve-systems resolve-system-fn descriptor))]
+          (cond
+            (cps/error? result)
+            (do (swap! peer assoc :last-reseat-error result)
+                (when-let [ch (:reseat-ch @peer)]
+                  (go (<! (timeout 100)) (put! ch :retry))))
+
+            (let [{d :descriptor hs :head-state} @peer]
+              (and (= descriptor d) (:ready? (gate descriptor hs))))
+            (let [ws (compose-fn result)]
+              (binding [ec/*execution-context* ctx]
+                (ec/swap-state! [workspace-key] (constantly ws)))
+              (swap! peer assoc :seated descriptor :last-reseat-error nil)
+              (when on-reseat (on-reseat ws descriptor)))))))
+    nil))
+
+(defn- start-reseat-loop!
+  "One SERIAL reseat consumer per async peer: each nudge re-evaluates + (re)seats,
+   one at a time (so concurrent resolves can't race). The `dropping-buffer 1` channel
+   collapses bursts of nudges into a single re-check; a closed channel (nil) stops it."
+  [peer reseat-ch]
+  (go-loop []
+    (when (some? (<! reseat-ch))
+      (<! (do-reseat-async! peer))
+      (recur))))
+
+(defn- maybe-reseat!
+  "Recompute the gate. A SYNC peer (JVM default) re-seats INLINE when ready+changed —
+   today's behaviour, byte-identical. An ASYNC peer nudges its serial reseat loop and
+   the seat completes later. Returns the gate result (`:reseated?` is true only on a
+   completed sync re-seat; async re-seats are observed via `:on-reseat`/`current-workspace`)."
+  [peer]
+  (let [{:keys [sync? reseat-ch descriptor head-state seated]} @peer
+        g (gate descriptor head-state)]
+    (if sync?
+      (if (and (:ready? g) (not= descriptor seated))
+        (do (reseat! @peer descriptor)
+            (swap! peer assoc :seated descriptor)
+            (assoc g :reseated? true))
+        (assoc g :reseated? false))
+      (do (when (and reseat-ch (:ready? g) (not= descriptor seated))
+            (put! reseat-ch :tick))
+          (assoc g :reseated? false)))))
+
+(defn set-descriptor!
+  "Set the target checkout descriptor (from the signal_sync'd control plane).
+   Triggers a gate re-evaluation + re-seat if ready."
+  [peer descriptor]
+  (swap! peer assoc :descriptor descriptor)
+  (maybe-reseat! peer))
+
+(defn apply-head-update!
+  "Record that `system-id`'s `branch` is now locally synced to `head-token`
+   (from a konserve-sync :on-key-update on the branch-pointer key). Triggers a
+   gate re-evaluation + re-seat if ready."
+  [peer system-id branch head-token]
+  (swap! peer update :head-state merge-head-update system-id branch head-token)
+  (maybe-reseat! peer))
+
+(defn current-workspace
+  "Read the workspace value currently seated in the peer's context (or nil). For an
+   async peer this is the LAST seated value (eventually-consistent — the next reseat
+   may still be in flight); poll it or use `:on-reseat`."
+  [peer]
+  (binding [ec/*execution-context* (:ctx @peer)]
+    (ec/get-state [workspace-key])))
+
+(defn stop-peer!
+  "Stop an async peer's serial reseat loop (no-op for a sync peer). Call on shutdown
+   so the consumer go-loop exits and stops observing nudges."
+  [peer]
+  (when-let [ch (:reseat-ch @peer)]
+    (close! ch)
+    (swap! peer assoc :reseat-ch nil))
+  peer)
+
+(defn gate-status
+  "Current gate result without mutating (for diagnostics / UI)."
+  [peer]
+  (let [{:keys [descriptor head-state]} @peer]
+    (gate descriptor head-state)))
+
+(defn peer-writable?
+  "Does `self-id` hold the single-writer lease for the peer's current checkout?"
+  [peer self-id]
+  (writable? (:descriptor @peer) self-id))

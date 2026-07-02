@@ -17,7 +17,8 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [kabel.peer :as peer]
             [kabel.http-kit :as http-kit]
-            [kabel.middleware.transit :refer [transit]]
+            [kabel.middleware.fressian :refer [fressian]]
+            [yggdrasil.wire :as wire]
             [hasch.core :refer [uuid]]
             [superv.async :refer [S <??]]
             [clojure.core.async :as a])
@@ -26,6 +27,13 @@
 ;; =============================================================================
 ;; Test Infrastructure
 ;; =============================================================================
+
+;; fressian serializer (replaces bare transit) — RPC payloads are plain data, so no CRDT
+;; system record crosses and `resolve-storage` is never called (nil-safe).
+(defn- wire-mw [peer-config]
+  (fressian (atom (wire/read-handlers {:resolve-storage (constantly nil)}))
+            (atom (wire/write-handlers))
+            peer-config))
 
 (defn- free-port
   "Find an available port for the test server."
@@ -58,7 +66,7 @@
   "Start a kabel server peer on the given URL."
   [url server-id]
   (let [handler (http-kit/create-http-kit-handler! S url server-id)
-        server (peer/server-peer S handler server-id ds/remote-middleware transit)]
+        server (peer/server-peer S handler server-id ds/remote-middleware wire-mw)]
     (ds/invoke-on-peer server)
     (<?? S (peer/start server))
     {:server server :handler handler}))
@@ -72,7 +80,7 @@
 (defn start-client!
   "Start a kabel client peer and connect to the given URL."
   [url client-id]
-  (let [client (peer/client-peer S client-id ds/remote-middleware transit)]
+  (let [client (peer/client-peer S client-id ds/remote-middleware wire-mw)]
     (ds/invoke-on-peer client)
     (<?? S (peer/connect S client url))
     client))

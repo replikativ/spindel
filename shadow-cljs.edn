@@ -36,4 +36,28 @@
   {:target :browser-test
    :test-dir "target/browser-test"
    :ns-regexp "-test$"
-   :runner-ns shadow.test.browser}}}
+   :runner-ns shadow.test.browser}
+
+  ;; cljs(node) client for the cross-RUNTIME bidirectional sync proof — connects to
+  ;; the JVM cross-runtime-server over a real websocket (kabel node transport).
+  ;; Run via test/scripts/cross-runtime.sh (starts the JVM server, then this client).
+  :cross-runtime-client
+  {:target :node-script
+   :output-to "target/cross-runtime-client.js"
+   :main org.replikativ.spindel.distributed.cross-runtime-client/-main}
+
+  ;; cljs(node) client that runs the full fork-remote!→write→merge-fork-remote!
+  ;; lifecycle against a REAL local datahike (memory) system, then publishes the
+  ;; merged item-names to the JVM server. Run via test/scripts/cross-runtime-fork.sh.
+  :cross-runtime-fork-client
+  {:target :node-script
+   :output-to "target/cross-runtime-fork-client.js"
+   :main org.replikativ.spindel.distributed.cross-runtime-fork-client/-main}
+
+  ;; cljs(node) client for the DURABLE cross-runtime proof — a node-filestore G-Set
+  ;; syncs the server's value+nodes over one fressian wire, then survives a cold restart.
+  ;; Run via test/scripts/cross-runtime-durable.sh.
+  :cross-runtime-durable-client
+  {:target :node-script
+   :output-to "target/cross-runtime-durable-client.js"
+   :main org.replikativ.spindel.distributed.cross-runtime-durable-client/-main}}}
