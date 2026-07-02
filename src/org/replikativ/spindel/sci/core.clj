@@ -37,10 +37,13 @@
   [sci-ctx]
   (require 'is.simm.partial-cps.runtime)
   ;; Native runtime namespace — one canonical compiled Thunk class.
+  ;; Inject the WHOLE runtime ns (all publics, native) — the interpreted async/seq CPS
+  ;; macros reference runtime/thunk?, runtime/force-thunk, … (added in partial-cps 0.1.57).
+  ;; A hand-picked subset silently breaks whenever partial-cps adds a runtime helper the
+  ;; macros emit (this bit the SCI spin/gen-aseq path via `runtime/thunk?`). All runtime
+  ;; publics are plain native fns / the ONE compiled Thunk ctor, so this stays canonical.
   (sci/add-namespace! sci-ctx 'is.simm.partial-cps.runtime
-                      {'bound-fn @(resolve 'is.simm.partial-cps.runtime/bound-fn)
-                       '->thunk  @(resolve 'is.simm.partial-cps.runtime/->thunk)
-                       '->Thunk  @(resolve 'is.simm.partial-cps.runtime/->Thunk)})
+                      (update-vals (ns-publics 'is.simm.partial-cps.runtime) deref))
   (let [ioc-src (slurp (clojure.java.io/resource "is/simm/partial_cps/ioc.clj"))
         async-src (slurp (clojure.java.io/resource "is/simm/partial_cps/async.cljc"))]
     (sci/eval-string* sci-ctx ioc-src)
