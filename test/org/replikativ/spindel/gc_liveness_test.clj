@@ -54,8 +54,11 @@
           (let [result (promise)
                 d      (build-suspended-chain! result)]
             ;; The parent/child Spin objects are now unreachable from user
-            ;; code. Force the Cleaner's hand.
-            (dotimes [_ 3] (System/gc) (Thread/sleep 100))
+            ;; code. Force the Cleaner's hand. Kept MINIMAL (2 cycles, short
+            ;; sleeps ≈ 100 ms) — System/gc in the shared suite JVM perturbs
+            ;; sibling tests, so this sentinel pays the smallest footprint
+            ;; that still reliably fails on unguarded reap code.
+            (dotimes [_ 2] (System/gc) (Thread/sleep 50))
             ;; Deliver the external resource — must propagate child→parent.
             (sync/deliver! d 41)
             (is (= [:ok 42] (deref result 10000 ::timeout))
