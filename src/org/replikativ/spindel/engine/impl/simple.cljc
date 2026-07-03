@@ -806,6 +806,16 @@
                   dedup-key [parent-id tid generation]
                   already-resumed? (when (and generation batch)
                                      (contains? @(:resumed-conts batch) dedup-key))]
+              ;; A completion whose subscription exists but whose cont entry is
+              ;; MISSING is a dropped wakeup — the parent spin will never
+              ;; resume. This must be loud, not a silent skip: it has cost
+              ;; days of debugging as an unexplained hang. Known cause:
+              ;; a fork's [:await-conts] snapshot (context.cljc fork-context)
+              ;; not containing a cont the parent registered post-fork.
+              (when (and (nil? cont) (not already-resumed?))
+                (log/warn :engine/spin-completion-cont-missing
+                          {:parent-id parent-id :cont-id cont-id :child-id tid
+                           :fork-id (:fork-id context)}))
               (when (and cont (not already-resumed?))
                 ;; Mark [parent child generation] as resumed
                 (when (and generation batch)
@@ -1450,6 +1460,35 @@
    (some (fn [[_k v]] (= :external-await (:kind v)))
          (rtp/get-state context [:await-conts spin-id]))))
 
+(defn- has-live-spin-await?
+  "True if `spin-id` has an await continuation on a child spin that has
+  NOT yet completed — the body is suspended mid-await and the child's
+  eventual `:spin-completion` needs this spin's cont + node to resume.
+
+  This closes the AWAITER half of the GC-reap hole that
+  `has-live-external-await?` closed for external resources: `:awaited-spin`
+  keeps the CHILD reachable through the parent's cont, but nothing keeps
+  the PARENT `Spin` object reachable — only the user's local binding does.
+  A parent parked in `@deref` (HotSpot liveness can drop the reference
+  mid-park) or a fire-and-forget awaiting chain becomes Cleaner-eligible
+  while genuinely suspended; reaping it deletes the node + conts +
+  subscriptions, so the child's completion dispatches into
+  `:parent-spin-ids nil` and is silently dropped — the awaiter never
+  resumes, no error. (Manifested as the dvergr llm-agent ask hang:
+  ~50 % under normal GC, deterministic under forced GC mid-turn.)
+
+  A cont whose child has ALREADY completed is not counted — its one-shot
+  event has fired (once-conts linger until the generation sweep); counting
+  those would block legitimate cascade cleanup of completed pairs."
+  [context spin-id]
+  (boolean
+   (some (fn [[_k v]]
+           (let [[ev-kind child-id] (:event-key v)]
+             (and (= :spin/complete ev-kind)
+                  (when-let [child (rtp/get-state context [:nodes child-id])]
+                    (not (:completed? child))))))
+         (rtp/get-state context [:await-conts spin-id]))))
+
 (defn try-gc-cleanup-spin!
   "Called from GC callback. Attempts full cleanup if safe, otherwise marks
   the spin as orphaned for deferred cleanup.
@@ -1488,9 +1527,10 @@
     (when node ;; may already be cleaned
       (let [has-observers? (seq (nodes/get-observers node))
             live-signal-cont? (has-live-signal-cont? context spin-id)
-            live-external-await? (has-live-external-await? context spin-id)]
+            live-external-await? (has-live-external-await? context spin-id)
+            live-spin-await? (has-live-spin-await? context spin-id)]
         (cond
-          (or has-observers? live-signal-cont? live-external-await?)
+          (or has-observers? live-signal-cont? live-external-await? live-spin-await?)
           ;; Has observers, live signal continuations, or live external
           ;; awaits → mark orphaned and defer cleanup. The Cleaner has
           ;; run, so the Spin object itself is unreachable, but the
@@ -1515,7 +1555,8 @@
                            (:orphaned? dep-node)
                            (empty? (nodes/get-observers dep-node))
                            (not (has-live-signal-cont? context dep-id))
-                           (not (has-live-external-await? context dep-id)))
+                           (not (has-live-external-await? context dep-id))
+                           (not (has-live-spin-await? context dep-id)))
                   (full-cleanup-spin! context dep-id))))))))))
 
 (defn track-signal-dep!
@@ -1816,7 +1857,15 @@
                                         (assoc-in state' [:subscriptions event-key spin-id] spin-subs')
                                         (update-in state' [:subscriptions event-key] dissoc spin-id))))
                                   rt-state
-                                  await-conts))))))))
+                                  await-conts)))
+              ;; Deferred reap: a spin whose Cleaner fired while it was
+              ;; suspended on a spin-await was ORPHANED (not full-cleaned —
+              ;; see has-live-spin-await? / try-gc-cleanup-spin!). Now that
+              ;; it has completed and its ephemeral conts are cleared, this
+              ;; generation boundary is the natural point to drop the node
+              ;; for real — otherwise completed orphans accumulate.
+              (when (:orphaned? (rtp/get-state context [:nodes spin-id]))
+                (full-cleanup-spin! context spin-id)))))))
 
     ;; Spin observers (parent set) live on `:nodes[child-id]:observers`;
     ;; there is no separate `:await-dependents` index any longer.
