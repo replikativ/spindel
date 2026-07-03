@@ -284,6 +284,7 @@
 
 (declare try-claim-execution!)
 (declare propagate-await-dirty!)
+(declare try-gc-cleanup-spin!)
 
 (defn ^:no-doc clear-created-spins!
   "Reset a spin's `:created-spins` set at the start of a (re-)run of its
@@ -920,6 +921,16 @@
             (let [result (spin resolve-fn reject-fn)]
               nil)))))
 
+    ;; GC cleanup request — the JVM Cleaner / JS FinalizationRegistry saw the
+    ;; Spin OBJECT become unreachable and enqueued this instead of mutating
+    ;; engine state from the GC thread. Running the reap inside the serialized
+    ;; drain means it can never race event dispatch: a :spin-completion for
+    ;; this spin enqueued before us has already resumed its subscribers.
+    :gc-cleanup
+    (do
+      (try-gc-cleanup-spin! context (:id event))
+      nil)
+
     ;; Unknown event type
     (do
       (log/trace :engine/unknown-event {:event event})
@@ -1413,109 +1424,67 @@
                            ))))
   true)
 
-(defn- has-live-signal-cont?
-  "True if `spin-id` has any continuation subscribed to a signal —
-  which can always fire because signals are mutable state and any
-  `swap!` will trigger them. Such a spin is reactive infrastructure
-  and must not be GC-cleaned even if its `Spin` Java object is
-  unreachable.
+(defn- gc-quiescent?
+  "True when `spin-id` is PROVABLY inert — the only state in which the
+  Cleaner path may destroy its engine node. GC timing must never decide
+  whether live machinery is torn down; anything not provably quiescent
+  is merely orphaned, and reaping happens later from engine-quiescent
+  code paths (the generation sweep).
 
-  Spin-completion conts (`[:spin/complete _]`) are deliberately NOT
-  counted as live here: their source spin's completion is a one-shot
-  event (already-completed spins won't re-complete unless they re-run,
-  and a parent spin's chance to re-run dies along with the parent's
-  own reactive infrastructure). Counting them would block legitimate
-  cascade cleanup of awaiter/awaitee pairs once both are unreachable."
-  [context spin-id]
-  (boolean (seq (rtp/get-state context [:track-subscriptions spin-id]))))
+  Quiescent = ALL of:
+  - `:completed?` and not `:running?` — the body has finished and isn't
+    re-executing. This alone protects EVERY suspended awaiter (spin-await,
+    external-await, mid-body between awaits): a suspended body is never
+    `:completed?`. The engine holds a suspended body's continuations in
+    context state, but nothing holds the Spin OBJECT except the user's
+    local binding, which HotSpot liveness can drop mid-`@deref`-park or
+    after last source-level use (the dvergr llm-agent ask hang: ~50 %
+    under organic GC, deterministic under forced GC; also the
+    `discourse.llm-test` ~20 % flake and the `fork-ctx-reentrancy`
+    control flake — pump spins reaped between loop iterations).
+  - no observers — no other spin depends on it.
+  - no track subscriptions — a signal cont can always re-fire; such a
+    spin is reactive infrastructure.
+  - no `:external-await` conts — an external resource (Deferred /
+    Mailbox / plain-fn) holds only the wrapped closure, not the Spin;
+    conservatively treat any such cont as a pending delivery.
 
-(defn- has-live-external-await?
-  "True if `spin-id` has any `:external-await` continuation pending —
-  the body is suspended on a Deferred, Mailbox, or plain-fn external
-  resource that has not yet fired. Such a cont holds the only path
-  back to the body's continuation; reaping it silently drops the
-  eventual delivery.
+  Lingering FIRED once-conts / reactive conts on a completed spin do NOT
+  block reaping (they linger until the generation sweep by design;
+  counting them would leak every completed parallel/awaiter — see
+  seq.leak-test and spin.gc-test's cascade).
 
-  Necessary because the `Spin` Java object holds no strong reference
-  on its own continuations once the body suspends — only the user's
-  local binding does. A fire-and-forget `(spawn! (spin … (await ext)
-  …))` keeps the Spin reachable only in the caller's lexical scope;
-  once the caller stops referencing it, the Cleaner fires
-  `try-gc-cleanup-spin!`. Without this guard the cont is reaped and
-  the eventual `ext` delivery has nowhere to resume — the body's
-  continuation (which might `deliver` to an external promise) never
-  fires. The dvergr `discourse.llm-test` flake (~20 % when many
-  spawn-and-await pairs run in one JVM) reproduces this exactly.
-
-  Spin-await conts (`[:spin/complete _]`) are NOT counted here:
-  those go through the `:spin-completion` dispatch, and the awaitee
-  Spin is held alive by the cont's `:awaited-spin` field — so the
-  awaiter/awaitee pair is reachable together, and cascade cleanup
-  reaps both safely once the user drops both. External resources
-  (Deferred / Mailbox / plain-fn) are NOT held by the cont (it only
-  holds `wrapped-resolve`), so reaping the cont severs the last path
-  back to the awaiter's body."
-  [context spin-id]
-  (boolean
-   (some (fn [[_k v]] (= :external-await (:kind v)))
-         (rtp/get-state context [:await-conts spin-id]))))
-
-(defn- has-live-spin-await?
-  "True if `spin-id` has an await continuation on a child spin that has
-  NOT yet completed — the body is suspended mid-await and the child's
-  eventual `:spin-completion` needs this spin's cont + node to resume.
-
-  This closes the AWAITER half of the GC-reap hole that
-  `has-live-external-await?` closed for external resources: `:awaited-spin`
-  keeps the CHILD reachable through the parent's cont, but nothing keeps
-  the PARENT `Spin` object reachable — only the user's local binding does.
-  A parent parked in `@deref` (HotSpot liveness can drop the reference
-  mid-park) or a fire-and-forget awaiting chain becomes Cleaner-eligible
-  while genuinely suspended; reaping it deletes the node + conts +
-  subscriptions, so the child's completion dispatches into
-  `:parent-spin-ids nil` and is silently dropped — the awaiter never
-  resumes, no error. (Manifested as the dvergr llm-agent ask hang:
-  ~50 % under normal GC, deterministic under forced GC mid-turn.)
-
-  A cont whose child has ALREADY completed is not counted — its one-shot
-  event has fired (once-conts linger until the generation sweep); counting
-  those would block legitimate cascade cleanup of completed pairs."
-  [context spin-id]
-  (boolean
-   (some (fn [[_k v]]
-           (let [[ev-kind child-id] (:event-key v)]
-             (and (= :spin/complete ev-kind)
-                  (when-let [child (rtp/get-state context [:nodes child-id])]
-                    (not (:completed? child))))))
-         (rtp/get-state context [:await-conts spin-id]))))
+  Dispatch-race safety comes from WHERE this runs, not from the
+  predicate: the GC callback only ENQUEUES a `:gc-cleanup` event, so the
+  reap executes inside the serialized drain — any `:spin-completion`
+  enqueued before it (e.g. for THIS completed spin) has already
+  dispatched, and its subscribers' resumes have run. Reaping never races
+  event dispatch by construction."
+  [context spin-id node]
+  (and (:completed? node)
+       (not (:running? node))
+       (empty? (nodes/get-observers node))
+       (empty? (rtp/get-state context [:track-subscriptions spin-id]))
+       (not-any? (fn [[_k v]] (= :external-await (:kind v)))
+                 (rtp/get-state context [:await-conts spin-id]))))
 
 (defn try-gc-cleanup-spin!
-  "Called from GC callback. Attempts full cleanup if safe, otherwise marks
-  the spin as orphaned for deferred cleanup.
+  "Called from GC callback (the JVM Cleaner / JS FinalizationRegistry):
+  the user dropped the last reference to the Spin OBJECT. Full-cleans the
+  engine node ONLY when the spin is provably inert (`gc-quiescent?` —
+  completed, not running, no observers, no conts of any kind); otherwise
+  just marks it `:orphaned? true`.
 
-  A spin is safe to fully clean when ALL of the following hold:
-  1. Its Spin object was GC'd (caller ensures this)
-  2. It has no observers (no other spins depend on it)
-  3. It has no live signal continuations (no `(track sig)` waiters
-     bound to a still-live signal)
-  4. It has no live `:external-await` continuations (no body slice
-     suspended on a Deferred / Mailbox / plain-fn external resource
-     that has not yet fired)
-
-  If any condition fails, it's marked `:orphaned? true` and a later
-  cleanup pass — triggered when the last observer or signal-cont is
-  torn down — will full-clean it.
-
-  Why (3) and (4) are essential: in both cases the cont's
-  `:resolve-fn` closes over the CPS body slice (which references
-  `spin-id`, atoms, etc.) but NOT over the `Spin` Java object
-  itself. So the Spin can become GC-eligible (the user's `let`
-  binding goes out of scope after last use) while the reactive or
-  suspended machinery is still very much alive. Without these
-  checks, the Cleaner thread fires, `full-cleanup-spin!` clears the
-  cont, and subsequent firings — signal change in (3)'s case, or
-  external-resource delivery in (4)'s case — silently no-op. Both
-  modes manifest as the awaiter never running again, with no error.
+  Policy: GC timing must NEVER decide whether live machinery is
+  destroyed. Object unreachability does not imply engine-liveness death —
+  the engine holds a suspended body's continuations in context state
+  while nothing holds the Spin object itself (HotSpot liveness can drop
+  the user's binding mid-`@deref`-park or after last use). Every past
+  attempt to enumerate 'safe' subsets here produced flaky lost-wakeup
+  hangs (the llm-test ~20 % flake, the dvergr llm-agent ~50 % ask hang,
+  the fork-ctx-reentrancy control flake) — so the reap decision is now
+  binary quiescence, and deferred reaping of completed orphans happens
+  at the generation sweep (`clear-all-await-continuations!`).
 
   Args:
     context - context record (implements PState protocol)
@@ -1525,39 +1494,29 @@
   [context spin-id]
   (let [node (rtp/get-state context [:nodes spin-id])]
     (when node ;; may already be cleaned
-      (let [has-observers? (seq (nodes/get-observers node))
-            live-signal-cont? (has-live-signal-cont? context spin-id)
-            live-external-await? (has-live-external-await? context spin-id)
-            live-spin-await? (has-live-spin-await? context spin-id)]
-        (cond
-          (or has-observers? live-signal-cont? live-external-await? live-spin-await?)
-          ;; Has observers, live signal continuations, or live external
-          ;; awaits → mark orphaned and defer cleanup. The Cleaner has
-          ;; run, so the Spin object itself is unreachable, but the
-          ;; runtime still needs this spin's state to fire reactive
-          ;; updates or resume from a pending external delivery.
-          (rtp/swap-state! context [:nodes spin-id]
-                           #(when % (assoc % :orphaned? true)))
-
-          :else
-          ;; No observers, no live signal continuations, no pending
-          ;; external awaits → safe to fully clean up + cascade to
-          ;; dependencies. Stale spin-completion conts (awaits of
-          ;; since-cleaned parents) are cleaned away by
-          ;; `full-cleanup-spin!`.
-          (let [deps (nodes/get-deps node)
-                dep-spin-ids (:spins deps #{})]
-            (full-cleanup-spin! context spin-id)
-            ;; Cascade: check if any spin dependency is now cleanable
-            (doseq [dep-id dep-spin-ids]
-              (let [dep-node (rtp/get-state context [:nodes dep-id])]
-                (when (and dep-node
-                           (:orphaned? dep-node)
-                           (empty? (nodes/get-observers dep-node))
-                           (not (has-live-signal-cont? context dep-id))
-                           (not (has-live-external-await? context dep-id))
-                           (not (has-live-spin-await? context dep-id)))
-                  (full-cleanup-spin! context dep-id))))))))))
+      (if (gc-quiescent? context spin-id node)
+        ;; Provably quiescent → safe to fully clean up + cascade to
+        ;; dependencies. Stale spin-completion conts (awaits of
+        ;; since-cleaned parents) are cleaned away by
+        ;; `full-cleanup-spin!`.
+        (let [deps (nodes/get-deps node)
+              dep-spin-ids (:spins deps #{})]
+          (full-cleanup-spin! context spin-id)
+          ;; Cascade: check if any spin dependency is now cleanable
+          (doseq [dep-id dep-spin-ids]
+            (let [dep-node (rtp/get-state context [:nodes dep-id])]
+              (when (and dep-node
+                         (:orphaned? dep-node)
+                         (gc-quiescent? context dep-id dep-node))
+                (full-cleanup-spin! context dep-id)))))
+        ;; NOT provably quiescent → only mark orphaned; deferred reaping
+        ;; happens from engine-quiescent state (the generation sweep in
+        ;; `clear-all-await-continuations!` full-cleans completed orphans
+        ;; once their conts are cleared). GC timing must NEVER decide
+        ;; whether live machinery is destroyed — that policy is what
+        ;; made hangs flaky (reap races body execution / event dispatch).
+        (rtp/swap-state! context [:nodes spin-id]
+                         #(when % (assoc % :orphaned? true)))))))
 
 (defn track-signal-dep!
   "Track that a spin depends on a signal — eagerly registers the spin
@@ -1859,13 +1818,17 @@
                                   rt-state
                                   await-conts)))
               ;; Deferred reap: a spin whose Cleaner fired while it was
-              ;; suspended on a spin-await was ORPHANED (not full-cleaned —
-              ;; see has-live-spin-await? / try-gc-cleanup-spin!). Now that
-              ;; it has completed and its ephemeral conts are cleared, this
+              ;; still live was ORPHANED (not full-cleaned — see
+              ;; gc-quiescent? / try-gc-cleanup-spin!). Now that it has
+              ;; completed and its ephemeral conts are cleared, this
               ;; generation boundary is the natural point to drop the node
-              ;; for real — otherwise completed orphans accumulate.
-              (when (:orphaned? (rtp/get-state context [:nodes spin-id]))
-                (full-cleanup-spin! context spin-id)))))))
+              ;; for real — otherwise completed orphans accumulate. Same
+              ;; quiescence predicate as the GC path: reap ONLY provably
+              ;; inert state.
+              (let [node' (rtp/get-state context [:nodes spin-id])]
+                (when (and (:orphaned? node')
+                           (gc-quiescent? context spin-id node'))
+                  (full-cleanup-spin! context spin-id))))))))
 
     ;; Spin observers (parent set) live on `:nodes[child-id]:observers`;
     ;; there is no separate `:await-dependents` index any longer.

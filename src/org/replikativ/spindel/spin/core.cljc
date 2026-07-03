@@ -115,11 +115,13 @@
             (if-let [cleanup-fn (.-cleanup_fn ^js held-value)]
               ;; Generic cleanup callback (from register-cleanup!)
               (cleanup-fn)
-              ;; Spin-specific cleanup via WeakRef to context
+              ;; Spin-specific cleanup via WeakRef to context. ENQUEUE the
+              ;; reap (same as the JVM Cleaner path) so it serializes with
+              ;; the drain instead of racing event dispatch.
               (let [spin-id (.-spin_id ^js held-value)
                     weak-ctx (.-weak_ctx ^js held-value)]
                 (when-let [ctx (and weak-ctx (.deref weak-ctx))]
-                  (simple/try-gc-cleanup-spin! ctx spin-id))))
+                  (rtp/enqueue! ctx {:type :gc-cleanup :id spin-id}))))
             (catch :default _
               ;; Silently ignore errors during GC cleanup
               nil)))))))
@@ -493,7 +495,13 @@
                        (run [_]
                          (try
                            (when-let [c (.get weak-ctx)]
-                             (simple/try-gc-cleanup-spin! c sid))
+                             ;; ENQUEUE the reap instead of mutating engine
+                             ;; state from the Cleaner thread — the drain
+                             ;; serializes it against event dispatch, so
+                             ;; cleanup can never race a :spin-completion
+                             ;; (see :gc-cleanup in process-event! +
+                             ;; gc-quiescent? in engine/impl/simple.cljc).
+                             (rtp/enqueue! c {:type :gc-cleanup :id sid}))
                            (catch Exception _
                              ;; Silently ignore errors during GC cleanup
                              nil))))))
