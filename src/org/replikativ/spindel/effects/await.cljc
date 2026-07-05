@@ -283,18 +283,34 @@
               child-ctx (if (seq spin-scope)
                           (update ctx :bindings merge spin-scope)
                           ctx)
+              ;; Body re-entry prologue — the FULL parity with `Spin`'s
+              ;; `-invoke` Case 2. The slow path runs the child by calling
+              ;; `.-spin-fn` directly (to inject child-resolve/child-reject),
+              ;; which bypasses `-invoke` and therefore its entire prologue.
+              ;;
+              ;; `clear-prior-body-conts!` is the load-bearing call: without
+              ;; it, every slow-path re-run APPENDS a fresh generation of
+              ;; track conts on top of the prior body's (track conts have no
+              ;; deterministic id — they gensym). Dispatch resumes the
+              ;; earliest cont by :order, i.e. always the STALE one, which
+              ;; then truncates the live body's conts and re-renders with its
+              ;; frozen lexical bindings onto the same element addresses —
+              ;; the zombie-repaint bug (simmis: opening a tab then firing
+              ;; any column-tracked signal reverted the column to its
+              ;; pre-tab-open DOM). Same-body re-entry through `-invoke` was
+              ;; fixed by clear-prior-body-conts! (dc96ab9); this is the
+              ;; missing await-slow-path wiring of that fix.
+              _ (simple/mark-running! ctx awaited-spin-id)
+              _ (simple/clear-created-spins! ctx awaited-spin-id)
+              _ (simple/clear-prior-body-conts! ctx awaited-spin-id)
               ;; Seed the child's per-spin chain-head slot before invoking
-              ;; its body — exactly what `Spin`'s `-invoke` Case 2 does.
-              ;; The slow path runs the child by calling `.-spin-fn`
-              ;; directly (to inject child-resolve/child-reject), which
-              ;; bypasses `-invoke` and therefore its chain-head seeding.
-              ;; Without this, the child body inherits the PARENT's
-              ;; chain-head, so the child's vnode addresses depend on
-              ;; where the `(await …)` sits in the parent's body — and
-              ;; shift whenever the parent re-runs from a different
-              ;; track continuation. Unstable addresses break the
-              ;; discharge's by-address element lookup (DISCH-NOTFOUND
-              ;; for the whole re-rendered subtree).
+              ;; its body. Without this, the child body inherits the
+              ;; PARENT's chain-head, so the child's vnode addresses depend
+              ;; on where the `(await …)` sits in the parent's body — and
+              ;; shift whenever the parent re-runs from a different track
+              ;; continuation. Unstable addresses break the discharge's
+              ;; by-address element lookup (DISCH-NOTFOUND for the whole
+              ;; re-rendered subtree).
               _ (addressing/seed-body-chain-head! ctx awaited-spin-id)
               _raw-result (binding [ec/*execution-context* child-ctx
                                     ec/*spin-id* awaited-spin-id
