@@ -265,7 +265,21 @@
       The render-fn may return a vnode or a spin. When it returns a
       spin, ifor-each's outer return is a spin (awaiting all child
       spins). When it returns a plain vnode, the outer return is a
-      KeyedFragment."
+      KeyedFragment.
+
+      MEMOIZATION CONTRACT: per-key renders are memoized on ITEM
+      equality (plain-element vnodes only; spin-returning render-fns
+      are never memoized). If an item is `=` to its previous value, the
+      cached vnode is reused and render-fn is NOT called — closure
+      variables captured by render-fn (a selected id, a lookup map) are
+      invisible to the diff. Anything that must trigger a re-render has
+      to be part of the item itself:
+
+        ;; WRONG — selected-id changes never re-render old items:
+        (ifor-each :id items #(row % (= (:id %) selected-id)))
+        ;; RIGHT — encode it in the item:
+        (ifor-each :id (mapv #(assoc % :selected? (= (:id %) selected-id)) items)
+          #(row % (:selected? %)))"
      [key-fn items render-fn]
      (let [source-loc {:file *file*
                        :line (:line (meta &form))

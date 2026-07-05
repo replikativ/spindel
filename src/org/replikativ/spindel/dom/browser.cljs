@@ -68,6 +68,17 @@
         (= attr-name :class)
         (.setAttribute el "class" value-str)
 
+        ;; Handle style maps: {:height "227px" :max-width "50%"} →
+        ;; "height: 227px; max-width: 50%". Without this branch a map
+        ;; falls through to :else and setAttribute receives the EDN
+        ;; string, which the browser silently rejects — :style maps
+        ;; never render. String styles pass through :else unchanged.
+        (and (= attr-name :style) (map? attr-value))
+        (.setAttribute el "style"
+                       (->> attr-value
+                            (map (fn [[k v]] (str (name k) ": " v)))
+                            (str/join "; ")))
+
         ;; Handle innerHTML (raw HTML injection — use with trusted content only)
         (= attr-name :innerHTML)
         (set! (.-innerHTML el) attr-value)
