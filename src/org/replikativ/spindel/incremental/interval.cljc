@@ -179,9 +179,14 @@
    typed_combinators.cljc (`izip*`, `iflat-map*`). They satisfy
    `PInterval` via the map extension below — so consumers reading via
    `get-new` / `get-old` / `get-deltas` work uniformly across the
-   legacy `Interval` deftype and the new typed maps."
+   legacy `Interval` deftype and the new typed maps.
+
+   Records are excluded: typed-interval maps are plain maps, and
+   records may not implement `-contains-key?` (datahike's CLJS AsOfDB
+   throws on it — probing a record here rejected the consuming spin and
+   froze the UI at the last resolved frame)."
   [x]
-  (and (map? x) (contains? x :algebra)))
+  (and (map? x) (not (record? x)) (contains? x :algebra)))
 
 (defn no-change?
   "True when this interval explicitly reports 'nothing changed'.
@@ -252,8 +257,9 @@
 
     ;; Typed-interval map produced by the new combinators — already
     ;; satisfies PInterval via the IPersistentMap extension. Pass
-    ;; through unchanged.
-    (and (map? x) (contains? x :algebra))
+    ;; through unchanged. (Record guard lives in the predicate — see
+    ;; typed-interval-map?.)
+    (typed-interval-map? x)
     x
 
     ;; Deltaable collection - extract its deltas
