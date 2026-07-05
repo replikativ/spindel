@@ -91,6 +91,15 @@ regardless of how `await`s are grouped in source. **Holds (structural).**
 (`spin/core.cljc:345-381`, `:524-546`), which caches the error and
 marks observers dirty so they rediscover it. **Holds.**
 
+*Rendering consequence.* Because errors short-circuit every ancestor
+bind, a single body exception rejects the whole chain up to the root
+render effect, which produces **no vdom** — the UI freezes at the last
+resolved frame with one `:render/error` log line. Semantically correct,
+observationally near-silent (the simmis AsOfDB episode: a `contains?`
+probe threw inside the page-editor body and the app appeared to ignore
+all updates). Dev builds now surface this visibly
+(`dom/render.cljc::show-render-error-overlay!`).
+
 **Status: Holds (structural).** Not mechanized; CPS construction
 guarantees the monad laws the way any CPS encoding of a monad does.
 
@@ -439,15 +448,33 @@ behaviors are not a 4-tuple of caller-supplied flags.
 ```mermaid
 stateDiagram-v2
     [*] --> Registered: make-spin (3-arity) → register-spin! :computation
-    Registered --> Running: (spin r e) invoke Case 2 / :spin-execution
+    Registered --> Running: (spin r e) invoke Case 2 / :spin-execution / await slow path
     Running --> Completed: outer resolve → cache-result! (:clean, completed?, running?=false)
     Running --> Suspended: body returns the incomplete sentinel (await/track)
     Suspended --> Running: resume-body! (cont fires)
     Completed --> Dirty: dependency changed → mark-dirty! / cache-result! cascade
     Completed --> Completed: re-register with identical? captures (B-gate no-op)
-    Dirty --> Running: re-run (track resume / :spin-execution / B-gate re-register)
+    Dirty --> Running: re-run (track resume / :spin-execution / B-gate re-register / await slow path)
     Completed --> [*]: GC + no observers + no live signal cont → full-cleanup-spin!
 ```
+
+**Body-entry prologue invariant.** Every `Registered/Dirty → Running`
+transition that invokes the cps-fn from scratch MUST run the shared
+prologue `simple/enter-body!` (mark-running!, clear-created-spins!,
+clear-prior-body-conts!, seed-body-chain-head!; rebuild paths use the
+`:rebuild?` variant that leaves run-state untouched). The prologue
+maintains the invariant the dispatch rules silently assume: **at most
+one body-generation of continuations exists per spin.** Earliest-cont
+selection (§2.4 T2) and `truncate-stale-conts!` (§3.4) are sound only
+under it — a surviving earlier-generation cont always wins dispatch,
+and resuming it truncates the *live* body's conts and re-runs a frozen
+lexical closure (the zombie-repaint bug). The enumeration of body-entry
+sites is normative: `Spin -invoke` Case 2, `await-spin`'s slow path
+(the one entry that calls `.-spin-fn` directly — it bypassed the
+prologue until 71d5801), the `-invoke` rebuild branch, and `deref-spin`'s
+JVM rebuild path; `:spin-execution` events route through `-invoke`.
+Any NEW direct body invocation must call `enter-body!` — see its
+docstring's call-site list.
 
 ### 2.6 Resource-spin lifecycle
 

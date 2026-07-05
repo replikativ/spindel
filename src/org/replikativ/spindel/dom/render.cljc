@@ -176,6 +176,36 @@
 ;; Integration with Spin System
 ;; =============================================================================
 
+#?(:cljs
+   (defn- clear-render-error-overlay! [container]
+     (when-let [el (.querySelector container "[data-spindel-render-error]")]
+       (.remove el))))
+
+#?(:cljs
+   (defn- show-render-error-overlay!
+     "Dev-only (goog.DEBUG) visible surface for a REJECTED render spin.
+      Without it, a body exception cascades monadically to the root and
+      the UI freezes at the last resolved frame with a single log line —
+      practically invisible. Updated in place on repeated rejects;
+      removed on the next successful resolve."
+     [container spin-id error]
+     (when ^boolean js/goog.DEBUG
+       (let [existing (.querySelector container "[data-spindel-render-error]")
+             el (or existing (.createElement js/document "div"))
+             msg (str (or (some-> error .-message) error))
+             stack (or (some-> error .-stack) "")]
+         (set! (.-cssText (.-style el))
+               (str "position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;"
+                    "background:#3b0d0d;color:#ffb4b4;border:1px solid #a33;"
+                    "border-radius:6px;padding:10px 14px;font:12px/1.5 monospace;"
+                    "max-height:40vh;overflow:auto;white-space:pre-wrap;"))
+         (.setAttribute el "data-spindel-render-error" "true")
+         (set! (.-textContent el)
+               (str "spindel render REJECTED — UI frozen at last resolved frame\n"
+                    "spin: " spin-id "\n" msg
+                    (when (seq stack) (str "\n\n" stack))))
+         (when-not existing (.appendChild container el))))))
+
 (defn render-spin!
   "Execute a spin and render its vdom result.
 
@@ -211,10 +241,15 @@
       ;; resolve callback
      (fn [vdom]
        (log/trace :render/vdom-received {:spin-id spin-id :has-vdom (some? vdom)})
+       #?(:cljs (clear-render-error-overlay! container))
        (render-effect vdom))
-      ;; reject callback
+      ;; reject callback — a rejected render produces NO vdom: the whole
+      ;; tree silently freezes at the last resolved frame (correct Result-
+      ;; monad semantics, terrible observability — the sharp-edges 'silent
+      ;; wrong behavior' pattern). In dev builds, surface it visibly.
      (fn [error]
-       (log/error :render/error {:spin-id spin-id :error error})))
+       (log/error :render/error {:spin-id spin-id :error error})
+       #?(:cljs (show-render-error-overlay! container spin-id error))))
 
     ;; Return control map
     {:spin-id spin-id

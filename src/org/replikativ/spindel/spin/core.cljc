@@ -173,10 +173,12 @@
          (and cached (ec/spin-result-clean? spin-id) rebuild-mode?)
          (do
            (log/debug :deref/rebuild-mode {:spin-id spin-id})
-           ;; Seed the per-spin chain-head slot before invoking spin-fn.
-           ;; See addressing.cljc — the cursor lives in ctx state, not a
-           ;; dynamic var, so it follows fork/snapshot semantics.
-           (addressing/seed-body-chain-head! runtime spin-id)
+           ;; Body re-entry prologue, rebuild variant (conts cleared +
+           ;; chain-head seeded; run-state untouched). Same scenario as
+           ;; -invoke's rebuild branch reached via deref — previously only
+           ;; seeded the chain-head, leaving stale :await-once conts from
+           ;; the original run alive. See simple/enter-body!.
+           (simple/enter-body! runtime spin-id {:rebuild? true})
            (binding [ec/*execution-context* runtime
                      ec/*spin-id* spin-id]
              (spin-fn (fn [_] nil) (fn [_] nil)))
@@ -239,14 +241,13 @@
             ;; Execute spin body for side effects (nested spin creation, continuation registration).
             ;; Fresh per-spin chain-head slot = nested spin minting reproduces the same id
             ;; sequence as the original run (rebuild's whole purpose).
-            ;; Drop the prior body's ephemeral await conts: in rebuild mode
-            ;; await-spin resolves synchronously and does NOT overwrite the
-            ;; cont, so without this an :await-once cont from the original
-            ;; run survives, fires on the next :spin-completion, and
-            ;; re-invokes the prior body's CPS chain (which closes over
-            ;; prior-run Spin instances). See clear-ephemeral-await-conts!.
-          (simple/clear-prior-body-conts! runtime spin-id)
-          (addressing/seed-body-chain-head! runtime spin-id)
+            ;; Body re-entry prologue, rebuild variant: conts cleared +
+            ;; chain-head seeded, but run-state untouched (cached result is
+            ;; reused; body runs for side effects only). Without the cont
+            ;; clear, an :await-once cont from the original run survives,
+            ;; fires on the next :spin-completion, and re-invokes the prior
+            ;; body's CPS chain. See simple/enter-body!.
+          (simple/enter-body! runtime spin-id {:rebuild? true})
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id]
               ;; Execute with dummy callbacks - we'll use cached value anyway
@@ -294,33 +295,13 @@
 
           (log/debug :spin/start {:spin-id spin-id})
 
-            ;; Mark in-flight. With the unified-queue design, :running? denotes
-            ;; "body invocation has begun but has not yet resolved" — covering
-            ;; both actively-executing slices and suspensions on async resources
-            ;; (Deferred, Mailbox, executor tasks). It is cleared only when
-            ;; cache-result! fires (body resolved). This lets `running?` /
-            ;; `await-drain-complete` / `deref` correctly detect in-flight work
-            ;; without requiring a special Phase 2 wait.
-          (simple/mark-running! runtime spin-id)
+            ;; THE body re-entry prologue (mark-running! +
+            ;; clear-created-spins! + clear-prior-body-conts! +
+            ;; seed-body-chain-head!) — shared with the await slow path
+            ;; via simple/enter-body! so the contract cannot drift; see
+            ;; its docstring for the invariant it maintains.
+          (simple/enter-body! runtime spin-id)
           (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
-
-            ;; Reset :created-spins for this body run; children are re-registered
-            ;; as the body runs, and register-spin! re-runs any whose captured
-            ;; environment changed (B) — no blanket invalidation needed.
-          (simple/clear-created-spins! runtime spin-id)
-
-            ;; Drop the prior body's ephemeral await conts at the same time.
-            ;; The new body run will register fresh conts at each (await …)
-            ;; via the slow path (deterministic cont-id would overwrite
-            ;; anyway in normal mode); clearing here keeps the rebuild path
-            ;; correct too (where the sync rebuild branch doesn't register).
-            ;; Persistent :await-reactive conts (parallel/race) are kept.
-          (simple/clear-prior-body-conts! runtime spin-id)
-
-            ;; Seed this body slice's per-spin chain-head slot with
-            ;; `body-start-chain-head spin-id` before invoking spin-fn —
-            ;; see addressing.cljc.
-          (addressing/seed-body-chain-head! runtime spin-id)
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id]
             (let [result (spin-fn

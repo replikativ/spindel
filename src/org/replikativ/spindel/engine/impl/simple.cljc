@@ -2052,6 +2052,35 @@
                        (nodes/->spin-node nil :clean false true #{} {} nil #{}))))
   true)
 
+(defn ^:no-doc enter-body!
+  "THE body (re-)entry prologue. Every path that invokes a spin's cps-fn
+  from scratch MUST run this first — the engine's dispatch and
+  truncation rules are sound only under the invariant that AT MOST ONE
+  body-generation of continuations exists per spin (earliest-cont
+  selection + truncate-stale-conts! both assume it; a stale earlier
+  generation wins dispatch and truncates the live body — the
+  zombie-repaint bug, fixed for the await slow path in 71d5801).
+
+  Call sites (keep this list exhaustive):
+  - `Spin` `-invoke` Case 2 (cache miss / dirty)     — full prologue
+  - `await-spin`'s slow path (dirty child under await) — full prologue
+  - `Spin` `-invoke` rebuild branch                   — `:rebuild? true`
+  - `deref-spin`'s JVM rebuild path                   — `:rebuild? true`
+  - (`:spin-execution` events route through `-invoke` — covered.)
+
+  `:rebuild? true` skips mark-running!/clear-created-spins!: rebuild
+  re-executes the body for side effects only (nested spin re-minting,
+  cont re-registration) and reuses the cached result, so node run-state
+  must not be touched."
+  ([context spin-id] (enter-body! context spin-id nil))
+  ([context spin-id {:keys [rebuild?]}]
+   (when-not rebuild?
+     (mark-running! context spin-id)
+     (clear-created-spins! context spin-id))
+   (clear-prior-body-conts! context spin-id)
+   (addressing/seed-body-chain-head! context spin-id)
+   true))
+
 (defn ^:no-doc try-claim-execution!
   "Atomically try to claim execution of a spin.
 
