@@ -45,6 +45,28 @@
 ;; Render Cycle
 ;; =============================================================================
 
+(defn ^:no-doc root-identity-changed?
+  "True when the mounted root and the new root are not the same DOM node.
+
+  Deltas are discharged against DOM elements bound by `:addr`, and the mounted
+  root is the one node no parent slot can address. When a spin's body returns a
+  different root element — a conditional at the TOP of a spin, e.g.
+  `(if loading? (el/div …) (el/div …))` — the new root's addr has no element
+  bound to it, so every delta beneath it targets a node that was never created
+  and the whole render silently vanishes. Detect that and re-mount.
+
+  Only element vnodes carry an `:addr`. Compare addrs when both have them,
+  otherwise fall back to `:tag` so element↔text transitions also re-mount. A
+  first render (no `current-vdom`) is not a change — `initial-mount!` owns it."
+  [current-vdom new-vdom]
+  (boolean
+   (when (and current-vdom new-vdom)
+     (let [ca (:addr current-vdom)
+           na (:addr new-vdom)]
+       (if (and ca na)
+         (not= ca na)
+         (not= (:tag current-vdom) (:tag new-vdom)))))))
+
 (defn initial-mount!
   "Perform initial mount of vdom to container."
   [render-state vdom]
@@ -84,8 +106,34 @@
   DOM refs are stored by stable address (:addr on vnodes), so no transfer
   is needed between old and new vdom objects."
   [render-state new-vdom]
-  (let [{:keys [discharge]} render-state]
-    (if new-vdom
+  (let [{:keys [container discharge current-vdom]} render-state]
+    (cond
+      ;; No new vdom. The root spin produced nothing this cycle: keep the last
+      ;; frame rather than tearing the app down. A root that legitimately wants
+      ;; to render nothing should return an empty element, not nil.
+      (nil? new-vdom) render-state
+
+      ;; The root element itself changed. Tear the old tree down properly, then
+      ;; mount the new one — all inside ONE eviction pass, so that an address
+      ;; the new tree re-claims (A→B→A) is spared by `(pending - live)`.
+      (root-identity-changed? current-vdom new-vdom)
+      (do
+        (log/debug :render/root-replace {:old (:addr current-vdom)
+                                         :new (:addr new-vdom)})
+        (binding [disch/*rendered-vnodes* (atom #{})
+                  disch/*rendered-addrs* (atom {})
+                  disch/*pending-evictions* (atom #{})]
+          ;; Refs get their nil call and caches are SCHEDULED (not yet dropped):
+          ;; foreign nodes (TipTap et al.) rely on this to release resources.
+          (disch/call-refs-on-unmount! current-vdom)
+          (let [root-el (disch/render-initial! discharge new-vdom)]
+            (when container
+              (set! (.-innerHTML container) "")
+              (when root-el (.appendChild container root-el))))
+          (disch/flush-pending-evictions! discharge))
+        (assoc render-state :current-vdom (disch/clear-deltas-deep new-vdom)))
+
+      :else
       (do
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
@@ -102,10 +150,7 @@
         ;; Clear deltas for next render cycle
         ;; No ref transfer needed — cleared vnodes carry same :addr values
         (let [cleared-vdom (disch/clear-deltas-deep new-vdom)]
-          (assoc render-state :current-vdom cleared-vdom)))
-
-      ;; No new vdom
-      render-state)))
+          (assoc render-state :current-vdom cleared-vdom))))))
 
 ;; =============================================================================
 ;; Render! API

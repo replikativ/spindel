@@ -126,8 +126,11 @@
           cleared))
 
       (frag/keyed-fragment? vnode)
-      (frag/keyed-fragment (mapv clear-stale-deltas (frag/fragment-items vnode))
-                           nil)
+      ;; Preserve `:addr` — it is what lets `call-refs-on-unmount!` evict the
+      ;; keyed cache at this ifor-each's call site.
+      (assoc (frag/keyed-fragment (mapv clear-stale-deltas (frag/fragment-items vnode))
+                                  nil)
+             :addr (:addr vnode))
 
       :else vnode)))
 
@@ -188,7 +191,14 @@
                                :items-by-key items-by-key
                                :order order
                                :was-sync? was-sync?})
-    (frag/keyed-fragment items deltas)))
+    ;; Stamp the ifor-each call-site address onto the fragment. The keyed cache
+    ;; lives at `[:dom/keyed-cache my-addr]`, and `my-addr` appears on NO vnode:
+    ;; items carry `keyed-child-address(my-addr, k)`. Without this stamp
+    ;; `call-refs-on-unmount!` walks the items and never learns the address that
+    ;; holds `:by-key` (every rendered vnode, with its event-handler closures)
+    ;; and `:items-by-key` — so unmounting a subtree containing an ifor-each
+    ;; retained the whole rendered list for the lifetime of the context.
+    (assoc (frag/keyed-fragment items deltas) :addr my-addr)))
 
 ;; =============================================================================
 ;; for-each*

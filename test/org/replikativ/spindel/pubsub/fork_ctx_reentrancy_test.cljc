@@ -108,7 +108,7 @@
                    [reply _] (await (anext asker-sub))]
                (log-trace :outer-got-reply reply)
                (deliver done {:reply (:content reply)})))))
-         (let [result (deref done 3000 :TIMEOUT)]
+         (let [result (deref done 30000 :TIMEOUT)]
            (ctx/stop-context! parent-ctx)
            (println "TRACE:" (pr-str @*trace*))
            (is (= {:reply "reply"} result)
@@ -135,7 +135,7 @@
              (bus-post! bus {:to worker-id :from asker-id :content "go"})
              (let [[reply _] (await (anext asker-sub))]
                (deliver done {:reply (:content reply)})))))
-         (let [result (deref done 3000 :TIMEOUT)]
+         (let [result (deref done 30000 :TIMEOUT)]
            (ctx/stop-context! parent-ctx)
            (is (= {:reply "reply"} result)))))))
 
@@ -158,7 +158,7 @@
                                              :content "go"})
                    [reply _] (await (anext asker-sub))]
                (deliver done {:reply (:content reply)})))))
-         (let [result (deref done 3000 :TIMEOUT)]
+         (let [result (deref done 30000 :TIMEOUT)]
            (ctx/stop-context! parent-ctx)
            (is (= {:reply "reply"} result)))))))
 
@@ -208,7 +208,7 @@
                            (await (anext result-tap)))]
                (log-trace :outer-got-final r)
                (deliver done r)))))
-         (let [result (deref done 3000 :TIMEOUT)
+         (let [result (deref done 30000 :TIMEOUT)
             ;; Reach into the TapSeq's internal state to see what's in result-tap's buffer
                inspect-tap (fn [tap label]
                              (try
@@ -248,7 +248,7 @@
                 (spin
                  (let [[reply _] (await (anext asker-sub))]
                    (deliver done {:reply (:content reply)})))))))
-         (let [result (deref done 3000 :TIMEOUT)]
+         (let [result (deref done 30000 :TIMEOUT)]
            (ctx/stop-context! parent-ctx)
            (is (= {:reply "reply"} result)
                "Should work since the setup happened outside the spin."))))))

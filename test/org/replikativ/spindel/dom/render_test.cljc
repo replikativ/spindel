@@ -84,16 +84,22 @@
 (deftest test-update-render-no-deltas
   (testing "Update render with same attrs does minimal work"
     (let [{:keys [discharge log]} (disch/make-mock-discharge)
-          v1 (el/div {:class "same"})
+          ;; Build BOTH roots from ONE call site. Identity is the address, and an
+          ;; address embeds the source location: two `el/div` forms on different
+          ;; lines are two different elements, and re-rendering "the same" root
+          ;; from a second call site is a genuine root swap (which now re-mounts).
+          ;; A real spin re-run rebuilds its root at the same call site with a
+          ;; reseeded chain, so its address is stable — that is what this models.
+          mk (fn [] (el/div {:class "same"}))
+          v1 (mk)
           container nil
           state (render/->RenderState container discharge nil false)
           mounted (render/initial-mount! state v1)
           _ (reset! log [])
-          v2 (el/div {:class "same"})
+          v2 (mk)
           _updated (render/update-render! mounted v2)]
-      ;; With context-aware addressing, vnodes at different source locations
-      ;; get different addresses, so transfer may re-apply attrs.
-      ;; At most one set-attr for the unchanged class.
+      (is (= (:addr v1) (:addr v2))
+          "same call site must yield a stable address across renders")
       (is (<= (count @log) 1)
           (str "Should do minimal work, got: " @log)))))
 

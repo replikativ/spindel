@@ -647,6 +647,48 @@ an arbitrary one as "the" root. Escalation to *one* root is fine when
 the await graph is a tree; for a DAG with shared awaited children the
 "root" is non-deterministic. Flagged as a latent question.
 
+### 3.9 Rendering identity (delta-direct DOM)
+
+Rendering has **no tree diff**. `build-element` reconciles each element's attrs
+and children against caches keyed by its address, attaches the resulting
+`:deltas` to the vnode, and `update-render!` discharges those deltas against the
+DOM element **bound to that address**. Two consequences follow, and both were
+violated in practice before they were stated:
+
+**R1 — Identity is the address.** `reconcile-slot` decides "did this child slot
+change?" and `discharge-vnode!` decides "which DOM node do I write to." They must
+agree, and the only thing the DOM layer binds by is `:addr`. A vnode's address is
+`content-hash[source-loc, parent-addr, slot-index]`, and a keyed element's is
+`keyed-child-address(my-addr, key)` — so **addr equality implies key equality and
+structural position, but not conversely**. `:key` on a plain element is a
+*disambiguator* for siblings at one source location, never an identity token;
+position-independent identity is `ifor-each`'s job, and its items travel through
+the `:keyed` slot type. Letting `:key` override `:addr` in reconciliation makes
+the parent declare a child "unchanged" while the child's deltas address a node
+that was never created: the update vanishes with no error. (Regression:
+`dom/branch_flip_test.clj`.)
+
+**R2 — The root is unaddressable from above.** Every node except the mounted root
+is reachable through some parent's slot reconciliation. The root has no parent, so
+a spin whose body returns a *different* root element (a conditional at the top of
+the spin) cannot be updated by deltas at all — the new root's address has no bound
+element. `update-render!` detects a changed root identity and re-mounts, running
+the full teardown protocol first (`call-refs-on-unmount!` → `render-initial!` →
+`flush-pending-evictions!`) so foreign nodes release resources and dead caches are
+evicted, while addresses the new tree re-claims are spared by `(pending − live)`.
+
+**Corollary (unmount completeness).** Every address the render path writes must be
+reachable from the teardown walk. `flatten-slot` splices a `:keyed` slot's items
+into `:children` and drops the `KeyedFragment` itself, so the `ifor-each` call-site
+address — which holds `:by-key`, i.e. every rendered vnode and its handler closures
+— is on no vnode. `evict-cache!` therefore cascades through the evictee's slot
+cache into its keyed slots. Without that cascade, unmounting any subtree containing
+an `ifor-each` leaked the entire rendered list for the lifetime of the context.
+
+Because a changed root re-mounts (and thus loses DOM state), **keep a spin's root
+element structurally stable** and branch *inside* it. This is the loading-state
+idiom: one container with a stable key, `cond`/`if` on the content within.
+
 ### Invariant summary table
 
 | composition          | glitch-free | no double-exec | no stale-cache | no orphan cont | deterministic id |

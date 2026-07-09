@@ -12,7 +12,8 @@
   - :nil    - Slot is empty (conditional returned nil)
   - :single - Slot contains one vnode
   - :keyed  - Slot contains KeyedFragment (from ifor-each)"
-  (:require [org.replikativ.spindel.engine.core :as ec]
+  (:require [clojure.set]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.dom.core :as core]))
 
 ;; Forward declaration for KeyedFragment check
@@ -93,9 +94,22 @@
   - `:dom/cache`       — slot cache
   - `:dom/attr-cache`  — attribute cache
   - `:dom/keyed-cache` — `ifor-each` per-call-site keyed cache
-  - `:dom/foreign`     — foreign-node marker"
+  - `:dom/foreign`     — foreign-node marker
+
+  Cascades into `ifor-each` keyed caches held by this element's slots. A
+  `:keyed` slot stores a `KeyedFragment` whose `:addr` is the ifor-each CALL
+  SITE — an address that appears on no vnode, because `flatten-slot` splices
+  the fragment's items into `:children` and drops the fragment itself. Walking
+  the vnode tree therefore cannot reach it. Without this cascade, unmounting a
+  subtree containing an `ifor-each` retained `:by-key` (every rendered vnode,
+  with its event-handler closures) for the lifetime of the context — the
+  dominant leak in a long-lived session."
   [addr]
   (when addr
+    (doseq [slot (ec/get-state [:dom/cache addr])
+            :when (= :keyed (:type slot))]
+      (when-let [frag-addr (:addr (:value slot))]
+        (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m frag-addr)))))
     (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
     (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
     (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
@@ -189,7 +203,7 @@
 
       ;; single → single: update if changed
       ;; Compare vnodes semantically:
-      ;; - For element vnodes: same tag + same identity (via :key)
+      ;; - For element vnodes: same tag + same ADDRESS (see below)
       ;;   When unchanged, the child handles its own deltas via discharge-vnode!
       ;; - For text nodes: compare content directly
       ;; - Otherwise: use reference equality
@@ -200,29 +214,41 @@
               (and (core/text-node? prev-value) (core/text-node? new-result))
               (= (:content prev-value) (:content new-result))
 
-              ;; Both are element vnodes - check tag and key for identity
-              ;; The child element handles its own deltas via discharge-vnode!
+              ;; Both are element vnodes. Identity IS the address, because that
+              ;; is what `discharge-vnode!` binds DOM elements by. A keyed
+              ;; element's addr already embeds its key
+              ;; (`keyed-child-address(my-addr, key)`), so addr equality implies
+              ;; key equality AND structural position.
+              ;;
+              ;; Comparing keys alone (the old rule) declared a child
+              ;; "unchanged" whenever the key matched, emitting no delta on the
+              ;; assumption below. That assumption holds only if the child's
+              ;; addr is stable — and it is not: two branches of an `if` are
+              ;; distinct source locations, hence distinct addrs. The child's
+              ;; deltas then targeted an addr with no bound DOM element and
+              ;; vanished silently (a self-tracking child spin whose root
+              ;; branch flipped would freeze forever).
+              ;;
+              ;; `:key` on a plain element is a DISAMBIGUATOR, not an identity
+              ;; token — see `addressing/keyed-child-address`. Position-
+              ;; independent identity is `ifor-each`'s job, and its items travel
+              ;; through the `:keyed` slot type, never through here.
+              ;;
               ;; DO NOT check (:deltas new-result) - that would cause parent to
               ;; trigger :update which calls render-initial! and bypasses child deltas
               (and (core/vnode? prev-value) (core/vnode? new-result))
               (let [same-tag? (= (:tag prev-value) (:tag new-result))
-                    prev-key (:key prev-value)
-                    new-key (:key new-result)
-                    ;; Identity check:
-                    ;; - If both have explicit keys, they must match
-                    ;; - If neither has keys, compare addresses (different source = different element)
-                    ;; - If one has key and other doesn't, they're different elements
-                    same-identity? (cond
-                                     (and prev-key new-key) (= prev-key new-key)
-                                     (and (nil? prev-key) (nil? new-key))
-                                     (let [prev-addr (:addr prev-value)
-                                           new-addr (:addr new-result)]
-                                       ;; If both have addresses, they must match
-                                       ;; If either is missing addr (legacy), fall back to same
-                                       (if (and prev-addr new-addr)
-                                         (= prev-addr new-addr)
-                                         true))
-                                     :else false)]
+                    prev-addr (:addr prev-value)
+                    new-addr (:addr new-result)
+                    same-identity? (if (and prev-addr new-addr)
+                                     (= prev-addr new-addr)
+                                     ;; Legacy vnodes without addrs: fall back to
+                                     ;; the old key/no-key rule.
+                                     (let [prev-key (:key prev-value)
+                                           new-key (:key new-result)]
+                                       (if (and prev-key new-key)
+                                         (= prev-key new-key)
+                                         (and (nil? prev-key) (nil? new-key)))))]
                 (and same-tag? same-identity?))
 
               ;; Otherwise use reference equality
