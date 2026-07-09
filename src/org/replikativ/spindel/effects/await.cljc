@@ -552,14 +552,28 @@
       ;; produced (typically `incomplete` when the resolve was itself an
       ;; engine-level suspend, or the value otherwise). Forcing `incomplete`
       ;; here would short-circuit sync-resolving partial-cps async blocks.
+      ;;
+      ;; The cancel-token is bound around the invocation, exactly as in the
+      ;; Mailbox branch above. A thunk is opaque: it may itself hand our
+      ;; resolve/reject to a waiter-keeping resource. `(aseq/anext mbx)` does
+      ;; precisely that — it returns a closure that calls the Mailbox 2-arity —
+      ;; so dispatching on the thunk's type instead of its target would strand
+      ;; the waiter with `:cancel-token nil`. `post-inline!` could then no
+      ;; longer recognise a cancelled waiter, and would CONSUME the producer's
+      ;; message before handing it to a resolve that the gate turns into a
+      ;; no-op: message lost, consumer never re-armed (a permanently deaf
+      ;; mult pump). The token must accompany the INVOCATION, not the type
+      ;; dispatch. Contract: a resource registering a waiter must do so
+      ;; synchronously inside the thunk, so this dynamic binding is in scope.
       (ifn? awaitable)
-      (let [[wr wj _cancel-token]
+      (let [[wr wj cancel-token]
             (cancellable-external-pair
              spin-id resolve reject
              [::ifn #?(:clj (System/identityHashCode awaitable)
                        :cljs (or (.-name awaitable) (str awaitable)))]
              source-loc)]
-        (awaitable wr wj))
+        (binding [ec/*external-await-cancel-token* cancel-token]
+          (awaitable wr wj)))
 
       :else
       (reject (eff/type-error 'await "Spin, Deferred, or async thunk" awaitable)))
