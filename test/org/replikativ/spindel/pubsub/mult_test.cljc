@@ -331,3 +331,37 @@
            ;; Pump should have delivered all items successfully
            ;; (verifying event-based execution works correctly)
            (is (= [1 2 3] result) "Pump should deliver all items via event-based execution"))))))
+
+;; =============================================================================
+;; Regression: consumer-fault isolation in deliver! (bug-bus-source-pump-lost-waiter)
+;; =============================================================================
+
+(def ^:private make-promise* @#'mult/make-promise)
+
+(deftest deliver-isolates-watcher-faults
+  ;; A promise watcher resumes a consumer spin and runs ON THE PRODUCER (pump)
+  ;; STACK. An unguarded throw there unwinds into the pump, cancels its await
+  ;; cont, and wedges the whole room bus deaf. deliver! must isolate each watcher
+  ;; fault: report it, keep notifying the remaining watchers, never propagate.
+  (let [orig-reporter @@#'mult/fault-reporter
+        faults (atom [])]
+    (mult/set-fault-reporter! (fn [ev data] (swap! faults conj [ev data])))
+    (try
+      (let [p (make-promise*)
+            called (atom [])]
+        ;; watcher order: a throwing one FIRST, a recording one after it
+        (swap! (:state p) update :watchers conj
+               (fn [_v] (throw (ex-info "consumer boom" {}))))
+        (swap! (:state p) update :watchers conj
+               (fn [v] (swap! called conj v)))
+        (testing "deliver! returns normally — the fault does not reach the producer"
+          (is (= :val ((:deliver! p) :val))))
+        (testing "a later watcher still runs despite the earlier fault (isolation)"
+          (is (= [:val] @called)))
+        (testing "the fault is reported, not silently swallowed"
+          (is (= 1 (count @faults)))
+          (is (= ::mult/watcher-fault (ffirst @faults)))
+          (is (instance? #?(:clj Throwable :cljs js/Error)
+                         (:error (second (first @faults)))))))
+      (finally
+        (mult/set-fault-reporter! orig-reporter)))))

@@ -22,6 +22,28 @@
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
+;; Fault reporting (spindel carries no logging dep — loud by default, overridable)
+;; =============================================================================
+
+(defonce ^:private fault-reporter
+  ;; Default: stderr / console.error so a fault is never silently swallowed.
+  ;; Embedders route it into their own logging via `set-fault-reporter!`.
+  (atom (fn [event data]
+          #?(:clj  (binding [*out* *err*]
+                     (println "[spindel.mult]" event (pr-str data)))
+             :cljs (js/console.error "[spindel.mult]" (str event) (clj->js data))))))
+
+(defn set-fault-reporter!
+  "Override how mult reports isolated consumer faults (`::watcher-fault`) and
+   pump rejections (`::pump-rejected`). `f` is (fn [event-keyword data-map]).
+   Default writes to stderr / console.error. simmis routes these into Telemere."
+  [f] (reset! fault-reporter f))
+
+(defn- report-fault! [event data]
+  (try (@fault-reporter event data)
+       (catch #?(:clj Throwable :cljs :default) _ nil)))
+
+;; =============================================================================
 ;; Simple Promise for Coordination (no runtime required)
 ;; =============================================================================
 
@@ -51,9 +73,18 @@
                      (if (:delivered? s)
                        value  ;; Already delivered - no-op
                        (if (compare-and-set! state s {:delivered? true :value value :watchers []})
-                         ;; CAS succeeded - notify watchers from the state we replaced
+                         ;; CAS succeeded - notify watchers from the state we replaced.
+                         ;; Each watcher resumes a consumer spin; a watcher runs ON
+                         ;; THE PRODUCER'S STACK (the source pump), so an unguarded
+                         ;; throw there unwinds INTO the pump, cancels its await cont,
+                         ;; and wedges the whole bus (dossier: bug-bus-source-pump-
+                         ;; lost-waiter). Isolate each consumer fault: report it, keep
+                         ;; delivering to the other watchers, never propagate to the
+                         ;; producer.
                          (do (doseq [w (:watchers s)]
-                               (w value))
+                               (try (w value)
+                                    (catch #?(:clj Throwable :cljs :default) e
+                                      (report-fault! ::watcher-fault {:error e}))))
                              value)
                          ;; CAS failed (concurrent modification) - retry
                          (recur))))))
@@ -336,7 +367,18 @@
                         :spin pump
                         :execution-context context
                         :resolve-fn (fn [_] nil)
-                        :reject-fn (fn [_] nil)})
+                        ;; A pump rejection means the fan-out loop died — the mult
+                        ;; is now deaf. This was swallowed with zero logging; make
+                        ;; it loud. With consumer faults isolated (see deliver!) the
+                        ;; pump should never reject on a consumer's behalf, so any
+                        ;; rejection here is a genuine engine/source fault worth
+                        ;; surfacing (the embedder's watchdog can then rebuild the
+                        ;; bus). We do NOT auto-restart: the source position is lost
+                        ;; on reject, so a naive restart would replay from the head.
+                        :reject-fn (fn [reason]
+                                     (report-fault! ::pump-rejected
+                                                    {:reason reason
+                                                     :spin-id (spin-core/spin-id pump)}))})
     pump))
 
 (extend-type Mult
