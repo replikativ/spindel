@@ -119,24 +119,38 @@
      (testing "CONTROL: same flow but bus + worker built OUTSIDE the outer
             spin. Should pass — confirms the bug is specific to the
             inline pattern, not the topology."
+       ;; Traced like its siblings: this test timed out ONCE on CI (30s,
+       ;; main build 552) with zero diagnostics — the worker helper logs
+       ;; into *trace* but nothing reset/printed it here. If it stalls
+       ;; again, the trace shows WHERE (worker never started / worker got
+       ;; the msg but the reply never reached the asker / …).
+       (reset! *trace* [])
        (let [parent-ctx (ctx/create-execution-context)
              worker-id  :worker
              fork-ctx   (binding [ec/*execution-context* parent-ctx]
                           (ctx/fork-context parent-ctx))
+             _ (log-trace :forked)
              bus        (make-bus fork-ctx)
+             _ (log-trace :bus-made)
              _worker    (spawn-echo-worker! bus worker-id)
              asker-id   (keyword (str "ask-" (rand-int 1000000)))
              asker-sub  (binding [ec/*execution-context* fork-ctx]
                           (bus-subscribe! bus asker-id (buf/fixed-buffer 1)))
+             _ (log-trace :asker-subscribed)
              done       (promise)]
          (binding [ec/*execution-context* fork-ctx]
            (sp/spawn!
             (spin
+             (log-trace :outer-spin-start)
              (bus-post! bus {:to worker-id :from asker-id :content "go"})
+             (log-trace :posted-go)
              (let [[reply _] (await (anext asker-sub))]
+               (log-trace :outer-got-reply reply)
                (deliver done {:reply (:content reply)})))))
          (let [result (deref done 30000 :TIMEOUT)]
            (ctx/stop-context! parent-ctx)
+           (when (= result :TIMEOUT)
+             (println "CONTROL-TIMEOUT TRACE:" (pr-str @*trace*)))
            (is (= {:reply "reply"} result)))))))
 
 #?(:clj
