@@ -259,6 +259,8 @@
 
 (defonce ^:private logged-collisions (atom #{}))
 
+(defonce ^:private logged-unbound (atom #{}))
+
 (defn register-addr!
   "Register an address as claimed during this render pass.
   Logs an error the first time we see a given collision address (across the
@@ -845,6 +847,24 @@
       (when-not (or is-rendered? is-applied?)
         (let [el (get-element discharge (:addr vnode))]
           (when-not el
+            ;; A vnode that CARRIES DELTAS but whose address has no bound DOM
+            ;; element means those updates are about to be dropped on the floor.
+            ;; That is never intentional: it is the signature of reconcile and
+            ;; discharge disagreeing about identity (the parent declared the
+            ;; child unchanged, so no element was ever created at the child's
+            ;; new address). Silently skipping it froze whole subtrees with a
+            ;; single debug line. Log loudly, once per address.
+            (when (and (seq (:deltas vnode))
+                       (not (contains? @logged-unbound (:addr vnode))))
+              (swap! logged-unbound conj (:addr vnode))
+              (log/error ::deltas-dropped-unbound-addr
+                         {:addr (:addr vnode)
+                          :tag (:tag vnode)
+                          :delta-count (count (:deltas vnode))
+                          :hint (str "This vnode's updates were discarded: no DOM "
+                                     "element is bound to its address. Usually a "
+                                     "structural change the parent's reconcile "
+                                     "did not emit a delta for.")}))
             (log/debug ::element-not-found {:addr (:addr vnode) :tag (:tag vnode)
                                             :delta-count (count (:deltas vnode))}))
           (when el
@@ -966,7 +986,7 @@
                                          :el el
                                          :error (str e)})))))
 
-(defn- call-refs-on-unmount!
+(defn ^:no-doc call-refs-on-unmount!
   "Recursively call ref callbacks with nil for a vnode and its descendants,
   and schedule their per-element caches for eviction. The eviction itself
   is deferred to end-of-cycle (see `*pending-evictions*` /
@@ -980,8 +1000,18 @@
       nil  ; Text nodes have no :addr and no refs
 
       (frag/keyed-fragment? vnode)
-      (doseq [item (frag/fragment-items vnode)]
-        (call-refs-on-unmount! item))
+      (do
+        ;; The fragment's own address (the `ifor-each` call site) holds the
+        ;; keyed cache — `:by-key` (every rendered vnode + its handler closures)
+        ;; and `:items-by-key`. That address appears on no item vnode, so it
+        ;; must be scheduled explicitly or the whole rendered list leaks for the
+        ;; lifetime of the context. `for-each*` stamps it via `:addr`.
+        (when-let [addr (:addr vnode)]
+          (if *pending-evictions*
+            (swap! *pending-evictions* conj addr)
+            (cache/evict-cache! addr)))
+        (doseq [item (frag/fragment-items vnode)]
+          (call-refs-on-unmount! item)))
 
       (core/vnode? vnode)
       (do

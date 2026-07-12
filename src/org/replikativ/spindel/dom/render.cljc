@@ -45,6 +45,28 @@
 ;; Render Cycle
 ;; =============================================================================
 
+(defn ^:no-doc root-identity-changed?
+  "True when the mounted root and the new root are not the same DOM node.
+
+  Deltas are discharged against DOM elements bound by `:addr`, and the mounted
+  root is the one node no parent slot can address. When a spin's body returns a
+  different root element — a conditional at the TOP of a spin, e.g.
+  `(if loading? (el/div …) (el/div …))` — the new root's addr has no element
+  bound to it, so every delta beneath it targets a node that was never created
+  and the whole render silently vanishes. Detect that and re-mount.
+
+  Only element vnodes carry an `:addr`. Compare addrs when both have them,
+  otherwise fall back to `:tag` so element↔text transitions also re-mount. A
+  first render (no `current-vdom`) is not a change — `initial-mount!` owns it."
+  [current-vdom new-vdom]
+  (boolean
+   (when (and current-vdom new-vdom)
+     (let [ca (:addr current-vdom)
+           na (:addr new-vdom)]
+       (if (and ca na)
+         (not= ca na)
+         (not= (:tag current-vdom) (:tag new-vdom)))))))
+
 (defn initial-mount!
   "Perform initial mount of vdom to container."
   [render-state vdom]
@@ -84,8 +106,34 @@
   DOM refs are stored by stable address (:addr on vnodes), so no transfer
   is needed between old and new vdom objects."
   [render-state new-vdom]
-  (let [{:keys [discharge]} render-state]
-    (if new-vdom
+  (let [{:keys [container discharge current-vdom]} render-state]
+    (cond
+      ;; No new vdom. The root spin produced nothing this cycle: keep the last
+      ;; frame rather than tearing the app down. A root that legitimately wants
+      ;; to render nothing should return an empty element, not nil.
+      (nil? new-vdom) render-state
+
+      ;; The root element itself changed. Tear the old tree down properly, then
+      ;; mount the new one — all inside ONE eviction pass, so that an address
+      ;; the new tree re-claims (A→B→A) is spared by `(pending - live)`.
+      (root-identity-changed? current-vdom new-vdom)
+      (do
+        (log/debug :render/root-replace {:old (:addr current-vdom)
+                                         :new (:addr new-vdom)})
+        (binding [disch/*rendered-vnodes* (atom #{})
+                  disch/*rendered-addrs* (atom {})
+                  disch/*pending-evictions* (atom #{})]
+          ;; Refs get their nil call and caches are SCHEDULED (not yet dropped):
+          ;; foreign nodes (TipTap et al.) rely on this to release resources.
+          (disch/call-refs-on-unmount! current-vdom)
+          (let [root-el (disch/render-initial! discharge new-vdom)]
+            (when container
+              (set! (.-innerHTML container) "")
+              (when root-el (.appendChild container root-el))))
+          (disch/flush-pending-evictions! discharge))
+        (assoc render-state :current-vdom (disch/clear-deltas-deep new-vdom)))
+
+      :else
       (do
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
@@ -102,10 +150,7 @@
         ;; Clear deltas for next render cycle
         ;; No ref transfer needed — cleared vnodes carry same :addr values
         (let [cleared-vdom (disch/clear-deltas-deep new-vdom)]
-          (assoc render-state :current-vdom cleared-vdom)))
-
-      ;; No new vdom
-      render-state)))
+          (assoc render-state :current-vdom cleared-vdom))))))
 
 ;; =============================================================================
 ;; Render! API
@@ -176,6 +221,36 @@
 ;; Integration with Spin System
 ;; =============================================================================
 
+#?(:cljs
+   (defn- clear-render-error-overlay! [container]
+     (when-let [el (.querySelector container "[data-spindel-render-error]")]
+       (.remove el))))
+
+#?(:cljs
+   (defn- show-render-error-overlay!
+     "Dev-only (goog.DEBUG) visible surface for a REJECTED render spin.
+      Without it, a body exception cascades monadically to the root and
+      the UI freezes at the last resolved frame with a single log line —
+      practically invisible. Updated in place on repeated rejects;
+      removed on the next successful resolve."
+     [container spin-id error]
+     (when ^boolean js/goog.DEBUG
+       (let [existing (.querySelector container "[data-spindel-render-error]")
+             el (or existing (.createElement js/document "div"))
+             msg (str (or (some-> error .-message) error))
+             stack (or (some-> error .-stack) "")]
+         (set! (.-cssText (.-style el))
+               (str "position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;"
+                    "background:#3b0d0d;color:#ffb4b4;border:1px solid #a33;"
+                    "border-radius:6px;padding:10px 14px;font:12px/1.5 monospace;"
+                    "max-height:40vh;overflow:auto;white-space:pre-wrap;"))
+         (.setAttribute el "data-spindel-render-error" "true")
+         (set! (.-textContent el)
+               (str "spindel render REJECTED — UI frozen at last resolved frame\n"
+                    "spin: " spin-id "\n" msg
+                    (when (seq stack) (str "\n\n" stack))))
+         (when-not existing (.appendChild container el))))))
+
 (defn render-spin!
   "Execute a spin and render its vdom result.
 
@@ -211,10 +286,15 @@
       ;; resolve callback
      (fn [vdom]
        (log/trace :render/vdom-received {:spin-id spin-id :has-vdom (some? vdom)})
+       #?(:cljs (clear-render-error-overlay! container))
        (render-effect vdom))
-      ;; reject callback
+      ;; reject callback — a rejected render produces NO vdom: the whole
+      ;; tree silently freezes at the last resolved frame (correct Result-
+      ;; monad semantics, terrible observability — the sharp-edges 'silent
+      ;; wrong behavior' pattern). In dev builds, surface it visibly.
      (fn [error]
-       (log/error :render/error {:spin-id spin-id :error error})))
+       (log/error :render/error {:spin-id spin-id :error error})
+       #?(:cljs (show-render-error-overlay! container spin-id error))))
 
     ;; Return control map
     {:spin-id spin-id

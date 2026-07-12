@@ -102,12 +102,13 @@
              (is (= 1 @exec-count))
              (is (>= time1 10) "Should take at least 10ms"))
 
-           (let [start (System/currentTimeMillis)
-                 result2 @expensive-spin
-                 time2 (- (System/currentTimeMillis) start)]
+           ;; `exec-count` is the assertion that the cache worked; a wall-clock
+           ;; bound on the second deref only measures the machine (a GC pause
+           ;; under full-suite load makes it flake). The body sleeps 10ms per
+           ;; execution, so "did not re-execute" is already pinned exactly.
+           (let [result2 @expensive-spin]
              (is (= 499500 result2))
-             (is (= 1 @exec-count) "Should not re-execute")
-             (is (< time2 5) "Should be instant from cache")))))))
+             (is (= 1 @exec-count) "Should not re-execute (cache hit)")))))))
 
 ;; =============================================================================
 ;; Signal Consumption and Dependency Tracking (cross-platform)

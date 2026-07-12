@@ -91,6 +91,15 @@ regardless of how `await`s are grouped in source. **Holds (structural).**
 (`spin/core.cljc:345-381`, `:524-546`), which caches the error and
 marks observers dirty so they rediscover it. **Holds.**
 
+*Rendering consequence.* Because errors short-circuit every ancestor
+bind, a single body exception rejects the whole chain up to the root
+render effect, which produces **no vdom** — the UI freezes at the last
+resolved frame with one `:render/error` log line. Semantically correct,
+observationally near-silent (the simmis AsOfDB episode: a `contains?`
+probe threw inside the page-editor body and the app appeared to ignore
+all updates). Dev builds now surface this visibly
+(`dom/render.cljc::show-render-error-overlay!`).
+
 **Status: Holds (structural).** Not mechanized; CPS construction
 guarantees the monad laws the way any CPS encoding of a monad does.
 
@@ -439,15 +448,33 @@ behaviors are not a 4-tuple of caller-supplied flags.
 ```mermaid
 stateDiagram-v2
     [*] --> Registered: make-spin (3-arity) → register-spin! :computation
-    Registered --> Running: (spin r e) invoke Case 2 / :spin-execution
+    Registered --> Running: (spin r e) invoke Case 2 / :spin-execution / await slow path
     Running --> Completed: outer resolve → cache-result! (:clean, completed?, running?=false)
     Running --> Suspended: body returns the incomplete sentinel (await/track)
     Suspended --> Running: resume-body! (cont fires)
     Completed --> Dirty: dependency changed → mark-dirty! / cache-result! cascade
     Completed --> Completed: re-register with identical? captures (B-gate no-op)
-    Dirty --> Running: re-run (track resume / :spin-execution / B-gate re-register)
+    Dirty --> Running: re-run (track resume / :spin-execution / B-gate re-register / await slow path)
     Completed --> [*]: GC + no observers + no live signal cont → full-cleanup-spin!
 ```
+
+**Body-entry prologue invariant.** Every `Registered/Dirty → Running`
+transition that invokes the cps-fn from scratch MUST run the shared
+prologue `simple/enter-body!` (mark-running!, clear-created-spins!,
+clear-prior-body-conts!, seed-body-chain-head!; rebuild paths use the
+`:rebuild?` variant that leaves run-state untouched). The prologue
+maintains the invariant the dispatch rules silently assume: **at most
+one body-generation of continuations exists per spin.** Earliest-cont
+selection (§2.4 T2) and `truncate-stale-conts!` (§3.4) are sound only
+under it — a surviving earlier-generation cont always wins dispatch,
+and resuming it truncates the *live* body's conts and re-runs a frozen
+lexical closure (the zombie-repaint bug). The enumeration of body-entry
+sites is normative: `Spin -invoke` Case 2, `await-spin`'s slow path
+(the one entry that calls `.-spin-fn` directly — it bypassed the
+prologue until 71d5801), the `-invoke` rebuild branch, and `deref-spin`'s
+JVM rebuild path; `:spin-execution` events route through `-invoke`.
+Any NEW direct body invocation must call `enter-body!` — see its
+docstring's call-site list.
 
 ### 2.6 Resource-spin lifecycle
 
@@ -619,6 +646,48 @@ caches. **Holds.** *Fragile:* `find-root-await-ancestor`
 an arbitrary one as "the" root. Escalation to *one* root is fine when
 the await graph is a tree; for a DAG with shared awaited children the
 "root" is non-deterministic. Flagged as a latent question.
+
+### 3.9 Rendering identity (delta-direct DOM)
+
+Rendering has **no tree diff**. `build-element` reconciles each element's attrs
+and children against caches keyed by its address, attaches the resulting
+`:deltas` to the vnode, and `update-render!` discharges those deltas against the
+DOM element **bound to that address**. Two consequences follow, and both were
+violated in practice before they were stated:
+
+**R1 — Identity is the address.** `reconcile-slot` decides "did this child slot
+change?" and `discharge-vnode!` decides "which DOM node do I write to." They must
+agree, and the only thing the DOM layer binds by is `:addr`. A vnode's address is
+`content-hash[source-loc, parent-addr, slot-index]`, and a keyed element's is
+`keyed-child-address(my-addr, key)` — so **addr equality implies key equality and
+structural position, but not conversely**. `:key` on a plain element is a
+*disambiguator* for siblings at one source location, never an identity token;
+position-independent identity is `ifor-each`'s job, and its items travel through
+the `:keyed` slot type. Letting `:key` override `:addr` in reconciliation makes
+the parent declare a child "unchanged" while the child's deltas address a node
+that was never created: the update vanishes with no error. (Regression:
+`dom/branch_flip_test.clj`.)
+
+**R2 — The root is unaddressable from above.** Every node except the mounted root
+is reachable through some parent's slot reconciliation. The root has no parent, so
+a spin whose body returns a *different* root element (a conditional at the top of
+the spin) cannot be updated by deltas at all — the new root's address has no bound
+element. `update-render!` detects a changed root identity and re-mounts, running
+the full teardown protocol first (`call-refs-on-unmount!` → `render-initial!` →
+`flush-pending-evictions!`) so foreign nodes release resources and dead caches are
+evicted, while addresses the new tree re-claims are spared by `(pending − live)`.
+
+**Corollary (unmount completeness).** Every address the render path writes must be
+reachable from the teardown walk. `flatten-slot` splices a `:keyed` slot's items
+into `:children` and drops the `KeyedFragment` itself, so the `ifor-each` call-site
+address — which holds `:by-key`, i.e. every rendered vnode and its handler closures
+— is on no vnode. `evict-cache!` therefore cascades through the evictee's slot
+cache into its keyed slots. Without that cascade, unmounting any subtree containing
+an `ifor-each` leaked the entire rendered list for the lifetime of the context.
+
+Because a changed root re-mounts (and thus loses DOM state), **keep a spin's root
+element structurally stable** and branch *inside* it. This is the loading-state
+idiom: one container with a stable key, `cond`/`if` on the content within.
 
 ### Invariant summary table
 

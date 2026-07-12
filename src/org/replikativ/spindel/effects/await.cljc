@@ -283,19 +283,17 @@
               child-ctx (if (seq spin-scope)
                           (update ctx :bindings merge spin-scope)
                           ctx)
-              ;; Seed the child's per-spin chain-head slot before invoking
-              ;; its body — exactly what `Spin`'s `-invoke` Case 2 does.
-              ;; The slow path runs the child by calling `.-spin-fn`
-              ;; directly (to inject child-resolve/child-reject), which
-              ;; bypasses `-invoke` and therefore its chain-head seeding.
-              ;; Without this, the child body inherits the PARENT's
-              ;; chain-head, so the child's vnode addresses depend on
-              ;; where the `(await …)` sits in the parent's body — and
-              ;; shift whenever the parent re-runs from a different
-              ;; track continuation. Unstable addresses break the
-              ;; discharge's by-address element lookup (DISCH-NOTFOUND
-              ;; for the whole re-rendered subtree).
-              _ (addressing/seed-body-chain-head! ctx awaited-spin-id)
+              ;; THE body re-entry prologue — full parity with `Spin`'s
+              ;; `-invoke` Case 2, via the shared simple/enter-body! (the
+              ;; slow path calls `.-spin-fn` directly to inject
+              ;; child-resolve/child-reject, bypassing `-invoke`, so it must
+              ;; run the prologue itself). History: only the chain-head
+              ;; seeding was duplicated here originally; the missing
+              ;; clear-prior-body-conts! let track conts accumulate across
+              ;; slow-path re-runs — earliest(-stale) cont won dispatch and
+              ;; repainted frozen state (zombie bug, fixed 71d5801). See
+              ;; enter-body!'s docstring for the invariant.
+              _ (simple/enter-body! ctx awaited-spin-id)
               _raw-result (binding [ec/*execution-context* child-ctx
                                     ec/*spin-id* awaited-spin-id
                                     pcps-async/*in-trampoline* false]
@@ -554,14 +552,28 @@
       ;; produced (typically `incomplete` when the resolve was itself an
       ;; engine-level suspend, or the value otherwise). Forcing `incomplete`
       ;; here would short-circuit sync-resolving partial-cps async blocks.
+      ;;
+      ;; The cancel-token is bound around the invocation, exactly as in the
+      ;; Mailbox branch above. A thunk is opaque: it may itself hand our
+      ;; resolve/reject to a waiter-keeping resource. `(aseq/anext mbx)` does
+      ;; precisely that — it returns a closure that calls the Mailbox 2-arity —
+      ;; so dispatching on the thunk's type instead of its target would strand
+      ;; the waiter with `:cancel-token nil`. `post-inline!` could then no
+      ;; longer recognise a cancelled waiter, and would CONSUME the producer's
+      ;; message before handing it to a resolve that the gate turns into a
+      ;; no-op: message lost, consumer never re-armed (a permanently deaf
+      ;; mult pump). The token must accompany the INVOCATION, not the type
+      ;; dispatch. Contract: a resource registering a waiter must do so
+      ;; synchronously inside the thunk, so this dynamic binding is in scope.
       (ifn? awaitable)
-      (let [[wr wj _cancel-token]
+      (let [[wr wj cancel-token]
             (cancellable-external-pair
              spin-id resolve reject
              [::ifn #?(:clj (System/identityHashCode awaitable)
                        :cljs (or (.-name awaitable) (str awaitable)))]
              source-loc)]
-        (awaitable wr wj))
+        (binding [ec/*external-await-cancel-token* cancel-token]
+          (awaitable wr wj)))
 
       :else
       (reject (eff/type-error 'await "Spin, Deferred, or async thunk" awaitable)))
