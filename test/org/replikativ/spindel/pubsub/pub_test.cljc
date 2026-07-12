@@ -52,6 +52,30 @@
   [v]
   (VectorSeq. (atom v) 0))
 
+(deftype GatedSeq [gate inner]
+  PAsyncSeq
+  (anext [_]
+    (spin
+     (await gate)
+     (await (anext inner)))))
+
+(defn gated-aseq
+  "Wrap `inner` so no item is yielded until `gate` (a Deferred) is
+   delivered. Rest-seqs come from `inner` directly — the gate only
+   guards the head.
+
+   Why tests need this: the pub pump starts lazily on the FIRST sub,
+   items for topics without a subscriber are DROPPED (core.async
+   semantics — see test-pub-unsubscribed-topics-dropped), and a mult tap
+   only receives items delivered AFTER it registered. A test that
+   subscribes topic/tap #2 while the pump is already consuming an eager
+   (pre-filled) source races its own subscription and loses early items
+   nondeterministically under load (spindel#34: [2 4] → [4] or []).
+   Gating the source until every sub is in place makes the intended
+   delivery deterministic without weakening the drop semantics."
+  [gate inner]
+  (GatedSeq. gate inner))
+
 ;; =============================================================================
 ;; Cross-Platform Tests (no blocking deref)
 ;; =============================================================================
@@ -97,10 +121,16 @@
                     {:type :b :value 2}
                     {:type :a :value 3}
                     {:type :b :value 4}]
-             source (vec->aseq items)
+             ;; Gate the source: sub-a starts the pump, which would
+             ;; otherwise race sub-b's registration and drop early :b
+             ;; items (spindel#34). Open the gate only once BOTH subs
+             ;; exist.
+             gate (sync/create-deferred ec/*execution-context*)
+             source (gated-aseq gate (vec->aseq items))
              p (pub/pub source :type)
              sub-a (pub/sub p :a (buf/fixed-buffer 10))
-             sub-b (pub/sub p :b (buf/fixed-buffer 10))]
+             sub-b (pub/sub p :b (buf/fixed-buffer 10))
+             _ (sync/deliver! gate :go)]
 
          ;; Let pump run via async delay
          @(spin (await (comb/sleep 200)))
@@ -193,10 +223,17 @@
      (testing "multiple subscribers to same topic each receive all items"
        (let [items (vec (for [i (range 5)]
                           {:type :a :value i}))
-             source (vec->aseq items)
+             ;; Gate the source: sub1 starts the pump, and a mult tap
+             ;; only receives items delivered AFTER it registered — so an
+             ;; ungated pump can hand item 0 to the topic mult before
+             ;; sub2's tap exists (spindel#34: 4/5 items). Open the gate
+             ;; only once BOTH taps exist.
+             gate (sync/create-deferred ec/*execution-context*)
+             source (gated-aseq gate (vec->aseq items))
              p (pub/pub source :type)
              sub1 (pub/sub p :a (buf/fixed-buffer 10))
-             sub2 (pub/sub p :a (buf/fixed-buffer 10))]
+             sub2 (pub/sub p :a (buf/fixed-buffer 10))
+             _ (sync/deliver! gate :go)]
 
          ;; Let pump run
          @(spin (await (comb/sleep 200)))
