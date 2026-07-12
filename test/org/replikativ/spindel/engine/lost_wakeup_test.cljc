@@ -285,12 +285,12 @@
      (testing "a thrown string (non-Error) reaches the reject path — the
              :default catches must not miss it"
        (async done
-         (th/with-ctx [ctx]
-           (let [t (spin (throw "string-boom"))]
-             (th/run-spin! t
-                           (fn [_v]
-                             (is false "must not resolve")
-                             (done))
-                           (fn [e]
-                             (is (= "string-boom" e))
-                             (done)))))))))
+              (th/with-ctx [ctx]
+                (let [t (spin (throw "string-boom"))]
+                  (th/run-spin! t
+                                (fn [_v]
+                                  (is false "must not resolve")
+                                  (done))
+                                (fn [e]
+                                  (is (= "string-boom" e))
+                                  (done)))))))))
