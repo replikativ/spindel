@@ -6,6 +6,7 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.bindings :as bindings]
@@ -460,8 +461,20 @@
        (let [spin-scope (select-keys (:bindings ctx)
                                      (bindings/spin-scope-keys))]
          (when (seq spin-scope)
-           (rtp/swap-state! ctx [:nodes spin-id :spin-scope]
-                            (constantly spin-scope)))))
+           ;; NODE-RECORD INVARIANT (#31): swap the WHOLE node, never a
+           ;; field path. A field-path write (`[:nodes id :spin-scope]`)
+           ;; on an ABSENT node — possible when a reap raced between
+           ;; register-spin! above and here — materializes a plain map
+           ;; `{:spin-scope …}` where a SpinNode record belongs; every
+           ;; downstream `(or node (->spin-node …))` guard then keeps the
+           ;; truthy map forever, and the first protocol call on it
+           ;; (`get-observers` in cache-result!) throws — silently
+           ;; stranding that spin's completion.
+           (rtp/swap-state! ctx [:nodes spin-id]
+                            (fn [node]
+                              (let [node (or node (nodes/->spin-node
+                                                   nil :clean false false #{} {} nil #{}))]
+                                (assoc node :spin-scope spin-scope)))))))
 
      ;; Register automatic cleanup when spin is GC'd
      ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
@@ -602,8 +615,17 @@
    covers)."
   [sid spins]
   (when-let [ctx (ec/current-execution-context)]
-    (rtp/swap-state! ctx [:nodes sid :owned-spins]
-                     (constantly (when (seq spins) (vec spins))))))
+    ;; NODE-RECORD INVARIANT (#31): swap the WHOLE node, never a field
+    ;; path. The clear-on-done call can race a GC / generation-boundary
+    ;; reap of the combinator's node; a field-path write would then
+    ;; materialize a plain map `{:owned-spins nil}` where a SpinNode
+    ;; record belongs (see the :spin-scope write in make-spin for the
+    ;; full failure chain). A reaped node needs no owned-spins edge —
+    ;; skip, preserving absence.
+    (rtp/swap-state! ctx [:nodes sid]
+                     (fn [node]
+                       (when node
+                         (assoc node :owned-spins (when (seq spins) (vec spins))))))))
 
 (defn cancel-spin!
   "Cancel a spin and all its observers (cooperative cancellation).
