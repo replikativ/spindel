@@ -283,12 +283,14 @@
 ;; -----------------------------------------------------------------------------
 
 #?(:clj
-   (deftest fork-inherits-in-flight-handoff-events
+   (deftest fork-undoes-in-flight-mailbox-claims
      (testing "a fork taken between the transactional handoff commit and its
-             :cont-resume processing inherits the event — the fork's consumer
-             copy receives the message instead of hanging un-armed (the
-             message exists in BOTH worlds, like a queued mailbox message
-             at fork time). Notification events stay dropped."
+             :cont-resume processing inherits NO events (an event is
+             delivered in exactly one world — the parent's; the popped
+             message was CLAIMED by a parent-world consumer), but the pop
+             is UNDONE in the fork's world: the waiter is re-registered
+             into the fork's CoW mailbox copy, so the fork's consumer
+             copy is armed for the fork's own traffic."
        (th/with-ctx [ctx]
          (let [mbx (sync/create-mailbox ctx)
                hits (atom []) ;; PLAIN atom — shared across worlds, one hit per world
@@ -332,30 +334,40 @@
                                      :cancel-token (:cancel-token @w)
                                      :resolve (:resolve @w)
                                      :value :the-msg
-                                     :mailbox mbx}]))
+                                     :mailbox mbx}])
+             ;; ...plus a pending DELIVERY event, which the fork must NOT
+             ;; inherit: forks happen mid-drain routinely (post!-then-fork
+             ;; in one body slice), and inheriting posts double-runs
+             ;; consumers with external effects (e.g. a durable room
+             ;; log). The fork's consumer for this one stays armed and
+             ;; simply never sees this particular message.
+             (rtp/swap-state-args! ctx [:engine/pending] conj
+                                   [{:type :mailbox-post
+                                     :mailbox mbx
+                                     :msg :dropped-in-fork}]))
            (let [fork (ectx/fork-context ctx)]
-             ;; fork-context both seeds the fork's pending with the
-             ;; in-flight data event AND triggers the fork's drain, so by
-             ;; the time we look the event may be pending or already
-             ;; processed — either way it was INHERITED, which the
-             ;; both-worlds outcome below pins. (The parent's copy can't
-             ;; move: we hold the parent's drain lock.)
-             (is (or (= 1 (count (filter #(= :cont-resume (:type %))
-                                         (rtp/get-state fork [:engine/pending]))))
-                     (= [:the-msg] @hits))
-                 "the fork inherited the in-flight data event")
+             (is (empty? (rtp/get-state fork [:engine/pending]))
+                 "the fork inherited NO events — neither the :cont-resume
+                nor the pending :mailbox-post")
+             (is (= 1 (count (:waiters (binding [ec/*execution-context* fork]
+                                         @(.-state-atom mbx)))))
+                 "the popped waiter was re-registered in the fork's copy
+                (the in-flight claim is undone, the consumer copy armed)")
              ;; Release the parent's drain lock and trigger it — in
              ;; reality post-inline! runs inside an active drain session,
              ;; which picks the event up itself.
              (rtp/swap-state! ctx [:engine/draining?] (constantly false))
              (simple/trigger-drain! ctx (:executor ctx))
-             ;; Each world drains its own copy of the event against its own
-             ;; ctx — the shared plain atom records one hit per world.
-             (is (poll-until #(= [:the-msg :the-msg] @hits) 4000)
-                 "both worlds' consumer copies received the message")
-             ;; Silence the unused-binding lint without dropping the fork
-             ;; reference before the drain we care about has run.
-             fork))))))
+             (is (poll-until #(= [:the-msg] @hits) 4000)
+                 "the in-flight message was delivered ONCE, in the parent's
+                world only")
+             ;; The fork's re-armed consumer copy wakes on the fork's OWN
+             ;; traffic.
+             (binding [ec/*execution-context* fork]
+               (sync/post! mbx :fork-msg))
+             (is (poll-until #(= [:the-msg :fork-msg] @hits) 4000)
+                 "the fork's consumer copy received the fork's own post —
+                re-armed, not wedged")))))))
 
 ;; -----------------------------------------------------------------------------
 ;; 5. CLJS: non-Error throw values must not slip past the catches
