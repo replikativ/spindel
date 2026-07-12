@@ -23,6 +23,7 @@
             [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.supervisor :as sup]
@@ -213,6 +214,67 @@
                               (:interrupted? data)))
                        @faults)))
            (finally (restore!)))))))
+
+;; -----------------------------------------------------------------------------
+;; 4b. Phase C: transactional handoff + re-post-on-cancelled
+;; -----------------------------------------------------------------------------
+
+#?(:clj
+   (deftest cont-resume-reposts-message-for-waiter-cancelled-in-window
+     (testing "a :cont-resume whose waiter was cancelled between enqueue and
+             processing RE-POSTS the mailbox message instead of feeding it to
+             a gated no-op (lossless — nothing of the continuation ran)"
+       (th/with-ctx [ctx]
+         (let [mbx (sync/create-mailbox ctx)
+               token (keyword "external-await-cancel" (str (random-uuid)))
+               fired (atom false)]
+           ;; Simulate the race deterministically: the waiter's token is
+           ;; ALREADY in :engine/cancelled-tokens when its :cont-resume
+           ;; event (as post-inline! would have enqueued it) processes.
+           (rtp/swap-state! ctx [:engine/cancelled-tokens]
+                            (fn [s] (conj (or s #{}) token)))
+           (rtp/enqueue! ctx {:type :cont-resume
+                              :site :mailbox
+                              :spin-id nil
+                              :cancel-token token
+                              :resolve (fn [_] (reset! fired true))
+                              :value :msg-1
+                              :mailbox mbx})
+           (is (poll-until
+                #(= [:msg-1]
+                    (binding [ec/*execution-context* ctx]
+                      (vec (:queue @(.-state-atom mbx)))))
+                2000)
+               "message re-posted into the mailbox queue (no live waiter)")
+           (is (not @fired) "the cancelled waiter's continuation never ran")
+           (is (not (contains? (rtp/get-state ctx [:engine/cancelled-tokens]) token))
+               "the consumed cancel-token was self-cleaned"))))))
+
+#?(:clj
+   (deftest backend-write-2-is-atomic-and-cow-seeds
+     (testing "AtomBackend: both paths transformed in one commit"
+       (let [b (backend/create-atom-backend {:a {:x 1} :engine/pending []})]
+         (backend/backend-write-2! b [:a :x] [:engine/pending]
+                                   (fn [x pending]
+                                     [(inc x) (conj pending {:ev (inc x)})]))
+         (is (= 2 (backend/backend-read b [:a :x])))
+         (is (= [{:ev 2}] (backend/backend-read b [:engine/pending])))))
+     (testing "OverlayBackend: shared path CoW-seeds the entity from the
+             parent; fork-local path writes directly; parent untouched"
+       (let [parent (backend/create-atom-backend
+                     {:atoms {:mbx {:value {:queue [] :waiters [:w]}}}
+                      :engine/pending [:parent-event]})
+             fork (backend/create-overlay-backend parent)]
+         (backend/backend-write-2! fork [:atoms :mbx :value] [:engine/pending]
+                                   (fn [mbx-state pending]
+                                     [(update mbx-state :waiters rest)
+                                      (conj (vec pending) {:ev 1})]))
+         (is (= [] (vec (:waiters (backend/backend-read fork [:atoms :mbx :value]))))
+             "fork sees the popped waiter (CoW copy)")
+         (is (= [:w] (:waiters (backend/backend-read parent [:atoms :mbx :value])))
+             "parent's copy is untouched (fork diverged)")
+         (is (= [{:ev 1}] (backend/backend-read fork [:engine/pending]))
+             "fork-local pending written directly — parent's queue not read")))))
 
 ;; -----------------------------------------------------------------------------
 ;; 5. CLJS: non-Error throw values must not slip past the catches
