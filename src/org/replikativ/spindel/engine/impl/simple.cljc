@@ -6,7 +6,7 @@
 
   Responsibilities:
   - Maintain event queue (:engine/pending)
-  - Process events: :signal-change, :spin-completion, :deferred-delivery, :mailbox-post, :spin-execution
+  - Process events: :signal-change, :spin-completion, :deferred-delivery, :mailbox-post, :spin-execution, :cont-resume, :gc-cleanup
   - Drain events asynchronously on executor threads
   - Prevent concurrent draining via CAS lock (:engine/draining?)
 
@@ -229,6 +229,47 @@
         (reject-owning-spin! context spin-id cancel-token e))
       nil)))
 
+(defn ^:no-doc enqueue-cont-resume!
+  "Enqueue a `:cont-resume` event — the resume-as-event handoff for
+  ONE-SHOT waiter continuations (mailbox waiters, deferred readers,
+  pubsub promise watchers, semaphore acquirers).
+
+  The scoped resume-as-event boundary (issue #27, `.internal/
+  lost-wakeup-design-space.md`): a waiter that is POPPED from its
+  primitive's state before firing is one-shot by construction, so
+  running it as its own top-level event is sound and gives it the
+  drain's uniform cancellation re-check + failure route. PERSISTENT
+  graph continuations (track conts, await conts — which are never
+  removed and may legitimately fire more than once) must keep resuming
+  inline within their driving event: queueing them as events would let
+  two driving events enqueue two resumes of the SAME un-advanced cont
+  (the inline design guarantees a resume advances the body before the
+  next event processes — see the loop-over-await pattern).
+
+  Event fields:
+    :spin-id / :cancel-token — cancellation identity of the waiter
+      (both re-checked at PROCESSING time; the window between enqueue
+      and processing can contain a truncation).
+    :resolve / :value — the continuation and its delivery.
+    :site — fault-report tag (:mailbox, :deferred, :promise, :semaphore).
+    :mailbox — for mailbox handoffs only: the owning Mailbox, so a
+      waiter found cancelled AT PROCESSING TIME can have its message
+      RE-POSTED losslessly (nothing of the continuation ran). This is a
+      capability the inline design could not express: a cancellation
+      landing between pop and invoke previously fed the message to a
+      gated no-op. Re-posting appends to the queue's tail — FIFO order
+      across a cancellation race is not preserved (mailboxes promise
+      FIFO only for the uncontended path).
+
+  Called from inside the drain (post-inline!/deliver-inline! run within
+  process-event!): plain enqueue — the active drain loop dequeues it in
+  the same session. Called from outside (promise deliver!, semaphore
+  release): use `rtp/enqueue!` which also triggers a drain."
+  [context event]
+  (rtp/swap-state-args! context [:engine/pending] conj
+                        [(assoc event :type :cont-resume)])
+  (log/trace :engine/enqueue-event {:event-type :cont-resume :site (:site event)}))
+
 (defn- deliver-inline!
   "INTERNAL: Deliver value inline to deferred, resuming readers directly."
   [context deferred value state-atom]
@@ -248,22 +289,22 @@
                                        :value value
                                        :pending [])))))]
 
-    ;; Notify all pending readers INLINE if this was the first assignment.
-    ;; Each pending entry is a `{:spin-id :cancel-token :resolve}` map (the
-    ;; Deferred 2-arity stores cancellation metadata so it can prune cancelled
-    ;; readers). The wrapped `:resolve` already no-ops if its await was
-    ;; cancelled, so we can invoke them all; the metadata is for the
-    ;; prune-on-read sweep — and for failure routing here.
-    ;; Event handler already bound *in-trampoline* false
-    ;;
-    ;; PER-READER isolation: each resume runs under guarded-resume!, so
-    ;; reader k throwing (a) cannot strand readers k+1..n — they never ran
-    ;; and still get the value — and (b) rejects reader k's own spin
-    ;; instead of leaving it PENDING. Same isolation shape PR #28 gave
-    ;; mult's watchers; a deferred with N readers is the same fan-out.
+    ;; Resume-as-event (#27 Phase B): each pending reader is a one-shot
+    ;; waiter `{:spin-id :cancel-token :resolve}` popped from `:pending`
+    ;; by the swap above — enqueue one `:cont-resume` per reader instead
+    ;; of invoking inline. Per-reader isolation is now STRUCTURAL: each
+    ;; reader is its own event with its own failure route (reader k
+    ;; throwing cannot strand readers k+1..n), and cancellation is
+    ;; re-checked at processing time. No `:mailbox` re-post field — every
+    ;; reader receives the same value, so a cancelled reader skipping
+    ;; delivery loses nothing.
     (when-let [pending @pending-callbacks]
       (doseq [{:keys [spin-id cancel-token resolve]} pending]
-        (guarded-resume! context :deferred spin-id cancel-token resolve value)))
+        (enqueue-cont-resume! context {:site :deferred
+                                       :spin-id spin-id
+                                       :cancel-token cancel-token
+                                       :resolve resolve
+                                       :value value})))
 
     ;; Return the assigned value
     (:value @state-atom)))
@@ -321,12 +362,20 @@
               (recur))
 
             :else
-            ;; Failure routing: a throw out of the resumed consumer rejects
-            ;; THAT consumer's spin (loud, supervisable) — the message is
-            ;; consumed either way (at-most-once; a partially-run
-            ;; continuation is not re-runnable). See guarded-resume!.
+            ;; Resume-as-event (#27 Phase B): the waiter was popped by the
+            ;; swap above (one-shot); hand it to the drain as its own
+            ;; event. The handler re-checks cancellation AT PROCESSING
+            ;; time and — because the event carries the mailbox — can
+            ;; RE-POST the message losslessly if the waiter was cancelled
+            ;; in the enqueue→process window. Failure routing (reject the
+            ;; owning spin on throw) lives in the handler.
             (do
-              (guarded-resume! context :mailbox spin-id cancel-token resolve msg)
+              (enqueue-cont-resume! context {:site :mailbox
+                                             :spin-id spin-id
+                                             :cancel-token cancel-token
+                                             :resolve resolve
+                                             :value msg
+                                             :mailbox mailbox})
               nil))
           ;; No waiter, message queued
           nil)))))
@@ -1041,6 +1090,44 @@
             ;; Invoke spin (Spin implements IFn)
             (let [result (spin resolve-fn reject-fn)]
               nil)))))
+
+    ;; Resume-as-event handoff for one-shot waiters (#27 Phase B) — see
+    ;; enqueue-cont-resume! for the design boundary. The waiter was
+    ;; already popped from its primitive's state; this event IS the
+    ;; wakeup, so cancellation is re-checked here (the enqueue→process
+    ;; window can contain a truncation) and the failure route is armed.
+    :cont-resume
+    ;; The whole case runs under the event's context binding —
+    ;; spin-is-cancelled? and the Mailbox 1-arity re-post both resolve
+    ;; *execution-context* dynamically.
+    (binding [ec/*execution-context* context
+              pcps-async/*in-trampoline* false]
+      (let [{:keys [spin-id cancel-token resolve value site mailbox]} event
+            cancelled-tokens (rtp/get-state context [:engine/cancelled-tokens])
+            cancelled? (or (and spin-id (ec/spin-is-cancelled? spin-id))
+                           (and cancel-token cancelled-tokens
+                                (contains? cancelled-tokens cancel-token)))]
+        (if cancelled?
+          (do
+            ;; Self-cleaning: consuming the cancelled waiter's token (same
+            ;; contract as the pop-time skip in post-inline!).
+            (when (and cancel-token cancelled-tokens
+                       (contains? cancelled-tokens cancel-token))
+              (rtp/swap-state! context [:engine/cancelled-tokens]
+                               (fn [s] (if s (disj s cancel-token) s))))
+            ;; A mailbox message belongs to exactly one consumer — nothing
+            ;; of this waiter's continuation ran, so RE-POST it losslessly
+            ;; (the fresh :mailbox-post finds the next live waiter or
+            ;; queues). Deferred/promise/semaphore deliveries carry no
+            ;; :mailbox: their values are not single-consumer, skipping a
+            ;; cancelled waiter loses nothing.
+            (when mailbox
+              (log/trace :engine/cont-resume-repost {:site site :spin-id spin-id})
+              (mailbox value))
+            nil)
+          (do
+            (guarded-resume! context site spin-id cancel-token resolve value)
+            nil))))
 
     ;; GC cleanup request — the JVM Cleaner / JS FinalizationRegistry saw the
     ;; Spin OBJECT become unreachable and enqueued this instead of mutating

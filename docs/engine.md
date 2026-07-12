@@ -554,8 +554,23 @@ returns that context's copy — `queue: 0` while the owning ctx holds
 | `:signal-change` | `swap!` / `reset!` on a signal | Marks dependent spins dirty, resumes track continuations, processes batch completions |
 | `:spin-completion` | Spin body finishes | Resumes `await` continuations in parent spins |
 | `:spin-execution` | `deref` on an uncached spin | Claims execution slot, runs spin body on executor |
-| `:deferred-delivery` | `deliver!` on a `Deferred` | Delivers value and inline-resumes waiting continuations |
-| `:mailbox-post` | `post!` on a `Mailbox` | Delivers message and inline-resumes the first waiter |
+| `:deferred-delivery` | `deliver!` on a `Deferred` | Assigns the value; enqueues one `:cont-resume` per pending reader |
+| `:mailbox-post` | `post!` on a `Mailbox` | Pops the first live waiter and enqueues its `:cont-resume` (or queues the message) |
+| `:cont-resume` | A one-shot waiter was popped for delivery (mailbox waiter, deferred reader, pubsub promise watcher, semaphore acquirer) | Re-checks cancellation at processing time (re-posting a cancelled mailbox waiter's message losslessly), then invokes the continuation under the uniform failure route |
+
+**The resume-as-event boundary.** One-shot waiters — entries POPPED from
+a primitive's state before firing — run as their own `:cont-resume`
+events: they get the drain's cancellation re-check and failure route,
+and no foreign thread ever executes them. PERSISTENT graph
+continuations (track conts and await conts, which are never removed
+and may legitimately fire more than once) resume INLINE within their
+driving event (`:signal-change` / `:spin-completion`): the inline
+design guarantees a resume has advanced the body before the next
+driving event processes — queueing them would let two child
+completions enqueue two resumes of the same un-advanced cont
+(double-firing the body). The persistent conts get per-resume fault
+isolation + owning-spin rejection instead (see the `:spin-completion`
+handler).
 
 ## 5. Glitch-Free Signal Propagation
 

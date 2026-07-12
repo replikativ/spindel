@@ -17,6 +17,7 @@
   (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
+            [org.replikativ.spindel.pubsub.promise :as promise]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.core :as ec]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
@@ -27,56 +28,14 @@
 ;; Internal Topic Mult Management
 ;; =============================================================================
 
-;; Simple promise (same as in mult.cljc).
-;; The await-spin captures *execution-context* at construction time and
-;; re-binds it around the watcher's resolve invocation, so a producer
-;; that delivers from a different ctx (e.g. a fork-ctx pump signaling
-;; awaiters registered on a parent ctx) still enqueues the awaiter's
-;; :spin-completion event on the awaiter's own ctx. See the same
-;; comment in mult.cljc/make-promise for details.
-(defn- make-promise
-  "Create a simple promise that can be delivered once and read multiple times.
-   Uses compare-and-set! instead of swap! to avoid side effects inside retry-able swap fns."
-  []
-  (let [state (atom {:delivered? false :value nil :watchers []})]
-    {:state state
-     :deliver! (fn [value]
-                 (loop []
-                   (let [s @state]
-                     (if (:delivered? s)
-                       value  ;; Already delivered - no-op
-                       (if (compare-and-set! state s {:delivered? true :value value :watchers []})
-                         ;; CAS succeeded - notify watchers from the state we replaced
-                         (do (doseq [w (:watchers s)]
-                               (w value))
-                             value)
-                         ;; CAS failed (concurrent modification) - retry
-                         (recur))))))
-     :await-spin (fn []
-                   (let [captured-ctx (try (ec/current-execution-context)
-                                           (catch #?(:clj Throwable :cljs :default) _ nil))]
-                     (spin-core/make-spin
-                      (fn [resolve _reject]
-                        (let [wrapped (if captured-ctx
-                                        (fn [v]
-                                          (binding [ec/*execution-context* captured-ctx]
-                                            (resolve v)))
-                                        resolve)]
-                          (loop []
-                            (let [s @state]
-                              (if (:delivered? s)
-                                (wrapped (:value s))
-                                ;; Try to add watcher via CAS
-                                (when-not (compare-and-set! state s (update s :watchers conj wrapped))
-                                  ;; CAS failed - retry (will re-check delivered? on next iteration)
-                                  (recur))))))
-                        spin-core/incomplete))))}))
-
-(defn- deliver-promise! [p value]
-  ((:deliver! p) value))
-
-(defn- promise-spin [p]
-  ((:await-spin p)))
+;; Coordination promise — shared engine-mediated implementation
+;; (pubsub/promise.cljc). Watcher delivery routes through the watcher's
+;; own ctx drain as a :cont-resume event, which subsumes both the
+;; cross-ctx rebinding this copy carried AND the per-watcher fault
+;; isolation it never got (PR #28 only patched mult's copy).
+(def ^:private make-promise promise/make-promise)
+(def ^:private deliver-promise! promise/deliver-promise!)
+(def ^:private promise-spin promise/promise-spin)
 
 (defn- ensure-topic-mult!
   "Ensure a mult exists for the given topic. Creates one if needed.

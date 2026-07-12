@@ -184,14 +184,20 @@
                 ;; would lose it.
                 (recur)
                 (do
-                  ;; Successfully dequeued a live waiter - schedule it on the
-                  ;; executor. alive-fn drops the callback if the context is
-                  ;; stopped before setTimeout fires (CLJS) — prevents stale
-                  ;; resumes from bleeding into a freshly-created context.
+                  ;; Successfully dequeued a live waiter — hand it to the
+                  ;; drain as a :cont-resume event (resume-as-event, #27
+                  ;; Phase B). The waiter is one-shot (popped by the CAS
+                  ;; above), so the event gives it the drain's uniform
+                  ;; cancellation re-check + failure route instead of a
+                  ;; bare executor task whose throw nothing routes. The
+                  ;; drain's entry guard drops events on a stopped
+                  ;; context, covering what alive-fn covered here.
                   (let [ctx ec/*execution-context*]
-                    (executor/execute! (:executor ctx)
-                                       (executor/alive-fn ctx
-                                                          #(spin/resume (:resolve waiter) :acquired))))
+                    (rtp/enqueue! ctx {:type :cont-resume
+                                       :site :semaphore
+                                       :spin-id (:spin-id waiter)
+                                       :resolve (:resolve waiter)
+                                       :value :acquired}))
                   :released))
               ;; CAS failed - retry
               (recur)))
