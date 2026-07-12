@@ -7,8 +7,7 @@
    - Built-in implementations: fixed, dropping, sliding
 
    Buffers manage backpressure between producers and consumers.
-   A nil buffer means rendezvous (synchronous handoff)."
-  #?(:clj (:import [java.util LinkedList])))
+   A nil buffer means rendezvous (synchronous handoff).")
 
 ;; =============================================================================
 ;; Buffer Protocol
@@ -52,22 +51,44 @@
 ;; Fixed Buffer
 ;; =============================================================================
 
+;; THREAD SAFETY (spindel#34): buffers are mutated and re-read from
+;; DIFFERENT drain threads — the producer side (deliver-to-all-taps!)
+;; adds on one thread while the consumer side (TapSeq anext) rechecks
+;; `count` on another, with only the availability-promise atoms between
+;; them. The JVM implementations previously wrapped a raw (unsynchronized)
+;; java.util.LinkedList: a plain-field data race under the JMM, so the
+;; consumer's recheck could read a STALE size 0 after the producer's add
+;; and then await a promise that had already been swapped and delivered —
+;; a silent, load-dependent lost wakeup (one reply in a pub round-trip
+;; simply never arriving). Inline delivery used to run the consumer on
+;; the producer's thread and mostly hid this; resume-as-event (#27/#29)
+;; made cross-thread producer/consumer the norm and exposed it.
+;;
+;; All implementations are now ATOM-backed vectors (as CLJS always was):
+;; every add!/remove!/count is a volatile-semantics atom op, which is
+;; exactly the happens-before edge the check-act-recheck patterns in
+;; mult/pub assume — capture waiter, recheck buffer: if the capture saw
+;; the post-add promise, the recheck is GUARANTEED to see the added item.
+;; remove! uses swap-vals! so take-and-return is a single atomic step.
+;; FIFO: conj appends, remove! pops the front.
+
 #?(:clj
-   (deftype FixedBuffer [^LinkedList buf ^long n]
+   (deftype FixedBuffer [buf-atom ^long n]
      PBuffer
      (full? [_]
-       (>= (.size buf) n))
+       (>= (count @buf-atom) n))
      (add! [this item]
-       (.addFirst buf item)
+       (swap! buf-atom conj item)
        this)
      (remove! [_]
-       (when-not (.isEmpty buf)
-         (.removeLast buf)))
+       (let [[old _] (swap-vals! buf-atom
+                                 (fn [b] (if (seq b) (vec (rest b)) b)))]
+         (first old)))
      (close-buf! [_])
 
      clojure.lang.Counted
      (count [_]
-       (.size buf)))
+       (count @buf-atom)))
 
    :cljs
    (deftype FixedBuffer [buf-atom n]
@@ -98,32 +119,33 @@
      (fixed-buffer 10)  ; Buffer up to 10 items"
   [n]
   (assert (pos? n) "Buffer size must be positive")
-  #?(:clj (FixedBuffer. (LinkedList.) n)
-     :cljs (FixedBuffer. (atom []) n)))
+  (FixedBuffer. (atom []) n))
 
 ;; =============================================================================
 ;; Dropping Buffer
 ;; =============================================================================
 
 #?(:clj
-   (deftype DroppingBuffer [^LinkedList buf ^long n]
+   (deftype DroppingBuffer [buf-atom ^long n]
      IUnblocking
 
      PBuffer
      (full? [_]
        false)  ; Never blocks - drops newest when full
      (add! [this item]
-       (when-not (>= (.size buf) n)
-         (.addFirst buf item))
+       ;; size check + conj in ONE swap so a concurrent add cannot
+       ;; overshoot n.
+       (swap! buf-atom (fn [b] (if (< (count b) n) (conj b item) b)))
        this)
      (remove! [_]
-       (when-not (.isEmpty buf)
-         (.removeLast buf)))
+       (let [[old _] (swap-vals! buf-atom
+                                 (fn [b] (if (seq b) (vec (rest b)) b)))]
+         (first old)))
      (close-buf! [_])
 
      clojure.lang.Counted
      (count [_]
-       (.size buf)))
+       (count @buf-atom)))
 
    :cljs
    (deftype DroppingBuffer [buf-atom n]
@@ -157,33 +179,34 @@
      (dropping-buffer 100)  ; Keep oldest 100, drop new ones when full"
   [n]
   (assert (pos? n) "Buffer size must be positive")
-  #?(:clj (DroppingBuffer. (LinkedList.) n)
-     :cljs (DroppingBuffer. (atom []) n)))
+  (DroppingBuffer. (atom []) n))
 
 ;; =============================================================================
 ;; Sliding Buffer
 ;; =============================================================================
 
 #?(:clj
-   (deftype SlidingBuffer [^LinkedList buf ^long n]
+   (deftype SlidingBuffer [buf-atom ^long n]
      IUnblocking
 
      PBuffer
      (full? [_]
        false)  ; Never blocks - slides oldest when full
      (add! [this item]
-       (when (= (.size buf) n)
-         (.removeLast buf))  ; Slide oldest out
-       (.addFirst buf item)
+       ;; conj + slide in ONE swap (drop the OLDEST when over n).
+       (swap! buf-atom (fn [b]
+                         (let [b' (conj b item)]
+                           (if (> (count b') n) (vec (rest b')) b'))))
        this)
      (remove! [_]
-       (when-not (.isEmpty buf)
-         (.removeLast buf)))
+       (let [[old _] (swap-vals! buf-atom
+                                 (fn [b] (if (seq b) (vec (rest b)) b)))]
+         (first old)))
      (close-buf! [_])
 
      clojure.lang.Counted
      (count [_]
-       (.size buf)))
+       (count @buf-atom)))
 
    :cljs
    (deftype SlidingBuffer [buf-atom n]
@@ -220,8 +243,7 @@
      (sliding-buffer 100)  ; Keep newest 100, slide oldest out"
   [n]
   (assert (pos? n) "Buffer size must be positive")
-  #?(:clj (SlidingBuffer. (LinkedList.) n)
-     :cljs (SlidingBuffer. (atom []) n)))
+  (SlidingBuffer. (atom []) n))
 
 ;; =============================================================================
 ;; Buffer Utilities
