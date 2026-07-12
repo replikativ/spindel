@@ -415,30 +415,48 @@
         parent-track-subscriptions (rtp/get-state parent-ctx [:track-subscriptions])
         parent-await-conts (rtp/get-state parent-ctx [:await-conts])
 
-        ;; Inherit the parent's in-flight DATA-BEARING events.
-        ;; :engine/pending is fork-local, and a fork deliberately DROPS
-        ;; the parent's un-drained NOTIFICATION events (:signal-change,
-        ;; :spin-completion, :spin-execution, :gc-cleanup): their truth
-        ;; already lives in state the fork sees (committed signal
-        ;; values, cached results), so re-delivering them in the fork
-        ;; would double-fire, and :spin-execution carries external
-        ;; caller callbacks that must fire once. Handoff events are
-        ;; different — they CARRY DATA that exists nowhere else: a
-        ;; :mailbox-post's / :cont-resume's message, a
-        ;; :deferred-delivery's value. Dropping those loses the message
-        ;; in the fork's world — and under the transactional handoff
-        ;; (#27 Phase C) a :cont-resume's waiter was already popped
-        ;; from the CoW-shared mailbox state, so the fork's consumer
-        ;; copy would hang un-armed with the message gone. Copy them:
-        ;; each world drains its own copy against its own ctx (the
-        ;; continuation closures resolve *execution-context*
-        ;; dynamically, and the fork copied [:await-conts], so the
-        ;; fork's processing advances the fork's body copies) — the
-        ;; same both-worlds semantics as a message sitting in the
-        ;; mailbox :queue at fork time.
-        parent-inflight-data-events
-        (vec (filter #(contains? #{:cont-resume :mailbox-post :deferred-delivery}
-                                 (:type %))
+        ;; The fork inherits NONE of the parent's un-drained events —
+        ;; an event is delivered in exactly one world (the parent's).
+        ;;
+        ;; - NOTIFICATION events (:signal-change, :spin-completion,
+        ;;   :spin-execution, :gc-cleanup): their truth already lives in
+        ;;   state the fork sees (committed signal values, cached
+        ;;   results, dirty flags + generation guard); re-delivering
+        ;;   would double-fire, and :spin-execution carries external
+        ;;   caller callbacks that must fire once.
+        ;;
+        ;; - DELIVERY events (:mailbox-post, :deferred-delivery): a
+        ;;   message is single-consumer; delivering it in two worlds is
+        ;;   a double-claim. Forks are routinely taken from INSIDE spin
+        ;;   bodies — mid-drain, where a just-posted message pending in
+        ;;   the queue is the NORM (post! then fork in one body slice) —
+        ;;   and a consumer whose effect targets state OUTSIDE the ctx
+        ;;   (a durable room log; the pubsub layer's plain-atom tap
+        ;;   buffers and coordination promises) would process the same
+        ;;   message in both worlds: duplicate external writes, corrupted
+        ;;   mult/pub coordination. CoW isolates ctx state, not external
+        ;;   effects.
+        ;;
+        ;; - :cont-resume events (a popped waiter's pending resume): the
+        ;;   transactional handoff (#27 Phase C) already ASSIGNED the
+        ;;   in-flight message to a consumer instance in the parent's
+        ;;   world when it popped the waiter. The event is dropped like
+        ;;   the rest — but the POP is undone in the fork's world by
+        ;;   re-registering the waiter into the fork's CoW mailbox copy
+        ;;   (below): pure state surgery, no execution, so the fork's
+        ;;   consumer copy is not left permanently un-armed and wakes on
+        ;;   the fork's OWN next post. Deferred readers need no repair —
+        ;;   deliver-inline! commits the value into the deferred's state
+        ;;   atomically with popping its readers, so the fork's copy is
+        ;;   already assigned and any re-run/await reads it. Pubsub
+        ;;   promise watchers and semaphore acquirers are NOT re-armed:
+        ;;   their coordination state is plain-atom (shared across
+        ;;   worlds) / permit-accounted — fork copies of those consumers
+        ;;   stay dormant, which is the pre-#27 semantics; embedders
+        ;;   re-create live pipelines in the fork (dvergr's participant
+        ;;   factories + fresh per-fork bus).
+        parent-inflight-mailbox-claims
+        (vec (filter #(and (= :cont-resume (:type %)) (:mailbox %))
                      (rtp/get-state parent-ctx [:engine/pending])))
 
         ;; Fork the forkable signals — those whose value is external mutable
@@ -475,7 +493,7 @@
         fork-local-state (cond-> (merge
                                   {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
                                    :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
-                                   :engine/pending parent-inflight-data-events ; ← data-bearing events only, see above
+                                   :engine/pending [] ; ← NO inherited events; see the claim-undo below
                                    :engine/draining? false
                                    :engine/delayed-spins (sorted-map)
                                    :engine/timer-handles {}}
@@ -535,11 +553,28 @@
                 (:running parent-ctx)        ; Share parent's lifecycle flag
                 (:drain-active parent-ctx)   ; Share parent's drain-active counter
                 )]
-      ;; A fork seeded with inherited in-flight data events (or explicit
-      ;; :engine/pending via state-updates) has work waiting but nothing
-      ;; has poked its drain yet — the parent's drain never touches a
-      ;; fork's fork-local queue. Trigger once so the inherited events
-      ;; don't sit until the fork's first own enqueue.
+      ;; Undo the parent's in-flight mailbox CLAIMS in the fork's world:
+      ;; each pending :cont-resume popped its waiter from the (CoW-shared)
+      ;; mailbox state before the fork — re-register the waiter into the
+      ;; fork's copy so the fork's consumer copy is armed for the fork's
+      ;; OWN traffic. State surgery only: nothing is delivered or
+      ;; executed here, and the in-flight message itself stays with the
+      ;; parent's world (single-consumer semantics). Restored at the
+      ;; FRONT — it was the front waiter when popped.
+      (doseq [{:keys [mailbox spin-id cancel-token resolve]} parent-inflight-mailbox-claims]
+        (let [state-atom #?(:clj  (.-state-atom mailbox)
+                            :cljs (.-state-atom ^js mailbox))
+              aid        #?(:clj  (.-id state-atom)
+                            :cljs (.-id ^js state-atom))]
+          (rtp/swap-state! fork [:atoms aid :value :waiters]
+                           (fn [ws]
+                             (into [{:spin-id spin-id
+                                     :cancel-token cancel-token
+                                     :resolve resolve}]
+                                   ws)))))
+      ;; A fork given explicit :engine/pending via state-updates has work
+      ;; waiting but nothing has poked its drain yet — the parent's drain
+      ;; never touches a fork's fork-local queue. Trigger once.
       (when (seq (rtp/get-state fork [:engine/pending]))
         (simple/trigger-drain! fork (:executor fork)))
       fork)))

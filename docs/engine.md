@@ -123,19 +123,33 @@ drain its own events without contending with the parent's drain.
 >   external caller callbacks that must fire exactly once — in the
 >   parent's world.
 >
-> - **Data-bearing handoff events** (`:mailbox-post`,
->   `:deferred-delivery`, `:cont-resume`) are *inherited* — copied into
->   the fork's initial queue (and the fork's drain is triggered).
->   Unlike notifications, these CARRY a payload that exists nowhere
->   else: the message/value in flight. Dropping them would lose the
->   message in the fork's world — and a `:cont-resume`'s waiter has
->   already been popped from the (CoW-shared) primitive state, so the
->   fork's consumer copy would hang un-armed. Each world drains its own
->   copy against its own ctx (continuation closures resolve
->   `*execution-context*` dynamically, and the fork copied
->   `[:await-conts]`), so both worlds' body copies receive the value —
->   the same both-worlds semantics as a message sitting in the mailbox
->   `:queue` at fork time.
+> - **Delivery events** (`:mailbox-post`, `:deferred-delivery`) are
+>   also *dropped* — an event is delivered in exactly ONE world, the
+>   parent's. A message is single-consumer; delivering it in two worlds
+>   is a double-claim, and forks are routinely taken from *inside spin
+>   bodies* — mid-drain, where a just-posted message pending in the
+>   queue is the norm (`post!` then fork in one body slice). A consumer
+>   whose effect targets state outside the ctx (a durable log; the
+>   pubsub layer's plain-atom tap buffers and coordination promises)
+>   would otherwise process the same message in both worlds. CoW
+>   isolates ctx state, not external effects. If a fork must see a
+>   particular message, deliver it before forking or post it to the
+>   fork explicitly.
+>
+> - **`:cont-resume` events** (a popped waiter's pending resume) are
+>   dropped like the rest — the transactional handoff already ASSIGNED
+>   that message to a consumer instance in the parent's world — but the
+>   POP is *undone in the fork's world*: `fork-context` re-registers the
+>   waiter into the fork's CoW mailbox copy (pure state surgery, nothing
+>   executes), so the fork's consumer copy is armed for the fork's own
+>   traffic instead of being permanently wedged by a half-done handoff
+>   it can't observe. Deferred readers need no repair (the value is
+>   committed into the deferred's state atomically with the pop — the
+>   fork's copy is already assigned). Pubsub promise watchers and
+>   semaphore acquirers are not re-armed: their coordination state is
+>   plain-atom / permit-accounted; fork copies of those pipelines stay
+>   dormant — re-create live pipelines in the fork (participant/bus
+>   factories) rather than relying on inherited in-flight machinery.
 
 `:engine/cancelled-tokens` is the one shared path with subtle
 fork behavior; see [§8](#8-overlay-backend).
