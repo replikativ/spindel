@@ -17,31 +17,29 @@
             [org.replikativ.spindel.pubsub.buffer :as buf]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.fault :as fault]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
-;; Fault reporting (spindel carries no logging dep — loud by default, overridable)
+;; Fault reporting — delegates to the engine-wide hook (engine/fault.cljc)
 ;; =============================================================================
 
-(defonce ^:private fault-reporter
-  ;; Default: stderr / console.error so a fault is never silently swallowed.
-  ;; Embedders route it into their own logging via `set-fault-reporter!`.
-  (atom (fn [event data]
-          #?(:clj  (binding [*out* *err*]
-                     (println "[spindel.mult]" event (pr-str data)))
-             :cljs (js/console.error "[spindel.mult]" (str event) (clj->js data))))))
-
 (defn set-fault-reporter!
-  "Override how mult reports isolated consumer faults (`::watcher-fault`) and
-   pump rejections (`::pump-rejected`). `f` is (fn [event-keyword data-map]).
-   Default writes to stderr / console.error. simmis routes these into Telemere."
-  [f] (reset! fault-reporter f))
+  "Override how engine faults are reported — `::pump-rejected` here plus
+   ALL engine fault events (`engine.fault/continuation-fault`,
+   `engine.fault/executor-task-fault`, …). `f` is
+   (fn [event-keyword data-map]). Default writes to stderr /
+   console.error. simmis routes these into Telemere.
+
+   Since the reporter was hoisted to `engine/fault.cljc`, this is a
+   delegating alias kept for API compatibility — it sets the ENGINE-WIDE
+   hook, not a mult-local one."
+  [f] (fault/set-fault-reporter! f))
 
 (defn- report-fault! [event data]
-  (try (@fault-reporter event data)
-       (catch #?(:clj Throwable :cljs :default) _ nil)))
+  (fault/report-fault! event data))
 
 ;; =============================================================================
 ;; Simple Promise for Coordination (no runtime required)

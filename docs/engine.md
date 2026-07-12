@@ -501,6 +501,52 @@ Thread A checks :pending → non-empty → re-triggers
 Without the re-trigger, the new event would sit unprocessed until the
 next wakeup (up to 1 second).
 
+### Threading contract
+
+The engine's threads and the embedder's threads have an asymmetric
+contract:
+
+- **Engine-owned threads are never interrupt targets.** The drain
+  thread, executor workers, and delayed-execution timers run engine
+  machinery interleaved with many spins' continuations; a
+  `Thread.interrupt` landing there (e.g. via `future-cancel` on a
+  future that happens to be executing engine code) can only be
+  reported, not honored. Cancel work through the engine instead:
+  `spin.core/cancel-spin!` for a spin, or the cancel-token machinery
+  that `await` installs automatically. (Issue #27 was exactly this
+  violation: interrupt-based turn cancellation losing a mailbox
+  waiter.)
+- **Blocking embedder work runs on embedder threads** (futures, your
+  own pools) and communicates with the engine ONLY through
+  enqueue-only APIs — `sync/deliver!`, `sync/post!`, signal `swap!`.
+  Those never run engine continuations on your thread, so your threads
+  stay freely interruptible. (dvergr's generation handles follow this
+  pattern: the LLM call runs on a cancellable future that `deliver!`s
+  its result.)
+- **Failure semantics: at-most-once delivery, loud rejection.** When a
+  resumed waiter/reader continuation throws (including
+  `InterruptedException` — the flag is restored), the engine reports
+  `engine.fault/continuation-fault` and REJECTS the owning spin via
+  its parked continuation's reject route, so `catch`/`finally` run and
+  `spawn!`'s `:on-error` (and therefore `spin/supervisor` restart
+  policies) fire. The in-flight message is consumed either way — a
+  partially-executed continuation cannot be re-run (bodies are not
+  idempotent), so redelivery is a *restart-level* policy, not an
+  engine-level one.
+- **Faults are never silent.** All engine fault paths — continuation
+  faults, exceptions escaping executor tasks (whose `.submit` Futures
+  are discarded), pubsub watcher/pump faults — report through the
+  single hook in `engine/fault.cljc`; embedders route it into their
+  logging via `set-fault-reporter!`.
+
+One more sharp edge for health checks and monitoring: **Mailbox and
+Deferred state is ctx-relative (copy-on-write)**. The `state-atom` is a
+fork-safe context-backed atom, so dereffing it under a different
+execution context (e.g. a daemon root instead of the owning room ctx)
+returns that context's copy — `queue: 0` while the owning ctx holds
+`queue: 10`. Probe under the owning ctx:
+`(binding [ec/*execution-context* owning-ctx] @state-atom)`.
+
 ### Event types
 
 | Event | When enqueued | What drain does |

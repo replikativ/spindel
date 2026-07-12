@@ -18,6 +18,7 @@
   (:refer-clojure :exclude [node])
   (:require [replikativ.logging :as log]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
@@ -138,14 +139,99 @@
 
 ;; Forward declaration for generation boundary cleanup
 (declare clear-all-await-continuations!)
+(declare cache-result!)
 
 ;; =============================================================================
 ;; Inline delivery/posting (to avoid cyclic dependency with spin/sync)
 ;; =============================================================================
 
+(defn- reject-owning-spin!
+  "Route a throw out of a resumed waiter/reader continuation to the
+  OWNING spin's reject path, so the failure is a loud crash of exactly
+  that consumer (Erlang-style) instead of a silently-forever-PENDING
+  spin. This is the failure-routing half of the at-most-once handoff
+  contract: a continuation that partially executed can never be
+  re-delivered (bodies are not idempotent — no effect log exists), so
+  the only sound continuation is rejection + supervision.
+
+  Two routes, in preference order:
+
+  1. The parked cont's `:reject-fn` — the waiter carries the
+     `:cancel-token` that `effects/await.cljc::cancellable-external-pair`
+     also stamped on the `:external-await` cont it registered in
+     `[:await-conts spin-id]`. Matching by token targets EXACTLY the
+     await this waiter belongs to (no blanket rejection of unrelated
+     parked awaits → no zombie-cont risk), and invoking its
+     `:reject-fn` resumes the body into its reject path: `catch`/
+     `finally` run, the error is cached, `abort-spin-chain!` cascades,
+     and — critically — the Spin invoke's LOCAL callbacks fire, which
+     is what `spawn!`'s `:on-error` and therefore `spin/supervisor`
+     restart policies ride on. (A bare node-write would notify awaiting
+     parents only; pumps/consumers are *spawned*, not awaited.) This
+     mirrors `spin.core/cancel-spin!` step (2), replicated here because
+     `spin.core` requires this namespace (cycle).
+
+  2. Fallback (no matching cont — e.g. a waiter registered through the
+     Mailbox/Deferred 2-arity directly, outside `await`): write the
+     error into the node and drive the engine-level completion cascade
+     + pending callbacks. If not even a node exists there is nothing to
+     reject — the caller reports the fault and that is all that can be
+     done.
+
+  Residual exposure (accepted, same as `cancel-spin!`): if the throw
+  happened in glue AFTER the resumed slice advanced through a further
+  breakpoint, the matched cont's reject unwinds a slice the body
+  already left. The window is glue-only (body slices are safe-r
+  wrapped) and strictly better than the alternative (silent wedge)."
+  [context spin-id cancel-token error]
+  (let [conts (rtp/get-state context [:await-conts spin-id])
+        [cont-id cont] (when cancel-token
+                         (first (filter (fn [[_cid c]]
+                                          (= (:cancel-token c) cancel-token))
+                                        conts)))]
+    (if cont
+      (do
+        (try
+          (binding [ec/*execution-context* context
+                    ec/*spin-id* spin-id
+                    pcps-async/*in-trampoline* false]
+            (when-let [rj (:reject-fn cont)] (rj error)))
+          (catch #?(:clj Throwable :cljs :default) _ nil))
+        (rtp/swap-state! context [:await-conts spin-id]
+                         (fn [m] (dissoc m cont-id))))
+      (when (rtp/get-state context [:nodes spin-id])
+        ;; Same raw {:variant :error} map shape the drain's
+        ;; :spin-completion catch writes — deliberately not spin.core's
+        ;; Result record (cycle).
+        (cache-result! context spin-id {:variant :error :payload error})
+        (enqueue-completion-event! context spin-id)
+        (doseq [{:keys [reject]} (take-pending-callbacks! context spin-id)]
+          (try (reject error)
+               (catch #?(:clj Throwable :cljs :default) _ nil)))))
+    nil))
+
+(defn- guarded-resume!
+  "Invoke a waiter/reader continuation with the uniform failure route:
+  on throw, restore the interrupt flag (JVM, if it was an interrupt),
+  report through the engine fault hook, and reject the owning spin via
+  `reject-owning-spin!`. `site` names the delivery path for the fault
+  report; `spin-id`/`cancel-token` come from the waiter entry and may
+  be nil (waiter registered outside a spin body → report-only)."
+  [context site spin-id cancel-token resolve value]
+  (try
+    (pcps-async/invoke-continuation resolve value)
+    (catch #?(:clj Throwable :cljs :default) e
+      #?(:clj (when (instance? InterruptedException e)
+                (.interrupt (Thread/currentThread))))
+      (fault/report-fault! ::fault/continuation-fault
+                           {:site site :spin-id spin-id :error e})
+      (when spin-id
+        (reject-owning-spin! context spin-id cancel-token e))
+      nil)))
+
 (defn- deliver-inline!
   "INTERNAL: Deliver value inline to deferred, resuming readers directly."
-  [deferred value state-atom]
+  [context deferred value state-atom]
   (let [;; Atomically check if already assigned and capture pending callbacks
         pending-callbacks (atom nil)
         _assigned? (swap! state-atom
@@ -167,11 +253,17 @@
     ;; Deferred 2-arity stores cancellation metadata so it can prune cancelled
     ;; readers). The wrapped `:resolve` already no-ops if its await was
     ;; cancelled, so we can invoke them all; the metadata is for the
-    ;; prune-on-read sweep, not needed here.
+    ;; prune-on-read sweep — and for failure routing here.
     ;; Event handler already bound *in-trampoline* false
+    ;;
+    ;; PER-READER isolation: each resume runs under guarded-resume!, so
+    ;; reader k throwing (a) cannot strand readers k+1..n — they never ran
+    ;; and still get the value — and (b) rejects reader k's own spin
+    ;; instead of leaving it PENDING. Same isolation shape PR #28 gave
+    ;; mult's watchers; a deferred with N readers is the same fan-out.
     (when-let [pending @pending-callbacks]
-      (doseq [{:keys [resolve]} pending]
-        (pcps-async/invoke-continuation resolve value)))
+      (doseq [{:keys [spin-id cancel-token resolve]} pending]
+        (guarded-resume! context :deferred spin-id cancel-token resolve value)))
 
     ;; Return the assigned value
     (:value @state-atom)))
@@ -198,10 +290,8 @@
   — the swap-state above only popped a waiter and didn't put the msg
   anywhere; the next iteration finds the next waiter (or pushes the msg
   to `:queue` if no more waiters)."
-  [mailbox msg state-atom]
-  (let [ctx (try (ec/current-execution-context)
-                 (catch #?(:clj Throwable :cljs :default) _ nil))
-        cancelled-tokens (when ctx (rtp/get-state ctx [:engine/cancelled-tokens]))]
+  [context mailbox msg state-atom]
+  (let [cancelled-tokens (rtp/get-state context [:engine/cancelled-tokens])]
     (loop []
       (let [waiter-to-try (atom nil)
             _result (swap! state-atom
@@ -226,14 +316,17 @@
               ;; one entry per signal-change × waiter over the context's
               ;; lifetime. See `effects/await.cljc::cancellable-external-pair`
               ;; for the Deferred/ifn? side of the same self-cleaning story.
-              (when ctx
-                (rtp/swap-state! ctx [:engine/cancelled-tokens]
-                                 (fn [s] (if s (disj s cancel-token) s))))
+              (rtp/swap-state! context [:engine/cancelled-tokens]
+                               (fn [s] (if s (disj s cancel-token) s)))
               (recur))
 
             :else
+            ;; Failure routing: a throw out of the resumed consumer rejects
+            ;; THAT consumer's spin (loud, supervisable) — the message is
+            ;; consumed either way (at-most-once; a partially-run
+            ;; continuation is not re-runnable). See guarded-resume!.
             (do
-              (pcps-async/invoke-continuation resolve msg)
+              (guarded-resume! context :mailbox spin-id cancel-token resolve msg)
               nil))
           ;; No waiter, message queued
           nil)))))
@@ -832,7 +925,35 @@
                 ;; created). The cont's own :resume-fn carries the
                 ;; monadic resolve/reject routing on the child's Result
                 ;; (see spin-await-cont-map in effects/await.cljc).
-                (resume-body! context parent-id cont :await))))))
+                ;;
+                ;; PER-PARENT isolation + failure routing: one parent's
+                ;; throwing resume must not strand the sibling parents in
+                ;; this doseq, and the thrower itself must reject loudly
+                ;; instead of staying suspended. On throw, unwind the
+                ;; parent via THIS cont's :reject-fn (the parent body's
+                ;; reject continuation — catch/finally run, spawn!/
+                ;; supervisor callbacks fire; mirrors cancel-spin!'s
+                ;; :await-once branch), then drop the spent cont. The
+                ;; drain-level :spin-completion catch remains as a
+                ;; backstop but should no longer fire for resume throws.
+                (try
+                  (resume-body! context parent-id cont :await)
+                  (catch #?(:clj Throwable :cljs :default) e
+                    #?(:clj (when (instance? InterruptedException e)
+                              (.interrupt (Thread/currentThread))))
+                    (fault/report-fault! ::fault/continuation-fault
+                                         {:site :spin-completion
+                                          :spin-id parent-id
+                                          :child-id tid
+                                          :error e})
+                    (try
+                      (binding [ec/*execution-context* context
+                                ec/*spin-id* parent-id
+                                pcps-async/*in-trampoline* false]
+                        (when-let [rj (:reject-fn cont)] (rj e)))
+                      (catch #?(:clj Throwable :cljs :default) _ nil))
+                    (rtp/swap-state! context [:await-conts parent-id]
+                                     (fn [m] (dissoc m cont-id))))))))))
 
       ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -854,7 +975,7 @@
       ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
       (binding [ec/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (deliver-inline! deferred value state-atom))
+        (deliver-inline! context deferred value state-atom))
       nil)
 
     :mailbox-post
@@ -869,7 +990,7 @@
       ;; The mailbox function will resume continuations which need context access
       (binding [ec/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (post-inline! mailbox msg state-atom))
+        (post-inline! context mailbox msg state-atom))
       nil)
 
     :spin-execution
@@ -1017,7 +1138,12 @@
                             ;; abort the entire drain session.
                             (try
                               (process-event! context event)
-                              (catch #?(:clj Throwable :cljs js/Error) e
+                              ;; :cljs :default, NOT js/Error — CLJS code can
+                              ;; throw non-Error values (strings, keywords,
+                              ;; maps); js/Error would let those abort the
+                              ;; whole drain session and skip the recovery
+                              ;; dispatch below.
+                              (catch #?(:clj Throwable :cljs :default) e
                                 (log/error :engine/event-processing-error {:event-type (:type event)
                                                                            :event-id (:id event)
                                                                            :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})

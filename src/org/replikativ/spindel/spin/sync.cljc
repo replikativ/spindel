@@ -285,6 +285,13 @@
    State is stored in fork-safe execution-context atom.
    Fork-safe - state is copied when execution-context is forked.
 
+   NOTE for health checks / monitoring: because the state atom is
+   ctx-backed (copy-on-write), dereffing it under a DIFFERENT execution
+   context returns that context's copy — e.g. `queue: 0` while the
+   owning ctx holds `queue: 10`. Probe under the owning ctx:
+   `(binding [ec/*execution-context* owning-ctx] @state-atom)`.
+   See engine.md §Threading contract.
+
    Example:
      (def mbx (create-mailbox execution-context))
      (mbx :msg)              ; Post message (returns nil)

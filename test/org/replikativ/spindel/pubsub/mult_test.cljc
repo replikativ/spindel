@@ -5,6 +5,7 @@
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.pubsub.buffer :as buf]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.context :as ctx]
             [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
@@ -343,7 +344,7 @@
   ;; STACK. An unguarded throw there unwinds into the pump, cancels its await
   ;; cont, and wedges the whole room bus deaf. deliver! must isolate each watcher
   ;; fault: report it, keep notifying the remaining watchers, never propagate.
-  (let [orig-reporter @@#'mult/fault-reporter
+  (let [orig-reporter (fault/current-fault-reporter)
         faults (atom [])]
     (mult/set-fault-reporter! (fn [ev data] (swap! faults conj [ev data])))
     (try
