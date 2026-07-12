@@ -20,6 +20,8 @@
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ectx]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -275,6 +277,85 @@
              "parent's copy is untouched (fork diverged)")
          (is (= [{:ev 1}] (backend/backend-read fork [:engine/pending]))
              "fork-local pending written directly — parent's queue not read")))))
+
+;; -----------------------------------------------------------------------------
+;; 4c. Forkability: in-flight data-bearing events are inherited by forks
+;; -----------------------------------------------------------------------------
+
+#?(:clj
+   (deftest fork-inherits-in-flight-handoff-events
+     (testing "a fork taken between the transactional handoff commit and its
+             :cont-resume processing inherits the event — the fork's consumer
+             copy receives the message instead of hanging un-armed (the
+             message exists in BOTH worlds, like a queued mailbox message
+             at fork time). Notification events stay dropped."
+       (th/with-ctx [ctx]
+         (let [mbx (sync/create-mailbox ctx)
+               hits (atom []) ;; PLAIN atom — shared across worlds, one hit per world
+               consumer (spin
+                         (let [m (await mbx)]
+                           (swap! hits conj m)
+                           m))]
+           (sync/spawn! consumer)
+           (is (poll-until #(binding [ec/*execution-context* ctx]
+                              (boolean (seq (:waiters @(.-state-atom mbx)))))
+                           2000)
+               "consumer's waiter registered")
+           ;; Make the window deterministic: wait until the parent's queue
+           ;; is quiet (the suspended consumer legitimately keeps
+           ;; :running? true, so await-drain-complete! never reports idle
+           ;; here — poll pending+lock only), then HOLD the drain lock so
+           ;; no straggler drain session (executor tasks from the
+           ;; spawn/take activity above) can consume the appended event
+           ;; before we fork.
+           (is (poll-until #(let [state (backend/backend-deref (:backend ctx))]
+                              (and (empty? (:engine/pending state))
+                                   (not (:engine/draining? state))))
+                           4000)
+               "parent queue quiesced")
+           (is (rtp/cas-state! ctx [:engine/draining?] false true)
+               "took the parent's drain lock")
+           ;; Simulate the committed handoff exactly as post-inline! leaves
+           ;; it: waiter popped from mailbox state, its :cont-resume in
+           ;; :engine/pending — appended WITHOUT a drain trigger so the
+           ;; fork can be taken in the window.
+           (let [w (volatile! nil)]
+             (binding [ec/*execution-context* ctx]
+               (swap! (.-state-atom mbx)
+                      (fn [st]
+                        (vreset! w (first (:waiters st)))
+                        (update st :waiters #(vec (rest %))))))
+             (rtp/swap-state-args! ctx [:engine/pending] conj
+                                   [{:type :cont-resume
+                                     :site :mailbox
+                                     :spin-id (:spin-id @w)
+                                     :cancel-token (:cancel-token @w)
+                                     :resolve (:resolve @w)
+                                     :value :the-msg
+                                     :mailbox mbx}]))
+           (let [fork (ectx/fork-context ctx)]
+             ;; fork-context both seeds the fork's pending with the
+             ;; in-flight data event AND triggers the fork's drain, so by
+             ;; the time we look the event may be pending or already
+             ;; processed — either way it was INHERITED, which the
+             ;; both-worlds outcome below pins. (The parent's copy can't
+             ;; move: we hold the parent's drain lock.)
+             (is (or (= 1 (count (filter #(= :cont-resume (:type %))
+                                         (rtp/get-state fork [:engine/pending]))))
+                     (= [:the-msg] @hits))
+                 "the fork inherited the in-flight data event")
+             ;; Release the parent's drain lock and trigger it — in
+             ;; reality post-inline! runs inside an active drain session,
+             ;; which picks the event up itself.
+             (rtp/swap-state! ctx [:engine/draining?] (constantly false))
+             (simple/trigger-drain! ctx (:executor ctx))
+             ;; Each world drains its own copy of the event against its own
+             ;; ctx — the shared plain atom records one hit per world.
+             (is (poll-until #(= [:the-msg :the-msg] @hits) 4000)
+                 "both worlds' consumer copies received the message")
+             ;; Silence the unused-binding lint without dropping the fork
+             ;; reference before the drain we care about has run.
+             fork))))))
 
 ;; -----------------------------------------------------------------------------
 ;; 5. CLJS: non-Error throw values must not slip past the catches

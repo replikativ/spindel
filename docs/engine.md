@@ -100,22 +100,42 @@ Reactive **execution state** (the two continuation tables,
 `:engine/pending`, `:engine/draining?`) is fork-local so the fork can
 drain its own events without contending with the parent's drain.
 
-> **Forking with an un-drained change.** Because `:engine/pending` is
-> fork-local, `fork-context` starts the fork with an empty queue — so a
-> `:signal-change` that the parent enqueued but has not yet drained is
-> *dropped* on the fork side. This is safe for the reactive model: spin
-> staleness is tracked by the per-`SpinNode` `:dirty` flag **plus the
-> `:generation` guard** (a spin caches the generations of the signals it
-> read and refuses its fast-path on a mismatch), neither of which lives in
-> the pending queue. So a fork spin that `await`/`track`s a stale-clean
-> spin recomputes against the new value via the generation guard — the
-> dropped event was only the *eager* recompute trigger, reconstructed
-> lazily on demand. Quiescence before forking is therefore an
-> optimization, not a correctness requirement. (The exception is a raw
-> `@deref` of a stale-clean spin, which returns the clean cache without
-> recomputing — the discouraged out-of-spin path; across a fork that
-> staleness is permanent rather than eventually-consistent, since the fork
-> never drains the dropped event.)
+> **Forking with an un-drained change.** `:engine/pending` is
+> fork-local, and `fork-context` splits the parent's un-drained queue by
+> event kind:
+>
+> - **Notification events** (`:signal-change`, `:spin-completion`,
+>   `:spin-execution`, `:gc-cleanup`) are *dropped* on the fork side.
+>   This is safe for the reactive model: their truth already lives in
+>   state the fork sees. Spin staleness is tracked by the per-`SpinNode`
+>   `:dirty` flag **plus the `:generation` guard** (a spin caches the
+>   generations of the signals it read and refuses its fast-path on a
+>   mismatch), neither of which lives in the pending queue. So a fork
+>   spin that `await`/`track`s a stale-clean spin recomputes against the
+>   new value via the generation guard — the dropped event was only the
+>   *eager* recompute trigger, reconstructed lazily on demand.
+>   Quiescence before forking is therefore an optimization, not a
+>   correctness requirement. (The exception is a raw `@deref` of a
+>   stale-clean spin, which returns the clean cache without recomputing
+>   — the discouraged out-of-spin path; across a fork that staleness is
+>   permanent rather than eventually-consistent, since the fork never
+>   drains the dropped event.) `:spin-execution` additionally carries
+>   external caller callbacks that must fire exactly once — in the
+>   parent's world.
+>
+> - **Data-bearing handoff events** (`:mailbox-post`,
+>   `:deferred-delivery`, `:cont-resume`) are *inherited* — copied into
+>   the fork's initial queue (and the fork's drain is triggered).
+>   Unlike notifications, these CARRY a payload that exists nowhere
+>   else: the message/value in flight. Dropping them would lose the
+>   message in the fork's world — and a `:cont-resume`'s waiter has
+>   already been popped from the (CoW-shared) primitive state, so the
+>   fork's consumer copy would hang un-armed. Each world drains its own
+>   copy against its own ctx (continuation closures resolve
+>   `*execution-context*` dynamically, and the fork copied
+>   `[:await-conts]`), so both worlds' body copies receive the value —
+>   the same both-worlds semantics as a message sitting in the mailbox
+>   `:queue` at fork time.
 
 `:engine/cancelled-tokens` is the one shared path with subtle
 fork behavior; see [§8](#8-overlay-backend).
