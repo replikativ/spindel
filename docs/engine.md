@@ -100,22 +100,42 @@ Reactive **execution state** (the two continuation tables,
 `:engine/pending`, `:engine/draining?`) is fork-local so the fork can
 drain its own events without contending with the parent's drain.
 
-> **Forking with an un-drained change.** Because `:engine/pending` is
-> fork-local, `fork-context` starts the fork with an empty queue — so a
-> `:signal-change` that the parent enqueued but has not yet drained is
-> *dropped* on the fork side. This is safe for the reactive model: spin
-> staleness is tracked by the per-`SpinNode` `:dirty` flag **plus the
-> `:generation` guard** (a spin caches the generations of the signals it
-> read and refuses its fast-path on a mismatch), neither of which lives in
-> the pending queue. So a fork spin that `await`/`track`s a stale-clean
-> spin recomputes against the new value via the generation guard — the
-> dropped event was only the *eager* recompute trigger, reconstructed
-> lazily on demand. Quiescence before forking is therefore an
-> optimization, not a correctness requirement. (The exception is a raw
-> `@deref` of a stale-clean spin, which returns the clean cache without
-> recomputing — the discouraged out-of-spin path; across a fork that
-> staleness is permanent rather than eventually-consistent, since the fork
-> never drains the dropped event.)
+> **Forking with an un-drained change.** `:engine/pending` is
+> fork-local, and `fork-context` splits the parent's un-drained queue by
+> event kind:
+>
+> - **Notification events** (`:signal-change`, `:spin-completion`,
+>   `:spin-execution`, `:gc-cleanup`) are *dropped* on the fork side.
+>   This is safe for the reactive model: their truth already lives in
+>   state the fork sees. Spin staleness is tracked by the per-`SpinNode`
+>   `:dirty` flag **plus the `:generation` guard** (a spin caches the
+>   generations of the signals it read and refuses its fast-path on a
+>   mismatch), neither of which lives in the pending queue. So a fork
+>   spin that `await`/`track`s a stale-clean spin recomputes against the
+>   new value via the generation guard — the dropped event was only the
+>   *eager* recompute trigger, reconstructed lazily on demand.
+>   Quiescence before forking is therefore an optimization, not a
+>   correctness requirement. (The exception is a raw `@deref` of a
+>   stale-clean spin, which returns the clean cache without recomputing
+>   — the discouraged out-of-spin path; across a fork that staleness is
+>   permanent rather than eventually-consistent, since the fork never
+>   drains the dropped event.) `:spin-execution` additionally carries
+>   external caller callbacks that must fire exactly once — in the
+>   parent's world.
+>
+> - **Data-bearing handoff events** (`:mailbox-post`,
+>   `:deferred-delivery`, `:cont-resume`) are *inherited* — copied into
+>   the fork's initial queue (and the fork's drain is triggered).
+>   Unlike notifications, these CARRY a payload that exists nowhere
+>   else: the message/value in flight. Dropping them would lose the
+>   message in the fork's world — and a `:cont-resume`'s waiter has
+>   already been popped from the (CoW-shared) primitive state, so the
+>   fork's consumer copy would hang un-armed. Each world drains its own
+>   copy against its own ctx (continuation closures resolve
+>   `*execution-context*` dynamically, and the fork copied
+>   `[:await-conts]`), so both worlds' body copies receive the value —
+>   the same both-worlds semantics as a message sitting in the mailbox
+>   `:queue` at fork time.
 
 `:engine/cancelled-tokens` is the one shared path with subtle
 fork behavior; see [§8](#8-overlay-backend).
@@ -501,6 +521,52 @@ Thread A checks :pending → non-empty → re-triggers
 Without the re-trigger, the new event would sit unprocessed until the
 next wakeup (up to 1 second).
 
+### Threading contract
+
+The engine's threads and the embedder's threads have an asymmetric
+contract:
+
+- **Engine-owned threads are never interrupt targets.** The drain
+  thread, executor workers, and delayed-execution timers run engine
+  machinery interleaved with many spins' continuations; a
+  `Thread.interrupt` landing there (e.g. via `future-cancel` on a
+  future that happens to be executing engine code) can only be
+  reported, not honored. Cancel work through the engine instead:
+  `spin.core/cancel-spin!` for a spin, or the cancel-token machinery
+  that `await` installs automatically. (Issue #27 was exactly this
+  violation: interrupt-based turn cancellation losing a mailbox
+  waiter.)
+- **Blocking embedder work runs on embedder threads** (futures, your
+  own pools) and communicates with the engine ONLY through
+  enqueue-only APIs — `sync/deliver!`, `sync/post!`, signal `swap!`.
+  Those never run engine continuations on your thread, so your threads
+  stay freely interruptible. (dvergr's generation handles follow this
+  pattern: the LLM call runs on a cancellable future that `deliver!`s
+  its result.)
+- **Failure semantics: at-most-once delivery, loud rejection.** When a
+  resumed waiter/reader continuation throws (including
+  `InterruptedException` — the flag is restored), the engine reports
+  `engine.fault/continuation-fault` and REJECTS the owning spin via
+  its parked continuation's reject route, so `catch`/`finally` run and
+  `spawn!`'s `:on-error` (and therefore `spin/supervisor` restart
+  policies) fire. The in-flight message is consumed either way — a
+  partially-executed continuation cannot be re-run (bodies are not
+  idempotent), so redelivery is a *restart-level* policy, not an
+  engine-level one.
+- **Faults are never silent.** All engine fault paths — continuation
+  faults, exceptions escaping executor tasks (whose `.submit` Futures
+  are discarded), pubsub watcher/pump faults — report through the
+  single hook in `engine/fault.cljc`; embedders route it into their
+  logging via `set-fault-reporter!`.
+
+One more sharp edge for health checks and monitoring: **Mailbox and
+Deferred state is ctx-relative (copy-on-write)**. The `state-atom` is a
+fork-safe context-backed atom, so dereffing it under a different
+execution context (e.g. a daemon root instead of the owning room ctx)
+returns that context's copy — `queue: 0` while the owning ctx holds
+`queue: 10`. Probe under the owning ctx:
+`(binding [ec/*execution-context* owning-ctx] @state-atom)`.
+
 ### Event types
 
 | Event | When enqueued | What drain does |
@@ -508,8 +574,23 @@ next wakeup (up to 1 second).
 | `:signal-change` | `swap!` / `reset!` on a signal | Marks dependent spins dirty, resumes track continuations, processes batch completions |
 | `:spin-completion` | Spin body finishes | Resumes `await` continuations in parent spins |
 | `:spin-execution` | `deref` on an uncached spin | Claims execution slot, runs spin body on executor |
-| `:deferred-delivery` | `deliver!` on a `Deferred` | Delivers value and inline-resumes waiting continuations |
-| `:mailbox-post` | `post!` on a `Mailbox` | Delivers message and inline-resumes the first waiter |
+| `:deferred-delivery` | `deliver!` on a `Deferred` | Assigns the value; enqueues one `:cont-resume` per pending reader |
+| `:mailbox-post` | `post!` on a `Mailbox` | Pops the first live waiter and enqueues its `:cont-resume` (or queues the message) |
+| `:cont-resume` | A one-shot waiter was popped for delivery (mailbox waiter, deferred reader, pubsub promise watcher, semaphore acquirer) | Re-checks cancellation at processing time (re-posting a cancelled mailbox waiter's message losslessly), then invokes the continuation under the uniform failure route |
+
+**The resume-as-event boundary.** One-shot waiters — entries POPPED from
+a primitive's state before firing — run as their own `:cont-resume`
+events: they get the drain's cancellation re-check and failure route,
+and no foreign thread ever executes them. PERSISTENT graph
+continuations (track conts and await conts, which are never removed
+and may legitimately fire more than once) resume INLINE within their
+driving event (`:signal-change` / `:spin-completion`): the inline
+design guarantees a resume has advanced the body before the next
+driving event processes — queueing them would let two child
+completions enqueue two resumes of the same un-advanced cont
+(double-firing the body). The persistent conts get per-resume fault
+isolation + owning-spin rejection instead (see the `:spin-completion`
+handler).
 
 ## 5. Glitch-Free Signal Propagation
 

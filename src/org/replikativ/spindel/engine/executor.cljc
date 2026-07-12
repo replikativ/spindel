@@ -9,7 +9,8 @@
   Scheduling policy — *when* and *in what order* to run things (topological
   observer notification, batch coordination, drain ordering) — lives in the
   engine implementation (`engine.impl.simple`), not in this namespace."
-  (:require [org.replikativ.spindel.engine.bindings :as bindings])
+  (:require [org.replikativ.spindel.engine.bindings :as bindings]
+            [org.replikativ.spindel.engine.fault :as fault])
   #?(:clj (:import [java.util.concurrent Executors ExecutorService ThreadPoolExecutor
                     ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
                     TimeUnit LinkedBlockingQueue Callable ForkJoinPool])))
@@ -90,6 +91,37 @@
        :cljs (js/clearTimeout handle)))
   nil)
 
+(defn ^:no-doc guard-task
+  "Wrap an executor task so an exception escaping it is REPORTED instead
+  of vanishing. On the JVM, `execute!` returns a `.submit` Future that
+  no caller derefs — an escaped throw is captured in the discarded
+  Future and lost without a trace. On JS, a throw escaping a setTimeout
+  callback surfaces as an uncaught error, but bypasses the engine's
+  fault hook. Either way, the task seam is the last place the engine
+  can observe the failure, so it is guarded here — this covers EVERY
+  executor-run path (drain sessions, parallel observer dispatch,
+  parallel/race children, delayed-spin resumes, semaphore wakes).
+
+  InterruptedException additionally restores the thread's interrupt
+  flag: the engine treats engine-owned threads as non-interruptible
+  (see engine.md §Threading contract), so an interrupt that lands here
+  is an embedder contract violation worth reporting — but the flag must
+  survive for pool machinery that inspects it.
+
+  The throw is NOT re-raised: there is no upstream observer to raise it
+  to (that is the point), and re-raising on a pool thread would only
+  feed the pool's uncaught-exception machinery inconsistently across
+  executors."
+  [task-fn]
+  (fn []
+    (try
+      (task-fn)
+      #?@(:clj [(catch InterruptedException ie
+                  (.interrupt (Thread/currentThread))
+                  (fault/report-fault! ::fault/executor-task-fault {:error ie :interrupted? true}))])
+      (catch #?(:clj Throwable :cljs :default) e
+        (fault/report-fault! ::fault/executor-task-fault {:error e})))))
+
 ;; =============================================================================
 ;; Executor Implementations
 ;; =============================================================================
@@ -131,9 +163,12 @@
        PExecutor
        (execute! [_ spin-fn]
          (let [bindings (capture-targeted-bindings)
-               bound-spin-fn (fn []
-                               (with-bindings bindings
-                                 (spin-fn)))]
+               ;; guard-task: the returned Future is discarded by every
+               ;; caller — without the guard an escaped throw vanishes.
+               bound-spin-fn (guard-task
+                              (fn []
+                                (with-bindings bindings
+                                  (spin-fn))))]
            (.submit executor ^Callable (reify Callable
                                          (call [_]
                                            (bound-spin-fn))))))
@@ -155,9 +190,11 @@
        PExecutor
        (execute! [_ spin-fn]
          (let [bindings (capture-targeted-bindings)
-               bound-spin-fn (fn []
-                               (with-bindings bindings
-                                 (spin-fn)))]
+               ;; guard-task: same discarded-Future rationale as PoolExecutor.
+               bound-spin-fn (guard-task
+                              (fn []
+                                (with-bindings bindings
+                                  (spin-fn))))]
            (.submit pool ^Callable (reify Callable
                                      (call [_]
                                        (bound-spin-fn))))))
@@ -179,7 +216,10 @@
      (execute! [_ spin-fn]
        ;; Capture current dynamic bindings before scheduling
        (let [captured-bindings (bindings/capture-bindings)
-             bound-spin-fn #(bindings/restore-bindings captured-bindings spin-fn)]
+             ;; guard-task: route escaped throws through the engine fault
+             ;; hook instead of the global uncaught-error handler.
+             bound-spin-fn (guard-task
+                            #(bindings/restore-bindings captured-bindings spin-fn))]
          ;; Schedule on next tick and return nil (TODO: return promise)
          (js/setTimeout bound-spin-fn 0)
          nil))
@@ -187,7 +227,8 @@
      (execute-after! [_ delay-ms spin-fn]
        ;; Capture current dynamic bindings before scheduling
        (let [captured-bindings (bindings/capture-bindings)
-             bound-spin-fn #(bindings/restore-bindings captured-bindings spin-fn)]
+             bound-spin-fn (guard-task
+                            #(bindings/restore-bindings captured-bindings spin-fn))]
          ;; Use setTimeout for delayed execution; return its id so the
          ;; caller can clearTimeout it (see cancel-timer-handle!) and not
          ;; leak a pending timer for a completed / cancelled delayed spin.

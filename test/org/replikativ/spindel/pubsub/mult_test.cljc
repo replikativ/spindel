@@ -5,6 +5,7 @@
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.pubsub.buffer :as buf]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.context :as ctx]
             [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
@@ -339,28 +340,38 @@
 (def ^:private make-promise* @#'mult/make-promise)
 
 (deftest deliver-isolates-watcher-faults
-  ;; A promise watcher resumes a consumer spin and runs ON THE PRODUCER (pump)
-  ;; STACK. An unguarded throw there unwinds into the pump, cancels its await
-  ;; cont, and wedges the whole room bus deaf. deliver! must isolate each watcher
-  ;; fault: report it, keep notifying the remaining watchers, never propagate.
-  (let [orig-reporter @@#'mult/fault-reporter
+  ;; A promise watcher resumes a consumer spin. Historically it ran ON THE
+  ;; PRODUCER (pump) STACK, where an unguarded throw unwound into the pump,
+  ;; cancelled its await cont, and wedged the whole room bus deaf. Under
+  ;; resume-as-event (#27 Phase B) ctx-registered watchers run as their own
+  ;; :cont-resume drain events (structural isolation); this test exercises
+  ;; the DEGENERATE no-ctx path (watchers registered outside the engine),
+  ;; which still runs inline on the deliverer's stack and must therefore be
+  ;; guarded: report the fault, keep notifying the remaining watchers, never
+  ;; propagate to the producer.
+  (let [orig-reporter (fault/current-fault-reporter)
         faults (atom [])]
     (mult/set-fault-reporter! (fn [ev data] (swap! faults conj [ev data])))
     (try
       (let [p (make-promise*)
             called (atom [])]
-        ;; watcher order: a throwing one FIRST, a recording one after it
+        ;; watcher order: a throwing one FIRST, a recording one after it.
+        ;; Watchers are {:ctx :spin-id :resolve} entries; :ctx nil selects
+        ;; the inline degenerate path this test targets.
         (swap! (:state p) update :watchers conj
-               (fn [_v] (throw (ex-info "consumer boom" {}))))
+               {:ctx nil :spin-id nil
+                :resolve (fn [_v] (throw (ex-info "consumer boom" {})))})
         (swap! (:state p) update :watchers conj
-               (fn [v] (swap! called conj v)))
+               {:ctx nil :spin-id nil
+                :resolve (fn [v] (swap! called conj v))})
         (testing "deliver! returns normally — the fault does not reach the producer"
           (is (= :val ((:deliver! p) :val))))
         (testing "a later watcher still runs despite the earlier fault (isolation)"
           (is (= [:val] @called)))
         (testing "the fault is reported, not silently swallowed"
           (is (= 1 (count @faults)))
-          (is (= ::mult/watcher-fault (ffirst @faults)))
+          (is (= ::fault/continuation-fault (ffirst @faults)))
+          (is (= :promise (:site (second (first @faults)))))
           (is (instance? #?(:clj Throwable :cljs js/Error)
                          (:error (second (first @faults)))))))
       (finally

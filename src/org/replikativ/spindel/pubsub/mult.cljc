@@ -15,106 +15,46 @@
   (:refer-clojure :exclude [await])
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.buffer :as buf]
+            [org.replikativ.spindel.pubsub.promise :as promise]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.fault :as fault]
             #?(:clj [org.replikativ.spindel.spin.cps :refer [spin]])
             [org.replikativ.spindel.effects.await :refer [await]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; =============================================================================
-;; Fault reporting (spindel carries no logging dep — loud by default, overridable)
+;; Fault reporting — delegates to the engine-wide hook (engine/fault.cljc)
 ;; =============================================================================
-
-(defonce ^:private fault-reporter
-  ;; Default: stderr / console.error so a fault is never silently swallowed.
-  ;; Embedders route it into their own logging via `set-fault-reporter!`.
-  (atom (fn [event data]
-          #?(:clj  (binding [*out* *err*]
-                     (println "[spindel.mult]" event (pr-str data)))
-             :cljs (js/console.error "[spindel.mult]" (str event) (clj->js data))))))
 
 (defn set-fault-reporter!
-  "Override how mult reports isolated consumer faults (`::watcher-fault`) and
-   pump rejections (`::pump-rejected`). `f` is (fn [event-keyword data-map]).
-   Default writes to stderr / console.error. simmis routes these into Telemere."
-  [f] (reset! fault-reporter f))
+  "Override how engine faults are reported — `::pump-rejected` here plus
+   ALL engine fault events (`engine.fault/continuation-fault`,
+   `engine.fault/executor-task-fault`, …). `f` is
+   (fn [event-keyword data-map]). Default writes to stderr /
+   console.error. simmis routes these into Telemere.
+
+   Since the reporter was hoisted to `engine/fault.cljc`, this is a
+   delegating alias kept for API compatibility — it sets the ENGINE-WIDE
+   hook, not a mult-local one."
+  [f] (fault/set-fault-reporter! f))
 
 (defn- report-fault! [event data]
-  (try (@fault-reporter event data)
-       (catch #?(:clj Throwable :cljs :default) _ nil)))
+  (fault/report-fault! event data))
 
 ;; =============================================================================
-;; Simple Promise for Coordination (no runtime required)
+;; Coordination promise — shared engine-mediated implementation.
+;; Delivery routes each watcher through its OWN ctx's drain as a
+;; :cont-resume event (resume-as-event, #27 Phase B): fault isolation,
+;; cancellation re-check and cross-ctx completion are structural now —
+;; the local make-promise copy (inline watchers on the producer's
+;; stack + per-watcher try/catch + cross-ctx rebinding wrapper) is gone.
+;; See pubsub/promise.cljc.
 ;; =============================================================================
 
-(defn- make-promise
-  "Create a simple promise that can be delivered once and read multiple times.
-   Uses a standard Clojure atom - no runtime dependency.
-   Uses compare-and-set! instead of swap! to avoid side effects inside retry-able swap fns.
-
-   ## Cross-ctx delivery fix
-   The watcher is the awaiter's `resolve` CPS continuation. When the
-   producer's thread invokes it via `deliver!`, the Clojure dynamic var
-   `*execution-context*` is whatever the producer has bound — often a
-   different execution context from the one that registered the
-   watcher. Without restoring the awaiter's ctx, the completion event
-   gets enqueued on the producer's ctx, where no await-cont is
-   registered for the awaiter's parent, and the parent deadlocks.
-
-   We capture `*execution-context*` at `await-spin` construction
-   (before the watcher is added) and re-establish it around the
-   watcher invocation so the spin completes against its own ctx."
-  []
-  (let [state (atom {:delivered? false :value nil :watchers []})]
-    {:state state
-     :deliver! (fn [value]
-                 (loop []
-                   (let [s @state]
-                     (if (:delivered? s)
-                       value  ;; Already delivered - no-op
-                       (if (compare-and-set! state s {:delivered? true :value value :watchers []})
-                         ;; CAS succeeded - notify watchers from the state we replaced.
-                         ;; Each watcher resumes a consumer spin; a watcher runs ON
-                         ;; THE PRODUCER'S STACK (the source pump), so an unguarded
-                         ;; throw there unwinds INTO the pump, cancels its await cont,
-                         ;; and wedges the whole bus (dossier: bug-bus-source-pump-
-                         ;; lost-waiter). Isolate each consumer fault: report it, keep
-                         ;; delivering to the other watchers, never propagate to the
-                         ;; producer.
-                         (do (doseq [w (:watchers s)]
-                               (try (w value)
-                                    (catch #?(:clj Throwable :cljs :default) e
-                                      (report-fault! ::watcher-fault {:error e}))))
-                             value)
-                         ;; CAS failed (concurrent modification) - retry
-                         (recur))))))
-     :await-spin (fn []
-                   (let [captured-ctx (try (ec/current-execution-context)
-                                           (catch #?(:clj Throwable :cljs :default) _ nil))]
-                     (spin-core/make-spin
-                      (fn [resolve _reject]
-                        ;; Wrap resolve so the completion fires against the
-                        ;; ctx that registered the await, not the producer's.
-                        (let [wrapped (if captured-ctx
-                                        (fn [v]
-                                          (binding [ec/*execution-context* captured-ctx]
-                                            (resolve v)))
-                                        resolve)]
-                          (loop []
-                            (let [s @state]
-                              (if (:delivered? s)
-                                (wrapped (:value s))
-                                ;; Try to add watcher via CAS
-                                (when-not (compare-and-set! state s (update s :watchers conj wrapped))
-                                  ;; CAS failed - retry (will re-check delivered? on next iteration)
-                                  (recur))))))
-                        spin-core/incomplete))))}))
-
-(defn- deliver-promise! [p value]
-  ((:deliver! p) value))
-
-(defn- promise-spin [p]
-  ((:await-spin p)))
+(def ^:private make-promise promise/make-promise)
+(def ^:private deliver-promise! promise/deliver-promise!)
+(def ^:private promise-spin promise/promise-spin)
 
 ;; =============================================================================
 ;; TapSeq - Per-tap async sequence

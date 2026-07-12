@@ -18,6 +18,7 @@
   (:require [is.simm.partial-cps.sequence :refer [PAsyncSeq anext]]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.pubsub.buffer :as buf]
+            [org.replikativ.spindel.pubsub.promise :as promise]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.engine.core :as ec]
@@ -30,47 +31,14 @@
 ;; Internal: per-partition push-based async seq
 ;; =============================================================================
 
-(defn- make-promise
-  "Simple promise for coordination (same pattern as mult.cljc — see that
-   ns for the cross-ctx-delivery rationale behind capturing ctx at
-   await-spin construction and re-binding it around the watcher
-   invocation)."
-  []
-  (let [state (atom {:delivered? false :value nil :watchers []})]
-    {:state state
-     :deliver! (fn [value]
-                 (loop []
-                   (let [s @state]
-                     (if (:delivered? s)
-                       value
-                       (if (compare-and-set! state s {:delivered? true :value value :watchers []})
-                         (do (doseq [w (:watchers s)]
-                               (w value))
-                             value)
-                         (recur))))))
-     :await-spin (fn []
-                   (let [captured-ctx (try (ec/current-execution-context)
-                                           (catch #?(:clj Throwable :cljs :default) _ nil))]
-                     (spin-core/make-spin
-                      (fn [resolve _reject]
-                        (let [wrapped (if captured-ctx
-                                        (fn [v]
-                                          (binding [ec/*execution-context* captured-ctx]
-                                            (resolve v)))
-                                        resolve)]
-                          (loop []
-                            (let [s @state]
-                              (if (:delivered? s)
-                                (wrapped (:value s))
-                                (when-not (compare-and-set! state s (update s :watchers conj wrapped))
-                                  (recur))))))
-                        spin-core/incomplete))))}))
-
-(defn- deliver-promise! [p value]
-  ((:deliver! p) value))
-
-(defn- promise-spin [p]
-  ((:await-spin p)))
+;; Coordination promise — shared engine-mediated implementation
+;; (pubsub/promise.cljc). Watcher delivery routes through the watcher's
+;; own ctx drain as a :cont-resume event, which subsumes both the
+;; cross-ctx rebinding this copy carried AND the per-watcher fault
+;; isolation it never got (PR #28 only patched mult's copy).
+(def ^:private make-promise promise/make-promise)
+(def ^:private deliver-promise! promise/deliver-promise!)
+(def ^:private promise-spin promise/promise-spin)
 
 (defrecord PartitionSource
            [;; atom of vector of items

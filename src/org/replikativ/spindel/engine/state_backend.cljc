@@ -24,6 +24,23 @@
     For empty path, f is applied to entire state.
     For non-empty path, f is applied to value at path.")
 
+  (backend-write-2! [backend path-a path-b f2]
+    "Atomically transform the values at TWO paths in one commit.
+
+    `f2` receives the current values `[a b]` and returns `[a' b']`;
+    both are written in the same atomic state transition. This is the
+    transactional-handoff primitive (issue #27 Phase C): popping a
+    waiter from a primitive's state and appending its resume event to
+    `[:engine/pending]` must be ONE transition, so a wakeup obligation
+    is never in zero places (lost) or two places (double delivery).
+
+    `f2` may be retried (CAS semantics) — it must be pure apart from
+    idempotent volatile! captures. Returns nil.
+
+    A single-function two-path op (not independent per-path fns)
+    because the second write depends on the first's outcome: whether a
+    waiter was popped decides whether an event is appended.")
+
   (backend-deref [backend]
     "Dereference entire state map (for inspection/serialization).")
 
@@ -46,6 +63,15 @@
       (swap! state-atom f)
       ;; Swap at path
       (get-in (swap! state-atom update-in path f) path)))
+
+  (backend-write-2! [_ path-a path-b f2]
+    (swap! state-atom
+           (fn [m]
+             (let [[a' b'] (f2 (get-in m path-a) (get-in m path-b))]
+               (-> m
+                   (assoc-in path-a a')
+                   (assoc-in path-b b')))))
+    nil)
 
   (backend-deref [_]
     @state-atom)
@@ -231,6 +257,34 @@
            (swap! overlay-atom update-in path f)
            path)))))
 
+  (backend-write-2! [_ path-a path-b f2]
+    ;; Both paths committed in ONE swap on the overlay atom — atomic
+    ;; within this fork. Shared paths are CoW-seeded from the parent
+    ;; exactly like backend-write!'s single-path branches (entity level
+    ;; for depth ≥ 2, whole value for depth 1); fork-local paths write
+    ;; directly. After seeding, the fork has diverged from the parent's
+    ;; copy — the standard overlay CoW semantic.
+    (letfn [(seed [ov path]
+              (if (or (fork-local-path? (first path) local-paths)
+                      (nil? parent-backend))
+                ov
+                (let [seed-path (if (>= (count path) 2)
+                                  (vec (take 2 path)) ;; entity-level CoW
+                                  path)]
+                  (if (not= ::not-found (get-in ov seed-path ::not-found))
+                    ov
+                    (if-some [parent-val (backend-read parent-backend seed-path)]
+                      (assoc-in ov seed-path parent-val)
+                      ov)))))]
+      (swap! overlay-atom
+             (fn [ov]
+               (let [ov (-> ov (seed path-a) (seed path-b))
+                     [a' b'] (f2 (get-in ov path-a) (get-in ov path-b))]
+                 (-> ov
+                     (assoc-in path-a a')
+                     (assoc-in path-b b'))))))
+    nil)
+
   (backend-deref [_]
     ;; Return overlay only (not merged with parent)
     ;; This is intentional - deref shows what's in this layer
@@ -319,6 +373,11 @@
     (throw (ex-info "Cannot write to immutable backend - use thaw-snapshot first"
                     {:backend-type :immutable
                      :path path})))
+
+  (backend-write-2! [_ path-a path-b _f2]
+    (throw (ex-info "Cannot write to immutable backend - use thaw-snapshot first"
+                    {:backend-type :immutable
+                     :path [path-a path-b]})))
 
   (backend-deref [_]
     state-map)

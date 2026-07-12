@@ -6,7 +6,7 @@
 
   Responsibilities:
   - Maintain event queue (:engine/pending)
-  - Process events: :signal-change, :spin-completion, :deferred-delivery, :mailbox-post, :spin-execution
+  - Process events: :signal-change, :spin-completion, :deferred-delivery, :mailbox-post, :spin-execution, :cont-resume, :gc-cleanup
   - Drain events asynchronously on executor threads
   - Prevent concurrent draining via CAS lock (:engine/draining?)
 
@@ -18,6 +18,7 @@
   (:refer-clojure :exclude [node])
   (:require [replikativ.logging :as log]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
@@ -138,43 +139,178 @@
 
 ;; Forward declaration for generation boundary cleanup
 (declare clear-all-await-continuations!)
+(declare cache-result!)
 
 ;; =============================================================================
 ;; Inline delivery/posting (to avoid cyclic dependency with spin/sync)
 ;; =============================================================================
 
+(defn- reject-owning-spin!
+  "Route a throw out of a resumed waiter/reader continuation to the
+  OWNING spin's reject path, so the failure is a loud crash of exactly
+  that consumer (Erlang-style) instead of a silently-forever-PENDING
+  spin. This is the failure-routing half of the at-most-once handoff
+  contract: a continuation that partially executed can never be
+  re-delivered (bodies are not idempotent — no effect log exists), so
+  the only sound continuation is rejection + supervision.
+
+  Two routes, in preference order:
+
+  1. The parked cont's `:reject-fn` — the waiter carries the
+     `:cancel-token` that `effects/await.cljc::cancellable-external-pair`
+     also stamped on the `:external-await` cont it registered in
+     `[:await-conts spin-id]`. Matching by token targets EXACTLY the
+     await this waiter belongs to (no blanket rejection of unrelated
+     parked awaits → no zombie-cont risk), and invoking its
+     `:reject-fn` resumes the body into its reject path: `catch`/
+     `finally` run, the error is cached, `abort-spin-chain!` cascades,
+     and — critically — the Spin invoke's LOCAL callbacks fire, which
+     is what `spawn!`'s `:on-error` and therefore `spin/supervisor`
+     restart policies ride on. (A bare node-write would notify awaiting
+     parents only; pumps/consumers are *spawned*, not awaited.) This
+     mirrors `spin.core/cancel-spin!` step (2), replicated here because
+     `spin.core` requires this namespace (cycle).
+
+  2. Fallback (no matching cont — e.g. a waiter registered through the
+     Mailbox/Deferred 2-arity directly, outside `await`): write the
+     error into the node and drive the engine-level completion cascade
+     + pending callbacks. If not even a node exists there is nothing to
+     reject — the caller reports the fault and that is all that can be
+     done.
+
+  Residual exposure (accepted, same as `cancel-spin!`): if the throw
+  happened in glue AFTER the resumed slice advanced through a further
+  breakpoint, the matched cont's reject unwinds a slice the body
+  already left. The window is glue-only (body slices are safe-r
+  wrapped) and strictly better than the alternative (silent wedge)."
+  [context spin-id cancel-token error]
+  (let [conts (rtp/get-state context [:await-conts spin-id])
+        [cont-id cont] (when cancel-token
+                         (first (filter (fn [[_cid c]]
+                                          (= (:cancel-token c) cancel-token))
+                                        conts)))]
+    (if cont
+      (do
+        (try
+          (binding [ec/*execution-context* context
+                    ec/*spin-id* spin-id
+                    pcps-async/*in-trampoline* false]
+            (when-let [rj (:reject-fn cont)] (rj error)))
+          (catch #?(:clj Throwable :cljs :default) _ nil))
+        (rtp/swap-state! context [:await-conts spin-id]
+                         (fn [m] (dissoc m cont-id))))
+      (when (rtp/get-state context [:nodes spin-id])
+        ;; Same raw {:variant :error} map shape the drain's
+        ;; :spin-completion catch writes — deliberately not spin.core's
+        ;; Result record (cycle).
+        (cache-result! context spin-id {:variant :error :payload error})
+        (enqueue-completion-event! context spin-id)
+        (doseq [{:keys [reject]} (take-pending-callbacks! context spin-id)]
+          (try (reject error)
+               (catch #?(:clj Throwable :cljs :default) _ nil)))))
+    nil))
+
+(defn- guarded-resume!
+  "Invoke a waiter/reader continuation with the uniform failure route:
+  on throw, restore the interrupt flag (JVM, if it was an interrupt),
+  report through the engine fault hook, and reject the owning spin via
+  `reject-owning-spin!`. `site` names the delivery path for the fault
+  report; `spin-id`/`cancel-token` come from the waiter entry and may
+  be nil (waiter registered outside a spin body → report-only)."
+  [context site spin-id cancel-token resolve value]
+  (try
+    (pcps-async/invoke-continuation resolve value)
+    (catch #?(:clj Throwable :cljs :default) e
+      #?(:clj (when (instance? InterruptedException e)
+                (.interrupt (Thread/currentThread))))
+      (fault/report-fault! ::fault/continuation-fault
+                           {:site site :spin-id spin-id :error e})
+      (when spin-id
+        (reject-owning-spin! context spin-id cancel-token e))
+      nil)))
+
+;; The resume-as-event boundary (issue #27, engine.md §Event types):
+;; ONE-SHOT waiters — entries POPPED from a primitive's state before
+;; firing (mailbox waiters, deferred readers, pubsub promise watchers,
+;; semaphore acquirers) — are handed to the drain as `:cont-resume`
+;; events. Inside the drain (post-inline!/deliver-inline!) the pop and
+;; the event append are ONE backend-write-2! commit; from outside
+;; (promise deliver!, semaphore release) `rtp/enqueue!` posts + triggers.
+;; PERSISTENT graph continuations (track conts, await conts — never
+;; removed, legitimately multi-fire) must keep resuming INLINE within
+;; their driving event: queueing them would let two driving events
+;; enqueue two resumes of the SAME un-advanced cont (the inline design
+;; guarantees a resume advances the body before the next event
+;; processes — see the loop-over-await pattern).
+;;
+;; :cont-resume event fields:
+;;   :spin-id / :cancel-token — cancellation identity of the waiter
+;;     (re-checked at PROCESSING time; the enqueue→process window can
+;;     contain a truncation).
+;;   :resolve / :value — the continuation and its delivery.
+;;   :site — fault-report tag (:mailbox, :deferred, :promise, :semaphore).
+;;   :mailbox — mailbox handoffs only: the owning Mailbox, so a waiter
+;;     found cancelled AT PROCESSING TIME has its message RE-POSTED
+;;     losslessly (nothing of the continuation ran) — a capability the
+;;     inline design could not express. Re-posting appends to the
+;;     queue's tail; FIFO across a cancellation race is not promised.
+
+(defn- ratom-id
+  "The RuntimeAtom's id field — the key of its ctx-backed state slot
+  `[:atoms id :value]`. Field access via the same per-platform pattern
+  as the deftype accesses in process-event! (reflection on CLJ is
+  acceptable on paths already heading into state mutation)."
+  [state-atom]
+  #?(:clj  (.-id state-atom)
+     :cljs (.-id ^js state-atom)))
+
 (defn- deliver-inline!
-  "INTERNAL: Deliver value inline to deferred, resuming readers directly."
-  [deferred value state-atom]
-  (let [;; Atomically check if already assigned and capture pending callbacks
-        pending-callbacks (atom nil)
-        _assigned? (swap! state-atom
-                          (fn [state]
-                            (if (:assigned? state)
-                             ;; Already assigned - no change
-                              state
-                             ;; First assignment - capture pending and mark assigned
-                             ;; IMPORTANT: Preserve :delivery-claimed? for single-assignment semantics
-                              (do
-                                (reset! pending-callbacks (:pending state))
-                                (assoc state
-                                       :assigned? true
-                                       :value value
-                                       :pending [])))))]
+  "INTERNAL: Deliver value to a deferred.
 
-    ;; Notify all pending readers INLINE if this was the first assignment.
-    ;; Each pending entry is a `{:spin-id :cancel-token :resolve}` map (the
-    ;; Deferred 2-arity stores cancellation metadata so it can prune cancelled
-    ;; readers). The wrapped `:resolve` already no-ops if its await was
-    ;; cancelled, so we can invoke them all; the metadata is for the
-    ;; prune-on-read sweep, not needed here.
-    ;; Event handler already bound *in-trampoline* false
-    (when-let [pending @pending-callbacks]
-      (doseq [{:keys [resolve]} pending]
-        (pcps-async/invoke-continuation resolve value)))
+  Transactional handoff (#27 Phase C): marking the deferred assigned,
+  capturing its pending readers, and appending their `:cont-resume`
+  events to `[:engine/pending]` is ONE atomic backend commit
+  (`backend-write-2!`) — each reader's wakeup obligation moves from the
+  deferred's `:pending` to the event queue with no instant in which it
+  exists in zero places (lost) or two (double delivery). Per-reader
+  isolation and cancellation re-checks live in the `:cont-resume`
+  handler.
 
+  Writes go through the backend directly (not the RuntimeAtom's swap),
+  so the ratom's watch listeners are fired manually afterwards —
+  outside the commit, exactly as `atom/swap-and-notify!` does (a swap
+  fn can retry; listeners must fire once, after)."
+  [context deferred value state-atom]
+  (let [aid (ratom-id state-atom)
+        value-path [:atoms aid :value]
+        old-v (volatile! nil)
+        new-v (volatile! nil)]
+    (backend/backend-write-2!
+     (:backend context) value-path [:engine/pending]
+     (fn [state pending]
+       (vreset! old-v state)
+       (if (:assigned? state)
+         ;; Already assigned - no change, no events
+         (do (vreset! new-v state)
+             [state pending])
+         ;; First assignment — capture pending readers and hand each to
+         ;; the drain as its own :cont-resume, atomically with the
+         ;; assignment. (Preserve :delivery-claimed? for
+         ;; single-assignment semantics.)
+         (let [state' (assoc state :assigned? true :value value :pending [])
+               events (mapv (fn [{:keys [spin-id cancel-token resolve]}]
+                              {:type :cont-resume
+                               :site :deferred
+                               :spin-id spin-id
+                               :cancel-token cancel-token
+                               :resolve resolve
+                               :value value})
+                            (:pending state))]
+           (vreset! new-v state')
+           [state' (into (vec pending) events)]))))
+    (ec/notify-listeners! state-atom aid @old-v @new-v)
     ;; Return the assigned value
-    (:value @state-atom)))
+    (:value @new-v)))
 
 (defn- post-inline!
   "INTERNAL: Post message inline to mailbox, resuming waiters directly.
@@ -195,48 +331,95 @@
      `ec/*external-await-cancel-token*`.
 
   When a cancelled waiter is found, the loop recurs with the SAME `msg`
-  — the swap-state above only popped a waiter and didn't put the msg
-  anywhere; the next iteration finds the next waiter (or pushes the msg
-  to `:queue` if no more waiters)."
-  [mailbox msg state-atom]
-  (let [ctx (try (ec/current-execution-context)
-                 (catch #?(:clj Throwable :cljs :default) _ nil))
-        cancelled-tokens (when ctx (rtp/get-state ctx [:engine/cancelled-tokens]))]
-    (loop []
-      (let [waiter-to-try (atom nil)
-            _result (swap! state-atom
-                           (fn [state]
-                             (if (seq (:waiters state))
-                              ;; Has waiters - take first one to try
-                               (do
-                                 (reset! waiter-to-try (first (:waiters state)))
-                                 (update state :waiters #(vec (rest %))))
-                              ;; No waiters - add to queue
-                               (update state :queue conj msg))))]
-        (if-let [{:keys [spin-id cancel-token resolve]} @waiter-to-try]
-          (cond
-            (and spin-id (ec/spin-is-cancelled? spin-id))
-            (recur)
+  — the commit only popped a waiter and didn't put the msg anywhere;
+  the next iteration finds the next waiter (or pushes the msg to
+  `:queue` if no more waiters). Skipping at pop time (rather than
+  leaving it to the `:cont-resume` handler's re-post) is load-bearing
+  for ORDER: cancelled waiters are routine (await truncations), and a
+  skip never consumes the message, so FIFO is preserved; the handler's
+  re-post only covers the rare cancellation landing in the
+  enqueue→process window.
 
-            (and cancel-token cancelled-tokens (contains? cancelled-tokens cancel-token))
-            (do
-              ;; Self-cleaning: this waiter was cancelled and we're consuming
-              ;; (skipping) it now — the cancel-token is no longer needed.
-              ;; Drop it from the set so cancelled-tokens doesn't accumulate
-              ;; one entry per signal-change × waiter over the context's
-              ;; lifetime. See `effects/await.cljc::cancellable-external-pair`
-              ;; for the Deferred/ifn? side of the same self-cleaning story.
-              (when ctx
-                (rtp/swap-state! ctx [:engine/cancelled-tokens]
+  Transactional handoff (#27 Phase C): popping the live waiter and
+  appending its `:cont-resume` to `[:engine/pending]` is ONE atomic
+  backend commit (`backend-write-2!`) — the wakeup obligation moves
+  from `:waiters` to the event queue with no instant in which it exists
+  in zero places or two. Writes bypass the RuntimeAtom's swap, so its
+  watch listeners are fired manually after each commit (never inside —
+  a swap fn can retry)."
+  [context mailbox msg state-atom]
+  (let [aid (ratom-id state-atom)
+        value-path [:atoms aid :value]
+        cancelled-tokens (rtp/get-state context [:engine/cancelled-tokens])
+        ;; Read-only cancellation probe, called INSIDE the commit fn on
+        ;; the head waiter: `spin-is-cancelled?` reads other state paths
+        ;; of the same backend (a deref of the last committed value) —
+        ;; legal inside a swap fn, and idempotent under CAS retry.
+        dead-waiter? (fn [{:keys [spin-id cancel-token]}]
+                       (or (and spin-id (ec/spin-is-cancelled? spin-id))
+                           (and cancel-token cancelled-tokens
+                                (contains? cancelled-tokens cancel-token))))]
+    (loop []
+      (let [decision (volatile! nil) ;; :queued | [:skip-dead waiter] | :handoff
+            old-v (volatile! nil)
+            new-v (volatile! nil)]
+        (backend/backend-write-2!
+         (:backend context) value-path [:engine/pending]
+         (fn [state pending]
+           (vreset! old-v state)
+           (let [w (first (:waiters state))]
+             (cond
+               (nil? w)
+               ;; No waiters - add to queue
+               (let [state' (update state :queue conj msg)]
+                 (vreset! decision :queued)
+                 (vreset! new-v state')
+                 [state' pending])
+
+               (dead-waiter? w)
+               ;; Pop the cancelled waiter WITHOUT consuming the message.
+               (let [state' (update state :waiters #(vec (rest %)))]
+                 (vreset! decision [:skip-dead w])
+                 (vreset! new-v state')
+                 [state' pending])
+
+               :else
+               ;; Live waiter: pop + append its :cont-resume in the same
+               ;; commit. The handler re-checks cancellation AT
+               ;; PROCESSING time and — because the event carries the
+               ;; mailbox — RE-POSTS the message losslessly if the
+               ;; waiter was cancelled in the enqueue→process window.
+               ;; Failure routing (reject the owning spin on throw)
+               ;; lives in the handler too.
+               (let [state' (update state :waiters #(vec (rest %)))
+                     event {:type :cont-resume
+                            :site :mailbox
+                            :spin-id (:spin-id w)
+                            :cancel-token (:cancel-token w)
+                            :resolve (:resolve w)
+                            :value msg
+                            :mailbox mailbox}]
+                 (vreset! decision :handoff)
+                 (vreset! new-v state')
+                 [state' (conj (vec pending) event)])))))
+        (ec/notify-listeners! state-atom aid @old-v @new-v)
+        (let [d @decision]
+          (if (and (vector? d) (= :skip-dead (first d)))
+            (let [{:keys [cancel-token]} (second d)]
+              ;; Self-cleaning: this waiter was cancelled and we're
+              ;; consuming (skipping) it now — the cancel-token is no
+              ;; longer needed. Drop it so cancelled-tokens doesn't
+              ;; accumulate one entry per signal-change × waiter over the
+              ;; context's lifetime. See `effects/await.cljc::
+              ;; cancellable-external-pair` for the Deferred/ifn? side of
+              ;; the same self-cleaning story.
+              (when (and cancel-token cancelled-tokens
+                         (contains? cancelled-tokens cancel-token))
+                (rtp/swap-state! context [:engine/cancelled-tokens]
                                  (fn [s] (if s (disj s cancel-token) s))))
               (recur))
-
-            :else
-            (do
-              (pcps-async/invoke-continuation resolve msg)
-              nil))
-          ;; No waiter, message queued
-          nil)))))
+            ;; :queued or :handoff — done.
+            nil))))))
 
 ;; =============================================================================
 ;; Engine state wiring
@@ -832,7 +1015,35 @@
                 ;; created). The cont's own :resume-fn carries the
                 ;; monadic resolve/reject routing on the child's Result
                 ;; (see spin-await-cont-map in effects/await.cljc).
-                (resume-body! context parent-id cont :await))))))
+                ;;
+                ;; PER-PARENT isolation + failure routing: one parent's
+                ;; throwing resume must not strand the sibling parents in
+                ;; this doseq, and the thrower itself must reject loudly
+                ;; instead of staying suspended. On throw, unwind the
+                ;; parent via THIS cont's :reject-fn (the parent body's
+                ;; reject continuation — catch/finally run, spawn!/
+                ;; supervisor callbacks fire; mirrors cancel-spin!'s
+                ;; :await-once branch), then drop the spent cont. The
+                ;; drain-level :spin-completion catch remains as a
+                ;; backstop but should no longer fire for resume throws.
+                (try
+                  (resume-body! context parent-id cont :await)
+                  (catch #?(:clj Throwable :cljs :default) e
+                    #?(:clj (when (instance? InterruptedException e)
+                              (.interrupt (Thread/currentThread))))
+                    (fault/report-fault! ::fault/continuation-fault
+                                         {:site :spin-completion
+                                          :spin-id parent-id
+                                          :child-id tid
+                                          :error e})
+                    (try
+                      (binding [ec/*execution-context* context
+                                ec/*spin-id* parent-id
+                                pcps-async/*in-trampoline* false]
+                        (when-let [rj (:reject-fn cont)] (rj e)))
+                      (catch #?(:clj Throwable :cljs :default) _ nil))
+                    (rtp/swap-state! context [:await-conts parent-id]
+                                     (fn [m] (dissoc m cont-id))))))))))
 
       ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -854,7 +1065,7 @@
       ;; CRITICAL: Bind *execution-context* so current-execution-context returns correct context
       (binding [ec/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (deliver-inline! deferred value state-atom))
+        (deliver-inline! context deferred value state-atom))
       nil)
 
     :mailbox-post
@@ -869,7 +1080,7 @@
       ;; The mailbox function will resume continuations which need context access
       (binding [ec/*execution-context* context
                 pcps-async/*in-trampoline* false]
-        (post-inline! mailbox msg state-atom))
+        (post-inline! context mailbox msg state-atom))
       nil)
 
     :spin-execution
@@ -920,6 +1131,44 @@
             ;; Invoke spin (Spin implements IFn)
             (let [result (spin resolve-fn reject-fn)]
               nil)))))
+
+    ;; Resume-as-event handoff for one-shot waiters (#27 Phase B) — see
+    ;; enqueue-cont-resume! for the design boundary. The waiter was
+    ;; already popped from its primitive's state; this event IS the
+    ;; wakeup, so cancellation is re-checked here (the enqueue→process
+    ;; window can contain a truncation) and the failure route is armed.
+    :cont-resume
+    ;; The whole case runs under the event's context binding —
+    ;; spin-is-cancelled? and the Mailbox 1-arity re-post both resolve
+    ;; *execution-context* dynamically.
+    (binding [ec/*execution-context* context
+              pcps-async/*in-trampoline* false]
+      (let [{:keys [spin-id cancel-token resolve value site mailbox]} event
+            cancelled-tokens (rtp/get-state context [:engine/cancelled-tokens])
+            cancelled? (or (and spin-id (ec/spin-is-cancelled? spin-id))
+                           (and cancel-token cancelled-tokens
+                                (contains? cancelled-tokens cancel-token)))]
+        (if cancelled?
+          (do
+            ;; Self-cleaning: consuming the cancelled waiter's token (same
+            ;; contract as the pop-time skip in post-inline!).
+            (when (and cancel-token cancelled-tokens
+                       (contains? cancelled-tokens cancel-token))
+              (rtp/swap-state! context [:engine/cancelled-tokens]
+                               (fn [s] (if s (disj s cancel-token) s))))
+            ;; A mailbox message belongs to exactly one consumer — nothing
+            ;; of this waiter's continuation ran, so RE-POST it losslessly
+            ;; (the fresh :mailbox-post finds the next live waiter or
+            ;; queues). Deferred/promise/semaphore deliveries carry no
+            ;; :mailbox: their values are not single-consumer, skipping a
+            ;; cancelled waiter loses nothing.
+            (when mailbox
+              (log/trace :engine/cont-resume-repost {:site site :spin-id spin-id})
+              (mailbox value))
+            nil)
+          (do
+            (guarded-resume! context site spin-id cancel-token resolve value)
+            nil))))
 
     ;; GC cleanup request — the JVM Cleaner / JS FinalizationRegistry saw the
     ;; Spin OBJECT become unreachable and enqueued this instead of mutating
@@ -1017,7 +1266,12 @@
                             ;; abort the entire drain session.
                             (try
                               (process-event! context event)
-                              (catch #?(:clj Throwable :cljs js/Error) e
+                              ;; :cljs :default, NOT js/Error — CLJS code can
+                              ;; throw non-Error values (strings, keywords,
+                              ;; maps); js/Error would let those abort the
+                              ;; whole drain session and skip the recovery
+                              ;; dispatch below.
+                              (catch #?(:clj Throwable :cljs :default) e
                                 (log/error :engine/event-processing-error {:event-type (:type event)
                                                                            :event-id (:id event)
                                                                            :error #?(:clj (.getMessage ^Throwable e) :cljs (str e))})

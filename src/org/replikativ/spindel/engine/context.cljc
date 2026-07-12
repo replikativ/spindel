@@ -415,6 +415,32 @@
         parent-track-subscriptions (rtp/get-state parent-ctx [:track-subscriptions])
         parent-await-conts (rtp/get-state parent-ctx [:await-conts])
 
+        ;; Inherit the parent's in-flight DATA-BEARING events.
+        ;; :engine/pending is fork-local, and a fork deliberately DROPS
+        ;; the parent's un-drained NOTIFICATION events (:signal-change,
+        ;; :spin-completion, :spin-execution, :gc-cleanup): their truth
+        ;; already lives in state the fork sees (committed signal
+        ;; values, cached results), so re-delivering them in the fork
+        ;; would double-fire, and :spin-execution carries external
+        ;; caller callbacks that must fire once. Handoff events are
+        ;; different — they CARRY DATA that exists nowhere else: a
+        ;; :mailbox-post's / :cont-resume's message, a
+        ;; :deferred-delivery's value. Dropping those loses the message
+        ;; in the fork's world — and under the transactional handoff
+        ;; (#27 Phase C) a :cont-resume's waiter was already popped
+        ;; from the CoW-shared mailbox state, so the fork's consumer
+        ;; copy would hang un-armed with the message gone. Copy them:
+        ;; each world drains its own copy against its own ctx (the
+        ;; continuation closures resolve *execution-context*
+        ;; dynamically, and the fork copied [:await-conts], so the
+        ;; fork's processing advances the fork's body copies) — the
+        ;; same both-worlds semantics as a message sitting in the
+        ;; mailbox :queue at fork time.
+        parent-inflight-data-events
+        (vec (filter #(contains? #{:cont-resume :mailbox-post :deferred-delivery}
+                                 (:type %))
+                     (rtp/get-state parent-ctx [:engine/pending])))
+
         ;; Fork the forkable signals — those whose value is external mutable
         ;; state the overlay CoW can't isolate (a yggdrasil system). For each id
         ;; in [:forkable-signals] we `fork-value` the parent's node value and
@@ -449,7 +475,7 @@
         fork-local-state (cond-> (merge
                                   {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
                                    :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
-                                   :engine/pending []
+                                   :engine/pending parent-inflight-data-events ; ← data-bearing events only, see above
                                    :engine/draining? false
                                    :engine/delayed-spins (sorted-map)
                                    :engine/timer-handles {}}
@@ -499,16 +525,24 @@
                         :else
                         parent-metadata)]
 
-    (->ExecutionContext
-     fork-id
-     overlay-backend
-     parent-ctx  ; Keep parent reference
-     (:executor parent-ctx)  ; Share executor (for now)
-     merged-bindings
-     fork-metadata
-     (:running parent-ctx)        ; Share parent's lifecycle flag
-     (:drain-active parent-ctx)   ; Share parent's drain-active counter
-     )))
+    (let [fork (->ExecutionContext
+                fork-id
+                overlay-backend
+                parent-ctx  ; Keep parent reference
+                (:executor parent-ctx)  ; Share executor (for now)
+                merged-bindings
+                fork-metadata
+                (:running parent-ctx)        ; Share parent's lifecycle flag
+                (:drain-active parent-ctx)   ; Share parent's drain-active counter
+                )]
+      ;; A fork seeded with inherited in-flight data events (or explicit
+      ;; :engine/pending via state-updates) has work waiting but nothing
+      ;; has poked its drain yet — the parent's drain never touches a
+      ;; fork's fork-local queue. Trigger once so the inherited events
+      ;; don't sit until the fork's first own enqueue.
+      (when (seq (rtp/get-state fork [:engine/pending]))
+        (simple/trigger-drain! fork (:executor fork)))
+      fork)))
 
 ;; =============================================================================
 ;; Accessors

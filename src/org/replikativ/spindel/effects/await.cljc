@@ -578,7 +578,10 @@
       :else
       (reject (eff/type-error 'await "Spin, Deferred, or async thunk" awaitable)))
 
-    (catch #?(:clj Throwable :cljs js/Error) t
+    ;; :cljs :default, NOT js/Error — a thrown non-Error value (string,
+    ;; keyword, map) must reach the reject continuation too, or the await
+    ;; silently never completes.
+    (catch #?(:clj Throwable :cljs :default) t
       (reject t))))
 
 ;; =============================================================================
