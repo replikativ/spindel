@@ -6,6 +6,8 @@
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.foreign :as foreign]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             #?(:clj [org.replikativ.spindel.test-helpers :as th])))
 
 ;; =============================================================================
@@ -94,79 +96,97 @@
 
 ;; =============================================================================
 ;; Foreign Node Tests
+;;
+;; These bind an execution context, like every other DOM test — because a
+;; foreign node REQUIRES one. They used to call `foreign-node*` bare, and the
+;; first test was even named "creates a vnode without context", encoding the bug
+;; as intent. A context-free foreign node cannot reconcile its attrs (they froze
+;; at mount) and, through the macro, silently dropped its :on-mount/:on-unmount
+;; entirely — a div pretending to be an editor.
 ;; =============================================================================
 
+(defmacro with-ctx
+  "Run body with a fresh execution context bound — what a spin always provides."
+  [& body]
+  `(let [ctx# (ctx/create-execution-context)]
+     (binding [ec/*execution-context* ctx#]
+       ~@body)))
+
 (deftest test-foreign-node-creation
-  (testing "foreign-node creates a vnode without context"
-    (let [mount-calls (atom [])
-          unmount-calls (atom [])
-          vnode (foreign/foreign-node*
-                 {:file "test" :line 1 :column 1}
-                 {:class "editor"
-                  :on-mount (fn [el] (swap! mount-calls conj el))
-                  :on-unmount (fn [_] (swap! unmount-calls conj :unmount))})]
-      (is (= :div (:tag vnode)))
-      (is (= {:class "editor"} @(:attrs vnode)))
-      (is (fn? (:ref vnode))))))
+  (testing "foreign-node builds an ADDRESSED vnode, so its attrs can be reconciled"
+    (with-ctx
+      (let [mount-calls   (atom [])
+            unmount-calls (atom [])
+            vnode (foreign/foreign-node*
+                   {:file "test" :line 1 :column 1}
+                   {:class "editor"
+                    :on-mount   (fn [el] (swap! mount-calls conj el))
+                    :on-unmount (fn [_] (swap! unmount-calls conj :unmount))})]
+        (is (= :div (:tag vnode)))
+        (is (= {:class "editor"} @(:attrs vnode)))
+        (is (fn? (:ref vnode)))
+        (is (some? (:addr vnode))
+            "an :addr is what lets the reconciler diff attrs — without it :class
+             and :style are frozen at mount, and a foreign host can never be
+             hidden instead of unmounted")))))
 
 (deftest test-foreign-node-with-custom-tag
   (testing "foreign-node respects custom tag"
-    (let [vnode (foreign/foreign-node*
-                 {:file "test" :line 1 :column 1}
-                 {:tag :pre
-                  :class "code"})]
-      (is (= :pre (:tag vnode))))))
+    (with-ctx
+      (let [vnode (foreign/foreign-node*
+                   {:file "test" :line 1 :column 1}
+                   {:tag :pre :class "code"})]
+        (is (= :pre (:tag vnode)))))))
 
 (deftest test-foreign-node-mount-callback
   (testing "foreign-node mount callback is called during render"
-    (let [mount-calls (atom [])
-          vnode (foreign/foreign-node*
-                 {:file "test" :line 1 :column 1}
-                 {:on-mount (fn [el] (swap! mount-calls conj el))})
-          {:keys [discharge]} (disch/make-mock-discharge)]
-      ;; Render the foreign node
-      (disch/render-initial! discharge vnode)
-      ;; Mount callback should have been called via ref
-      (is (= 1 (count @mount-calls)))
-      (is (some? (first @mount-calls))))))
+    (with-ctx
+      (let [mount-calls (atom [])
+            vnode (foreign/foreign-node*
+                   {:file "test" :line 1 :column 1}
+                   {:on-mount (fn [el] (swap! mount-calls conj el))})
+            {:keys [discharge]} (disch/make-mock-discharge)]
+        (disch/render-initial! discharge vnode)
+        (is (= 1 (count @mount-calls)))
+        (is (some? (first @mount-calls)))))))
 
 (deftest test-foreign-node-unmount-callback
   (testing "foreign-node unmount callback is called on remove"
-    (let [unmount-calls (atom [])
-          vnode (foreign/foreign-node*
-                 {:file "test" :line 1 :column 1}
-                 {:on-unmount (fn [_] (swap! unmount-calls conj :unmounted))})
-          {:keys [discharge]} (disch/make-mock-discharge)
-          parent-el :mock-parent]
-      ;; First render
-      (disch/render-initial! discharge vnode)
-      (is (empty? @unmount-calls) "Unmount should not be called yet")
-      ;; Apply remove delta
-      (disch/apply-child-delta! discharge parent-el
-                                {:delta :remove :path [0] :old-value vnode})
-      (is (= 1 (count @unmount-calls))))))
+    (with-ctx
+      (let [unmount-calls (atom [])
+            vnode (foreign/foreign-node*
+                   {:file "test" :line 1 :column 1}
+                   {:on-unmount (fn [_] (swap! unmount-calls conj :unmounted))})
+            {:keys [discharge]} (disch/make-mock-discharge)
+            parent-el :mock-parent]
+        (disch/render-initial! discharge vnode)
+        (is (empty? @unmount-calls) "Unmount should not be called yet")
+        (disch/apply-child-delta! discharge parent-el
+                                  {:delta :remove :path [0] :old-value vnode})
+        (is (= 1 (count @unmount-calls)))))))
 
 (deftest test-foreign-node-error-handling
   (testing "foreign-node callback errors are caught"
-    (let [mount-error (atom false)
-          unmount-error (atom false)
-          vnode (foreign/foreign-node*
-                 {:file "test" :line 1 :column 1}
-                 {:on-mount (fn [_]
-                              (reset! mount-error true)
-                              (throw (#?(:clj Exception. :cljs js/Error.) "Mount error")))
-                  :on-unmount (fn [_]
-                                (reset! unmount-error true)
-                                (throw (#?(:clj Exception. :cljs js/Error.) "Unmount error")))})
-          {:keys [discharge]} (disch/make-mock-discharge)
-          parent-el :mock-parent]
+    (with-ctx
+      (let [mount-error (atom false)
+            unmount-error (atom false)
+            vnode (foreign/foreign-node*
+                   {:file "test" :line 1 :column 1}
+                   {:on-mount (fn [_]
+                                (reset! mount-error true)
+                                (throw (#?(:clj Exception. :cljs js/Error.) "Mount error")))
+                    :on-unmount (fn [_]
+                                  (reset! unmount-error true)
+                                  (throw (#?(:clj Exception. :cljs js/Error.) "Unmount error")))})
+            {:keys [discharge]} (disch/make-mock-discharge)
+            parent-el :mock-parent]
       ;; Should not throw on mount
-      (disch/render-initial! discharge vnode)
-      (is @mount-error "Mount callback should have been called")
+        (disch/render-initial! discharge vnode)
+        (is @mount-error "Mount callback should have been called")
       ;; Should not throw on unmount
-      (disch/apply-child-delta! discharge parent-el
-                                {:delta :remove :path [0] :old-value vnode})
-      (is @unmount-error "Unmount callback should have been called"))))
+        (disch/apply-child-delta! discharge parent-el
+                                  {:delta :remove :path [0] :old-value vnode})
+        (is @unmount-error "Unmount callback should have been called")))))
 
 ;; =============================================================================
 ;; In-place reconciliation tests (Π3)

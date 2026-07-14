@@ -135,14 +135,11 @@
     ;; :style now update like any other element. Children stay EMPTY — that part
     ;; was always right: the whole point is that spindel does not own them.
     ;;
-    ;; It needs an execution context (the caches live there), and `simple-element`
-    ;; was chosen originally precisely BECAUSE it needs none — SSR and unit tests
-    ;; build vdom with no context bound. So: addressed when we can be, simple when
-    ;; we must be. Outside a context there is no re-render, hence nothing to
-    ;; reconcile against, and the frozen attrs cost nothing.
-    (if ec/*execution-context*
-      (el/build-element tag my-addr attrs-with-ref [])
-      (el/simple-element tag attrs-with-ref []))))
+    ;; This REQUIRES an execution context, and that is not a limitation — it is
+    ;; what a foreign node IS. The caches live in the context, and without one
+    ;; there is no reconciliation, no attr deltas, and no lifecycle. Callers that
+    ;; have no context do not want a degraded foreign node; they want an error.
+    (el/build-element tag my-addr attrs-with-ref [])))
 
 ;; =============================================================================
 ;; Macro: foreign-node
@@ -178,9 +175,16 @@
      (let [source-loc {:file *file*
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
-       `(if ec/*execution-context*
-          (foreign-node* ~source-loc ~opts)
-          ;; Without context: create simple element (no lifecycle callbacks)
-          (el/simple-element (:tag ~opts :div)
-                             (dissoc ~opts :tag :on-mount :on-unmount)
-                             [])))))
+       ;; NO context fallback.
+       ;;
+       ;; This used to degrade to a bare element with the :on-mount/:on-unmount
+       ;; callbacks silently DROPPED — which is not a degraded foreign node, it is
+       ;; a lie. The lifecycle is the entire point: without it your TipTap,
+       ;; CodeMirror or Jitsi call is never constructed, and nothing says so. A
+       ;; div that quietly does nothing is the worst possible failure mode.
+       ;;
+       ;; Nothing legitimate needs that branch: spins always bind a context, and
+       ;; SSR never renders foreign nodes (it cannot — there is no DOM to hand the
+       ;; library). So an absent context is a BUG at the call site, and it now
+       ;; announces itself instead of hiding.
+       `(foreign-node* ~source-loc ~opts))))
