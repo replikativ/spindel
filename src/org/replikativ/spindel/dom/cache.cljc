@@ -389,7 +389,7 @@
               ;; They are child-index deltas exactly like :add/:remove/:update,
               ;; so they need exactly the same slot→flattened conversion.
               (:add-fragment :remove-fragment
-               :replace-with-fragment :replace-fragment-with-single)
+                             :replace-with-fragment :replace-fragment-with-single)
               (assoc delta :path [base-idx])
 
               ;; Anything else: leave alone.
