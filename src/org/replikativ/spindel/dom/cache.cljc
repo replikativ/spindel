@@ -376,7 +376,23 @@
                  :path [slot-idx]
                  :adjusted-deltas adjusted-internal})
 
-              ;; Fragment add/remove: need special handling at render time
+              ;; Fragment appears/disappears/replaces wholesale.
+              ;;
+              ;; These used to fall through UNADJUSTED — and `discharge` then
+              ;; used `(first path)` as a DOM child index. But an unadjusted path
+              ;; is a SLOT index, and slots do not correspond to children: a :nil
+              ;; slot flattens to zero nodes, a :keyed slot to many. So an
+              ;; ifor-each appearing after such a sibling inserted its items at
+              ;; the WRONG index — e.g. before a preceding element instead of
+              ;; after it. Silent, and only visible as a mysterious reordering.
+              ;;
+              ;; They are child-index deltas exactly like :add/:remove/:update,
+              ;; so they need exactly the same slot→flattened conversion.
+              (:add-fragment :remove-fragment
+               :replace-with-fragment :replace-fragment-with-single)
+              (assoc delta :path [base-idx])
+
+              ;; Anything else: leave alone.
               delta)))
         deltas))
 

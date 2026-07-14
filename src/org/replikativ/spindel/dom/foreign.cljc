@@ -54,7 +54,8 @@
   - Never pass children to foreign-node - they will be ignored
   - The mount/unmount callbacks are synchronous
   - Multiple mounts/unmounts may occur if the element is conditionally rendered"
-  (:require [org.replikativ.spindel.dom.elements :as el]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.engine.core :as ec]
             [replikativ.logging :as log]))
@@ -121,10 +122,27 @@
         ;; Merge ref into attrs
         attrs-with-ref (assoc attrs :ref ref-fn)]
 
-    ;; Create the container element with no children
-    ;; We use simple-element since we don't need caching for children
-    ;; but we want the element to participate in parent's slot reconciliation
-    (el/simple-element tag attrs-with-ref [])))
+    ;; ADDRESSED, not simple-element.
+    ;;
+    ;; `simple-element` builds a vnode with no `:addr`, so the reconciler has no
+    ;; cache to diff its attrs against and emits no attr deltas — the container's
+    ;; attributes were therefore FROZEN AT MOUNT. You could not toggle a foreign
+    ;; node's :class or :style, ever. That is not a corner: hiding a foreign host
+    ;; (a live call, a video, an editor) instead of unmounting it is precisely how
+    ;; you keep its state alive, and it is done with a class.
+    ;;
+    ;; `build-element` reconciles attrs against the address cache, so :class and
+    ;; :style now update like any other element. Children stay EMPTY — that part
+    ;; was always right: the whole point is that spindel does not own them.
+    ;;
+    ;; It needs an execution context (the caches live there), and `simple-element`
+    ;; was chosen originally precisely BECAUSE it needs none — SSR and unit tests
+    ;; build vdom with no context bound. So: addressed when we can be, simple when
+    ;; we must be. Outside a context there is no re-render, hence nothing to
+    ;; reconcile against, and the frozen attrs cost nothing.
+    (if ec/*execution-context*
+      (el/build-element tag my-addr attrs-with-ref [])
+      (el/simple-element tag attrs-with-ref []))))
 
 ;; =============================================================================
 ;; Macro: foreign-node
