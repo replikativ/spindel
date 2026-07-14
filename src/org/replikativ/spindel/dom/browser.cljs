@@ -142,16 +142,53 @@
         (.appendChild parent new-child))))
 
   (move-child! [_ parent from-idx to-idx]
+    ;; `moveBefore` MOVES a node; removeChild+insertBefore DESTROYS AND RECREATES
+    ;; it. For most elements the difference is invisible. For anything holding
+    ;; state OUTSIDE the element — an <iframe>'s browsing context, a <video>'s
+    ;; live srcObject, a WebGL context, an editor's selection — the difference is
+    ;; the whole ballgame: removal runs the DOM "removing steps", which discard
+    ;; that state. A Jitsi call died on a mere SIBLING REORDER, having survived
+    ;; nothing more than being renumbered.
+    ;;
+    ;; Measured in Chromium (a counter living inside the iframe's document):
+    ;;   removeChild + insertBefore → counter reset (context discarded)
+    ;;   moveBefore                 → counter preserved, across reorder AND
+    ;;                                across a change of parent
+    ;;
+    ;; moveBefore throws HierarchyRequestError if either node is DISCONNECTED,
+    ;; so the fallback is not decoration: it is the path for pre-2025 browsers
+    ;; (Chrome <133, Firefox/Safari until they ship it) and for any move
+    ;; involving a detached tree. There, state loss is unavoidable — the platform
+    ;; offers no other way — and we take the old behaviour rather than throw.
     (let [children (.-childNodes parent)
-          child (aget children from-idx)]
-      (when child
-        ;; Remove from current position and insert at new position
-        ;; Note: after removal, indices shift, so we need to account for that
-        (.removeChild parent child)
-        (let [ref-node (aget (.-childNodes parent) to-idx)]
-          (if ref-node
-            (.insertBefore parent child ref-node)
-            (.appendChild parent child))))))
+          child    (aget children from-idx)]
+      (when (and child (not= from-idx to-idx))
+        ;; INDEX SUBTLETY. Both APIs mean "put child before ref", and the final
+        ;; index of child is ref's index in the list WITHOUT child. The old code
+        ;; removed first, so it could just read the shortened list. moveBefore is
+        ;; ATOMIC — the child is still present when we pick ref — so we must
+        ;; account for the shift ourselves:
+        ;;   moving RIGHT (to > from): everything past `from` shifts left by one
+        ;;     when child leaves, so ref must be the node AFTER the target slot.
+        ;;   moving LEFT  (to < from): indices below `from` are unaffected.
+        ;; Getting this wrong is an off-by-one that silently misorders lists.
+        (let [ref (if (< from-idx to-idx)
+                    (aget children (inc to-idx))    ; may be undefined ⇒ to the end
+                    (aget children to-idx))
+              fallback! (fn []
+                          (.removeChild parent child)
+                          (let [r (aget (.-childNodes parent) to-idx)]
+                            (if r
+                              (.insertBefore parent child r)
+                              (.appendChild parent child))))]
+          (if (and (.-moveBefore parent) (.-isConnected child))
+            (try
+              (.moveBefore parent child (or ref nil))   ; null ⇒ append
+              (catch :default _
+                ;; disconnected / cross-document — the platform offers no
+                ;; state-preserving path here, so take the lossy one
+                (fallback!)))
+            (fallback!))))))
 
   (child-index-of [_ parent child]
     (let [children (.-childNodes parent)

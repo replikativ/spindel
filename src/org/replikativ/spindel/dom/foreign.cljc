@@ -54,7 +54,8 @@
   - Never pass children to foreign-node - they will be ignored
   - The mount/unmount callbacks are synchronous
   - Multiple mounts/unmounts may occur if the element is conditionally rendered"
-  (:require [org.replikativ.spindel.dom.elements :as el]
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.engine.core :as ec]
             [replikativ.logging :as log]))
@@ -121,10 +122,24 @@
         ;; Merge ref into attrs
         attrs-with-ref (assoc attrs :ref ref-fn)]
 
-    ;; Create the container element with no children
-    ;; We use simple-element since we don't need caching for children
-    ;; but we want the element to participate in parent's slot reconciliation
-    (el/simple-element tag attrs-with-ref [])))
+    ;; ADDRESSED, not simple-element.
+    ;;
+    ;; `simple-element` builds a vnode with no `:addr`, so the reconciler has no
+    ;; cache to diff its attrs against and emits no attr deltas — the container's
+    ;; attributes were therefore FROZEN AT MOUNT. You could not toggle a foreign
+    ;; node's :class or :style, ever. That is not a corner: hiding a foreign host
+    ;; (a live call, a video, an editor) instead of unmounting it is precisely how
+    ;; you keep its state alive, and it is done with a class.
+    ;;
+    ;; `build-element` reconciles attrs against the address cache, so :class and
+    ;; :style now update like any other element. Children stay EMPTY — that part
+    ;; was always right: the whole point is that spindel does not own them.
+    ;;
+    ;; This REQUIRES an execution context, and that is not a limitation — it is
+    ;; what a foreign node IS. The caches live in the context, and without one
+    ;; there is no reconciliation, no attr deltas, and no lifecycle. Callers that
+    ;; have no context do not want a degraded foreign node; they want an error.
+    (el/build-element tag my-addr attrs-with-ref [])))
 
 ;; =============================================================================
 ;; Macro: foreign-node
@@ -160,9 +175,16 @@
      (let [source-loc {:file *file*
                        :line (:line (meta &form))
                        :column (:column (meta &form))}]
-       `(if ec/*execution-context*
-          (foreign-node* ~source-loc ~opts)
-          ;; Without context: create simple element (no lifecycle callbacks)
-          (el/simple-element (:tag ~opts :div)
-                             (dissoc ~opts :tag :on-mount :on-unmount)
-                             [])))))
+       ;; NO context fallback.
+       ;;
+       ;; This used to degrade to a bare element with the :on-mount/:on-unmount
+       ;; callbacks silently DROPPED — which is not a degraded foreign node, it is
+       ;; a lie. The lifecycle is the entire point: without it your TipTap,
+       ;; CodeMirror or Jitsi call is never constructed, and nothing says so. A
+       ;; div that quietly does nothing is the worst possible failure mode.
+       ;;
+       ;; Nothing legitimate needs that branch: spins always bind a context, and
+       ;; SSR never renders foreign nodes (it cannot — there is no DOM to hand the
+       ;; library). So an absent context is a BUG at the call site, and it now
+       ;; announces itself instead of hiding.
+       `(foreign-node* ~source-loc ~opts))))
