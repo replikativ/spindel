@@ -37,7 +37,7 @@
             ;; pre-existing engine limitation orthogonal to interop locking.)
             (is (= 30
                    (macro/eval-and-deref sci-ctx
-                     "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
+                                         "(require '[org.replikativ.spindel.spin.cps :refer [spin]]
                                '[org.replikativ.spindel.effects.await :refer [await]])
                       (spin
                         (let [a (spin 10)
@@ -60,12 +60,12 @@
             (is (thrown-with-msg?
                  Exception #"(?i)not allowed"
                  (sci/eval-string* sci-ctx
-                   "(.getClassLoader (class 1))")))
+                                   "(.getClassLoader (class 1))")))
             ;; The concrete escape a sandboxed attacker would try.
             (is (thrown-with-msg?
                  Exception #"(?i)not allowed"
                  (sci/eval-string* sci-ctx
-                   "(-> \"x\" .getClass .getClassLoader
+                                   "(-> \"x\" .getClass .getClassLoader
                         (.loadClass \"java.lang.Runtime\"))")))))
         (finally
           (ctx/stop-context! rt))))))
