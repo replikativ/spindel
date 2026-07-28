@@ -66,7 +66,27 @@
 
   Lazily resolved to avoid class loading issues at namespace load time.
   Uses Class/forName for deftype classes (Thunk, Spin) since they are
-  Java classes, not Clojure vars."
+  Java classes, not Clojure vars.
+
+  LOCKED BY DEFAULT — no `:allow :all`. On the JVM, `:allow :all` turns SCI's
+  per-class interop gate OFF (ADR 0015), so a spindel-backed context with it set
+  is a full JVM escape from otherwise-sandboxed code: from ANY object,
+  `.getClass` → `.getClassLoader` → `.loadClass \"java.lang.Runtime\"` → reflect
+  reaches a host shell. That is fine for a TRUSTED context (a developer's own
+  frontend), but every UNTRUSTED consumer — an agent sandbox running code an
+  outsider can influence — inherited it, silently escapable. So the default here
+  is fail-safe: interop is gated to this allowlist, and a caller that genuinely
+  needs wider host reach opts in EXPLICITLY with `(assoc (common-classes) :allow
+  :all)` — a locally visible, auditable decision rather than a hidden default.
+
+  The spindel engine itself needs none of that reach — its whole suite (916
+  tests, incl. sci/lock_test) passes with interop locked to this map; the
+  deref/atom/Spin/Thunk types above are all it touches. On CLJS `:allow :all` was already redundant, since
+  `:unrestricted` bypasses the interop check upstream (ADR 0015), so removing it
+  changes only JVM contexts. A JVM consumer whose spin code does interop on a
+  class NOT listed here now gets a loud \"Method X on class Y not allowed!\" at
+  the call site — register the class (or opt into `:allow :all` if trusted)
+  rather than have the sandbox stay wide open by default."
   []
   ;; Ensure namespaces are loaded before referencing their deftypes
   (require 'is.simm.partial-cps.runtime)
@@ -80,5 +100,4 @@
    'is.simm.partial_cps.runtime.Thunk (Class/forName "is.simm.partial_cps.runtime.Thunk")
    'org.replikativ.spindel.spin.core.Spin (Class/forName "org.replikativ.spindel.spin.core.Spin")
    'java.lang.Throwable java.lang.Throwable
-   'is.simm.partial-cps.async/Throwable java.lang.Throwable
-   :allow :all})
+   'is.simm.partial-cps.async/Throwable java.lang.Throwable})

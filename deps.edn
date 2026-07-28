@@ -37,6 +37,12 @@
                       ;; PSS pinned to match what yggdrasil 0.3.34 pins (canonical
                       ;; handlers + MST + the cljs MST oversized-node iterator fix).
                       org.replikativ/persistent-sorted-set {:mvn/version "0.4.130"}
+                      ;; SCI on the :test classpath so the sci-integration
+                      ;; namespaces (sci.core/macro/boundary) are exercised —
+                      ;; notably sci/lock_test, which pins that `common-classes`
+                      ;; is locked (no `:allow :all`). Needs >= 0.14 for ADR 0007
+                      ;; instance-member control (the deny direction of that test).
+                      org.babashka/sci {:mvn/version "0.15.56"}
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts ["-m" "cognitect.test-runner"]
