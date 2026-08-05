@@ -219,8 +219,7 @@
 
    Returns nil."
   [discharge vnode]
-  (binding [disch/*suppress-vnode-deltas* true]
-    (commit-reconcile* discharge vnode)))
+  (commit-reconcile* discharge vnode))
 
 (defn- commit-reconcile*
   [discharge vnode]

@@ -689,40 +689,34 @@ Because a changed root re-mounts (and thus loses DOM state), **keep a spin's roo
 element structurally stable** and branch *inside* it. This is the loading-state
 idiom: one container with a stable key, `cond`/`if` on the content within.
 
-**R3 — The caches are a model of the DOM, so they advance on commit, not on
-compute.** `build-element` (and `ifor-each`) reconcile against the committed
-caches but write their results to a STAGING area (`[:dom/pending]`);
-`cache/commit-pending!` promotes staging only for addresses present in a vdom
-tree that actually reached the DOM. There are exactly four commit points —
-`initial-mount!`, both branches of `update-render!`, and `discharge-all!`. On
-the paths that evict (`update-render!`, `discharge-all!`), the commit sits
-immediately BEFORE the eviction flush, so an address unmounted in the same
-pass cannot be resurrected by its own promotion; `initial-mount!` evicts
-nothing, and commits once the tree is appended. The initial-mount commit is
-the one that matters most: a spin with no tracks runs its body exactly once,
-there — if its staging is not promoted then, it never is, and the next parent
-re-emission reconciles against nil and re-emits `:add` for a subtree the DOM
-already holds, duplicating it.
+**R3 — Reconciliation happens AT the commit point; the caches advance in the
+same step as the DOM write.** Builds are pure values: `build-element` and
+`for-each*` classify slots and package items — no cache reads, no diffing, no
+staged deltas. At the commit points (`initial-mount!` seeds caches from the
+mounted tree; `update-render!` runs `commit-reconcile!`, dom/commit) the
+arrived tree is diffed against the committed per-address caches and applied,
+and the caches are advanced in one step.
 
-Why this is a rule and not an optimization: the engine may abandon a body
-slice AFTER it has built its elements — a slice that suspends on an `await`
-is truncated and cancelled when a newer signal value resumes the track
-continuation above it (`truncate-stale-conts!`), and every improvement to
-cancellation correctness increases how often that happens. Advancing the
-caches at compute time meant an abandoned slice still moved the baseline: the
-committed run then reconciled against state the DOM had never seen, produced
-no deltas, and the change was lost silently — and because child deltas carry
-positions, the slot cache's fiction made the NEXT transition remove a live
-sibling at the wrong index. (Regression: `dom/superseded_run_test.clj`; the
-zero-op no-change re-render test there is the detector for a MISSED commit
-point — a tree whose staging is never promoted re-emits its whole mount as
-`:add` on the following pass.)
+Why this is a rule and not an implementation detail: it is what makes both
+abandonment AND repetition free. An abandoned body slice never touched
+anything, so nothing needs undoing. A body executed N times for one logical
+change — routine when a parent's `:await-reactive` cont re-fires per child
+re-completion — produces N pure values; the first commit advances the
+baseline, and every later build diffs against it and collapses to its genuine
+residual. The earlier design (compute-time reconciliation with staged caches
+promoted at commit) could not have the second property: N racing builds all
+diffed one uncommitted baseline and each carried the same `:add`, more than
+one of which could reach the DOM in separate passes (measured live: six
+builds of one container per settled expand, the same `:add` discharged
+twice); and the shared last-write-wins staging slot meant the committed
+baseline could advance past what the DOM actually held. (Acceptance:
+`dom/commit_reconcile_test.clj` — five distinct builds, one insert;
+`dom/jsdom_final_state_test.cljs` — the app-shape protocol on a real tree.)
 
-Two scoped exceptions, stated so they are read as design rather than bugs:
-SSR builds stage and never commit (a one-shot context; the staging dies with
-it), and a vnode whose deltas were dropped for want of a bound element still
-commits with its tree — that case already logs `::deltas-dropped-unbound-addr`
-loudly and matches prior behaviour.
+One prerequisite the rule imposes on builds: the vnode carries its slot
+structure (`:slots`), because `flatten-slots` destroys the `:nil`-slot
+information the commit diff needs for stable slot indices. And the diff runs
+against the ARRIVED TREE only — never against any build-side accumulation.
 
 **R4 — The environment travels with the continuation, never with the
 event.** A body slice always executes in the environment captured at its own

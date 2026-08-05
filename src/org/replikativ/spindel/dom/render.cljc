@@ -1,20 +1,16 @@
 (ns org.replikativ.spindel.dom.render
   "Reactive rendering - connects spindel's signal system to DOM.
 
-  **Delta-Direct Rendering (New Model):**
+  **Commit-time reconciliation:**
 
-  In the delta-direct model, there is no diffing:
   1. Elements are macros that capture source location
-  2. Each element has a stable address (from source-loc + parent + slot)
-  3. Elements cache their children by slot position
-  4. On re-render, slot reconciliation produces deltas directly
-  5. Deltas are discharged to the DOM without re-diffing
-
-  The render! function:
-  1. Executes a spin that produces vdom with deltas
-  2. Mounts vdom to the DOM container (first render)
-  3. Re-executes when tracked signals change
-  4. Discharges deltas directly to the DOM (no diffing)
+  2. Each element has a stable address (source-loc + parent + slot)
+  3. Builds are PURE VALUES - no cache reads, no deltas, no staging
+  4. At the commit point the arrived tree is diffed against the
+     committed per-address caches (dom/commit) and the caches advance
+     in the same step as the DOM write
+  5. A stale build committed later diffs against the already-advanced
+     baseline and collapses to its genuine residual
 
   Usage:
     (render! container
@@ -24,8 +20,8 @@
             (ifor-each :id new
               (fn [todo] (el/li (:text todo))))))))
 
-  The spin re-runs whenever tracked signals change. Element macros
-  produce vnodes with deltas attached that are discharged to the DOM."
+  The spin re-runs whenever tracked signals change; each completion's
+  tree is committed through dom/commit."
   (:require [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.commit :as commit]
@@ -78,9 +74,7 @@
             (set! (.-innerHTML container) ""))
         ;; Render initial vdom
         root-el (binding [disch/*rendered-addrs* (atom {})]
-                  (disch/render-initial! discharge vdom))
-        ;; Clear deltas for next render cycle
-        cleared-vdom (disch/clear-deltas-deep vdom)]
+                  (disch/render-initial! discharge vdom))]
     ;; Append to container
     (when (and container root-el)
       (.appendChild container root-el))
@@ -94,27 +88,17 @@
     (commit/seed-subtree-caches! vdom)
     ;; No transfer needed — address-based refs work with cleared vdom
     ;; (clear-deltas-deep preserves :addr fields)
+    ;; builds are pure values — nothing to clear
     (assoc render-state
-           :current-vdom cleared-vdom
+           :current-vdom vdom
            :mounted? true)))
 
 (defn update-render!
-  "Apply vdom changes to DOM using delta-direct rendering.
-
-  In the new model:
-  1. Vnodes arrive with deltas already computed (from element* slot reconciliation)
-  2. We collect all nodes with deltas
-  3. We discharge deltas directly (no diffing)
-  4. We clear deltas for next render cycle
-
-  Uses *rendered-vnodes* to track vnodes that are fully rendered during
-  this cycle. When a parent's :add delta triggers render-initial! for a child,
-  the child vnode is marked as rendered. If the same child appears in the
-  nodes-with-deltas list (because it had deltas from element* reconciliation
-  against empty cache), discharge-vnode! will skip it to prevent double-rendering.
-
-  DOM refs are stored by stable address (:addr on vnodes), so no transfer
-  is needed between old and new vdom objects."
+  "Apply an arrived vdom tree to the DOM via commit-time reconciliation
+  (dom/commit): diff against the committed per-address caches, apply,
+  advance the caches in the same step. DOM refs are stored by stable
+  address (:addr on vnodes), so no transfer is needed between old and
+  new vdom objects."
   [render-state new-vdom]
   (let [{:keys [container discharge current-vdom]} render-state]
     (cond
@@ -130,8 +114,7 @@
       (do
         (log/debug :render/root-replace {:old (:addr current-vdom)
                                          :new (:addr new-vdom)})
-        (binding [disch/*rendered-vnodes* (atom #{})
-                  disch/*rendered-addrs* (atom {})
+        (binding [disch/*rendered-addrs* (atom {})
                   disch/*pending-evictions* (atom #{})]
           ;; Refs get their nil call and caches are SCHEDULED (not yet dropped):
           ;; foreign nodes (TipTap et al.) rely on this to release resources.
@@ -146,14 +129,13 @@
           ;; this pass unmounted is not resurrected by the seeding.
           (commit/seed-subtree-caches! new-vdom)
           (disch/flush-pending-evictions! discharge))
-        (assoc render-state :current-vdom (disch/clear-deltas-deep new-vdom)))
+        (assoc render-state :current-vdom new-vdom))
 
       :else
       (do
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
-        (binding [disch/*rendered-vnodes* (atom #{})
-                  disch/*rendered-addrs* (atom {})
+        (binding [disch/*rendered-addrs* (atom {})
                   disch/*pending-evictions* (atom #{})]
           ;; COMMIT-TIME RECONCILIATION (dom/commit): diff the arrived tree
           ;; against the committed caches, apply, and advance the caches in
@@ -167,11 +149,7 @@
           ;; the same apply-child-delta! paths as before.
           (commit/commit-reconcile! discharge new-vdom)
           (disch/flush-pending-evictions! discharge))
-
-        ;; Clear deltas for next render cycle
-        ;; No ref transfer needed — cleared vnodes carry same :addr values
-        (let [cleared-vdom (disch/clear-deltas-deep new-vdom)]
-          (assoc render-state :current-vdom cleared-vdom))))))
+        (assoc render-state :current-vdom new-vdom)))))
 
 ;; =============================================================================
 ;; Render! API
@@ -205,38 +183,23 @@
 
   The returned function should be called with the vdom result.
 
-  Each render effect carries a long-lived `*applied-vnodes*` set that
-  tracks vnode objects whose deltas have already been applied. This is
-  what makes cached spin results safe to embed in a re-emitting parent:
-  the same vnode object encountered in a later cycle is recognized and
-  its deltas are not re-applied (which would duplicate children — the
-  cross-spin reuse bug).
-
-  Storage: a weak set (CLJ: `Collections/newSetFromMap` over
-  `WeakHashMap`, wrapped in `synchronizedSet` to tolerate parallel
-  signal-change drains; CLJS: `js/WeakSet`). Identity semantics — when
-  a spin re-runs and produces a fresh cached result, the OLD vnode is
-  no longer referenced via the spin's :result cache and the weak set
-  lets it become GC-eligible rather than pinning it for the lifetime
-  of the render effect (which would leak unboundedly in long-running
-  apps)."
+  Builds are pure values, so cached spin results embedded by a
+  re-emitting parent are safe by construction: committing the same
+  state twice diffs to nothing. No per-object applied tracking is
+  needed."
   [container discharge]
-  (let [state-atom (atom (->RenderState container discharge nil false))
-        applied    (disch/make-applied-vnodes)]
+  (let [state-atom (atom (->RenderState container discharge nil false))]
     (fn [vdom]
       (when vdom
-        (let [state @state-atom
-              has-deltas? (seq (:deltas vdom))]
+        (let [state @state-atom]
           (log/debug ::render-effect-callback {:mounted? (:mounted? state)
-                                               :vdom-tag (:tag vdom)
-                                               :vdom-has-deltas? has-deltas?
-                                               :vdom-deltas (:deltas vdom)})
-          (binding [disch/*applied-vnodes* applied]
-            (if (:mounted? state)
-              ;; Update with delta-direct rendering
-              (swap! state-atom update-render! vdom)
-              ;; Initial mount
-              (reset! state-atom (initial-mount! state vdom)))))))))
+                                               :vdom-tag (:tag vdom)})
+          (if (:mounted? state)
+            ;; Commit-time reconciliation (dom/commit) — diff the arrived
+            ;; tree against the committed caches at the point of writing
+            (swap! state-atom update-render! vdom)
+            ;; Initial mount
+            (reset! state-atom (initial-mount! state vdom))))))))
 
 ;; =============================================================================
 ;; Integration with Spin System

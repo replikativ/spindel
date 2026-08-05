@@ -28,8 +28,9 @@
         (await (some-async-component))    ;; await now works!
         (el/span \"hello\")))
 
-  Each element gets unique address based on position in tree.
-  Conditionals work naturally - nil slots produce add/remove deltas."
+  Each element gets a unique address based on position in tree.
+  Conditionals work naturally - a nil slot occupies its index as :nil,
+  and the commit-time diff (dom/commit) turns transitions into add/remove."
   (:require [org.replikativ.spindel.dom.core :as core]
             [org.replikativ.spindel.dom.addressing :as addr]
             [org.replikativ.spindel.dom.cache :as cache]
@@ -95,7 +96,7 @@
 ;; =============================================================================
 
 (defn build-element
-  "Create a vnode with delta tracking from already-evaluated children.
+  "Create a PURE vnode from already-evaluated children.
 
   This is the new CPS-aware runtime implementation. Children are evaluated
   by the macro expansion (with proper slot context), then passed here.
@@ -106,7 +107,7 @@
     attrs - Attribute map
     children - Vector of already-evaluated children (vnodes, text, nil, KeyedFragment)
 
-  Returns: VNode with :deltas if any changes detected"
+  Returns: VNode (a plain value; reconciliation happens at commit)"
   [tag my-addr attrs children]
   (let [;; When element has a :key, derive a unique cache address so that
         ;; multiple keyed elements at the same source location (e.g. in map)

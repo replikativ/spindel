@@ -104,76 +104,12 @@
        (not (spin? v))
        (not (frag/keyed-fragment? v))))
 
-(defn- clear-stale-deltas
-  "Strip any `:deltas` field from a vnode and its children. Required
-   when reusing a memoised vnode — the discharge tree-walk would
-   otherwise re-apply prior deltas and duplicate DOM children."
-  [vnode]
-  (when vnode
-    (cond
-      (and (map? vnode) (contains? vnode :content) (not (contains? vnode :tag)))
-      vnode
-
-      (and (map? vnode) (contains? vnode :tag))
-      (let [cleared (dissoc vnode :deltas)
-            cleared (if-let [attrs (:attrs cleared)]
-                      (assoc cleared :attrs (d/clear-deltas attrs))
-                      cleared)
-            children (:children cleared)]
-        (if children
-          (let [child-vec (if (d/deltaable? children) @children children)]
-            (assoc cleared :children
-                   (d/deltaable-vector (mapv clear-stale-deltas child-vec))))
-          cleared))
-
-      (frag/keyed-fragment? vnode)
-      ;; Preserve `:addr` — it is what lets `call-refs-on-unmount!` evict the
-      ;; keyed cache at this ifor-each's call site.
-      (assoc (frag/keyed-fragment (mapv clear-stale-deltas (frag/fragment-items vnode))
-                                  nil)
-             :addr (:addr vnode))
-
-      :else vnode)))
-
 ;; =============================================================================
 ;; Cache access
 ;; =============================================================================
 
 (defn- get-keyed-cache [addr]
   (ec/get-state [:dom/keyed-cache addr]))
-
-(defn- set-keyed-cache!
-  "STAGE the keyed cache; `cache/commit-pending!` promotes it once the
-   fragment's items have actually been discharged.
-
-   Same asymmetry as the element caches, and the list path made it worse: the
-   fragment's delta embeds `:prev-items` inline, so an abandoned build both
-   moved the keyed baseline and poisoned the next diff."
-  [addr cache-data]
-  (cache/stage-keyed! addr cache-data))
-
-;; =============================================================================
-;; Delta derivation — package the keyed SequenceAlgebra diff for discharge
-;; =============================================================================
-
-(defn- build-seq-diff
-  "Build the discharge-layer `:seq-diff` delta for the fragment.
-
-   The keyed-sequence diff itself is computed by the incremental layer
-   (`sequence-algebra/keyed-seq-diff`) — identity is the item key, and
-   per-key change is detected with structural vnode equality. This
-   function only packages the resulting SequenceAlgebra diff as the
-   `:seq-diff` delta the discharge tree-walk consumes, attaching
-   `:prev-items` (the previous vnodes in DOM order) that `apply-seq-diff!`
-   needs.
-
-   Returns the delta in a wrapping vector, or nil when nothing changed."
-  [order prev-order by-key prev-by-key]
-  (when-let [diff (sa/keyed-seq-diff order prev-order by-key prev-by-key
-                                     vnode-value-equal?)]
-    [{:delta :seq-diff
-      :diff diff
-      :prev-items (mapv #(get prev-by-key %) prev-order)}]))
 
 ;; =============================================================================
 ;; Fragment build (sync and async paths)
