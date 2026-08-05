@@ -338,3 +338,133 @@
       (is (= 3 (n-matching body ".section")) "still three sections")
       (is (kept? (.querySelector body ".shell"))
           "R1: the nav's address must be stable across re-renders"))))
+
+;; =============================================================================
+;; 4. The REAL nav shape: await INSIDE the element build
+;; =============================================================================
+;;
+;; Everything above awaits the fragment FIRST and then builds the element
+;; around the result. simmis's nav (nav.cljc:731) does the opposite — the
+;; `await` sits inside the `el/div`'s child thunk:
+;;
+;;   (el/div {:class "nav-section"}
+;;     header
+;;     (when-not collapsed
+;;       (el/div {:class "nav-section-items"}
+;;         (await (ifor-each :kb/id kb-items render-kb-subsection-spin)))))
+;;
+;; so ELEMENT CONSTRUCTION ITSELF suspends: partial-cps splits build-element's
+;; child evaluation across an async boundary. The items are spins that TRACK
+;; their own signals and contain a further (sync) ifor-each with their own
+;; conditional container — the nested `.sub-items` here.
+;;
+;; Measured in Chrome (dev build carrying every fix above): from a CLEAN
+;; state, every SETTLED expand inserted the subtree TWICE and every collapse
+;; removed it once — deterministic, +1 outer & +5 nested containers per
+;; toggle cycle, no race required. Probing the live app pinned the shape:
+;; the container was BUILT 6+ times during one expand (the parent's slice
+;; re-ran once per subsection re-completion — they all track the toggled
+;; signal, and each KB's pages signal fires at its own real time), and the
+;; same `:add` was discharged in TWO SEPARATE update-render! passes from two
+;; DIFFERENT vnode objects. `*applied-vnodes*` is identity-keyed by design,
+;; so distinct builds pass it; R3's commit does not help because every build
+;; reconciled against the committed baseline BEFORE the first pass promoted
+;; it. That window — N builds diffing one uncommitted baseline, >1 of them
+;; reaching the DOM in separate passes — is inherent to compute-time
+;; reconciliation, and is exactly what moving reconciliation to COMMIT time
+;; closes (effect-state-design.md option D/E; repeat_execution_test's
+;; docstring predicted this fix shape).
+;;
+;; Reproduction required ALL of: (1) the await inside the element build,
+;; (2) reactive per-item sub-spins tracking the toggled signal, (3) nested
+;; conditional containers, (4) staggered per-item signal changes landing in
+;; separate drains, and (5) — the one that finally made it fire — an OUTER
+;; root spin awaiting the section, whose :await-reactive cont re-fires per
+;; section re-completion so separate passes embed different-era builds.
+;;
+;; THIS TEST FAILS (6 nested containers instead of 3 after one settled
+;; expand). It is the acceptance criterion for the commit-time
+;; reconciliation change.
+
+(deftest-async await-inside-element-child-does-not-duplicate
+  (testing "collapse and re-expand a section whose element build suspends on
+            an awaited fragment of reactive sub-spins — one container each"
+    (let [body (fresh-body)
+          discharge (browser/make-dom-discharge (.-ownerDocument body))
+          ;; the toggled signal is a SET tracked by the parent AND every
+          ;; subsection — nav's `nav-collapsed-projects`. Toggling "kbs"
+          ;; changes the set VALUE, so every tracker fires even though only
+          ;; the parent's own membership changed: a diamond across the
+          ;; await boundary (parent re-runs AND each item re-completes,
+          ;; re-firing the parent's :await-reactive cont).
+          collapsed (sig/signal #{})
+          ;; one pages-signal per KB — the app's kb-pages, updated by each
+          ;; KB-CONN at its own real time. Each update is a SEPARATE
+          ;; :signal-change event re-running the section through the item's
+          ;; track, so builds land in separate drains/render passes instead
+          ;; of coalescing — the ingredient the browser trace showed (six
+          ;; builds of the container, :add discharged in TWO passes).
+          pages {"wiki" (sig/signal ["p1"]) "assist" (sig/signal ["p1"])
+                 "notes" (sig/signal ["p1"])}
+          kbs [{:id "wiki"} {:id "assist"} {:id "notes"}]
+          subsection (fn [kb]
+                       (spin
+                        (let [{c :new} (track collapsed)
+                              {ps :new} (track (get pages (:id kb)))]
+                          (el/div {:key (:id kb) :class "nav-subsection"}
+                                  (el/span (str (:id kb) "-" (count ps)))
+                                  (when-not (contains? c (:id kb))
+                                    (el/div {:class "sub-items"}
+                                          (foreach/for-each*
+                                           {:file "jsdom-nav-shape" :line 2 :column 1}
+                                           :id
+                                           (fn [p] (el/li {:key (:id p)} (:id p)))
+                                           [{:id (str (:id kb) "-p1")}
+                                            {:id (str (:id kb) "-p2")}])))))))
+          ;; the SECTION spin — reactive, created once
+          section (spin
+                   (let [{c :new} (track collapsed)]
+                     (el/div {:class "nav-section"}
+                             (el/div {:class "nav-title"} "Memory")
+                             (when-not (contains? c "kbs")
+                               (el/div {:class "section-items"}
+                                       (await (foreach/for-each*
+                                               {:file "jsdom-nav-shape" :line 1 :column 1}
+                                               :id subsection kbs)))))))
+          ;; the ROOT wraps it, as nav's root wraps its sections: the root's
+          ;; :await-reactive cont re-fires on every section re-completion, so
+          ;; each render pass can embed a DIFFERENT-ERA section build
+          root (spin
+                (el/div {:class "nav-shell"}
+                        (await section)))]
+      (render/render-spin! body root discharge)
+      (<? (comb/sleep 300))
+      (is (= 1 (n-matching body ".section-items")) "mounted: one outer container")
+      (is (= 3 (n-matching body ".sub-items")) "mounted: three nested containers")
+      (swap! collapsed conj "kbs")
+      (<? (comb/sleep 300))
+      (is (= 0 (n-matching body ".section-items")) "settled collapse: outer gone")
+      (swap! collapsed disj "kbs")
+      ;; the app's expand is not one event: KBs (re)connect and their pages
+      ;; signals fire at staggered times while the section is still settling
+      (<? (comb/sleep 30))
+      (reset! (get pages "wiki") ["p1" "p2"])
+      (<? (comb/sleep 40))
+      (reset! (get pages "assist") ["p1" "p2"])
+      (<? (comb/sleep 40))
+      (reset! (get pages "notes") ["p1" "p2"])
+      (<? (comb/sleep 500))
+      (is (= 1 (n-matching body ".section-items"))
+          (str "settled expand: ONE outer container, got "
+               (n-matching body ".section-items")))
+      (is (= 3 (n-matching body ".sub-items"))
+          (str "settled expand: three nested containers, got "
+               (n-matching body ".sub-items")))
+      ;; second cycle — accumulation is the app signature (+6 per cycle)
+      (swap! collapsed conj "kbs")
+      (<? (comb/sleep 300))
+      (swap! collapsed disj "kbs")
+      (<? (comb/sleep 500))
+      (is (= 1 (n-matching body ".section-items"))
+          (str "cycle 2: still one outer container, got "
+               (n-matching body ".section-items"))))))
