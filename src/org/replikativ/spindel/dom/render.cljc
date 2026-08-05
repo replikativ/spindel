@@ -27,6 +27,7 @@
   The spin re-runs whenever tracked signals change. Element macros
   produce vnodes with deltas attached that are discharged to the DOM."
   (:require [org.replikativ.spindel.dom.discharge :as disch]
+            [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.core :as ec]
             [replikativ.logging :as log]))
@@ -82,6 +83,12 @@
     ;; Append to container
     (when (and container root-el)
       (.appendChild container root-el))
+    ;; The whole tree just reached the DOM, so its reconciliations become the
+    ;; caches' model of it. This is the commit point that matters MOST: a spin
+    ;; with no tracks runs its body exactly once, here — if its staging is not
+    ;; promoted now, it never is, and the next parent re-emission reconciles
+    ;; against nil and re-emits `:add` for a subtree the DOM already holds.
+    (cache/commit-pending! (disch/collect-addrs vdom))
     ;; No transfer needed — address-based refs work with cleared vdom
     ;; (clear-deltas-deep preserves :addr fields)
     (assoc render-state
@@ -130,6 +137,10 @@
             (when container
               (set! (.-innerHTML container) "")
               (when root-el (.appendChild container root-el))))
+          ;; The new tree is in the DOM, so its reconciliations may become the
+          ;; caches' model of it. Before the evictions, so an address this pass
+          ;; unmounted is not resurrected by the promotion.
+          (cache/commit-pending! (disch/collect-addrs new-vdom))
           (disch/flush-pending-evictions! discharge))
         (assoc render-state :current-vdom (disch/clear-deltas-deep new-vdom)))
 
@@ -145,6 +156,11 @@
               (log/trace :render/delta-update {:nodes-with-deltas (count nodes-with-deltas)})
               (doseq [node nodes-with-deltas]
                 (disch/discharge-vnode! discharge node))))
+          ;; Commit the staged reconciliations for everything in the tree that
+          ;; just reached the DOM — NOT only the nodes that carried deltas: a
+          ;; subtree built wholesale by `render-initial!` has none of its own,
+          ;; and would otherwise re-emit `:add` on the next pass.
+          (cache/commit-pending! (disch/collect-addrs new-vdom))
           (disch/flush-pending-evictions! discharge))
 
         ;; Clear deltas for next render cycle

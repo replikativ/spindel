@@ -689,6 +689,41 @@ Because a changed root re-mounts (and thus loses DOM state), **keep a spin's roo
 element structurally stable** and branch *inside* it. This is the loading-state
 idiom: one container with a stable key, `cond`/`if` on the content within.
 
+**R3 — The caches are a model of the DOM, so they advance on commit, not on
+compute.** `build-element` (and `ifor-each`) reconcile against the committed
+caches but write their results to a STAGING area (`[:dom/pending]`);
+`cache/commit-pending!` promotes staging only for addresses present in a vdom
+tree that actually reached the DOM. There are exactly four commit points —
+`initial-mount!`, both branches of `update-render!`, and `discharge-all!`. On
+the paths that evict (`update-render!`, `discharge-all!`), the commit sits
+immediately BEFORE the eviction flush, so an address unmounted in the same
+pass cannot be resurrected by its own promotion; `initial-mount!` evicts
+nothing, and commits once the tree is appended. The initial-mount commit is
+the one that matters most: a spin with no tracks runs its body exactly once,
+there — if its staging is not promoted then, it never is, and the next parent
+re-emission reconciles against nil and re-emits `:add` for a subtree the DOM
+already holds, duplicating it.
+
+Why this is a rule and not an optimization: the engine may abandon a body
+slice AFTER it has built its elements — a slice that suspends on an `await`
+is truncated and cancelled when a newer signal value resumes the track
+continuation above it (`truncate-stale-conts!`), and every improvement to
+cancellation correctness increases how often that happens. Advancing the
+caches at compute time meant an abandoned slice still moved the baseline: the
+committed run then reconciled against state the DOM had never seen, produced
+no deltas, and the change was lost silently — and because child deltas carry
+positions, the slot cache's fiction made the NEXT transition remove a live
+sibling at the wrong index. (Regression: `dom/superseded_run_test.clj`; the
+zero-op no-change re-render test there is the detector for a MISSED commit
+point — a tree whose staging is never promoted re-emits its whole mount as
+`:add` on the following pass.)
+
+Two scoped exceptions, stated so they are read as design rather than bugs:
+SSR builds stage and never commit (a one-shot context; the staging dies with
+it), and a vnode whose deltas were dropped for want of a bound element still
+commits with its tree — that case already logs `::deltas-dropped-unbound-addr`
+loudly and matches prior behaviour.
+
 ### Invariant summary table
 
 | composition          | glitch-free | no double-exec | no stale-cache | no orphan cont | deterministic id |
