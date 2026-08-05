@@ -155,6 +155,12 @@
 (declare commit-reconcile!)
 (declare commit-reconcile*)
 
+;; One warn per unbound address per process — the condition persists across
+;; passes (the stranded subtree is recommitted on every parent re-emission),
+;; so unthrottled it floods the console: measured 89 identical lines for one
+;; defect. Same policy as discharge's logged-collisions.
+(defonce ^:private logged-unbound (atom #{}))
+
 (defn- created-value-addrs
   "Addresses of subtrees a set of just-applied child deltas CREATED (as
    opposed to reconciled in place). These get seeded caches and are excluded
@@ -231,7 +237,14 @@
       (if-not el
         ;; No element for a claimed-committed address: loud, not silent —
         ;; this is the commit-walk analogue of ::deltas-dropped-unbound-addr.
-        (log/warn ::commit-unbound-addr {:addr addr :tag (:tag vnode)})
+        ;; Known producer: an ::addr-collision earlier (two vnodes, one addr —
+        ;; e.g. an unkeyed component instantiated per scope); the collision
+        ;; winner's unmount strands the loser here, frozen.
+        (when-not (contains? @logged-unbound addr)
+          (swap! logged-unbound conj addr)
+          (log/warn ::commit-unbound-addr {:addr addr :tag (:tag vnode)
+                                           :class (:class (plain-attrs vnode))
+                                           :children (count (plain-children vnode))}))
         (let [;; --- attrs: committed -> arrived ---
               new-attrs (dissoc (plain-attrs vnode) :key :ref)
               prev-attrs (cache/get-attr-cache addr)
