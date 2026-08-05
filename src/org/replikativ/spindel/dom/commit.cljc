@@ -53,7 +53,8 @@
    `:add`/`:update`/fragment delta) get their caches SEEDED from their
    vnodes, not diffed — diffing a just-created subtree against its nil cache
    would re-emit its whole mount."
-  (:require [org.replikativ.spindel.dom.core :as core]
+  (:require [clojure.set]
+            [org.replikativ.spindel.dom.core :as core]
             [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.dom.discharge :as disch]
@@ -212,6 +213,67 @@
     (doseq [k (filter (set prev-order) order)]
       (commit-reconcile* discharge (get by-key k)))
     nil))
+
+(defn tree-addrs
+  "Every address a committed tree claims MOUNTED: element addrs, `ifor-each`
+   call-site addrs (which appear on no flattened child — they ride `:keyed`
+   slot values), and keyed item addrs, recursively. `:nil` slots contribute
+   nothing. This is the mounted model of a tree; the difference between two
+   successive committed trees is exactly what unmounted."
+  [vnode]
+  (cond
+    (frag/keyed-fragment? vnode)
+    (transduce (map tree-addrs) into
+               (if-let [a (:addr vnode)] #{a} #{})
+               (frag/fragment-items vnode))
+
+    (and (core/vnode? vnode) (not (core/text-node? vnode)))
+    (transduce (comp (mapcat (fn [slot]
+                               (case (:type slot)
+                                 :nil []
+                                 [(:value slot)])))
+                     (map tree-addrs))
+               into
+               (if-let [a (:addr vnode)] #{a} #{})
+               (vnode-slots vnode))
+
+    :else #{}))
+
+(defn retire-dead!
+  "Reconcile the MOUNTED MODEL after a commit: every address the previous
+   committed tree claimed that the new one does not is dead — drop its
+   per-address caches and its element-registry entry.
+
+   This is the single derivation that replaces the deferred-eviction
+   choreography (*pending-evictions* / flush / the keyed-cache cascade and
+   its liveness closure). Those existed because unmount decisions were made
+   MID-WALK, where an address can sit in both a dying subtree and a live one
+   (A->B->A). Between two committed trees there is no such ambiguity: an
+   address is in the new tree or it is not. Fragment call sites need no
+   cascade — `tree-addrs` reads them off `:slots` directly.
+
+   Ref unmount callbacks are NOT fired here: the commit walk's own removal
+   paths fire them when the element leaves the DOM (and the root-replace
+   path cycles the whole old tree explicitly). This retires STATE, exactly
+   once, from one place."
+  [discharge prev-vdom new-vdom]
+  (when prev-vdom
+    (let [dead (clojure.set/difference (tree-addrs prev-vdom)
+                                       (tree-addrs new-vdom))]
+      (doseq [a dead]
+        (cache/evict-cache! a)
+        (disch/remove-element! discharge a))))
+  nil)
+
+(defn commit-update!
+  "The full commit step for an update pass: reconcile the arrived tree
+   against the committed caches (`commit-reconcile!`), then retire the
+   addresses the previous committed tree held that this one does not
+   (`retire-dead!`). `prev-vdom` is the tree the LAST commit installed —
+   the render effect's `:current-vdom`."
+  [discharge prev-vdom new-vdom]
+  (commit-reconcile! discharge new-vdom)
+  (retire-dead! discharge prev-vdom new-vdom))
 
 (defn commit-reconcile!
   "Diff `vnode` against the committed per-address caches, apply the

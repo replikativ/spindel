@@ -99,89 +99,22 @@
   [addr cache-data]
   (ec/swap-state! [:dom/keyed-cache addr] (constantly cache-data)))
 
-;; =============================================================================
-;; Fragment call-site reachability (used by eviction liveness)
-;; =============================================================================
-;;
-;; NOTE on history: the caches used to advance through a build-time STAGING
-;; area promoted at commit (`stage-*` / `commit-pending!`, R3). That design was
-;; retired with commit-time reconciliation (dom/commit): builds are pure, the
-;; diff runs at the commit point against the committed caches, and the caches
-;; advance in the same step as the DOM write — so both hazards staging
-;; addressed (abandoned slices moving the baseline; N racing builds sharing one
-;; last-write-wins pending slot) are gone structurally.
-
-(defn- keyed-frag-addrs
-  "The `ifor-each` call-site addresses reachable from `slots`.
-
-   A `:keyed` slot holds a KeyedFragment whose `:addr` is the call site — an
-   address that appears on NO vnode, because `flatten-slot` splices the
-   fragment's items into `:children` and drops the fragment itself. A
-   vnode-walking liveness sweep cannot see these; they are reached the same
-   way `evict-cache!` reaches them, through the parent's slots."
-  [slots]
-  (into #{} (keep (fn [slot]
-                    (when (= :keyed (:type slot))
-                      (:addr (:value slot))))
-                  slots)))
-
-(defn live-keyed-closure
-  "Extend `live-addrs` with the `ifor-each` call-site addresses reachable from
-   their COMMITTED slots, transitively.
-
-   A fragment call site appears on no vnode, so a liveness set built from
-   rendered vnodes never contains one; without this closure a fragment is
-   structurally exempt from the very check that protects live addresses from
-   eviction. The commit walk advances the committed slots BEFORE the eviction
-   flush runs, so the closure reads current data."
-  [live-addrs]
-  (loop [live (set live-addrs)]
-    (let [more (into live
-                     (mapcat #(keyed-frag-addrs (ec/get-state [:dom/cache %])))
-                     live)]
-      (if (= (count more) (count live)) live (recur more)))))
-
 (defn evict-cache!
-  "Drop all per-address engine state for an element address.
+  "Drop all per-address engine state for one element address: slot cache,
+  attr cache, keyed cache (when the address is an `ifor-each` call site),
+  and the foreign-node marker.
 
-  Called when an element is unmounted so the per-address entries do not
-  accumulate for the lifetime of the context. Covers every `[:dom/* <addr>]`
-  map the render path writes:
-  - `:dom/cache`       — slot cache
-  - `:dom/attr-cache`  — attribute cache
-  - `:dom/keyed-cache` — `ifor-each` per-call-site keyed cache
-  - `:dom/foreign`     — foreign-node marker
-
-  Cascades into `ifor-each` keyed caches held by this element's slots. A
-  `:keyed` slot stores a `KeyedFragment` whose `:addr` is the ifor-each CALL
-  SITE — an address that appears on no vnode, because `flatten-slot` splices
-  the fragment's items into `:children` and drops the fragment itself. Walking
-  the vnode tree therefore cannot reach it. Without this cascade, unmounting a
-  subtree containing an `ifor-each` retained `:by-key` (every rendered vnode,
-  with its event-handler closures) for the lifetime of the context — the
-  dominant leak in a long-lived session."
-  ([addr] (evict-cache! addr nil))
-  ([addr protected]
-   (when addr
-     (doseq [slot (ec/get-state [:dom/cache addr])
-             :when (= :keyed (:type slot))]
-       (when-let [frag-addr (:addr (:value slot))]
-         ;; `protected` guards the cascade against a dead parent taking a LIVE
-         ;; fragment's cache with it. The call-site address is stable across
-         ;; re-renders, so a superseded parent's slots still name the fragment
-         ;; the current parent renders; dropping it resets the keyed baseline to
-         ;; empty and the next render re-adds every item. Measured before the
-         ;; guard: a settled collapse turned 6 sections into 12.
-         (when-not (contains? protected frag-addr)
-           (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m frag-addr))))))
-     (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
-     (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
-     (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
-     (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr))))))
-
-;; =============================================================================
-;; Attribute Reconciliation
-;; =============================================================================
+  Called from `commit/retire-dead!` — the single derivation of unmount as
+  the difference between successive committed trees. No cascade into
+  fragment call sites is needed here: `tree-addrs` reads them off `:slots`,
+  so a dead fragment's own address is in the dead set directly, and a LIVE
+  fragment can never be in it."
+  [addr]
+  (when addr
+    (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
+    (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
+    (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
+    (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr)))))
 
 (defn reconcile-attrs
   "Reconcile previous attrs with new attrs, producing deltas.
