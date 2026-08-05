@@ -257,3 +257,59 @@
       (is (= 1 (n-matching body ".root")) "exactly one root")
       (is (kept? (.querySelector body ".root"))
           "an await between track and element must not change the address"))))
+
+;; =============================================================================
+;; 3. OPEN, SEPARATE DEFECT: the fragment's parent is re-minted each re-render
+;; =============================================================================
+;;
+;; Found while diagnosing the eviction bug, and NOT fixed by it. Probing
+;; `render-initial!` showed the nav getting a NEW address on every re-render:
+;;
+;;   mount   nav :el-12707852...
+;;   expand  nav :el-17fec733...   <- re-minted, whole subtree rebuilt
+;;
+;; R1 says identity IS the address, so a stable call site must keep its
+;; address; re-minting rebuilds the world on every render. The two tests above
+;; isolate the trigger: `track -> await -> element` preserves node identity
+;; (both pass), so neither the await nor the track is at fault on its own. It
+;; is the awaited ifor-each FRAGMENT child that destabilises the parent.
+;;
+;; The address is `content-hash[source-loc, parent-addr, slot-index]` — all
+;; three of which should be stable here — so the cause is likelier in the
+;; chain-head cursor the addressing layer forks for fragment items
+;; (dom/addressing `with-item-scope`, engine/addressing get/set-chain-head!).
+;; That is engine-level and deserves its own change; the eviction fix above is
+;; independent of it and complete on its own.
+;;
+;; This test FAILS. It is the acceptance criterion for that follow-up.
+
+(deftest-async fragment-parent-keeps-its-identity-across-rerender
+  (testing "a parent whose child is an awaited ifor-each fragment must be
+            reconciled in place, not re-created"
+    (let [body (fresh-body)
+          discharge (browser/make-dom-discharge (.-ownerDocument body))
+          open-set (sig/signal #{})
+          ids ["a" "b" "c"]
+          section-fn (fn [{:keys [id open?]}]
+                       (spin
+                        (await (comb/sleep 1))
+                        (el/div {:key id :class "section"}
+                                (when open? (el/ul {:class "section-items"})))))
+          root (spin
+                (let [{os :new} (track open-set)
+                      frag (await (foreach/for-each*
+                                   {:file "jsdom-identity" :line 1 :column 1}
+                                   :id section-fn
+                                   (mapv (fn [id] {:id id
+                                                   :open? (contains? os id)})
+                                         ids)))]
+                  (el/nav {:class "shell"} frag)))]
+      (render/render-spin! body root discharge)
+      (<? (comb/sleep 200))
+      (is (= 3 (n-matching body ".section")) "mounted")
+      (stamp! (.querySelector body ".shell"))
+      (reset! open-set #{"b"})
+      (<? (comb/sleep 300))
+      (is (= 3 (n-matching body ".section")) "still three sections")
+      (is (kept? (.querySelector body ".shell"))
+          "R1: the nav's address must be stable across re-renders"))))
