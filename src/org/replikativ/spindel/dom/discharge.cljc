@@ -306,7 +306,6 @@
       (when-not (contains? new-attrs k)
         (remove-attribute! discharge el k)))))
 
-
 (declare reconcile-vnode!)
 
 ;; =============================================================================
@@ -672,7 +671,6 @@
 
     ;; Unknown delta type - ignore
     nil))
-
 
 ;; =============================================================================
 ;; Ref Callback Helpers

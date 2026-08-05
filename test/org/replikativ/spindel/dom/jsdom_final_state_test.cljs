@@ -415,12 +415,12 @@
                                   (el/span (str (:id kb) "-" (count ps)))
                                   (when-not (contains? c (:id kb))
                                     (el/div {:class "sub-items"}
-                                          (foreach/for-each*
-                                           {:file "jsdom-nav-shape" :line 2 :column 1}
-                                           :id
-                                           (fn [p] (el/li {:key (:id p)} (:id p)))
-                                           [{:id (str (:id kb) "-p1")}
-                                            {:id (str (:id kb) "-p2")}])))))))
+                                            (foreach/for-each*
+                                             {:file "jsdom-nav-shape" :line 2 :column 1}
+                                             :id
+                                             (fn [p] (el/li {:key (:id p)} (:id p)))
+                                             [{:id (str (:id kb) "-p1")}
+                                              {:id (str (:id kb) "-p2")}])))))))
           ;; the SECTION spin — reactive, created once
           section (spin
                    (let [{c :new} (track collapsed)]
