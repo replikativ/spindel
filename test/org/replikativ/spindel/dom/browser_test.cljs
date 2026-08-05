@@ -7,6 +7,7 @@
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.commit :as commit]
             ["jsdom" :refer [JSDOM]]))
 
 ;; Element macros (el/div, el/span, ...) write into the bound execution
@@ -166,16 +167,10 @@
       (is (= "old" (.getAttribute div "class")))
       (is (= "test" (.getAttribute div "id")))
 
-      ;; Update attributes (simulating what would happen in real usage)
-      ;; First clear deltas from initial render
-      (let [v1-cleared (dom/clear-deltas v1)
-            ;; Then update attributes
-            v2 (dom/update-attrs v1-cleared {:class "new" :id "test"})]
-        ;; Re-store element reference for v2
-        (disch/set-element! discharge v2 div)
-        ;; Apply deltas
-        (disch/discharge-vnode! discharge v2)
-        ;; Verify update
+      ;; Update via commit-time reconciliation: a fresh build of the new
+      ;; state, diffed against the committed caches at the point of writing
+      (let [v2 (assoc v1 :attrs {:class "new" :id "test"})]
+        (commit/commit-reconcile! discharge v2)
         (is (= "new" (.getAttribute div "class")))
         (is (= "test" (.getAttribute div "id")))))))
 
@@ -189,12 +184,9 @@
       ;; Verify initial state
       (is (= "bar" (.getAttribute div "data-foo")))
 
-      ;; Remove data-foo attribute
-      (let [v1-cleared (dom/clear-deltas v1)
-            v2 (dom/update-attrs v1-cleared {:class "test"})]
-        (disch/set-element! discharge v2 div)
-        (disch/discharge-vnode! discharge v2)
-        ;; Attribute should be removed
+      ;; Remove data-foo: absent from the new build's attrs -> removed
+      (let [v2 (assoc v1 :attrs {:class "test"})]
+        (commit/commit-reconcile! discharge v2)
         (is (not (.hasAttribute div "data-foo")))
         (is (= "test" (.getAttribute div "class")))))))
 
@@ -206,16 +198,18 @@
   (testing "Append child via delta"
     (let [doc (make-test-document)
           body (get-body doc)
-          v1 (el/ul (el/li "Item 1"))
+          ;; one source location — identity is the address; the second slot
+          ;; is :nil in v1 and an element in v2, the canonical conditional
+          build (fn [two?] (el/ul (el/li "Item 1")
+                                  (when two? (el/li "Item 2"))))
+          v1 (build false)
           discharge (browser/mount! body v1)
           ul (.-firstChild body)]
       (is (= 1 (.-length (.-children ul))))
 
-      ;; Append a new child
-      (let [v1-cleared (dom/clear-deltas v1)
-            v2 (dom/append-child v1-cleared (el/li "Item 2"))]
-        (disch/set-element! discharge v2 ul)
-        (disch/discharge-vnode! discharge v2)
+      ;; Append via commit-time reconciliation of a fresh build
+      (let [v2 (build true)]
+        (commit/commit-reconcile! discharge v2)
         (is (= 2 (.-length (.-children ul))))
         (is (= "Item 2" (.-textContent (aget (.-children ul) 1))))))))
 

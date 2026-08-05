@@ -128,109 +128,8 @@
 ;; =============================================================================
 
 (declare render-initial!)
-(declare clear-deltas-deep)
 (declare call-ref!)
 (declare call-refs-on-unmount!)
-
-;; Track vnodes that have been fully rendered via render-initial!
-;; These should not have their deltas applied again.
-(def ^:dynamic *rendered-vnodes* nil)
-
-;; Tracks vnode objects whose :deltas have already been applied by
-;; discharge-vnode! at some point in the render-effect's lifetime.
-;;
-;; Unlike *rendered-vnodes* which is per-cycle, this set is bound by the
-;; render effect once and persists across re-render cycles. It exists to
-;; deal with the cross-spin reuse case: a cached spin result (an aside
-;; vnode) carries its initial-reconciliation :deltas forever; without
-;; this set, every time a parent re-emits and embeds the cached child
-;; vnode, the same :deltas fire again, duplicating children in the DOM.
-;;
-;; Identity comparison is the WHOLE point: a *new* vnode at the same
-;; addr with new deltas (e.g. a rebuild because the spin re-ran, OR a
-;; fresh build-element output that just happens to be value-equal to a
-;; prior cycle's vnode) is a different object and MUST get its deltas
-;; applied. Value comparison here is a correctness bug — when a source
-;; oscillates back to an equal state, two distinct render cycles
-;; produce value-equal parent vnodes, and a value-keyed set silently
-;; drops the second cycle's deltas, leaving stale / duplicated DOM.
-(def ^:dynamic *applied-vnodes* nil)
-
-;; ----------------------------------------------------------------------------
-;; Generational identity tracking for *applied-vnodes*
-;; ----------------------------------------------------------------------------
-;;
-;; Requirements: (a) IDENTITY semantics — "have I seen THIS object?",
-;; never "an equal one"; (b) bounded memory — a naive identity set held
-;; for the render-effect's whole life pins every vnode ever discharged.
-;;
-;; The JVM has no weak *identity* map in the stdlib (`WeakHashMap` is
-;; value-keyed; `IdentityHashMap` is strong). So instead of relying on
-;; GC we bound memory explicitly with two generations, :prev and :cur,
-;; rotated once per discharge cycle (`rotate-applied!`). A cached spin
-;; result that is still being re-embedded is re-touched into :cur every
-;; cycle, so it never ages out while live; once its spin re-runs and it
-;; stops being embedded, it falls out within two cycles. CLJS keeps a
-;; bare js/WeakSet — JS WeakSet is already weak AND identity-keyed — so
-;; the generational machinery is a CLJ-only no-op there.
-;;
-;; synchronizedSet because multiple async-dispatch threads can drive
-;; concurrent discharge passes against the same applied-set.
-
-#?(:clj
-   (defn- identity-vnode-set []
-     (Collections/synchronizedSet
-      (Collections/newSetFromMap (IdentityHashMap.)))))
-
-(defn make-applied-vnodes
-  "Create a fresh applied-vnodes tracker (one per render-effect).
-
-   CLJ: an atom holding `{:prev <identity-set> :cur <identity-set>}`.
-   CLJS: a js/WeakSet (already weak + identity-keyed).
-
-   Identity-based 'have I seen THIS object?' semantics; memory is
-   bounded to ~2 discharge cycles via `rotate-applied!`."
-  []
-  #?(:clj  (atom {:prev (identity-vnode-set) :cur (identity-vnode-set)})
-     :cljs (js/WeakSet.)))
-
-(defn- applied-seen?!
-  "Identity check: was this exact vnode object already discharged in
-   this cycle or the previous one? Nil-safe on the set arg.
-
-   Side effect: when the vnode is found only in the older (:prev)
-   generation, it is refreshed into :cur — so a cached spin result
-   that keeps being re-embedded never ages out across the rotation."
-  [s vnode]
-  (and s
-       #?(:clj  (let [{:keys [prev cur]} @s]
-                  (cond
-                    (.contains ^java.util.Set cur vnode)  true
-                    (.contains ^java.util.Set prev vnode) (do (.add ^java.util.Set cur vnode)
-                                                              true)
-                    :else false))
-          :cljs (.has s vnode))))
-
-(defn- applied-add!
-  "Mark this vnode object as applied in the current generation.
-   No-op when the set is nil."
-  [s vnode]
-  (when s
-    #?(:clj  (.add ^java.util.Set (:cur @s) vnode)
-       :cljs (.add s vnode)))
-  nil)
-
-(defn- rotate-applied!
-  "Advance the applied-vnodes generations at a discharge-cycle
-   boundary: this cycle's :cur becomes :prev and a fresh empty :cur
-   starts. Bounds memory to the last two cycles' worth of applied
-   vnodes. CLJS's js/WeakSet is GC-managed, so this is a no-op there."
-  [s]
-  #?(:clj  (when s
-             (swap! s (fn [{:keys [cur]}]
-                        {:prev cur :cur (identity-vnode-set)})))
-     :cljs nil)
-  nil)
 
 ;; Track addresses claimed during the current render pass. If two different
 ;; vnodes try to claim the same :addr we have an addressing collision —
@@ -309,10 +208,18 @@
   ([] (flush-pending-evictions! nil))
   ([discharge]
    (when (and *pending-evictions* *rendered-addrs*)
-     (let [live (set (keys @*rendered-addrs*))]
+     ;; `*rendered-addrs*` holds only addresses that appear ON a vnode, and an
+     ;; `ifor-each` call site appears on none — `flatten-slot` splices the
+     ;; fragment's items into `:children` and drops the fragment. So a fragment
+     ;; could never be found live here, and was exempt from this whole check:
+     ;; a dead parent's stale `:keyed` slot cascaded into the cache of a
+     ;; fragment the LIVE parent was still rendering, and the next render
+     ;; diffed against an empty baseline and re-added every item. Close over
+     ;; the committed slots the same way `commit-pending!` does for staging.
+     (let [live (cache/live-keyed-closure (keys @*rendered-addrs*))]
        (doseq [addr @*pending-evictions*]
          (when-not (contains? live addr)
-           (cache/evict-cache! addr)
+           (cache/evict-cache! addr live)
            (when discharge (remove-element! discharge addr))))))))
 
 ;; =============================================================================
@@ -329,14 +236,6 @@
       :update (set-attribute! discharge el attr-name value)
       :remove (remove-attribute! discharge el attr-name)
       nil)))
-
-(defn apply-attr-deltas!
-  "Apply all attribute deltas from vnode to element."
-  [discharge el vnode]
-  (when-let [attrs (:attrs vnode)]
-    (when-let [attr-deltas (d/get-deltas attrs)]
-      (doseq [delta attr-deltas]
-        (apply-attr-delta! discharge el delta)))))
 
 ;; =============================================================================
 ;; Key-aware reconciliation
@@ -364,7 +263,7 @@
 ;; regular-element children is a follow-up.
 ;; =============================================================================
 
-(defn- reconcilable?
+(defn reconcilable?
   "True if old-vnode and new-vnode can be reconciled into the same DOM
    element — same shape, same address, same key, same tag.
 
@@ -406,9 +305,6 @@
     (doseq [k (keys old-attrs)]
       (when-not (contains? new-attrs k)
         (remove-attribute! discharge el k)))))
-
-(declare apply-child-deltas!)
-(declare apply-attr-deltas!)
 
 (declare reconcile-vnode!)
 
@@ -610,31 +506,13 @@
 
    Two sources of changes are propagated to the reused element:
 
-   1. Attribute diff between old-vnode and new-vnode. Computed by
-      `reconcile-attrs!` — this catches changes that aren't expressed
-      as DeltaableMap deltas (e.g. fresh attrs on a re-constructed
-      vnode).
-
-   2. The new-vnode's own `:deltas` field (from slot reconciliation)
-      and `:children`-DeltaableVector deltas. These describe per-child
-      changes the producer already computed; `apply-child-deltas!`
-      walks them. Attribute deltas on the new-vnode's DeltaableMap are
-      applied via `apply-attr-deltas!` so the same attribute-delta
-      vocabulary the existing discharge consumes is honoured.
-
-   Deep structural child reconciliation (matching arbitrary new
-   children to old children by `:key` when no child-delta path exists)
-   is deferred — producers currently emit the explicit delta vocabulary
-   for any change they need propagated."
+   Only the attribute diff between old-vnode and new-vnode, computed by
+   `reconcile-attrs!`. Child-level changes are NOT applied here — under
+   commit-time reconciliation (dom/commit) the walk recurses into
+   addr-equal children and diffs them against their own per-address
+   caches; builds attach no deltas of their own."
   [discharge el old-vnode new-vnode]
-  (reconcile-attrs! discharge el old-vnode new-vnode)
-  ;; Also honour any DeltaableMap attr-deltas on the new vnode (in
-  ;; case the producer maintained the same map across renders and
-  ;; mutated it incrementally rather than rebuilding).
-  (apply-attr-deltas! discharge el new-vnode)
-  ;; Propagate child-level changes (both slot-reconciliation :deltas
-  ;; and :children DeltaableVector deltas).
-  (apply-child-deltas! discharge el new-vnode))
+  (reconcile-attrs! discharge el old-vnode new-vnode))
 
 ;; =============================================================================
 ;; Child Delta Application (New Delta-Direct System)
@@ -644,12 +522,8 @@
   "Apply a single child delta from slot reconciliation."
   [discharge el delta]
   (case (:delta delta)
-    ;; Simple add: render and insert
-    ;; IMPORTANT: After render-initial!, mark the vnode subtree as rendered to prevent
-    ;; double-application. The vnode may have deltas from element* reconciliation
-    ;; against empty cache, but render-initial! already creates all children.
-    ;; Without marking, those deltas would be applied again when discharge-vnode!
-    ;; processes the child vnodes (since they're in the pre-computed nodes-with-deltas list).
+    ;; Simple add: render and insert. The caller (the commit walk) seeds
+    ;; the created subtree's caches afterwards — see dom/commit.
     :add
     (let [{:keys [path value]} delta
           index (first path)
@@ -798,200 +672,6 @@
     ;; Unknown delta type - ignore
     nil))
 
-(defn apply-child-deltas!
-  "Apply all child deltas from vnode to element.
-
-  Deltas come from two sources:
-  1. The :deltas field set by element* during slot reconciliation
-  2. The DeltaableVector children (from dom/append-child, dom/update-child, etc.)"
-  [discharge el vnode]
-  ;; Apply slot reconciliation deltas
-  (when-let [deltas (:deltas vnode)]
-    (doseq [delta deltas]
-      (apply-child-delta! discharge el delta)))
-  ;; Apply DeltaableVector children deltas (from direct manipulation)
-  (when-let [children (:children vnode)]
-    (when-let [child-deltas (d/get-deltas children)]
-      (doseq [delta child-deltas]
-        (apply-child-delta! discharge el delta)))))
-
-;; =============================================================================
-;; VNode Discharge
-;; =============================================================================
-
-(defn discharge-vnode!
-  "Discharge all deltas from a vnode to the target element.
-
-  Applies:
-  1. Attribute deltas (from DeltaableMap)
-  2. Child deltas (from slot reconciliation :deltas field)
-
-  Skips vnodes that were already fully rendered via render-initial! during
-  this discharge cycle (tracked in *rendered-vnodes*), AND vnodes whose
-  deltas have already been applied earlier in this render-effect's
-  lifetime (tracked in *applied-vnodes*, set up by create-render-effect).
-  The latter protects against cross-spin reuse: a cached spin result's
-  vnode carries its initial-reconciliation :deltas; without this guard,
-  every parent re-emission that embeds the same vnode object would
-  re-apply those deltas, duplicating children in the DOM."
-  [discharge vnode]
-  (when vnode
-    (let [is-rendered? (and *rendered-vnodes* (contains? @*rendered-vnodes* vnode))
-          is-applied?  (applied-seen?! *applied-vnodes* vnode)]
-      (log/debug ::discharge-vnode {:tag (:tag vnode)
-                                    :is-rendered? is-rendered?
-                                    :is-applied? is-applied?
-                                    :has-child-deltas (boolean (seq (:deltas vnode)))
-                                    :child-delta-count (count (:deltas vnode))
-                                    :rendered-set-size (when *rendered-vnodes* (count @*rendered-vnodes*))})
-      (when-not (or is-rendered? is-applied?)
-        (let [el (get-element discharge (:addr vnode))]
-          (when-not el
-            ;; A vnode that CARRIES DELTAS but whose address has no bound DOM
-            ;; element means those updates are about to be dropped on the floor.
-            ;; That is never intentional: it is the signature of reconcile and
-            ;; discharge disagreeing about identity (the parent declared the
-            ;; child unchanged, so no element was ever created at the child's
-            ;; new address). Silently skipping it froze whole subtrees with a
-            ;; single debug line. Log loudly, once per address.
-            (when (and (seq (:deltas vnode))
-                       (not (contains? @logged-unbound (:addr vnode))))
-              (swap! logged-unbound conj (:addr vnode))
-              (log/error ::deltas-dropped-unbound-addr
-                         {:addr (:addr vnode)
-                          :tag (:tag vnode)
-                          :delta-count (count (:deltas vnode))
-                          :hint (str "This vnode's updates were discarded: no DOM "
-                                     "element is bound to its address. Usually a "
-                                     "structural change the parent's reconcile "
-                                     "did not emit a delta for.")}))
-            (log/debug ::element-not-found {:addr (:addr vnode) :tag (:tag vnode)
-                                            :delta-count (count (:deltas vnode))}))
-          (when el
-            ;; Apply attribute deltas
-            (apply-attr-deltas! discharge el vnode)
-
-            ;; Apply child deltas (from new delta-direct system)
-            (apply-child-deltas! discharge el vnode)
-
-            ;; Mark this vnode object as applied so future render cycles
-            ;; that encounter the SAME vnode (e.g. a cached spin result
-            ;; embedded by a re-emitting parent) skip re-applying.
-            (applied-add! *applied-vnodes* vnode)))))))
-
-;; =============================================================================
-;; Tree Walking
-;; =============================================================================
-
-(defn collect-nodes-with-deltas
-  "Walk vdom tree and collect all nodes that have deltas.
-
-  A node has deltas if:
-  - It has attribute deltas (from DeltaableMap)
-  - It has child deltas (from :deltas field)"
-  [vnode]
-  (when vnode
-    (let [has-attr-deltas? (and (:attrs vnode) (d/has-deltas? (:attrs vnode)))
-          has-child-deltas? (or (seq (:deltas vnode))
-                                (and (:children vnode) (d/has-deltas? (:children vnode))))
-          has-deltas? (or has-attr-deltas? has-child-deltas?)
-          children (when-let [ch (:children vnode)]
-                     (if (d/deltaable? ch) @ch ch))
-          child-results (mapcat collect-nodes-with-deltas children)]
-      (when has-deltas?
-        (log/debug ::collected-node-with-deltas {:tag (:tag vnode)
-                                                 :child-delta-count (count (:deltas vnode))
-                                                 :deltas (mapv #(select-keys % [:delta :path]) (:deltas vnode))}))
-      (if has-deltas?
-        (cons vnode child-results)
-        child-results))))
-
-(defn collect-addrs
-  "Every `:addr` in a vdom tree.
-
-  The sibling of `collect-nodes-with-deltas`, and deliberately NOT filtered by
-  deltas: this answers `which addresses did the DOM actually see this pass?`,
-  which is what decides whether a staged cache entry may be promoted
-  (`cache/commit-pending!`). A node created wholesale by `render-initial!`
-  carries no deltas of its own — it is still in the tree, and its caches must
-  still commit, or the next pass would re-emit its `:add` and duplicate it."
-  [vnode]
-  (if-not (map? vnode)
-    #{}
-    (let [children (when-let [ch (:children vnode)]
-                     (if (d/deltaable? ch) @ch ch))
-          from-children (into #{} (mapcat collect-addrs children))]
-      (if-let [a (:addr vnode)]
-        (conj from-children a)
-        from-children))))
-
-(defn discharge-all!
-  "Discharge all deltas from vdom tree to target.
-
-  1. Collect all nodes with deltas
-  2. Apply each node's deltas (skipping those rendered via render-initial!)
-  3. Clear deltas for next render cycle
-
-  Uses *rendered-vnodes* dynamic var to track vnodes that have been fully
-  rendered during this cycle. This prevents double-application of deltas
-  when a parent's :add delta triggers render-initial! for a child that
-  also appears in the nodes-with-deltas list.
-
-  Returns the vdom with deltas cleared."
-  [discharge vdom]
-  (binding [*rendered-vnodes* (atom #{})
-            *rendered-addrs* (atom {})
-            *pending-evictions* (atom #{})]
-    (let [nodes (collect-nodes-with-deltas vdom)]
-      (log/debug ::discharge-all {:nodes-count (count nodes)
-                                  :nodes-with-deltas (mapv (fn [n] {:tag (:tag n) :deltas (:deltas n)}) nodes)})
-      (doseq [node nodes]
-        (discharge-vnode! discharge node))
-      (let [result (clear-deltas-deep vdom)]
-        ;; This tree reached the DOM, so the reconciliations that built it may
-        ;; now become the caches' model of it. Anything staged by a run whose
-        ;; output never got here is dropped — see `cache/commit-pending!`.
-        ;; Before the evictions: an address unmounted this pass must not be
-        ;; resurrected by the promotion.
-        (cache/commit-pending! (collect-addrs vdom))
-        ;; Evict caches of addresses unmounted this pass that no live
-        ;; element re-claimed (deferred — see flush-pending-evictions!).
-        (flush-pending-evictions! discharge)
-        ;; Advance the applied-vnodes generations so memory stays
-        ;; bounded while cross-cycle cached-result protection holds.
-        (rotate-applied! *applied-vnodes*)
-        result))))
-
-;; =============================================================================
-;; Delta Clearing
-;; =============================================================================
-
-(defn clear-deltas
-  "Clear deltas from a single vnode."
-  [vnode]
-  (cond-> vnode
-    (:attrs vnode) (update :attrs d/clear-deltas)
-    (:children vnode) (update :children d/clear-deltas)
-    (:deltas vnode) (dissoc :deltas)))
-
-(defn clear-deltas-deep
-  "Recursively clear deltas from vnode and all descendants."
-  [vnode]
-  (cond
-    (nil? vnode) nil
-
-    (core/text-node? vnode) vnode
-
-    :else
-    (let [cleared (clear-deltas vnode)
-          children (:children cleared)]
-      (if children
-        (let [child-vec (if (d/deltaable? children) @children children)]
-          (assoc cleared :children
-                 (d/deltaable-vector
-                  (mapv clear-deltas-deep child-vec))))
-        cleared))))
-
 ;; =============================================================================
 ;; Ref Callback Helpers
 ;; =============================================================================
@@ -1056,29 +736,10 @@
 ;; Initial Render (create all elements)
 ;; =============================================================================
 
-(defn- mark-rendered!
-  "Mark a vnode as rendered in *rendered-vnodes* if tracking is active.
-
-  Also marks it as 'applied' in the long-lived `*applied-vnodes*` set if
-  bound. `render-initial!` walks a vnode's :children list directly to
-  create the DOM tree, which effectively consumes the equivalent of its
-  initial-reconciliation :deltas. Without registering the vnode as
-  applied, the next discharge cycle would walk the SAME vnode (when a
-  parent re-emits with this cached child) and re-apply those deltas to
-  the existing DOM element, duplicating children — the cross-spin reuse
-  bug."
-  [vnode]
-  (when vnode
-    (when *rendered-vnodes*
-      (swap! *rendered-vnodes* conj vnode))
-    (applied-add! *applied-vnodes* vnode)))
-
 (defn render-initial!
   "Render entire vdom tree to target for initial mount.
 
-  Creates all elements and stores references.
-  Also marks all rendered vnodes in *rendered-vnodes* to prevent
-  double-application of deltas during discharge-all!."
+  Creates all elements and stores references."
   [discharge vnode]
   (cond
     (nil? vnode)
@@ -1088,20 +749,17 @@
     (let [el (create-text! discharge (:content vnode))]
       ;; Text nodes don't have :addr — skip storing ref since they're
       ;; always replaced wholesale and never looked up by address
-      (mark-rendered! vnode)
       el)
 
     (core/fragment? vnode)
     ;; Fragments don't create an element, just render children
     (let [children (when-let [ch (:children vnode)]
                      (if (d/deltaable? ch) @ch ch))]
-      (mark-rendered! vnode)
       (mapv #(render-initial! discharge %) children))
 
     (frag/keyed-fragment? vnode)
     ;; KeyedFragment: render all items
     (do
-      (mark-rendered! vnode)
       (mapv #(render-initial! discharge %) (frag/fragment-items vnode)))
 
     (core/vnode? vnode)
@@ -1112,8 +770,6 @@
       (set-element! discharge (:addr vnode) el)
       ;; Detect duplicate :addr claims (e.g., siblings from `for` instead of ifor-each)
       (register-addr! vnode)
-      ;; Mark as rendered to prevent double delta application
-      (mark-rendered! vnode)
 
       ;; Set all attributes (defer :value until after children for <select>)
       (let [raw-attrs (when-let [attrs (:attrs vnode)]

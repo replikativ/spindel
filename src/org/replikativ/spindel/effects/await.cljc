@@ -443,6 +443,15 @@
               :kind :external-await
               :source-loc source-loc
               :cancel-token cancel-token
+              ;; Same per-slice snapshot the Spin-await cont carries. We
+              ;; are on the awaiter's stack here, so the ambient context
+              ;; IS the environment the post-await slice must resume in.
+              ;; Without it, the `:cont-resume` handler resumed the slice
+              ;; in the DRAIN's environment — historically whatever
+              ;; body-scoped context was smuggled through the enqueue
+              ;; closure, i.e. sometimes accidentally right, never
+              ;; guaranteed. See .internal/slice-environment-integrity.md.
+              :slice-state (capture-slice-state (ec/current-execution-context) spin-id)
               ;; `:cancel!` takes the engine context to record the
               ;; cancellation in. Engine truncation sites pass the
               ;; context they're operating on, which is what makes

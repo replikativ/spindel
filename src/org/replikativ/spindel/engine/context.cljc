@@ -266,15 +266,26 @@
         ;; Counter of drains currently past the function-entry guard.
         ;; stop-context! polls this down to 0 before returning.
         drain-active (atom 0)]
-    (->ExecutionContext
-     fork-id
-     atom-backend
-     nil    ; No parent for root
-     executor
-     bindings
-     metadata
-     running
-     drain-active)))
+    (-> (->ExecutionContext
+         fork-id
+         atom-backend
+         nil    ; No parent for root
+         executor
+         bindings
+         metadata
+         running
+         drain-active)
+        ;; The creation-time bindings, stamped so the drain can NORMALIZE:
+        ;; body-scoped context values (with :dom/* scope etc. assoc'd on)
+        ;; are smuggled into `trigger-drain!` through enqueue closures, and
+        ;; without normalization the whole event cascade — including FIRST
+        ;; slices of freshly created spins, whose construction scope is a
+        ;; select-keys DELTA merged onto the drain context — executes in a
+        ;; random body's environment. Every derived value keeps this key
+        ;; (assoc on a record preserves extra keys), so any smuggled
+        ;; context still knows its pristine base.
+        ;; See .internal/slice-environment-integrity.md.
+        (assoc :base-bindings bindings))))
 
 (defn stop-context!
   "Quiesce an execution context.
@@ -543,16 +554,25 @@
                         :else
                         parent-metadata)]
 
-    (let [fork (->ExecutionContext
-                fork-id
-                overlay-backend
-                parent-ctx  ; Keep parent reference
-                (:executor parent-ctx)  ; Share executor (for now)
-                merged-bindings
-                fork-metadata
-                (:running parent-ctx)        ; Share parent's lifecycle flag
-                (:drain-active parent-ctx)   ; Share parent's drain-active counter
-                )]
+    (let [fork (-> (->ExecutionContext
+                    fork-id
+                    overlay-backend
+                    parent-ctx  ; Keep parent reference
+                    (:executor parent-ctx)  ; Share executor (for now)
+                    merged-bindings
+                    fork-metadata
+                    (:running parent-ctx)        ; Share parent's lifecycle flag
+                    (:drain-active parent-ctx)   ; Share parent's drain-active counter
+                    )
+                   ;; The fork's creation-time bindings (parent base +
+                   ;; fork overrides) — same drain-normalization stamp as
+                   ;; create-execution-context. Deliberately built from
+                   ;; the parent's BASE, not the parent's possibly
+                   ;; body-scoped current value.
+                   (assoc :base-bindings
+                          (merge (or (:base-bindings parent-ctx)
+                                     (:bindings parent-ctx))
+                                 bindings)))]
       ;; Undo the parent's in-flight mailbox CLAIMS in the fork's world:
       ;; each pending :cont-resume popped its waiter from the (CoW-shared)
       ;; mailbox state before the fork — re-register the waiter into the
@@ -693,11 +713,10 @@
 
   Also:
   - Resets engine draining flag.
-  - Drops :dom/cache, :dom/attr-cache, :dom/keyed-cache and :dom/pending,
+  - Drops :dom/cache, :dom/attr-cache and :dom/keyed-cache,
     since slot, attribute and keyed-list reconciliation state belongs to the
     previous render pass and would mismatch the DOM the restored context
-    renders into. :dom/pending holds reconciliations not yet promoted to
-    those caches, so it is render-pass state by the same argument.
+    renders into.
 
   NOTE: Continuations are preserved for in-memory snapshot/restore.
   They will be dropped during serialization (since closures can't be serialized).
@@ -712,7 +731,7 @@
       (assoc :engine/draining? false)
 
       ;; Drop render-pass-specific DOM caches; restored context re-renders.
-      (dissoc :dom/cache :dom/attr-cache :dom/keyed-cache :dom/pending)
+      (dissoc :dom/cache :dom/attr-cache :dom/keyed-cache)
 
       ;; Mark in-flight spins as dirty
       (update :nodes

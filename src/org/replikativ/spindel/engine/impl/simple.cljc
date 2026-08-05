@@ -140,6 +140,33 @@
 ;; Forward declaration for generation boundary cleanup
 (declare clear-all-await-continuations!)
 (declare cache-result!)
+(declare restore-slice-state!)
+
+(defn- cont-by-cancel-token
+  "The `:external-await` cont in `[:await-conts spin-id]` carrying
+  `cancel-token`, or nil. One-shot waiter resumes (`:cont-resume` events,
+  `reject-owning-spin!`) identify their await this way — the waiter entry
+  popped from the primitive's state carries the token, not the cont id."
+  [context spin-id cancel-token]
+  (when (and spin-id cancel-token)
+    (first (filter #(= (:cancel-token %) cancel-token)
+                   (vals (rtp/get-state context [:await-conts spin-id]))))))
+
+(defn- slice-context
+  "The context a one-shot waiter's slice must resume in: the cont's
+  `:slice-state` snapshot restored over `context` when the cont still
+  exists, `context` unchanged otherwise (waiter registered outside an
+  await — nothing captured, nothing to restore). The environment travels
+  with the continuation, never with the event — a slice resumed in the
+  DELIVERER's environment computes addresses/scope from whatever body
+  happened to complete last (measured: .internal/slice-environment-
+  integrity.md)."
+  [context spin-id cancel-token]
+  (if-let [cont (cont-by-cancel-token context spin-id cancel-token)]
+    (if (:slice-state cont)
+      (restore-slice-state! context spin-id cont)
+      context)
+    context))
 
 ;; =============================================================================
 ;; Inline delivery/posting (to avoid cyclic dependency with spin/sync)
@@ -192,10 +219,16 @@
     (if cont
       (do
         (try
-          (binding [ec/*execution-context* context
-                    ec/*spin-id* spin-id
-                    pcps-async/*in-trampoline* false]
-            (when-let [rj (:reject-fn cont)] (rj error)))
+          ;; The reject path is a body slice too — `catch`/`finally`
+          ;; run in it. Restore the cont's captured environment, same
+          ;; as the resolve path (`slice-context` in `:cont-resume`).
+          (let [rctx (if (:slice-state cont)
+                       (restore-slice-state! context spin-id cont)
+                       context)]
+            (binding [ec/*execution-context* rctx
+                      ec/*spin-id* spin-id
+                      pcps-async/*in-trampoline* false]
+              (when-let [rj (:reject-fn cont)] (rj error))))
           (catch #?(:clj Throwable :cljs :default) _ nil))
         (rtp/swap-state! context [:await-conts spin-id]
                          (fn [m] (dissoc m cont-id))))
@@ -550,11 +583,26 @@
     same ids as on the first run. Falls back to the body-start value
     when no snapshot was captured.
 
-  - `:bindings` — merged onto the current context bindings (snapshot
-    wins) and returned as a NEW context. The other two are state
-    mutations; this one is a value the caller must `binding`.
+  - `:bindings` — REPLACES the current context bindings and is returned
+    as a NEW context. The other two are state mutations; this one is a
+    value the caller must `binding`.
 
-  Returns the context with `:slice-state`'s `:bindings` merged in."
+    Replacement, not merge: the snapshot is the FULL `(:bindings ctx)`
+    map at the suspend point, so it already contains everything the
+    slice could legitimately see (fork-local config included — the body
+    ran on this context, so creation-time bindings are inside every
+    snapshot it takes). Merge restored presence but not ABSENCE: a key
+    the slice never had bound survived from whatever context the drain
+    happened to be running on — and the drain context can be a
+    body-scoped value smuggled through `enqueue-completion-event!`'s
+    closure (see .internal/slice-environment-integrity.md). Measured
+    consequence: a parent resuming from `(await (for-each* …))`
+    inherited the last-completing ITEM's `:dom/parent-addr`, its
+    element was addressed under that item's keyed scope, and the
+    address changed with completion order — re-minting the subtree
+    every render.
+
+  Returns the context with `:slice-state`'s `:bindings` swapped in."
   [context spin-id cont]
   (let [{:keys [bindings chain-head tracking]} (:slice-state cont)]
     (when tracking
@@ -563,7 +611,7 @@
                                  (or chain-head
                                      (addressing/body-start-chain-head spin-id)))
     (cond-> context
-      bindings (update :bindings merge bindings))))
+      bindings (assoc :bindings bindings))))
 
 ;; -----------------------------------------------------------------------------
 ;; Continuation storage — split by the comonad / monad nature of the cont:
@@ -1166,8 +1214,13 @@
               (log/trace :engine/cont-resume-repost {:site site :spin-id spin-id})
               (mailbox value))
             nil)
-          (do
-            (guarded-resume! context site spin-id cancel-token resolve value)
+          ;; Resume the slice in ITS OWN captured environment, not the
+          ;; drain's. `slice-context` restores the owning cont's
+          ;; `:slice-state` (bindings + chain-head + dep tracking); the
+          ;; re-binding is what the resumed body code actually reads.
+          (let [rctx (slice-context context spin-id cancel-token)]
+            (binding [ec/*execution-context* rctx]
+              (guarded-resume! rctx site spin-id cancel-token resolve value))
             nil))))
 
     ;; GC cleanup request — the JVM Cleaner / JS FinalizationRegistry saw the
@@ -1206,7 +1259,21 @@
 
   Returns: Number of events processed"
   [context executor]
-  (let [running       (:running context)
+  (let [;; NORMALIZE: run the drain on the context's creation-time
+        ;; bindings, never on a body-scoped value. `trigger-drain!` is
+        ;; reached through enqueue closures that captured the context at
+        ;; an await point — a value that can carry another body's
+        ;; :dom/parent-addr etc. Processing events on it made the whole
+        ;; cascade execute in a random body's environment: resumed slices
+        ;; leaked absent-key scope through restore (now replace), and
+        ;; FIRST slices of fresh spins (construction scope is a delta
+        ;; merged onto this context) inherited it wholesale. Slices get
+        ;; their environment exclusively from their cont's :slice-state.
+        ;; Contexts without the stamp (snapshot/restored) pass through.
+        context (if-some [bb (:base-bindings context)]
+                  (assoc context :bindings bb)
+                  context)
+        running       (:running context)
         drain-active  (:drain-active context)]
     (cond
       ;; Function-entry guard: drop drains on a stopped context. New drain

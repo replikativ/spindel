@@ -13,10 +13,11 @@
    the DOM never gained, so the NEXT transition removed the wrong index — a
    live sibling.
 
-   The fix: `build-element`/`ifor-each` STAGE their reconciliations
-   (`[:dom/pending]`), and `cache/commit-pending!` promotes them only for
-   addresses present in a vdom tree that actually reached the DOM
-   (initial-mount!, update-render!'s two branches, discharge-all!)."
+   HISTORY: the first fix STAGED build-time reconciliations and promoted
+   them at commit (R3 v1). That design was later replaced by commit-time
+   reconciliation (dom/commit): builds are pure and the diff runs at the
+   commit point, which makes abandonment free by construction — these
+   tests now guard that property rather than the staging mechanism."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [org.replikativ.spindel.dom.elements :as el]

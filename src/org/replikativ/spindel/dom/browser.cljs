@@ -7,9 +7,10 @@
     (def d (browser/make-dom-discharge js/document))
     (disch/render-initial! d vdom)
     ;; Later, after vdom updates:
-    (disch/discharge-all! d updated-vdom)"
+    (refresh! d updated-vdom)"
   (:require [clojure.string :as str]
-            [org.replikativ.spindel.dom.discharge :as disch]))
+            [org.replikativ.spindel.dom.discharge :as disch]
+            [org.replikativ.spindel.dom.commit :as commit]))
 
 ;; =============================================================================
 ;; SVG namespace support
@@ -238,6 +239,9 @@
                   (disch/render-initial! discharge vdom))]
     (when root-el
       (.appendChild container root-el))
+    ;; seed the per-address caches from the mounted tree so a later
+    ;; `refresh!` (commit-time reconciliation) diffs against reality
+    (commit/seed-subtree-caches! vdom)
     discharge))
 
 (defn refresh!
@@ -246,10 +250,14 @@
    discharge: The discharge returned from mount!
    new-vdom: The updated virtual DOM tree
 
-   This diffs the new vdom against the previous state and applies
-   only the necessary changes to the DOM."
+   Commit-time reconciliation: the new tree is diffed against the
+   committed per-address caches at the point of writing (dom/commit),
+   and the caches advance in the same step."
   [discharge new-vdom]
-  (disch/discharge-all! discharge new-vdom))
+  (binding [disch/*rendered-addrs* (atom {})
+            disch/*pending-evictions* (atom #{})]
+    (commit/commit-reconcile! discharge new-vdom)
+    (disch/flush-pending-evictions! discharge)))
 
 (defn unmount!
   "Unmount a vdom tree from the DOM.

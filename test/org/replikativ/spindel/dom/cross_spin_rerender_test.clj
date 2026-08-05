@@ -10,11 +10,13 @@
   The bug this guards against: the cached child vnode carries the
   :deltas computed by `build-element`'s initial reconciliation
   (`[:add header at 0, :add content at 1]`). Without dedup, each
-  parent re-emission walks the cached vnode in `collect-nodes-with-deltas`
+  parent re-emission used to re-walk the cached vnode's stale deltas
   and re-applies those :add deltas to the (existing) DOM element,
-  duplicating children. The fix lives in `discharge-vnode!` /
+  duplicating children. HISTORY: first fixed by an identity-keyed
   `mark-rendered!` / `create-render-effect` and uses an
-  `*applied-vnodes*` set that persists across re-render cycles for
+  applied-vnodes set; now structural — builds are pure values and
+  commit-time reconciliation (dom/commit) diffs them, so re-embedding
+  a cached result commits to nothing. The test guards the outcome for
   one render-effect."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing use-fixtures]]

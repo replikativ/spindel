@@ -146,16 +146,16 @@
 (deftest test-address-based-element-refs
   (testing "Element references are stored and found by address"
     (let [{:keys [discharge]} (disch/make-mock-discharge)
-          v1 (el/div {:class "test"} (el/span "Hello"))
-          _ (disch/render-initial! discharge v1)]
-      ;; Element should be findable by its address
+          ;; one source location, invoked twice — builds are pure values
+          ;; under commit-time reconciliation, and identity is the address
+          build (fn [] (el/div {:class "test"} (el/span "Hello")))
+          v1 (build)
+          _ (disch/render-initial! discharge v1)
+          v1b (build)]
       (is (some? (disch/get-element discharge (:addr v1))))
-      ;; After clear-deltas-deep, new objects carry same :addr
-      (let [cleared (disch/clear-deltas-deep v1)]
-        (is (= (:addr v1) (:addr cleared))
-            "Cleared vdom should preserve address")
-        ;; Element should still be findable via the cleared vdom's address
-        (is (some? (disch/get-element discharge (:addr cleared))))))))
+      (is (= (:addr v1) (:addr v1b))
+          "a rebuild from the same source location carries the same address")
+      (is (some? (disch/get-element discharge (:addr v1b)))))))
 
 ;; =============================================================================
 ;; Delta-Direct Rendering Tests (CLJ only - requires await-drain)

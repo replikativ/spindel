@@ -10,7 +10,16 @@
     (ssr/render-to-string (el/div {:class \"app\"} (el/h1 \"Hello\")))"
   (:require [clojure.string :as str]
             [org.replikativ.spindel.dom.core :as core]
-            [org.replikativ.spindel.dom.fragment :as frag]))
+            [org.replikativ.spindel.dom.fragment :as frag]
+            [org.replikativ.spindel.incremental.deltaable :as d]))
+
+(defn- plain
+  "Attrs/children as a plain value — builds attach plain maps/vectors under
+   commit-time reconciliation, but legacy vnodes may still carry deltaables."
+  [x]
+  (cond (nil? x) nil
+        (d/deltaable? x) @x
+        :else x))
 
 ;; =============================================================================
 ;; HTML Escaping
@@ -83,15 +92,15 @@
     (str/join (map render-to-string (:items vnode)))
 
     (core/fragment? vnode)
-    (str/join (map render-to-string @(:children vnode)))
+    (str/join (map render-to-string (plain (:children vnode))))
 
     (core/element-node? vnode)
     (let [tag (name (:tag vnode))
-          attrs (render-attrs @(:attrs vnode))
+          attrs (render-attrs (plain (:attrs vnode)))
           void? (void-element? (:tag vnode))]
       (if void?
         (str "<" tag attrs " />")
-        (let [children (str/join (map render-to-string @(:children vnode)))]
+        (let [children (str/join (map render-to-string (plain (:children vnode))))]
           (str "<" tag attrs ">" children "</" tag ">"))))
 
     :else ""))
