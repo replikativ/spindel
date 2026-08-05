@@ -125,8 +125,10 @@
         ;; Reconcile attrs with cache
         attr-deltas (cache/reconcile-attrs prev-attrs attrs-clean)
 
-        ;; Update attr cache
-        _ (cache/set-attr-cache! effective-addr attrs-clean)
+        ;; STAGE the attr cache — it is promoted only if this vnode is actually
+        ;; discharged (cache/commit-pending!). Advancing it here moved the
+        ;; baseline for runs that were later abandoned, losing their deltas.
+        _ (cache/stage-attrs! effective-addr attrs-clean)
 
         ;; Normalize children (handle text, nil, sequences)
         normalized-children (flatten-and-normalize children)
@@ -134,8 +136,10 @@
         ;; Reconcile children with cache
         {:keys [slots deltas]} (cache/reconcile-children prev-slot-cache normalized-children)
 
-        ;; Update slot cache
-        _ (cache/set-slot-cache! effective-addr slots)
+        ;; STAGE the slot cache — same reason as the attrs above. Child deltas
+        ;; carry POSITIONS, so a lost one does not merely miss an update: the
+        ;; next pass computes indices against a DOM that never received it.
+        _ (cache/stage-slots! effective-addr slots)
 
         ;; Flatten slots to final children vector
         final-children (cache/flatten-slots slots)

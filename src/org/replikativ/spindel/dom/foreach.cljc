@@ -57,6 +57,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.dom.addressing :as addr]
+            [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.sequence-algebra :as sa]
@@ -141,8 +142,15 @@
 (defn- get-keyed-cache [addr]
   (ec/get-state [:dom/keyed-cache addr]))
 
-(defn- set-keyed-cache! [addr cache-data]
-  (ec/swap-state! [:dom/keyed-cache addr] (constantly cache-data)))
+(defn- set-keyed-cache!
+  "STAGE the keyed cache; `cache/commit-pending!` promotes it once the
+   fragment's items have actually been discharged.
+
+   Same asymmetry as the element caches, and the list path made it worse: the
+   fragment's delta embeds `:prev-items` inline, so an abandoned build both
+   moved the keyed baseline and poisoned the next diff."
+  [addr cache-data]
+  (cache/stage-keyed! addr cache-data))
 
 ;; =============================================================================
 ;; Delta derivation — package the keyed SequenceAlgebra diff for discharge

@@ -85,6 +85,101 @@
   [addr attrs]
   (ec/swap-state! [:dom/attr-cache addr] (constantly attrs)))
 
+;; =============================================================================
+;; Staging — the caches model the DOM, so they advance on COMMIT, not on compute
+;; =============================================================================
+;;
+;; A reconciliation writes its result HERE, not into the committed caches. The
+;; committed caches are promoted only for addresses that appear in a vdom tree
+;; that was actually discharged (`commit-pending!`, called from
+;; `discharge-all!`).
+;;
+;; Why: a body slice can build its elements and then suspend on an `await`. If
+;; a newer signal value resumes the track continuation above it, `resume-body!`
+;; truncates and CANCELS that slice — its CPS chain never resolves, so its
+;; vnode never reaches the render effect. Advancing the caches while computing
+;; meant that abandoned run still moved the baseline: the next run reconciled
+;; against a value the DOM had never been told about, produced no deltas, and
+;; the change was lost with nothing logged.
+;;
+;; Worse, it compounded. A lost `:add` left the slot cache claiming a child the
+;; DOM never gained, so the following transition removed the wrong index — a
+;; live sibling — and every index after it was off by one.
+;;
+;; Staging makes abandonment free: a slice that never reaches the DOM never
+;; moves the baseline.
+
+(defn stage-attrs!
+  "Stage reconciled attrs for `addr`. Promoted by `commit-pending!`."
+  [addr attrs]
+  (ec/swap-state! [:dom/pending addr] (fn [m] (assoc m :attrs attrs))))
+
+(defn stage-slots!
+  "Stage reconciled slots for `addr`. Promoted by `commit-pending!`."
+  [addr slots]
+  (ec/swap-state! [:dom/pending addr] (fn [m] (assoc m :slots slots))))
+
+(defn stage-keyed!
+  "Stage an `ifor-each` keyed cache for its call-site `addr`."
+  [addr cache-data]
+  (ec/swap-state! [:dom/pending addr] (fn [m] (assoc m :keyed cache-data))))
+
+(defn- keyed-frag-addrs
+  "The `ifor-each` call-site addresses reachable from `slots`.
+
+   A `:keyed` slot holds a KeyedFragment whose `:addr` is the call site — an
+   address that appears on NO vnode, because `flatten-slot` splices the
+   fragment's items into `:children` and drops the fragment itself. The commit
+   sweep walks vnodes, so it cannot see these; they are reached the same way
+   `evict-cache!` reaches them, through the parent's slots."
+  [slots]
+  (into #{} (keep (fn [slot]
+                    (when (= :keyed (:type slot))
+                      (:addr (:value slot))))
+                  slots)))
+
+(defn commit-pending!
+  "Promote staged cache entries for `live-addrs`, and drop the rest.
+
+   `live-addrs` is every `:addr` in the vdom tree that was just discharged.
+   An address that was staged by a run whose output never reached the DOM is
+   absent from that set, so its staging is discarded and the committed cache
+   keeps describing what the DOM actually holds.
+
+   Fragment call sites are folded in transitively: they hang off a parent's
+   `:keyed` slots rather than off any vnode, and a fragment's own items can in
+   turn contain further fragments, so this closes over the staged slots until
+   the live set stops growing."
+  [live-addrs]
+  (let [pending (ec/get-state [:dom/pending])]
+    (when (seq pending)
+      (let [live (loop [live (set live-addrs)]
+                   (let [more (into live
+                                    (mapcat (fn [addr]
+                                              (keyed-frag-addrs (get-in pending [addr :slots])))
+                                            live))]
+                     (if (= (count more) (count live)) live (recur more))))]
+        (doseq [[addr entry] pending
+                :when (contains? live addr)]
+          (when (contains? entry :attrs)
+            (ec/swap-state! [:dom/attr-cache addr] (constantly (:attrs entry))))
+          (when (contains? entry :slots)
+            (ec/swap-state! [:dom/cache addr] (constantly (:slots entry))))
+          (when (contains? entry :keyed)
+            (ec/swap-state! [:dom/keyed-cache addr] (constantly (:keyed entry)))))
+        ;; Drop ONLY what was promoted. Staging for addresses outside this tree
+        ;; is kept, not discarded: a child spin resolves on its own schedule, so
+        ;; it can stage its build one pass and have its vnode embedded by the
+        ;; parent in a later one. Clearing wholesale destroyed that staging in
+        ;; between, the child's cache never advanced, and it re-emitted `:add`
+        ;; on the next build — duplicating its subtree (caught by
+        ;; cross-spin-rerender and ifor-each-oscillation).
+        ;;
+        ;; Retained staging is not a leak: a rebuild overwrites its address,
+        ;; `evict-cache!` drops it on unmount, and snapshot cleaning drops the
+        ;; whole map.
+        (ec/swap-state! [:dom/pending] (fn [m] (apply dissoc m (filter live (keys m)))))))))
+
 (defn evict-cache!
   "Drop all per-address engine state for an element address.
 
@@ -113,7 +208,10 @@
     (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
     (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
     (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
-    (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr)))))
+    (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr)))
+    ;; Staging too, or an unmounted address could be resurrected by a commit
+    ;; sweep that runs after the eviction.
+    (ec/swap-state! [:dom/pending] (fn [m] (dissoc m addr)))))
 
 ;; =============================================================================
 ;; Attribute Reconciliation

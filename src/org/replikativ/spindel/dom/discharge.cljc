@@ -906,6 +906,25 @@
         (cons vnode child-results)
         child-results))))
 
+(defn collect-addrs
+  "Every `:addr` in a vdom tree.
+
+  The sibling of `collect-nodes-with-deltas`, and deliberately NOT filtered by
+  deltas: this answers `which addresses did the DOM actually see this pass?`,
+  which is what decides whether a staged cache entry may be promoted
+  (`cache/commit-pending!`). A node created wholesale by `render-initial!`
+  carries no deltas of its own — it is still in the tree, and its caches must
+  still commit, or the next pass would re-emit its `:add` and duplicate it."
+  [vnode]
+  (if-not (map? vnode)
+    #{}
+    (let [children (when-let [ch (:children vnode)]
+                     (if (d/deltaable? ch) @ch ch))
+          from-children (into #{} (mapcat collect-addrs children))]
+      (if-let [a (:addr vnode)]
+        (conj from-children a)
+        from-children))))
+
 (defn discharge-all!
   "Discharge all deltas from vdom tree to target.
 
@@ -929,6 +948,12 @@
       (doseq [node nodes]
         (discharge-vnode! discharge node))
       (let [result (clear-deltas-deep vdom)]
+        ;; This tree reached the DOM, so the reconciliations that built it may
+        ;; now become the caches' model of it. Anything staged by a run whose
+        ;; output never got here is dropped — see `cache/commit-pending!`.
+        ;; Before the evictions: an address unmounted this pass must not be
+        ;; resurrected by the promotion.
+        (cache/commit-pending! (collect-addrs vdom))
         ;; Evict caches of addresses unmounted this pass that no live
         ;; element re-claimed (deferred — see flush-pending-evictions!).
         (flush-pending-evictions! discharge)
