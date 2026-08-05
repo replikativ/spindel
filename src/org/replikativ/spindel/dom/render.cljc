@@ -114,41 +114,39 @@
       (do
         (log/debug :render/root-replace {:old (:addr current-vdom)
                                          :new (:addr new-vdom)})
-        (binding [disch/*rendered-addrs* (atom {})
-                  disch/*pending-evictions* (atom #{})]
-          ;; Refs get their nil call and caches are SCHEDULED (not yet dropped):
-          ;; foreign nodes (TipTap et al.) rely on this to release resources.
+        (binding [disch/*rendered-addrs* (atom {})]
+          ;; Refs cycle for the WHOLE old tree — every element is physically
+          ;; destroyed by the innerHTML wipe, so even an address the new tree
+          ;; re-claims gets nil then its fresh element (render-initial! calls
+          ;; the ref again). Foreign nodes (TipTap et al.) rely on this to
+          ;; release resources.
           (disch/call-refs-on-unmount! current-vdom)
           (let [root-el (disch/render-initial! discharge new-vdom)]
             (when container
               (set! (.-innerHTML container) "")
               (when root-el (.appendChild container root-el))))
-          ;; The new tree is in the DOM: seed its caches from the tree (same
-          ;; reasoning as initial-mount! — the arrived tree is the authority,
-          ;; not last-write-wins staging). Before the evictions, so an address
-          ;; this pass unmounted is not resurrected by the seeding.
+          ;; The new tree is in the DOM: seed its caches from the tree, then
+          ;; retire everything the old tree held that the new one does not —
+          ;; the mounted model is the difference between the two committed
+          ;; trees, nothing else. Seed BEFORE retire so a re-claimed address's
+          ;; fresh cache is never touched (it is in the new tree, hence never
+          ;; in the dead set).
           (commit/seed-subtree-caches! new-vdom)
-          (disch/flush-pending-evictions! discharge))
+          (commit/retire-dead! discharge current-vdom new-vdom))
         (assoc render-state :current-vdom new-vdom))
 
       :else
       (do
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
-        (binding [disch/*rendered-addrs* (atom {})
-                  disch/*pending-evictions* (atom #{})]
+        (binding [disch/*rendered-addrs* (atom {})]
           ;; COMMIT-TIME RECONCILIATION (dom/commit): diff the arrived tree
-          ;; against the committed caches, apply, and advance the caches in
-          ;; the same step. Build-time :deltas on the vnodes are IGNORED —
-          ;; they were computed against whatever baseline the build happened
-          ;; to see, and when N builds race before a commit they all carry
-          ;; the same :add (measured: six builds of one container per settled
-          ;; expand, the same :add discharged in two passes). Here a stale
-          ;; build diffs against the advanced baseline and collapses to its
-          ;; genuine residual. Unmount refs + deferred evictions flow through
-          ;; the same apply-child-delta! paths as before.
-          (commit/commit-reconcile! discharge new-vdom)
-          (disch/flush-pending-evictions! discharge))
+          ;; against the committed caches, apply, advance the caches in the
+          ;; same step — then retire the addresses the PREVIOUS committed
+          ;; tree held that this one does not (caches + element registry,
+          ;; one derivation). Unmount REFS fire from the walk's own removal
+          ;; paths, at the moment the element leaves the DOM.
+          (commit/commit-update! discharge current-vdom new-vdom))
         (assoc render-state :current-vdom new-vdom)))))
 
 ;; =============================================================================

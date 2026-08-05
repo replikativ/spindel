@@ -156,6 +156,40 @@
       (:data-type attrs)    (assoc :data-type (:data-type attrs))
       text-content          (assoc :text (subs text-content 0 (min 60 (count text-content)))))))
 
+;; =============================================================================
+;; Integrity violations — loud in production, FATAL in tests
+;; =============================================================================
+;;
+;; ::addr-collision and ::commit-unbound-addr are the detectors for the two
+;; rendering integrity invariants: identity-is-the-address (R1, an app keying
+;; obligation) and mounted-model consistency (caches / element registry /
+;; tree agree — structural since the committed-tree difference became the one
+;; unmount derivation). In production they log once per address. Under test,
+;; a fixture enables COLLECTION and each test asserts it drained empty — so a
+;; regression in either invariant fails the suite instead of scrolling by.
+
+(defonce integrity-violations
+  ;; nil = collection off (production); a vector = collecting (tests).
+  (atom nil))
+
+(defn record-violation!
+  "Record an integrity violation when collection is enabled. Returns nil."
+  [kind data]
+  (swap! integrity-violations #(when % (conj % {:kind kind :data data})))
+  nil)
+
+(defn collect-violations!
+  "Enable collection (call from a test fixture's :before)."
+  []
+  (reset! integrity-violations []))
+
+(defn drain-violations!
+  "Return everything collected and reset the collector (still enabled).
+   Tests assert this is empty as their final check."
+  []
+  (let [[old _] (swap-vals! integrity-violations #(when % []))]
+    (or old [])))
+
 (defonce ^:private logged-collisions (atom #{}))
 
 (defonce ^:private logged-unbound (atom #{}))
@@ -170,57 +204,21 @@
     (let [addr (:addr vnode)
           seen (get @*rendered-addrs* addr)]
       (if seen
-        (when (and (not (identical? seen vnode))
-                   (not (contains? @logged-collisions addr)))
-          (swap! logged-collisions conj addr)
-          (log/error ::addr-collision
-                     {:addr addr
-                      :prior (vnode-fingerprint seen)
-                      :new (vnode-fingerprint vnode)
-                      :hint "Two vnodes claim the same :addr in one render pass. Use ifor-each for cardinality-variable lists, or split the call site so each sibling has a distinct source-loc. (Logged once per process — see logged-collisions atom.)"}))
+        (when (not (identical? seen vnode))
+          ;; collection sees EVERY occurrence — tests must fail on the
+          ;; second collision at an addr too; only the LOG is throttled
+          (record-violation! ::addr-collision
+                             {:addr addr
+                              :prior (vnode-fingerprint seen)
+                              :new (vnode-fingerprint vnode)})
+          (when-not (contains? @logged-collisions addr)
+            (swap! logged-collisions conj addr)
+            (log/error ::addr-collision
+                       {:addr addr
+                        :prior (vnode-fingerprint seen)
+                        :new (vnode-fingerprint vnode)
+                        :hint "Two vnodes claim the same :addr in one render pass. Use ifor-each for cardinality-variable lists, or split the call site so each sibling has a distinct source-loc. (Logged once per process — see logged-collisions atom.)"})))
         (swap! *rendered-addrs* assoc addr vnode)))))
-
-;; Addresses whose per-element caches are slated for eviction because a
-;; vnode at that address was unmounted this render pass. Eviction is
-;; *deferred* to end-of-cycle: an unmount runs before the live subtree is
-;; render-initial!'d, so an address can sit in both a destroyed subtree and
-;; a live one within one pass (a churned parent whose keyed descendants
-;; survive). `flush-pending-evictions!` drops only the addresses absent
-;; from `*rendered-addrs*` once the pass is complete.
-(def ^:dynamic *pending-evictions* nil)
-
-(defn flush-pending-evictions!
-  "Evict the per-element caches of addresses unmounted this render pass
-  that no live element claimed. Call once, after the full discharge walk,
-  inside the `*pending-evictions*` / `*rendered-addrs*` binding.
-
-  Eager eviction on unmount is unsafe: unmount runs before the live
-  subtree is render-initial!'d, so it would wipe the cache of an address
-  that a still-live element (a surviving keyed descendant of a churned
-  parent) re-claims later in the same pass. By end-of-pass `*rendered-addrs*`
-  holds every live address, so (pending - live) is exactly the dead set.
-
-  When a `discharge` is supplied we also drop its addr→element registry entry
-  for each dead address (`remove-element!`) — otherwise the registry retains
-  the detached DOM node for the lifetime of the tree (it is only ever fully
-  cleared by `unmount!`). The 0-arity form keeps the cache-only behavior for
-  callers (e.g. focused unit tests) that have no discharge in hand."
-  ([] (flush-pending-evictions! nil))
-  ([discharge]
-   (when (and *pending-evictions* *rendered-addrs*)
-     ;; `*rendered-addrs*` holds only addresses that appear ON a vnode, and an
-     ;; `ifor-each` call site appears on none — `flatten-slot` splices the
-     ;; fragment's items into `:children` and drops the fragment. So a fragment
-     ;; could never be found live here, and was exempt from this whole check:
-     ;; a dead parent's stale `:keyed` slot cascaded into the cache of a
-     ;; fragment the LIVE parent was still rendering, and the next render
-     ;; diffed against an empty baseline and re-added every item. Close over
-     ;; the committed slots the same way `commit-pending!` does for staging.
-     (let [live (cache/live-keyed-closure (keys @*rendered-addrs*))]
-       (doseq [addr @*pending-evictions*]
-         (when-not (contains? live addr)
-           (cache/evict-cache! addr live)
-           (when discharge (remove-element! discharge addr))))))))
 
 ;; =============================================================================
 ;; Attribute Delta Application
@@ -692,12 +690,10 @@
                                          :error (str e)})))))
 
 (defn ^:no-doc call-refs-on-unmount!
-  "Recursively call ref callbacks with nil for a vnode and its descendants,
-  and schedule their per-element caches for eviction. The eviction itself
-  is deferred to end-of-cycle (see `*pending-evictions*` /
-  `flush-pending-evictions!`) so it cannot wipe a cache that an address
-  still-live elsewhere in the same render pass re-claims. Outside a render
-  pass (no binding) eviction falls back to eager, as before."
+  "Recursively call ref callbacks with nil for a vnode and its descendants.
+  REFS ONLY — state retirement (caches, element registry) is derived once,
+  from the difference between successive committed trees
+  (`commit/retire-dead!`), not accumulated from unmount walks."
   [vnode]
   (when vnode
     (cond
@@ -705,26 +701,12 @@
       nil  ; Text nodes have no :addr and no refs
 
       (frag/keyed-fragment? vnode)
-      (do
-        ;; The fragment's own address (the `ifor-each` call site) holds the
-        ;; keyed cache — `:by-key` (every rendered vnode + its handler closures)
-        ;; and `:items-by-key`. That address appears on no item vnode, so it
-        ;; must be scheduled explicitly or the whole rendered list leaks for the
-        ;; lifetime of the context. `for-each*` stamps it via `:addr`.
-        (when-let [addr (:addr vnode)]
-          (if *pending-evictions*
-            (swap! *pending-evictions* conj addr)
-            (cache/evict-cache! addr)))
-        (doseq [item (frag/fragment-items vnode)]
-          (call-refs-on-unmount! item)))
+      (doseq [item (frag/fragment-items vnode)]
+        (call-refs-on-unmount! item))
 
       (core/vnode? vnode)
       (do
         (call-ref! vnode nil)
-        (if *pending-evictions*
-          (when-let [addr (:addr vnode)]
-            (swap! *pending-evictions* conj addr))
-          (cache/evict-cache! (:addr vnode)))
         (when-let [children (:children vnode)]
           (let [child-vec (if (d/deltaable? children) @children children)]
             (doseq [child child-vec]

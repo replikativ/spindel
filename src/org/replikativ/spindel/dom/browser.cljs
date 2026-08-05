@@ -245,19 +245,21 @@
     discharge))
 
 (defn refresh!
-  "Update the DOM tree with new vdom.
+  "Update the DOM tree with new vdom via commit-time reconciliation: the
+   new tree is diffed against the committed per-address caches at the
+   point of writing (dom/commit), and the caches advance in the same step.
 
-   discharge: The discharge returned from mount!
-   new-vdom: The updated virtual DOM tree
-
-   Commit-time reconciliation: the new tree is diffed against the
-   committed per-address caches at the point of writing (dom/commit),
-   and the caches advance in the same step."
-  [discharge new-vdom]
-  (binding [disch/*rendered-addrs* (atom {})
-            disch/*pending-evictions* (atom #{})]
-    (commit/commit-reconcile! discharge new-vdom)
-    (disch/flush-pending-evictions! discharge)))
+   The 3-arity also passes `prev-vdom` — the tree the LAST refresh (or
+   mount!) installed — so addresses it held that the new tree does not are
+   RETIRED (caches + element-registry entries). The 2-arity applies the
+   reconciliation only; callers who track their previous tree should
+   prefer the 3-arity."
+  ([discharge new-vdom]
+   (binding [disch/*rendered-addrs* (atom {})]
+     (commit/commit-reconcile! discharge new-vdom)))
+  ([discharge prev-vdom new-vdom]
+   (binding [disch/*rendered-addrs* (atom {})]
+     (commit/commit-update! discharge prev-vdom new-vdom))))
 
 (defn unmount!
   "Unmount a vdom tree from the DOM.
