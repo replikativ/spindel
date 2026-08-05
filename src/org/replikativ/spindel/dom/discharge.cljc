@@ -641,8 +641,20 @@
   ;; mutated it incrementally rather than rebuilding).
   (apply-attr-deltas! discharge el new-vnode)
   ;; Propagate child-level changes (both slot-reconciliation :deltas
-  ;; and :children DeltaableVector deltas).
-  (apply-child-deltas! discharge el new-vnode))
+  ;; and :children DeltaableVector deltas) — AT MOST ONCE per vnode
+  ;; object, through the same `*applied-vnodes*` gate as
+  ;; `discharge-vnode!`. A fragment item is reachable twice in one
+  ;; pass: the seq-diff `:change` reconciles it HERE, and the item is
+  ;; also SPLICED into its parent's `:children` (flatten-slot), so the
+  ;; delta tree-walk visits the same object again. Ungated, a
+  ;; conditional child's `:add` applied twice — measured as two
+  ;; identical `.section-items` inserted into one section by one body
+  ;; execution. Whichever path runs first wins; the other skips the
+  ;; child deltas (attrs above stay unguarded — re-setting an
+  ;; attribute to the same value is idempotent at the DOM).
+  (when-not (applied-seen?! *applied-vnodes* new-vnode)
+    (applied-add! *applied-vnodes* new-vnode)
+    (apply-child-deltas! discharge el new-vnode)))
 
 ;; =============================================================================
 ;; Child Delta Application (New Delta-Direct System)
