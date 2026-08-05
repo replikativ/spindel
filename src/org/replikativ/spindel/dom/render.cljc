@@ -28,6 +28,7 @@
   produce vnodes with deltas attached that are discharged to the DOM."
   (:require [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.cache :as cache]
+            [org.replikativ.spindel.dom.commit :as commit]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.core :as ec]
             [replikativ.logging :as log]))
@@ -83,12 +84,14 @@
     ;; Append to container
     (when (and container root-el)
       (.appendChild container root-el))
-    ;; The whole tree just reached the DOM, so its reconciliations become the
-    ;; caches' model of it. This is the commit point that matters MOST: a spin
-    ;; with no tracks runs its body exactly once, here — if its staging is not
-    ;; promoted now, it never is, and the next parent re-emission reconciles
-    ;; against nil and re-emits `:add` for a subtree the DOM already holds.
-    (cache/commit-pending! (disch/collect-addrs vdom))
+    ;; The whole tree just reached the DOM: SEED the caches from the tree
+    ;; itself. This replaces promoting the build's staging — staging is
+    ;; last-write-wins per address, so when several builds raced before this
+    ;; mount, the staged value could describe a build the DOM never received.
+    ;; The tree the DOM holds is the only sound source. (Commit point
+    ;; ordering unchanged; this is still the commit point that matters most —
+    ;; a spin with no tracks runs its body exactly once, here.)
+    (commit/seed-subtree-caches! vdom)
     ;; No transfer needed — address-based refs work with cleared vdom
     ;; (clear-deltas-deep preserves :addr fields)
     (assoc render-state
@@ -137,10 +140,11 @@
             (when container
               (set! (.-innerHTML container) "")
               (when root-el (.appendChild container root-el))))
-          ;; The new tree is in the DOM, so its reconciliations may become the
-          ;; caches' model of it. Before the evictions, so an address this pass
-          ;; unmounted is not resurrected by the promotion.
-          (cache/commit-pending! (disch/collect-addrs new-vdom))
+          ;; The new tree is in the DOM: seed its caches from the tree (same
+          ;; reasoning as initial-mount! — the arrived tree is the authority,
+          ;; not last-write-wins staging). Before the evictions, so an address
+          ;; this pass unmounted is not resurrected by the seeding.
+          (commit/seed-subtree-caches! new-vdom)
           (disch/flush-pending-evictions! discharge))
         (assoc render-state :current-vdom (disch/clear-deltas-deep new-vdom)))
 
@@ -151,16 +155,17 @@
         (binding [disch/*rendered-vnodes* (atom #{})
                   disch/*rendered-addrs* (atom {})
                   disch/*pending-evictions* (atom #{})]
-          (let [nodes-with-deltas (disch/collect-nodes-with-deltas new-vdom)]
-            (when (seq nodes-with-deltas)
-              (log/trace :render/delta-update {:nodes-with-deltas (count nodes-with-deltas)})
-              (doseq [node nodes-with-deltas]
-                (disch/discharge-vnode! discharge node))))
-          ;; Commit the staged reconciliations for everything in the tree that
-          ;; just reached the DOM — NOT only the nodes that carried deltas: a
-          ;; subtree built wholesale by `render-initial!` has none of its own,
-          ;; and would otherwise re-emit `:add` on the next pass.
-          (cache/commit-pending! (disch/collect-addrs new-vdom))
+          ;; COMMIT-TIME RECONCILIATION (dom/commit): diff the arrived tree
+          ;; against the committed caches, apply, and advance the caches in
+          ;; the same step. Build-time :deltas on the vnodes are IGNORED —
+          ;; they were computed against whatever baseline the build happened
+          ;; to see, and when N builds race before a commit they all carry
+          ;; the same :add (measured: six builds of one container per settled
+          ;; expand, the same :add discharged in two passes). Here a stale
+          ;; build diffs against the advanced baseline and collapses to its
+          ;; genuine residual. Unmount refs + deferred evictions flow through
+          ;; the same apply-child-delta! paths as before.
+          (commit/commit-reconcile! discharge new-vdom)
           (disch/flush-pending-evictions! discharge))
 
         ;; Clear deltas for next render cycle

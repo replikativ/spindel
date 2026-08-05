@@ -156,6 +156,15 @@
 ;; drops the second cycle's deltas, leaving stale / duplicated DOM.
 (def ^:dynamic *applied-vnodes* nil)
 
+;; Bound true by the commit-time reconciliation walk (dom/commit). The walk
+;; computes every difference itself against the committed caches; vnode-
+;; attached build-time :deltas are frozen against whatever baseline that
+;; build happened to see and MUST NOT also apply — under the walk they are
+;; exactly the stale duplicates being eliminated. reconcile-vnode! keeps its
+;; value-based attr diff either way. TRANSITIONAL: once builds stop attaching
+;; :deltas (E step 5), the guarded branches become vacuous and this flag goes.
+(def ^:dynamic *suppress-vnode-deltas* false)
+
 ;; ----------------------------------------------------------------------------
 ;; Generational identity tracking for *applied-vnodes*
 ;; ----------------------------------------------------------------------------
@@ -636,10 +645,11 @@
    for any change they need propagated."
   [discharge el old-vnode new-vnode]
   (reconcile-attrs! discharge el old-vnode new-vnode)
+  (when-not *suppress-vnode-deltas*
   ;; Also honour any DeltaableMap attr-deltas on the new vnode (in
   ;; case the producer maintained the same map across renders and
   ;; mutated it incrementally rather than rebuilding).
-  (apply-attr-deltas! discharge el new-vnode)
+  (apply-attr-deltas! discharge el new-vnode))
   ;; Propagate child-level changes (both slot-reconciliation :deltas
   ;; and :children DeltaableVector deltas) — AT MOST ONCE per vnode
   ;; object, through the same `*applied-vnodes*` gate as
@@ -652,9 +662,10 @@
   ;; execution. Whichever path runs first wins; the other skips the
   ;; child deltas (attrs above stay unguarded — re-setting an
   ;; attribute to the same value is idempotent at the DOM).
-  (when-not (applied-seen?! *applied-vnodes* new-vnode)
-    (applied-add! *applied-vnodes* new-vnode)
-    (apply-child-deltas! discharge el new-vnode)))
+  (when-not *suppress-vnode-deltas*
+    (when-not (applied-seen?! *applied-vnodes* new-vnode)
+      (applied-add! *applied-vnodes* new-vnode)
+      (apply-child-deltas! discharge el new-vnode))))
 
 ;; =============================================================================
 ;; Child Delta Application (New Delta-Direct System)

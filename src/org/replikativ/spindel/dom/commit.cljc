@@ -148,6 +148,7 @@
 ;; =============================================================================
 
 (declare commit-reconcile!)
+(declare commit-reconcile*)
 
 (defn- created-value-addrs
   "Addresses of subtrees a set of just-applied child deltas CREATED (as
@@ -201,7 +202,7 @@
     ;; apply-seq-diff! itself; compatible ones were reconciled). Recurse to
     ;; bring their attrs/slots current against their own caches.
     (doseq [k (filter (set prev-order) order)]
-      (commit-reconcile! discharge (get by-key k)))
+      (commit-reconcile* discharge (get by-key k)))
     nil))
 
 (defn commit-reconcile!
@@ -215,6 +216,11 @@
    CURRENT state, which is exactly what should be applied.
 
    Returns nil."
+  [discharge vnode]
+  (binding [disch/*suppress-vnode-deltas* true]
+    (commit-reconcile* discharge vnode)))
+
+(defn- commit-reconcile*
   [discharge vnode]
   (when (and (core/vnode? vnode)
              (not (core/text-node? vnode))
@@ -292,5 +298,5 @@
                                (not (core/text-node? child))
                                (:addr child)
                                (not (contains? created (:addr child))))]
-              (commit-reconcile! discharge child))))))
+              (commit-reconcile* discharge child))))))
     nil))
