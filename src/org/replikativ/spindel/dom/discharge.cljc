@@ -309,10 +309,18 @@
   ([] (flush-pending-evictions! nil))
   ([discharge]
    (when (and *pending-evictions* *rendered-addrs*)
-     (let [live (set (keys @*rendered-addrs*))]
+     ;; `*rendered-addrs*` holds only addresses that appear ON a vnode, and an
+     ;; `ifor-each` call site appears on none — `flatten-slot` splices the
+     ;; fragment's items into `:children` and drops the fragment. So a fragment
+     ;; could never be found live here, and was exempt from this whole check:
+     ;; a dead parent's stale `:keyed` slot cascaded into the cache of a
+     ;; fragment the LIVE parent was still rendering, and the next render
+     ;; diffed against an empty baseline and re-added every item. Close over
+     ;; the committed slots the same way `commit-pending!` does for staging.
+     (let [live (cache/live-keyed-closure (keys @*rendered-addrs*))]
        (doseq [addr @*pending-evictions*]
          (when-not (contains? live addr)
-           (cache/evict-cache! addr)
+           (cache/evict-cache! addr live)
            (when discharge (remove-element! discharge addr))))))))
 
 ;; =============================================================================

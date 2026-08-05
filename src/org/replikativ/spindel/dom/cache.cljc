@@ -138,6 +138,25 @@
                       (:addr (:value slot))))
                   slots)))
 
+(defn live-keyed-closure
+  "Extend `live-addrs` with the `ifor-each` call-site addresses reachable from
+   their COMMITTED slots, transitively.
+
+   The eviction counterpart to the closure `commit-pending!` runs over STAGED
+   slots, and needed for the same reason: a fragment call site appears on no
+   vnode, so a liveness set built from rendered vnodes never contains one.
+   Without this, a fragment is structurally exempt from the very check that
+   protects live addresses from eviction.
+
+   `commit-pending!` runs before `flush-pending-evictions!` at every call site,
+   so by eviction time the live tree's slots are already promoted here."
+  [live-addrs]
+  (loop [live (set live-addrs)]
+    (let [more (into live
+                     (mapcat #(keyed-frag-addrs (ec/get-state [:dom/cache %])))
+                     live)]
+      (if (= (count more) (count live)) live (recur more)))))
+
 (defn commit-pending!
   "Promote staged cache entries for `live-addrs`, and drop the rest.
 
@@ -199,19 +218,27 @@
   subtree containing an `ifor-each` retained `:by-key` (every rendered vnode,
   with its event-handler closures) for the lifetime of the context — the
   dominant leak in a long-lived session."
-  [addr]
-  (when addr
-    (doseq [slot (ec/get-state [:dom/cache addr])
-            :when (= :keyed (:type slot))]
-      (when-let [frag-addr (:addr (:value slot))]
-        (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m frag-addr)))))
-    (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
-    (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
-    (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
-    (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr)))
-    ;; Staging too, or an unmounted address could be resurrected by a commit
-    ;; sweep that runs after the eviction.
-    (ec/swap-state! [:dom/pending] (fn [m] (dissoc m addr)))))
+  ([addr] (evict-cache! addr nil))
+  ([addr protected]
+   (when addr
+     (doseq [slot (ec/get-state [:dom/cache addr])
+             :when (= :keyed (:type slot))]
+       (when-let [frag-addr (:addr (:value slot))]
+         ;; `protected` guards the cascade against a dead parent taking a LIVE
+         ;; fragment's cache with it. The call-site address is stable across
+         ;; re-renders, so a superseded parent's slots still name the fragment
+         ;; the current parent renders; dropping it resets the keyed baseline to
+         ;; empty and the next render re-adds every item. Measured before the
+         ;; guard: a settled collapse turned 6 sections into 12.
+         (when-not (contains? protected frag-addr)
+           (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m frag-addr))))))
+     (ec/swap-state! [:dom/cache] (fn [m] (dissoc m addr)))
+     (ec/swap-state! [:dom/attr-cache] (fn [m] (dissoc m addr)))
+     (ec/swap-state! [:dom/keyed-cache] (fn [m] (dissoc m addr)))
+     (ec/swap-state! [:dom/foreign] (fn [m] (dissoc m addr)))
+     ;; Staging too, or an unmounted address could be resurrected by a commit
+     ;; sweep that runs after the eviction.
+     (ec/swap-state! [:dom/pending] (fn [m] (dissoc m addr))))))
 
 ;; =============================================================================
 ;; Attribute Reconciliation
