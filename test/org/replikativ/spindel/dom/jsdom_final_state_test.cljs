@@ -274,12 +274,37 @@
 ;; (both pass), so neither the await nor the track is at fault on its own. It
 ;; is the awaited ifor-each FRAGMENT child that destabilises the parent.
 ;;
-;; The address is `content-hash[source-loc, parent-addr, slot-index]` — all
-;; three of which should be stable here — so the cause is likelier in the
-;; chain-head cursor the addressing layer forks for fragment items
-;; (dom/addressing `with-item-scope`, engine/addressing get/set-chain-head!).
-;; That is engine-level and deserves its own change; the eviction fix above is
-;; independent of it and complete on its own.
+;; ROOT CAUSE, measured. The address is
+;; `content-hash[source-loc, parent-addr, slot-index]`. Probing all three at the
+;; nav's construction, across two renders:
+;;
+;;   render 1  parent=:keyed-0435e69b  slot=0  chain=:spin-07ecfb2e  (item c)
+;;   render 2  parent=:keyed-1653f3a8  slot=0  chain=:spin-07ecfb2e  (item b)
+;;
+;; slot and the spin chain-head are STABLE. The parent is not — and it is a
+;; `:keyed-...` address, i.e. an `ifor-each` ITEM's scope. The outer body's
+;; element is being addressed as though it lived inside one of the fragment's
+;; items, and WHICH item varies per render (c, then b). That nondeterminism is
+;; the instability. The per-item keyed addresses are themselves stable
+;; (`:keyed-0435e69b` is item c in both renders), so item addressing is fine.
+;;
+;; The mechanism: `with-keyed-context-fn` installs `:dom/parent-addr` with a
+;; synchronous `binding` around a thunk that only STARTS async work — the item
+;; render-fn returns a spin, so the `finally` fires immediately (the ENTER/EXIT
+;; pairs all print during the synchronous kick-off, before any item body
+;; resolves). The scope therefore does not track the item's continuation, and
+;; when the parent body resumes from `(await (for-each* ...))` it inherits the
+;; ambient context left by whichever item continuation resumed last.
+;;
+;; This is why the two tests above pass: with no fragment there is no keyed
+;; scope to leak, so `track -> await -> element` is stable.
+;;
+;; The fix must make the keyed scope part of the item spin's captured context
+;; (re-established per continuation, torn down when it completes) rather than a
+;; synchronous dynamic binding, and/or have a resuming body restore its OWN dom
+;; bindings instead of inheriting ambient ones. That is engine-level and
+;; deserves its own change; the eviction fix above is independent of it and
+;; complete on its own.
 ;;
 ;; This test FAILS. It is the acceptance criterion for that follow-up.
 
