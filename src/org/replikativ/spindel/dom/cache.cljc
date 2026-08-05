@@ -85,6 +85,20 @@
   [addr attrs]
   (ec/swap-state! [:dom/attr-cache addr] (constantly attrs)))
 
+(defn get-keyed-cache
+  "Get the committed `ifor-each` keyed cache for a fragment call-site
+  address. Returns {:by-key :items-by-key :order :was-sync?} or nil."
+  [addr]
+  (ec/get-state [:dom/keyed-cache addr]))
+
+(defn set-keyed-cache!
+  "Directly set the committed keyed cache for a fragment call-site address.
+  Used by the commit-time reconciliation walk (dom/commit), which advances
+  the baseline in the same step as the DOM write — NOT by builds, which
+  stage (`stage-keyed!`)."
+  [addr cache-data]
+  (ec/swap-state! [:dom/keyed-cache addr] (constantly cache-data)))
+
 ;; =============================================================================
 ;; Staging — the caches model the DOM, so they advance on COMMIT, not on compute
 ;; =============================================================================

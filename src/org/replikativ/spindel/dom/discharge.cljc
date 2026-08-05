@@ -372,7 +372,7 @@
 ;; regular-element children is a follow-up.
 ;; =============================================================================
 
-(defn- reconcilable?
+(defn reconcilable?
   "True if old-vnode and new-vnode can be reconciled into the same DOM
    element — same shape, same address, same key, same tag.
 

@@ -70,7 +70,7 @@
 ;; VNode helpers
 ;; =============================================================================
 
-(defn- vnode-value-equal?
+(defn vnode-value-equal?
   "Compare two vnodes by their semantic value, not object identity.
    Vnodes contain DeltaableMap/Vector instances that are fresh each
    render, so identity-based `=` would always be false. We dereference
