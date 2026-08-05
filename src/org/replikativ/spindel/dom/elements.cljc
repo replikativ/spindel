@@ -156,6 +156,14 @@
         vnode (cond-> {:tag tag
                        :addr effective-addr
                        :attrs attrs-with-deltas
+                       ;; The classified slot structure, pre-flatten. The
+                       ;; commit-time reconciliation walk (dom/commit) diffs
+                       ;; the ARRIVED TREE against the committed caches, and
+                       ;; `flatten-slots` destroys exactly what it needs: a
+                       ;; conditional slot currently nil must occupy its slot
+                       ;; index as `:nil`, or every later sibling's position
+                       ;; shifts and the diff mis-addresses them.
+                       :slots slots
                        :children (org.replikativ.spindel.incremental.deltaable/deltaable-vector
                                   (vec final-children))}
                 key-val (assoc :key key-val)
