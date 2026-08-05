@@ -724,6 +724,29 @@ it), and a vnode whose deltas were dropped for want of a bound element still
 commits with its tree — that case already logs `::deltas-dropped-unbound-addr`
 loudly and matches prior behaviour.
 
+**R4 — The environment travels with the continuation, never with the
+event.** A body slice always executes in the environment captured at its own
+suspension point (or construction, for a first slice): `(:bindings ctx)`,
+the addressing chain-head, and the transient dep tracking. The environment
+of the COMPLETER — whoever delivered the value that woke the slice — must
+never be observable. Enforced at three places: (1) `restore-slice-state!`
+REPLACES the context's bindings with the cont's snapshot (merge restored
+presence but not absence — a key the slice never bound leaked in from the
+resume context); (2) every continuation carries `:slice-state`, including
+`:external-await` conts (Deferred/Mailbox/thunk), whose `:cont-resume` and
+reject paths restore it; (3) the drain NORMALIZES its context to the
+creation-time `:base-bindings` — enqueue closures smuggle body-scoped
+context values into `trigger-drain!`, and an un-normalized drain executed
+whole cascades (including FIRST slices of fresh spins, whose construction
+scope is a delta merged onto the drain context) in a random body's
+environment. Violation symptom, measured before the rule: an element built
+after `(await (for-each* …))` was addressed under the last-completing
+ITEM's keyed scope, so its address changed with completion order — R1
+broken nondeterministically, the subtree re-minted every render.
+(Regression: `dom/jsdom_final_state_test.cljs`
+`fragment-parent-keeps-its-identity-across-rerender`; full derivation in
+`.internal/slice-environment-integrity.md`.)
+
 ### Invariant summary table
 
 | composition          | glitch-free | no double-exec | no stale-cache | no orphan cont | deterministic id |
