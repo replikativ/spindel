@@ -92,11 +92,22 @@
       (mapv cache/make-slot (plain-children vnode))))
 
 (defn- fragment-order+by-key
-  "[order by-key items-by-key] for a KeyedFragment's current items."
+  "[order by-key items] for a KeyedFragment's current items."
   [fragment]
   (let [items (frag/fragment-items fragment)
         order (mapv :key items)]
     [order (zipmap order items) items]))
+
+(defn- fragment-cache-value
+  "The committed keyed-cache entry for a fragment: vnodes by key + order,
+   plus `:items-by-key`/`:was-sync?` carried FROM the fragment (for-each*
+   attaches them) — they are what the per-key memoisation reads on the
+   next build. Absent on hand-built fragments -> memo simply misses."
+  [fragment order by-key]
+  {:by-key by-key
+   :items-by-key (or (:items-by-key fragment) {})
+   :order order
+   :was-sync? (boolean (:was-sync? fragment))})
 
 ;; =============================================================================
 ;; Cache seeding for fresh subtrees
@@ -114,10 +125,7 @@
     (frag/keyed-fragment? vnode)
     (let [[order by-key items] (fragment-order+by-key vnode)]
       (when-let [fa (:addr vnode)]
-        (cache/set-keyed-cache! fa {:by-key by-key
-                                    :items-by-key {}
-                                    :order order
-                                    :was-sync? true}))
+        (cache/set-keyed-cache! fa (fragment-cache-value vnode order by-key)))
       (doseq [item items] (seed-subtree-caches! item)))
 
     (and (core/vnode? vnode) (not (core/text-node? vnode)))
@@ -136,10 +144,7 @@
               :when (frag/keyed-fragment? v)]
         (let [[order by-key _] (fragment-order+by-key v)]
           (when-let [fa (:addr v)]
-            (cache/set-keyed-cache! fa {:by-key by-key
-                                        :items-by-key {}
-                                        :order order
-                                        :was-sync? true})))))
+            (cache/set-keyed-cache! fa (fragment-cache-value v order by-key))))))
 
     :else nil))
 
@@ -190,10 +195,7 @@
       (disch/apply-seq-diff! discharge parent-el diff prev-items))
     ;; advance the keyed baseline in the same step as the DOM write
     (when fa
-      (cache/set-keyed-cache! fa {:by-key by-key
-                                  :items-by-key {}
-                                  :order order
-                                  :was-sync? true}))
+      (cache/set-keyed-cache! fa (fragment-cache-value fragment order by-key)))
     ;; grown keys were created by apply-seq-diff!'s render-initial!
     (doseq [k grown-keys]
       (seed-subtree-caches! (get by-key k)))
@@ -278,10 +280,7 @@
                   :when (frag/keyed-fragment? value)]
             (let [[order by-key _] (fragment-order+by-key value)]
               (when-let [fa (:addr value)]
-                (cache/set-keyed-cache! fa {:by-key by-key
-                                            :items-by-key {}
-                                            :order order
-                                            :was-sync? true})))
+                (cache/set-keyed-cache! fa (fragment-cache-value value order by-key))))
             (doseq [item (frag/fragment-items value)]
               (seed-subtree-caches! item)))
           ;; 4. keyed-keyed slots: our own diff + recursion into survivors

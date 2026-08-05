@@ -186,19 +186,19 @@
    decide whether per-key vnode memoisation is safe — substituting a
    cached vnode would flip the result type if the render-fn now
    returns a spin."
-  [my-addr resolved-items prev-by-key prev-order was-sync?]
-  (let [by-key (into {} (map (juxt :key :vnode) resolved-items))
-        items-by-key (into {} (keep (fn [r]
+  [my-addr resolved-items _prev-by-key _prev-order was-sync?]
+  (let [items-by-key (into {} (keep (fn [r]
                                       (when (contains? r :item)
                                         [(:key r) (:item r)])))
                            resolved-items)
-        order (mapv :key resolved-items)
         items (mapv :vnode resolved-items)
-        deltas (build-seq-diff order prev-order by-key prev-by-key)]
-    (set-keyed-cache! my-addr {:by-key by-key
-                               :items-by-key items-by-key
-                               :order order
-                               :was-sync? was-sync?})
+        ;; PURE: no diff, no staging. The commit walk (dom/commit) diffs
+        ;; the fragment's items against the committed keyed cache and
+        ;; advances it in the same step as the DOM write. `:items-by-key`
+        ;; and `:was-sync?` ride the fragment so the walk can carry them
+        ;; into the cache — they are what the per-key memoisation above
+        ;; reads on the next build.
+        deltas nil]
     ;; Stamp the ifor-each call-site address onto the fragment. The keyed cache
     ;; lives at `[:dom/keyed-cache my-addr]`, and `my-addr` appears on NO vnode:
     ;; items carry `keyed-child-address(my-addr, k)`. Without this stamp
@@ -206,7 +206,10 @@
     ;; holds `:by-key` (every rendered vnode, with its event-handler closures)
     ;; and `:items-by-key` — so unmounting a subtree containing an ifor-each
     ;; retained the whole rendered list for the lifetime of the context.
-    (assoc (frag/keyed-fragment items deltas) :addr my-addr)))
+    (assoc (frag/keyed-fragment items deltas)
+           :addr my-addr
+           :items-by-key items-by-key
+           :was-sync? was-sync?)))
 
 ;; =============================================================================
 ;; for-each*
@@ -237,8 +240,10 @@
                                      (not= ::miss cached-item)
                                      (= cached-item item)
                                      (plain-element-vnode? cached-vnode))
+                      ;; cached vnodes are pure values under commit-time
+                      ;; reconciliation — nothing to strip on reuse
                       vnode (if memo-hit?
-                              (clear-stale-deltas cached-vnode)
+                              cached-vnode
                               (addr/with-keyed-context-fn my-addr k
                                 #(render-fn item)))]
                   {:key k :vnode vnode :item item}))
@@ -256,16 +261,15 @@
        (loop [remaining items-with-keys
               resolved []]
          (if (empty? remaining)
-           (let [fresh-cache (get-keyed-cache my-addr)
-                 fresh-by-key (or (:by-key fresh-cache) {})
-                 fresh-order (or (:order fresh-cache) [])]
-             (build-fragment-result my-addr resolved fresh-by-key fresh-order false))
+           ;; build is pure — no prev capture, no re-read; the commit walk
+           ;; diffs against whatever is committed WHEN THIS FRAGMENT LANDS
+           (build-fragment-result my-addr resolved nil nil false)
            (let [{:keys [key vnode item]} (first remaining)
                  resolved-vnode (if (spin? vnode) (await vnode) vnode)]
              (recur (rest remaining)
                     (conj resolved {:key key :vnode resolved-vnode :item item}))))))
       ;; Sync path
-      (build-fragment-result my-addr items-with-keys prev-by-key prev-order true))))
+      (build-fragment-result my-addr items-with-keys nil nil true))))
 
 ;; =============================================================================
 ;; Macro

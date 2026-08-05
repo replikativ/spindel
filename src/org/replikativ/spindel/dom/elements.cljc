@@ -115,64 +115,36 @@
                          (addr/keyed-child-address my-addr k)
                          my-addr)
 
-        ;; Get previous caches
-        prev-slot-cache (cache/get-slot-cache effective-addr)
-        prev-attrs (cache/get-attr-cache effective-addr)
-
         ;; Clean attrs (remove :key and :ref which are handled separately)
         attrs-clean (dissoc attrs :key :ref)
 
-        ;; Reconcile attrs with cache
-        attr-deltas (cache/reconcile-attrs prev-attrs attrs-clean)
-
-        ;; STAGE the attr cache — it is promoted only if this vnode is actually
-        ;; discharged (cache/commit-pending!). Advancing it here moved the
-        ;; baseline for runs that were later abandoned, losing their deltas.
-        _ (cache/stage-attrs! effective-addr attrs-clean)
-
-        ;; Normalize children (handle text, nil, sequences)
+        ;; Normalize children (handle text, nil, sequences) and classify
+        ;; into slots. The build is PURE: no cache reads, no diffing, no
+        ;; staging. Reconciliation happens once, at the commit point
+        ;; (dom/commit), against the committed caches — a build may run any
+        ;; number of times, or be abandoned entirely, and neither changes
+        ;; what the device shows. (Compute-time reconciliation could not
+        ;; have that property: N builds racing before a commit all diffed
+        ;; the same baseline and each carried the same :add.)
         normalized-children (flatten-and-normalize children)
+        slots (mapv cache/make-slot normalized-children)
 
-        ;; Reconcile children with cache
-        {:keys [slots deltas]} (cache/reconcile-children prev-slot-cache normalized-children)
-
-        ;; STAGE the slot cache — same reason as the attrs above. Child deltas
-        ;; carry POSITIONS, so a lost one does not merely miss an update: the
-        ;; next pass computes indices against a DOM that never received it.
-        _ (cache/stage-slots! effective-addr slots)
-
-        ;; Flatten slots to final children vector
-        final-children (cache/flatten-slots slots)
-
-        ;; Adjust delta paths to absolute indices
-        adjusted-deltas (when (seq deltas)
-                          (cache/adjust-delta-paths slots deltas))
-
-        ;; Build vnode with attrs that carry deltas
         key-val (:key attrs)
-        ref-fn (:ref attrs)
-        attrs-with-deltas (org.replikativ.spindel.incremental.deltaable/deltaable-map-with-deltas
-                           attrs-clean attr-deltas)
-        vnode (cond-> {:tag tag
-                       :addr effective-addr
-                       :attrs attrs-with-deltas
-                       ;; The classified slot structure, pre-flatten. The
-                       ;; commit-time reconciliation walk (dom/commit) diffs
-                       ;; the ARRIVED TREE against the committed caches, and
-                       ;; `flatten-slots` destroys exactly what it needs: a
-                       ;; conditional slot currently nil must occupy its slot
-                       ;; index as `:nil`, or every later sibling's position
-                       ;; shifts and the diff mis-addresses them.
-                       :slots slots
-                       :children (org.replikativ.spindel.incremental.deltaable/deltaable-vector
-                                  (vec final-children))}
-                key-val (assoc :key key-val)
-                ref-fn (assoc :ref ref-fn))]
-
-    ;; Attach child deltas if any
-    (if (seq adjusted-deltas)
-      (assoc vnode :deltas adjusted-deltas)
-      vnode)))
+        ref-fn (:ref attrs)]
+    (cond-> {:tag tag
+             :addr effective-addr
+             ;; delta-FREE deltaable: same deref-able value shape consumers
+             ;; and tests have always seen, minus the build-time deltas
+             :attrs (org.replikativ.spindel.incremental.deltaable/deltaable-map attrs-clean)
+             ;; The classified slot structure, pre-flatten: a conditional
+             ;; slot currently nil must occupy its slot index as `:nil`, or
+             ;; every later sibling's position shifts and the commit diff
+             ;; mis-addresses them.
+             :slots slots
+             :children (org.replikativ.spindel.incremental.deltaable/deltaable-vector
+                        (vec (cache/flatten-slots slots)))}
+      key-val (assoc :key key-val)
+      ref-fn (assoc :ref ref-fn))))
 
 ;; =============================================================================
 ;; Legacy Element* (for backwards compatibility)
