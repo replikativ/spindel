@@ -97,3 +97,13 @@
         (commit/retire-dead! discharge churned without)
         (is (nil? (cache/get-keyed-cache :el-frag))
             "dead fragment's keyed cache retired — no cascade required")))))
+
+(deftest violation-collection-round-trips
+  (testing "the enforcement is itself testable: record -> drain non-empty ->
+            drain empty (a detector that cannot fire is worthless)"
+    (disch/collect-violations!)
+    (disch/record-violation! ::probe {:x 1})
+    (let [vs (disch/drain-violations!)]
+      (is (= 1 (count vs)))
+      (is (= ::probe (:kind (first vs)))))
+    (is (empty? (disch/drain-violations!)))))

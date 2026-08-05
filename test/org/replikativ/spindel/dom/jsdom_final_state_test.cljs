@@ -26,6 +26,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.browser :as browser]
+            [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
             [org.replikativ.spindel.dom.foreach :as foreach]
             [org.replikativ.spindel.signal :as sig]
@@ -41,7 +42,11 @@
 (use-fixtures :each
   {:before (fn [] (let [c (ctx/create-execution-context)]
                     (reset! current-test-ctx c)
-                    (set! ec/*execution-context* c)))
+                    (set! ec/*execution-context* c)
+                    ;; integrity violations (::addr-collision /
+                    ;; ::commit-unbound-addr) FAIL these tests — every
+                    ;; deftest ends with (is (true? (integrity-clean?)))
+                    (disch/collect-violations!)))
    :after  (fn [] (when-let [c @current-test-ctx]
                     (ctx/stop-context! c)
                     (set! ec/*execution-context* nil)
@@ -50,6 +55,14 @@
 (defn- fresh-body []
   (let [dom (JSDOM. "<!DOCTYPE html><html><body></body></html>")]
     (.-body (.-document (.-window dom)))))
+
+(defn- integrity-clean?
+  "True when no ::addr-collision / ::commit-unbound-addr was recorded since
+   the last drain. Returns the violations otherwise, so the failure report
+   names them."
+  []
+  (let [vs (disch/drain-violations!)]
+    (or (empty? vs) vs)))
 
 (defn- n-matching
   "How many nodes match `sel` — the harness equivalent of the browser count."
@@ -85,7 +98,8 @@
       (reset! open? false)
       (<? (comb/sleep 50))
       (is (= 0 (n-matching body ".section-items"))
-          "collapsed again: the container is gone"))))
+          "collapsed again: the container is gone")
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; =============================================================================
 ;; 1. A duplication bug, stated as a node count — MEASURED, both versions
@@ -164,7 +178,8 @@
                (n-matching body ".section")))
       (is (= 1 (n-matching body ".section-items"))
           (str "exactly one items container may be on screen, got "
-               (n-matching body ".section-items"))))))
+               (n-matching body ".section-items")))
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; Is the in-flight race required, or does the same shape duplicate even when
 ;; every toggle is allowed to settle? This separates "supersession mishandled"
@@ -203,7 +218,8 @@
       (reset! open-set #{})
       (<? (comb/sleep 300))
       (is (= 6 (n-matching body ".section")) "after settled collapse")
-      (is (= 0 (n-matching body ".section-items")) "container closed"))))
+      (is (= 0 (n-matching body ".section-items")) "container closed")
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; =============================================================================
 ;; 2. Isolation: is the root element PRESERVED across a re-render?
@@ -238,7 +254,8 @@
       (<? (comb/sleep 100))
       (is (= 1 (n-matching body ".root")) "exactly one root")
       (is (kept? (.querySelector body ".root"))
-          "the root node must be reconciled in place, not recreated"))))
+          "the root node must be reconciled in place, not recreated")
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 (deftest-async element-identity-survives-rerender-with-await
   (testing "track -> await -> element (the shape the nav uses)"
@@ -256,7 +273,8 @@
       (<? (comb/sleep 200))
       (is (= 1 (n-matching body ".root")) "exactly one root")
       (is (kept? (.querySelector body ".root"))
-          "an await between track and element must not change the address"))))
+          "an await between track and element must not change the address")
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; =============================================================================
 ;; 3. OPEN, SEPARATE DEFECT: the fragment's parent is re-minted each re-render
@@ -337,7 +355,8 @@
       (<? (comb/sleep 300))
       (is (= 3 (n-matching body ".section")) "still three sections")
       (is (kept? (.querySelector body ".shell"))
-          "R1: the nav's address must be stable across re-renders"))))
+          "R1: the nav's address must be stable across re-renders")
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; =============================================================================
 ;; 4. The REAL nav shape: await INSIDE the element build
@@ -467,4 +486,66 @@
       (<? (comb/sleep 500))
       (is (= 1 (n-matching body ".section-items"))
           (str "cycle 2: still one outer container, got "
-               (n-matching body ".section-items"))))))
+               (n-matching body ".section-items")))
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))
+
+;; =============================================================================
+;; 5. Panel switch: content swaps under a surviving sibling
+;; =============================================================================
+;;
+;; The family of the remaining field repro (an unbound-addr while switching
+;; tabs with a context panel alongside): a tab signal swaps the CONTENT
+;; branch — each branch embeds a scope-keyed panel (the history-subway
+;; shape) — while a SIBLING (the context section) survives every switch,
+;; reconciled in place, never re-created. Under the deferred-eviction
+;; machinery the survivor was invisible to *rendered-addrs* (only fresh
+;; render-initial! registered), so an unmount walk could get it evicted at
+;; flush — the conjectured mechanism of the frozen-subtree warns. Under the
+;; mounted-model derivation the survivor is in every committed tree and can
+;; never be dead. The integrity assertion turns any regression here into a
+;; test failure rather than a console line.
+
+(deftest-async panel-switch-keeps-the-survivor-and-retires-the-departed
+  (testing "A->B->A content switches beside an in-place survivor: survivor
+            keeps updating, departed scopes' caches retire, zero integrity
+            violations"
+    (let [body (fresh-body)
+          discharge (browser/make-dom-discharge (.-ownerDocument body))
+          tab (sig/signal :a)
+          n (sig/signal 0)
+          panel (fn [scope]
+                  (el/div {:key scope :class "scoped-panel"}
+                          (el/span {:class "panel-scope"} scope)))
+          root (spin
+                (let [{t :new} (track tab)
+                      {v :new} (track n)]
+                  (el/div {:class "shell"}
+                          ;; the survivor: reconciled in place on every pass
+                          (el/div {:class "survivor"} (str "n=" v))
+                          ;; the switching content, one call site per branch
+                          (if (= t :a)
+                            (el/section {:class "content-a"} (panel "scope-a"))
+                            (el/section {:class "content-b"} (panel "scope-b"))))))]
+      (render/render-spin! body root discharge)
+      (<? (comb/sleep 100))
+      (is (= 1 (n-matching body ".content-a")) "mounted on A")
+      (reset! tab :b)
+      (<? (comb/sleep 200))
+      (is (= 1 (n-matching body ".content-b")) "switched to B")
+      (is (= 0 (n-matching body ".content-a")) "A gone")
+      ;; the survivor still updates AFTER the switch — the frozen-subtree
+      ;; failure mode would leave it stuck at n=0
+      (reset! n 1)
+      (<? (comb/sleep 200))
+      (is (= "n=1" (.-textContent (.querySelector body ".survivor")))
+          "survivor reconciles in place across the switch")
+      ;; and back: A->B->A re-mounts A cleanly against retired caches
+      (reset! tab :a)
+      (<? (comb/sleep 200))
+      (is (= 1 (n-matching body ".content-a")) "back on A")
+      (is (= 1 (n-matching body ".scoped-panel")) "exactly one panel")
+      (reset! n 2)
+      (<? (comb/sleep 200))
+      (is (= "n=2" (.-textContent (.querySelector body ".survivor")))
+          "survivor still live after A->B->A")
+      (is (true? (integrity-clean?)) "no integrity violations recorded"))))

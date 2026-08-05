@@ -156,6 +156,40 @@
       (:data-type attrs)    (assoc :data-type (:data-type attrs))
       text-content          (assoc :text (subs text-content 0 (min 60 (count text-content)))))))
 
+;; =============================================================================
+;; Integrity violations — loud in production, FATAL in tests
+;; =============================================================================
+;;
+;; ::addr-collision and ::commit-unbound-addr are the detectors for the two
+;; rendering integrity invariants: identity-is-the-address (R1, an app keying
+;; obligation) and mounted-model consistency (caches / element registry /
+;; tree agree — structural since the committed-tree difference became the one
+;; unmount derivation). In production they log once per address. Under test,
+;; a fixture enables COLLECTION and each test asserts it drained empty — so a
+;; regression in either invariant fails the suite instead of scrolling by.
+
+(defonce integrity-violations
+  ;; nil = collection off (production); a vector = collecting (tests).
+  (atom nil))
+
+(defn record-violation!
+  "Record an integrity violation when collection is enabled. Returns nil."
+  [kind data]
+  (swap! integrity-violations #(when % (conj % {:kind kind :data data})))
+  nil)
+
+(defn collect-violations!
+  "Enable collection (call from a test fixture's :before)."
+  []
+  (reset! integrity-violations []))
+
+(defn drain-violations!
+  "Return everything collected and reset the collector (still enabled).
+   Tests assert this is empty as their final check."
+  []
+  (let [[old _] (swap-vals! integrity-violations #(when % []))]
+    (or old [])))
+
 (defonce ^:private logged-collisions (atom #{}))
 
 (defonce ^:private logged-unbound (atom #{}))
@@ -170,14 +204,20 @@
     (let [addr (:addr vnode)
           seen (get @*rendered-addrs* addr)]
       (if seen
-        (when (and (not (identical? seen vnode))
-                   (not (contains? @logged-collisions addr)))
-          (swap! logged-collisions conj addr)
-          (log/error ::addr-collision
-                     {:addr addr
-                      :prior (vnode-fingerprint seen)
-                      :new (vnode-fingerprint vnode)
-                      :hint "Two vnodes claim the same :addr in one render pass. Use ifor-each for cardinality-variable lists, or split the call site so each sibling has a distinct source-loc. (Logged once per process — see logged-collisions atom.)"}))
+        (when (not (identical? seen vnode))
+          ;; collection sees EVERY occurrence — tests must fail on the
+          ;; second collision at an addr too; only the LOG is throttled
+          (record-violation! ::addr-collision
+                             {:addr addr
+                              :prior (vnode-fingerprint seen)
+                              :new (vnode-fingerprint vnode)})
+          (when-not (contains? @logged-collisions addr)
+            (swap! logged-collisions conj addr)
+            (log/error ::addr-collision
+                       {:addr addr
+                        :prior (vnode-fingerprint seen)
+                        :new (vnode-fingerprint vnode)
+                        :hint "Two vnodes claim the same :addr in one render pass. Use ifor-each for cardinality-variable lists, or split the call site so each sibling has a distinct source-loc. (Logged once per process — see logged-collisions atom.)"})))
         (swap! *rendered-addrs* assoc addr vnode)))))
 
 ;; =============================================================================

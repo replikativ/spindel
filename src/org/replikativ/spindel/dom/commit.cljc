@@ -302,11 +302,15 @@
         ;; Known producer: an ::addr-collision earlier (two vnodes, one addr —
         ;; e.g. an unkeyed component instantiated per scope); the collision
         ;; winner's unmount strands the loser here, frozen.
-        (when-not (contains? @logged-unbound addr)
-          (swap! logged-unbound conj addr)
-          (log/warn ::commit-unbound-addr {:addr addr :tag (:tag vnode)
-                                           :class (:class (plain-attrs vnode))
-                                           :children (count (plain-children vnode))}))
+        (do
+          (disch/record-violation! ::commit-unbound-addr
+                                   {:addr addr :tag (:tag vnode)
+                                    :class (:class (plain-attrs vnode))})
+          (when-not (contains? @logged-unbound addr)
+            (swap! logged-unbound conj addr)
+            (log/warn ::commit-unbound-addr {:addr addr :tag (:tag vnode)
+                                             :class (:class (plain-attrs vnode))
+                                             :children (count (plain-children vnode))})))
         (let [;; --- attrs: committed -> arrived ---
               new-attrs (dissoc (plain-attrs vnode) :key :ref)
               prev-attrs (cache/get-attr-cache addr)
