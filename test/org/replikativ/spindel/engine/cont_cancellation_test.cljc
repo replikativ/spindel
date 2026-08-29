@@ -36,6 +36,18 @@
             [is.simm.partial-cps.sequence :refer [anext]]
             [org.replikativ.spindel.core :as sp]))
 
+(defn- stale-spin-completion-subscriptions
+  "Reverse subscription entries whose owning await continuation is gone."
+  [context]
+  (let [state (rtp/get-state context [])]
+    (vec
+     (for [[[event-type child-id] parents] (:subscriptions state)
+           :when (= :spin/complete event-type)
+           [parent-id cont-ids] parents
+           cont-id cont-ids
+           :when (nil? (get-in state [:await-conts parent-id cont-id]))]
+       {:child-id child-id :parent-id parent-id :cont-id cont-id}))))
+
 #?(:clj
    (deftest no-double-side-effect-after-track-resume-mid-deferred-await
      (testing "When a parent body's track-cont is resumed mid `(await deferred)`,
@@ -473,3 +485,21 @@
            (let [res (ec/get-state [:nodes (spin-core/spin-id winner) :result])]
              (is (or (nil? res) (= :ok (:variant res)))
                  "winner child's cached result was not overwritten by a stray cancel")))))))
+
+#?(:clj
+   (deftest race-cancellation-consumes-continuation-and-reverse-subscription
+     (testing "a race loser cancelled while awaiting a child leaves no reverse
+            subscription pointing at its intentionally consumed continuation"
+       (let [execution-ctx (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* execution-ctx]
+             (let [fast (spin (await (comb/sleep 10 :fast)))
+                   slow (spin (await (comb/sleep 5000 :slow)))
+                   root (spin (await (comb/race fast slow)))]
+               (is (= :fast (deref root 2000 ::timeout)))
+               (simple/await-drain-complete! execution-ctx :timeout-ms 2000)
+               (is (spin-core/spin-cancelled? slow))
+               (is (empty? (stale-spin-completion-subscriptions execution-ctx))
+                   "cancellation atomically removes the await cont and its reverse index")))
+           (finally
+             (ctx/close-context! execution-ctx)))))))

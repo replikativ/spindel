@@ -657,6 +657,13 @@
     ;; by delivering the cancellation into its parked await continuation — the
     ;; structured-concurrency contract (`finally`/`ensure` runs on cancel).
     (doseq [[cont-id cont] conts]
+      ;; Consume the parked continuation and its reverse subscription as one
+      ;; state transition before resuming user cleanup or cancelling children.
+      ;; A child completion can be enqueued synchronously by either action.  If
+      ;; only the cont is dissociated afterwards, that completion observes a
+      ;; stale [:subscriptions [:spin/complete child]] entry and reports a
+      ;; missing continuation even though cancellation intentionally spent it.
+      (ec/continuation-remove! sid cont-id)
       (case (:kind cont)
         ;; Parked on a Deferred / Mailbox / async-thunk: invoking the cont's reject
         ;; continuation resumes the body into its reject path so catch/finally run.
@@ -670,8 +677,7 @@
                 (when-let [rj (:reject-fn cont)] (rj err)))
               (catch #?(:clj Throwable :cljs :default) _ nil))
             (when-let [c! (:cancel! cont)]
-              (try (c! ctx) (catch #?(:clj Throwable :cljs :default) _ nil)))
-            (ec/swap-state! [:await-conts sid] (fn [m] (dissoc m cont-id))))
+              (try (c! ctx) (catch #?(:clj Throwable :cljs :default) _ nil))))
         ;; Parked awaiting a child spin (incl. a reactive aseq/PSpin): resume THIS
         ;; parent into reject directly — the cont's :reject-fn is the parent body's
         ;; raw reject continuation, so invoking it unwinds the parent's try/finally
@@ -686,8 +692,7 @@
                 (when-let [rj (:reject-fn cont)] (rj err)))
               (catch #?(:clj Throwable :cljs :default) _ nil))
             (when-let [child (:awaited-spin cont)]
-              (cancel-spin! child))
-            (ec/swap-state! [:await-conts sid] (fn [m] (dissoc m cont-id))))
+              (cancel-spin! child)))
         nil))
     ;; (3) Cascade into combinator-owned children. A fan-out combinator
     ;; (`race`/`parallel`) starts its children via manual `make-spin` callbacks,
