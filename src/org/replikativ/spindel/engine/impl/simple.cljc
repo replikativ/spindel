@@ -143,7 +143,6 @@
 (declare restore-slice-state!)
 (declare claim-continuation-for-resume!)
 (declare release-reactive-resume!)
-(declare release-continuation-resume!)
 (declare remove-continuation!)
 
 (defn- cont-by-cancel-token
@@ -876,6 +875,13 @@
                              (update state :subscriptions dissoc event-key)))))))
   nil)
 
+(defn- legitimately-retired-edge?
+  "True only when this exact continuation/event edge was validly consumed."
+  [context event-key spin-id cont-id]
+  (= event-key
+     (rtp/get-state context
+                    [:engine/retired-conts [spin-id cont-id]])))
+
 (defn process-event!
   "Process a single event.
 
@@ -1067,13 +1073,12 @@
                   cont (when-not already-resumed?
                          (claim-continuation-for-resume!
                           context parent-id cont-id))]
-              ;; A missing cont is a dropped wakeup only when its parent is
-              ;; provably stranded: live/running, no cached result, no concurrent
-              ;; resume owner, and no other continuation to express progress. A
-              ;; terminal parent or one that advanced to its next await can race
-              ;; an event already in flight. Converge that obsolete reverse edge
-              ;; quietly. Always prune it so repeated completion events cannot
-              ;; amplify one stale edge indefinitely.
+              ;; A missing cont is benign only with exact retirement evidence
+              ;; for this [parent cont-id] and event edge. This distinguishes a
+              ;; body that legitimately advanced/cancelled from a multi-await
+              ;; parent whose one missing branch can still strand the join.
+              ;; Always prune the stale reverse edge so repeated completion
+              ;; events cannot amplify it indefinitely.
               (when (and (nil? cont)
                          (not already-resumed?)
                          (contains? (or (rtp/get-state
@@ -1082,23 +1087,13 @@
                                           parent-id])
                                         #{})
                                     cont-id))
-                (let [parent-node (rtp/get-state context [:nodes parent-id])
-                      remaining-conts (spin-continuations
-                                       (rtp/get-state context []) parent-id)
-                      resume-in-flight? (contains?
-                                         (or (rtp/get-state
-                                              context [:engine/resuming-conts])
-                                             #{})
-                                         [parent-id cont-id])
-                      stranded? (and parent-node
-                                     (:running? parent-node)
-                                     (not (:completed? parent-node))
-                                     (nil? (nodes/get-value parent-node))
-                                     (not resume-in-flight?)
-                                     (empty? remaining-conts))]
+                (let [event-key [:spin/complete tid]
+                      legitimately-retired?
+                      (legitimately-retired-edge?
+                       context event-key parent-id cont-id)]
                   (prune-completion-subscription!
-                   context [:spin/complete tid] parent-id cont-id)
-                  (when stranded?
+                   context event-key parent-id cont-id)
+                  (when-not legitimately-retired?
                     (log/warn :engine/spin-completion-cont-missing
                               {:parent-id parent-id :cont-id cont-id :child-id tid
                                :fork-id (:fork-id context)}))))
@@ -1146,11 +1141,9 @@
                                 pcps-async/*in-trampoline* false]
                         (when-let [rj (:reject-fn cont)] (rj e)))
                       (catch #?(:clj Throwable :cljs :default) _ nil))
-                    (remove-continuation! context parent-id cont-id))
-                  (finally
-                    (release-continuation-resume! context parent-id cont-id))))))))
+                    (remove-continuation! context parent-id cont-id))))))))
 
-      ;; Propagate dirty flag through await dependency graph
+;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
       nil)
 
@@ -1730,6 +1723,12 @@
             ;; Clear continuations (both kinds) + transient tracking.
                            (update :track-subscriptions dissoc spin-id)
                            (update :await-conts dissoc spin-id)
+                           (update :engine/retired-conts
+                                   (fn [retired]
+                                     (into {}
+                                           (remove (fn [[[owner-id _] _]]
+                                                     (= owner-id spin-id)))
+                                           retired)))
                            (update :spin-tracking dissoc spin-id)
 
             ;; Clean up subscriptions (remove spin-id from all event keys,
@@ -1788,6 +1787,12 @@
             ;; 5. Remove continuations (both kinds)
                            (update :track-subscriptions dissoc spin-id)
                            (update :await-conts dissoc spin-id)
+                           (update :engine/retired-conts
+                                   (fn [retired]
+                                     (into {}
+                                           (remove (fn [[[owner-id _] _]]
+                                                     (= owner-id spin-id)))
+                                           retired)))
             ;; 6. Remove pending callbacks
                            (update :pending-callbacks dissoc spin-id)
             ;; 7. Remove tracking data
@@ -2623,6 +2628,8 @@
                                                     rt-state spin-id cont-id displaced false)
                                                    rt-state)]
                                        (-> state
+                                           (update :engine/retired-conts
+                                                   dissoc [spin-id cont-id])
                                            (assoc-in [store-key spin-id cont-id] cont')
                                            (update-in [:subscriptions event-key spin-id]
                                                       (fn [s] (conj (or s #{}) cont-id)))))))]
@@ -2645,6 +2652,7 @@
         spin-subs' (disj (or spin-subs #{}) cont-id)
         state' (-> rt-state
                    (update-in [store-key spin-id] dissoc cont-id)
+                   (assoc-in [:engine/retired-conts [spin-id cont-id]] event-key)
                    (update :subscriptions
                            (fn [subs]
                              (if (seq spin-subs')
@@ -2672,38 +2680,24 @@
                      (fn [rt-state]
                        (vreset! claimed nil)
                        (if-let [cont (continuation-at rt-state spin-id cont-id)]
-                         (let [next-state
-                               (cond
-                                 (and (= :await-reactive (:kind cont))
-                                      (not (resume-claimed-key cont)))
-                                 (do
-                                   (vreset! claimed cont)
-                                   (assoc-in rt-state
-                                             [:await-conts spin-id cont-id resume-claimed-key]
-                                             true))
+                         (cond
+                           (and (= :await-reactive (:kind cont))
+                                (not (resume-claimed-key cont)))
+                           (do
+                             (vreset! claimed cont)
+                             (assoc-in rt-state
+                                       [:await-conts spin-id cont-id resume-claimed-key]
+                                       true))
 
-                                 (= :await-reactive (:kind cont))
-                                 rt-state
+                           (= :await-reactive (:kind cont))
+                           rt-state
 
-                                 :else
-                                 (do
-                                   (vreset! claimed cont)
-                                   (detach-continuation rt-state spin-id cont-id cont false)))]
-                           (if @claimed
-                             (update next-state :engine/resuming-conts
-                                     (fn [claims]
-                                       (conj (or claims #{}) [spin-id cont-id])))
-                             next-state))
+                           :else
+                           (do
+                             (vreset! claimed cont)
+                             (detach-continuation rt-state spin-id cont-id cont false)))
                          rt-state)))
     @claimed))
-
-(defn release-continuation-resume!
-  "Release transient ownership of a continuation's CPS resume slice."
-  [context spin-id cont-id]
-  (rtp/swap-state! context [:engine/resuming-conts]
-                   (fn [claims]
-                     (disj (or claims #{}) [spin-id cont-id])))
-  nil)
 
 (defn release-reactive-resume!
   "Release a reactive continuation's in-flight completion claim when it still

@@ -251,7 +251,7 @@
                               :track-subscriptions {} ; Comonadic track continuations (per spin)
                               :await-conts {}        ; Monadic await continuations (per spin)
                               :subscriptions {}      ; Event subscriptions (reverse index of the continuation tables)
-                              :engine/resuming-conts #{} ; Completion claims currently advancing CPS slices
+                              :engine/retired-conts {} ; Exact edges consumed by valid continuation retirement
                               :atoms {}              ; Fork-safe execution context atoms
                               ;; Engine state
                               :engine/pending []
@@ -521,7 +521,7 @@
                                   {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
                                    :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
                                    :subscriptions (or parent-subscriptions {})             ; ← Copy their reverse index!
-                                   :engine/resuming-conts #{} ; in-flight execution is not inherited
+                                   :engine/retired-conts {} ; retirement history is world-local
                                    :engine/pending [] ; ← NO inherited events; see the claim-undo below
                                    :engine/draining? false
                                    :engine/delayed-spins (sorted-map)

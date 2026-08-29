@@ -109,7 +109,7 @@
   This is load-bearing: a listener is side-effecting egress (publish/notify), so a
   fork must not inherit-then-fire the parent's listener on a fork-private mutation
   (that would leak speculative state). A fork that wants to egress adds its own."
-  #{:track-subscriptions :await-conts :subscriptions :engine/resuming-conts
+  #{:track-subscriptions :await-conts :subscriptions :engine/retired-conts
     :engine/pending :engine/draining?
     :engine/delayed-spins :engine/timer-handles :listeners})
 
@@ -124,25 +124,31 @@
 
 (defn- merged-overlay-state
   "Materialize the shallow entity-level overlay view, applying tombstones."
-  [parent-state overlay]
+  [parent-state overlay local-paths]
   (reduce-kv
    (fn [state top-key overlay-value]
      (cond
        (= deleted overlay-value)
        (dissoc state top-key)
 
-       (and (map? (get state top-key)) (map? overlay-value))
+       (map? overlay-value)
        (assoc state top-key
               (reduce-kv (fn [entities entity-id entity-value]
                            (if (= deleted entity-value)
                              (dissoc entities entity-id)
                              (assoc entities entity-id entity-value)))
-                         (or (get state top-key) {})
+                         (if (map? (get state top-key))
+                           (get state top-key)
+                           {})
                          overlay-value))
 
        :else
        (assoc state top-key overlay-value)))
-   (or parent-state {})
+   ;; Fork-local top-level keys are authoritative in this layer. They were
+   ;; copied explicitly at fork creation (or initialized empty) and must never
+   ;; re-import values the parent registered afterward during a whole-state
+   ;; transaction.
+   (apply dissoc (or parent-state {}) local-paths)
    overlay))
 
 (defn fork-local-path?
@@ -161,7 +167,9 @@
     ;; Special handling for fork-local state (don't fall back to parent)
     (if (and (seq path) (fork-local-path? (first path) local-paths))
       ;; Fork-local: overlay only, no parent fallback
-      (get-in @overlay-atom path)
+      (let [overlay @overlay-atom]
+        (when-not (deleted-ancestor? overlay path)
+          (get-in overlay path)))
       ;; Shared state: check overlay, fall back to parent
       (let [overlay @overlay-atom
             overlay-val (get-in overlay path ::not-found)]
@@ -188,7 +196,7 @@
                                       ;; Recursively materialized by the
                                       ;; overlay backend implementation.
                                       (backend-deref parent-backend))
-                       merged (merged-overlay-state parent-state ov)
+                       merged (merged-overlay-state parent-state ov local-paths)
                        new-state (f merged)
                        top-keys (set/union (set (keys merged))
                                            (set (keys new-state)))
@@ -353,7 +361,8 @@
     ;; layer can inspect :overlay-atom directly.
     (merged-overlay-state
      (when parent-backend (backend-deref parent-backend))
-     @overlay-atom))
+     @overlay-atom
+     local-paths))
 
   (backend-type [_]
     :overlay))

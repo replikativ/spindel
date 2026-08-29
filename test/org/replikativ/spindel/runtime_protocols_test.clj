@@ -293,13 +293,53 @@
         (is (= :new-child
                (-> (rtp/get-state context [:await-conts spin-id cont-id])
                    :event-key second)))
+        (is (nil? (rtp/get-state
+                   context [:engine/retired-conts [spin-id cont-id]]))
+            "re-attaching a deterministic ID clears its old retirement")
         (is (some? (simple/claim-continuation-for-resume!
                     context spin-id cont-id)))
-        (is (contains? (rtp/get-state context [:engine/resuming-conts])
-                       [spin-id cont-id]))
-        (simple/release-continuation-resume! context spin-id cont-id)
-        (is (not (contains? (rtp/get-state context [:engine/resuming-conts])
-                            [spin-id cont-id])))
+        (is (= [:spin/complete :new-child]
+               (rtp/get-state
+                context [:engine/retired-conts [spin-id cont-id]]))
+            "a consumed edge carries explicit retirement evidence")
+        (finally
+          (ctx/close-context! context))))))
+
+(deftest retirement-evidence-distinguishes-missing-parallel-branch
+  (testing "a live sibling continuation does not excuse an unretired missing edge"
+    (let [context (ctx/create-execution-context)
+          spin-id :parallel-parent
+          missing-id :missing-branch
+          sibling-id :live-sibling
+          missing-event [:spin/complete :missing-child]
+          classifier (ns-resolve 'org.replikativ.spindel.engine.impl.simple
+                                 'legitimately-retired-edge?)]
+      (try
+        (rtp/add-continuation!
+         context spin-id
+         {:id sibling-id
+          :event-key [:spin/complete :sibling-child]
+          :kind :await-reactive
+          :on-resume identity
+          :resolve-fn identity
+          :reject-fn identity})
+        (rtp/swap-state! context [:subscriptions missing-event spin-id]
+                         (constantly #{missing-id}))
+        (is (false? (classifier context missing-event spin-id missing-id))
+            "unrelated progress cannot hide a genuinely missing branch")
+
+        (rtp/add-continuation!
+         context spin-id
+         {:id missing-id
+          :event-key missing-event
+          :kind :await-once
+          :on-resume identity
+          :resolve-fn identity
+          :reject-fn identity})
+        (is (some? (simple/claim-continuation-for-resume!
+                    context spin-id missing-id)))
+        (is (true? (classifier context missing-event spin-id missing-id))
+            "an exact completion claim records benign advancement")
         (finally
           (ctx/close-context! context))))))
 
@@ -424,6 +464,9 @@
                          fork [:subscriptions [:spin/complete child-id] spin-id])
                         #{}))
             "the reverse index shares the continuation snapshot boundary")
+        (is (nil? (simple/claim-continuation-for-resume!
+                   fork spin-id cont-id))
+            "a whole-state claim cannot re-import the parent's continuation")
         (finally
           (ctx/close-context! fork)
           (ctx/close-context! parent))))))
@@ -459,6 +502,9 @@
                                   spin-id])
                                 #{}))
                     "the removed edge cannot fall through either overlay")
+                (is (nil? (simple/process-event!
+                           fork-2 {:type :spin-completion :id child-b}))
+                    "late completion treats the fork-local tombstone as absent")
                 (is (nil? (rtp/get-state
                            fork-2 [:await-conts spin-id :nested-cont-a]))
                     "the parent fork's tombstone remains materialized")
