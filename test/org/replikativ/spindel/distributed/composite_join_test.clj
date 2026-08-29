@@ -3,7 +3,7 @@
    their per-system ygg-signal VALUES — no parent, no new interface, no privileged
    workspace. Each registered system is a convergent value (PConvergent); merging
    two peers is `(-join (system a) (system b))` per system, seated back into both
-   contexts' ygg-signals. `merge-to-parent!` not involved."
+   contexts' ygg-signals. Hierarchical fork settlement is not involved."
   (:require [clojure.test :refer [deftest testing is]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]

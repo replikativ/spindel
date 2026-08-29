@@ -10,7 +10,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [org.replikativ.spindel.test-helpers :as th]
-            [org.replikativ.spindel.test-async :refer [deftest-async <?]]
+            [org.replikativ.spindel.test-async :refer [deftest-async <? sync?]]
             [yggdrasil.protocols :as yp])
   #?(:cljs (:require-macros [org.replikativ.spindel.test-helpers]
                             [org.replikativ.spindel.test-async :refer [deftest-async <?]])))
@@ -38,7 +38,11 @@
         (let [fork (<? (ygg/fork!))]
           (is (ygg/fork-handle? fork))
           (is (some? (:child-ctx fork)))
-          (is (some? (:fork-id fork)))))
+          (is (some? (:fork-id fork)))
+          (is (= :shared (get-in (ygg/fork-descriptor fork)
+                                 [:fork/systems "kb" :kind]))
+              "the descriptor does not claim an identity-forked system is isolated")
+          (<? (ygg/discard-fork! fork))))
       ;; post-await: the with-ctx binding has exited across the fork! await (partial-cps
       ;; hands a thunk to its trampoline, so `binding` does not convey), so RE-BIND the
       ;; context for these context-reading ops.
@@ -47,3 +51,21 @@
           (is (true? (ygg/unregister! "kb")))
           (is (nil? (ygg/system "kb")))
           (is (= {} (ygg/registered-systems))))))))
+
+(deftest-async settlement-cps-is-lazy-single-execution-and-replayable
+  (th/with-ctx [ctx]
+    (let [fork (<? (ygg/fork! {:systems :none :sync? sync?}))
+          callbacks (atom 0)
+          settlement (ygg/discard-fork! fork {:sync? sync?
+                                              :on-discard (fn [_] (swap! callbacks inc))})]
+      #?(:cljs
+         (is (ygg/open-fork? fork)
+             "constructing the CPS expression does not consume settlement authority"))
+      (is (nil? (<? settlement)))
+      (is (nil? (<? settlement))
+          "invoking the same CPS expression again replays its result")
+      (is (= 1 @callbacks)
+          "the settlement body and callback execute exactly once")
+      (is (nil? (<? (ygg/discard-fork! fork {:sync? sync?})))
+          "a later idempotent call preserves the asynchronous return shape")
+      (is (= :discarded (:status (ygg/fork-disposition fork)))))))
