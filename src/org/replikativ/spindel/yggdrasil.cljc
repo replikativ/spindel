@@ -107,11 +107,9 @@
    natively; a convergent system without a branch map falls back to the system
    unchanged (snapshot fork targets versioned systems for now).
 
-   Returns a plain branched SYSTEM (not an Overlay) — pinned at a PAST value, it
-   is for reproduce/replay/experiment, where you read or run in isolation and
-   drop the `snap-<fork>` branch rather than merge it back. So a snapshot fork
-   is NOT auto-managed by merge-to-parent! / discard-from-parent! (which act on
-   overlays); lifecycle cleanup of snapshot forks is a follow-up."
+   Returns a plain branched SYSTEM (not an Overlay) — pinned at a PAST value.
+   Its `snap-<fork>` branch is managed by the same ForkHandle lifecycle as a
+   regular branch fork: merge explicitly to adopt it, or discard to clean it up."
   [sys fork-id snap-id]
   (if (satisfies? ygg/Branchable sys)
     (let [new-branch (keyword (str "snap-" (name fork-id)))]
@@ -133,6 +131,12 @@
   "True if `b` is a fork branch (engine fork-ids are `:fork-<uuid>` keywords)."
   [b]
   (and b (str/starts-with? (name b) "fork-")))
+
+(defn- managed-fork-branch-name?
+  "True when `b` is a private branch owned by a ForkHandle lifecycle."
+  [b]
+  (and b (or (str/starts-with? (name b) "fork-")
+             (str/starts-with? (name b) "snap-"))))
 
 (defn- branch-fork
   "BRANCH fork (the DEFAULT for convergent systems): a REAL branched system as the
@@ -403,15 +407,172 @@
     x))
 
 ;; =============================================================================
-;; Fork Handle (explicit control)
+;; Fork Handle (explicit affine control)
 ;; =============================================================================
 
-(defrecord ForkHandle [child-ctx parent-ctx fork-id])
+(defrecord ForkHandle [child-ctx parent-ctx fork-id descriptor authority token])
 
 (defn fork-handle?
   "Returns true if x is a ForkHandle."
   [x]
   (instance? ForkHandle x))
+
+(defn fork-descriptor
+  "Portable creation-time description of `fork-handle` plus its current owner and
+   settlement status. The descriptor contains only data; live contexts, callbacks,
+   errors, and the affine authority token never cross this boundary.
+
+   For Snapshotable systems, per-system `:head` is the head observed immediately
+   after fork creation. A durable branch remains the live locator after it
+   advances; a later settlement journal/export API will checkpoint terminal
+   heads for restart recovery. Non-forkable compatibility systems are reported
+   honestly as `:kind :shared` rather than pretending they were isolated."
+  [fork-handle]
+  (let [{:keys [status owner operation]} @(:authority fork-handle)]
+    (cond-> (assoc (:descriptor fork-handle)
+                   :fork/owner owner
+                   :fork/status status)
+      operation (assoc :fork/operation operation))))
+
+(defn fork-disposition
+  "Process-local lifecycle view of a ForkHandle, without its authority token."
+  [fork-handle]
+  (dissoc @(:authority fork-handle) :token :error :last-error))
+
+(defn open-fork?
+  "True when this exact handle still owns the open settlement capability. A
+   transferred handle is stale even though the adopted handle remains open."
+  [fork-handle]
+  (let [{:keys [status token]} @(:authority fork-handle)]
+    (and (= :open status) (= token (:token fork-handle)))))
+
+(defn- authority-error [fork-handle state]
+  (if (not= (:token fork-handle) (:token state))
+    (ex-info "ForkHandle settlement authority was transferred"
+             {:type ::stale-fork-handle
+              :fork-id (:fork-id fork-handle)
+              :owner (:owner state)
+              :status (:status state)})
+    (ex-info "ForkHandle is not open"
+             {:type ::fork-not-open
+              :fork-id (:fork-id fork-handle)
+              :owner (:owner state)
+              :status (:status state)
+              :operation (:operation state)})))
+
+(defn- ensure-open-authority! [fork-handle]
+  (let [state @(:authority fork-handle)]
+    (when-not (and (= :open (:status state))
+                   (= (:token fork-handle) (:token state)))
+      (throw (authority-error fork-handle state))))
+  fork-handle)
+
+(defn transfer-fork!
+  "Transfer an OPEN fork's affine settlement authority to `new-owner`.
+
+   Returns a new ForkHandle over the same child/parent world. The old handle is
+   immediately stale and can no longer merge, discard, transfer, or advance from
+   its parent. No substrate state is copied and no branch is created. This is the
+   primitive a durable proposal/room adoption layer uses after it has persisted
+   ownership and arranged GC retention."
+  [fork-handle new-owner]
+  (when (nil? new-owner)
+    (throw (ex-info "Fork owner cannot be nil"
+                    {:type ::invalid-fork-owner
+                     :fork-id (:fork-id fork-handle)})))
+  (loop []
+    (let [authority (:authority fork-handle)
+          state @authority]
+      (when-not (and (= :open (:status state))
+                     (= (:token fork-handle) (:token state)))
+        (throw (authority-error fork-handle state)))
+      (let [new-token (random-uuid)
+            next-state (assoc state :owner new-owner :token new-token)]
+        (if (compare-and-set! authority state next-state)
+          (assoc fork-handle
+                 :token new-token
+                 :descriptor (assoc (:descriptor fork-handle) :fork/owner new-owner))
+          (recur))))))
+
+(defn- terminal-status [operation]
+  (case operation
+    :merge :merged
+    :discard :discarded
+    (throw (ex-info "Unknown fork settlement operation"
+                    {:type ::invalid-settlement-operation
+                     :operation operation}))))
+
+(defn- claim-settlement! [fork-handle operation]
+  (loop []
+    (let [authority (:authority fork-handle)
+          state @authority]
+      (cond
+        (not= (:token fork-handle) (:token state))
+        (throw (authority-error fork-handle state))
+
+        (= :open (:status state))
+        (let [next-state (assoc state :status :settling :operation operation)]
+          (if (compare-and-set! authority state next-state)
+            {:execute? true}
+            (recur)))
+
+        (and (= (terminal-status operation) (:status state))
+             (= operation (:operation state)))
+        {:execute? false :result (:result state)}
+
+        :else
+        (throw (authority-error fork-handle state))))))
+
+(defn- complete-settlement! [fork-handle operation result]
+  (swap! (:authority fork-handle)
+         (fn [state]
+           (if (and (= (:token fork-handle) (:token state))
+                    (= :settling (:status state))
+                    (= operation (:operation state)))
+             (assoc state :status (terminal-status operation) :result result)
+             state)))
+  result)
+
+(defn- fail-settlement! [fork-handle operation error]
+  (swap! (:authority fork-handle)
+         (fn [state]
+           (if (and (= (:token fork-handle) (:token state))
+                    (= :settling (:status state))
+                    (= operation (:operation state)))
+             ;; A failed attempt does not consume affine authority. Dvergr keeps
+             ;; automatic merge failures for review, where the same owner must be
+             ;; able to retry or discard. A later durable per-system journal makes
+             ;; retry after a mid-settlement process crash recoverable as well.
+             (-> state
+                 (assoc :status :open
+                        :last-operation operation
+                        :last-error error)
+                 (update :settlement-attempts (fnil inc 0))
+                 (dissoc :operation))
+             state)))
+  error)
+
+(defn- settle-fork! [fork-handle operation f]
+  (let [{:keys [execute? result]} (claim-settlement! fork-handle operation)]
+    (if-not execute?
+      result
+      (try
+        (let [x (f)]
+          ;; Durable Yggdrasil ops are values on the JVM and partial-CPS thunks on
+          ;; cljs. Attach the authority transition without changing either public
+          ;; execution shape.
+          (if (fn? x)
+            (fn [resolve reject]
+              (x (fn [value]
+                   (complete-settlement! fork-handle operation value)
+                   (resolve value))
+                 (fn [error]
+                   (fail-settlement! fork-handle operation error)
+                   (reject error))))
+            (complete-settlement! fork-handle operation x)))
+        (catch #?(:clj Throwable :cljs :default) error
+          (fail-settlement! fork-handle operation error)
+          (throw error))))))
 
 (defn fork!
   "Create a forked execution context with every ygg-signal overlaid (or snapshot-
@@ -420,6 +581,10 @@
    opts (optional): forwarded to `ctx/fork-context` —
      :mode      :following (default) | :frozen — overlay fork relation to parent
      :snapshots {system-id -> snapshot-id} — pin those systems at fixed values
+     :systems   :all (default) | :none | #{system-id ...} — systems visible and
+       forked in the child. Excluded systems are hidden, never shared writable.
+     :purpose   portable descriptor tag such as :run/:particle/:proposal
+     :owner     initial affine settlement owner (default parent context fork-id)
      :convergent-fork :branch (default) | :overlay — a CONVERGENT CRDT forks as a
        real yggdrasil BRANCH by default (the natural CRDT API works in the fork: read
        `@ref`, write `g/conj`, `merge-fork!` folds back). `:overlay` forces the live-
@@ -442,17 +607,47 @@
      (:sync? (merge yc/default-opts opts))
      (async
       (let [parent-ctx (ec/current-execution-context)
+            parent-reg (registry parent-ctx)
+            systems-opt (get opts :systems :all)
+            selected-ids (cond
+                           (= :all systems-opt) (set (keys parent-reg))
+                           (= :none systems-opt) #{}
+                           (set? systems-opt) systems-opt
+                           :else (throw (ex-info "Invalid :systems fork policy"
+                                                 {:type ::invalid-systems-policy
+                                                  :systems systems-opt})))
+            unknown (seq (remove #(contains? parent-reg %) selected-ids))
+            _known-systems (when unknown
+                             (throw (ex-info "Fork policy names unregistered systems"
+                                             {:type ::unknown-fork-systems
+                                              :systems (vec unknown)
+                                              :registered (vec (keys parent-reg))})))
+            snapshot-ids (set (keys (:snapshots opts)))
+            _included-snapshots (when-let [excluded (seq (remove selected-ids snapshot-ids))]
+                                  (throw (ex-info "Snapshot policy names systems excluded from the fork"
+                                                  {:type ::excluded-snapshot-systems
+                                                   :systems (vec excluded)})))
+            selected-reg (select-keys parent-reg selected-ids)
+            selected-signal-ids (into #{} (map (comp :id val)) selected-reg)
            ;; translate :snapshots from SYSTEM-id keys (what callers know) to the
            ;; SIGNAL-id keys fork-context forks by.
             snaps  (when-let [s (:snapshots opts)]
                      (into {} (keep (fn [[sid snap]]
-                                      (when-let [sr (get (registry parent-ctx) sid)]
+                                      (when-let [sr (get selected-reg sid)]
                                         [(:id sr) snap])))
                            s))
-            fopts  (cond-> opts snaps (assoc :snapshots snaps))
+            state-updates (merge (:state-updates opts)
+                                 {registry-key selected-reg
+                                  :forkable-signals selected-signal-ids})
+            fopts  (cond-> (-> opts
+                               (dissoc :systems :purpose :owner :rights)
+                               (assoc :state-updates state-updates
+                                      :forkable-signals selected-signal-ids))
+                     snaps (assoc :snapshots snaps))
             child-ctx  (apply ctx/fork-context parent-ctx (mapcat identity fopts))
             fork-id    (:fork-id child-ctx)
-            popts  (merge yc/default-opts opts)]
+            popts  (merge yc/default-opts opts)
+            owner  (or (:owner opts) (:fork-id parent-ctx))]
        ;; POST-PASS (Design B async lift): the engine's `fork-context`/`fork-value`
        ;; hook is SYNCHRONOUS, so a convergent BRANCH fork — durable `branch!`/`checkout`
        ;; that only yield a value synchronously on the JVM — is done here, AWAITED, over
@@ -470,7 +665,49 @@
                       branched (await (ygg/checkout cval fork-id popts))]
                   (set-node-value! child-ctx sig-ref branched))))
             (recur (next ps))))
-        (->ForkHandle child-ctx parent-ctx fork-id)))))))
+        ;; Capture the actual granted per-system fork shape, not merely the
+        ;; requested policy. Versioned systems may degrade :following to :frozen.
+        (let [systems
+              (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc {}]
+                (if ps
+                  (let [[sid _ cval psys] (first ps)
+                        csys (ys/effective-system cval)
+                        pv (when (satisfies? ygg/Snapshotable psys)
+                             (ygg/snapshot-id psys))
+                        cv (when (satisfies? ygg/Snapshotable csys)
+                             (ygg/snapshot-id csys))
+                        parent-head (if (fn? pv) (await pv) pv)
+                        child-head (if (fn? cv) (await cv) cv)
+                        snapshot? (contains? snapshot-ids sid)
+                        branch (when (satisfies? ygg/Branchable csys)
+                                 (ygg/current-branch csys))
+                        kind (cond snapshot? :snapshot
+                                   (ovl/overlay? cval) :overlay
+                                   (managed-fork-branch-name? branch) :branch
+                                   (= cval psys) :shared
+                                   :else :forked)
+                        entry {:base-snapshot (if (ovl/overlay? cval)
+                                                (ygg/base-ref cval)
+                                                parent-head)
+                               :head child-head
+                               :branch branch
+                               :mode (cond (ovl/overlay? cval) (:mode cval)
+                                           (= :shared kind) :shared
+                                           :else :frozen)
+                               :kind kind
+                               :rights (if (= :shared kind)
+                                         :shared
+                                         (get-in opts [:rights sid] :write))}]
+                    (recur (next ps) (assoc acc sid entry)))
+                  acc))
+              descriptor {:fork/id fork-id
+                          :fork/parent (:fork-id parent-ctx)
+                          :fork/purpose (or (:purpose opts) :unspecified)
+                          :fork/owner owner
+                          :fork/systems systems}
+              token (random-uuid)
+              authority (atom {:status :open :owner owner :token token})]
+          (->ForkHandle child-ctx parent-ctx fork-id descriptor authority token))))))))
 
 ;; `with-fork` is a JVM-only convenience macro. On cljs use the engine form it
 ;; expands to directly: `(ec/with-context (:child-ctx fork) …)`.
@@ -639,12 +876,14 @@
                                           (ygg/discard! cval)
                                           (conj acc sid))
 
-                                       ;; BRANCH-forked convergent: `cval` is a real system on `:fork-<uuid>`.
+                                       ;; Managed BRANCH fork: `cval` is a real system on a private
+                                       ;; `:fork-<uuid>` or `:snap-<uuid>` branch.
                                        ;; Check out the parent branch (loads its LIVE head for durable stores),
                                        ;; `merge!` the fork branch in, drop the fork branch. Await each (can't
                                        ;; thread-first through CPS on cljs); `mopts` threads `:sync?`.
-                                        (and (satisfies? yc/PConvergent cval)
-                                             (fork-branch-name? (ygg/current-branch cval)))
+                                        (and (satisfies? ygg/Branchable cval)
+                                             (satisfies? ygg/Mergeable cval)
+                                             (managed-fork-branch-name? (ygg/current-branch cval)))
                                         (let [mopts   (merge yc/default-opts opts)
                                               fbranch (ygg/current-branch cval)
                                               pbranch (ygg/current-branch psys)
@@ -693,9 +932,9 @@
             (let [[_ _ cval _] (first ps)]
               (cond
                 (ovl/overlay? cval) (ygg/discard! cval)
-               ;; branch-forked convergent: drop the fork branch (its nodes GC later).
-                (and (satisfies? yc/PConvergent cval)
-                     (fork-branch-name? (ygg/current-branch cval)))
+               ;; Managed branch fork: drop the private branch (its nodes GC later).
+                (and (satisfies? ygg/Branchable cval)
+                     (managed-fork-branch-name? (ygg/current-branch cval)))
                 (await (ygg/delete-branch! cval (ygg/current-branch cval) (merge yc/default-opts opts)))))
             (recur (next ps))))
         (when-let [cb (:on-discard opts)]
@@ -711,14 +950,21 @@
 ;; ForkHandle variants (delegate to the ctx-based ops)
 
 (defn merge-fork!
-  "Merge fork's overlays to parent (ForkHandle variant of merge-to-parent!)."
+  "Merge an OPEN fork's overlays to its parent exactly once. Repeating the same
+   successful operation returns its cached result; discard/transfer afterwards
+   fails without touching the substrate."
   ([fork-handle] (merge-fork! fork-handle {}))
-  ([fork-handle opts] (merge-to-parent! (:child-ctx fork-handle) opts)))
+  ([fork-handle opts]
+   (settle-fork! fork-handle :merge
+                 #(merge-to-parent! (:child-ctx fork-handle) opts))))
 
 (defn discard-fork!
-  "Discard fork's overlays (ForkHandle variant of discard-from-parent!)."
+  "Discard an OPEN fork exactly once. Repeating the same successful operation is
+   idempotent and returns the cached result."
   ([fork-handle] (discard-fork! fork-handle {}))
-  ([fork-handle opts] (discard-from-parent! (:child-ctx fork-handle) opts)))
+  ([fork-handle opts]
+   (settle-fork! fork-handle :discard
+                 #(discard-from-parent! (:child-ctx fork-handle) opts))))
 
 ;; =============================================================================
 ;; Merge From Parent (Parent → Child sync)
@@ -768,6 +1014,7 @@
   "Merge parent's current state into a fork (ForkHandle variant)."
   ([fork-handle] (merge-fork-from-parent! fork-handle {}))
   ([fork-handle opts]
+   (ensure-open-authority! fork-handle)
    (merge-from-parent! (:child-ctx fork-handle) opts)))
 
 ;; =============================================================================

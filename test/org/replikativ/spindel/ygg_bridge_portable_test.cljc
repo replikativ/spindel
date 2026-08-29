@@ -38,7 +38,11 @@
         (let [fork (<? (ygg/fork!))]
           (is (ygg/fork-handle? fork))
           (is (some? (:child-ctx fork)))
-          (is (some? (:fork-id fork)))))
+          (is (some? (:fork-id fork)))
+          (is (= :shared (get-in (ygg/fork-descriptor fork)
+                                 [:fork/systems "kb" :kind]))
+              "the descriptor does not claim an identity-forked system is isolated")
+          (<? (ygg/discard-fork! fork))))
       ;; post-await: the with-ctx binding has exited across the fork! await (partial-cps
       ;; hands a thunk to its trampoline, so `binding` does not convey), so RE-BIND the
       ;; context for these context-reading ops.

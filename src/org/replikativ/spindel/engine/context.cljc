@@ -411,7 +411,8 @@
   - Fork-local state (continuations, engine queue/timers) doesn't fall back
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
-  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork]
+  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork
+                        forkable-signals]
                  :or {state-updates {}
                       bindings {}
                       metadata nil
@@ -478,7 +479,14 @@
         ;; parent. `:snapshots` (per-id) picks a SNAPSHOT fork (pin a fixed value)
         ;; over the default OVERLAY fork (from current head, `mode` :following→
         ;; :frozen). Pure signals aren't in the set and fall through unchanged.
-        forkable-ids (rtp/get-state parent-ctx [:forkable-signals])
+        ;; A higher-level bridge may attenuate the fork to an explicit subset of
+        ;; forkable signals. `nil` preserves the historical "all registered"
+        ;; behavior; an explicit empty set means none. The bridge must also hide
+        ;; excluded addressing entries from the child so an unforked mutable
+        ;; value cannot be reached accidentally through a shared reference.
+        forkable-ids (if (nil? forkable-signals)
+                       (rtp/get-state parent-ctx [:forkable-signals])
+                       forkable-signals)
         forked-nodes (when (seq forkable-ids)
                        (persistent!
                         (reduce
@@ -1139,4 +1147,3 @@
     (advance-time! ctx 1000)  ; Jump to t=1000ms"
   [ctx target-ms]
   (delayed/advance-virtual-time! ctx target-ms))
-

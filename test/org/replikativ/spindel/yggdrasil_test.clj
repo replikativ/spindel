@@ -292,16 +292,52 @@
           (sh "git" "add" "v2.txt" :dir repo)
           (sh "git" "commit" "-m" "v2" :dir repo)
           ;; snapshot-fork pinned at state-1
-          (let [fork-handle (ygg/fork! {:snapshots {sid snap1}})]
+          (let [fork-handle (ygg/fork! {:snapshots {sid snap1}})
+                branch-name (atom nil)]
             (ygg/with-fork fork-handle
               (let [branch (name (ygg-proto/current-branch @yref))
                     wt     (str (:worktrees-dir @yref) "/" branch)]
+                (reset! branch-name branch)
                 (is (clojure.string/starts-with? branch "snap-")
                     "snapshot fork is on a snap-<fork> branch")
                 (is (.exists (io/file (str wt "/v1.txt")))
                     "the pinned state-1 file is present in the fork")
                 (is (not (.exists (io/file (str wt "/v2.txt"))))
-                    "the parent's later state-2 is NOT present (frozen at the snapshot)")))))))))
+                    "the parent's later state-2 is NOT present (frozen at the snapshot)")))
+            (ygg/discard-fork! fork-handle)
+            (is (not (contains? (ygg-proto/branches @yref) (keyword @branch-name)))
+                "discard cleans up the managed snapshot branch")))))))
+
+(deftest test-snapshot-fork-can-be-adopted
+  (testing "an explicitly merged snapshot experiment joins into the live parent"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid  (ygg-proto/system-id *test-git-system*)
+            repo (:repo-path @yref)]
+        (spit (str repo "/base.txt") "base")
+        (sh "git" "add" "base.txt" :dir repo)
+        (sh "git" "commit" "-m" "base" :dir repo)
+        (let [base (ygg-proto/snapshot-id @yref)]
+          (spit (str repo "/parent.txt") "parent")
+          (sh "git" "add" "parent.txt" :dir repo)
+          (sh "git" "commit" "-m" "parent advance" :dir repo)
+          (let [fork-handle (ygg/fork! {:snapshots {sid base}})
+                branch-name (atom nil)]
+            (ygg/with-fork fork-handle
+              (let [branch (name (ygg-proto/current-branch @yref))
+                    wt     (str (:worktrees-dir @yref) "/" branch)]
+                (reset! branch-name branch)
+                (spit (str wt "/experiment.txt") "adopt me")
+                (sh "git" "add" "experiment.txt" :dir wt)
+                (sh "git" "commit" "-m" "snapshot experiment" :dir wt)))
+            (ygg/merge-fork! fork-handle)
+            (is (.exists (io/file (str repo "/parent.txt")))
+                "the live parent's own advance remains")
+            (is (.exists (io/file (str repo "/experiment.txt")))
+                "the experiment was adopted")
+            (is (not (contains? (ygg-proto/branches @yref) (keyword @branch-name)))
+                "merge cleans up the managed snapshot branch")
+            (is (= :merged (:status (ygg/fork-disposition fork-handle))))))))))
 
 ;; =============================================================================
 ;; ForkHandle Tests
@@ -320,7 +356,102 @@
             "ForkHandle has parent-ctx")
         (is (:fork-id fork-handle)
             "ForkHandle has fork-id")
+        (is (= :open (:fork/status (ygg/fork-descriptor fork-handle))))
         (ygg/discard-fork! fork-handle)))))
+
+(deftest test-fork-handle-settles-exactly-once
+  (testing "the same settlement is idempotent and a competing settlement is refused"
+    (th/with-ctx [ctx]
+      (let [fork-handle (ygg/fork! {:systems :none :purpose :test})]
+        (is (ygg/open-fork? fork-handle))
+        (is (nil? (ygg/discard-fork! fork-handle)))
+        (is (nil? (ygg/discard-fork! fork-handle))
+            "the second discard returns the cached result")
+        (is (= {:status :discarded
+                :owner (:fork-id ctx)
+                :operation :discard
+                :result nil}
+               (ygg/fork-disposition fork-handle)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not open"
+                              (ygg/merge-fork! fork-handle)))))))
+
+(deftest test-fork-authority-transfer-is-affine
+  (testing "transfer invalidates the old handle and gives the adopter one authority"
+    (th/with-ctx [ctx]
+      (let [original (ygg/fork! {:systems :none :owner :run})
+            adopted  (ygg/transfer-fork! original :proposal)]
+        (is (not (ygg/open-fork? original)))
+        (is (ygg/open-fork? adopted))
+        (is (= :proposal (:fork/owner (ygg/fork-descriptor adopted))))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"transferred"
+                              (ygg/discard-fork! original)))
+        (is (nil? (ygg/discard-fork! adopted)))
+        (is (= :discarded (:status (ygg/fork-disposition adopted))))))))
+
+(deftest test-failed-settlement-attempt-remains-retryable
+  (testing "failure records an attempt without consuming merge/discard authority"
+    (th/with-ctx [ctx]
+      (let [fork-handle (ygg/fork! {:systems :none})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"injected"
+                              (ygg/merge-fork! fork-handle
+                                               {:on-merge
+                                                (fn [_]
+                                                  (throw (ex-info "injected" {})))})))
+        (is (ygg/open-fork? fork-handle))
+        (is (= {:status :open
+                :owner (:fork-id ctx)
+                :last-operation :merge
+                :settlement-attempts 1}
+               (ygg/fork-disposition fork-handle)))
+        (is (= {:merged [] :child-only []}
+               (ygg/merge-fork! fork-handle)))
+        (is (= :merged (:status (ygg/fork-disposition fork-handle))))))))
+
+(deftest test-fork-system-selection-hides-unselected-systems
+  (testing "only selected registered systems are visible and forked in the child"
+    (let [ctx (ctx/create-execution-context)
+          second-repo-path (create-temp-repo)
+          second-system (git-adapter/create second-repo-path {:system-name "excluded"})]
+      (try
+        (binding [ec/*execution-context* ctx]
+          (let [included (ygg/register! *test-git-system*)
+                excluded (ygg/register! second-system)
+                included-id (ygg-proto/system-id *test-git-system*)
+                fork-handle (ygg/fork! {:systems #{included-id}
+                                        :purpose :selected-test})
+                descriptor (ygg/fork-descriptor fork-handle)]
+            (is (= #{included-id} (set (keys (:fork/systems descriptor))))
+                "the portable descriptor records the selected world")
+            (ygg/with-fork fork-handle
+              (is (some? @included))
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not found"
+                                    @excluded)))
+            (ygg/discard-fork! fork-handle)))
+        (finally
+          (ctx/stop-context! ctx)
+          (cleanup-temp-repo second-repo-path))))))
+
+(deftest test-nested-merge-targets-immediate-parent
+  (testing "an inner merge changes its outer fork but not the root"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            outer (ygg/fork!)]
+        (ygg/with-fork outer
+          (let [inner (ygg/fork!)]
+            (ygg/with-fork inner
+              (let [branch-name (name (ygg-proto/current-branch @yref))
+                    wt-path (str (:worktrees-dir @yref) "/" branch-name)]
+                (spit (str wt-path "/nested.txt") "nested")
+                (sh "git" "add" "nested.txt" :dir wt-path)
+                (sh "git" "commit" "-m" "nested" :dir wt-path)))
+            (ygg/merge-fork! inner)
+            (let [outer-branch (name (ygg-proto/current-branch @yref))
+                  outer-path (str (:worktrees-dir @yref) "/" outer-branch)]
+              (is (.exists (io/file (str outer-path "/nested.txt")))
+                  "inner contribution landed in the immediate parent"))))
+        (is (not (.exists (io/file (str (:repo-path @yref) "/nested.txt"))))
+            "inner contribution did not skip the outer fork and reach root")
+        (ygg/discard-fork! outer)))))
 
 ;; =============================================================================
 ;; Merge From Parent Tests
