@@ -19,6 +19,19 @@
 (def ^:dynamic *test-repo-path* nil)
 (def ^:dynamic *test-git-system* nil)
 
+(defrecord ThrowingOverlay [parent local-writes mode]
+  ygg-proto/Overlayable
+  (advance! [this] this)
+  (advance! [this _] this)
+  (peek-parent [_] parent)
+  (peek-parent [_ _] parent)
+  (base-ref [_] (ygg-proto/snapshot-id parent))
+  (overlay-writes [_] @local-writes)
+  (merge-down! [_] (throw (ex-info "mutation probe" {})))
+  (merge-down! [_ _] (throw (ex-info "mutation probe" {})))
+  (discard! [_] parent)
+  (discard! [_ _] parent))
+
 (defn create-temp-repo
   "Create a temporary git repository for testing."
   []
@@ -294,6 +307,9 @@
           ;; snapshot-fork pinned at state-1
           (let [fork-handle (ygg/fork! {:snapshots {sid snap1}})
                 branch-name (atom nil)]
+            (is (= snap1 (get-in (ygg/fork-descriptor fork-handle)
+                                 [:fork/systems sid :base-snapshot]))
+                "descriptor records the requested historical base, not the live parent head")
             (ygg/with-fork fork-handle
               (let [branch (name (ygg-proto/current-branch @yref))
                     wt     (str (:worktrees-dir @yref) "/" branch)]
@@ -388,24 +404,60 @@
         (is (nil? (ygg/discard-fork! adopted)))
         (is (= :discarded (:status (ygg/fork-disposition adopted))))))))
 
-(deftest test-failed-settlement-attempt-remains-retryable
-  (testing "failure records an attempt without consuming merge/discard authority"
+(deftest test-post-commit-callback-failure-does-not-reopen-settlement
+  (testing "callback failure reports an integration error after the substrate is terminal"
     (th/with-ctx [ctx]
-      (let [fork-handle (ygg/fork! {:systems :none})]
+      (let [yref (ygg/register! *test-git-system*)
+            fork-handle (ygg/fork!)
+            branch-name (atom nil)]
+        (ygg/with-fork fork-handle
+          (let [branch (name (ygg-proto/current-branch @yref))
+                wt (str (:worktrees-dir @yref) "/" branch)]
+            (reset! branch-name (keyword branch))
+            (spit (str wt "/callback-failure.txt") "merged once")
+            (sh "git" "add" "callback-failure.txt" :dir wt)
+            (sh "git" "commit" "-m" "callback failure regression" :dir wt)))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"injected"
                               (ygg/merge-fork! fork-handle
                                                {:on-merge
                                                 (fn [_]
                                                   (throw (ex-info "injected" {})))})))
-        (is (ygg/open-fork? fork-handle))
-        (is (= {:status :open
-                :owner (:fork-id ctx)
-                :last-operation :merge
-                :settlement-attempts 1}
-               (ygg/fork-disposition fork-handle)))
-        (is (= {:merged [] :child-only []}
+        (is (not (ygg/open-fork? fork-handle)))
+        (is (= :merged (:status (ygg/fork-disposition fork-handle))))
+        (is (= :failed (:callback-status (ygg/fork-disposition fork-handle))))
+        (is (= "injected" (:callback-error (ygg/fork-disposition fork-handle))))
+        (is (.exists (io/file (str (:repo-path @yref) "/callback-failure.txt"))))
+        (is (not (contains? (ygg-proto/branches @yref) @branch-name)))
+        (is (= {:merged [(ygg-proto/system-id @yref)] :child-only []}
                (ygg/merge-fork! fork-handle)))
-        (is (= :merged (:status (ygg/fork-disposition fork-handle))))))))
+        (is (= :failed (:callback-status (ygg/fork-disposition fork-handle))))))))
+
+(deftest test-mutation-failure-does-not-reopen-settlement
+  (testing "a failure after entering the mutation phase requires repair"
+    (th/with-ctx [ctx]
+      (ygg/register! *test-git-system*)
+      (let [sid (ygg-proto/system-id *test-git-system*)
+            parent-system (ygg/system sid)
+            mutation-fork (ygg/fork!)]
+        (ygg/with-fork mutation-fork
+          (reset! (ygg/system-signal sid)
+                  (->ThrowingOverlay parent-system (atom parent-system) :frozen)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"mutation probe"
+                              (ygg/merge-fork! mutation-fork {:force true})))
+        (is (not (ygg/open-fork? mutation-fork)))
+        (is (= :incomplete (:status (ygg/fork-disposition mutation-fork))))
+        (is (= :mutating (:phase (ygg/fork-disposition mutation-fork))))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not open"
+                              (ygg/discard-fork! mutation-fork)))))))
+
+(deftest test-fork-rights-reject-unenforceable-labels
+  (testing "descriptors never claim rights the runtime does not enforce"
+    (th/with-ctx [ctx]
+      (let [yref (ygg/register! *test-git-system*)
+            sid (ygg-proto/system-id @yref)]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"currently enforceable"
+                              (ygg/fork! {:systems #{sid}
+                                          :rights {sid :read}})))))))
 
 (deftest test-fork-system-selection-hides-unselected-systems
   (testing "only selected registered systems are visible and forked in the child"
@@ -417,6 +469,8 @@
           (let [included (ygg/register! *test-git-system*)
                 excluded (ygg/register! second-system)
                 included-id (ygg-proto/system-id *test-git-system*)
+                excluded-id (ygg-proto/system-id second-system)
+                raw-excluded (ygg/system-signal excluded-id)
                 fork-handle (ygg/fork! {:systems #{included-id}
                                         :purpose :selected-test})
                 descriptor (ygg/fork-descriptor fork-handle)]
@@ -425,7 +479,13 @@
             (ygg/with-fork fork-handle
               (is (some? @included))
               (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not found"
-                                    @excluded)))
+                                    @excluded))
+              (is (nil? @raw-excluded)
+                  "a retained raw SignalRef is tombstoned instead of falling through")
+              (reset! raw-excluded :child-local)
+              (is (= :child-local @raw-excluded)))
+            (is (identical? second-system @raw-excluded)
+                "writes through the retained ref remain child-local")
             (ygg/discard-fork! fork-handle)))
         (finally
           (ctx/stop-context! ctx)
@@ -458,11 +518,10 @@
 ;; =============================================================================
 
 (deftest test-merge-from-parent
-  (testing "merge-from-parent! pulls parent changes into child"
+  (testing "merge-fork-from-parent! pulls parent changes into child"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
-            fork-handle (ygg/fork!)
-            child-ctx (:child-ctx fork-handle)]
+            fork-handle (ygg/fork!)]
 
         ;; Make a change in the parent (simulates another agent's merged work)
         (let [repo-path (:repo-path @yref)
@@ -480,7 +539,7 @@
                 "Child does NOT have parent's file before merge")))
 
         ;; Merge: pull parent's changes into child
-        (ygg/merge-from-parent! child-ctx)
+        (ygg/merge-fork-from-parent! fork-handle)
 
         ;; After merge, child SHOULD have the parent file
         (ygg/with-fork fork-handle
@@ -493,11 +552,10 @@
         (ygg/discard-fork! fork-handle)))))
 
 (deftest test-merge-from-parent-preserves-child-work
-  (testing "merge-from-parent! preserves child's own changes"
+  (testing "merge-fork-from-parent! preserves child's own changes"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
-            fork-handle (ygg/fork!)
-            child-ctx (:child-ctx fork-handle)]
+            fork-handle (ygg/fork!)]
 
         ;; Make a change in the fork first
         (ygg/with-fork fork-handle
@@ -517,7 +575,7 @@
           (sh "git" "commit" "-m" "Parent update" :dir repo-path))
 
         ;; Merge from parent
-        (ygg/merge-from-parent! child-ctx)
+        (ygg/merge-fork-from-parent! fork-handle)
 
         ;; After merge, child should have BOTH files
         (ygg/with-fork fork-handle
@@ -636,20 +694,19 @@
         (ygg/discard-fork! fork-handle)))))
 
 (deftest test-workspace-merge-transactional
-  (testing "merge-to-parent! returns :merged and lands the fork's change"
+  (testing "merge-fork! returns :merged and lands the fork's change"
     (th/with-ctx [ctx]
       (let [yref (ygg/register! *test-git-system*)
             sid  (ygg-proto/system-id *test-git-system*)
-            fork-handle (ygg/fork!)
-            child-ctx (:child-ctx fork-handle)]
+            fork-handle (ygg/fork!)]
         (ygg/with-fork fork-handle
           (let [branch-name (name (ygg-proto/current-branch @yref))
                 wt-path (str (:worktrees-dir @yref) "/" branch-name)]
             (spit (str wt-path "/ws-merge.txt") "merge me")
             (sh "git" "add" "ws-merge.txt" :dir wt-path)
             (sh "git" "commit" "-m" "ws merge commit" :dir wt-path)))
-        (let [result (ygg/merge-to-parent! child-ctx)]
+        (let [result (ygg/merge-fork! fork-handle)]
           (is (contains? (set (:merged result)) sid)
-              "merge-to-parent! reports the merged sub-system")
+              "merge-fork! reports the merged sub-system")
           (is (.exists (io/file (str (:repo-path @yref) "/ws-merge.txt")))
               "fork's file landed in the parent"))))))

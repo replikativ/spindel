@@ -280,7 +280,7 @@
    collects per-system `ygg/conflicts` between the parent + fork snapshot-ids; if
    any system conflicts (or a detector throws — counted as indeterminate) it aborts
    WITHOUT merging and returns `{:merged {} :conflicts {sid [...]}}`. Mirrors
-   `yggdrasil.cljc/merge-to-parent!` for the branch (rather than overlay) case.
+   `yggdrasil.cljc/merge-fork!` for the branch (rather than overlay) case.
 
    DI: `system-lookup` (system-id -> local base ygg-system); `checkout-fn`
    (sys branch -> branch-scoped system, default `ygg/checkout`); `snapshot-id-fn`
