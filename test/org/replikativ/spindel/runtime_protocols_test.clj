@@ -343,6 +343,41 @@
         (finally
           (ctx/close-context! context))))))
 
+(deftest retirement-evidence-is-bounded-by-pending-completions
+  (testing "fresh continuation IDs do not accumulate as historical state"
+    (let [context (ctx/create-execution-context)
+          spin-id :long-lived-await-loop
+          sweep! (ns-resolve 'org.replikativ.spindel.engine.impl.simple
+                             'sweep-retired-continuations!)]
+      (try
+        (dotimes [i 200]
+          (let [cont-id (keyword (str "fresh-cont-" i))
+                child-id (keyword (str "fresh-child-" i))]
+            (rtp/add-continuation!
+             context spin-id
+             {:id cont-id
+              :event-key [:spin/complete child-id]
+              :kind :await-once
+              :on-resume identity
+              :resolve-fn identity
+              :reject-fn identity})
+            (is (some? (simple/claim-continuation-for-resume!
+                        context spin-id cont-id)))))
+        (is (= 200 (count (rtp/get-state context [:engine/retired-conts]))))
+        (rtp/swap-state! context [:engine/pending]
+                         (constantly [{:type :spin-completion
+                                       :id :fresh-child-199}]))
+        (sweep! context)
+        (is (= {[spin-id :fresh-cont-199]
+                [:spin/complete :fresh-child-199]}
+               (rtp/get-state context [:engine/retired-conts]))
+            "only evidence relevant to queued work survives the sweep")
+        (rtp/swap-state! context [:engine/pending] (constantly []))
+        (sweep! context)
+        (is (empty? (rtp/get-state context [:engine/retired-conts])))
+        (finally
+          (ctx/close-context! context))))))
+
 (deftest truncating-stale-continuations-detaches-reverse-edges
   (testing "reactive resume truncates both halves of every later await edge"
     (let [context (ctx/create-execution-context)
@@ -505,6 +540,13 @@
                 (is (nil? (simple/process-event!
                            fork-2 {:type :spin-completion :id child-b}))
                     "late completion treats the fork-local tombstone as absent")
+                (rtp/swap-state! fork-2 [:await-conts spin-id]
+                                 (fn [conts]
+                                   (assoc (or conts {}) :revived {:kind :await-once})))
+                (is (= :await-once
+                       (rtp/get-state
+                        fork-2 [:await-conts spin-id :revived :kind]))
+                    "a fork-local write can revive a tombstoned entity")
                 (is (nil? (rtp/get-state
                            fork-2 [:await-conts spin-id :nested-cont-a]))
                     "the parent fork's tombstone remains materialized")

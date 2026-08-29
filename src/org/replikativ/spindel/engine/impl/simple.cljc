@@ -866,13 +866,33 @@
                    (fn [state]
                      (let [spin-subs (get-in state [:subscriptions event-key spin-id])
                            spin-subs' (disj (or spin-subs #{}) cont-id)]
-                       (if (seq spin-subs')
-                         (assoc-in state [:subscriptions event-key spin-id] spin-subs')
-                         (let [event-subs (dissoc (get-in state [:subscriptions event-key])
-                                                  spin-id)]
-                           (if (seq event-subs)
-                             (assoc-in state [:subscriptions event-key] event-subs)
-                             (update state :subscriptions dissoc event-key)))))))
+                       (->
+                        (if (seq spin-subs')
+                          (assoc-in state [:subscriptions event-key spin-id] spin-subs')
+                          (let [event-subs (dissoc (get-in state [:subscriptions event-key])
+                                                   spin-id)]
+                            (if (seq event-subs)
+                              (assoc-in state [:subscriptions event-key] event-subs)
+                              (update state :subscriptions dissoc event-key))))
+                        (update :engine/retired-conts
+                                dissoc [spin-id cont-id])))))
+  nil)
+
+(defn- sweep-retired-continuations!
+  "Retain retirement evidence only for completion events still pending."
+  [context]
+  (let [pending-event-keys
+        (into #{}
+              (keep (fn [event]
+                      (when (= :spin-completion (:type event))
+                        [:spin/complete (:id event)])))
+              (rtp/get-state context [:engine/pending]))]
+    (rtp/swap-state! context [:engine/retired-conts]
+                     (fn [retired]
+                       (into {}
+                             (filter (fn [[_ edge]]
+                                       (contains? pending-event-keys edge)))
+                             retired))))
   nil)
 
 (defn- legitimately-retired-edge?
@@ -1415,11 +1435,14 @@
                                         (catch #?(:clj Throwable :cljs :default) _))))
 
                                   nil)))
+                            (sweep-retired-continuations! context)
                             (swap! event-count inc)
                             (recur))
                           ;; Queue empty — drain complete.
                           (do
                             (log/trace :engine/drain-complete {:events-processed @event-count})
+                            (rtp/swap-state! context [:engine/retired-conts]
+                                             (constantly {}))
                             @event-count))))))
                 (finally
                   ;; Always release draining lock.

@@ -122,6 +122,20 @@
    (some #(= deleted (get-in overlay (subvec (vec path) 0 %)))
          (range 1 (inc (count path))))))
 
+(defn- revive-deleted-path
+  "Replace tombstoned prefixes so a nested update can safely descend.
+
+  Strict ancestors become maps; a tombstone at the target becomes nil so the
+  caller's update function observes the same value as backend-read."
+  [overlay path]
+  (reduce (fn [state depth]
+            (let [prefix (subvec (vec path) 0 depth)]
+              (if (= deleted (get-in state prefix))
+                (assoc-in state prefix (when (< depth (count path)) {}))
+                state)))
+          overlay
+          (range 1 (inc (count path)))))
+
 (defn- merged-overlay-state
   "Materialize the shallow entity-level overlay view, applying tombstones."
   [parent-state overlay local-paths]
@@ -315,7 +329,9 @@
           ;; Fork-local path (no parent fallback by design) or root
           ;; backend (no parent): direct write.
           (get-in
-           (swap! overlay-atom update-in path f)
+           (swap! overlay-atom
+                  (fn [ov]
+                    (update-in (revive-deleted-path ov path) path f)))
            path)))))
 
   (backend-write-2! [_ path-a path-b f2]
