@@ -6,7 +6,8 @@
   - RefBackend: STM transactional state (ref-based, JVM only)
   - ImmutableBackend: Readonly snapshots (serializable)
   - OverlayBackend: Fork with delta storage (memory efficient)"
-  (:require [incognito.edn :refer [read-string-safe]]))
+  (:require [clojure.set :as set]
+            [incognito.edn :refer [read-string-safe]]))
 
 ;; =============================================================================
 ;; Protocol
@@ -109,6 +110,38 @@
   #{:track-subscriptions :await-conts :engine/pending :engine/draining?
     :engine/delayed-spins :engine/timer-handles :listeners})
 
+(def ^:private deleted ::deleted)
+
+(defn- deleted-ancestor?
+  "True when an overlay path or one of its prefixes is an explicit tombstone."
+  [overlay path]
+  (boolean
+   (some #(= deleted (get-in overlay (subvec (vec path) 0 %)))
+         (range 1 (inc (count path))))))
+
+(defn- merged-overlay-state
+  "Materialize the shallow entity-level overlay view, applying tombstones."
+  [parent-state overlay]
+  (reduce-kv
+   (fn [state top-key overlay-value]
+     (cond
+       (= deleted overlay-value)
+       (dissoc state top-key)
+
+       (and (map? (get state top-key)) (map? overlay-value))
+       (assoc state top-key
+              (reduce-kv (fn [entities entity-id entity-value]
+                           (if (= deleted entity-value)
+                             (dissoc entities entity-id)
+                             (assoc entities entity-id entity-value)))
+                         (or (get state top-key) {})
+                         overlay-value))
+
+       :else
+       (assoc state top-key overlay-value)))
+   (or parent-state {})
+   overlay))
+
 (defn fork-local-path?
   "Check if path is fork-local (should not fall back to parent).
 
@@ -127,59 +160,69 @@
       ;; Fork-local: overlay only, no parent fallback
       (get-in @overlay-atom path)
       ;; Shared state: check overlay, fall back to parent
-      (let [overlay-val (get-in @overlay-atom path ::not-found)]
-        (if (not= overlay-val ::not-found)
-          overlay-val
-          (when parent-backend
-            (backend-read parent-backend path))))))
+      (let [overlay @overlay-atom
+            overlay-val (get-in overlay path ::not-found)]
+        (cond
+          (deleted-ancestor? overlay path) nil
+          (not= overlay-val ::not-found) overlay-val
+          parent-backend (backend-read parent-backend path)
+          :else nil))))
 
   (backend-write! [this path f]
     ;; All writes go to overlay
     ;; CRITICAL: For shared state, use copy-on-write at entity level (e.g., full node)
     (if (empty? path)
       ;; Empty path = full state transaction
-      ;; Detect changes at ENTITY level (depth 2) to preserve sparse overlay
-      (let [parent-state (when parent-backend (backend-deref parent-backend))
-            overlay-state @overlay-atom
-            ;; Deep merge: overlay entities override parent entities
-            merged (merge-with (fn [parent-val overlay-val]
-                                 (if (and (map? parent-val) (map? overlay-val))
-                                   (merge parent-val overlay-val)
-                                   overlay-val))
-                               parent-state
-                               overlay-state)
-            ;; Apply function to merged view
-            new-state (f merged)
-            ;; Find changed ENTITIES (depth 2: [:nodes spin-1], [:signals sig-1])
-            ;; not just changed top-level keys (depth 1: :nodes, :signals)
-            changed-entities (reduce
-                              (fn [acc top-key]
-                                (let [old-map (get merged top-key)
-                                      new-map (get new-state top-key)]
-                                  (if (and (map? old-map) (map? new-map))
-                                    ;; Both are maps - check entity-level changes
-                                    (reduce (fn [acc2 entity-id]
-                                              (let [old-entity (get old-map entity-id)
-                                                    new-entity (get new-map entity-id)]
-                                                (if (not= old-entity new-entity)
-                                                  (conj acc2 [[top-key entity-id] new-entity])
-                                                  acc2)))
-                                            acc
-                                            (keys new-map))
-                                    ;; Not entity maps - write whole top-level value if changed
-                                    (if (not= old-map new-map)
-                                      (conj acc [[top-key] new-map])
-                                      acc))))
-                              []
-                              (keys new-state))]
-        ;; Write only changed entities to overlay (preserves sparseness!)
+      ;; Apply `f` INSIDE the overlay CAS. The prior implementation computed
+      ;; from @overlay-atom before swap!, so two whole-state transactions could
+      ;; both claim the same continuation. Removed inherited entities are
+      ;; written as nil tombstones; omission would fall through to the parent
+      ;; backend and resurrect the removed subscription/continuation.
+      (let [committed (volatile! nil)]
         (swap! overlay-atom
                (fn [ov]
-                 (reduce (fn [acc [path val]]
-                           (assoc-in acc path val))
-                         ov
-                         changed-entities)))
-        new-state)
+                 (let [parent-state (when parent-backend
+                                      (backend-deref parent-backend))
+                       merged (merged-overlay-state parent-state ov)
+                       new-state (f merged)
+                       top-keys (set/union (set (keys merged))
+                                           (set (keys new-state)))
+                       changes
+                       (reduce
+                        (fn [acc top-key]
+                          (let [old-value (get merged top-key)
+                                new-value (get new-state top-key)]
+                            (if (and (map? old-value) (map? new-value))
+                              (reduce
+                               (fn [acc' entity-id]
+                                 (let [old-entity (get old-value entity-id)
+                                       present? (contains? new-value entity-id)
+                                       new-entity (when present?
+                                                    (get new-value entity-id))]
+                                   (if (= old-entity new-entity)
+                                     acc'
+                                     (conj acc'
+                                           [[top-key entity-id]
+                                            (if present? new-entity deleted)]))))
+                               acc
+                               (set/union (set (keys old-value))
+                                          (set (keys new-value))))
+                              (if (= old-value new-value)
+                                acc
+                                (conj acc [[top-key]
+                                           (if (contains? new-state top-key)
+                                             new-value
+                                             deleted)])))))
+                        []
+                        top-keys)]
+                   ;; Reset on every retry; only the invocation whose CAS commits
+                   ;; determines the auxiliary return value.
+                   (vreset! committed new-state)
+                   (reduce (fn [next-ov [changed-path value]]
+                             (assoc-in next-ov changed-path value))
+                           ov
+                           changes))))
+        @committed)
 
       ;; Non-empty path
       ;; CRITICAL: All writes must be atomic (f runs inside swap!) to prevent
@@ -204,7 +247,9 @@
                                                      (get-in ov entity-path ::not-found))
                         ;; If entity not in overlay, copy from parent first
                             ov (if entity-in-overlay?
-                                 ov
+                                 (if (= deleted (get-in ov entity-path))
+                                   (assoc-in ov entity-path {})
+                                   ov)
                                  (if-let [parent-entity (when parent-backend
                                                           (backend-read parent-backend entity-path))]
                                    (assoc-in ov entity-path parent-entity)
@@ -247,7 +292,10 @@
                                (if-some [parent-val (backend-read parent-backend path)]
                                  (assoc-in ov path parent-val)
                                  ov))]
-                      (assoc-in ov path (f (get-in ov path))))))
+                      (assoc-in ov path
+                                (f (if (= deleted (get-in ov path))
+                                     nil
+                                     (get-in ov path)))))))
            path)
 
           :else
@@ -279,7 +327,10 @@
       (swap! overlay-atom
              (fn [ov]
                (let [ov (-> ov (seed path-a) (seed path-b))
-                     [a' b'] (f2 (get-in ov path-a) (get-in ov path-b))]
+                     read-local (fn [path]
+                                  (when-not (deleted-ancestor? ov path)
+                                    (get-in ov path)))
+                     [a' b'] (f2 (read-local path-a) (read-local path-b))]
                  (-> ov
                      (assoc-in path-a a')
                      (assoc-in path-b b'))))))

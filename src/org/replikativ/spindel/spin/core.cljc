@@ -662,35 +662,43 @@
       ;; user cleanup or cancelling children. Only the winning concurrent
       ;; canceller receives `cont`; all others skip it.
       (when-let [cont (ec/continuation-remove! sid cont-id {:cancel? true})]
-        (case (:kind cont)
+        (if (::simple/resume-in-flight? cont)
+          ;; Completion linearized first and owns this reactive CPS slice.
+          ;; Remove its future graph edge, but do not reject the same slice.
+          ;; Cooperative cancellation is already cached on the parent and will
+          ;; be observed at its next await point.
+          (when-let [child (:awaited-spin cont)]
+            (when (nil? (ec/spin-current-result (spin-id child)))
+              (cancel-spin! child)))
+          (case (:kind cont)
         ;; Parked on a Deferred / Mailbox / async-thunk: invoking the cont's reject
         ;; continuation resumes the body into its reject path so catch/finally run.
         ;; Then arm the external-resource cancellation gate (so a later delivery on
         ;; the abandoned reader is a no-op) and drop the now-spent cont.
-          :external-await
-          (do (try
-                (binding [ec/*execution-context* ctx
-                          ec/*spin-id*          sid
-                          pcps-async/*in-trampoline* false]
-                  (when-let [rj (:reject-fn cont)] (rj err)))
-                (catch #?(:clj Throwable :cljs :default) _ nil))
-              nil)
+            :external-await
+            (do (try
+                  (binding [ec/*execution-context* ctx
+                            ec/*spin-id*          sid
+                            pcps-async/*in-trampoline* false]
+                    (when-let [rj (:reject-fn cont)] (rj err)))
+                  (catch #?(:clj Throwable :cljs :default) _ nil))
+                nil)
         ;; Parked awaiting a child spin (incl. a reactive aseq/PSpin): resume THIS
         ;; parent into reject directly — the cont's :reject-fn is the parent body's
         ;; raw reject continuation, so invoking it unwinds the parent's try/finally
         ;; without depending on the child driving a :spin-completion resume (which a
         ;; reactive await won't, on cancel). Then cascade-cancel the awaited child so
         ;; it terminates too, and drop the spent cont.
-          (:await-once :await-reactive)
-          (do (try
-                (binding [ec/*execution-context* ctx
-                          ec/*spin-id*          sid
-                          pcps-async/*in-trampoline* false]
-                  (when-let [rj (:reject-fn cont)] (rj err)))
-                (catch #?(:clj Throwable :cljs :default) _ nil))
-              (when-let [child (:awaited-spin cont)]
-                (cancel-spin! child)))
-          nil)))
+            (:await-once :await-reactive)
+            (do (try
+                  (binding [ec/*execution-context* ctx
+                            ec/*spin-id*          sid
+                            pcps-async/*in-trampoline* false]
+                    (when-let [rj (:reject-fn cont)] (rj err)))
+                  (catch #?(:clj Throwable :cljs :default) _ nil))
+                (when-let [child (:awaited-spin cont)]
+                  (cancel-spin! child)))
+            nil))))
     ;; (3) Cascade into combinator-owned children. A fan-out combinator
     ;; (`race`/`parallel`) starts its children via manual `make-spin` callbacks,
     ;; so during the initial fan-out window they are held outside the await-cont

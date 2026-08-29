@@ -265,6 +265,51 @@
           ;; Verify removed
           (is (nil? (ec/get-state [:track-subscriptions spin-id (:id added-cont)]))))))))
 
+(deftest fork-overlay-continuation-claim-has-one-winner
+  (testing "completion and cancellation atomically arbitrate in a fork overlay"
+    (let [parent (ctx/create-execution-context)]
+      (try
+        ;; Register before forking: await conts are copied into the fork while
+        ;; reverse subscriptions initially fall through to the parent backend.
+        (dotimes [i 100]
+          (let [spin-id (keyword (str "fork-claim-spin-" i))
+                child-id (keyword (str "fork-claim-child-" i))
+                cont-id (keyword (str "fork-claim-cont-" i))
+                cont {:id cont-id
+                      :event-key [:spin/complete child-id]
+                      :kind :await-once
+                      :on-resume identity
+                      :resolve-fn identity
+                      :reject-fn identity}]
+            (rtp/add-continuation! parent spin-id cont)))
+        (let [fork (ctx/fork-context parent)]
+          (try
+            (dotimes [i 100]
+              (let [spin-id (keyword (str "fork-claim-spin-" i))
+                    child-id (keyword (str "fork-claim-child-" i))
+                    cont-id (keyword (str "fork-claim-cont-" i))
+                    start (promise)
+                    completion (future
+                                 @start
+                                 (simple/claim-continuation-for-resume!
+                                  fork spin-id cont-id))
+                    cancellation (future
+                                   @start
+                                   (rtp/remove-continuation!
+                                    fork spin-id cont-id {:cancel? true}))]
+                (deliver start true)
+                (is (= 1 (count (filter some? [@completion @cancellation])))
+                    "exactly one side owns the CPS continuation")
+                (is (empty? (or (rtp/get-state
+                                 fork
+                                 [:subscriptions [:spin/complete child-id] spin-id])
+                                #{}))
+                    "a tombstone prevents the removed reverse edge falling through")))
+            (finally
+              (ctx/close-context! fork))))
+        (finally
+          (ctx/close-context! parent))))))
+
 (deftest test-pcontinuation-earliest
   (testing "earliest-continuation returns earliest by order"
     (th/with-ctx [ctx]
