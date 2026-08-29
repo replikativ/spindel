@@ -251,6 +251,7 @@
                               :track-subscriptions {} ; Comonadic track continuations (per spin)
                               :await-conts {}        ; Monadic await continuations (per spin)
                               :subscriptions {}      ; Event subscriptions (reverse index of the continuation tables)
+                              :engine/resuming-conts #{} ; Completion claims currently advancing CPS slices
                               :atoms {}              ; Fork-safe execution context atoms
                               ;; Engine state
                               :engine/pending []
@@ -428,6 +429,11 @@
         ;; parent fallback).
         parent-track-subscriptions (rtp/get-state parent-ctx [:track-subscriptions])
         parent-await-conts (rtp/get-state parent-ctx [:await-conts])
+        ;; Continuations and their reverse index form one graph snapshot. If
+        ;; :subscriptions falls through to the live parent while the cont tables
+        ;; are copied, a fork can observe a post-fork edge whose continuation it
+        ;; can never resume.
+        parent-subscriptions (rtp/get-state parent-ctx [:subscriptions])
 
         ;; The fork inherits NONE of the parent's un-drained events —
         ;; an event is delivered in exactly one world (the parent's).
@@ -514,6 +520,8 @@
         fork-local-state (cond-> (merge
                                   {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
                                    :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
+                                   :subscriptions (or parent-subscriptions {})             ; ← Copy their reverse index!
+                                   :engine/resuming-conts #{} ; in-flight execution is not inherited
                                    :engine/pending [] ; ← NO inherited events; see the claim-undo below
                                    :engine/draining? false
                                    :engine/delayed-spins (sorted-map)

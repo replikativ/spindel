@@ -143,6 +143,7 @@
 (declare restore-slice-state!)
 (declare claim-continuation-for-resume!)
 (declare release-reactive-resume!)
+(declare release-continuation-resume!)
 (declare remove-continuation!)
 
 (defn- cont-by-cancel-token
@@ -659,6 +660,8 @@
   (merge (get-in state [:track-subscriptions spin-id])
          (get-in state [:await-conts spin-id])))
 
+(declare detach-continuation)
+
 (defn- truncate-stale-conts!
   "Drop a spin's continuations whose `:order` is strictly greater than the
   resumed continuation's, then re-track the signal deps of the conts whose
@@ -682,8 +685,7 @@
         skipped-signal-ids (->> (vals all-conts)
                                 (filter #(< (:order %) cont-order))
                                 (keep :signal-id))
-        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))
-        keep-kept (fn [conts] (into {} (filter (fn [[_k v]] (<= (:order v) cont-order)) conts)))]
+        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
     ;; Fire cancellation hooks BEFORE state mutation so orphaned closures
     ;; observe cancellation the moment the external resource calls them.
     ;; Pass the current context — under Option A (state-backed cancel
@@ -694,9 +696,11 @@
       (when-let [cancel! (:cancel! c)] (cancel! context)))
     (rtp/swap-state! context []
                      (fn [state]
-                       (-> state
-                           (update-in [:track-subscriptions spin-id] keep-kept)
-                           (update-in [:await-conts spin-id] keep-kept))))
+                       (reduce (fn [next-state stale]
+                                 (detach-continuation
+                                  next-state spin-id (:id stale) stale false))
+                               state
+                               cancelled-conts)))
     (doseq [skipped-sid skipped-signal-ids]
       (track-signal-dep! context spin-id skipped-sid))))
 
@@ -855,6 +859,22 @@
               (if (seq grandparents)
                 (recur (first grandparents) (conj visited current))
                 current))))))))
+
+(defn- prune-completion-subscription!
+  "Remove a reverse completion edge whose continuation no longer exists."
+  [context event-key spin-id cont-id]
+  (rtp/swap-state! context []
+                   (fn [state]
+                     (let [spin-subs (get-in state [:subscriptions event-key spin-id])
+                           spin-subs' (disj (or spin-subs #{}) cont-id)]
+                       (if (seq spin-subs')
+                         (assoc-in state [:subscriptions event-key spin-id] spin-subs')
+                         (let [event-subs (dissoc (get-in state [:subscriptions event-key])
+                                                  spin-id)]
+                           (if (seq event-subs)
+                             (assoc-in state [:subscriptions event-key] event-subs)
+                             (update state :subscriptions dissoc event-key)))))))
+  nil)
 
 (defn process-event!
   "Process a single event.
@@ -1047,16 +1067,13 @@
                   cont (when-not already-resumed?
                          (claim-continuation-for-resume!
                           context parent-id cont-id))]
-              ;; A completion whose subscription exists but whose cont entry is
-              ;; MISSING is a dropped wakeup — the parent spin will never
-              ;; resume. This must be loud, not a silent skip: it has cost
-              ;; days of debugging as an unexplained hang. Known cause:
-              ;; a fork's [:await-conts] snapshot (context.cljc fork-context)
-              ;; not containing a cont the parent registered post-fork.
-              ;; Cancellation removes the cont and reverse subscription in one
-              ;; transaction. `cont-ids` was read earlier, so re-check the
-              ;; reverse edge before diagnosing a missing cont: its deliberate
-              ;; removal may have won between those reads.
+              ;; A missing cont is a dropped wakeup only when its parent is
+              ;; provably stranded: live/running, no cached result, no concurrent
+              ;; resume owner, and no other continuation to express progress. A
+              ;; terminal parent or one that advanced to its next await can race
+              ;; an event already in flight. Converge that obsolete reverse edge
+              ;; quietly. Always prune it so repeated completion events cannot
+              ;; amplify one stale edge indefinitely.
               (when (and (nil? cont)
                          (not already-resumed?)
                          (contains? (or (rtp/get-state
@@ -1065,9 +1082,26 @@
                                           parent-id])
                                         #{})
                                     cont-id))
-                (log/warn :engine/spin-completion-cont-missing
-                          {:parent-id parent-id :cont-id cont-id :child-id tid
-                           :fork-id (:fork-id context)}))
+                (let [parent-node (rtp/get-state context [:nodes parent-id])
+                      remaining-conts (spin-continuations
+                                       (rtp/get-state context []) parent-id)
+                      resume-in-flight? (contains?
+                                         (or (rtp/get-state
+                                              context [:engine/resuming-conts])
+                                             #{})
+                                         [parent-id cont-id])
+                      stranded? (and parent-node
+                                     (:running? parent-node)
+                                     (not (:completed? parent-node))
+                                     (nil? (nodes/get-value parent-node))
+                                     (not resume-in-flight?)
+                                     (empty? remaining-conts))]
+                  (prune-completion-subscription!
+                   context [:spin/complete tid] parent-id cont-id)
+                  (when stranded?
+                    (log/warn :engine/spin-completion-cont-missing
+                              {:parent-id parent-id :cont-id cont-id :child-id tid
+                               :fork-id (:fork-id context)}))))
               (when cont
                 ;; Mark [parent child generation] as resumed
                 (when (and generation batch)
@@ -1112,7 +1146,9 @@
                                 pcps-async/*in-trampoline* false]
                         (when-let [rj (:reject-fn cont)] (rj e)))
                       (catch #?(:clj Throwable :cljs :default) _ nil))
-                    (remove-continuation! context parent-id cont-id))))))))
+                    (remove-continuation! context parent-id cont-id))
+                  (finally
+                    (release-continuation-resume! context parent-id cont-id))))))))
 
       ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -2568,6 +2604,7 @@
         store-key (cont-store-key cont)
         new-state (rtp/swap-state! context []
                                    (fn [rt-state]
+                                     (reset! displaced-cancel nil)
                                      (let [track-conts (get-in rt-state [:track-subscriptions spin-id])
                                            await-conts (get-in rt-state [:await-conts spin-id])
                                            order (inc (+ (count track-conts) (count await-conts)))
@@ -2576,8 +2613,16 @@
                                            _     (when-let [c! (:cancel! displaced)]
                                                    (reset! displaced-cancel c!))
                                            cont' (-> cont (assoc :id cont-id :order order))
-                                           event-key (:event-key cont')]
-                                       (-> rt-state
+                                           event-key (:event-key cont')
+                                           ;; A deterministic source-location ID may be
+                                           ;; reused when a body advances to a different
+                                           ;; child. Remove both halves of the old graph
+                                           ;; edge before attaching the replacement.
+                                           state (if displaced
+                                                   (detach-continuation
+                                                    rt-state spin-id cont-id displaced false)
+                                                   rt-state)]
+                                       (-> state
                                            (assoc-in [store-key spin-id cont-id] cont')
                                            (update-in [:subscriptions event-key spin-id]
                                                       (fn [s] (conj (or s #{}) cont-id)))))))]
@@ -2627,32 +2672,48 @@
                      (fn [rt-state]
                        (vreset! claimed nil)
                        (if-let [cont (continuation-at rt-state spin-id cont-id)]
-                         (cond
-                           (and (= :await-reactive (:kind cont))
-                                (not (resume-claimed-key cont)))
-                           (do
-                             (vreset! claimed cont)
-                             (assoc-in rt-state
-                                       [:await-conts spin-id cont-id resume-claimed-key]
-                                       true))
+                         (let [next-state
+                               (cond
+                                 (and (= :await-reactive (:kind cont))
+                                      (not (resume-claimed-key cont)))
+                                 (do
+                                   (vreset! claimed cont)
+                                   (assoc-in rt-state
+                                             [:await-conts spin-id cont-id resume-claimed-key]
+                                             true))
 
-                           (= :await-reactive (:kind cont))
-                           rt-state
+                                 (= :await-reactive (:kind cont))
+                                 rt-state
 
-                           :else
-                           (do
-                             (vreset! claimed cont)
-                             (detach-continuation rt-state spin-id cont-id cont false)))
+                                 :else
+                                 (do
+                                   (vreset! claimed cont)
+                                   (detach-continuation rt-state spin-id cont-id cont false)))]
+                           (if @claimed
+                             (update next-state :engine/resuming-conts
+                                     (fn [claims]
+                                       (conj (or claims #{}) [spin-id cont-id])))
+                             next-state))
                          rt-state)))
     @claimed))
+
+(defn release-continuation-resume!
+  "Release transient ownership of a continuation's CPS resume slice."
+  [context spin-id cont-id]
+  (rtp/swap-state! context [:engine/resuming-conts]
+                   (fn [claims]
+                     (disj (or claims #{}) [spin-id cont-id])))
+  nil)
 
 (defn release-reactive-resume!
   "Release a reactive continuation's in-flight completion claim when it still
   exists. Cancellation may have removed it while the resumed slice ran."
   [context spin-id cont-id]
-  (rtp/swap-state! context [:await-conts spin-id cont-id]
-                   (fn [cont]
-                     (when cont (dissoc cont resume-claimed-key))))
+  (rtp/swap-state! context [:await-conts spin-id]
+                   (fn [conts]
+                     (if (contains? conts cont-id)
+                       (update conts cont-id dissoc resume-claimed-key)
+                       conts)))
   nil)
 
 (defn remove-continuation!

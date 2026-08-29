@@ -94,12 +94,14 @@
 
   Fork-local state:
   - :track-subscriptions / :await-conts - Continuations specific to this fork
+  - :subscriptions - Reverse index for those continuations; it must share their
+    snapshot boundary or a fork can observe a parent registration without the
+    matching continuation
   - :engine/* - Engine execution state (pending queue, draining flag, timers)
 
   Shared state (falls back to parent):
   - :nodes - Signal and spin nodes (shared observer graph for reactive invalidation)
   - :spin-tracking - Dependency tracking (transient accumulator)
-  - :subscriptions - Event subscriptions
   - :atoms - Runtime atoms
 
   :listeners is fork-local AND deliberately NOT copied into a fork by
@@ -107,7 +109,8 @@
   This is load-bearing: a listener is side-effecting egress (publish/notify), so a
   fork must not inherit-then-fire the parent's listener on a fork-private mutation
   (that would leak speculative state). A fork that wants to egress adds its own."
-  #{:track-subscriptions :await-conts :engine/pending :engine/draining?
+  #{:track-subscriptions :await-conts :subscriptions :engine/resuming-conts
+    :engine/pending :engine/draining?
     :engine/delayed-spins :engine/timer-handles :listeners})
 
 (def ^:private deleted ::deleted)
@@ -182,6 +185,8 @@
         (swap! overlay-atom
                (fn [ov]
                  (let [parent-state (when parent-backend
+                                      ;; Recursively materialized by the
+                                      ;; overlay backend implementation.
                                       (backend-deref parent-backend))
                        merged (merged-overlay-state parent-state ov)
                        new-state (f merged)
@@ -320,7 +325,12 @@
                                   (vec (take 2 path)) ;; entity-level CoW
                                   path)]
                   (if (not= ::not-found (get-in ov seed-path ::not-found))
-                    ov
+                    (if (= deleted (get-in ov seed-path))
+                      ;; A whole-state transaction removed this entity.
+                      ;; Revive an empty fork-local entity before assoc-in
+                      ;; descends through the tombstone.
+                      (assoc-in ov seed-path {})
+                      ov)
                     (if-some [parent-val (backend-read parent-backend seed-path)]
                       (assoc-in ov seed-path parent-val)
                       ov)))))]
@@ -337,9 +347,13 @@
     nil)
 
   (backend-deref [_]
-    ;; Return overlay only (not merged with parent)
-    ;; This is intentional - deref shows what's in this layer
-    @overlay-atom)
+    ;; The protocol promises the entire state for inspection and snapshots.
+    ;; Materialize recursively so nested overlays include inherited entities
+    ;; and every ancestor's tombstones. Diagnostics that need only this sparse
+    ;; layer can inspect :overlay-atom directly.
+    (merged-overlay-state
+     (when parent-backend (backend-deref parent-backend))
+     @overlay-atom))
 
   (backend-type [_]
     :overlay))
