@@ -503,3 +503,68 @@
                    "cancellation atomically removes the await cont and its reverse index")))
            (finally
              (ctx/close-context! execution-ctx)))))))
+
+#?(:clj
+   (deftest external-await-is-gated-before-cancellation-cleanup
+     (testing "a finally block that synchronously delivers the abandoned resource
+            cannot resume the post-await slice during cancellation"
+       (let [execution-ctx (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* execution-ctx]
+             (let [gate (sync/deferred)
+                   after-await (atom 0)
+                   cleanups (atom 0)
+                   worker (spin
+                           (try
+                             (await gate)
+                             (swap! after-await inc)
+                             (finally
+                               (swap! cleanups inc)
+                               (sync/deliver! gate :delivered-by-cleanup))))]
+               (sp/spawn! worker)
+               (Thread/sleep 80)
+               (spin-core/cancel-spin! worker)
+               (simple/await-drain-complete! execution-ctx :timeout-ms 2000)
+               (is (= 1 @cleanups) "the raw reject continuation runs finally once")
+               (is (zero? @after-await)
+                   "the atomically armed external gate rejects synchronous delivery")))
+           (finally
+             (ctx/close-context! execution-ctx)))))))
+
+#?(:clj
+   (deftest concurrent-cancellers-claim-a-parked-continuation-once
+     (testing "two cancellers racing on one parent run each cleanup and child
+            cascade at most once"
+       (let [execution-ctx (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* execution-ctx]
+             (let [gate (sync/deferred)
+                   parent-cleanups (atom 0)
+                   child-cleanups (atom 0)
+                   child (spin
+                          (try
+                            (await gate)
+                            (finally (swap! child-cleanups inc))))
+                   parent (spin
+                           (try
+                             (await child)
+                             (finally (swap! parent-cleanups inc))))
+                   start (promise)]
+               (sp/spawn! parent)
+               (Thread/sleep 80)
+               (let [cancel (fn []
+                              (future
+                                @start
+                                (binding [ec/*execution-context* execution-ctx]
+                                  (spin-core/cancel-spin! parent))))
+                     a (cancel)
+                     b (cancel)]
+                 (deliver start true)
+                 @a
+                 @b)
+               (simple/await-drain-complete! execution-ctx :timeout-ms 2000)
+               (is (= 1 @parent-cleanups) "one canceller claimed the parent cont")
+               (is (= 1 @child-cleanups) "the child cancellation cascade ran once")
+               (is (empty? (stale-spin-completion-subscriptions execution-ctx)))))
+           (finally
+             (ctx/close-context! execution-ctx)))))))

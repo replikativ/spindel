@@ -1044,7 +1044,18 @@
               ;; days of debugging as an unexplained hang. Known cause:
               ;; a fork's [:await-conts] snapshot (context.cljc fork-context)
               ;; not containing a cont the parent registered post-fork.
-              (when (and (nil? cont) (not already-resumed?))
+              ;; Cancellation removes the cont and reverse subscription in one
+              ;; transaction. `cont-ids` was read earlier, so re-check the
+              ;; reverse edge before diagnosing a missing cont: its deliberate
+              ;; removal may have won between those reads.
+              (when (and (nil? cont)
+                         (not already-resumed?)
+                         (contains? (or (rtp/get-state
+                                         context
+                                         [:subscriptions [:spin/complete tid]
+                                          parent-id])
+                                        #{})
+                                    cont-id))
                 (log/warn :engine/spin-completion-cont-missing
                           {:parent-id parent-id :cont-id cont-id :child-id tid
                            :fork-id (:fork-id context)}))
@@ -2562,48 +2573,57 @@
     (get-in new-state [store-key spin-id cont-id])))
 
 (defn remove-continuation!
-  "Remove a continuation from a spin.
+  "Atomically remove and return a continuation from a spin.
 
   TRANSACTIONAL: All state changes happen atomically in a single swap-state! to
-  ensure context consistency for snapshotting.
+  ensure context consistency for snapshotting. Exactly one concurrent caller
+  receives the removed continuation. With `{:cancel? true}`, an external-await
+  cancellation token is armed in the same transaction as removal.
 
   Args:
     context - context record (implements PState protocol)
     spin-id - ID of spin that owns the continuation
     cont-id - ID of continuation to remove
 
-  Returns: true"
-  [context spin-id cont-id]
-  (rtp/swap-state! context []
-                   (fn [rt-state]
-                     (let [;; cont-id alone doesn't carry the kind — look it
-                           ;; up to find which structure it lives in.
-                           cont (or (get-in rt-state [:track-subscriptions spin-id cont-id])
-                                    (get-in rt-state [:await-conts spin-id cont-id]))
-                           store-key (when cont (cont-store-key cont))
-                           event-key (:event-key cont)]
-                       (cond-> rt-state
-            ;; Remove continuation from its kind-routed structure.
-                         store-key
-                         (update-in [store-key spin-id] dissoc cont-id)
-
-            ;; Unregister subscription and clean up empty entries
-                         true
-                         (update :subscriptions
-                                 (fn [subs]
-                                   (let [spin-subs (get-in subs [event-key spin-id])
-                                         spin-subs' (disj (or spin-subs #{}) cont-id)]
-                                     (if (seq spin-subs')
-                          ;; Still have subscriptions for this spin
-                                       (assoc-in subs [event-key spin-id] spin-subs')
-                          ;; No more subscriptions for this spin
-                                       (let [event-subs (dissoc (get subs event-key) spin-id)]
-                                         (if (seq event-subs)
-                              ;; Still have other spins subscribed to this event
-                                           (assoc subs event-key event-subs)
-                              ;; No more spins subscribed to this event
-                                           (dissoc subs event-key)))))))))))
-  true)
+  Returns: the removed continuation, or nil."
+  ([context spin-id cont-id]
+   (remove-continuation! context spin-id cont-id nil))
+  ([context spin-id cont-id {:keys [cancel?]}]
+   (let [removed (volatile! nil)]
+     (rtp/swap-state! context []
+                      (fn [rt-state]
+                        (if-let [cont (or (get-in rt-state
+                                                  [:track-subscriptions spin-id cont-id])
+                                          (get-in rt-state
+                                                  [:await-conts spin-id cont-id]))]
+                          (let [store-key (cont-store-key cont)
+                                event-key (:event-key cont)
+                                spin-subs (get-in rt-state
+                                                  [:subscriptions event-key spin-id])
+                                spin-subs' (disj (or spin-subs #{}) cont-id)
+                                state' (-> rt-state
+                                           (update-in [store-key spin-id] dissoc cont-id)
+                                           (update :subscriptions
+                                                   (fn [subs]
+                                                     (if (seq spin-subs')
+                                                       (assoc-in subs
+                                                                 [event-key spin-id]
+                                                                 spin-subs')
+                                                       (let [event-subs
+                                                             (dissoc (get subs event-key)
+                                                                     spin-id)]
+                                                         (if (seq event-subs)
+                                                           (assoc subs event-key event-subs)
+                                                           (dissoc subs event-key)))))))]
+                            (vreset! removed cont)
+                            (cond-> state'
+                              (and cancel? (:cancel-token cont))
+                              (update-in [:engine/cancelled-tokens]
+                                         (fn [tokens]
+                                           (conj (or tokens #{})
+                                                 (:cancel-token cont))))))
+                          rt-state)))
+     @removed)))
 
 (defn earliest-continuation
   "Get the earliest continuation for a spin subscribed to a signal or

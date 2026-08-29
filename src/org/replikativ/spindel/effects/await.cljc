@@ -461,7 +461,10 @@
                          (rtp/swap-state! ctx [:engine/cancelled-tokens]
                                           (fn [s] (conj (or s #{}) cancel-token))))
               :resolve-fn wrapped-resolve
-              :reject-fn wrapped-reject
+              ;; Engine cancellation first arms cancel-token and then resumes
+              ;; the body through this raw reject continuation so finally/catch
+              ;; still run. The external resource alone receives wrapped-reject.
+              :reject-fn reject
               ;; on-resume is required for the cont protocol but
               ;; never fires for external-await conts — the engine
               ;; doesn't dispatch on :external-await events.

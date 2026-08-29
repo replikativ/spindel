@@ -120,6 +120,8 @@
     (simple/add-continuation! this spin-id cont))
   (remove-continuation! [this spin-id cont-id]
     (simple/remove-continuation! this spin-id cont-id))
+  (remove-continuation! [this spin-id cont-id opts]
+    (simple/remove-continuation! this spin-id cont-id opts))
   (earliest-continuation [this spin-id signal-id]
     (simple/earliest-continuation this spin-id signal-id))
   (resume-continuation! [this spin-id cont resume-fn]

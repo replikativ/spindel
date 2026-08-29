@@ -239,9 +239,13 @@
         cont-with-bindings (assoc cont :bindings captured-bindings)]
     (rtp/add-continuation! ctx spin-id cont-with-bindings)))
 
-(defn ^:no-doc continuation-remove! [spin-id cont-id]
-  (let [ctx (current-execution-context)]
-    (rtp/remove-continuation! ctx spin-id cont-id)))
+(defn ^:no-doc continuation-remove!
+  ([spin-id cont-id]
+   (let [ctx (current-execution-context)]
+     (rtp/remove-continuation! ctx spin-id cont-id)))
+  ([spin-id cont-id opts]
+   (let [ctx (current-execution-context)]
+     (rtp/remove-continuation! ctx spin-id cont-id opts))))
 
 (defn ^:no-doc continuation-earliest [spin-id signal-id]
   (let [ctx (current-execution-context)]
@@ -386,4 +390,3 @@
   (fn [event]
     (binding [*execution-context* ctx]
       (handler-fn event))))
-

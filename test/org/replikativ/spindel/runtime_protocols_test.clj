@@ -256,8 +256,11 @@
           (let [stored (ec/get-state [:track-subscriptions spin-id (:id added-cont)])]
             (is (some? stored)))
 
-          ;; Remove continuation
-          (rtp/remove-continuation! ctx spin-id (:id added-cont))
+          ;; Remove continuation. Exactly one caller claims the descriptor.
+          (is (= (:id added-cont)
+                 (:id (rtp/remove-continuation! ctx spin-id (:id added-cont)))))
+          (is (nil? (rtp/remove-continuation! ctx spin-id (:id added-cont)))
+              "a spent continuation cannot be claimed twice")
 
           ;; Verify removed
           (is (nil? (ec/get-state [:track-subscriptions spin-id (:id added-cont)]))))))))

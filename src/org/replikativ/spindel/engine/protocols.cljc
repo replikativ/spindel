@@ -65,7 +65,10 @@
   (add-continuation! [ctx spin-id cont]
     "Attach a continuation descriptor to spin-id.")
   (remove-continuation! [ctx spin-id cont-id]
-    "Detach continuation by id.")
+    [ctx spin-id cont-id opts]
+    "Atomically detach and return a continuation by id, or nil when already
+     absent. With `{:cancel? true}`, arm a state-backed external-await token in
+     the same transaction so external delivery cannot race cancellation.")
   (earliest-continuation [ctx spin-id signal-id]
     "Return earliest applicable continuation descriptor for (spin-id, signal-id), or nil.")
   (resume-continuation! [ctx spin-id cont resume-fn]
