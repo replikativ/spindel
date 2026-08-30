@@ -849,6 +849,22 @@ A yggdrasil system held as a signal value.
 | `(system-of signal)` | Unwrap to the effective (writable) system. |
 | `(sync-opts system & {:keys [sync?]})` | Derive `sync-signal!` hooks from the system's CRDT protocols (`PConvergent → :merge-fn`, `PDeltaApply → :apply-delta-fn` + `:delta-fn` + `:clear-delta-fn`). |
 
+## `spindel.yggdrasil`
+
+Fork-aware registry and affine settlement of Yggdrasil systems in an execution
+context. See [Forking](forking.md#fork-registered-systems-and-settle-them-affinely).
+
+| Function | Description |
+|----------|-------------|
+| `(register! system)` / `(unregister! system-id)` | Add or remove a forkable Yggdrasil signal; rejected once that child world's settlement authority is partitioned/frozen. |
+| `(fork! opts)` | Fork the reactive context and selected registered systems; returns the sole open `ForkHandle`. |
+| `(fork-descriptor handle)` | Portable world/system basis plus current owner and settlement status; excludes live authority. |
+| `(transfer-fork! handle owner)` | Atomically consume the caller's authority and return the new owner's handle. |
+| `(partition-fork! handle parts)` | Consume a whole/scope handle into two or more disjoint, exhaustive per-system settlement handles. |
+| `(fork-diff handle)` / `(fork-conflicts handle)` | Diff or conflict projection restricted to the handle's settlement scope. |
+| `(merge-fork! handle opts)` / `(discard-fork! handle opts)` | Settle only the handle's scope exactly once; same-operation replay is idempotent. |
+| `(merge-fork-from-parent! handle opts)` | Advance only the open handle's systems from its immediate parent under an exclusive `:advancing` authority lease. |
+
 ## `spindel.distributed.workspace-peer`
 
 Pure gate + checkout/topology descriptor + single-writer lease (no transport deps).

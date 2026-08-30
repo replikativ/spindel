@@ -404,6 +404,219 @@
         (is (nil? (ygg/discard-fork! adopted)))
         (is (= :discarded (:status (ygg/fork-disposition adopted))))))))
 
+(deftest test-fork-settlement-authority-partitions-by-system
+  (testing "partition consumes the whole handle and independently settles disjoint systems"
+    (let [ctx (ctx/create-execution-context)
+          second-repo (create-temp-repo)
+          second-system (git-adapter/create second-repo {:system-name "partition-second"})]
+      (try
+        (binding [ec/*execution-context* ctx]
+          (let [first-ref (ygg/register! *test-git-system*)
+                second-ref (ygg/register! second-system)
+                first-id (ygg-proto/system-id @first-ref)
+                second-id (ygg-proto/system-id @second-ref)
+                whole (ygg/fork! {:purpose :proposal :owner :run})]
+            (ygg/with-fork whole
+              (doseq [[yref filename] [[first-ref "accepted.txt"]
+                                       [second-ref "dismissed.txt"]]]
+                (let [branch (name (ygg-proto/current-branch @yref))
+                      wt (str (:worktrees-dir @yref) "/" branch)]
+                  (spit (str wt "/" filename) filename)
+                  (sh "git" "add" filename :dir wt)
+                  (sh "git" "commit" "-m" filename :dir wt))))
+            (let [[accepted dismissed]
+                  (ygg/partition-fork!
+                   whole
+                   [{:systems #{first-id} :owner :code-review}
+                    {:systems #{second-id} :owner :data-review}])
+                  accepted-desc (ygg/fork-descriptor accepted)
+                  dismissed-desc (ygg/fork-descriptor dismissed)]
+              (is (not (ygg/open-fork? whole)))
+              (is (= :partitioned (:status (ygg/fork-disposition whole))))
+              (is (= (:fork/id accepted-desc) (:fork/id dismissed-desc)
+                     (:fork/id (ygg/fork-descriptor whole)))
+                  "partitioning preserves one world identity")
+              (is (not= (:fork/settlement-id accepted-desc)
+                        (:fork/settlement-id dismissed-desc)))
+              (is (= #{first-id} (set (keys (:fork/systems accepted-desc)))))
+              (is (= #{second-id} (set (keys (:fork/systems dismissed-desc)))))
+              (is (= #{first-id} (set (keys (ygg/fork-diff accepted)))))
+              (is (= #{second-id} (set (keys (ygg/fork-diff dismissed)))))
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not open"
+                                    (ygg/merge-fork! whole)))
+              (let [adopted (ygg/transfer-fork! accepted :governance)]
+                (is (not (ygg/open-fork? accepted)))
+                (is (ygg/open-fork? adopted))
+                (ygg/merge-fork! adopted))
+              (is (.exists (io/file (str *test-repo-path* "/accepted.txt"))))
+              (is (not (.exists (io/file (str second-repo "/dismissed.txt"))))
+                  "settling one partition cannot merge a sibling partition")
+              (ygg/discard-fork! dismissed)
+              (is (not (.exists (io/file (str second-repo "/dismissed.txt"))))))))
+        (finally
+          (ctx/stop-context! ctx)
+          (cleanup-temp-repo second-repo))))))
+
+(deftest test-invalid-fork-partitions-do-not-consume-authority
+  (let [ctx (ctx/create-execution-context)
+        second-repo (create-temp-repo)
+        second-system (git-adapter/create second-repo {:system-name "partition-validation"})]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [first-ref (ygg/register! *test-git-system*)
+              second-ref (ygg/register! second-system)
+              first-id (ygg-proto/system-id @first-ref)
+              second-id (ygg-proto/system-id @second-ref)
+              whole (ygg/fork!)]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"overlap"
+                                (ygg/partition-fork!
+                                 whole
+                                 [{:systems #{first-id} :owner :a}
+                                  {:systems #{first-id second-id} :owner :b}])))
+          (is (ygg/open-fork? whole))
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"exactly cover"
+                                (ygg/partition-fork!
+                                 whole
+                                 [{:systems #{first-id} :owner :a}
+                                  {:systems #{:unknown} :owner :b}])))
+          (is (ygg/open-fork? whole)
+              "validation failures leave the original affine capability open")
+          (ygg/discard-fork! whole)))
+      (finally
+        (ctx/stop-context! ctx)
+        (cleanup-temp-repo second-repo)))))
+
+(deftest test-partition-rejects-an-uncheckpointed-child-only-system
+  (let [ctx (ctx/create-execution-context)
+        second-repo (create-temp-repo)
+        child-repo (create-temp-repo)
+        second-system (git-adapter/create second-repo {:system-name "partition-base"})]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [first-ref (ygg/register! *test-git-system*)
+              second-ref (ygg/register! second-system)
+              first-id (ygg-proto/system-id @first-ref)
+              second-id (ygg-proto/system-id @second-ref)
+              whole (ygg/fork!)]
+          (ygg/with-fork whole
+            (ygg/register! (git-adapter/create child-repo
+                                               {:system-name "uncheckpointed-child"})))
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"shape changed"
+                                (ygg/partition-fork!
+                                 whole
+                                 [{:systems #{first-id} :owner :a}
+                                  {:systems #{second-id} :owner :b}])))
+          (is (ygg/open-fork? whole))
+          (ygg/discard-fork! whole)))
+      (finally
+        (ctx/stop-context! ctx)
+        (cleanup-temp-repo child-repo)
+        (cleanup-temp-repo second-repo)))))
+
+(deftest test-partition-settlement-fails-closed-when-parent-system-is-removed
+  (let [ctx (ctx/create-execution-context)
+        second-repo (create-temp-repo)
+        second-system (git-adapter/create second-repo {:system-name "partition-parent-shape"})]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [first-ref (ygg/register! *test-git-system*)
+              second-ref (ygg/register! second-system)
+              first-id (ygg-proto/system-id @first-ref)
+              second-id (ygg-proto/system-id @second-ref)
+              whole (ygg/fork!)
+              [first-part removed-part]
+              (ygg/partition-fork!
+               whole
+               [{:systems #{first-id} :owner :first}
+                {:systems #{second-id} :owner :second}])]
+          (is (true? (ygg/unregister! second-id))
+              "the parent control plane may change independently")
+          (doseq [operation [(fn [] (ygg/fork-diff removed-part))
+                             (fn [] (ygg/discard-fork! removed-part))]]
+            (let [error (try (operation) nil (catch Throwable error error))]
+              (is (= ::ygg/fork-system-shape-changed (:type (ex-data error))))
+              (is (= #{second-id} (:missing-from-parent (ex-data error))))))
+          (is (ygg/open-fork? removed-part)
+              "preflight shape failure remains retryable and never skips cleanup")
+          (ygg/discard-fork! first-part)))
+      (finally
+        (ctx/stop-context! ctx)
+        (cleanup-temp-repo second-repo)))))
+
+(deftest test-nested-child-only-merge-cannot-bypass-partition-freeze
+  (let [ctx (ctx/create-execution-context)
+        second-repo (create-temp-repo)
+        child-repo (create-temp-repo)
+        second-system (git-adapter/create second-repo {:system-name "partition-frozen-parent"})
+        child-system (git-adapter/create child-repo {:system-name "late-child-only"})]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [first-ref (ygg/register! *test-git-system*)
+              second-ref (ygg/register! second-system)
+              first-id (ygg-proto/system-id @first-ref)
+              second-id (ygg-proto/system-id @second-ref)
+              child-id (ygg-proto/system-id child-system)
+              whole (ygg/fork!)
+              [first-part second-part]
+              (ygg/partition-fork!
+               whole
+               [{:systems #{first-id} :owner :first}
+                {:systems #{second-id} :owner :second}])
+              nested (ygg/with-fork whole (ygg/fork!))]
+          (ygg/with-fork nested (ygg/register! child-system))
+          (let [error (try
+                        (ygg/merge-fork! nested)
+                        nil
+                        (catch Throwable error error))]
+            (is (= ::ygg/fork-world-shape-frozen (:type (ex-data error)))))
+          (is (ygg/open-fork? nested)
+              "a frozen-parent preflight failure leaves the nested fork retryable")
+          (is (nil? (ygg/with-fork whole (ygg/system child-id)))
+              "internal child-only carry cannot mutate the frozen registry")
+          (ygg/discard-fork! nested)
+          (ygg/discard-fork! first-part)
+          (ygg/discard-fork! second-part)))
+      (finally
+        (ctx/stop-context! ctx)
+        (cleanup-temp-repo child-repo)
+        (cleanup-temp-repo second-repo)))))
+
+(deftest test-parent-registry-replacement-during-merge-fails-incomplete
+  (th/with-ctx [ctx]
+    (let [yref (ygg/register! *test-git-system*)
+          sid (ygg-proto/system-id @yref)
+          fork-handle (ygg/fork!)
+          seat-var (ns-resolve 'org.replikativ.spindel.yggdrasil
+                               'ensure-parent-signal-and-seat!)
+          original-seat @seat-var
+          entered (promise)
+          release (promise)]
+      (ygg/with-fork fork-handle
+        (let [branch (name (ygg-proto/current-branch @yref))
+              wt (str (:worktrees-dir @yref) "/" branch)]
+          (spit (str wt "/registry-race.txt") "race")
+          (sh "git" "add" "registry-race.txt" :dir wt)
+          (sh "git" "commit" "-m" "registry race" :dir wt)))
+      (let [task (future
+                   (try
+                     (with-redefs-fn
+                       {seat-var (fn [& args]
+                                   (deliver entered :entered)
+                                   @release
+                                   (apply original-seat args))}
+                       #(ygg/merge-fork! fork-handle {:force true}))
+                     (catch Throwable error error)))]
+        (try
+          (is (= :entered (deref entered 5000 :timeout)))
+          (is (true? (ygg/unregister! sid)))
+          (finally
+            (deliver release true)))
+        (let [error @task]
+          (is (= ::ygg/fork-system-shape-changed (:type (ex-data error))))
+          (is (= sid (:system (ex-data error)))))
+        (is (= :incomplete (:status (ygg/fork-disposition fork-handle))))
+        (is (= :mutating (:phase (ygg/fork-disposition fork-handle))))))))
+
 (deftest test-post-commit-callback-failure-does-not-reopen-settlement
   (testing "callback failure reports an integration error after the substrate is terminal"
     (th/with-ctx [ctx]
@@ -588,6 +801,64 @@
                 "Parent's update pulled in after merge")))
 
         (ygg/discard-fork! fork-handle)))))
+
+(deftest test-merge-from-parent-holds-affine-authority
+  (testing "an in-flight parent advance excludes transfer, partition, and settlement"
+    (th/with-ctx [ctx]
+      (ygg/register! *test-git-system*)
+      (let [fork-handle (ygg/fork!)
+            repo-path (:repo-path *test-git-system*)
+            entered (promise)
+            release (promise)
+            shared-pairs-var (ns-resolve 'org.replikativ.spindel.yggdrasil
+                                         'handle-shared-pairs)
+            original-shared-pairs @shared-pairs-var]
+        (spit (str repo-path "/advance-lease.txt") "lease")
+        (sh "git" "add" "advance-lease.txt" :dir repo-path)
+        (sh "git" "commit" "-m" "advance lease" :dir repo-path)
+        (let [task (future
+                     (with-redefs-fn
+                       {shared-pairs-var
+                        (fn [& args]
+                          (deliver entered :entered)
+                          @release
+                          (apply original-shared-pairs args))}
+                       #(ygg/merge-fork-from-parent! fork-handle)))]
+          (try
+            (is (= :entered (deref entered 5000 :timeout)))
+            (is (= :advancing (:status (ygg/fork-disposition fork-handle))))
+            (doseq [operation [(fn [] (ygg/transfer-fork! fork-handle :other))
+                               (fn [] (ygg/partition-fork!
+                                       fork-handle
+                                       [{:systems #{(ygg-proto/system-id *test-git-system*)}
+                                         :owner :a}
+                                        {:systems #{:unknown} :owner :b}]))
+                               (fn [] (ygg/discard-fork! fork-handle))]]
+              (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not open"
+                                    (operation))))
+            (finally
+              (deliver release true)))
+          (is (nil? @task))
+          (is (ygg/open-fork? fork-handle))
+          (ygg/discard-fork! fork-handle))))))
+
+(deftest test-merge-from-parent-mutation-failure-consumes-authority
+  (th/with-ctx [ctx]
+    (ygg/register! *test-git-system*)
+    (let [fork-handle (ygg/fork!)
+          mark-var (ns-resolve 'org.replikativ.spindel.yggdrasil
+                               'mark-advance-mutating!)
+          original-mark @mark-var]
+      (with-redefs-fn
+        {mark-var (fn [handle]
+                    (original-mark handle)
+                    (throw (ex-info "advance mutation probe" {})))}
+        #(is (thrown-with-msg? clojure.lang.ExceptionInfo #"advance mutation probe"
+                               (ygg/merge-fork-from-parent! fork-handle))))
+      (is (= :incomplete (:status (ygg/fork-disposition fork-handle))))
+      (is (= :mutating (:phase (ygg/fork-disposition fork-handle))))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not open"
+                            (ygg/discard-fork! fork-handle))))))
 
 (deftest test-merge-fork-from-parent
   (testing "merge-fork-from-parent! works with ForkHandle"

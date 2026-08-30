@@ -87,6 +87,29 @@
 ;;                                                  ygg-signal); fork-context forks
 ;;                                                  each of these signal values.
 (def registry-key :ygg-signals)
+(def ^:private fork-authority-key ::fork-authority)
+
+;; Registry shape is part of a fork's settlement authority. On the JVM this
+;; lock closes the validation/CAS race between partition-fork! and a concurrent
+;; register!/unregister!. ClojureScript executes these synchronous transitions
+;; on one event loop, so no monitor is needed there.
+#?(:clj (defonce ^:private registry-authority-lock (Object.)))
+
+(defn- with-registry-authority-lock [f]
+  #?(:clj (locking registry-authority-lock (f))
+     :cljs (f)))
+
+(defn- ensure-world-shape-mutable!
+  ([] (ensure-world-shape-mutable! (ec/current-execution-context)))
+  ([ctx]
+   (when-let [authority (rtp/get-state ctx [fork-authority-key])]
+     (let [{:keys [status operation]} @authority]
+       (when-not (= :open status)
+         (throw (ex-info "Fork world system registry is frozen"
+                         {:type ::fork-world-shape-frozen
+                          :status status
+                          :operation operation})))))
+   true))
 
 ;; =============================================================================
 ;; fork-value — how a context fork isolates a yggdrasil system value
@@ -277,19 +300,25 @@
      (def ygit (register! (git/create \".\")))
      @ygit  ; => the git system"
   [sys]
-  (let [sys-id (ygg/system-id sys)
-        sig    (ys/ygg-signal sys)]
-    (ec/swap-state! [registry-key] #(assoc (or % {}) sys-id sig))
-    (->YggRef sys-id)))
+  (with-registry-authority-lock
+    (fn []
+      (ensure-world-shape-mutable!)
+      (let [sys-id (ygg/system-id sys)
+            sig    (ys/ygg-signal sys)]
+        (ec/swap-state! [registry-key] #(assoc (or % {}) sys-id sig))
+        (->YggRef sys-id)))))
 
 (defn unregister!
   "Remove the system identified by `sys-id` — the mirror of `register!`. Drops it
    from the registry and the forkable-signal set. Returns true if removed."
   [sys-id]
-  (when-let [sig-ref (get (registry) sys-id)]
-    (ec/swap-state! [registry-key] #(dissoc % sys-id))
-    (ec/swap-state! [:forkable-signals] #(disj (or % #{}) (:id sig-ref)))
-    true))
+  (with-registry-authority-lock
+    (fn []
+      (ensure-world-shape-mutable!)
+      (when-let [sig-ref (get (registry) sys-id)]
+        (ec/swap-state! [registry-key] #(dissoc % sys-id))
+        (ec/swap-state! [:forkable-signals] #(disj (or % #{}) (:id sig-ref)))
+        true))))
 
 (defn system
   "Get a registered system by id from the current context — the EFFECTIVE writable
@@ -351,6 +380,29 @@
   (let [preg (registry parent-ctx)]
     (into {} (remove (fn [[sid _]] (contains? preg sid))) (registry child-ctx))))
 
+(defn- scoped-shared-pairs
+  "Shared pairs for `scope`, failing closed when a descriptor-owned system no
+   longer exists in the parent. A missing parent is a changed settlement shape,
+   never a child-only system that can be silently carried or skipped."
+  [child-ctx parent-ctx scope]
+  (let [pairs (vec (shared-pairs child-ctx parent-ctx))]
+    (if-not scope
+      pairs
+      (let [parent-reg (registry parent-ctx)
+            selected (filterv (fn [[sid child-ref _ _]]
+                                (and (contains? scope sid)
+                                     (= (:id child-ref)
+                                        (:id (get parent-reg sid)))))
+                              pairs)
+            present (set (map first selected))
+            missing (set (remove present scope))]
+        (when (seq missing)
+          (throw (ex-info "Fork settlement system shape changed"
+                          {:type ::fork-system-shape-changed
+                           :missing-from-parent missing
+                           :scope scope})))
+        selected))))
+
 (defn- set-node-value!
   "Swap ygg-signal `sig-ref`'s node value in `ctx` to `v` (system or overlay),
    preserving observers and bumping generation."
@@ -360,6 +412,37 @@
                      (nodes/->signal-node v nil nil false
                                           (if node (nodes/get-observers node) #{})
                                           (inc (or (:generation node) 0))))))
+
+(defn- ensure-parent-signal-and-seat!
+  "After durable merge work, atomically verify that `expected-ref` still names
+   `sid` in the parent registry and seat the merged value. This closes the async
+   unregister/re-register race that would otherwise update an obsolete node."
+  [parent-ctx sid expected-ref value]
+  (with-registry-authority-lock
+    (fn []
+      (let [current-ref (get (registry parent-ctx) sid)]
+        (when-not (= (:id expected-ref) (:id current-ref))
+          (throw (ex-info "Fork settlement system shape changed during merge"
+                          {:type ::fork-system-shape-changed
+                           :system sid
+                           :expected-signal (:id expected-ref)
+                           :current-signal (:id current-ref)})))
+        (set-node-value! parent-ctx expected-ref value)))))
+
+(defn- ensure-registry-mutable! [ctx]
+  (with-registry-authority-lock #(ensure-world-shape-mutable! ctx)))
+
+(defn- carry-child-only!
+  "Atomically carry child-only systems into a mutable parent registry. Internal
+   settlement must obey the same world-shape frontier as public registration."
+  [parent-ctx child-ctx systems]
+  (with-registry-authority-lock
+    (fn []
+      (ensure-world-shape-mutable! parent-ctx)
+      (doseq [[sid sig-ref] systems]
+        (rtp/swap-state! parent-ctx [registry-key] #(assoc (or % {}) sid sig-ref))
+        (rtp/swap-state! parent-ctx [:forkable-signals] #(conj (or % #{}) (:id sig-ref)))
+        (set-node-value! parent-ctx sig-ref (node-value child-ctx sig-ref))))))
 
 ;; =============================================================================
 ;; Async context conveyance
@@ -416,11 +499,12 @@
    heads for restart recovery. Non-forkable compatibility systems are reported
    honestly as `:kind :shared` rather than pretending they were isolated."
   [fork-handle]
-  (let [{:keys [status owner operation]} @(:authority fork-handle)]
+  (let [{:keys [status owner operation partitions]} @(:authority fork-handle)]
     (cond-> (assoc (:descriptor fork-handle)
                    :fork/owner owner
                    :fork/status status)
-      operation (assoc :fork/operation operation))))
+      operation (assoc :fork/operation operation)
+      partitions (assoc :fork/partitions partitions))))
 
 (defn fork-disposition
   "Process-local lifecycle view of a ForkHandle, without its authority token."
@@ -481,6 +565,123 @@
                  :token new-token
                  :descriptor (assoc (:descriptor fork-handle) :fork/owner new-owner))
           (recur))))))
+
+(defn- partition-fork-under-lock!
+  [fork-handle partitions]
+  ;; Fail on affine authority before inspecting caller-supplied partition data;
+  ;; an in-flight advance/settlement is the governing state of the capability.
+  (ensure-open-authority! fork-handle)
+  (let [parts (vec partitions)
+        descriptor (:descriptor fork-handle)
+        described (set (keys (:fork/systems descriptor)))
+        registered (set (keys (registry (:child-ctx fork-handle))))
+        world-systems (or (:fork/world-systems descriptor) described)
+        system-sets (mapv (comp set :systems) parts)
+        frequencies (frequencies (mapcat seq system-sets))
+        overlap (into #{} (keep (fn [[sid n]] (when (> n 1) sid))) frequencies)
+        covered (set (keys frequencies))
+        unknown (set (remove described covered))
+        omitted (set (remove covered described))]
+    (when (< (count parts) 2)
+      (throw (ex-info "Fork partition requires at least two parts"
+                      {:type ::invalid-fork-partition
+                       :partition-count (count parts)})))
+    (when-let [idx (first (keep-indexed (fn [idx part]
+                                          (when (or (not (set? (:systems part)))
+                                                    (empty? (:systems part)))
+                                            idx))
+                                        parts))]
+      (throw (ex-info "Each fork partition must name a non-empty system set"
+                      {:type ::invalid-fork-partition
+                       :partition-index idx
+                       :partition (nth parts idx)})))
+    (when-let [idx (first (keep-indexed (fn [idx part]
+                                          (when (nil? (:owner part)) idx))
+                                        parts))]
+      (throw (ex-info "Each fork partition requires an owner"
+                      {:type ::invalid-fork-owner
+                       :partition-index idx})))
+    (when (seq overlap)
+      (throw (ex-info "Fork partitions overlap"
+                      {:type ::overlapping-fork-partition
+                       :systems overlap})))
+    (when (or (seq unknown) (seq omitted))
+      (throw (ex-info "Fork partitions must exactly cover the described world"
+                      {:type ::incomplete-fork-partition
+                       :unknown unknown
+                       :omitted omitted
+                       :described described})))
+    ;; New child-only systems and removed descriptor systems do not yet have a
+    ;; portable creation/basis entry. Refuse to mint misleading partial handles;
+    ;; a later descriptor checkpoint/journal can make this case partitionable.
+    (when (not= world-systems registered)
+      (throw (ex-info "Fork system shape changed after creation"
+                      {:type ::fork-system-shape-changed
+                       :described world-systems
+                       :registered registered
+                       :added (set (remove world-systems registered))
+                       :removed (set (remove registered world-systems))})))
+    (let [partition-of (or (:fork/settlement-id descriptor)
+                           (:fork/id descriptor))
+          prepared
+          (mapv (fn [{:keys [systems owner purpose]}]
+                  (let [settlement-id (random-uuid)
+                        token (random-uuid)
+                        part-descriptor
+                        (cond-> (assoc descriptor
+                                       :fork/settlement-id settlement-id
+                                       :fork/partition-of partition-of
+                                       :fork/world-systems world-systems
+                                       :fork/systems (select-keys (:fork/systems descriptor)
+                                                                  systems)
+                                       :fork/owner owner)
+                          purpose (assoc :fork/purpose purpose))]
+                    {:descriptor part-descriptor
+                     :authority (atom {:status :open :owner owner :token token})
+                     :token token}))
+                parts)
+          authority (:authority fork-handle)]
+      (loop []
+        (let [state @authority]
+          (when-not (and (= :open (:status state))
+                         (= (:token fork-handle) (:token state)))
+            (throw (authority-error fork-handle state)))
+          (let [next-state (assoc state
+                                  :status :partitioned
+                                  :operation :partition
+                                  :partitions (mapv #(get-in % [:descriptor
+                                                                :fork/settlement-id])
+                                                    prepared))]
+            (if (compare-and-set! authority state next-state)
+              (mapv (fn [{:keys [descriptor authority token]}]
+                      (->ForkHandle (:child-ctx fork-handle)
+                                    (:parent-ctx fork-handle)
+                                    (:fork-id fork-handle)
+                                    descriptor authority token))
+                    prepared)
+              (recur))))))))
+
+(defn partition-fork!
+  "Consume one OPEN fork settlement capability and return disjoint capabilities
+   over the same execution world.
+
+   `partitions` is a vector of at least two maps:
+
+     [{:systems #{system-id ...} :owner owner-id :purpose optional-tag} ...]
+
+   Every descriptor-named system must occur exactly once: overlaps, omissions,
+   unknown systems, nil owners, and worlds whose registered system shape changed
+   after fork creation are rejected without consuming the original handle. Each
+   returned handle may then be transferred, merged, or discarded independently.
+
+   This partitions substrate *settlement authority*, not runtime access. The
+   handles intentionally retain the same child execution context and must remain
+   trusted host capabilities rather than values exposed to sandboxed code. Once
+   partitioned, that world's system registry is frozen so its exhaustive scopes
+   cannot be invalidated by later registration changes."
+  [fork-handle partitions]
+  (with-registry-authority-lock
+    #(partition-fork-under-lock! fork-handle partitions)))
 
 (defn- terminal-status [operation]
   (case operation
@@ -557,6 +758,64 @@
                           :last-operation operation
                           :last-error error)
                    (update :settlement-attempts (fnil inc 0))))
+             state)))
+  error)
+
+(defn- claim-advance! [fork-handle]
+  (loop []
+    (let [authority (:authority fork-handle)
+          state @authority]
+      (when-not (and (= :open (:status state))
+                     (= (:token fork-handle) (:token state)))
+        (throw (authority-error fork-handle state)))
+      (let [next-state (-> state
+                           (assoc :status :advancing
+                                  :operation :advance-from-parent
+                                  :phase :preflight)
+                           (dissoc :last-operation :last-error))]
+        (if (compare-and-set! authority state next-state)
+          true
+          (recur))))))
+
+(defn- mark-advance-mutating! [fork-handle]
+  (swap! (:authority fork-handle)
+         (fn [state]
+           (if (and (= (:token fork-handle) (:token state))
+                    (= :advancing (:status state))
+                    (= :advance-from-parent (:operation state)))
+             (assoc state :phase :mutating)
+             state))))
+
+(defn- complete-advance! [fork-handle]
+  (swap! (:authority fork-handle)
+         (fn [state]
+           (if (and (= (:token fork-handle) (:token state))
+                    (= :advancing (:status state))
+                    (= :advance-from-parent (:operation state)))
+             (-> state
+                 (assoc :status :open)
+                 (dissoc :operation :phase :last-operation :last-error))
+             state)))
+  nil)
+
+(defn- fail-advance! [fork-handle error]
+  (swap! (:authority fork-handle)
+         (fn [state]
+           (if (and (= (:token fork-handle) (:token state))
+                    (= :advancing (:status state))
+                    (= :advance-from-parent (:operation state)))
+             (if (= :preflight (:phase state))
+               (-> state
+                   (assoc :status :open
+                          :last-operation :advance-from-parent
+                          :last-error error)
+                   (update :advance-attempts (fnil inc 0))
+                   (dissoc :operation :phase))
+               (-> state
+                   (assoc :status :incomplete
+                          :last-operation :advance-from-parent
+                          :last-error error)
+                   (update :advance-attempts (fnil inc 0))))
              state)))
   error)
 
@@ -837,6 +1096,10 @@
                           :fork/systems systems}
               token (random-uuid)
               authority (atom {:status :open :owner owner :token token})]
+          ;; The child world observes this shared authority atom. It remains
+          ;; mutable while OPEN, but partition-fork!'s atomic transition freezes
+          ;; registry shape for every recursively subdivided capability.
+          (rtp/swap-state! child-ctx [fork-authority-key] (constantly authority))
           (->ForkHandle child-ctx parent-ctx fork-id descriptor authority token))))))))
 
 ;; `with-fork` is a JVM-only convenience macro. On cljs use the engine form it
@@ -882,19 +1145,16 @@
             (catch #?(:clj Throwable :cljs :default) t
               (ygt/diff-error psnap fsnap (ex-message t)))))))))
 
-(defn context-diff
-  "Per-system delta of a forked context vs its parent — the unified diff a
-   reviewer reads: {system-id -> typed yggdrasil delta (GitDiff / DatahikeDiff /
-   DiffError)}. nil when the context has no parent. Non-Mergeable systems are
-   omitted."
-  [child-ctx]
+(defn- context-diff-scoped
+  [child-ctx scope]
   (convey-context
    (async+sync
     (:sync? yc/default-opts)
     (async
      (when-let [parent-ctx (:parent-ctx child-ctx)]
       ;; accumulating loop (not `into`/`keep`) — `system-merge-base-diff` is awaited.
-       (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc {}]
+       (loop [ps (seq (scoped-shared-pairs child-ctx parent-ctx scope))
+              acc {}]
          (if ps
            (let [[sid _ cval psys] (first ps)
                  fsys (ys/effective-system cval)
@@ -905,33 +1165,72 @@
              (recur (next ps) acc*))
            acc)))))))
 
-(defn context-conflicts
-  "Per-system conflicts of a forked context vs its parent, each tagged
-   `:system`. nil when the context has no parent."
+(defn context-diff
+  "Per-system delta of a forked context vs its parent — the unified diff a
+   reviewer reads: {system-id -> typed yggdrasil delta (GitDiff / DatahikeDiff /
+   DiffError)}. nil when the context has no parent. Non-Mergeable systems are
+  omitted."
   [child-ctx]
+  (context-diff-scoped child-ctx nil))
+
+(defn- context-conflicts-scoped
+  [child-ctx scope]
   (convey-context
    (async+sync
     (:sync? yc/default-opts)
     (async
      (when-let [parent-ctx (:parent-ctx child-ctx)]
-      ;; accumulating loop (not `into`/`mapcat`) — `snapshot-id`/`conflicts` are `await`ed
-      ;; ONLY when a continuation (a fn): default-opts `snapshot-id` is a plain value on the
-      ;; JVM but a CPS on cljs; `conflicts` is `[]` for conflict-free CRDTs, CPS for versioned.
-       (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc []]
+      ;; accumulating loop (not `into`/`mapcat`) — durable calls are awaited.
+       (loop [ps (seq (scoped-shared-pairs child-ctx parent-ctx scope))
+              acc []]
          (if ps
            (let [[sid _ cval psys] (first ps)
                  fsys (ys/effective-system cval)
                  more (if (satisfies? ygg/Mergeable fsys)
                         (try
-                          (let [ps1  (let [v (ygg/snapshot-id psys)] (if (fn? v) (await v) v))
-                                fs1  (let [v (ygg/snapshot-id fsys)] (if (fn? v) (await v) v))
+                          (let [ps1 (let [v (ygg/snapshot-id psys)]
+                                      (if (fn? v) (await v) v))
+                                fs1 (let [v (ygg/snapshot-id fsys)]
+                                      (if (fn? v) (await v) v))
                                 pres (ygg/conflicts psys ps1 fs1)
-                                cs   (if (fn? pres) (await pres) pres)]
+                                cs (if (fn? pres) (await pres) pres)]
                             (mapv #(assoc % :system sid) cs))
                           (catch #?(:clj Throwable :cljs :default) _ nil))
                         nil)]
              (recur (next ps) (into acc (or more []))))
            acc)))))))
+
+(defn context-conflicts
+  "Per-system conflicts of a forked context vs its parent, each tagged
+   `:system`. nil when the context has no parent."
+  [child-ctx]
+  (context-conflicts-scoped child-ctx nil))
+
+(declare handle-system-scope)
+
+(defn fork-diff
+  "Per-system delta restricted to the settlement authority of `fork-handle`.
+   Original handles see the whole child world; partition handles see only their
+   disjoint descriptor-named scope."
+  [fork-handle]
+  (convey-context
+   (async+sync
+    (:sync? yc/default-opts)
+    (async
+     (let [x (context-diff-scoped (:child-ctx fork-handle)
+                                  (handle-system-scope fork-handle))]
+       (if (fn? x) (await x) x))))))
+
+(defn fork-conflicts
+  "Conflict projection restricted to `fork-handle`'s settlement scope."
+  [fork-handle]
+  (convey-context
+   (async+sync
+    (:sync? yc/default-opts)
+    (async
+     (let [x (context-conflicts-scoped (:child-ctx fork-handle)
+                                       (handle-system-scope fork-handle))]
+       (if (fn? x) (await x) x))))))
 
 ;; =============================================================================
 ;; Merge / Discard (Parent-Controlled)
@@ -945,6 +1244,26 @@
   (let [{:keys [kind branch]} (get-in (:descriptor fork-handle) [:fork/systems sid])]
     (and (contains? #{:branch :snapshot} kind)
          (= branch (ygg/current-branch cval)))))
+
+(defn- handle-system-scope
+  "nil means the original handle owns the whole evolving child world. A
+   partitioned handle owns exactly the systems named in its descriptor."
+  [fork-handle]
+  (when (contains? (:descriptor fork-handle) :fork/partition-of)
+    (set (keys (get-in fork-handle [:descriptor :fork/systems])))))
+
+(defn- handle-shared-pairs [fork-handle]
+  (scoped-shared-pairs (:child-ctx fork-handle)
+                       (:parent-ctx fork-handle)
+                       (handle-system-scope fork-handle)))
+
+(defn- handle-child-only [fork-handle]
+  ;; A partition's descriptor systems were all shared when the exhaustive split
+  ;; was minted. If one later disappears from the parent, handle-shared-pairs
+  ;; fails closed; it must never be reclassified as child-only.
+  (if (handle-system-scope fork-handle)
+    {}
+    (child-only (:child-ctx fork-handle) (:parent-ctx fork-handle))))
 
 (defn- merge-fork-context!
   "Merge a ForkHandle's per-system overlays into its parent.
@@ -969,8 +1288,13 @@
       (:sync? (merge yc/default-opts opts))
       (async
        (when-let [parent-ctx (:parent-ctx child-ctx)]
-         (let [pairs (shared-pairs child-ctx parent-ctx)
-               co (child-only child-ctx parent-ctx)]
+         (let [pairs (handle-shared-pairs fork-handle)
+               co (handle-child-only fork-handle)]
+           ;; Carrying a newly registered child system changes the parent's
+           ;; world shape. Reject before any substrate mutation when that parent
+           ;; has already been partitioned/frozen.
+           (when (seq co)
+             (ensure-registry-mutable! parent-ctx))
          ;; 1. conflict pre-check (FAIL-SAFE: a throwing detector counts as an
          ;; indeterminate conflict so the gate aborts rather than blind-merges).
          ;; `snapshot-id`/`conflicts` are `await`ed ONLY when a continuation (a fn):
@@ -1011,7 +1335,8 @@
                                        ;; OVERLAY fork (convergent :overlay opt + datahike/git): join back.
                                          (ovl/overlay? cval)
                                          (let [m (await (ygg/merge-down! cval opts))]
-                                           (set-node-value! parent-ctx sig-ref m)
+                                           (ensure-parent-signal-and-seat!
+                                            parent-ctx sid sig-ref m)
                                            (ygg/discard! cval)
                                            (conj acc sid))
 
@@ -1027,19 +1352,20 @@
                                                fbranch (ygg/current-branch cval)
                                                pbranch (ygg/current-branch psys)
                                                co      (await (ygg/checkout cval pbranch mopts))
-                                               mg      (await (ygg/merge! co fbranch mopts))
-                                               m       (await (ygg/delete-branch! mg fbranch mopts))]
-                                           (set-node-value! parent-ctx sig-ref m)
+                                               mg      (await (ygg/merge! co fbranch mopts))]
+                                           (ensure-parent-signal-and-seat!
+                                            parent-ctx sid sig-ref mg)
+                                           (let [m (await (ygg/delete-branch! mg fbranch mopts))]
+                                             (ensure-parent-signal-and-seat!
+                                              parent-ctx sid sig-ref m))
                                            (conj acc sid))
 
                                          :else acc)]
                               (recur (next ps) acc*))
                             acc))]
             ;; 3. carry child-only systems into the parent registry + nodes.
-             (doseq [[sid sig-ref] co]
-               (rtp/swap-state! parent-ctx [registry-key] #(assoc (or % {}) sid sig-ref))
-               (rtp/swap-state! parent-ctx [:forkable-signals] #(conj (or % #{}) (:id sig-ref)))
-               (set-node-value! parent-ctx sig-ref (node-value child-ctx sig-ref)))
+             (when (seq co)
+               (carry-child-only! parent-ctx child-ctx co))
              {:merged merged :child-only (vec (keys co))
               :parent-ctx parent-ctx :child-ctx child-ctx}))))))))
 
@@ -1058,8 +1384,8 @@
       (:sync? (merge yc/default-opts opts))
       (async
        (when-let [parent-ctx (:parent-ctx child-ctx)]
-         (let [pairs (shared-pairs child-ctx parent-ctx)
-               co (child-only child-ctx parent-ctx)]
+         (let [pairs (handle-shared-pairs fork-handle)
+               co (handle-child-only fork-handle)]
            (when (seq pairs)
              (mark-settlement-mutating! fork-handle :discard))
        ;; `discard!` on an overlay is a synchronous no-op (returns nil); `delete-branch!`
@@ -1127,34 +1453,44 @@
       (async+sync
        (:sync? (merge yc/default-opts opts))
        (async
-      ;; In the CPS mode this check runs when the awaitable executes, so an
-      ;; authority transfer between construction and execution invalidates it.
-        (ensure-open-authority! fork-handle)
-        (when-let [parent-ctx (:parent-ctx child-ctx)]
-       ;; Loop (not doseq) so `checkout`/`merge!` await-thread on cljs.
-          (loop [ps (seq (filter (fn [[sid _ _ _]]
-                                   (not= :shared (get-in (:descriptor fork-handle)
-                                                         [:fork/systems sid :kind])))
-                                 (shared-pairs child-ctx parent-ctx)))]
-            (when ps
-              (let [[_ sig-ref cval psys] (first ps)
-                    fsys (ys/effective-system cval)]
-                (when (and (satisfies? ygg/Branchable fsys)
-                           (satisfies? ygg/Mergeable fsys))
-                  (let [cbranch (ygg/current-branch fsys)
-                        pbranch (ygg/current-branch psys)
-                     ;; thread :sync? — `opts` is a merge-opts map without it; else the
-                     ;; JVM async branch seats a CPS continuation (the finding-#3 twin).
-                        mopts   (merge yc/default-opts {:message (str "Merge from " (name pbranch))} opts)
-                        co      (await (ygg/checkout fsys cbranch mopts))
-                        m       (await (ygg/merge! co pbranch mopts))]
-                 ;; repoint: if cval is an overlay, update its writable system in
-                 ;; place; else repoint the node. (both sync)
-                    (if (ovl/overlay? cval)
-                      (ovl/reseat-overlay! cval m)
-                      (set-node-value! child-ctx sig-ref m)))))
-              (recur (next ps)))))
-        nil))))))
+        ;; Claim when the CPS expression executes, not when it is constructed.
+        ;; The :advancing lease excludes transfer, partition, and settlement for
+        ;; the full async checkout/merge interval.
+        (claim-advance! fork-handle)
+        (try
+          (when-let [parent-ctx (:parent-ctx child-ctx)]
+            (let [pairs (vec (filter (fn [[sid _ _ _]]
+                                       (not= :shared (get-in (:descriptor fork-handle)
+                                                             [:fork/systems sid :kind])))
+                                     (handle-shared-pairs fork-handle)))]
+              (when (seq pairs)
+                ;; From this point a durable adapter may have changed even if a
+                ;; later operation rejects; do not reopen authority on failure.
+                (mark-advance-mutating! fork-handle))
+              ;; Loop (not doseq) so checkout/merge await-thread on cljs.
+              (loop [ps (seq pairs)]
+                (when ps
+                  (let [[_ sig-ref cval psys] (first ps)
+                        fsys (ys/effective-system cval)]
+                    (when (and (satisfies? ygg/Branchable fsys)
+                               (satisfies? ygg/Mergeable fsys))
+                      (let [cbranch (ygg/current-branch fsys)
+                            pbranch (ygg/current-branch psys)
+                            ;; Thread :sync?; otherwise the JVM async branch can
+                            ;; accidentally seat a CPS continuation as a system.
+                            mopts (merge yc/default-opts
+                                         {:message (str "Merge from " (name pbranch))}
+                                         opts)
+                            co (await (ygg/checkout fsys cbranch mopts))
+                            m (await (ygg/merge! co pbranch mopts))]
+                        (if (ovl/overlay? cval)
+                          (ovl/reseat-overlay! cval m)
+                          (set-node-value! child-ctx sig-ref m)))))
+                  (recur (next ps))))))
+          (complete-advance! fork-handle)
+          (catch #?(:clj Throwable :cljs :default) error
+            (fail-advance! fork-handle error)
+            (throw error)))))))))
 
 (defn merge-fork-from-parent!
   "Merge the parent's current state into an OPEN fork. The ForkHandle is the

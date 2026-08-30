@@ -69,3 +69,44 @@
       (is (nil? (<? (ygg/discard-fork! fork {:sync? sync?})))
           "a later idempotent call preserves the asynchronous return shape")
       (is (= :discarded (:status (ygg/fork-disposition fork)))))))
+
+(deftest-async settlement-authority-partition-is-portable
+  (th/with-ctx [ctx]
+    (ygg/register! (->TinySys "kb"))
+    (ygg/register! (->TinySys "ledger"))
+    (ygg/register! (->TinySys "files"))
+    (let [whole (<? (ygg/fork! {:sync? sync? :owner :run}))
+          [knowledge files]
+          (ygg/partition-fork!
+           whole
+           [{:systems #{"kb" "ledger"} :owner :knowledge-review}
+            {:systems #{"files"} :owner :code-review}])
+          [kb ledger]
+          (ygg/partition-fork!
+           knowledge
+           [{:systems #{"kb"} :owner :research-review}
+            {:systems #{"ledger"} :owner :accounting-review}])]
+      (is (= :partitioned (:status (ygg/fork-disposition whole))))
+      (is (not (ygg/open-fork? whole)))
+      (is (= :partitioned (:status (ygg/fork-disposition knowledge)))
+          "a partition can be recursively subdivided without a new world fork")
+      (is (= #{"kb"} (set (keys (:fork/systems (ygg/fork-descriptor kb))))))
+      (is (= #{"ledger"} (set (keys (:fork/systems (ygg/fork-descriptor ledger))))))
+      (is (not= (:fork/settlement-id (ygg/fork-descriptor kb))
+                (:fork/settlement-id (ygg/fork-descriptor ledger))))
+      (binding [ec/*execution-context* (:child-ctx whole)]
+        (let [register-error (try
+                               (ygg/register! (->TinySys "late"))
+                               nil
+                               (catch #?(:clj Throwable :cljs :default) error error))
+              unregister-error (try
+                                 (ygg/unregister! "kb")
+                                 nil
+                                 (catch #?(:clj Throwable :cljs :default) error error))]
+          (is (= ::ygg/fork-world-shape-frozen
+                 (:type (ex-data register-error))))
+          (is (= ::ygg/fork-world-shape-frozen
+                 (:type (ex-data unregister-error))))))
+      (is (nil? (<? (ygg/discard-fork! kb {:sync? sync?}))))
+      (is (nil? (<? (ygg/discard-fork! ledger {:sync? sync?}))))
+      (is (nil? (<? (ygg/discard-fork! files {:sync? sync?})))))))

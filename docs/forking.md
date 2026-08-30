@@ -87,9 +87,65 @@ the parent context for performance:
   etc. are not isolated. Spins that observably do something to the
   outside world will do it from every fork that runs them.
 
-If you need an external resource to fork along with the context, register
-it under `[:external-refs]` and implement the `PForkable` protocol so
-`fork-context` can ask it to copy itself.
+If an external resource has Yggdrasil fork/merge semantics, register it with
+`org.replikativ.spindel.yggdrasil/register!` and fork through that namespace's
+`fork!`. The returned `ForkHandle` wraps the execution-context fork and is the
+single settlement authority for all selected registered systems.
+
+## Fork registered systems and settle them affinely
+
+```clojure
+(require '[org.replikativ.spindel.yggdrasil :as ygg])
+
+(def world
+  (ygg/fork! {:systems #{:kb :repo}
+              :purpose :proposal
+              :owner :run-42}))
+
+;; Work in the isolated reactive context and its Yggdrasil branches.
+(binding [ec/*execution-context* (:child-ctx world)]
+  (perform-work!))
+
+;; Settlement is mutually exclusive and exactly once.
+(ygg/merge-fork! world)       ; or discard-fork! / transfer-fork!
+```
+
+The portable value from `fork-descriptor` contains world identity, ancestry,
+owner, policy, and per-system branch/basis data. It never contains the live
+contexts or affine token.
+
+After the world is physically quiescent, trusted host code may split one open
+whole-world settlement capability into disjoint per-system capabilities:
+
+```clojure
+(def parts
+  (ygg/partition-fork!
+   world
+   [{:systems #{:repo} :owner :code-review}
+    {:systems #{:kb}   :owner :knowledge-review}]))
+```
+
+Partitioning consumes `world`. Every descriptor-named system must occur exactly
+once; overlaps and omissions are rejected. All returned handles retain the same
+`:fork/id` because they govern one execution world, while each has a distinct
+`:fork/settlement-id`. `fork-diff`, `fork-conflicts`, `merge-fork!`,
+`discard-fork!`, and `merge-fork-from-parent!` operate only on that handle's
+scope.
+
+This divides settlement authority, not arbitrary runtime access: the handles
+share the child execution context and are host capabilities, not sandbox values.
+The system registry must also still match the creation descriptor; worlds with
+uncheckpointed child-only systems are refused until those systems receive a
+portable basis entry. A successful partition freezes registration in that child
+world (including recursive partitions), closing the race between exhaustive
+scope validation and later `register!`/`unregister!` calls. Settlement also fails
+closed if a scoped system is removed or replaced in the parent; it is never
+silently reclassified as child-only.
+
+`merge-fork-from-parent!` temporarily leases the same affine authority as
+`:advancing`. Transfer, partition, merge, and discard are rejected until the
+advance completes. A read-only preflight failure reopens the handle; failure
+after durable mutation begins leaves it `:incomplete` for explicit recovery.
 
 ## Fork and the spin cache
 
