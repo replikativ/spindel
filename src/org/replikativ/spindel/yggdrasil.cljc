@@ -49,6 +49,7 @@
          (d/transact! @@ydb [{:foo/bar 1}]))
        (ygg/merge-fork! fork))                       ; merge each overlay down"
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.nodes :as nodes]
@@ -1025,7 +1026,8 @@
                                         [(:id sr) snap])))
                            s))
             state-updates (-> (or (:state-updates opts) {})
-                              (assoc registry-key selected-reg
+                              (assoc registry-key
+                                     (backend/full-replacement selected-reg)
                                      :forkable-signals selected-signal-ids)
                               (update :nodes #(merge (or % {}) attenuated-nodes)))
             fopts  (cond-> (-> opts
