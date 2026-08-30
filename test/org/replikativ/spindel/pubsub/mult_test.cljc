@@ -234,6 +234,24 @@
          (is (mult/mult-closed? m))))))
 
 #?(:clj
+   (deftest late-tap-on-exhausted-mult-is-closed
+     (let [m (mult/mult (vec->aseq [:only]))
+           first-tap (mult/tap m (buf/fixed-buffer 2))]
+       (is (= [:only]
+              @(spin
+                (loop [source first-tap values []]
+                  (if-let [[value rest-source] (await (anext source))]
+                    (recur rest-source (conj values value))
+                    values)))))
+       (let [late-tap (mult/tap m (buf/fixed-buffer 1))]
+         (is (mult/tap-closed? late-tap))
+         (is (nil? @(anext late-tap))))
+       (let [retained (count @(:taps-atom m))]
+         (dotimes [_ 20]
+           (is (mult/tap-closed? (mult/tap m (buf/fixed-buffer 1)))))
+         (is (= retained (count @(:taps-atom m))))))))
+
+#?(:clj
    (deftest test-mult-tap-with-fixed-buffer
      (testing "tap with fixed buffer"
        (let [source (vec->aseq (range 5))
