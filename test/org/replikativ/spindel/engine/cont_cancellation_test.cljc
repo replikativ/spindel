@@ -554,6 +554,37 @@
              (ctx/close-context! execution-ctx)))))))
 
 #?(:clj
+   (deftest cancellation-hands-back-when-a-parked-reject-slice-throws
+     (testing "structured owners are notified even when continuation glue fails
+            before reaching the Spin's root reject callback"
+       (let [execution-ctx (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* execution-ctx]
+             (let [gate (sync/deferred)
+                   rejected (promise)
+                   worker (spin (await gate))
+                   sid (spin-core/spin-id worker)]
+               (worker (fn [_] (is false "cancelled worker resolved"))
+                       #(deliver rejected %))
+               (simple/await-drain-complete! execution-ctx :timeout-ms 2000)
+               (is (seq (ec/get-state [:await-conts sid])))
+               (ec/swap-state!
+                [:await-conts sid]
+                (fn [conts]
+                  (into {}
+                        (map (fn [[id cont]]
+                               [id (assoc cont :reject-fn
+                                          (fn [_]
+                                            (throw (ex-info "broken reject glue" {}))))]))
+                        conts)))
+               (spin-core/cancel-spin! worker)
+               (let [error (deref rejected 2000 ::timeout)]
+                 (is (not= ::timeout error) "owner receives terminal hand-back")
+                 (is (= spin-core/spin-cancelled (:type (ex-data error)))))))
+           (finally
+             (ctx/close-context! execution-ctx)))))))
+
+#?(:clj
    (deftest concurrent-cancellers-claim-a-parked-continuation-once
      (testing "two cancellers racing on one parent run each cleanup and child
             cascade at most once"

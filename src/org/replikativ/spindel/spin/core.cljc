@@ -145,6 +145,27 @@
 ;; Forward declaration for error handling
 (declare abort-spin-chain!)
 
+(defn- add-cancellation-handback!
+  "Retain the cold invocation's callback boundary in the execution context.
+
+  The ordinary callbacks remain invocation-local because reactive Spins may
+  complete more than once. This registry exists only so cancellation can still
+  reach that boundary when malformed continuation glue throws before the root
+  reject callback."
+  [runtime spin-id handback]
+  (rtp/swap-state! runtime [:cancellation-handbacks spin-id]
+                   (fn [handbacks]
+                     (conj (or handbacks []) handback))))
+
+(defn- take-cancellation-handbacks!
+  [runtime spin-id]
+  (let [result (atom nil)]
+    (rtp/swap-state! runtime [:cancellation-handbacks spin-id]
+                     (fn [handbacks]
+                       (reset! result handbacks)
+                       nil))
+    (or @result [])))
+
 ;; spin-fn now arity-2 (resolve reject) relying on dynamic bindings (*execution-context*, *spin-id*).
 ;; Spin is STATELESS - no runtime reference, uses dynamic *execution-context* binding.
 
@@ -290,11 +311,18 @@
 
           ;; Case 2: Cache miss - execute spin
         :else
-        (let [;; Local execution state (ephemeral, not in runtime)
-              callbacks-atom (atom [{:resolve resolve :reject reject}])
+        (let [callbacks-atom (atom [{:resolve resolve :reject reject}])
+              delivery-count (atom 0)
               executing? (atom true)]
 
           (log/debug :spin/start {:spin-id spin-id})
+
+          (add-cancellation-handback!
+           runtime spin-id
+           {:delivery-count delivery-count
+            :reject (fn [err]
+                      (doseq [{:keys [reject]} @callbacks-atom]
+                        (resume reject err)))})
 
             ;; THE body re-entry prologue (mark-running! +
             ;; clear-created-spins! + clear-prior-body-conts! +
@@ -323,14 +351,14 @@
                               (simple/enqueue-completion-event! current-rt spin-id)
                               (log/debug :spin/completed {:spin-id spin-id :enqueued :spin-completion})
 
-                                ;; Call all pending callbacks from local state
-                              (let [callbacks @callbacks-atom]
-                                (doseq [{:keys [resolve]} callbacks]
-                                    ;; Call resolve via resume to handle Thunk returns
-                                  (resume resolve value)))
+                                ;; The local callback remains installed across
+                                ;; reactive re-completions.
+                              (swap! delivery-count inc)
+                              (doseq [{:keys [resolve]} @callbacks-atom]
+                                (resume resolve value))
 
-                                ;; CRITICAL: Also call any pending callbacks from shared state
-                                ;; These are from duplicate :spin-execution events that were skipped
+                                ;; Duplicate execution events wait here and are
+                                ;; one-shot, unlike the cold invocation above.
                               (let [pending (simple/take-pending-callbacks! current-rt spin-id)]
                                 (when (seq pending)
                                   (log/trace :spin/pending-callbacks {:spin-id spin-id :count (count pending)})
@@ -360,14 +388,11 @@
                                 ;; Abort downstream spins
                               (abort-spin-chain! spin-id err)
 
-                                ;; Call all pending callbacks from local state
-                              (let [callbacks @callbacks-atom]
-                                (doseq [{:keys [reject]} callbacks]
-                                    ;; Call reject via resume to handle Thunk returns
-                                  (resume reject err)))
+                                ;; Same persistent local callback as success.
+                              (swap! delivery-count inc)
+                              (doseq [{:keys [reject]} @callbacks-atom]
+                                (resume reject err))
 
-                                ;; CRITICAL: Also call any pending callbacks from shared state
-                                ;; These are from duplicate :spin-execution events that were skipped
                               (let [current-rt (ec/current-execution-context)
                                     pending (simple/take-pending-callbacks! current-rt spin-id)]
                                 (when (seq pending)
@@ -646,7 +671,14 @@
                                        :cljs (js/Date.))})
         ;; Requires *execution-context* to be bound by caller
         ctx   (ec/current-execution-context)
-        conts (ec/get-state [:await-conts sid])]
+        conts (ec/get-state [:await-conts sid])
+        ;; Claim fallback ownership before invoking any parked continuation.
+        ;; Each baseline lets us distinguish a successful ordinary reject from
+        ;; glue that threw before reaching the root callback.
+        handbacks (mapv (fn [handback]
+                          (assoc handback :baseline
+                                 @(get handback :delivery-count)))
+                        (take-cancellation-handbacks! ctx sid))]
     ;; (1) Cache the cancel result + dirty observers. Makes `spin-is-cancelled?`
     ;; true, so a RUNNING spin rejects at its next await (cooperative), and any
     ;; awaiting parents are re-notified.
@@ -711,7 +743,23 @@
     ;; empty regardless.
     (doseq [child (ec/get-state [:nodes sid :owned-spins])]
       (when (and child (nil? (ec/spin-current-result (spin-id child))))
-        (cancel-spin! child)))))
+        (cancel-spin! child)))
+    ;; A well-formed CPS reject path increments `delivery-count` before invoking
+    ;; the local callback. If user/SCI continuation glue throws before that
+    ;; boundary, compare-and-set claims a single fallback hand-back. Reactive
+    ;; callbacks therefore remain persistent during normal operation without a
+    ;; cancellation double-notification.
+    (doseq [{:keys [delivery-count reject baseline]} handbacks]
+      (when (compare-and-set! delivery-count baseline (inc baseline))
+        (try
+          (resume reject err)
+          (catch #?(:clj Throwable :cljs :default) _ nil))))
+    ;; Duplicate execution-event observers remain one-shot and use the existing
+    ;; pending registry.
+    (doseq [{:keys [reject]} (simple/take-pending-callbacks! ctx sid)]
+      (try
+        (resume reject err)
+        (catch #?(:clj Throwable :cljs :default) _ nil)))))
 
 (defn cleanup-spin!
   "Manually clean up a spin, removing it from the runtime.

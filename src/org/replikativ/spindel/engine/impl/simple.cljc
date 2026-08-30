@@ -1819,6 +1819,7 @@
                                            retired)))
             ;; 6. Remove pending callbacks
                            (update :pending-callbacks dissoc spin-id)
+                           (update :cancellation-handbacks dissoc spin-id)
             ;; 7. Remove tracking data
                            (update :spin-tracking dissoc spin-id)
             ;; 9. Clean subscriptions (remove spin-id from all event keys)
