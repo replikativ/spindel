@@ -183,6 +183,7 @@
     ;; is symmetric — each side joins the other's own state. Integrating a remote value
     ;; carries no local δ ⇒ no echo on our watch.
     (let [out     (chan 1)
+          completion (chan 1)
           current @signal-atom
           snap    (if state-fn (state-fn current) current)
           reply!  (fn []
@@ -190,12 +191,26 @@
                       (put! out (if state-fn
                                   {:type :snapshot :delta snap}
                                   {:type :snapshot :value current})))
-                    (close! out))]
+                    (close! out))
+          finish! (fn [result]
+                    (if (and (map? result)
+                             (true? (:ok result))
+                             (not (contains? result :error)))
+                      (do
+                        (reply!)
+                        (put! completion {:ok true}))
+                      (do
+                        (close! out)
+                        (put! completion
+                              {:error (or (:error result)
+                                          (ex-info "Handshake integration failed"
+                                                   {:result result}))})))
+                    (close! completion))]
       (if (or (contains? client-state :delta) (contains? client-state :value))
         ;; integrate the joiner's state, THEN reply our pre-captured snapshot
-        (a/take! (apply-incoming! this client-state) (fn [_] (reply!)))
-        (reply!))
-      out))
+        (a/take! (apply-incoming! this client-state) finish!)
+        (finish! {:ok true}))
+      (proto/checked-handshake-source out completion)))
 
   (-apply-handshake-item [this item]
     ;; Catch-up on connect: a snapshot is already {:delta …} (OP-path, convergent)

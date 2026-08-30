@@ -5,12 +5,33 @@
    LWW-reset default."
   (:require #?(:clj  [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
+            #?(:clj [clojure.core.async :refer [<!!]])
             [clojure.set :as set]
             [kabel.pubsub.protocol :as proto]
             [org.replikativ.spindel.core :as s]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.distributed.signal-sync :as ss]))
+
+#?(:clj
+   (deftest handshake-production-reports-symmetric-join-result
+     (let [state (atom #{:owner})
+           strategy (ss/->SignalSyncStrategy state nil set/union nil true nil)
+           source (proto/-handshake-items
+                   strategy {:hash 0 :value #{:joiner}})]
+       (is (= {:type :snapshot :value #{:owner}} (<!! (:items source))))
+       (is (= {:ok true} (<!! (:completion source))))
+       (is (= #{:owner :joiner} @state)))
+
+     (let [state (atom #{:owner})
+           strategy (ss/->SignalSyncStrategy
+                     state nil (fn [_ _] (throw (ex-info "join failed" {})))
+                     nil true nil)
+           source (proto/-handshake-items
+                   strategy {:hash 0 :value #{:joiner}})]
+       (is (nil? (<!! (:items source))))
+       (is (some? (:error (<!! (:completion source)))))
+       (is (= #{:owner} @state)))))
 
 (deftest merge-fn-joins-instead-of-resetting
   (testing "with merge-fn, an incoming remote value is JOINED with the local one"

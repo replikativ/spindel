@@ -12,7 +12,7 @@
         org.replikativ/hasch {:mvn/version "0.4.99"}
         org.clojure/core.async {:mvn/version "1.6.681"}
         anglican/anglican {:mvn/version "1.1.0"}
-        org.replikativ/kabel {:mvn/version "0.3.94"}}
+        org.replikativ/kabel {:mvn/version "0.3.116"}}
 
  :aliases
  {:test {:extra-paths ["test"]
