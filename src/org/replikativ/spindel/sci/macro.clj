@@ -31,6 +31,19 @@
             [is.simm.partial-cps.async :as async]
             [org.replikativ.spindel.sci.core :as sci-core]))
 
+(defn- same-world-or-descendant?
+  "True when `candidate` is the captured world or one of its COW descendants.
+
+  Continuation slice restoration may construct another ExecutionContext record
+  for the same branch, so stable fork identity—not object identity—is the base
+  case."
+  [candidate captured]
+  (loop [ctx candidate]
+    (cond
+      (nil? ctx) false
+      (= (:fork-id ctx) (:fork-id captured)) true
+      :else (recur (:parent-ctx ctx)))))
+
 (defn create-spin-macro-context
   "Create SCI context with full spin/await/track syntax support.
 
@@ -165,17 +178,27 @@
               wrap-cont
               (fn [continuation]
                 (fn [value]
-                  (let [current-ctx (or (try (ec/current-execution-context)
-                                             (catch Throwable _ nil))
-                                        captured-ctx)
-                        current-spin-id (or ec/*spin-id* captured-spin-id)]
+                  (let [ambient-ctx (try (ec/current-execution-context)
+                                         (catch Throwable _ nil))
+                        current-ctx (if (same-world-or-descendant?
+                                         ambient-ctx captured-ctx)
+                                      ambient-ctx
+                                      captured-ctx)]
                     (binding [ec/*execution-context* current-ctx
-                              ec/*spin-id* current-spin-id]
+                              ;; A Spin keeps one identity across worlds. The
+                              ;; ambient id belongs to the producer/drain that
+                              ;; happened to resume this continuation and must
+                              ;; never re-parent the consumer's next await.
+                              ec/*spin-id* captured-spin-id]
                       (sci/with-bindings
                         {sci-execution-context current-ctx
-                         sci-spin-id current-spin-id
+                         sci-spin-id captured-spin-id
                          sci-in-trampoline captured-trampoline}
                         (async/invoke-continuation continuation value))))))]
+          (when-not captured-spin-id
+            (throw (ex-info "SCI await requires an owning Spin"
+                            {:type ::sci-await-outside-spin
+                             :source-loc source-loc})))
           (binding [ec/*execution-context* captured-ctx
                     ec/*spin-id* captured-spin-id]
             (eff-await/await-handler awaitable captured-spin-id source-loc
