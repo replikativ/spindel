@@ -120,6 +120,8 @@
     (simple/add-continuation! this spin-id cont))
   (remove-continuation! [this spin-id cont-id]
     (simple/remove-continuation! this spin-id cont-id))
+  (remove-continuation! [this spin-id cont-id opts]
+    (simple/remove-continuation! this spin-id cont-id opts))
   (earliest-continuation [this spin-id signal-id]
     (simple/earliest-continuation this spin-id signal-id))
   (resume-continuation! [this spin-id cont resume-fn]
@@ -249,6 +251,7 @@
                               :track-subscriptions {} ; Comonadic track continuations (per spin)
                               :await-conts {}        ; Monadic await continuations (per spin)
                               :subscriptions {}      ; Event subscriptions (reverse index of the continuation tables)
+                              :engine/retired-conts {} ; Exact edges consumed by valid continuation retirement
                               :atoms {}              ; Fork-safe execution context atoms
                               ;; Engine state
                               :engine/pending []
@@ -426,6 +429,11 @@
         ;; parent fallback).
         parent-track-subscriptions (rtp/get-state parent-ctx [:track-subscriptions])
         parent-await-conts (rtp/get-state parent-ctx [:await-conts])
+        ;; Continuations and their reverse index form one graph snapshot. If
+        ;; :subscriptions falls through to the live parent while the cont tables
+        ;; are copied, a fork can observe a post-fork edge whose continuation it
+        ;; can never resume.
+        parent-subscriptions (rtp/get-state parent-ctx [:subscriptions])
 
         ;; The fork inherits NONE of the parent's un-drained events —
         ;; an event is delivered in exactly one world (the parent's).
@@ -512,6 +520,8 @@
         fork-local-state (cond-> (merge
                                   {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
                                    :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
+                                   :subscriptions (or parent-subscriptions {})             ; ← Copy their reverse index!
+                                   :engine/retired-conts {} ; retirement history is world-local
                                    :engine/pending [] ; ← NO inherited events; see the claim-undo below
                                    :engine/draining? false
                                    :engine/delayed-spins (sorted-map)

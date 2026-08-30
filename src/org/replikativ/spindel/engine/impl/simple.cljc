@@ -141,6 +141,9 @@
 (declare clear-all-await-continuations!)
 (declare cache-result!)
 (declare restore-slice-state!)
+(declare claim-continuation-for-resume!)
+(declare release-reactive-resume!)
+(declare remove-continuation!)
 
 (defn- cont-by-cancel-token
   "The `:external-await` cont in `[:await-conts spin-id]` carrying
@@ -151,6 +154,8 @@
   (when (and spin-id cancel-token)
     (first (filter #(= (:cancel-token %) cancel-token)
                    (vals (rtp/get-state context [:await-conts spin-id]))))))
+
+(def ^:private resume-claimed-key ::resume-claimed?)
 
 (defn- slice-context
   "The context a one-shot waiter's slice must resume in: the cont's
@@ -654,6 +659,8 @@
   (merge (get-in state [:track-subscriptions spin-id])
          (get-in state [:await-conts spin-id])))
 
+(declare detach-continuation)
+
 (defn- truncate-stale-conts!
   "Drop a spin's continuations whose `:order` is strictly greater than the
   resumed continuation's, then re-track the signal deps of the conts whose
@@ -677,8 +684,7 @@
         skipped-signal-ids (->> (vals all-conts)
                                 (filter #(< (:order %) cont-order))
                                 (keep :signal-id))
-        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))
-        keep-kept (fn [conts] (into {} (filter (fn [[_k v]] (<= (:order v) cont-order)) conts)))]
+        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
     ;; Fire cancellation hooks BEFORE state mutation so orphaned closures
     ;; observe cancellation the moment the external resource calls them.
     ;; Pass the current context — under Option A (state-backed cancel
@@ -689,9 +695,11 @@
       (when-let [cancel! (:cancel! c)] (cancel! context)))
     (rtp/swap-state! context []
                      (fn [state]
-                       (-> state
-                           (update-in [:track-subscriptions spin-id] keep-kept)
-                           (update-in [:await-conts spin-id] keep-kept))))
+                       (reduce (fn [next-state stale]
+                                 (detach-continuation
+                                  next-state spin-id (:id stale) stale false))
+                               state
+                               cancelled-conts)))
     (doseq [skipped-sid skipped-signal-ids]
       (track-signal-dep! context spin-id skipped-sid))))
 
@@ -850,6 +858,49 @@
               (if (seq grandparents)
                 (recur (first grandparents) (conj visited current))
                 current))))))))
+
+(defn- prune-completion-subscription!
+  "Remove a reverse completion edge whose continuation no longer exists."
+  [context event-key spin-id cont-id]
+  (rtp/swap-state! context []
+                   (fn [state]
+                     (let [spin-subs (get-in state [:subscriptions event-key spin-id])
+                           spin-subs' (disj (or spin-subs #{}) cont-id)]
+                       (->
+                        (if (seq spin-subs')
+                          (assoc-in state [:subscriptions event-key spin-id] spin-subs')
+                          (let [event-subs (dissoc (get-in state [:subscriptions event-key])
+                                                   spin-id)]
+                            (if (seq event-subs)
+                              (assoc-in state [:subscriptions event-key] event-subs)
+                              (update state :subscriptions dissoc event-key))))
+                        (update :engine/retired-conts
+                                dissoc [spin-id cont-id])))))
+  nil)
+
+(defn- sweep-retired-continuations!
+  "Retain retirement evidence only for completion events still pending."
+  [context]
+  (let [pending-event-keys
+        (into #{}
+              (keep (fn [event]
+                      (when (= :spin-completion (:type event))
+                        [:spin/complete (:id event)])))
+              (rtp/get-state context [:engine/pending]))]
+    (rtp/swap-state! context [:engine/retired-conts]
+                     (fn [retired]
+                       (into {}
+                             (filter (fn [[_ edge]]
+                                       (contains? pending-event-keys edge)))
+                             retired))))
+  nil)
+
+(defn- legitimately-retired-edge?
+  "True only when this exact continuation/event edge was validly consumed."
+  [context event-key spin-id cont-id]
+  (= event-key
+     (rtp/get-state context
+                    [:engine/retired-conts [spin-id cont-id]])))
 
 (defn process-event!
   "Process a single event.
@@ -1031,24 +1082,42 @@
             ;; construction — track conts subscribe to [:signal _]. Read
             ;; :await-conts directly: an await resume cannot reach a
             ;; track cont, and the structural split enforces that.
-            (let [cont (rtp/get-state context
-                                      [:await-conts parent-id cont-id])
-                  ;; Generation-based deduplication via batch state (not dynamic bindings)
+            (let [;; Generation-based deduplication via batch state (not dynamic bindings)
                   generation (when batch (:generation batch))
                   dedup-key [parent-id tid generation]
                   already-resumed? (when (and generation batch)
-                                     (contains? @(:resumed-conts batch) dedup-key))]
-              ;; A completion whose subscription exists but whose cont entry is
-              ;; MISSING is a dropped wakeup — the parent spin will never
-              ;; resume. This must be loud, not a silent skip: it has cost
-              ;; days of debugging as an unexplained hang. Known cause:
-              ;; a fork's [:await-conts] snapshot (context.cljc fork-context)
-              ;; not containing a cont the parent registered post-fork.
-              (when (and (nil? cont) (not already-resumed?))
-                (log/warn :engine/spin-completion-cont-missing
-                          {:parent-id parent-id :cont-id cont-id :child-id tid
-                           :fork-id (:fork-id context)}))
-              (when (and cont (not already-resumed?))
+                                     (contains? @(:resumed-conts batch) dedup-key))
+                  ;; Completion and external cancellation arbitrate through one
+                  ;; state claim. One-shot awaits are consumed; reactive awaits
+                  ;; retain their graph edge with an in-flight marker.
+                  cont (when-not already-resumed?
+                         (claim-continuation-for-resume!
+                          context parent-id cont-id))]
+              ;; A missing cont is benign only with exact retirement evidence
+              ;; for this [parent cont-id] and event edge. This distinguishes a
+              ;; body that legitimately advanced/cancelled from a multi-await
+              ;; parent whose one missing branch can still strand the join.
+              ;; Always prune the stale reverse edge so repeated completion
+              ;; events cannot amplify it indefinitely.
+              (when (and (nil? cont)
+                         (not already-resumed?)
+                         (contains? (or (rtp/get-state
+                                         context
+                                         [:subscriptions [:spin/complete tid]
+                                          parent-id])
+                                        #{})
+                                    cont-id))
+                (let [event-key [:spin/complete tid]
+                      legitimately-retired?
+                      (legitimately-retired-edge?
+                       context event-key parent-id cont-id)]
+                  (prune-completion-subscription!
+                   context event-key parent-id cont-id)
+                  (when-not legitimately-retired?
+                    (log/warn :engine/spin-completion-cont-missing
+                              {:parent-id parent-id :cont-id cont-id :child-id tid
+                               :fork-id (:fork-id context)}))))
+              (when cont
                 ;; Mark [parent child generation] as resumed
                 (when (and generation batch)
                   (swap! (:resumed-conts batch) conj dedup-key))
@@ -1076,6 +1145,8 @@
                 ;; backstop but should no longer fire for resume throws.
                 (try
                   (resume-body! context parent-id cont :await)
+                  (when (= :await-reactive (:kind cont))
+                    (release-reactive-resume! context parent-id cont-id))
                   (catch #?(:clj Throwable :cljs :default) e
                     #?(:clj (when (instance? InterruptedException e)
                               (.interrupt (Thread/currentThread))))
@@ -1090,10 +1161,9 @@
                                 pcps-async/*in-trampoline* false]
                         (when-let [rj (:reject-fn cont)] (rj e)))
                       (catch #?(:clj Throwable :cljs :default) _ nil))
-                    (rtp/swap-state! context [:await-conts parent-id]
-                                     (fn [m] (dissoc m cont-id))))))))))
+                    (remove-continuation! context parent-id cont-id))))))))
 
-      ;; Propagate dirty flag through await dependency graph
+;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
       nil)
 
@@ -1195,8 +1265,11 @@
             cancelled-tokens (rtp/get-state context [:engine/cancelled-tokens])
             cancelled? (or (and spin-id (ec/spin-is-cancelled? spin-id))
                            (and cancel-token cancelled-tokens
-                                (contains? cancelled-tokens cancel-token)))]
-        (if cancelled?
+                                (contains? cancelled-tokens cancel-token)))
+            cont (cont-by-cancel-token context spin-id cancel-token)
+            claimed (when (and (not cancelled?) cont)
+                      (remove-continuation! context spin-id (:id cont)))]
+        (if (or cancelled? (and cont (nil? claimed)))
           (do
             ;; Self-cleaning: consuming the cancelled waiter's token (same
             ;; contract as the pop-time skip in post-inline!).
@@ -1218,7 +1291,9 @@
           ;; drain's. `slice-context` restores the owning cont's
           ;; `:slice-state` (bindings + chain-head + dep tracking); the
           ;; re-binding is what the resumed body code actually reads.
-          (let [rctx (slice-context context spin-id cancel-token)]
+          (let [rctx (if (:slice-state claimed)
+                       (restore-slice-state! context spin-id claimed)
+                       context)]
             (binding [ec/*execution-context* rctx]
               (guarded-resume! rctx site spin-id cancel-token resolve value))
             nil))))
@@ -1360,11 +1435,14 @@
                                         (catch #?(:clj Throwable :cljs :default) _))))
 
                                   nil)))
+                            (sweep-retired-continuations! context)
                             (swap! event-count inc)
                             (recur))
                           ;; Queue empty — drain complete.
                           (do
                             (log/trace :engine/drain-complete {:events-processed @event-count})
+                            (rtp/swap-state! context [:engine/retired-conts]
+                                             (constantly {}))
                             @event-count))))))
                 (finally
                   ;; Always release draining lock.
@@ -1668,6 +1746,12 @@
             ;; Clear continuations (both kinds) + transient tracking.
                            (update :track-subscriptions dissoc spin-id)
                            (update :await-conts dissoc spin-id)
+                           (update :engine/retired-conts
+                                   (fn [retired]
+                                     (into {}
+                                           (remove (fn [[[owner-id _] _]]
+                                                     (= owner-id spin-id)))
+                                           retired)))
                            (update :spin-tracking dissoc spin-id)
 
             ;; Clean up subscriptions (remove spin-id from all event keys,
@@ -1726,6 +1810,12 @@
             ;; 5. Remove continuations (both kinds)
                            (update :track-subscriptions dissoc spin-id)
                            (update :await-conts dissoc spin-id)
+                           (update :engine/retired-conts
+                                   (fn [retired]
+                                     (into {}
+                                           (remove (fn [[[owner-id _] _]]
+                                                     (= owner-id spin-id)))
+                                           retired)))
             ;; 6. Remove pending callbacks
                            (update :pending-callbacks dissoc spin-id)
             ;; 7. Remove tracking data
@@ -2542,6 +2632,7 @@
         store-key (cont-store-key cont)
         new-state (rtp/swap-state! context []
                                    (fn [rt-state]
+                                     (reset! displaced-cancel nil)
                                      (let [track-conts (get-in rt-state [:track-subscriptions spin-id])
                                            await-conts (get-in rt-state [:await-conts spin-id])
                                            order (inc (+ (count track-conts) (count await-conts)))
@@ -2550,8 +2641,18 @@
                                            _     (when-let [c! (:cancel! displaced)]
                                                    (reset! displaced-cancel c!))
                                            cont' (-> cont (assoc :id cont-id :order order))
-                                           event-key (:event-key cont')]
-                                       (-> rt-state
+                                           event-key (:event-key cont')
+                                           ;; A deterministic source-location ID may be
+                                           ;; reused when a body advances to a different
+                                           ;; child. Remove both halves of the old graph
+                                           ;; edge before attaching the replacement.
+                                           state (if displaced
+                                                   (detach-continuation
+                                                    rt-state spin-id cont-id displaced false)
+                                                   rt-state)]
+                                       (-> state
+                                           (update :engine/retired-conts
+                                                   dissoc [spin-id cont-id])
                                            (assoc-in [store-key spin-id cont-id] cont')
                                            (update-in [:subscriptions event-key spin-id]
                                                       (fn [s] (conj (or s #{}) cont-id)))))))]
@@ -2561,49 +2662,114 @@
     (when-let [c! @displaced-cancel] (c! context))
     (get-in new-state [store-key spin-id cont-id])))
 
+(defn- continuation-at [rt-state spin-id cont-id]
+  (or (get-in rt-state [:track-subscriptions spin-id cont-id])
+      (get-in rt-state [:await-conts spin-id cont-id])))
+
+(defn- detach-continuation
+  "Pure removal of `cont` and its reverse subscription from runtime state."
+  [rt-state spin-id cont-id cont cancel?]
+  (let [store-key (cont-store-key cont)
+        event-key (:event-key cont)
+        spin-subs (get-in rt-state [:subscriptions event-key spin-id])
+        spin-subs' (disj (or spin-subs #{}) cont-id)
+        state' (-> rt-state
+                   (update-in [store-key spin-id] dissoc cont-id)
+                   (assoc-in [:engine/retired-conts [spin-id cont-id]] event-key)
+                   (update :subscriptions
+                           (fn [subs]
+                             (if (seq spin-subs')
+                               (assoc-in subs [event-key spin-id] spin-subs')
+                               (let [event-subs (dissoc (get subs event-key)
+                                                        spin-id)]
+                                 (if (seq event-subs)
+                                   (assoc subs event-key event-subs)
+                                   (dissoc subs event-key)))))))]
+    (cond-> state'
+      (and cancel? (:cancel-token cont))
+      (update-in [:engine/cancelled-tokens]
+                 (fn [tokens]
+                   (conj (or tokens #{}) (:cancel-token cont)))))))
+
+(defn claim-continuation-for-resume!
+  "Atomically arbitrate completion against cancellation.
+
+  One-shot/external awaits are detached and returned to exactly one caller.
+  Reactive awaits remain registered but are marked in-flight so cancellation
+  can remove the future graph edge without invoking the same CPS slice."
+  [context spin-id cont-id]
+  (let [claimed (volatile! nil)]
+    (rtp/swap-state! context []
+                     (fn [rt-state]
+                       (vreset! claimed nil)
+                       (if-let [cont (continuation-at rt-state spin-id cont-id)]
+                         (cond
+                           (and (= :await-reactive (:kind cont))
+                                (not (resume-claimed-key cont)))
+                           (do
+                             (vreset! claimed cont)
+                             (assoc-in rt-state
+                                       [:await-conts spin-id cont-id resume-claimed-key]
+                                       true))
+
+                           (= :await-reactive (:kind cont))
+                           rt-state
+
+                           :else
+                           (do
+                             (vreset! claimed cont)
+                             (detach-continuation rt-state spin-id cont-id cont false)))
+                         rt-state)))
+    @claimed))
+
+(defn release-reactive-resume!
+  "Release a reactive continuation's in-flight completion claim when it still
+  exists. Cancellation may have removed it while the resumed slice ran."
+  [context spin-id cont-id]
+  (rtp/swap-state! context [:await-conts spin-id]
+                   (fn [conts]
+                     (if (contains? conts cont-id)
+                       (update conts cont-id dissoc resume-claimed-key)
+                       conts)))
+  nil)
+
 (defn remove-continuation!
-  "Remove a continuation from a spin.
+  "Atomically remove and return a continuation from a spin.
 
   TRANSACTIONAL: All state changes happen atomically in a single swap-state! to
-  ensure context consistency for snapshotting.
+  ensure context consistency for snapshotting. Exactly one concurrent caller
+  receives the removed continuation. With `{:cancel? true}`, an external-await
+  cancellation token is armed in the same transaction as removal.
 
   Args:
     context - context record (implements PState protocol)
     spin-id - ID of spin that owns the continuation
     cont-id - ID of continuation to remove
 
-  Returns: true"
-  [context spin-id cont-id]
-  (rtp/swap-state! context []
-                   (fn [rt-state]
-                     (let [;; cont-id alone doesn't carry the kind — look it
-                           ;; up to find which structure it lives in.
-                           cont (or (get-in rt-state [:track-subscriptions spin-id cont-id])
-                                    (get-in rt-state [:await-conts spin-id cont-id]))
-                           store-key (when cont (cont-store-key cont))
-                           event-key (:event-key cont)]
-                       (cond-> rt-state
-            ;; Remove continuation from its kind-routed structure.
-                         store-key
-                         (update-in [store-key spin-id] dissoc cont-id)
-
-            ;; Unregister subscription and clean up empty entries
-                         true
-                         (update :subscriptions
-                                 (fn [subs]
-                                   (let [spin-subs (get-in subs [event-key spin-id])
-                                         spin-subs' (disj (or spin-subs #{}) cont-id)]
-                                     (if (seq spin-subs')
-                          ;; Still have subscriptions for this spin
-                                       (assoc-in subs [event-key spin-id] spin-subs')
-                          ;; No more subscriptions for this spin
-                                       (let [event-subs (dissoc (get subs event-key) spin-id)]
-                                         (if (seq event-subs)
-                              ;; Still have other spins subscribed to this event
-                                           (assoc subs event-key event-subs)
-                              ;; No more spins subscribed to this event
-                                           (dissoc subs event-key)))))))))))
-  true)
+  Returns: the removed continuation, or nil."
+  ([context spin-id cont-id]
+   (remove-continuation! context spin-id cont-id nil))
+  ([context spin-id cont-id {:keys [cancel?]}]
+   (let [removed (volatile! nil)]
+     (rtp/swap-state! context []
+                      (fn [rt-state]
+                        ;; swap!/overlay transactions may retry. Clear an earlier
+                        ;; failed attempt's capture before inspecting this attempt.
+                        (vreset! removed nil)
+                        (if-let [cont (continuation-at rt-state spin-id cont-id)]
+                          (do
+                            ;; A completion that already linearized on this
+                            ;; reactive cont owns its current CPS invocation.
+                            ;; Cancellation removes future reactivity but marks
+                            ;; the descriptor so the canceller does not reject
+                            ;; the same slice concurrently.
+                            (vreset! removed
+                                     (cond-> cont
+                                       (resume-claimed-key cont)
+                                       (assoc ::resume-in-flight? true)))
+                            (detach-continuation rt-state spin-id cont-id cont cancel?))
+                          rt-state)))
+     @removed)))
 
 (defn earliest-continuation
   "Get the earliest continuation for a spin subscribed to a signal or

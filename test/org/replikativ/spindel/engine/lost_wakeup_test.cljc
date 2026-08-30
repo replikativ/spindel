@@ -276,7 +276,27 @@
          (is (= [:w] (:waiters (backend/backend-read parent [:atoms :mbx :value])))
              "parent's copy is untouched (fork diverged)")
          (is (= [{:ev 1}] (backend/backend-read fork [:engine/pending]))
-             "fork-local pending written directly — parent's queue not read")))))
+             "fork-local pending written directly — parent's queue not read")))
+     (testing "OverlayBackend: two-path handoff revives an entity tombstone"
+       (let [parent (backend/create-atom-backend
+                     {:atoms {:mbx {:value {:queue []}}}
+                      :engine/pending []})
+             fork (backend/create-overlay-backend parent)]
+         ;; Whole-state cleanup creates an explicit entity tombstone so the
+         ;; inherited mailbox cannot fall through from the parent.
+         (backend/backend-write! fork [] #(update % :atoms dissoc :mbx))
+         (is (nil? (backend/backend-read fork [:atoms :mbx])))
+         (backend/backend-write-2! fork [:atoms :mbx :value] [:engine/pending]
+                                   (fn [_ pending]
+                                     [{:queue [:late]}
+                                      (conj (vec pending) {:ev :late})]))
+         (is (= {:queue [:late]}
+                (backend/backend-read fork [:atoms :mbx :value])))
+         (is (= [{:ev :late}]
+                (backend/backend-read fork [:engine/pending])))
+         (is (= {:queue []}
+                (backend/backend-read parent [:atoms :mbx :value]))
+             "revival remains isolated from the parent")))))
 
 ;; -----------------------------------------------------------------------------
 ;; 4c. Forkability: in-flight data-bearing events are inherited by forks

@@ -7,6 +7,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.impl.graph :as graph]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -256,11 +257,318 @@
           (let [stored (ec/get-state [:track-subscriptions spin-id (:id added-cont)])]
             (is (some? stored)))
 
-          ;; Remove continuation
-          (rtp/remove-continuation! ctx spin-id (:id added-cont))
+          ;; Remove continuation. Exactly one caller claims the descriptor.
+          (is (= (:id added-cont)
+                 (:id (rtp/remove-continuation! ctx spin-id (:id added-cont)))))
+          (is (nil? (rtp/remove-continuation! ctx spin-id (:id added-cont)))
+              "a spent continuation cannot be claimed twice")
 
           ;; Verify removed
           (is (nil? (ec/get-state [:track-subscriptions spin-id (:id added-cont)]))))))))
+
+(deftest replacing-continuation-detaches-previous-reverse-edge
+  (testing "a deterministic continuation ID can advance to another child"
+    (let [context (ctx/create-execution-context)
+          spin-id :reawait-parent
+          cont-id :reused-await-cont
+          base {:id cont-id
+                :kind :await-once
+                :on-resume identity
+                :resolve-fn identity
+                :reject-fn identity}]
+      (try
+        (rtp/add-continuation!
+         context spin-id (assoc base :event-key [:spin/complete :old-child]))
+        (rtp/add-continuation!
+         context spin-id (assoc base :event-key [:spin/complete :new-child]))
+        (is (empty? (or (rtp/get-state
+                         context
+                         [:subscriptions [:spin/complete :old-child] spin-id])
+                        #{}))
+            "the obsolete child cannot resume the replacement")
+        (is (= #{cont-id}
+               (rtp/get-state
+                context
+                [:subscriptions [:spin/complete :new-child] spin-id])))
+        (is (= :new-child
+               (-> (rtp/get-state context [:await-conts spin-id cont-id])
+                   :event-key second)))
+        (is (nil? (rtp/get-state
+                   context [:engine/retired-conts [spin-id cont-id]]))
+            "re-attaching a deterministic ID clears its old retirement")
+        (is (some? (simple/claim-continuation-for-resume!
+                    context spin-id cont-id)))
+        (is (= [:spin/complete :new-child]
+               (rtp/get-state
+                context [:engine/retired-conts [spin-id cont-id]]))
+            "a consumed edge carries explicit retirement evidence")
+        (finally
+          (ctx/close-context! context))))))
+
+(deftest retirement-evidence-distinguishes-missing-parallel-branch
+  (testing "a live sibling continuation does not excuse an unretired missing edge"
+    (let [context (ctx/create-execution-context)
+          spin-id :parallel-parent
+          missing-id :missing-branch
+          sibling-id :live-sibling
+          missing-event [:spin/complete :missing-child]
+          classifier (ns-resolve 'org.replikativ.spindel.engine.impl.simple
+                                 'legitimately-retired-edge?)]
+      (try
+        (rtp/add-continuation!
+         context spin-id
+         {:id sibling-id
+          :event-key [:spin/complete :sibling-child]
+          :kind :await-reactive
+          :on-resume identity
+          :resolve-fn identity
+          :reject-fn identity})
+        (rtp/swap-state! context [:subscriptions missing-event spin-id]
+                         (constantly #{missing-id}))
+        (is (false? (classifier context missing-event spin-id missing-id))
+            "unrelated progress cannot hide a genuinely missing branch")
+
+        (rtp/add-continuation!
+         context spin-id
+         {:id missing-id
+          :event-key missing-event
+          :kind :await-once
+          :on-resume identity
+          :resolve-fn identity
+          :reject-fn identity})
+        (is (some? (simple/claim-continuation-for-resume!
+                    context spin-id missing-id)))
+        (is (true? (classifier context missing-event spin-id missing-id))
+            "an exact completion claim records benign advancement")
+        (finally
+          (ctx/close-context! context))))))
+
+(deftest retirement-evidence-is-bounded-by-pending-completions
+  (testing "fresh continuation IDs do not accumulate as historical state"
+    (let [context (ctx/create-execution-context)
+          spin-id :long-lived-await-loop
+          sweep! (ns-resolve 'org.replikativ.spindel.engine.impl.simple
+                             'sweep-retired-continuations!)]
+      (try
+        (dotimes [i 200]
+          (let [cont-id (keyword (str "fresh-cont-" i))
+                child-id (keyword (str "fresh-child-" i))]
+            (rtp/add-continuation!
+             context spin-id
+             {:id cont-id
+              :event-key [:spin/complete child-id]
+              :kind :await-once
+              :on-resume identity
+              :resolve-fn identity
+              :reject-fn identity})
+            (is (some? (simple/claim-continuation-for-resume!
+                        context spin-id cont-id)))))
+        (is (= 200 (count (rtp/get-state context [:engine/retired-conts]))))
+        (rtp/swap-state! context [:engine/pending]
+                         (constantly [{:type :spin-completion
+                                       :id :fresh-child-199}]))
+        (sweep! context)
+        (is (= {[spin-id :fresh-cont-199]
+                [:spin/complete :fresh-child-199]}
+               (rtp/get-state context [:engine/retired-conts]))
+            "only evidence relevant to queued work survives the sweep")
+        (rtp/swap-state! context [:engine/pending] (constantly []))
+        (sweep! context)
+        (is (empty? (rtp/get-state context [:engine/retired-conts])))
+        (finally
+          (ctx/close-context! context))))))
+
+(deftest truncating-stale-continuations-detaches-reverse-edges
+  (testing "reactive resume truncates both halves of every later await edge"
+    (let [context (ctx/create-execution-context)
+          spin-id :truncate-parent
+          mk-cont (fn [cont-id child-id order]
+                    {:id cont-id
+                     :event-key [:spin/complete child-id]
+                     :kind :await-once
+                     :order order
+                     :on-resume identity
+                     :resolve-fn identity
+                     :reject-fn identity})
+          resumed (mk-cont :resumed :resumed-child 0)
+          stale (mk-cont :stale :stale-child 1)]
+      (try
+        (rtp/add-continuation! context spin-id stale)
+        ((ns-resolve 'org.replikativ.spindel.engine.impl.simple
+                     'truncate-stale-conts!)
+         context spin-id resumed)
+        (is (nil? (rtp/get-state context [:await-conts spin-id :stale])))
+        (is (empty? (or (rtp/get-state
+                         context
+                         [:subscriptions [:spin/complete :stale-child] spin-id])
+                        #{}))
+            "the obsolete completion cannot repeatedly diagnose a missing cont")
+        (finally
+          (ctx/close-context! context))))))
+
+(deftest terminal-parent-converges-stale-completion-edge
+  (testing "an in-flight completion after terminal settlement is benign and pruned"
+    (let [context (ctx/create-execution-context)
+          parent-id :terminal-parent
+          child-id :late-child
+          cont-id :already-spent]
+      (try
+        (rtp/swap-state! context [:nodes parent-id]
+                         (constantly
+                          (nodes/->spin-node :cancelled :clean true false
+                                             #{} {} nil #{})))
+        (rtp/swap-state! context
+                         [:subscriptions [:spin/complete child-id] parent-id]
+                         (constantly #{cont-id}))
+        (simple/process-event! context {:type :spin-completion :id child-id})
+        (is (empty? (or (rtp/get-state
+                         context
+                         [:subscriptions [:spin/complete child-id] parent-id])
+                        #{}))
+            "one late event repairs the obsolete reverse edge")
+        (finally
+          (ctx/close-context! context))))))
+
+(deftest fork-overlay-continuation-claim-has-one-winner
+  (testing "completion and cancellation atomically arbitrate in a fork overlay"
+    (let [parent (ctx/create-execution-context)]
+      (try
+        ;; Register before forking: await conts and their reverse subscriptions
+        ;; are copied into one fork-local graph snapshot.
+        (dotimes [i 100]
+          (let [spin-id (keyword (str "fork-claim-spin-" i))
+                child-id (keyword (str "fork-claim-child-" i))
+                cont-id (keyword (str "fork-claim-cont-" i))
+                cont {:id cont-id
+                      :event-key [:spin/complete child-id]
+                      :kind :await-once
+                      :on-resume identity
+                      :resolve-fn identity
+                      :reject-fn identity}]
+            (rtp/add-continuation! parent spin-id cont)))
+        (let [fork (ctx/fork-context parent)]
+          (try
+            (dotimes [i 100]
+              (let [spin-id (keyword (str "fork-claim-spin-" i))
+                    child-id (keyword (str "fork-claim-child-" i))
+                    cont-id (keyword (str "fork-claim-cont-" i))
+                    start (promise)
+                    completion (future
+                                 @start
+                                 (simple/claim-continuation-for-resume!
+                                  fork spin-id cont-id))
+                    cancellation (future
+                                   @start
+                                   (rtp/remove-continuation!
+                                    fork spin-id cont-id {:cancel? true}))]
+                (deliver start true)
+                (is (= 1 (count (filter some? [@completion @cancellation])))
+                    "exactly one side owns the CPS continuation")
+                (is (empty? (or (rtp/get-state
+                                 fork
+                                 [:subscriptions [:spin/complete child-id] spin-id])
+                                #{}))
+                    "a tombstone prevents the removed reverse edge falling through")))
+            (finally
+              (ctx/close-context! fork))))
+        (finally
+          (ctx/close-context! parent))))))
+
+(deftest fork-does-not-observe-post-fork-parent-subscriptions
+  (testing "a fork cannot see one half of a continuation registered later"
+    (let [parent (ctx/create-execution-context)
+          fork (ctx/fork-context parent)
+          spin-id :post-fork-parent
+          child-id :post-fork-child
+          cont-id :post-fork-cont]
+      (try
+        (rtp/add-continuation!
+         parent spin-id
+         {:id cont-id
+          :event-key [:spin/complete child-id]
+          :kind :await-once
+          :on-resume identity
+          :resolve-fn identity
+          :reject-fn identity})
+        (is (some? (rtp/get-state parent [:await-conts spin-id cont-id])))
+        (is (contains? (rtp/get-state
+                        parent [:subscriptions [:spin/complete child-id] spin-id])
+                       cont-id))
+        (is (nil? (rtp/get-state fork [:await-conts spin-id cont-id])))
+        (is (empty? (or (rtp/get-state
+                         fork [:subscriptions [:spin/complete child-id] spin-id])
+                        #{}))
+            "the reverse index shares the continuation snapshot boundary")
+        (is (nil? (simple/claim-continuation-for-resume!
+                   fork spin-id cont-id))
+            "a whole-state claim cannot re-import the parent's continuation")
+        (finally
+          (ctx/close-context! fork)
+          (ctx/close-context! parent))))))
+
+(deftest nested-fork-removal-does-not-resurrect-reverse-subscription
+  (testing "whole-state claims materialize the complete overlay ancestry"
+    (let [root (ctx/create-execution-context)
+          spin-id :nested-parent
+          child-a :nested-child-a
+          child-b :nested-child-b]
+      (try
+        (doseq [[child-id cont-id] [[child-a :nested-cont-a]
+                                    [child-b :nested-cont-b]]]
+          (rtp/add-continuation!
+           root spin-id
+           {:id cont-id
+            :event-key [:spin/complete child-id]
+            :kind :await-once
+            :on-resume identity
+            :resolve-fn identity
+            :reject-fn identity}))
+        (let [fork-1 (ctx/fork-context root)]
+          (try
+            (is (some? (rtp/remove-continuation!
+                        fork-1 spin-id :nested-cont-a {:cancel? true})))
+            (let [fork-2 (ctx/fork-context fork-1)]
+              (try
+                (is (some? (simple/claim-continuation-for-resume!
+                            fork-2 spin-id :nested-cont-b)))
+                (is (empty? (or (rtp/get-state
+                                 fork-2
+                                 [:subscriptions [:spin/complete child-b]
+                                  spin-id])
+                                #{}))
+                    "the removed edge cannot fall through either overlay")
+                (is (nil? (simple/process-event!
+                           fork-2 {:type :spin-completion :id child-b}))
+                    "late completion treats the fork-local tombstone as absent")
+                (rtp/swap-state! fork-2 [:await-conts spin-id]
+                                 (fn [conts]
+                                   (assoc (or conts {}) :revived {:kind :await-once})))
+                (is (= :await-once
+                       (rtp/get-state
+                        fork-2 [:await-conts spin-id :revived :kind]))
+                    "a fork-local write can revive a tombstoned entity")
+                (is (nil? (rtp/get-state
+                           fork-2 [:await-conts spin-id :nested-cont-a]))
+                    "the parent fork's tombstone remains materialized")
+                (finally
+                  (ctx/close-context! fork-2))))
+            (finally
+              (ctx/close-context! fork-1))))
+        (finally
+          (ctx/close-context! root))))))
+
+(deftest reactive-resume-release-preserves-absent-continuation
+  (testing "cancellation during resume is not replaced with a nil entry"
+    (let [context (ctx/create-execution-context)]
+      (try
+        (simple/release-reactive-resume! context :reactive-parent :spent-cont)
+        (is (nil? (rtp/get-state
+                   context [:await-conts :reactive-parent :spent-cont])))
+        (is (empty? (or (rtp/get-state
+                         context [:await-conts :reactive-parent])
+                        {})))
+        (finally
+          (ctx/close-context! context))))))
 
 (deftest test-pcontinuation-earliest
   (testing "earliest-continuation returns earliest by order"
