@@ -266,8 +266,9 @@
                  {:status (:status @world-manager)
                   :manager world-manager
                   :descriptors (coord/world-descriptors world-manager)})]
-           (throw (ex-info "Inference failed: a particle's model threw"
-                           (cond-> {:particle-id (:particle-id final-measure)}
+           (throw (ex-info "Inference failed during particle execution"
+                           (cond-> {:type ::inference-failed
+                                    :particle-id (:particle-id final-measure)}
                              world-recovery
                              (assoc :world/recovery world-recovery))
                            (:error final-measure)))))
