@@ -285,6 +285,24 @@
          :active-contexts (into {} (map (juxt :fork-id identity)) contexts))
   nil)
 
+(defn- begin-particle-generation-transition!
+  "Keep quiescence closed while a superseded generation unwinds.  Its child
+  worlds already exist, but must not run until every source continuation has
+  executed its cancellation cleanup."
+  [manager]
+  (swap! manager assoc :generation-transition? true)
+  nil)
+
+(defn- complete-particle-generation-transition!
+  "Atomically replace a retired generation with `contexts` and reopen ordinary
+  terminal accounting.  An empty replacement is used when retirement itself
+  failed and the never-started children should be settled with the tree."
+  [manager contexts]
+  (swap! manager assoc
+         :active-contexts (into {} (map (juxt :fork-id identity)) contexts)
+         :generation-transition? false)
+  nil)
+
 (defn- maybe-clean-cancelled-worlds! [manager]
   (loop []
     (let [state @manager]
@@ -309,7 +327,8 @@
              (let [active (dissoc (:active-contexts state) (:fork-id context))]
                (vreset! remaining active)
                (assoc state :active-contexts active))))
-    (when (empty? @remaining)
+    (when (and (empty? @remaining)
+               (not (:generation-transition? @manager)))
       (let [readers (volatile! [])
             quiescence (:quiescence @manager)]
         (swap! quiescence
@@ -321,6 +340,102 @@
         (doseq [reader @readers] (reader nil))
         (maybe-clean-cancelled-worlds! manager)))
     nil))
+
+(defn- cancellation-error []
+  (ex-info "Inference particle cancelled"
+           {:type spin-core/spin-cancelled}))
+
+(defn- cancellation-error? [error]
+  (= spin-core/spin-cancelled (:type (ex-data error))))
+
+(defn- resume-checkpoint-reject!
+  "Reject one kernel checkpoint on its owning executor.  If admission is
+  rejected, run the terminal slice through a synchronous executor over the
+  same context/backend so finally blocks and terminal callbacks still run."
+  [context checkpoint error]
+  (let [reject-checkpoint!
+        (fn [execution-context]
+          (binding [rtc/*execution-context* execution-context
+                    pcps-async/*in-trampoline* false]
+            (spin-core/resume (:reject checkpoint) error)))]
+    (try
+      (execute! (:executor context) #(reject-checkpoint! context))
+      (catch #?(:clj Throwable :cljs :default) scheduling-error
+        (log/warn :inference/checkpoint-reject-schedule-failed
+                  {:fork-id (:fork-id context)
+                   :error scheduling-error})
+        (reject-checkpoint!
+         (assoc context :executor (executor/synchronous-executor)))))))
+
+(defn- take-retirement!
+  "Atomically claim a source context's expected retirement callback."
+  [coordinator context]
+  (let [claimed (volatile! nil)
+        fork-id (:fork-id context)]
+    (swap! (:retiring-contexts coordinator)
+           (fn [retiring]
+             (if-let [entry (get retiring fork-id)]
+               (do (vreset! claimed entry)
+                   (dissoc retiring fork-id))
+               retiring)))
+    @claimed))
+
+(defn- retirement-entry [coordinator context]
+  (get @(:retiring-contexts coordinator) (:fork-id context)))
+
+(defn- retire-particle-generation!
+  "Unwind all suspended source particles after their child worlds have been
+  constructed.  Retirement is expected control flow, not inference failure.
+
+  The coordinator methods claim each terminal callback through
+  `:retiring-contexts`; only after every source has quiesced does this CPS
+  operation resolve or reject.  The first non-cancellation cleanup error is
+  retained while the remaining sources continue unwinding."
+  [coordinator particle-states]
+  (fn [resolve reject]
+    (let [states (vec particle-states)
+          remaining (atom (count states))
+          first-error (atom nil)
+          finish-one!
+          (fn [error]
+            (when error (compare-and-set! first-error nil error))
+            (when (zero? (swap! remaining dec))
+              (if-let [error @first-error]
+                (reject error)
+                (resolve nil))))]
+      (if (empty? states)
+        (resolve nil)
+        (do
+          ;; Publish the complete retirement set before rejecting any source;
+          ;; synchronous executors may deliver a terminal callback inline.
+          (doseq [[_ {:keys [context]}] states]
+            (swap! (:retiring-contexts coordinator)
+                   assoc (:fork-id context) {:finish! finish-one!}))
+          (swap! (:particles coordinator)
+                 (fn [particles]
+                   (reduce (fn [next-particles [particle-id state]]
+                             (assoc next-particles particle-id
+                                    (assoc state :status :retiring)))
+                           particles
+                           states)))
+          (doseq [[_particle-id {:keys [context checkpoint]}] states]
+            (try
+              ;; Cascade into ordinary await/owned-spin edges first.  The
+              ;; kernel checkpoint itself is outside that graph and is rejected
+              ;; explicitly below.
+              (when-let [task (rtp/get-state context [:inference :task])]
+                (binding [rtc/*execution-context* context]
+                  (spin-core/cancel-spin! task)))
+              (resume-checkpoint-reject! context checkpoint
+                                         (cancellation-error))
+              (catch #?(:clj Throwable :cljs :default) error
+                ;; A synchronous fallback can throw before reaching the model's
+                ;; terminal callback. Claim and account for that source here.
+                (when-let [{:keys [finish!]} (take-retirement! coordinator context)]
+                  (particle-context-terminal!
+                   (:world-manager coordinator) context)
+                  (finish! (when-not (cancellation-error? error)
+                             error)))))))))))
 
 (defn- cancel-kernel-checkpoints!
   "Atomically claim and reject continuations parked at a kernel barrier.
@@ -348,37 +463,16 @@
                 {}
                 states)))
       (doseq [{:keys [context checkpoint]} @claimed]
-        (let [reject-checkpoint!
-              (fn [execution-context]
-                (binding [rtc/*execution-context* execution-context
-                          pcps-async/*in-trampoline* false]
-                  (spin-core/resume (:reject checkpoint) error)))]
-          (try
-            (execute! (:executor context) #(reject-checkpoint! context))
-            (catch #?(:clj Throwable :cljs :default) scheduling-error
-              ;; A rejected executor cannot own this CPS slice. Unwind it on
-              ;; the cancelling caller so :finally and the terminal callback
-              ;; still run and the affine worlds cannot remain wedged.
-              (log/warn :inference/checkpoint-cancel-schedule-failed
-                        {:fork-id (:fork-id context)
-                         :error scheduling-error})
-              (try
-                ;; Continuation unwinding may itself enqueue engine events. A
-                ;; rejected particle executor cannot service those either, so
-                ;; run the same context/backend through a synchronous executor
-                ;; for this terminal slice only.
-                (reject-checkpoint!
-                 (assoc context :executor
-                        (executor/synchronous-executor)))
-                (catch #?(:clj Throwable :cljs :default) unwind-error
-                  ;; Executor guard-task normally contains a terminal throw.
-                  ;; The synchronous fallback must provide the same boundary
-                  ;; so one particle cannot prevent the remaining claims from
-                  ;; unwinding.
-                  (when-not (spin-core/spin-cancelled? unwind-error)
-                    (log/error :inference/checkpoint-cancel-unwind-failed
-                               {:fork-id (:fork-id context)
-                                :error unwind-error})))))))))))
+        (try
+          (resume-checkpoint-reject! context checkpoint error)
+          (catch #?(:clj Throwable :cljs :default) unwind-error
+            ;; The synchronous fallback provides the executor-task boundary
+            ;; inline. Cancellation is its expected terminal throw; report only
+            ;; a genuine cleanup failure and continue unwinding other sources.
+            (when-not (cancellation-error? unwind-error)
+              (log/error :inference/checkpoint-cancel-unwind-failed
+                         {:fork-id (:fork-id context)
+                          :error unwind-error}))))))))
 
 (defn cancel-particle-worlds!
   "Cooperatively cancel every live particle. Cleanup begins automatically once
@@ -686,6 +780,7 @@
             parent-runtime   ; runtime where coordinator was created (for delivery)
             delivered?       ; atom: flag to ensure we only deliver once
             world-manager    ; canonical particle worlds, or nil for legacy fresh roots
+            retiring-contexts ; atom: fork-id -> expected generation-retirement callback
    ;; PGIBBS/PGAS support
             pgibbs-retained-trace  ; atom: retained trace for PGIBBS/PGAS (nil if not using)
             retained-particle-id   ; atom: particle-id of retained particle
@@ -694,158 +789,184 @@
   InferenceCoordinator
 
   (notify-checkpoint! [this particle-id context checkpoint]
-    (let [particle-sweep (rtp/get-state context [:inference :sweep])
-          coordinator-sweep @current-sweep]
+    (if (retirement-entry this context)
+      ;; A cancellation `finally` may itself reach a probabilistic checkpoint.
+      ;; It cannot join the next generation's barrier; keep unwinding the same
+      ;; retired slice through its reject continuation.
+      (try
+        (resume-checkpoint-reject! context checkpoint (cancellation-error))
+        (catch #?(:clj Throwable :cljs :default) error
+          (when-let [{:keys [finish!]} (take-retirement! this context)]
+            (when world-manager
+              (particle-context-terminal! world-manager context))
+            (finish! (when-not (cancellation-error? error)
+                       error)))))
+      (let [particle-sweep (rtp/get-state context [:inference :sweep])
+            coordinator-sweep @current-sweep]
       ;; Ignore notifications from previous sweeps (race condition protection)
-      (when (= particle-sweep coordinator-sweep)
-        (let [;; Get current trace from context
-              trace (or (rtp/get-state context [:inference :trace]) {})
-              {:keys [options address]} checkpoint
-              {:keys [observe]} options
+        (when (= particle-sweep coordinator-sweep)
+          (let [;; Get current trace from context
+                trace (or (rtp/get-state context [:inference :trace]) {})
+                {:keys [options address]} checkpoint
+                {:keys [observe]} options
 
               ;; PGIBBS: Check if this is the retained particle at a sample site
               ;; If so, use value from retained trace instead of sampling fresh
-              retained-trace @pgibbs-retained-trace
-              is-retained? (and retained-trace
-                                (= particle-id @retained-particle-id))
-              use-retained-value? (and is-retained?
-                                       (not (some? observe))  ; sample site, not observe
-                                       (contains? retained-trace address))
+                retained-trace @pgibbs-retained-trace
+                is-retained? (and retained-trace
+                                  (= particle-id @retained-particle-id))
+                use-retained-value? (and is-retained?
+                                         (not (some? observe))  ; sample site, not observe
+                                         (contains? retained-trace address))
 
               ;; Override kernel result if using retained trace value
-              kernel-result (if use-retained-value?
+                kernel-result (if use-retained-value?
                               ;; Use retained trace value directly
-                              (let [retained-value (get-in retained-trace [address :value])]
-                                (log/debug :pgibbs/use-retained-value {:particle-id particle-id
-                                                                       :address address
-                                                                       :value retained-value})
-                                {:action :assign :value retained-value})
+                                (let [retained-value (get-in retained-trace [address :value])]
+                                  (log/debug :pgibbs/use-retained-value {:particle-id particle-id
+                                                                         :address address
+                                                                         :value retained-value})
+                                  {:action :assign :value retained-value})
                               ;; Otherwise ask kernel what to do
-                              (k/step kernel context checkpoint trace))]
+                                (k/step kernel context checkpoint trace))]
 
-          (log/debug :kernel-coord/checkpoint {:particle-id particle-id
-                                               :sweep coordinator-sweep
-                                               :action (:action kernel-result)
-                                               :is-retained? is-retained?})
+            (log/debug :kernel-coord/checkpoint {:particle-id particle-id
+                                                 :sweep coordinator-sweep
+                                                 :action (:action kernel-result)
+                                                 :is-retained? is-retained?})
 
-          (case (:action kernel-result)
+            (case (:action kernel-result)
             ;; Simple assignment - resume immediately or barrier
-            :assign
-            (let [{:keys [value]} kernel-result]
+              :assign
+              (let [{:keys [value]} kernel-result]
 
               ;; If barrier policy requires waiting at observations
-              (if (and (= barrier-policy :every-observe) (some? observe))
+                (if (and (= barrier-policy :every-observe) (some? observe))
                 ;; Store state and wait at barrier
-                (do
-                  (swap! particles assoc particle-id
-                         {:context context
-                          :checkpoint checkpoint
-                          :value value
-                          :status :checkpoint
-                          :log-weight (rtp/get-state context [:inference :log-weight])
-                          :retained? is-retained?})
+                  (do
+                    (swap! particles assoc particle-id
+                           {:context context
+                            :checkpoint checkpoint
+                            :value value
+                            :status :checkpoint
+                            :log-weight (rtp/get-state context [:inference :log-weight])
+                            :retained? is-retained?})
 
-                  (let [count (swap! barrier-count inc)]
-                    (log/debug :kernel-coord/barrier-count {:count count :total total-particles})
-                    (when (= count total-particles)
+                    (let [count (swap! barrier-count inc)]
+                      (log/debug :kernel-coord/barrier-count {:count count :total total-particles})
+                      (when (= count total-particles)
                       ;; All particles at barrier - trigger resample logic
-                      (future (trigger-kernel-resample! this)))))
+                        (future (trigger-kernel-resample! this)))))
 
                 ;; No barrier - resume immediately
-                (resume-particle-with-value! context checkpoint value)))
+                  (resume-particle-with-value! context checkpoint value)))
 
             ;; Modify existing trace values - replay from earliest modified checkpoint
-            :modify
-            (let [{:keys [updates]} kernel-result]
-              (log/debug :kernel-coord/modify {:particle-id particle-id
-                                               :num-updates (count updates)})
-              (resume-from-checkpoint! context updates))
+              :modify
+              (let [{:keys [updates]} kernel-result]
+                (log/debug :kernel-coord/modify {:particle-id particle-id
+                                                 :num-updates (count updates)})
+                (resume-from-checkpoint! context updates))
 
             ;; Assign current value, then modify others and replay
-            :assign-and-modify
-            (let [{:keys [value updates]} kernel-result
-                  {:keys [address]} checkpoint]
-              (log/debug :kernel-coord/assign-and-modify {:particle-id particle-id
-                                                          :address address
-                                                          :value value
-                                                          :num-updates (count updates)})
+              :assign-and-modify
+              (let [{:keys [value updates]} kernel-result
+                    {:keys [address]} checkpoint]
+                (log/debug :kernel-coord/assign-and-modify {:particle-id particle-id
+                                                            :address address
+                                                            :value value
+                                                            :num-updates (count updates)})
               ;; First record current assignment in trace
-              (rtp/swap-state! context [:inference :trace]
-                               (fn [t] (assoc (or t {}) address value)))
+                (rtp/swap-state! context [:inference :trace]
+                                 (fn [t] (assoc (or t {}) address value)))
               ;; Then replay from earliest modified
-              (resume-from-checkpoint! context updates)))))))
+                (resume-from-checkpoint! context updates))))))))
 
   (notify-complete! [this particle-id context result]
-    (let [particle-sweep (rtp/get-state context [:inference :sweep])
-          coordinator-sweep @current-sweep]
+    (if-let [{:keys [finish!]} (take-retirement! this context)]
+      (do
+        (when world-manager
+          (particle-context-terminal! world-manager context))
+        (finish! nil))
+      (let [particle-sweep (rtp/get-state context [:inference :sweep])
+            coordinator-sweep @current-sweep]
       ;; Ignore notifications from previous sweeps
-      (when (= particle-sweep coordinator-sweep)
-        (log/debug :kernel-coord/complete {:particle-id particle-id})
+        (when (= particle-sweep coordinator-sweep)
+          (log/debug :kernel-coord/complete {:particle-id particle-id})
 
         ;; Store result in context
-        (rtp/swap-state! context [:inference :result] (constantly result))
+          (rtp/swap-state! context [:inference :result] (constantly result))
 
         ;; Get trace and ask kernel
-        (let [trace (or (rtp/get-state context [:inference :trace]) {})
-              kernel-result (k/on-complete kernel context trace result)]
+          (let [trace (or (rtp/get-state context [:inference :trace]) {})
+                kernel-result (k/on-complete kernel context trace result)]
 
-          (case (:action kernel-result)
+            (case (:action kernel-result)
             ;; Done - record completion
-            :done
-            (let [;; Use kernel's accepted result (may differ from current if proposal rejected)
-                  accepted-result (or (:result kernel-result) result)
-                  accepted-trace (or (:trace kernel-result) trace)]
+              :done
+              (let [;; Use kernel's accepted result (may differ from current if proposal rejected)
+                    accepted-result (or (:result kernel-result) result)
+                    accepted-trace (or (:trace kernel-result) trace)]
 
               ;; Update context with accepted state (for m/get-value to return correct value)
-              (rtp/swap-state! context [:inference :result] (constantly accepted-result))
-              (rtp/swap-state! context [:inference :trace] (constantly accepted-trace))
+                (rtp/swap-state! context [:inference :result] (constantly accepted-result))
+                (rtp/swap-state! context [:inference :trace] (constantly accepted-trace))
 
-              (swap! particles assoc particle-id
-                     {:context context
-                      :status :complete
-                      :result accepted-result
-                      :log-weight (:log-weight kernel-result)})
+                (swap! particles assoc particle-id
+                       {:context context
+                        :status :complete
+                        :result accepted-result
+                        :log-weight (:log-weight kernel-result)})
 
-              (when world-manager
-                (particle-context-terminal! world-manager context))
+                (when world-manager
+                  (particle-context-terminal! world-manager context))
 
               ;; Increment barrier count for completion
-              (let [count (swap! barrier-count inc)]
-                (log/debug :kernel-coord/completion-count {:count count :total total-particles})
-                (when (= count total-particles)
-                  (future (trigger-kernel-resample! this)))))
+                (let [count (swap! barrier-count inc)]
+                  (log/debug :kernel-coord/completion-count {:count count :total total-particles})
+                  (when (= count total-particles)
+                    (future (trigger-kernel-resample! this)))))
 
             ;; Iterate - replay from beginning with optional updates
-            :iterate
-            (let [{:keys [updates]} kernel-result]
-              (log/debug :kernel-coord/iterate {:particle-id particle-id
-                                                :num-updates (count updates)})
+              :iterate
+              (let [{:keys [updates]} kernel-result]
+                (log/debug :kernel-coord/iterate {:particle-id particle-id
+                                                  :num-updates (count updates)})
               ;; Clear result since we're re-running
-              (rtp/swap-state! context [:inference :result] (constantly nil))
+                (rtp/swap-state! context [:inference :result] (constantly nil))
               ;; Resume from checkpoint (empty updates = full replay from first checkpoint)
-              (resume-from-checkpoint! context (or updates {}))))))))
+                (resume-from-checkpoint! context (or updates {})))))))))
 
-  (notify-failed! [_this particle-id context error]
-    (log/error :kernel-coord/particle-failed {:particle-id particle-id
-                                              :error error})
+  (notify-failed! [this particle-id context error]
+    (if-let [{:keys [finish!]} (take-retirement! this context)]
+      (do
+        (when world-manager
+          (particle-context-terminal! world-manager context))
+        ;; Cancellation is the expected control signal. A finally/cleanup
+        ;; failure remains a real inference failure, but only after every
+        ;; superseded source has been given a chance to unwind.
+        (finish! (when-not (cancellation-error? error) error)))
+      (do
+        (log/error :kernel-coord/particle-failed {:particle-id particle-id
+                                                  :error error})
     ;; Record the failure on the particle (so it counts as "done" for any
     ;; bookkeeping that walks particle state). No sweep check: a particle
     ;; abort fails the whole inference regardless of sweep — a broken
     ;; model fails every particle identically.
-    (swap! particles assoc particle-id
-           {:context context :status :failed :error error})
-    (when world-manager
-      (particle-context-terminal! world-manager context))
+        (swap! particles assoc particle-id
+               {:context context :status :failed :error error})
+        (when world-manager
+          (particle-context-terminal! world-manager context))
     ;; Fail fast: deliver an InferenceFailure marker to on-complete once.
     ;; kernel-infer awaits this Deferred and re-throws on the marker.
     ;; Without this, the still-running particles (if any) never let
     ;; barrier-count reach total-particles, so on-complete is never
     ;; delivered and (await (await-completion …)) waits forever.
-    (when (compare-and-set! delivered? false true)
-      (binding [rtc/*execution-context* parent-runtime]
-        (sync/deliver! on-complete (->InferenceFailure particle-id error)))
-      (when world-manager
-        (cancel-particle-worlds! world-manager))))
+        (when (compare-and-set! delivered? false true)
+          (binding [rtc/*execution-context* parent-runtime]
+            (sync/deliver! on-complete (->InferenceFailure particle-id error)))
+          (when world-manager
+            (cancel-particle-worlds! world-manager))))))
 
   (await-completion [_this]
     on-complete))
@@ -1209,9 +1330,31 @@
             original-contexts-ordered (mapv :context particles-ordered)
             continue!
             (fn [contexts-with-checkpoints]
-              (resume-resampled-contexts!
-               coordinator particles-state particles-ordered should-resample?
-               is-pgibbs? is-pgas? ancestor-idx contexts-with-checkpoints))]
+              (if-let [manager (:world-manager coordinator)]
+                (do
+                  ;; Every selected child must exist before source retirement
+                  ;; starts. Keep the manager non-quiescent across the handoff,
+                  ;; wait for every source terminal callback (`finally`
+                  ;; included), then admit the replacement generation.
+                  (begin-particle-generation-transition! manager)
+                  (invoke-result!
+                   (retire-particle-generation! coordinator particles-state)
+                   (fn [_]
+                     (complete-particle-generation-transition!
+                      manager (mapv :context contexts-with-checkpoints))
+                     (resume-resampled-contexts!
+                      coordinator particles-state particles-ordered
+                      should-resample? is-pgibbs? is-pgas? ancestor-idx
+                      contexts-with-checkpoints))
+                   (fn [retirement-error]
+                     (complete-particle-generation-transition! manager [])
+                     (notify-failed! coordinator :particle-retirement
+                                     (:parent-runtime coordinator)
+                                     retirement-error))))
+                (resume-resampled-contexts!
+                 coordinator particles-state particles-ordered
+                 should-resample? is-pgibbs? is-pgas? ancestor-idx
+                 contexts-with-checkpoints)))]
 
         (if-let [manager (:world-manager coordinator)]
           (pair-world-checkpoints!
@@ -1297,6 +1440,7 @@
    runtime                                          ; parent-runtime
    (atom false)                                     ; delivered?
    (:world-manager opts)                            ; world-manager
+   (atom {})                                        ; retiring-contexts
     ;; PGIBBS/PGAS fields
    (atom (:pgibbs-retained-trace opts))             ; pgibbs-retained-trace
    (atom nil)                                       ; retained-particle-id (set by first particle)

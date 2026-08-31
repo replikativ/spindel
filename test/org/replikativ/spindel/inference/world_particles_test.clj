@@ -96,6 +96,53 @@
       (finally
         (context/stop-context! root)))))
 
+(deftest resampling-retires-source-worlds-before-running-children
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        source-count 3
+        finalized (atom [])
+        child-finally-counts (atom [])]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [model
+              (spin
+               (try
+                 (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                 ;; Only replacement children resume through the successful
+                 ;; side of the barrier. Every source `finally` must already
+                 ;; have run before any child is admitted here.
+                 (swap! child-finally-counts conj (count @finalized))
+                 :done
+                 (finally
+                   (swap! finalized conj
+                          (rtp/get-state ec/*execution-context*
+                                         [:inference :particle-id])))))
+              result
+              (deref
+               (spin
+                (try
+                  (await
+                   (inference/smc-infer
+                    model source-count
+                    {:world-policy :fork
+                     :executor (:executor root)
+                     :resample-threshold 2.0}))
+                  (catch Throwable error error)))
+               5000 ::timed-out)]
+          (is (not= ::timed-out result))
+          (is (not (instance? Throwable result))
+              "expected source retirement is not a global inference failure")
+          (is (= source-count (count (measure/get-contexts result))))
+          (is (= source-count (count @child-finally-counts)))
+          (is (every? #(>= % source-count) @child-finally-counts)
+              "all superseded sources unwind before replacement children run")
+          (is (= (* 2 source-count) (count @finalized))
+              "both source and replacement generations execute finally")
+          (is (= (* 2 source-count) (count (distinct @finalized)))
+              "each retired or completed particle reaches one terminal path")))
+      (finally
+        (context/close-context! root)))))
+
 (deftest canonical-worlds-reject-unsafe-pgas-scoring
   (let [root (context/create-execution-context)]
     (try
