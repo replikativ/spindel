@@ -128,6 +128,7 @@
          :handles []
          :active-contexts {}
          :cancel-requested? false
+         :generation-phase nil
          :cleanup-started? false
          :quiescence (atom {:status :pending :readers []})
          :cleanup (atom {:status :pending :readers []})}))
@@ -286,28 +287,61 @@
   nil)
 
 (defn- begin-particle-generation-transition!
-  "Keep quiescence closed while a superseded generation unwinds.  Its child
-  worlds already exist, but must not run until every source continuation has
-  executed its cancellation cleanup."
+  "Keep quiescence closed while replacement worlds are constructed and their
+  superseded source generation unwinds."
   [manager]
-  (swap! manager assoc :generation-transition? true)
+  (swap! manager assoc
+         :generation-transition? true
+         :generation-phase :forking)
   nil)
 
+(defn- claim-particle-generation-retirement!
+  "Linearize source retirement against cancellation during child construction.
+  True means retirement owns the source checkpoints; false means cancellation
+  already owns them and the never-started children must not be admitted."
+  [manager]
+  (let [claimed? (volatile! false)]
+    (swap! manager
+           (fn [state]
+             (if (and (= :forking (:generation-phase state))
+                      (not (:cancel-requested? state)))
+               (do (vreset! claimed? true)
+                   (assoc state :generation-phase :retiring))
+               state)))
+    @claimed?))
+
 (defn- complete-particle-generation-transition!
-  "Atomically replace a retired generation with `contexts` and reopen ordinary
-  terminal accounting.  An empty replacement is used when retirement itself
-  failed and the never-started children should be settled with the tree."
+  "Atomically admit `contexts` unless cancellation won the transition.
+
+  Returns false only when cancellation rejects a non-empty replacement. An
+  empty replacement closes a failed transition without erasing source contexts
+  that still owe terminal callbacks; callers route the failure separately."
   [manager contexts]
-  (swap! manager assoc
-         :active-contexts (into {} (map (juxt :fork-id identity)) contexts)
-         :generation-transition? false)
-  nil)
+  (let [contexts (vec contexts)
+        admitted? (volatile! false)]
+    (swap! manager
+           (fn [state]
+             (let [admit? (or (empty? contexts)
+                              (not (:cancel-requested? state)))]
+               (vreset! admitted? admit?)
+               (assoc state
+                      ;; Empty/cancelled replacements were never admitted.
+                      ;; Preserve any source contexts still unwinding so their
+                      ;; terminal callbacks remain the quiescence proof.
+                      :active-contexts
+                      (if (and (seq contexts) admit?)
+                        (into {} (map (juxt :fork-id identity)) contexts)
+                        (:active-contexts state))
+                      :generation-transition? false
+                      :generation-phase nil))))
+    @admitted?))
 
 (defn- maybe-clean-cancelled-worlds! [manager]
   (loop []
     (let [state @manager]
       (when (and (:cancel-requested? state)
                  (empty? (:active-contexts state))
+                 (not (:generation-transition? state))
                  (not (:cleanup-started? state)))
         (if (compare-and-set! manager state (assoc state :cleanup-started? true))
           (invoke-result!
@@ -478,18 +512,24 @@
   "Cooperatively cancel every live particle. Cleanup begins automatically once
   their resolve/reject callbacks prove quiescence."
   [manager]
-  (let [{:keys [active-contexts coordinator]}
+  (let [{:keys [active-contexts coordinator generation-phase]}
         (swap! manager assoc :cancel-requested? true)
         contexts (vals active-contexts)]
-    (doseq [context contexts]
-      (when-let [task (rtp/get-state context [:inference :task])]
-        (try
-          (binding [rtc/*execution-context* context]
-            (spin-core/cancel-spin! task))
-          (catch #?(:clj Throwable :cljs :default) error
-            (log/error :inference/particle-cancel-failed
-                       {:fork-id (:fork-id context) :error error})))))
-    (cancel-kernel-checkpoints! coordinator)
+    ;; During :retiring, retirement owns the source checkpoint rejection and
+    ;; will observe :cancel-requested? before admitting children. Cancelling the
+    ;; same continuations here would race/double-resume them. During :forking,
+    ;; cancellation owns the still-current sources; the transition gate keeps
+    ;; cleanup from consuming handles while child construction unwinds.
+    (when-not (= :retiring generation-phase)
+      (doseq [context contexts]
+        (when-let [task (rtp/get-state context [:inference :task])]
+          (try
+            (binding [rtc/*execution-context* context]
+              (spin-core/cancel-spin! task))
+            (catch #?(:clj Throwable :cljs :default) error
+              (log/error :inference/particle-cancel-failed
+                         {:fork-id (:fork-id context) :error error})))))
+      (cancel-kernel-checkpoints! coordinator))
     (maybe-clean-cancelled-worlds! manager)
     (await-particle-world-quiescence manager)))
 
@@ -1331,42 +1371,59 @@
             continue!
             (fn [contexts-with-checkpoints]
               (if-let [manager (:world-manager coordinator)]
-                (do
-                  ;; Every selected child must exist before source retirement
-                  ;; starts. Keep the manager non-quiescent across the handoff,
-                  ;; wait for every source terminal callback (`finally`
-                  ;; included), then admit the replacement generation.
-                  (begin-particle-generation-transition! manager)
+                (if (claim-particle-generation-retirement! manager)
                   (invoke-result!
                    (retire-particle-generation! coordinator particles-state)
                    (fn [_]
-                     (complete-particle-generation-transition!
-                      manager (mapv :context contexts-with-checkpoints))
-                     (resume-resampled-contexts!
-                      coordinator particles-state particles-ordered
-                      should-resample? is-pgibbs? is-pgas? ancestor-idx
-                      contexts-with-checkpoints))
+                     (if (complete-particle-generation-transition!
+                          manager (mapv :context contexts-with-checkpoints))
+                       (resume-resampled-contexts!
+                        coordinator particles-state particles-ordered
+                        should-resample? is-pgibbs? is-pgas? ancestor-idx
+                        contexts-with-checkpoints)
+                       ;; Cancellation landed while source finalizers were
+                       ;; running. The children were never started; close the
+                       ;; coordinator and let normal manager cleanup settle all
+                       ;; source/child handles.
+                       (notify-failed! coordinator :particle-generation
+                                       (:parent-runtime coordinator)
+                                       (cancellation-error))))
                    (fn [retirement-error]
                      (complete-particle-generation-transition! manager [])
                      (notify-failed! coordinator :particle-retirement
                                      (:parent-runtime coordinator)
-                                     retirement-error))))
+                                     retirement-error)))
+                  ;; Cancellation won while child worlds were being forked and
+                  ;; already owns the old source checkpoints. Never retire them
+                  ;; a second time or admit the replacement generation.
+                  (do
+                    (complete-particle-generation-transition! manager [])
+                    (notify-failed! coordinator :particle-generation
+                                    (:parent-runtime coordinator)
+                                    (cancellation-error))))
                 (resume-resampled-contexts!
                  coordinator particles-state particles-ordered
                  should-resample? is-pgibbs? is-pgas? ancestor-idx
                  contexts-with-checkpoints)))]
 
         (if-let [manager (:world-manager coordinator)]
-          (pair-world-checkpoints!
-           manager resampled-contexts original-contexts-ordered particles-state
-           continue!
-           (fn [fork-error]
-             ;; Source particles are suspended, not terminal: structured
-             ;; cancellation must unwind their parked continuations and user
-             ;; finally blocks before automatic quiescent cleanup consumes the
-             ;; source and partially constructed child worlds.
-             (notify-failed! coordinator :particle-world
-                             (:parent-runtime coordinator) fork-error)))
+          (do
+            ;; Hold quiescence before the first asynchronous child fork. A
+            ;; concurrent cancellation may unwind the source particles, but it
+            ;; cannot settle the tree until every in-flight fork callback has
+            ;; crossed `continue!` or the failure callback below.
+            (begin-particle-generation-transition! manager)
+            (pair-world-checkpoints!
+             manager resampled-contexts original-contexts-ordered particles-state
+             continue!
+             (fn [fork-error]
+               (complete-particle-generation-transition! manager [])
+               ;; Source particles are suspended, not terminal: structured
+               ;; cancellation must unwind their parked continuations and user
+               ;; finally blocks before automatic quiescent cleanup consumes the
+               ;; source and partially constructed child worlds.
+               (notify-failed! coordinator :particle-world
+                               (:parent-runtime coordinator) fork-error))))
           (continue!
            (pair-checkpoints resampled-contexts
                              original-contexts-ordered

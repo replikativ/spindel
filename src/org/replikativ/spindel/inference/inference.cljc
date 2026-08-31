@@ -278,57 +278,74 @@
      (when world-manager
        (coord/register-particle-contexts! world-manager initial-particles))
 
-      ;; Start all particles. Initialization is all-or-nothing from the
-      ;; caller's perspective, but an executor can reject midway through the
-      ;; enqueue loop. In that case distinguish successfully started contexts
-      ;; from contexts that never ran, then enter the normal supervised
-      ;; cancellation/quiescence lifecycle.
-     (let [started (atom #{})]
+     ;; Once particles are registered, this Spin owns their complete lifecycle.
+     ;; Normal completion sets `completed?` only after world settlement and
+     ;; posterior projection. Every other exit — especially cancellation of the
+     ;; public inference Spin by an enclosing Run — cancels and joins the manager
+     ;; before propagating the original result/error.
+     (let [completed? (atom false)]
        (try
-         (doseq [particle-ctx initial-particles]
-           (start-particle! particle-ctx coordinator)
-           (swap! started conj (:fork-id particle-ctx)))
-         (catch #?(:clj Throwable :cljs :default) error
-           (when world-manager
-             (doseq [particle-ctx initial-particles
-                     :when (not (contains? @started (:fork-id particle-ctx)))]
-               (coord/particle-context-terminal! world-manager particle-ctx))
-             (coord/cancel-particle-worlds! world-manager))
-           (throw
-            (ex-info
-             "Inference failed while starting particles"
-             (cond-> {:type ::particle-start-failed
-                      :started (count @started)
-                      :requested num-particles}
-               world-manager
-               (assoc :world/recovery
-                      (particle-world-recovery world-manager)))
-             error)))))
+         ;; Start all particles. Initialization is all-or-nothing from the
+         ;; caller's perspective, but an executor can reject midway through the
+         ;; enqueue loop. In that case distinguish successfully started contexts
+         ;; from contexts that never ran, then enter the normal supervised
+         ;; cancellation/quiescence lifecycle.
+         (let [started (atom #{})]
+           (try
+             (doseq [particle-ctx initial-particles]
+               (start-particle! particle-ctx coordinator)
+               (swap! started conj (:fork-id particle-ctx)))
+             (catch #?(:clj Throwable :cljs :default) error
+               (when world-manager
+                 (doseq [particle-ctx initial-particles
+                         :when (not (contains? @started (:fork-id particle-ctx)))]
+                   (coord/particle-context-terminal! world-manager particle-ctx))
+                 (coord/cancel-particle-worlds! world-manager))
+               (throw
+                (ex-info
+                 "Inference failed while starting particles"
+                 (cond-> {:type ::particle-start-failed
+                          :started (count @started)
+                          :requested num-particles}
+                   world-manager
+                   (assoc :world/recovery
+                          (particle-world-recovery world-manager)))
+                 error)))))
 
-     (log/debug :kernel-infer/particles-started)
+         (log/debug :kernel-infer/particles-started)
 
-      ;; Await completion
-     (let [final-measure (await (coord/await-completion coordinator))]
+         ;; Await completion
+         (let [final-measure (await (coord/await-completion coordinator))]
 
-        ;; A particle's spin aborted: the coordinator delivered a
-        ;; failure marker instead of an EmpiricalMeasure. Re-throw so
-        ;; the calling spin / @(spin …) propagates the error to the
-        ;; agent / REPL caller, instead of returning a bogus measure.
-       (when (coord/inference-failure? final-measure)
-         (let [world-recovery
-               (when world-manager (particle-world-recovery world-manager))]
-           (throw (ex-info "Inference failed during particle execution"
-                           (cond-> {:type ::inference-failed
-                                    :particle-id (:particle-id final-measure)}
-                             world-recovery
-                             (assoc :world/recovery world-recovery))
-                           (:error final-measure)))))
+           ;; A particle's spin aborted: the coordinator delivered a
+           ;; failure marker instead of an EmpiricalMeasure. Re-throw so
+           ;; the calling spin / @(spin …) propagates the error to the
+           ;; agent / REPL caller, instead of returning a bogus measure.
+           (when (coord/inference-failure? final-measure)
+             (let [world-recovery
+                   (when world-manager (particle-world-recovery world-manager))]
+               (throw (ex-info "Inference failed during particle execution"
+                               (cond-> {:type ::inference-failed
+                                        :particle-id (:particle-id final-measure)}
+                                 world-recovery
+                                 (assoc :world/recovery world-recovery))
+                               (:error final-measure)))))
 
-       (log/debug :kernel-infer/complete {:num-particles num-particles
-                                          :log-marginal (m/log-marginal final-measure)
-                                          :ess (m/effective-sample-size final-measure)})
+           (log/debug :kernel-infer/complete
+                      {:num-particles num-particles
+                       :log-marginal (m/log-marginal final-measure)
+                       :ess (m/effective-sample-size final-measure)})
 
-       final-measure))))
+           (reset! completed? true)
+           final-measure)
+         (finally
+           (when (and world-manager
+                      (not @completed?)
+                      ;; Coordinator/start failures already own cancellation
+                      ;; and preserve a richer recovery error. Join only when
+                      ;; this public Spin is the first cancellation owner.
+                      (not (:cancel-requested? @world-manager)))
+             (await (coord/cancel-particle-worlds! world-manager)))))))))
 
 ;; =============================================================================
 ;; Convenience Functions (Delegate to kernel-infer)

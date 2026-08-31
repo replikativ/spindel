@@ -14,6 +14,7 @@
             [org.replikativ.spindel.inference.inference :as inference]
             [org.replikativ.spindel.inference.kernel :as kernel]
             [org.replikativ.spindel.inference.measure :as measure]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [yggdrasil.convergent.gset :as g]))
@@ -140,6 +141,176 @@
               "both source and replacement generations execute finally")
           (is (= (* 2 source-count) (count (distinct @finalized)))
               "each retired or completed particle reaches one terminal path")))
+      (finally
+        (context/close-context! root)))))
+
+(deftest cancellation-during-source-retirement-never-admits-children
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        manager* (atom nil)
+        retirement-entered (promise)
+        release-retirement (promise)
+        child-entered (atom 0)
+        create-manager coordinator/create-world-manager]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [model
+              (spin
+               (try
+                 (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                 (swap! child-entered inc)
+                 (await (fn [_resolve _reject] nil))
+                 (finally
+                   (deliver retirement-entered true)
+                   @release-retirement)))
+              outcome
+              (future
+                (with-redefs
+                 [coordinator/create-world-manager
+                  (fn [opts]
+                    (let [manager (create-manager opts)]
+                      (reset! manager* manager)
+                      manager))]
+                  (binding [ec/*execution-context* root]
+                    (try
+                      @(inference/smc-infer
+                        model 1
+                        {:world-policy :fork
+                         :executor (:executor root)
+                         :resample-threshold 2.0})
+                      (catch Throwable error error)))))]
+          (is (= true (deref retirement-entered 5000 ::timed-out)))
+          (is (= :retiring (:generation-phase @@manager*)))
+          (let [cancelled (promise)
+                operation (coordinator/cancel-particle-worlds! @manager*)]
+            (operation #(deliver cancelled [:ok %])
+                       #(deliver cancelled [:error %]))
+            (deliver release-retirement true)
+            (is (= [:ok nil] (deref cancelled 5000 ::timed-out)))
+            (is (instance? Throwable (deref outcome 5000 ::timed-out)))
+            (is (zero? @child-entered)
+                "replacement children never run after cancellation wins")
+            (is (= :discarded (:status @@manager*)))
+            (is (empty? (:handles @@manager*))))))
+      (finally
+        (deliver release-retirement true)
+        (context/close-context! root)))))
+
+(deftest cancellation-during-resampling-fork-construction-gates-settlement
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        manager* (atom nil)
+        fork-count (atom 0)
+        child-fork-entered (promise)
+        release-child-fork (promise)
+        source-finalizer-entered (promise)
+        release-source-finalizer (promise)
+        child-entered (atom 0)
+        create-manager coordinator/create-world-manager
+        fork-world coordinator/fork-particle-world!]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [model
+              (spin
+               (try
+                 (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                 (swap! child-entered inc)
+                 (await (fn [_resolve _reject] nil))
+                 (finally
+                   (deliver source-finalizer-entered true)
+                   @release-source-finalizer)))
+              outcome
+              (future
+                (with-redefs
+                 [coordinator/create-world-manager
+                  (fn [opts]
+                    (let [manager (create-manager opts)]
+                      (reset! manager* manager)
+                      manager))
+                  coordinator/fork-particle-world!
+                  (fn [manager source resolve reject]
+                    (if (= 2 (swap! fork-count inc))
+                      (do
+                        (deliver child-fork-entered true)
+                        (future
+                          @release-child-fork
+                          (fork-world manager source resolve reject)))
+                      (fork-world manager source resolve reject)))]
+                  (binding [ec/*execution-context* root]
+                    (try
+                      @(inference/smc-infer
+                        model 1
+                        {:world-policy :fork
+                         :executor (:executor root)
+                         :resample-threshold 2.0})
+                      (catch Throwable error error)))))]
+          (is (= true (deref child-fork-entered 5000 ::timed-out)))
+          (is (= :forking (:generation-phase @@manager*)))
+          (let [cancelled (promise)
+                operation (coordinator/cancel-particle-worlds! @manager*)]
+            (operation #(deliver cancelled [:ok %])
+                       #(deliver cancelled [:error %]))
+            (is (= true (deref source-finalizer-entered 5000 ::timed-out)))
+            (is (= :open (:status @@manager*))
+                "settlement waits for the outstanding fork callback")
+            (deliver release-child-fork true)
+            (is (= ::still-waiting
+                   (deref cancelled 100 ::still-waiting))
+                "the late fork callback cannot erase an unwinding source")
+            (is (= 1 (count (:active-contexts @@manager*))))
+            (deliver release-source-finalizer true)
+            (is (= [:ok nil] (deref cancelled 5000 ::timed-out)))
+            (is (instance? Throwable (deref outcome 5000 ::timed-out)))
+            (is (zero? @child-entered))
+            (is (= :discarded (:status @@manager*)))
+            (is (= 2 (count (:descriptors @@manager*)))
+                "the late child handle remains inside affine cleanup")
+            (is (empty? (:handles @@manager*))))))
+      (finally
+        (deliver release-child-fork true)
+        (deliver release-source-finalizer true)
+        (context/close-context! root)))))
+
+(deftest cancelling-public-inference-spin-cancels-and-joins-worlds
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        manager* (atom nil)
+        task* (atom nil)
+        model-entered (promise)
+        model-cleaned? (atom false)
+        create-manager coordinator/create-world-manager]
+    (try
+      (let [outcome
+            (future
+              (with-redefs
+               [coordinator/create-world-manager
+                (fn [opts]
+                  (let [manager (create-manager opts)]
+                    (reset! manager* manager)
+                    manager))]
+                (binding [ec/*execution-context* root]
+                  (let [task
+                        (inference/smc-infer
+                         (spin
+                          (try
+                            (deliver model-entered true)
+                            (await (fn [_resolve _reject] nil))
+                            (finally (reset! model-cleaned? true))))
+                         1
+                         {:world-policy :fork
+                          :executor (:executor root)})]
+                    (reset! task* task)
+                    (try @task (catch Throwable error error))))))]
+        (is (= true (deref model-entered 5000 ::timed-out)))
+        (binding [ec/*execution-context* root]
+          (spin-core/cancel-spin! @task*))
+        (let [result (deref outcome 5000 ::timed-out)]
+          (is (instance? Throwable result))
+          (is (= spin-core/spin-cancelled (:type (ex-data result))))
+          (is @model-cleaned?)
+          (is (= :discarded (:status @@manager*))
+              "the public Spin rejects only after manager settlement")
+          (is (empty? (:handles @@manager*)))))
       (finally
         (context/close-context! root)))))
 
