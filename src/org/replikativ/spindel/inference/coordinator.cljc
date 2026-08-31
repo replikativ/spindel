@@ -265,6 +265,16 @@
                  (update state :readers conj resolve))))
       (when @immediate? (resolve nil)))))
 
+(defn discard-particle-worlds-when-quiescent!
+  "Return a CPS operation that waits for terminal particle callbacks before
+  consuming world settlement authority."
+  [manager]
+  (fn [resolve reject]
+    ((await-particle-world-quiescence manager)
+     (fn [_]
+       (invoke-result! (discard-particle-worlds! manager) resolve reject))
+     reject)))
+
 (defn register-particle-contexts!
   "Replace the live particle generation tracked by a world manager."
   [manager contexts]

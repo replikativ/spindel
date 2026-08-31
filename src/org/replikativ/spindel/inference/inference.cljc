@@ -283,7 +283,9 @@
                   :await-quiescent
                   (coord/await-particle-world-quiescence world-manager)
                   :cancel! #(coord/cancel-particle-worlds! world-manager)
-                  :discard! #(coord/discard-particle-worlds! world-manager)
+                  :discard!
+                  #(coord/discard-particle-worlds-when-quiescent!
+                    world-manager)
                   :descriptors (coord/world-descriptors world-manager)})]
            (throw (ex-info "Inference failed during particle execution"
                            (cond-> {:type ::inference-failed
