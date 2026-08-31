@@ -240,6 +240,12 @@
   private claim is: whichever callback/cancellation reaches this boundary first
   determines the work outcome, without changing Spin's fork/runtime semantics."
   [state-atom inbox claim job op payload]
+  ;; `cancel!` linearizes its request in controller state before posting the
+  ;; command to the runner mailbox. A child may complete in that hand-off
+  ;; window (especially on a single-threaded CLJS runtime); make the callback
+  ;; observe the already-committed request instead of racing the mailbox.
+  (when (:cancel-requested? @state-atom)
+    (claim-cancellation! claim :cancelled))
   (let [token (random-uuid)
         committed (swap! claim
                          (fn [status]
