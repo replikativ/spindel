@@ -29,30 +29,36 @@ ambient world
   -> discard the speculative world tree
 ```
 
-The `EmpiricalMeasure` retains result and trace projections in its contexts;
-it does not retain writable settlement authority. On successful completion,
+The `EmpiricalMeasure` retains result and trace projections in parentless,
+immutable contexts. It therefore retains neither the resampling ancestry nor
+writable settlement authority. On successful completion,
 all particle `ForkHandle`s are consumed newest-generation first. Construction
 and resampling failures are also cleaned up automatically because no affected
 particle is running at those boundaries.
 
 ## Failure and recovery
 
-Model failures are fail-fast. Sibling particles may still be executing when
-the first failure reaches the caller, so Spindel cannot safely discard their
-worlds at that instant. The thrown exception therefore contains:
+Model failures are fail-fast. Spindel cooperatively cancels sibling particles,
+tracks their terminal callbacks, and discards their worlds automatically once
+they are quiescent. The thrown exception also contains actionable process-local
+recovery operations:
 
 ```clojure
 (:world/recovery (ex-data error))
 ;; => {:status :open
 ;;     :manager <process-local capability>
+;;     :await-quiescent <CPS operation>
+;;     :cancel! <host function>
+;;     :discard! <host function>
 ;;     :descriptors [<portable fork descriptors> ...]}
 ```
 
-Descriptors are safe durable/audit projections. The manager and its live
-handles are process-local capabilities. A supervising host can wait for or
-cancel sibling execution and then call
-`inference.coordinator/discard-particle-worlds!`. The cleanup operation is
-idempotent and concurrent callers share one settlement result.
+Descriptors are safe durable/audit projections. The manager, operations, and
+its live handles are process-local capabilities. A supervising host can await
+quiescence and retry cleanup if automatic settlement encountered a recoverable
+preflight failure. Cleanup is idempotent, concurrent callers share one result,
+and a read-only preflight failure permits a later retry; failures after mutation
+remain terminal for explicit substrate recovery.
 
 ## State placement
 
@@ -83,4 +89,10 @@ provided the host explicitly injects the constructor, evaluator, and world
 fork capabilities. The inner interpreter executes `Spin` values against the
 child runtime, and the parent retains settlement authority. Raw `sci.core`
 does not need to be exposed to untrusted Dvergr programs; recursive
-self-programming is a curated capability, not ambient reflection.
+self-programming is a curated capability, not ambient reflection. The world
+API gives SCI opaque IDs backed by a host registry. Raw `ForkHandle` records
+contain mutable affine authority and must never cross the sandbox boundary.
+
+PGAS ancestor scoring still uses legacy snapshot particles, so Spindel rejects
+`:world-policy :fork` together with `:pgas-ancestor-sampling?`. That combination
+can be enabled once auxiliary scoring particles also use canonical worlds.

@@ -7,6 +7,7 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.inference.coordinator :as coordinator]
             [org.replikativ.spindel.inference.effects :refer [observe]]
             [org.replikativ.spindel.inference.inference :as inference]
@@ -23,6 +24,12 @@
   (spin
    (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
    :done))
+
+(defn- await-cps [operation]
+  (let [result (promise)]
+    (operation #(deliver result [:ok %])
+               #(deliver result [:error %]))
+    (deref result 5000 ::timed-out)))
 
 (deftest smc-resamples-independent-worlds-and-discards-the-tree
   (let [root (context/create-execution-context)
@@ -74,14 +81,36 @@
                 "settled generations no longer pin live contexts")
             (is (every? #(= :discarded (:fork/status %))
                         (:descriptors @@manager*)))
-            (is (every? nil?
-                        (map #(rtp/get-state
-                               % [:inference :inference-coordinator])
-                             (measure/get-contexts posterior))))
+            (is (every? nil? (map :parent-ctx
+                                  (measure/get-contexts posterior)))
+                "posterior projections do not retain resampling ancestry")
+            (is (every? #(= :immutable
+                            (backend/backend-type (:backend %)))
+                        (measure/get-contexts posterior)))
             (is (every? map?
                         (map #(rtp/get-state
                                % [:inference :world-descriptor])
                              (measure/get-contexts posterior)))))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest canonical-worlds-reject-unsafe-pgas-scoring
+  (let [root (context/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [result
+              @(spin
+                (try
+                  (await
+                   (inference/smc-infer
+                    (spin :done) 2
+                    {:world-policy :fork
+                     :pgas-ancestor-sampling? true}))
+                  :unexpected-success
+                  (catch Throwable error error)))]
+          (is (instance? Throwable result))
+          (is (= ::inference/world-pgas-unsupported
+                 (:type (ex-data result))))))
       (finally
         (context/stop-context! root)))))
 
@@ -132,6 +161,39 @@
           (is (= :discarded (:status @@manager*)))
           (is (= 2 (count (:descriptors @@manager*))))
           (is (empty? (:handles @@manager*)))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest read-only-cleanup-failure-can-be-retried
+  (let [root (context/create-execution-context)
+        manager (coordinator/create-world-manager {})
+        discard ygg/discard-fork!
+        attempts (atom 0)]
+    (try
+      (binding [ec/*execution-context* root]
+        (is (= :ok
+               (first
+                (await-cps
+                 (fn [resolve reject]
+                   (coordinator/fork-particle-world!
+                    manager root resolve reject))))))
+        (let [first-result
+              (with-redefs
+               [ygg/discard-fork!
+                (fn [handle opts]
+                  (if (= 1 (swap! attempts inc))
+                    (fn [_resolve reject]
+                      (reject (ex-info "synthetic preflight failure" {})))
+                    (discard handle opts)))]
+                (let [failed (await-cps
+                              (coordinator/discard-particle-worlds! manager))
+                      retried (await-cps
+                               (coordinator/discard-particle-worlds! manager))]
+                  [failed retried]))]
+          (is (= :error (ffirst first-result)))
+          (is (= [:ok nil] (second first-result)))
+          (is (= :discarded (:status @manager)))
+          (is (empty? (:handles @manager)))))
       (finally
         (context/stop-context! root)))))
 
@@ -191,14 +253,17 @@
               recovery (:world/recovery (ex-data result))]
           (is (not= ::timed-out result))
           (is (instance? Throwable result))
-          (is (= :open (:status recovery))
-              "fail-fast cannot consume worlds while sibling particles may run")
+          (is (contains? #{:open :discarding :discarded} (:status recovery)))
           (is (= 3 (count (:descriptors recovery))))
           (is (every? #(and (map? %)
                             (keyword? (:fork/id %))
                             (= :particle (:fork/purpose %)))
                       (:descriptors recovery)))
           (is (instance? clojure.lang.IAtom (:manager recovery))
-              "the live recovery capability stays process-local")))
+              "the live recovery capability stays process-local")
+          (is (= [:ok nil] (await-cps (:await-quiescent recovery))))
+          (is (= [:ok nil] (await-cps ((:discard! recovery)))))
+          (is (= :discarded (:status @(:manager recovery))))
+          (is (empty? (:handles @(:manager recovery))))))
       (finally
         (context/stop-context! root)))))

@@ -26,6 +26,7 @@
   (:require [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.executor :refer [execute!]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
@@ -124,6 +125,10 @@
          :status :open
          :fork-opts (or fork-opts {})
          :handles []
+         :active-contexts {}
+         :cancel-requested? false
+         :cleanup-started? false
+         :quiescence (atom {:status :pending :readers []})
          :cleanup (atom {:status :pending :readers []})}))
 
 (defn world-descriptors
@@ -170,6 +175,16 @@
   (fn [resolve reject]
     (let [cleanup (:cleanup @manager)
           immediate (volatile! nil)]
+      ;; A read-only settlement preflight reopens its ForkHandle. Retrying gets
+      ;; a fresh subscriber generation; mutating/incomplete failures remain
+      ;; terminal in the manager and keep their memoized rejection.
+      (loop []
+        (let [state @cleanup]
+          (when (and (= :failed (:status state))
+                     (= :open (:status @manager))
+                     (not (compare-and-set!
+                           cleanup state {:status :pending :readers []})))
+            (recur))))
       ;; Subscribe before trying to become the cleanup owner. Completion and
       ;; subscription linearize on this atom, so concurrent callers neither
       ;; hang nor execute settlement twice.
@@ -193,8 +208,10 @@
                              state)))
                   (doseq [{:keys [resolve reject]} @readers]
                     ((if (= status :done) resolve reject) payload))))
-              (fail! [error]
-                (swap! manager assoc :status :failed :error error)
+              (fail! [handle error]
+                (swap! manager assoc
+                       :status (if (ygg/open-fork? handle) :open :failed)
+                       :error error)
                 (complete! :failed error))
               (step [handles]
                 (if-let [handle (first handles)]
@@ -204,7 +221,7 @@
                       (invoke-result!
                        (ygg/discard-fork! handle {:sync? false})
                        (fn [_] (step (next handles)))
-                       fail!))
+                       (fn [error] (fail! handle error))))
                     (step (next handles)))
                   (do
                     ;; Replace process-local affine capabilities with portable
@@ -234,6 +251,80 @@
                     :discarding nil
                     nil)))]
         (when-not @immediate (claim!))))))
+
+(defn await-particle-world-quiescence
+  "Return a CPS operation resolved when no particle context is still running."
+  [manager]
+  (fn [resolve _reject]
+    (let [quiescence (:quiescence @manager)
+          immediate? (volatile! false)]
+      (swap! quiescence
+             (fn [state]
+               (if (= :done (:status state))
+                 (do (vreset! immediate? true) state)
+                 (update state :readers conj resolve))))
+      (when @immediate? (resolve nil)))))
+
+(defn register-particle-contexts!
+  "Replace the live particle generation tracked by a world manager."
+  [manager contexts]
+  (swap! manager assoc
+         :active-contexts (into {} (map (juxt :fork-id identity)) contexts))
+  nil)
+
+(defn- maybe-clean-cancelled-worlds! [manager]
+  (loop []
+    (let [state @manager]
+      (when (and (:cancel-requested? state)
+                 (empty? (:active-contexts state))
+                 (not (:cleanup-started? state)))
+        (if (compare-and-set! manager state (assoc state :cleanup-started? true))
+          (invoke-result!
+           (discard-particle-worlds! manager)
+           (constantly nil)
+           (fn [error]
+             (log/error :inference/particle-world-cleanup-failed
+                        {:error error})))
+          (recur))))))
+
+(defn particle-context-terminal!
+  "Mark one particle context quiescent and trigger deferred failure cleanup."
+  [manager context]
+  (let [remaining (volatile! nil)]
+    (swap! manager
+           (fn [state]
+             (let [active (dissoc (:active-contexts state) (:fork-id context))]
+               (vreset! remaining active)
+               (assoc state :active-contexts active))))
+    (when (empty? @remaining)
+      (let [readers (volatile! [])
+            quiescence (:quiescence @manager)]
+        (swap! quiescence
+               (fn [state]
+                 (if (= :done (:status state))
+                   state
+                   (do (vreset! readers (:readers state))
+                       {:status :done :readers []}))))
+        (doseq [reader @readers] (reader nil))
+        (maybe-clean-cancelled-worlds! manager)))
+    nil))
+
+(defn cancel-particle-worlds!
+  "Cooperatively cancel every live particle. Cleanup begins automatically once
+  their resolve/reject callbacks prove quiescence."
+  [manager]
+  (let [contexts (vals (:active-contexts
+                        (swap! manager assoc :cancel-requested? true)))]
+    (doseq [context contexts]
+      (when-let [task (rtp/get-state context [:inference :task])]
+        (try
+          (binding [rtc/*execution-context* context]
+            (spin-core/cancel-spin! task))
+          (catch #?(:clj Throwable :cljs :default) error
+            (log/error :inference/particle-cancel-failed
+                       {:fork-id (:fork-id context) :error error})))))
+    (maybe-clean-cancelled-worlds! manager)
+    (await-particle-world-quiescence manager)))
 
 ;; =============================================================================
 ;; Helper: Snapshot-Based Context Forking
@@ -674,7 +765,9 @@
     ;; delivered and (await (await-completion …)) waits forever.
     (when (compare-and-set! delivered? false true)
       (binding [rtc/*execution-context* parent-runtime]
-        (sync/deliver! on-complete (->InferenceFailure particle-id error)))))
+        (sync/deliver! on-complete (->InferenceFailure particle-id error)))
+      (when world-manager
+        (cancel-particle-worlds! world-manager))))
 
   (await-completion [_this]
     on-complete))
@@ -889,6 +982,8 @@
 (defn- resume-resampled-contexts!
   [coordinator particles-state particles-ordered should-resample?
    is-pgibbs? is-pgas? ancestor-idx contexts-with-checkpoints]
+  (when-let [manager (:world-manager coordinator)]
+    (register-particle-contexts! manager (mapv :context contexts-with-checkpoints)))
   ;; Reset weights if we resampled.
   (when should-resample?
     (doseq [{:keys [context]} contexts-with-checkpoints]
@@ -942,22 +1037,30 @@
                 :retained? is-new-retained?})
         (resume-particle-with-value! context checkpoint value)))))
 
-(defn- project-settled-particle-contexts!
-  "Remove live orchestration capabilities from contexts that escape in the
-  final measure. Results, scores, and traces remain queryable."
-  [contexts]
-  (doseq [context contexts]
-    (rtp/swap-state!
-     context [:inference]
-     (fn [state]
-       ;; Explicit nils are overlay tombstones here. `dissoc` would let a
-       ;; frozen child's nested read fall back to the immutable parent view.
-       (let [projected (assoc state :inference-coordinator nil)]
-         (if-let [world (:world state)]
-           (-> projected
-               (assoc :world-descriptor (ygg/fork-descriptor world))
-               (assoc :world nil))
-           projected))))))
+(def ^:private projected-inference-keys
+  #{:log-weight :choice-stack :trace :particle-id :sweep :result
+    :deterministic :interventions :mcmc :rw-mcmc :block-gibbs})
+
+(defn- project-settled-particle-context
+  "Create a parentless immutable posterior context. Returning the settled
+  execution context itself would retain its complete resampling ancestry."
+  [context]
+  (let [inference-state (rtp/get-state context [:inference])
+        projected (cond-> (select-keys inference-state
+                                       projected-inference-keys)
+                    (:world inference-state)
+                    (assoc :world-descriptor
+                           (ygg/fork-descriptor (:world inference-state))))]
+    (assoc context
+           :backend (backend/create-immutable-backend
+                     {:inference projected}
+                     {:source-fork-id (:fork-id context)
+                      :projection :inference-posterior})
+           :parent-ctx nil
+           :bindings {}
+           :metadata {:inference/projection true}
+           :running nil
+           :drain-active nil)))
 
 (defn trigger-kernel-resample!
   "Trigger barrier processing for KernelCoordinator.
@@ -1063,7 +1166,9 @@
         (let [final-particles (vals particles-state)
               contexts (mapv :context final-particles)
               log-weights (mapv :log-weight final-particles)
-              final-measure (m/empirical (mapv vector contexts log-weights))]
+              legacy-measure (when-not (:world-manager coordinator)
+                               (m/empirical
+                                (mapv vector contexts log-weights)))]
 
           (log/debug :kernel-coord/all-complete {:num-sweeps @(:current-sweep coordinator)
                                                  :num-particles (count contexts)})
@@ -1076,12 +1181,15 @@
               (invoke-result!
                (discard-particle-worlds! manager)
                (fn [_]
-                 (project-settled-particle-contexts! contexts)
-                 (deliver! final-measure))
+                 (deliver!
+                  (m/empirical
+                   (mapv vector
+                         (mapv project-settled-particle-context contexts)
+                         log-weights))))
                (fn [error]
                  (deliver! (->InferenceFailure :particle-world-cleanup
                                                error))))
-              (deliver! final-measure)))))
+              (deliver! legacy-measure)))))
 
       ;; Mixed state
       :else
