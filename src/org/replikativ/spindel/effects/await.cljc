@@ -383,7 +383,9 @@
                 the same call site overwrite rather than accumulate)
     source-loc - source location of the await call (for cont id)
 
-  Returns: [wrapped-resolve wrapped-reject cancel-token]
+  Returns: [wrapped-resolve wrapped-reject cancel-token cancellation]
+  where cancellation is nil or {:result ...}. Registration and the second
+  cancellation check close the check-before-register race with cancel-spin!.
 
   The cancel-token is returned so that resources whose dispatch happens
   *outside* the wrapped closure (e.g. Mailbox's `post-inline!` consumes
@@ -470,7 +472,19 @@
               ;; doesn't dispatch on :external-await events.
               :on-resume (fn [_rt] nil)}]
     (ec/continuation-add! spin-id cont)
-    [wrapped-resolve wrapped-reject cancel-token]))
+    (let [cancellation
+          (when (ec/spin-is-cancelled? spin-id)
+            ;; cancel-spin! may have run after await-handler's entry check but
+            ;; before this continuation became visible. Claim the just-added
+            ;; continuation and reject this slice synchronously; callers must
+            ;; then avoid registering a now-orphaned external reader.
+            (when (ec/continuation-remove! spin-id cont-id {:cancel? true})
+              {:result
+               (reject
+                (ex-info "Spin cancelled"
+                         {:type spin-core/spin-cancelled
+                          :spin-id spin-id}))}))]
+      [wrapped-resolve wrapped-reject cancel-token cancellation])))
 
 (defn- await-deferred
   "Direct await handler for Deferred.
@@ -484,19 +498,22 @@
   and only the NEW body slice (registered by the parent's re-run)
   advances. See `cancellable-external-pair` for the design rationale."
   [deferred spin-id source-loc resolve reject]
-  (let [[wr wj cancel-token]
+  (let [[wr wj cancel-token cancellation]
         (cancellable-external-pair
          spin-id resolve reject
          [::deferred #?(:clj (System/identityHashCode deferred)
                         :cljs (.-id deferred))]
          source-loc)]
-    ;; Thread the cancel-token into the Deferred's 2-arity (via the dynamic
-    ;; var, same as the Mailbox branch) so it can store it on the pending
-    ;; reader and prune cancelled readers — otherwise a cancelled await on a
-    ;; never-delivered deferred strands its `:pending` entry forever.
-    (binding [ec/*external-await-cancel-token* cancel-token]
-      (deferred wr wj)))
-  spin-core/incomplete)
+    (if cancellation
+      (:result cancellation)
+      (do
+        ;; Thread the cancel-token into the Deferred's 2-arity (via the dynamic
+        ;; var, same as the Mailbox branch) so it can store it on the pending
+        ;; reader and prune cancelled readers — otherwise a cancelled await on a
+        ;; never-delivered deferred strands its `:pending` entry forever.
+        (binding [ec/*external-await-cancel-token* cancel-token]
+          (deferred wr wj))
+        spin-core/incomplete))))
 
 (defn reactive-spin?
   "Check if value is a Spin. Works across CLJ/CLJS."
@@ -539,15 +556,18 @@
            (= "org.replikativ.spindel.spin.sync.Mailbox"
               #?(:clj (.getName (class awaitable))
                  :cljs (.-name (type awaitable)))))
-      (let [[wr wj cancel-token]
+      (let [[wr wj cancel-token cancellation]
             (cancellable-external-pair
              spin-id resolve reject
              [::mailbox #?(:clj (System/identityHashCode awaitable)
                            :cljs (.-id awaitable))]
              source-loc)]
-        (binding [ec/*external-await-cancel-token* cancel-token]
-          (awaitable wr wj))
-        spin-core/incomplete)
+        (if cancellation
+          (:result cancellation)
+          (do
+            (binding [ec/*external-await-cancel-token* cancel-token]
+              (awaitable wr wj))
+            spin-core/incomplete)))
 
       ;; SignalRef is an error
       (track/signal-ref? awaitable)
@@ -578,14 +598,16 @@
       ;; dispatch. Contract: a resource registering a waiter must do so
       ;; synchronously inside the thunk, so this dynamic binding is in scope.
       (ifn? awaitable)
-      (let [[wr wj cancel-token]
+      (let [[wr wj cancel-token cancellation]
             (cancellable-external-pair
              spin-id resolve reject
              [::ifn #?(:clj (System/identityHashCode awaitable)
                        :cljs (or (.-name awaitable) (str awaitable)))]
              source-loc)]
-        (binding [ec/*external-await-cancel-token* cancel-token]
-          (awaitable wr wj)))
+        (if cancellation
+          (:result cancellation)
+          (binding [ec/*external-await-cancel-token* cancel-token]
+            (awaitable wr wj))))
 
       :else
       (reject (eff/type-error 'await "Spin, Deferred, or async thunk" awaitable)))
