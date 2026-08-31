@@ -386,6 +386,10 @@
                 Map of keys to values that spins can read via (:bindings *execution-context*)
     :metadata - Fork metadata (default: parent metadata with updated process-id/depth)
     :process-id - Override auto-assigned process-id (default: parent + 1)
+    :executor - Executor for the fork (default: share the parent's executor)
+    :mode - :following (default), where untouched state reads through to the
+            live parent, or :frozen, where untouched state reads from a
+            materialized fork-time view. Both modes remain copy-on-write.
 
   Returns: New ExecutionContext with overlay backend
 
@@ -408,19 +412,25 @@
     (def fork2 (fork-context fork))        ; process-id 2
 
   Properties:
-  - Fork creation is O(1) with OverlayBackend
+  - :following fork creation is O(1) with OverlayBackend
+  - :frozen materializes the parent view once, then writes copy-on-write
   - Overlay stores only modifications (memory efficient)
   - Reads fall through to parent (shared observer graph)
   - Fork-local state (continuations, engine queue/timers) doesn't fall back
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
-  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork
+  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork executor
                         forkable-signals]
                  :or {state-updates {}
                       bindings {}
                       metadata nil
                       process-id nil
                       mode :following}}]
+  (when-not (#{:following :frozen} mode)
+    (throw (ex-info "Invalid execution-context fork mode"
+                    {:type ::invalid-fork-mode
+                     :mode mode
+                     :supported #{:following :frozen}})))
   (let [fork-id (keyword (str "fork-" (random-uuid)))
         ;; Copy parent's continuations — both kinds — so the fork inherits
         ;; the parent's reactive subscriptions. Without this, spins
@@ -533,9 +543,23 @@
                            (seq forked-nodes)
                            (update :nodes merge forked-nodes))
 
-        ;; Create overlay backend over parent's backend
+        ;; A frozen child must not observe later parent writes through untouched
+        ;; paths. Materialize the complete fork-time view as an immutable base,
+        ;; while retaining the real parent context separately for lineage and
+        ;; higher-level Yggdrasil settlement. Registered external systems are
+        ;; overridden by `forked-nodes` above, so their handles are never copied
+        ;; as writable aliases into the child view.
+        parent-view-backend
+        (if (= :frozen mode)
+          (backend/create-immutable-backend
+           (backend/backend-deref (:backend parent-ctx))
+           {:source-fork-id (:fork-id parent-ctx)
+            :fork-mode :frozen})
+          (:backend parent-ctx))
+
+        ;; Create overlay backend over the live or frozen parent view.
         overlay-backend (backend/create-overlay-backend
-                         (:backend parent-ctx)
+                         parent-view-backend
                          fork-local-state)
 
         ;; Merge bindings (child overrides parent)
@@ -576,7 +600,7 @@
                     fork-id
                     overlay-backend
                     parent-ctx  ; Keep parent reference
-                    (:executor parent-ctx)  ; Share executor (for now)
+                    (or executor (:executor parent-ctx))
                     merged-bindings
                     fork-metadata
                     (:running parent-ctx)        ; Share parent's lifecycle flag

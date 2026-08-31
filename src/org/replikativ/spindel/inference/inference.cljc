@@ -142,6 +142,11 @@
     - :barrier-policy - :every-observe | :none (default :every-observe for SMC behavior)
     - :resample-threshold - ESS threshold (default 0.5)
     - :executor - Shared executor for all particles
+    - :world-policy - :fresh (default) for pure inference, or :fork to
+      execute each particle in a frozen canonical Yggdrasil world that is
+      discarded after the final particle values are captured
+    - :world-opts - Optional :systems/:rights/:snapshots policy forwarded to
+      canonical particle forks; lifecycle fields are owned by inference
 
   Returns: Spin<EmpiricalMeasure>
 
@@ -165,50 +170,80 @@
                                    :barrier-policy (:barrier-policy opts :every-observe)})
 
    (let [runtime rtc/*execution-context*
+         world-policy (get opts :world-policy :fresh)
+         _ (when-not (#{:fresh :fork} world-policy)
+             (throw (ex-info "Unknown inference world policy"
+                             {:type ::invalid-world-policy
+                              :world-policy world-policy
+                              :supported #{:fresh :fork}})))
+          ;; Create or use provided shared executor
+         shared-executor (or (:executor opts)
+                             ;; Canonical child worlds share the ambient runtime
+                             ;; unless the caller explicitly delegates another
+                             ;; scheduler. This keeps executor ownership with the
+                             ;; enclosing world instead of leaking an inference-
+                             ;; local pool after affine world settlement.
+                             (when (= :fork world-policy)
+                               (:executor runtime))
+                             (sched/thread-pool-executor {:threads 2}))
+         world-manager (when (= :fork world-policy)
+                         (coord/create-world-manager
+                          (assoc (:world-opts opts) :executor shared-executor)))
          coordinator (coord/create-kernel-coordinator
                       runtime
                       kernel
                       num-particles
-                      opts)
-
-          ;; Create or use provided shared executor
-         shared-executor (or (:executor opts)
-                             (sched/thread-pool-executor {:threads 2}))
+                      (assoc opts :world-manager world-manager))
 
           ;; PGIBBS: Check if we have a retained trace (for conditional SMC)
          pgibbs-retained-trace (:pgibbs-retained-trace opts)
 
           ;; Initialize particles with coordinator reference
-          ;; For PGIBBS: first particle is retained
+         ;; For PGIBBS: first particle is retained
          initial-particles
-         (vec (map-indexed
-               (fn [idx _]
-                 (let [ctx (ctx/create-execution-context
-                            :executor shared-executor)
-                       particle-id (keyword (str "particle-" (gensym)))
-                       is-retained? (and pgibbs-retained-trace (= idx 0))]
+         (try
+           (loop [idx 0
+                  particles []]
+             (if (= idx num-particles)
+               particles
+               (let [world (when world-manager
+                             (await
+                              (fn [resolve reject]
+                                (coord/fork-particle-world!
+                                 world-manager runtime resolve reject))))
+                     particle-ctx (if world
+                                    (:child-ctx world)
+                                    (ctx/create-execution-context
+                                     :executor shared-executor))
+                     particle-id (keyword (str "particle-" (gensym)))
+                     is-retained? (and pgibbs-retained-trace (= idx 0))]
 
-                    ;; Initialize probabilistic state
-                   (rtp/swap-state! ctx [:inference]
-                                    (constantly {:log-weight 0.0
-                                                 :choice-stack []
-                                                 :trace {}
-                                                 :checkpoints {}
-                                                 :particle-id particle-id
-                                                 :sweep 0
-                                                 :inference-coordinator coordinator}))
+                 (rtp/swap-state!
+                  particle-ctx [:inference]
+                  (constantly
+                   {:log-weight 0.0
+                    :choice-stack []
+                    :trace {}
+                    :checkpoints {}
+                    :particle-id particle-id
+                    :sweep 0
+                    :world world
+                    :inference-coordinator coordinator}))
+                 (rtp/swap-state! particle-ctx [:inference :task]
+                                  (constantly model-task))
 
-                    ;; Store model spin in context
-                   (rtp/swap-state! ctx [:inference :task]
-                                    (constantly model-task))
+                 (when is-retained?
+                   (reset! (.-retained-particle-id coordinator) particle-id)
+                   (log/debug :kernel-infer/set-retained-particle
+                              {:particle-id particle-id}))
 
-                    ;; PGIBBS: Set retained particle ID in coordinator
-                   (when is-retained?
-                     (reset! (.-retained-particle-id coordinator) particle-id)
-                     (log/debug :kernel-infer/set-retained-particle {:particle-id particle-id}))
-
-                   ctx))
-               (range num-particles)))]
+                 (recur (inc idx) (conj particles particle-ctx)))))
+           (catch #?(:clj Throwable :cljs :default) error
+             ;; No particle starts until initialization finishes, so every
+             ;; partially created world is quiescent and safe to consume.
+             (when world-manager
+               (await (coord/discard-particle-worlds! world-manager)))
+             (throw error)))]
 
      (log/debug :kernel-infer/particles-initialized {:num-particles (count initial-particles)})
 
@@ -226,9 +261,16 @@
         ;; the calling spin / @(spin …) propagates the error to the
         ;; agent / REPL caller, instead of returning a bogus measure.
        (when (coord/inference-failure? final-measure)
-         (throw (ex-info "Inference failed: a particle's model threw"
-                         {:particle-id (:particle-id final-measure)}
-                         (:error final-measure))))
+         (let [world-recovery
+               (when world-manager
+                 {:status (:status @world-manager)
+                  :manager world-manager
+                  :descriptors (coord/world-descriptors world-manager)})]
+           (throw (ex-info "Inference failed: a particle's model threw"
+                           (cond-> {:particle-id (:particle-id final-measure)}
+                             world-recovery
+                             (assoc :world/recovery world-recovery))
+                           (:error final-measure)))))
 
        (log/debug :kernel-infer/complete {:num-particles num-particles
                                           :log-marginal (m/log-marginal final-measure)

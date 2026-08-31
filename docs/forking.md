@@ -27,7 +27,9 @@ Spindel supports **O(1) copy-on-write forking** of execution contexts. Forks sha
   :state-updates {...}     ;; initial overlay state
   :bindings {:key "val"}   ;; fork-local configuration (merged with parent)
   :metadata {:label "my-fork"}
-  :process-id 42)          ;; override auto-assigned process ID
+  :process-id 42           ;; override auto-assigned process ID
+  :executor executor       ;; optional; otherwise shares the parent scheduler
+  :mode :frozen)           ;; pin untouched state instead of following parent
 ```
 
 ## Isolation
@@ -60,7 +62,15 @@ A fork is **fully isolated from parent for its own writes** (fork→parent never
 
 **Shared paths** (overlay fall-through, parent-following on reads): everything else, including `:nodes`, `:subscriptions`, `:spin-tracking`, `:atoms`, and `:engine/cancelled-tokens`.
 
-If you need fully-isolated semantics on a shared path — a fork that does not track parent's later writes — use `snapshot-context` instead of `fork-context`. A snapshot returns a new root with `ImmutableBackend`, no parent, no fall-through. The cancellation interaction with `:engine/cancelled-tokens` (a shared path) is discussed in the source comments at `src/org/replikativ/spindel/effects/await.cljc` (search for `cancellable-external-pair`).
+If you need fully-isolated semantics on a shared path — a fork that does not
+track parent's later writes while remaining a writable child — use
+`(fork-context parent :mode :frozen)`. This materializes the parent's complete
+fork-time view once and uses it as the immutable base of the child's writable
+overlay. Use `snapshot-context` when the result itself should be an immutable,
+parentless checkpoint. The cancellation interaction with
+`:engine/cancelled-tokens` (a shared path) is discussed in the source comments
+at `src/org/replikativ/spindel/effects/await.cljc` (search for
+`cancellable-external-pair`).
 
 ## Overlay Backend
 
@@ -77,10 +87,10 @@ The fork itself is O(1) — only the overlay structure is created. State is copi
 A fork is fully isolated for *state*, but a few resources are shared with
 the parent context for performance:
 
-- **Executor**: Both parent and fork submit work to the same executor
+- **Executor by default**: Parent and fork submit work to the same executor
   (thread pool on JVM, event loop on CLJS). Concurrent forks compete for
-  the same workers. If you need an isolated executor, create a fresh root
-  context instead.
+  the same workers. Pass `:executor` to `fork-context`/`ygg/fork!` when the
+  child should use a separately managed scheduler.
 - **Drain thread / drain signal** (JVM): One background thread drains
   events for the parent and all of its forks.
 - **External side effects**: HTTP requests, file I/O, console output,
