@@ -67,6 +67,10 @@
                     interrupt flag is set so timeouts and user-cancels unwind
                     the computation). Optional — omit for unbounded execution.
                     (Convenience; equivalent to `:sci-opts {:interrupt-fn …}`.)
+    :resolve-sci-context - Optional `(fn [execution-context] sci-context)` used
+                when a suspended continuation resumes in a descendant Spindel
+                world. Embeddings with forked interpreter components use this
+                to select the SCI world paired with the ambient runtime.
     :sci-opts - A map merged into the `sci/init` argument, so a consumer can set
                 ANY SCI option without spindel having to thread it through one key
                 at a time — e.g. `:load-fn` (resolve `(require …)` against the
@@ -94,17 +98,18 @@
                   x (await a)
                   y (await b)]
               (+ x y)))\"))  ; => 30"
-  [{:keys [runtime native-spins expose-track? interrupt-fn sci-opts]
+  [{:keys [runtime native-spins expose-track? interrupt-fn sci-opts resolve-sci-context]
     :or {native-spins {}
          expose-track? true
          sci-opts      {}}}]
   (let [sci-execution-context (sci/new-dynamic-var '*execution-context* runtime)
         sci-spin-id (sci/new-dynamic-var '*spin-id* nil)
         sci-in-trampoline (sci/new-dynamic-var '*in-trampoline* false)
-        ;; Wrap all native spins for SCI (BoundaryTask pattern)
+        ;; Native capabilities follow the caller's selected world. Explicit
+        ;; cross-world task handles use boundary/wrap-spin-for-sci instead.
         wrapped-natives (into {}
                               (map (fn [[k v]]
-                                     [k (boundary/wrap-spin-for-sci v runtime)])
+                                     [k (boundary/wrap-capability-for-sci v)])
                                    native-spins))
 
         ;; Build namespace map — inject native primitives SCI code needs
@@ -149,6 +154,10 @@
         sci-ctx (sci/init
                  (-> sci-opts
                      (cond-> interrupt-fn (assoc :interrupt-fn interrupt-fn))
+                     ;; Spindel captures and retargets suspended continuations;
+                     ;; SCI's direct/standard runtime deliberately does not
+                     ;; maintain the managed world needed for that operation.
+                     (assoc :runtime-mode :forkable)
                      (update :features    #(or % #{:clj}))
                      (update :classes     merge (sci-core/common-classes))
                      (update :bindings    merge wrapped-natives)
@@ -175,6 +184,8 @@
         (let [captured-ctx (ec/current-execution-context)
               captured-spin-id ec/*spin-id*
               captured-trampoline @sci-in-trampoline
+              captured-sci-context (sci/capture-continuation-context sci-ctx)
+              continuation-contexts (atom {sci-ctx captured-sci-context})
               wrap-cont
               (fn [continuation]
                 (fn [value]
@@ -183,18 +194,37 @@
                         current-ctx (if (same-world-or-descendant?
                                          ambient-ctx captured-ctx)
                                       ambient-ctx
-                                      captured-ctx)]
-                    (binding [ec/*execution-context* current-ctx
-                              ;; A Spin keeps one identity across worlds. The
-                              ;; ambient id belongs to the producer/drain that
-                              ;; happened to resume this continuation and must
-                              ;; never re-parent the consumer's next await.
-                              ec/*spin-id* captured-spin-id]
-                      (sci/with-bindings
-                        {sci-execution-context current-ctx
-                         sci-spin-id captured-spin-id
-                         sci-in-trampoline captured-trampoline}
-                        (async/invoke-continuation continuation value))))))]
+                                      captured-ctx)
+                        target-sci-ctx (if resolve-sci-context
+                                         (resolve-sci-context current-ctx)
+                                         sci-ctx)
+                        continuation-context
+                        (or (get @continuation-contexts target-sci-ctx)
+                            (let [retargeted
+                                  (sci/retarget-continuation-context
+                                   captured-sci-context target-sci-ctx)]
+                              (get (swap! continuation-contexts
+                                          #(if (contains? % target-sci-ctx)
+                                             %
+                                             (assoc % target-sci-ctx retargeted)))
+                                   target-sci-ctx)))
+                        resume
+                        (sci/continuation-context-fn
+                         continuation-context
+                         (fn [resumed-value]
+                           (binding [ec/*execution-context* current-ctx
+                                     ;; A Spin keeps one identity across worlds. The
+                                     ;; ambient id belongs to the producer/drain that
+                                     ;; happened to resume this continuation and must
+                                     ;; never re-parent the consumer's next await.
+                                     ec/*spin-id* captured-spin-id]
+                             (sci/with-bindings
+                               {sci-execution-context current-ctx
+                                sci-spin-id captured-spin-id
+                                sci-in-trampoline captured-trampoline}
+                               (async/invoke-continuation continuation
+                                                          resumed-value)))))]
+                    (resume value))))]
           (when-not captured-spin-id
             (throw (ex-info "SCI await requires an owning Spin"
                             {:type ::sci-await-outside-spin

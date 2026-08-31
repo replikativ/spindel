@@ -73,6 +73,15 @@
   a require cycle with `spin/sync.cljc`."
   nil)
 
+(def ^:dynamic *callback-egress-policy*
+  "Authority attached to callbacks created by the current host invocation.
+
+  The default is world-local. Inference coordinators may bind
+  `:causal-follow` when a continuation copied into a descendant is explicitly
+  authorized to complete the coordinating callback. This authority is captured
+  on the callback edge; interpreted code cannot grant it by rebinding a world."
+  :isolated)
+
 ;; =============================================================================
 ;; CLJS Binding Registration
 ;; =============================================================================
@@ -318,6 +327,15 @@
   [path]
   (let [ctx (current-execution-context)]
     (rtp/get-state ctx path)))
+
+(defn get-state-in
+  "Read `path` from the explicit execution context `ctx`.
+
+  Most programs should use `get-state`, which follows the dynamic world. This
+  arity exists for stable world references that must resolve against a context
+  supplied by an embedding or continuation boundary."
+  [ctx path]
+  (rtp/get-state ctx path))
 
 (defn notify-listeners!
   "Fire the watch/egress listeners registered for reference `ref` (id `id`) with the

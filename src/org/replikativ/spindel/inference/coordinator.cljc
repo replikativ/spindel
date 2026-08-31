@@ -165,7 +165,12 @@
                   (when (compare-and-set! settled? false true)
                     (swap! manager update-state)
                     (try
-                      (f value)
+                      ;; Fork creation is an effect hosted by a child world,
+                      ;; but its continuation belongs to the source program.
+                      ;; Re-enter the caller explicitly so initialization does
+                      ;; not migrate the coordinating Spin into the new child.
+                      (binding [rtc/*execution-context* source-context]
+                        (f value))
                       (finally
                         (maybe-complete-particle-quiescence! manager)))))
         opts (-> fork-opts
@@ -564,24 +569,20 @@
 ;; =============================================================================
 
 (defn fork-particle-context
-  "Create independent copy of particle context using snapshot-based forking.
+  "Create an independent, fully materialized child particle context.
 
-  Uses snapshot-context + restore-snapshot instead of fork-context to avoid
-  overlay backend isolation issues (see OVERLAY_BACKEND_BUG.md).
-
-  This creates a complete independent copy with AtomBackend, ensuring no
-  shared state between particles.
+  This avoids overlay-backend coupling while retaining parent lineage and
+  independently forking live world components such as SCI interpreters. It is
+  an in-process operation, not a portable snapshot.
 
   Args:
     ctx - ExecutionContext to fork
 
   Returns: New ExecutionContext with AtomBackend (complete independent copy)"
   [ctx]
-  (let [snap (ctx/snapshot-context ctx
-                                   :clean-in-flight? false   ; Keep spin states as-is
-                                   :include-pending? false)] ; Don't include pending events
-    (ctx/restore-snapshot snap
-                          :drain-events? false)))  ; Don't drain - caller initializes state first
+  (ctx/materialized-fork-context
+   ctx
+   :clean-in-flight? false))
 
 ;; =============================================================================
 ;; Helper: Pair Checkpoints for Resampling

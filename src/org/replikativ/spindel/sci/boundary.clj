@@ -22,9 +22,22 @@
 (deftype BoundaryTask [task runtime task-spin-id]
   clojure.lang.IFn
   (invoke [this resolve reject]
-    (binding [ec/*execution-context* runtime
-              ec/*spin-id* task-spin-id]
-      (task resolve reject)))
+    (let [caller-runtime (ec/current-execution-context)
+          caller-spin-id ec/*spin-id*
+          return-to-caller
+          (fn [continuation]
+            (fn [value]
+              (binding [ec/*execution-context* caller-runtime
+                        ec/*spin-id* caller-spin-id]
+                (continuation value))))]
+      ;; The task executes where it is hosted, but its result returns to the
+      ;; caller's world. Without the wrapped callbacks, awaiting a task in a
+      ;; nested child world migrates the caller's continuation into that child
+      ;; and caches the caller's result on the wrong execution context.
+      (binding [ec/*execution-context* runtime
+                ec/*spin-id* task-spin-id]
+        (task (return-to-caller resolve)
+              (return-to-caller reject)))))
 
   clojure.lang.IDeref
   (deref [this]
@@ -34,7 +47,8 @@
 (defn wrap-spin-for-sci
   "Wrap a native spin for use in SCI contexts.
 
-  Returns a BoundaryTask that establishes proper bindings when called from SCI.
+  Returns a BoundaryTask that executes in the task runtime and re-enters the
+  caller runtime for resolve/reject.
 
   Example:
     (def native-spin (spin (+ 1 2)))
@@ -43,7 +57,39 @@
     ;; In SCI:
     (wrapped resolve reject)  ; Works! Bindings established automatically"
   [task runtime]
-  (BoundaryTask. task runtime (.-spin_id task)))
+  (BoundaryTask. task runtime (spin-core/spin-id task)))
+
+(deftype AmbientBoundaryTask [task task-spin-id]
+  clojure.lang.IFn
+  (invoke [_ resolve reject]
+    (let [caller-runtime (ec/current-execution-context)
+          caller-spin-id ec/*spin-id*
+          return-to-caller
+          (fn [continuation]
+            (fn [value]
+              (binding [ec/*execution-context* caller-runtime
+                        ec/*spin-id* caller-spin-id]
+                (continuation value))))]
+      ;; Capabilities inherited by a fork belong to the selected world. Unlike
+      ;; an explicit cross-world task handle, they must not retain the runtime
+      ;; in which the interpreter was originally constructed.
+      (binding [ec/*execution-context* caller-runtime
+                ec/*spin-id* task-spin-id]
+        (task (return-to-caller resolve)
+              (return-to-caller reject)))))
+
+  clojure.lang.IDeref
+  (deref [_]
+    @task))
+
+(defn wrap-capability-for-sci
+  "Wrap an inherited native capability so it executes in the caller's world.
+
+  Use this for `:native-spins` installed in a forkable interpreter. Use
+  `wrap-spin-for-sci` instead for an explicit handle to a task hosted by a
+  particular world."
+  [task]
+  (AmbientBoundaryTask. task (spin-core/spin-id task)))
 
 ;; =============================================================================
 ;; SCI Spin Creation
@@ -108,7 +154,7 @@
          native-spins {}}}]
   (let [;; Wrap all native spins for SCI
         wrapped-natives (into {} (map (fn [[k v]]
-                                        [k (wrap-spin-for-sci v runtime)])
+                                        [k (wrap-capability-for-sci v)])
                                       native-spins))
 
         ;; Create base SCI context

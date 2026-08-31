@@ -122,6 +122,7 @@
                                :id spin-id
                                :spin task
                                :execution-context context
+                               :callback-egress-policy :causal-follow
                                :resolve-fn resolve-fn
                                :reject-fn reject-fn})
           (catch #?(:clj Throwable :cljs :default) error
@@ -143,6 +144,9 @@
    :discard!
    #(coord/discard-particle-worlds-when-quiescent! world-manager)
    :descriptors (coord/world-descriptors world-manager)})
+
+(defmacro ^:private inference-spin [& body]
+  `(spin-core/with-causal-descendant-egress (spin ~@body)))
 
 (defn kernel-infer
   "Run inference using a PInferenceKernel.
@@ -183,7 +187,7 @@
                                         {:barrier-policy :every-observe}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
-  (spin
+  (inference-spin
    (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
                                    :num-particles num-particles
                                    :barrier-policy (:barrier-policy opts :every-observe)})

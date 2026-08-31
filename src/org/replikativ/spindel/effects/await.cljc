@@ -16,8 +16,7 @@
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.effects.track :as track]
             [replikativ.logging :as log]
-            [is.simm.partial-cps.async :as pcps-async])
-  #?(:clj (:import [org.replikativ.spindel.spin.core Spin])))
+            [is.simm.partial-cps.async :as pcps-async]))
 
 ;; =============================================================================
 ;; Public API Shim
@@ -150,7 +149,7 @@
 
   NOTE: In rebuild mode, we SKIP the fast path to ensure child spin bodies execute
   (for side effects like nested spin creation and continuation registration)."
-  [^Spin spin-ref spin-id source-loc resolve reject]
+  [spin-ref spin-id source-loc resolve reject]
   (let [awaited-spin-id (spin-core/spin-id spin-ref)
         noop (fn [& _] nil)
         ctx (ec/current-execution-context)
@@ -249,7 +248,7 @@
         ;; - reactive spins (parallel etc.) that re-complete on signal changes
         ;;   keep using the same continuation across multiple drain dispatches.
         :else
-        (let [child-spin-fn (.-spin-fn ^Spin spin-ref)
+        (let [child-spin-fn (spin-core/spin-body spin-ref)
               child-value (volatile! nil)
               child-error (volatile! nil)
               child-completed? (volatile! false)
@@ -547,9 +546,10 @@
         spin-core/incomplete))))
 
 (defn reactive-spin?
-  "Check if value is a Spin. Works across CLJ/CLJS."
+  "Check if value exposes both reactive identity and an engine Spin body."
   [x]
-  (instance? #?(:clj Spin :cljs spin-core/Spin) x))
+  (and (satisfies? spin-core/PSpin x)
+       (satisfies? spin-core/PSpinBody x)))
 
 (defn await-handler
   "Unified direct await handler - dispatches based on type.

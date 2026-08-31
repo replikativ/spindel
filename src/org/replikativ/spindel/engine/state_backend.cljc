@@ -110,8 +110,10 @@
   fork must not inherit-then-fire the parent's listener on a fork-private mutation
   (that would leak speculative state). A fork that wants to egress adds its own."
   #{:track-subscriptions :await-conts :subscriptions :engine/retired-conts
+    :world/components :world/forkable-components
     :engine/pending :engine/draining?
-    :engine/delayed-spins :engine/timer-handles :listeners})
+    :engine/delayed-spins :engine/timer-handles :listeners
+    :pending-callbacks})
 
 (def ^:private deleted ::deleted)
 (def ^:private full-replacement-key ::full-replacement)

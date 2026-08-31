@@ -5,6 +5,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.sci.boundary :as boundary]
             [org.replikativ.spindel.sci.macro :as macro]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [sci.core :as sci]))
 
@@ -21,6 +22,7 @@
         {'fork! (fn []
                   (let [world-id (random-uuid)
                         handle (ygg/fork! {:purpose :interpreter
+                                           :mode :frozen
                                            :sync? true})]
                     (swap! worlds assoc world-id handle)
                     world-id))
@@ -28,9 +30,10 @@
          (fn [world-id]
            (let [interpreter-id (random-uuid)
                  interpreter
-                 (macro/create-spin-macro-context
-                  {:runtime (:child-ctx (resolve-world world-id))
-                   :sci-opts @nested-opts})]
+                 (sci/with-detached-context
+                   #(macro/create-spin-macro-context
+                     {:runtime (:child-ctx (resolve-world world-id))
+                      :sci-opts @nested-opts}))]
              (swap! interpreters assoc interpreter-id interpreter)
              interpreter-id))
          'eval-spin
@@ -48,23 +51,33 @@
         outer (macro/create-spin-macro-context
                {:runtime root :sci-opts opts})]
     (try
-      (let [{:keys [world-id value] :as result}
+      (let [nested-source
+            "(require '[org.replikativ.spindel.spin.cps :refer [spin]]) (spin 41)"
+            outer-source
+            (str
+             "(require '[spindel.world :as world] "
+             "         '[org.replikativ.spindel.spin.cps :refer [spin]] "
+             "         '[org.replikativ.spindel.effects.await :refer [await]]) "
+             "(let [child (world/fork!) "
+             "      interpreter (world/interpreter! child) "
+             "      nested-task (world/eval-spin child interpreter "
+             (pr-str nested-source)
+             ") "
+             "      task (spin (inc (await nested-task)))] "
+             "  {:world-id child :task task :value @task})")
+            {:keys [world-id task value] :as result}
             (binding [ec/*execution-context* root]
-              (sci/eval-string*
-               outer
-               (str
-                "(require '[spindel.world :as world] "
-                "         '[org.replikativ.spindel.spin.cps :refer [spin]] "
-                "         '[org.replikativ.spindel.effects.await :refer [await]]) "
-                "(let [child (world/fork!) "
-                "      interpreter (world/interpreter! child) "
-                "      task (world/eval-spin "
-                "            child interpreter "
-                "            \"(require '[org.replikativ.spindel.spin.cps :refer [spin]]) (spin 41)\")] "
-                "  {:world-id child :value @(spin (inc (await task)))})")))
-            world (resolve-world world-id)]
+              (sci/eval-string* outer outer-source))
+            world (resolve-world world-id)
+            task-id (spin-core/spin-id task)]
         (testing "the interpreter and its computation are constructed by SCI"
           (is (= 42 value))
+          (is (= 42 (:payload (binding [ec/*execution-context* root]
+                                (ec/spin-current-result task-id))))
+              "the nested boundary returns completion to the caller world")
+          (is (nil? (binding [ec/*execution-context* (:child-ctx world)]
+                      (ec/spin-current-result task-id)))
+              "the nested task runtime does not steal the caller's completion")
           (is (= :interpreter
                  (:fork/purpose (ygg/fork-descriptor world))))
           (is (= (:fork-id root)
@@ -74,7 +87,7 @@
           (binding [ec/*execution-context* root]
             (is (nil? (ygg/discard-fork! world {:sync? true}))))
           (is (not (ygg/open-fork? world))))
-        (is (= #{:world-id :value} (set (keys result))))
+        (is (= #{:world-id :task :value} (set (keys result))))
         (is (uuid? world-id)
             "SCI receives an opaque identifier, never the affine handle"))
       (finally
