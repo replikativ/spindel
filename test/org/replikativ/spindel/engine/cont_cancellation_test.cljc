@@ -70,6 +70,28 @@
                   (sync/post! mailbox :first)
                   (sync/post! mailbox :second))))
 
+(deftest cancellation-remains-typed-at-the-next-effect-boundary
+  (h/async-test [ctx done]
+                (let [first-gate (sync/deferred)
+                      second-gate (sync/deferred)
+                      worker (spin
+                              (try
+                                (await first-gate)
+                                (catch #?(:clj Throwable :cljs :default) _
+                                  :handled))
+                              (await second-gate))]
+                  (h/run-spin! worker
+                               (fn [value]
+                                 (is false (str "unexpected value " value))
+                                 (done))
+                               (fn [error]
+                                 (is (= spin-core/spin-cancelled
+                                        (:type (ex-data error))))
+                                 (is (ec/spin-is-cancelled?
+                                      (spin-core/spin-id worker)))
+                                 (done)))
+                  (spin-core/cancel-spin! worker))))
+
 #?(:clj
    (deftest cancellation-between-check-and-external-registration-is-not-lost
      (testing "an await that loses the entry-check/register race unwinds instead

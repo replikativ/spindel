@@ -223,8 +223,11 @@
 
   Called at entry point of all effect handlers to enforce cancellation."
   [spin-id]
-  (when (and spin-id (ec/spin-is-cancelled?))
-    (throw (ex-info "Spin cancelled" {:spin-id spin-id}))))
+  (when (and spin-id (ec/spin-is-cancelled? spin-id))
+    ;; Re-throw the cached cancellation itself. Constructing a generic error
+    ;; here would overwrite the typed terminal result when a cancellation is
+    ;; caught by one slice and then observed again at its next effect boundary.
+    (throw (:payload (ec/spin-current-result spin-id)))))
 
 (defn type-error
   "Create standardized type error for wrong awaitable/trackable type.

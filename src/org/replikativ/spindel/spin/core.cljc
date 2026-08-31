@@ -584,7 +584,7 @@
     (when (and cached (error? cached))
       (match cached
         (fn [_] false)
-        (fn [e] (= "Spin cancelled by user" (.getMessage ^Throwable e)))))))
+        (fn [e] (= spin-cancelled (:type (ex-data e))))))))
 
 (defn spin-failed?
   "Check if a spin has failed (either due to error or cancellation).
