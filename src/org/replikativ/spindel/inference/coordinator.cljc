@@ -229,11 +229,13 @@
                     ;; generation once the final measure no longer needs it.
                     (swap! manager
                            (fn [state]
-                             (assoc state
-                                    :status :discarded
-                                    :descriptors
-                                    (mapv ygg/fork-descriptor (:handles state))
-                                    :handles [])))
+                             (-> state
+                                 (assoc :status :discarded
+                                        :descriptors
+                                        (mapv ygg/fork-descriptor
+                                              (:handles state))
+                                        :handles [])
+                                 (dissoc :coordinator))))
                     (complete! :done nil))))
               (claim! []
                 (let [state @manager]
@@ -319,12 +321,45 @@
         (maybe-clean-cancelled-worlds! manager)))
     nil))
 
+(defn- cancel-kernel-checkpoints!
+  "Atomically claim and reject continuations parked at a kernel barrier.
+
+  Kernel checkpoints are deliberately coordinated outside Spin's ordinary
+  await graph, so `cancel-spin!` cannot discover them. Claiming the particle
+  status first prevents a concurrent cancellation from rejecting the same CPS
+  slice twice. Terminal accounting still happens only through the particle's
+  top-level reject callback."
+  [coordinator]
+  (when-let [particles (:particles coordinator)]
+    (let [claimed (volatile! [])
+          error (ex-info "Inference particle cancelled"
+                         {:type spin-core/spin-cancelled})]
+      (swap! particles
+             (fn [states]
+               (reduce-kv
+                (fn [next-states particle-id state]
+                  (if (= :checkpoint (:status state))
+                    (do
+                      (vswap! claimed conj state)
+                      (assoc next-states particle-id
+                             (assoc state :status :cancelling)))
+                    (assoc next-states particle-id state)))
+                {}
+                states)))
+      (doseq [{:keys [context checkpoint]} @claimed]
+        (execute! (:executor context)
+                  (fn []
+                    (binding [rtc/*execution-context* context
+                              pcps-async/*in-trampoline* false]
+                      (spin-core/resume (:reject checkpoint) error))))))))
+
 (defn cancel-particle-worlds!
   "Cooperatively cancel every live particle. Cleanup begins automatically once
   their resolve/reject callbacks prove quiescence."
   [manager]
-  (let [contexts (vals (:active-contexts
-                        (swap! manager assoc :cancel-requested? true)))]
+  (let [{:keys [active-contexts coordinator]}
+        (swap! manager assoc :cancel-requested? true)
+        contexts (vals active-contexts)]
     (doseq [context contexts]
       (when-let [task (rtp/get-state context [:inference :task])]
         (try
@@ -333,6 +368,7 @@
           (catch #?(:clj Throwable :cljs :default) error
             (log/error :inference/particle-cancel-failed
                        {:fork-id (:fork-id context) :error error})))))
+    (cancel-kernel-checkpoints! coordinator)
     (maybe-clean-cancelled-worlds! manager)
     (await-particle-world-quiescence manager)))
 
@@ -743,6 +779,9 @@
                       :result accepted-result
                       :log-weight (:log-weight kernel-result)})
 
+              (when world-manager
+                (particle-context-terminal! world-manager context))
+
               ;; Increment barrier count for completion
               (let [count (swap! barrier-count inc)]
                 (log/debug :kernel-coord/completion-count {:count count :total total-particles})
@@ -768,6 +807,8 @@
     ;; model fails every particle identically.
     (swap! particles assoc particle-id
            {:context context :status :failed :error error})
+    (when world-manager
+      (particle-context-terminal! world-manager context))
     ;; Fail fast: deliver an InferenceFailure marker to on-complete once.
     ;; kernel-infer awaits this Deferred and re-throws on the marker.
     ;; Without this, the still-running particles (if any) never let
@@ -1150,21 +1191,12 @@
            manager resampled-contexts original-contexts-ordered particles-state
            continue!
            (fn [fork-error]
-             ;; Every source particle is suspended at this barrier and no child
-             ;; has been resumed yet, so partial construction is quiescent and
-             ;; can be consumed before reporting failure.
-             (invoke-result!
-              (discard-particle-worlds! manager)
-              (fn [_]
-                (notify-failed! coordinator :particle-world
-                                (:parent-runtime coordinator) fork-error))
-              (fn [cleanup-error]
-                (notify-failed!
-                 coordinator :particle-world-cleanup
-                 (:parent-runtime coordinator)
-                 (ex-info "Particle world creation and cleanup failed"
-                          {:type ::particle-world-cleanup-failed}
-                          cleanup-error))))))
+             ;; Source particles are suspended, not terminal: structured
+             ;; cancellation must unwind their parked continuations and user
+             ;; finally blocks before automatic quiescent cleanup consumes the
+             ;; source and partially constructed child worlds.
+             (notify-failed! coordinator :particle-world
+                             (:parent-runtime coordinator) fork-error)))
           (continue!
            (pair-checkpoints resampled-contexts
                              original-contexts-ordered

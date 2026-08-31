@@ -83,9 +83,7 @@
                                                            :spin-id spin-id})
                            ;; Notify coordinator with CURRENT state (not captured)
                            (when current-coord
-                             (coord/notify-complete! current-coord current-pid current-ctx value)
-                             (when-let [manager (:world-manager current-coord)]
-                               (coord/particle-context-terminal! manager current-ctx))))
+                             (coord/notify-complete! current-coord current-pid current-ctx value)))
                          value)  ; Return value for spin result flow
 
             reject-fn (fn [error]
@@ -109,10 +107,7 @@
                           ;; the engine event loop catches it and the
                           ;; coordinator is none the wiser.)
                           (if current-coord
-                            (do
-                              (when-let [manager (:world-manager current-coord)]
-                                (coord/particle-context-terminal! manager current-ctx))
-                              (coord/notify-failed! current-coord current-pid current-ctx error))
+                            (coord/notify-failed! current-coord current-pid current-ctx error)
                             ;; No coordinator wired up — rethrow rather
                             ;; than silently swallow.
                             (throw error))))]
@@ -129,6 +124,16 @@
 ;; =============================================================================
 ;; Kernel-Based Inference
 ;; =============================================================================
+
+(defn- particle-world-recovery [world-manager]
+  {:status (:status @world-manager)
+   :manager world-manager
+   :await-quiescent
+   (coord/await-particle-world-quiescence world-manager)
+   :cancel! #(coord/cancel-particle-worlds! world-manager)
+   :discard!
+   #(coord/discard-particle-worlds-when-quiescent! world-manager)
+   :descriptors (coord/world-descriptors world-manager)})
 
 (defn kernel-infer
   "Run inference using a PInferenceKernel.
@@ -206,6 +211,8 @@
                       kernel
                       num-particles
                       (assoc opts :world-manager world-manager))
+         _ (when world-manager
+             (swap! world-manager assoc :coordinator coordinator))
 
           ;; PGIBBS: Check if we have a retained trace (for conditional SMC)
          pgibbs-retained-trace (:pgibbs-retained-trace opts)
@@ -262,9 +269,32 @@
      (when world-manager
        (coord/register-particle-contexts! world-manager initial-particles))
 
-      ;; Start all particles
-     (doseq [particle-ctx initial-particles]
-       (start-particle! particle-ctx coordinator))
+      ;; Start all particles. Initialization is all-or-nothing from the
+      ;; caller's perspective, but an executor can reject midway through the
+      ;; enqueue loop. In that case distinguish successfully started contexts
+      ;; from contexts that never ran, then enter the normal supervised
+      ;; cancellation/quiescence lifecycle.
+     (let [started (atom #{})]
+       (try
+         (doseq [particle-ctx initial-particles]
+           (start-particle! particle-ctx coordinator)
+           (swap! started conj (:fork-id particle-ctx)))
+         (catch #?(:clj Throwable :cljs :default) error
+           (when world-manager
+             (doseq [particle-ctx initial-particles
+                     :when (not (contains? @started (:fork-id particle-ctx)))]
+               (coord/particle-context-terminal! world-manager particle-ctx))
+             (coord/cancel-particle-worlds! world-manager))
+           (throw
+            (ex-info
+             "Inference failed while starting particles"
+             (cond-> {:type ::particle-start-failed
+                      :started (count @started)
+                      :requested num-particles}
+               world-manager
+               (assoc :world/recovery
+                      (particle-world-recovery world-manager)))
+             error)))))
 
      (log/debug :kernel-infer/particles-started)
 
@@ -277,16 +307,7 @@
         ;; agent / REPL caller, instead of returning a bogus measure.
        (when (coord/inference-failure? final-measure)
          (let [world-recovery
-               (when world-manager
-                 {:status (:status @world-manager)
-                  :manager world-manager
-                  :await-quiescent
-                  (coord/await-particle-world-quiescence world-manager)
-                  :cancel! #(coord/cancel-particle-worlds! world-manager)
-                  :discard!
-                  #(coord/discard-particle-worlds-when-quiescent!
-                    world-manager)
-                  :descriptors (coord/world-descriptors world-manager)})]
+               (when world-manager (particle-world-recovery world-manager))]
            (throw (ex-info "Inference failed during particle execution"
                            (cond-> {:type ::inference-failed
                                     :particle-id (:particle-id final-measure)}
@@ -852,6 +873,12 @@
         (query measure identity)))"
   [model-task num-particles num-iterations & [opts]]
   (spin
+   (when (= :fork (:world-policy opts))
+     (throw
+      (ex-info
+       "PGAS ancestor scoring does not yet support canonical worlds"
+       {:type ::world-pgas-unsupported
+        :world-policy :fork})))
    (log/debug :pgas/start {:num-particles num-particles
                            :num-iterations num-iterations})
 

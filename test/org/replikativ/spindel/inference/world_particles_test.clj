@@ -6,11 +6,13 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.inference.coordinator :as coordinator]
             [org.replikativ.spindel.inference.effects :refer [observe]]
             [org.replikativ.spindel.inference.inference :as inference]
+            [org.replikativ.spindel.inference.kernel :as kernel]
             [org.replikativ.spindel.inference.measure :as measure]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -111,6 +113,28 @@
           (is (instance? Throwable result))
           (is (= ::inference/world-pgas-unsupported
                  (:type (ex-data result))))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest public-pgas-rejects-worlds-before-starting-the-model
+  (let [root (context/create-execution-context)
+        invocations (atom 0)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [result
+              @(spin
+                (try
+                  (await
+                   (inference/pgas-infer
+                    (spin (swap! invocations inc) :done)
+                    2 1 {:world-policy :fork}))
+                  :unexpected-success
+                  (catch Throwable error error)))]
+          (is (instance? Throwable result))
+          (is (= ::inference/world-pgas-unsupported
+                 (:type (ex-data result))))
+          (is (zero? @invocations)
+              "the public wrapper rejects before its initial SMC sweep")))
       (finally
         (context/stop-context! root)))))
 
@@ -229,11 +253,118 @@
                  5000 ::timed-out))]
           (is (not= ::timed-out result))
           (is (instance? Throwable result))
+          (let [recovery (:world/recovery (ex-data result))]
+            (is (map? recovery))
+            (is (= [:ok nil] (await-cps (:await-quiescent recovery))))
+            (is (= [:ok nil] (await-cps ((:discard! recovery))))))
           (is (= :discarded (:status @@manager*)))
           (is (= 5 (count (:descriptors @@manager*))))
           (is (empty? (:handles @@manager*)))))
       (finally
         (context/stop-context! root)))))
+
+(deftest partial-particle-start-failure-is-cancelled-and-recoverable
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        manager* (atom nil)
+        starts (atom 0)
+        first-running (promise)
+        create-manager coordinator/create-world-manager
+        start-particle inference/start-particle!]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [result
+              (with-redefs
+               [coordinator/create-world-manager
+                (fn [opts]
+                  (let [manager (create-manager opts)]
+                    (reset! manager* manager)
+                    manager))
+                inference/start-particle!
+                (fn [particle coordinator]
+                  (if (= 2 (swap! starts inc))
+                    (throw (ex-info "synthetic executor rejection" {}))
+                    (do
+                      (start-particle particle coordinator)
+                      (deref first-running 5000 ::timed-out))))]
+                @(spin
+                  (try
+                    (await
+                     (inference/smc-infer
+                      (spin
+                       (await
+                        (fn [_resolve _reject]
+                          (deliver first-running true))))
+                      3 {:world-policy :fork}))
+                    :unexpected-success
+                    (catch Throwable error error))))
+              recovery (:world/recovery (ex-data result))]
+          (is (instance? Throwable result))
+          (is (= ::inference/particle-start-failed
+                 (:type (ex-data result))))
+          (is (= 1 (:started (ex-data result))))
+          (is (= [:ok nil] (await-cps (:await-quiescent recovery))))
+          (is (= [:ok nil] (await-cps ((:discard! recovery)))))
+          (is (= :discarded (:status @@manager*)))
+          (is (= 3 (count (:descriptors @@manager*))))
+          (is (empty? (:handles @@manager*)))))
+      (finally
+        (context/close-context! root)))))
+
+(deftest iterative-particles-remain-live-until-their-final-completion
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        manager* (atom nil)
+        second-pass (promise)
+        arrivals (atom 0)
+        create-manager coordinator/create-world-manager
+        iterative-kernel
+        (reify kernel/PInferenceKernel
+          (kernel-id [_] :world-lifecycle-regression)
+          (step [_ _ checkpoint _]
+            {:action :assign
+             :value (or (get-in checkpoint [:options :observe]) 0.0)})
+          (on-complete [_ particle _trace _result]
+            (rtp/swap-state! particle [:test :iterate?] (constantly true))
+            {:action :iterate :updates {}}))]
+    (try
+      (binding [ec/*execution-context* root]
+        (with-redefs
+         [coordinator/create-world-manager
+          (fn [opts]
+            (let [manager (create-manager opts)]
+              (reset! manager* manager)
+              manager))]
+          (let [model
+                (spin
+                 (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                 (when (rtp/get-state ec/*execution-context*
+                                      [:test :iterate?])
+                   (when (= 2 (swap! arrivals inc))
+                     (deliver second-pass true))
+                   (await (fn [_resolve _reject] nil)))
+                 :done)
+                task (inference/kernel-infer
+                      model iterative-kernel 2
+                      {:world-policy :fork :barrier-policy :none})
+                result (future
+                         (try
+                           (deref task 5000 ::timed-out)
+                           (catch Throwable error error)))]
+            (is (= true (deref second-pass 5000 ::timed-out)))
+            (is (= 2 (count (:active-contexts @@manager*)))
+                "an :iterate completion is not a terminal world callback")
+            (is (= [:ok nil]
+                   (await-cps
+                    (coordinator/cancel-particle-worlds! @manager*))))
+            (is (not= ::timed-out (deref result 5000 ::timed-out)))
+            (is (= [:ok nil]
+                   (await-cps
+                    (coordinator/discard-particle-worlds-when-quiescent!
+                     @manager*))))
+            (is (= :discarded (:status @@manager*))))))
+      (finally
+        (context/close-context! root)))))
 
 (deftest model-failure-exposes-portable-world-recovery
   (let [root (context/create-execution-context)]
