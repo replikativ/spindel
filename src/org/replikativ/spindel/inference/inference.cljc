@@ -35,7 +35,7 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :as comb]
-            [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.effects.await :refer [await await-finalization]]
             [replikativ.logging :as log]
             [anglican.runtime :as ar]
             [clojure.set :as set]))
@@ -226,57 +226,69 @@
           ;; PGIBBS: Check if we have a retained trace (for conditional SMC)
          pgibbs-retained-trace (:pgibbs-retained-trace opts)
 
+         _initial-generation
+         (when world-manager
+           (coord/begin-particle-generation-transition! world-manager))
+
           ;; Initialize particles with coordinator reference
          ;; For PGIBBS: first particle is retained
          initial-particles
          (try
-           (loop [idx 0
-                  particles []]
-             (if (= idx num-particles)
-               particles
-               (let [world (when world-manager
-                             (await
-                              (fn [resolve reject]
-                                (coord/fork-particle-world!
-                                 world-manager runtime resolve reject))))
-                     particle-ctx (if world
-                                    (:child-ctx world)
-                                    (ctx/create-execution-context
-                                     :executor shared-executor))
-                     particle-id (keyword (str "particle-" (gensym)))
-                     is-retained? (and pgibbs-retained-trace (= idx 0))]
+           (let [particles
+                 (loop [idx 0
+                        particles []]
+                   (if (= idx num-particles)
+                     particles
+                     (let [world (when world-manager
+                                   (await
+                                    (fn [resolve reject]
+                                      (coord/fork-particle-world!
+                                       world-manager runtime resolve reject))))
+                           particle-ctx (if world
+                                          (:child-ctx world)
+                                          (ctx/create-execution-context
+                                           :executor shared-executor))
+                           particle-id (keyword (str "particle-" (gensym)))
+                           is-retained? (and pgibbs-retained-trace (= idx 0))]
 
-                 (rtp/swap-state!
-                  particle-ctx [:inference]
-                  (constantly
-                   {:log-weight 0.0
-                    :choice-stack []
-                    :trace {}
-                    :checkpoints {}
-                    :particle-id particle-id
-                    :sweep 0
-                    :world world
-                    :inference-coordinator coordinator}))
-                 (rtp/swap-state! particle-ctx [:inference :task]
-                                  (constantly model-task))
+                       (rtp/swap-state!
+                        particle-ctx [:inference]
+                        (constantly
+                         {:log-weight 0.0
+                          :choice-stack []
+                          :trace {}
+                          :checkpoints {}
+                          :particle-id particle-id
+                          :sweep 0
+                          :world world
+                          :inference-coordinator coordinator}))
+                       (rtp/swap-state! particle-ctx [:inference :task]
+                                        (constantly model-task))
 
-                 (when is-retained?
-                   (reset! (.-retained-particle-id coordinator) particle-id)
-                   (log/debug :kernel-infer/set-retained-particle
-                              {:particle-id particle-id}))
+                       (when is-retained?
+                         (reset! (.-retained-particle-id coordinator) particle-id)
+                         (log/debug :kernel-infer/set-retained-particle
+                                    {:particle-id particle-id}))
 
-                 (recur (inc idx) (conj particles particle-ctx)))))
+                       (recur (inc idx) (conj particles particle-ctx)))))]
+             (when (and world-manager
+                        (not (coord/complete-particle-generation-transition!
+                              world-manager particles)))
+               (throw (ex-info "Inference cancelled during particle initialization"
+                               {:type spin-core/spin-cancelled})))
+             particles)
            (catch #?(:clj Throwable :cljs :default) error
-             ;; No particle starts until initialization finishes, so every
-             ;; partially created world is quiescent and safe to consume.
              (when world-manager
-               (await (coord/discard-particle-worlds! world-manager)))
+               ;; Close the generation transaction, then wait past the owning
+               ;; Spin's cancellation for every in-flight fork callback and
+               ;; affine discard to finish.
+               (coord/complete-particle-generation-transition!
+                world-manager [])
+               (await-finalization
+                (coord/cancel-particle-worlds! world-manager)))
              (throw error)))]
 
      (log/debug :kernel-infer/particles-initialized {:num-particles (count initial-particles)})
-
-     (when world-manager
-       (coord/register-particle-contexts! world-manager initial-particles))
 
      ;; Once particles are registered, this Spin owns their complete lifecycle.
      ;; Normal completion sets `completed?` only after world settlement and
@@ -339,13 +351,9 @@
            (reset! completed? true)
            final-measure)
          (finally
-           (when (and world-manager
-                      (not @completed?)
-                      ;; Coordinator/start failures already own cancellation
-                      ;; and preserve a richer recovery error. Join only when
-                      ;; this public Spin is the first cancellation owner.
-                      (not (:cancel-requested? @world-manager)))
-             (await (coord/cancel-particle-worlds! world-manager)))))))))
+           (when (and world-manager (not @completed?))
+             (await-finalization
+              (coord/cancel-particle-worlds! world-manager)))))))))
 
 ;; =============================================================================
 ;; Convenience Functions (Delegate to kernel-infer)

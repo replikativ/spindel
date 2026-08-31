@@ -676,13 +676,13 @@
         ;; Then arm the external-resource cancellation gate (so a later delivery on
         ;; the abandoned reader is a no-op) and drop the now-spent cont.
             :external-await
-            (do (try
-                  (binding [ec/*execution-context* ctx
-                            ec/*spin-id*          sid
-                            pcps-async/*in-trampoline* false]
-                    (when-let [rj (:reject-fn cont)] (rj err)))
-                  (catch #?(:clj Throwable :cljs :default) _ nil))
-                nil)
+            (when-not (:cancellation-shielded? cont)
+              (try
+                (binding [ec/*execution-context* ctx
+                          ec/*spin-id*          sid
+                          pcps-async/*in-trampoline* false]
+                  (when-let [rj (:reject-fn cont)] (rj err)))
+                (catch #?(:clj Throwable :cljs :default) _ nil)))
         ;; Parked awaiting a child spin (incl. a reactive aseq/PSpin): resume THIS
         ;; parent into reject directly — the cont's :reject-fn is the parent body's
         ;; raw reject continuation, so invoking it unwinds the parent's try/finally

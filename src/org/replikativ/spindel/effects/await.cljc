@@ -30,6 +30,17 @@
   [& _]
   (throw (ex-info "await called outside of spin context (should be CPS-transformed)" {})))
 
+(defn ^:no-doc await-finalization
+  "Suspend for an asynchronous resource finalizer even after the owning Spin
+  has been cancelled.
+
+  This is an internal structured-concurrency primitive. Unlike `await`, a
+  repeated `cancel-spin!` does not truncate this cleanup boundary. It preserves
+  the already-running rejection/finally path; it does not hide the Spin's cached
+  cancellation from observers that begin dereferencing afterward."
+  [& _]
+  (throw (ex-info "await-finalization called outside of spin context (should be CPS-transformed)" {})))
+
 ;; *external-await-cancel-token* lives in engine.core so resource
 ;; implementations (Mailbox in spin/sync.cljc) can read it without
 ;; depending on effects/await.cljc.
@@ -394,15 +405,17 @@
   waiters without losing the message. The Deferred path doesn't need
   the token (its `:pending` callbacks all receive the same value, and
   the cancellation gate makes orphaned ones harmlessly no-op)."
-  [spin-id resolve reject ext-tag source-loc]
-  (let [;; The cancel-token is a fresh UUID per call. Repeated awaits at
+  ([spin-id resolve reject ext-tag source-loc]
+   (cancellable-external-pair spin-id resolve reject ext-tag source-loc true))
+  ([spin-id resolve reject ext-tag source-loc cancellable?]
+   (let [;; The cancel-token is a fresh UUID per call. Repeated awaits at
         ;; the same source-loc on the same resource get DIFFERENT
         ;; tokens, but the cont-id is deterministic — `add-continuation!`
         ;; calls the displaced cont's `:cancel!` before overwriting
         ;; (closes the orphaned-by-re-await loop).
-        cancel-token (keyword "external-await-cancel" (str (random-uuid)))
-        cont-id (keyword (str "external-await-"
-                              (h/content-hash [spin-id ext-tag source-loc])))
+         cancel-token (keyword "external-await-cancel" (str (random-uuid)))
+         cont-id (keyword (str "external-await-"
+                               (h/content-hash [spin-id ext-tag source-loc])))
         ;; Resolve the CURRENT execution context dynamically. If
         ;; *execution-context* is unbound (we're being called from a
         ;; truly external thread that hasn't entered the engine yet),
@@ -412,39 +425,40 @@
         ;;
         ;; Returns the resolved context (or nil) along with the result
         ;; so the caller can reuse it for the self-cleanup disj below.
-        check-and-clean!
-        (fn []
-          (let [ctx (try (ec/current-execution-context)
-                         (catch #?(:clj Throwable :cljs :default) _ nil))
-                cancelled (when ctx (rtp/get-state ctx [:engine/cancelled-tokens]))
-                in-set? (boolean (and cancelled (contains? cancelled cancel-token)))]
+         check-and-clean!
+         (fn []
+           (let [ctx (try (ec/current-execution-context)
+                          (catch #?(:clj Throwable :cljs :default) _ nil))
+                 cancelled (when ctx (rtp/get-state ctx [:engine/cancelled-tokens]))
+                 in-set? (boolean (and cancelled (contains? cancelled cancel-token)))]
             ;; Self-cleaning: external resources deliver each consumer's
             ;; closure at most once. After the closure fires (cancelled or
             ;; not), drop our token from the cancelled set so it doesn't
             ;; accumulate over the context's lifetime. Bounds the set's
             ;; growth to closures that never get fired (e.g. a Deferred
             ;; that's abandoned without being delivered).
-            (when (and ctx in-set?)
-              (rtp/swap-state! ctx [:engine/cancelled-tokens]
-                               (fn [s] (if s (disj s cancel-token) s))))
-            in-set?))
-        wrapped-resolve (fn [v]
-                          (when-not (check-and-clean!)
-                            (resolve v)))
-        wrapped-reject  (fn [e]
-                          (when-not (check-and-clean!)
-                            (reject e)))
-        cont {:id cont-id
+             (when (and ctx in-set?)
+               (rtp/swap-state! ctx [:engine/cancelled-tokens]
+                                (fn [s] (if s (disj s cancel-token) s))))
+             (and cancellable? in-set?)))
+         wrapped-resolve (fn [v]
+                           (when-not (check-and-clean!)
+                             (resolve v)))
+         wrapped-reject  (fn [e]
+                           (when-not (check-and-clean!)
+                             (reject e)))
+         cont {:id cont-id
               ;; Event-key is informational — no handler reads
               ;; `[:external-await …]`. Keeping a key makes the cont
               ;; uniform with the rest of the registry and lets the
               ;; `:subscriptions` cleanup in clear-all-await-
               ;; continuations! / clear-deps! work without special-
               ;; casing.
-              :event-key [:external-await ext-tag]
-              :kind :external-await
-              :source-loc source-loc
-              :cancel-token cancel-token
+               :event-key [:external-await ext-tag]
+               :kind :external-await
+               :cancellation-shielded? (not cancellable?)
+               :source-loc source-loc
+               :cancel-token cancel-token
               ;; Same per-slice snapshot the Spin-await cont carries. We
               ;; are on the awaiter's stack here, so the ambient context
               ;; IS the environment the post-await slice must resume in.
@@ -453,38 +467,55 @@
               ;; body-scoped context was smuggled through the enqueue
               ;; closure, i.e. sometimes accidentally right, never
               ;; guaranteed. See .internal/slice-environment-integrity.md.
-              :slice-state (capture-slice-state (ec/current-execution-context) spin-id)
+               :slice-state (capture-slice-state (ec/current-execution-context) spin-id)
               ;; `:cancel!` takes the engine context to record the
               ;; cancellation in. Engine truncation sites pass the
               ;; context they're operating on, which is what makes
               ;; this fork-safe: fork's truncation records into
               ;; fork's overlay, parent's into parent's.
-              :cancel! (fn [ctx]
-                         (rtp/swap-state! ctx [:engine/cancelled-tokens]
-                                          (fn [s] (conj (or s #{}) cancel-token))))
-              :resolve-fn wrapped-resolve
+               :cancel! (when cancellable?
+                          (fn [ctx]
+                            (rtp/swap-state! ctx [:engine/cancelled-tokens]
+                                             (fn [s] (conj (or s #{}) cancel-token)))))
+               :resolve-fn wrapped-resolve
               ;; Engine cancellation first arms cancel-token and then resumes
               ;; the body through this raw reject continuation so finally/catch
               ;; still run. The external resource alone receives wrapped-reject.
-              :reject-fn reject
+               :reject-fn reject
               ;; on-resume is required for the cont protocol but
               ;; never fires for external-await conts — the engine
               ;; doesn't dispatch on :external-await events.
-              :on-resume (fn [_rt] nil)}]
-    (ec/continuation-add! spin-id cont)
-    (let [cancellation
-          (when (ec/spin-is-cancelled? spin-id)
+               :on-resume (fn [_rt] nil)}]
+     (ec/continuation-add! spin-id cont)
+     (let [cancellation
+           (when (and cancellable? (ec/spin-is-cancelled? spin-id))
             ;; cancel-spin! may have run after await-handler's entry check but
             ;; before this continuation became visible. Claim the just-added
             ;; continuation and reject this slice synchronously; callers must
             ;; then avoid registering a now-orphaned external reader.
-            (when (ec/continuation-remove! spin-id cont-id {:cancel? true})
-              {:result
-               (reject
-                (ex-info "Spin cancelled"
-                         {:type spin-core/spin-cancelled
-                          :spin-id spin-id}))}))]
-      [wrapped-resolve wrapped-reject cancel-token cancellation])))
+             (when (ec/continuation-remove! spin-id cont-id {:cancel? true})
+               {:result
+                (reject
+                 (ex-info "Spin cancelled"
+                          {:type spin-core/spin-cancelled
+                           :spin-id spin-id}))}))]
+       [wrapped-resolve wrapped-reject cancel-token cancellation]))))
+
+(defn await-finalization-handler
+  "Direct handler for the cancellation-shielded finalization boundary."
+  [awaitable spin-id source-loc resolve reject]
+  (try
+    (if (ifn? awaitable)
+      (let [[wr wj _cancel-token _cancellation]
+            (cancellable-external-pair
+             spin-id resolve reject
+             [::finalization #?(:clj (System/identityHashCode awaitable)
+                                :cljs (or (.-name awaitable) (str awaitable)))]
+             source-loc false)]
+        (awaitable wr wj))
+      (reject (eff/type-error 'await-finalization "async thunk" awaitable)))
+    (catch #?(:clj Throwable :cljs :default) error
+      (reject error))))
 
 (defn- await-deferred
   "Direct await handler for Deferred.
@@ -627,3 +658,9 @@
  ::await-handler
  'org.replikativ.spindel.engine.effects/one-arg->awaitable-map
  'org.replikativ.spindel.effects.await/await-handler)
+
+(eff/register-effect-by-symbol!
+ 'org.replikativ.spindel.effects.await/await-finalization
+ ::await-finalization-handler
+ 'org.replikativ.spindel.engine.effects/one-arg->awaitable-map
+ 'org.replikativ.spindel.effects.await/await-finalization-handler)

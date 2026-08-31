@@ -271,14 +271,15 @@
         (deliver release-source-finalizer true)
         (context/close-context! root)))))
 
-(deftest cancelling-public-inference-spin-cancels-and-joins-worlds
+(deftest cancellation-during-initial-fork-construction-joins-late-world
   (let [root (context/create-execution-context
-              {:executor (executor/thread-pool-executor 4)})
+              {:executor (executor/thread-pool-executor 2)})
         manager* (atom nil)
         task* (atom nil)
-        model-entered (promise)
-        model-cleaned? (atom false)
-        create-manager coordinator/create-world-manager]
+        fork-entered (promise)
+        release-fork (promise)
+        create-manager coordinator/create-world-manager
+        fork-world ygg/fork!]
     (try
       (let [outcome
             (future
@@ -287,7 +288,69 @@
                 (fn [opts]
                   (let [manager (create-manager opts)]
                     (reset! manager* manager)
-                    manager))]
+                    manager))
+                ygg/fork!
+                (fn [opts]
+                  (let [operation (fork-world opts)]
+                    (fn [resolve reject]
+                      (operation
+                       (fn [handle]
+                         (deliver fork-entered true)
+                         (future @release-fork (resolve handle)))
+                       reject))))]
+                (binding [ec/*execution-context* root]
+                  (let [task (inference/smc-infer
+                              (spin :done) 1
+                              {:world-policy :fork
+                               :executor (:executor root)})]
+                    (reset! task* task)
+                    (try @task (catch Throwable error error))))))]
+        (is (= true (deref fork-entered 5000 ::timed-out)))
+        (binding [ec/*execution-context* root]
+          (spin-core/cancel-spin! @task*))
+        (is (= ::still-waiting (deref outcome 100 ::still-waiting))
+            "public cancellation waits for the outstanding affine fork")
+        (is (= 1 (:pending-forks @@manager*)))
+        (is (= :open (:status @@manager*)))
+        (deliver release-fork true)
+        (let [result (deref outcome 5000 ::timed-out)]
+          (is (instance? Throwable result))
+          (is (= spin-core/spin-cancelled (:type (ex-data result))))
+          (is (= :discarded (:status @@manager*)))
+          (is (= 1 (count (:descriptors @@manager*))))
+          (is (empty? (:handles @@manager*)))))
+      (finally
+        (deliver release-fork true)
+        (context/close-context! root)))))
+
+(deftest cancelling-public-inference-spin-cancels-and-joins-worlds
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
+        manager* (atom nil)
+        task* (atom nil)
+        model-entered (promise)
+        model-cleaned? (atom false)
+        discard-entered (promise)
+        release-discard (promise)
+        create-manager coordinator/create-world-manager
+        discard-world ygg/discard-fork!]
+    (try
+      (let [outcome
+            (future
+              (with-redefs
+               [coordinator/create-world-manager
+                (fn [opts]
+                  (let [manager (create-manager opts)]
+                    (reset! manager* manager)
+                    manager))
+                ygg/discard-fork!
+                (fn [handle opts]
+                  (let [operation (discard-world handle opts)]
+                    (fn [resolve reject]
+                      (deliver discard-entered true)
+                      (future
+                        @release-discard
+                        (operation resolve reject)))))]
                 (binding [ec/*execution-context* root]
                   (let [task
                         (inference/smc-infer
@@ -304,6 +367,11 @@
         (is (= true (deref model-entered 5000 ::timed-out)))
         (binding [ec/*execution-context* root]
           (spin-core/cancel-spin! @task*))
+        (is (= true (deref discard-entered 5000 ::timed-out)))
+        (is (= ::still-waiting (deref outcome 100 ::still-waiting))
+            "public cancellation stays pending through asynchronous discard")
+        (is (= :discarding (:status @@manager*)))
+        (deliver release-discard true)
         (let [result (deref outcome 5000 ::timed-out)]
           (is (instance? Throwable result))
           (is (= spin-core/spin-cancelled (:type (ex-data result))))
@@ -312,6 +380,7 @@
               "the public Spin rejects only after manager settlement")
           (is (empty? (:handles @@manager*)))))
       (finally
+        (deliver release-discard true)
         (context/close-context! root)))))
 
 (deftest canonical-worlds-reject-unsafe-pgas-scoring

@@ -126,12 +126,15 @@
          :status :open
          :fork-opts (or fork-opts {})
          :handles []
+         :pending-forks 0
          :active-contexts {}
          :cancel-requested? false
          :generation-phase nil
          :cleanup-started? false
          :quiescence (atom {:status :pending :readers []})
          :cleanup (atom {:status :pending :readers []})}))
+
+(declare maybe-complete-particle-quiescence!)
 
 (defn world-descriptors
   "Return the portable projections retained by a particle-world manager."
@@ -155,20 +158,35 @@
   execution state reads from the fork-time view and every registered external
   system is independently forked through PForkable."
   [manager source-context resolve reject]
+  (swap! manager update :pending-forks inc)
   (let [{:keys [id fork-opts]} @manager
+        settled? (atom false)
+        finish! (fn [update-state f value]
+                  (when (compare-and-set! settled? false true)
+                    (swap! manager update-state)
+                    (try
+                      (f value)
+                      (finally
+                        (maybe-complete-particle-quiescence! manager)))))
         opts (-> fork-opts
                  (assoc :mode :frozen
                         :purpose :particle
                         :owner id
                         :sync? false))]
-    (binding [rtc/*execution-context* source-context
-              pcps-async/*in-trampoline* false]
-      (invoke-result!
-       (ygg/fork! opts)
-       (fn [handle]
-         (swap! manager update :handles conj handle)
-         (resolve handle))
-       reject))))
+    (letfn [(succeed! [handle]
+              (finish! (fn [state]
+                         (-> state
+                             (update :handles conj handle)
+                             (update :pending-forks dec)))
+                       resolve handle))
+            (fail! [error]
+              (finish! #(update % :pending-forks dec) reject error))]
+      (binding [rtc/*execution-context* source-context
+                pcps-async/*in-trampoline* false]
+        (try
+          (invoke-result! (ygg/fork! opts) succeed! fail!)
+          (catch #?(:clj Throwable :cljs :default) error
+            (fail! error)))))))
 
 (defn discard-particle-worlds!
   "Discard all worlds owned by `manager`, newest generation first. Returns a
@@ -286,7 +304,7 @@
          :active-contexts (into {} (map (juxt :fork-id identity)) contexts))
   nil)
 
-(defn- begin-particle-generation-transition!
+(defn begin-particle-generation-transition!
   "Keep quiescence closed while replacement worlds are constructed and their
   superseded source generation unwinds."
   [manager]
@@ -310,7 +328,7 @@
                state)))
     @claimed?))
 
-(defn- complete-particle-generation-transition!
+(defn complete-particle-generation-transition!
   "Atomically admit `contexts` unless cancellation won the transition.
 
   Returns false only when cancellation rejects a non-empty replacement. An
@@ -334,6 +352,7 @@
                         (:active-contexts state))
                       :generation-transition? false
                       :generation-phase nil))))
+    (maybe-complete-particle-quiescence! manager)
     @admitted?))
 
 (defn- maybe-clean-cancelled-worlds! [manager]
@@ -342,6 +361,7 @@
       (when (and (:cancel-requested? state)
                  (empty? (:active-contexts state))
                  (not (:generation-transition? state))
+                 (zero? (:pending-forks state))
                  (not (:cleanup-started? state)))
         (if (compare-and-set! manager state (assoc state :cleanup-started? true))
           (invoke-result!
@@ -352,17 +372,11 @@
                         {:error error})))
           (recur))))))
 
-(defn particle-context-terminal!
-  "Mark one particle context quiescent and trigger deferred failure cleanup."
-  [manager context]
-  (let [remaining (volatile! nil)]
-    (swap! manager
-           (fn [state]
-             (let [active (dissoc (:active-contexts state) (:fork-id context))]
-               (vreset! remaining active)
-               (assoc state :active-contexts active))))
-    (when (and (empty? @remaining)
-               (not (:generation-transition? @manager)))
+(defn- maybe-complete-particle-quiescence! [manager]
+  (let [{:keys [active-contexts generation-transition? pending-forks]} @manager]
+    (when (and (empty? active-contexts)
+               (not generation-transition?)
+               (zero? pending-forks))
       (let [readers (volatile! [])
             quiescence (:quiescence @manager)]
         (swap! quiescence
@@ -372,7 +386,19 @@
                    (do (vreset! readers (:readers state))
                        {:status :done :readers []}))))
         (doseq [reader @readers] (reader nil))
-        (maybe-clean-cancelled-worlds! manager)))
+        (maybe-clean-cancelled-worlds! manager)))))
+
+(defn particle-context-terminal!
+  "Mark one particle context quiescent and trigger deferred failure cleanup."
+  [manager context]
+  (let [remaining (volatile! nil)]
+    (swap! manager
+           (fn [state]
+             (let [active (dissoc (:active-contexts state) (:fork-id context))]
+               (vreset! remaining active)
+               (assoc state :active-contexts active))))
+    (when (empty? @remaining)
+      (maybe-complete-particle-quiescence! manager))
     nil))
 
 (defn- cancellation-error []
@@ -531,7 +557,7 @@
                          {:fork-id (:fork-id context) :error error})))))
       (cancel-kernel-checkpoints! coordinator))
     (maybe-clean-cancelled-worlds! manager)
-    (await-particle-world-quiescence manager)))
+    (discard-particle-worlds-when-quiescent! manager)))
 
 ;; =============================================================================
 ;; Helper: Snapshot-Based Context Forking
