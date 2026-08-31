@@ -222,9 +222,21 @@
         (context/stop-context! root)))))
 
 (deftest resampling-fork-failure-consumes-the-suspended-tree
-  (let [root (context/create-execution-context)
+  (let [root (context/create-execution-context
+              {:executor (executor/thread-pool-executor 4)})
         manager* (atom nil)
         fork-count (atom 0)
+        schedules (atom 0)
+        root-executor (:executor root)
+        rejecting-cancel-executor
+        (reify executor/PExecutor
+          (execute! [_ task]
+            (if (> (swap! schedules inc) 4)
+              (throw (ex-info "synthetic cancellation scheduling rejection"
+                              {}))
+              (executor/execute! root-executor task)))
+          (execute-after! [_ delay-ms task]
+            (executor/execute-after! root-executor delay-ms task)))
         create-manager coordinator/create-world-manager
         fork-world coordinator/fork-particle-world!]
     (try
@@ -247,6 +259,7 @@
                     (await (inference/smc-infer
                             (observed-model) 4
                             {:world-policy :fork
+                             :executor rejecting-cancel-executor
                              :resample-threshold 2.0}))
                     :unexpected-success
                     (catch Throwable error error)))
@@ -261,16 +274,23 @@
           (is (= 5 (count (:descriptors @@manager*))))
           (is (empty? (:handles @@manager*)))))
       (finally
-        (context/stop-context! root)))))
+        (context/close-context! root)))))
 
 (deftest partial-particle-start-failure-is-cancelled-and-recoverable
   (let [root (context/create-execution-context
               {:executor (executor/thread-pool-executor 4)})
         manager* (atom nil)
-        starts (atom 0)
-        first-running (promise)
-        create-manager coordinator/create-world-manager
-        start-particle inference/start-particle!]
+        schedules (atom 0)
+        root-executor (:executor root)
+        rejecting-executor
+        (reify executor/PExecutor
+          (execute! [_ task]
+            (if (= 2 (swap! schedules inc))
+              (throw (ex-info "synthetic executor rejection" {}))
+              (executor/execute! root-executor task)))
+          (execute-after! [_ delay-ms task]
+            (executor/execute-after! root-executor delay-ms task)))
+        create-manager coordinator/create-world-manager]
     (try
       (binding [ec/*execution-context* root]
         (let [result
@@ -279,23 +299,14 @@
                 (fn [opts]
                   (let [manager (create-manager opts)]
                     (reset! manager* manager)
-                    manager))
-                inference/start-particle!
-                (fn [particle coordinator]
-                  (if (= 2 (swap! starts inc))
-                    (throw (ex-info "synthetic executor rejection" {}))
-                    (do
-                      (start-particle particle coordinator)
-                      (deref first-running 5000 ::timed-out))))]
+                    manager))]
                 @(spin
                   (try
                     (await
                      (inference/smc-infer
-                      (spin
-                       (await
-                        (fn [_resolve _reject]
-                          (deliver first-running true))))
-                      3 {:world-policy :fork}))
+                      (spin (await (fn [_resolve _reject] nil)))
+                      3 {:world-policy :fork
+                         :executor rejecting-executor}))
                     :unexpected-success
                     (catch Throwable error error))))
               recovery (:world/recovery (ex-data result))]

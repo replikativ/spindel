@@ -27,7 +27,8 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.state-backend :as backend]
-            [org.replikativ.spindel.engine.executor :refer [execute!]]
+            [org.replikativ.spindel.engine.executor :as executor
+             :refer [execute!]]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -347,11 +348,37 @@
                 {}
                 states)))
       (doseq [{:keys [context checkpoint]} @claimed]
-        (execute! (:executor context)
-                  (fn []
-                    (binding [rtc/*execution-context* context
-                              pcps-async/*in-trampoline* false]
-                      (spin-core/resume (:reject checkpoint) error))))))))
+        (let [reject-checkpoint!
+              (fn [execution-context]
+                (binding [rtc/*execution-context* execution-context
+                          pcps-async/*in-trampoline* false]
+                  (spin-core/resume (:reject checkpoint) error)))]
+          (try
+            (execute! (:executor context) #(reject-checkpoint! context))
+            (catch #?(:clj Throwable :cljs :default) scheduling-error
+              ;; A rejected executor cannot own this CPS slice. Unwind it on
+              ;; the cancelling caller so :finally and the terminal callback
+              ;; still run and the affine worlds cannot remain wedged.
+              (log/warn :inference/checkpoint-cancel-schedule-failed
+                        {:fork-id (:fork-id context)
+                         :error scheduling-error})
+              (try
+                ;; Continuation unwinding may itself enqueue engine events. A
+                ;; rejected particle executor cannot service those either, so
+                ;; run the same context/backend through a synchronous executor
+                ;; for this terminal slice only.
+                (reject-checkpoint!
+                 (assoc context :executor
+                        (executor/synchronous-executor)))
+                (catch #?(:clj Throwable :cljs :default) unwind-error
+                  ;; Executor guard-task normally contains a terminal throw.
+                  ;; The synchronous fallback must provide the same boundary
+                  ;; so one particle cannot prevent the remaining claims from
+                  ;; unwinding.
+                  (when-not (spin-core/spin-cancelled? unwind-error)
+                    (log/error :inference/checkpoint-cancel-unwind-failed
+                               {:fork-id (:fork-id context)
+                                :error unwind-error})))))))))))
 
 (defn cancel-particle-worlds!
   "Cooperatively cancel every live particle. Cleanup begins automatically once

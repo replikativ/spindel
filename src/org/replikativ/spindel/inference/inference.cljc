@@ -112,14 +112,23 @@
                             ;; than silently swallow.
                             (throw error))))]
 
-        ;; Enqueue spin execution event
-        ;; The particle's executor will process this asynchronously
-        (rtc/enqueue-event! {:type :spin-execution
-                             :id spin-id
-                             :spin task
-                             :execution-context context  ; Use particle's context
-                             :resolve-fn resolve-fn
-                             :reject-fn reject-fn})))))
+        ;; Enqueue spin execution event. PEngine currently appends the event
+        ;; before asking its executor to drain, so executor rejection can throw
+        ;; after the event became visible. Cache cancellation immediately: a
+        ;; later drain can then only observe the cancelled result, never run the
+        ;; particle body in a world the startup recovery has already settled.
+        (try
+          (rtc/enqueue-event! {:type :spin-execution
+                               :id spin-id
+                               :spin task
+                               :execution-context context
+                               :resolve-fn resolve-fn
+                               :reject-fn reject-fn})
+          (catch #?(:clj Throwable :cljs :default) error
+            (spin-core/cancel-spin! task)
+            (when-let [manager (:world-manager coordinator)]
+              (coord/particle-context-terminal! manager context))
+            (throw error)))))))
 
 ;; =============================================================================
 ;; Kernel-Based Inference
