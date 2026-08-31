@@ -33,6 +33,7 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.seq.core :refer [gen-aseq]]
             [org.replikativ.spindel.spin.combinators :as comb]
+            [org.replikativ.spindel.test-helpers :as h]
             [is.simm.partial-cps.sequence :refer [anext]]
             [org.replikativ.spindel.core :as sp]))
 
@@ -47,6 +48,27 @@
            cont-id cont-ids
            :when (nil? (get-in state [:await-conts parent-id cont-id]))]
        {:child-id child-id :parent-id parent-id :cont-id cont-id}))))
+
+(deftest sequential-external-resumes-retain-owning-spin
+  (h/async-test [ctx done]
+                (let [mailbox (sync/mailbox)
+                      worker (spin
+                              (let [first-value (await mailbox)
+                                    first-owner ec/*spin-id*
+                                    second-value (await mailbox)]
+                                [first-value first-owner
+                                 second-value ec/*spin-id*]))
+                      worker-id (spin-core/spin-id worker)]
+                  (h/run-spin! worker
+                               (fn [result]
+                                 (is (= [:first worker-id :second worker-id]
+                                        result))
+                                 (done))
+                               (fn [error]
+                                 (is false (str error))
+                                 (done)))
+                  (sync/post! mailbox :first)
+                  (sync/post! mailbox :second))))
 
 #?(:clj
    (deftest no-double-side-effect-after-track-resume-mid-deferred-await

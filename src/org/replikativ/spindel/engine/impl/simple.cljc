@@ -1294,7 +1294,8 @@
           (let [rctx (if (:slice-state claimed)
                        (restore-slice-state! context spin-id claimed)
                        context)]
-            (binding [ec/*execution-context* rctx]
+            (binding [ec/*execution-context* rctx
+                      ec/*spin-id* spin-id]
               (guarded-resume! rctx site spin-id cancel-token resolve value))
             nil))))
 
