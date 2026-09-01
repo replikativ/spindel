@@ -157,6 +157,15 @@
                                            (simple/try-gc-cleanup-spin! ctx child-id)
                                            (is (nil? (rtp/get-state ctx [:nodes child-id])) "Child should be cleaned")
                                            (is (nil? (rtp/get-state ctx [:nodes parent-id])) "Orphaned parent should be cleaned via cascade")
+                    ;; This test invokes the Cleaner callback directly while
+                    ;; still holding the corresponding Spin objects. Keep the
+                    ;; objects strongly reachable through the last assertion;
+                    ;; otherwise HotSpot may concurrently enqueue a real
+                    ;; Cleaner callback after their last source-level use and
+                    ;; race these deterministic state observations.
+                                           #?(:clj (do
+                                                     (java.lang.ref.Reference/reachabilityFence c)
+                                                     (java.lang.ref.Reference/reachabilityFence p)))
                                            (done))
                                          (fn [e] (is false (str "Child failed: " e)) (done)))))
                           (fn [e] (is false (str "Parent failed: " e)) (done))))))))
