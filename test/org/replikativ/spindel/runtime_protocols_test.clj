@@ -16,6 +16,8 @@
             [org.replikativ.spindel.test-async :refer [await-drain]]
             [org.replikativ.spindel.test-helpers :as th]))
 
+(defrecord TestConfig [a])
+
 ;; =============================================================================
 ;; PGraph Protocol Tests - Dependency Graph Management
 ;; =============================================================================
@@ -555,6 +557,108 @@
             (finally
               (ctx/close-context! fork-1))))
         (finally
+          (ctx/close-context! root))))))
+
+(deftest overlay-map-reads-materialize-entity-tombstones
+  (testing "a whole-state removal is absent from direct fork-local map reads"
+    (let [root (ctx/create-execution-context)
+          fork-1 (ctx/fork-context root)
+          fork-2 (ctx/fork-context fork-1)
+          fire-time 4242
+          entry {:id :delayed-test :spin-fn identity}]
+      (try
+        (rtp/swap-state! fork-2 [:engine/delayed-spins]
+                         #(assoc (or % (sorted-map)) fire-time [entry]))
+        ;; Delayed firing uses a whole-state transaction. OverlayBackend records
+        ;; the removed map entity as a sparse tombstone.
+        (rtp/swap-state! fork-2 []
+                         #(assoc % :engine/delayed-spins (sorted-map)))
+        (is (= (sorted-map)
+               (rtp/get-state fork-2 [:engine/delayed-spins])))
+        (is (nil? (rtp/get-state fork-2
+                                 [:engine/delayed-spins fire-time])))
+        (finally
+          (ctx/close-context! fork-2)
+          (ctx/close-context! fork-1)
+          (ctx/close-context! root))))))
+
+(deftest shared-overlay-map-reads-materialize-logical-state
+  (testing "shared collection reads merge inherited entities and tombstones"
+    (let [root (ctx/create-execution-context)]
+      (try
+        (rtp/swap-state! root [:nodes] (constantly {:a 1 :b 2}))
+        (let [fork-1 (ctx/fork-context root)]
+          (try
+            (rtp/swap-state! fork-1 [] #(update % :nodes dissoc :a))
+            (is (= {:b 2} (rtp/get-state fork-1 [:nodes])))
+            (is (nil? (rtp/get-state fork-1 [:nodes :a])))
+            (is (= 2 (rtp/get-state fork-1 [:nodes :b])))
+            (let [fork-2 (ctx/fork-context fork-1)]
+              (try
+                (rtp/swap-state! fork-2 []
+                                 #(-> %
+                                      (update :nodes dissoc :b)
+                                      (assoc-in [:nodes :c] 3)))
+                (is (= {:c 3} (rtp/get-state fork-2 [:nodes]))
+                    "nested overlays compose into one logical collection")
+                (is (nil? (rtp/get-state fork-2 [:nodes :a])))
+                (is (nil? (rtp/get-state fork-2 [:nodes :b])))
+                (is (= 3 (rtp/get-state fork-2 [:nodes :c])))
+                (finally
+                  (ctx/close-context! fork-2))))
+            (finally
+              (ctx/close-context! fork-1))))
+        (finally
+          (ctx/close-context! root))))))
+
+(deftest shared-depth-one-write-establishes-divergence-boundary
+  (testing "a full collection CoW does not import later parent mutations"
+    (let [root (ctx/create-execution-context)
+          fork (ctx/fork-context root)]
+      (try
+        (rtp/swap-state! root [:nodes] (constantly {:a 1}))
+        (rtp/swap-state! fork [:nodes] #(assoc % :b 2))
+        (rtp/swap-state! root [:nodes] #(assoc % :c 3))
+        (is (= {:a 1 :b 2} (rtp/get-state fork [:nodes])))
+        (is (= {:a 1 :b 2} (:nodes (rtp/get-state fork []))))
+        (is (nil? (rtp/get-state fork [:nodes :c])))
+        (finally
+          (ctx/close-context! fork)
+          (ctx/close-context! root))))))
+
+(deftest full-replacement-materializes-later-whole-state-removals
+  (testing "whole-state deletion cannot expose a tombstone through a full CoW"
+    (let [root (ctx/create-execution-context)
+          fork (ctx/fork-context root)]
+      (try
+        (rtp/swap-state! root [:nodes] (constantly {:a 1 :b 2}))
+        (rtp/swap-state! fork [:nodes] identity)
+        (rtp/swap-state! fork [] #(update % :nodes dissoc :b))
+        (is (= {:a 1} (rtp/get-state fork [:nodes])))
+        (is (= {:a 1} (:nodes (rtp/get-state fork []))))
+        (is (nil? (rtp/get-state fork [:nodes :b])))
+        (finally
+          (ctx/close-context! fork)
+          (ctx/close-context! root))))))
+
+(deftest shared-record-write-is-a-full-replacement
+  (testing "record CoW is consistent across direct, full, and nested reads"
+    (let [root (ctx/create-execution-context)
+          fork-1 (ctx/fork-context root)]
+      (try
+        (rtp/swap-state! root [:config] (constantly (->TestConfig 1)))
+        (rtp/swap-state! fork-1 [:config] identity)
+        (rtp/swap-state! root [:config] #(assoc % :later 2))
+        (is (= (->TestConfig 1) (rtp/get-state fork-1 [:config])))
+        (is (= (->TestConfig 1) (:config (rtp/get-state fork-1 []))))
+        (let [fork-2 (ctx/fork-context fork-1)]
+          (try
+            (is (= (->TestConfig 1) (rtp/get-state fork-2 [:config])))
+            (is (= (->TestConfig 1) (:config (rtp/get-state fork-2 []))))
+            (finally
+              (ctx/close-context! fork-2))))
+        (finally
+          (ctx/close-context! fork-1)
           (ctx/close-context! root))))))
 
 (deftest reactive-resume-release-preserves-absent-continuation

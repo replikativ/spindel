@@ -159,15 +159,14 @@
 ;; ----------------------------------------------------------------------------
 
 (defprotocol PForkable
-  "Protocol for a SIGNAL VALUE that needs explicit forking when its host context
-  forks — a reference to external mutable state (a yggdrasil system) that the
-  overlay backend's copy-on-write does NOT isolate by itself, because the value
-  is a handle onto a shared store (a git repo, a datahike conn, a konserve CRDT).
+  "Protocol for a WORLD-BOUND VALUE that needs explicit forking when its host
+  context forks. This includes signal values that reference external mutable
+  state (a yggdrasil system) and non-reactive world components such as an
+  interpreter heap that the overlay backend's copy-on-write cannot isolate.
 
-  When an ExecutionContext is forked, every signal whose id is in
-  [:forkable-signals] is forked by calling `fork-value` on its current value and
-  writing the result as the fork-local signal node. Pure signal values (numbers,
-  maps, …) are NOT in that set and fall through the overlay unchanged.
+  When an ExecutionContext is forked, registered forkable signals and world
+  components call `fork-value`; their results are seated in the child context.
+  Pure values (numbers, maps, …) are not registered and fall through unchanged.
 
   Implementations should:
   - Return a NEW value representing the isolated fork (an Overlay or a branched
