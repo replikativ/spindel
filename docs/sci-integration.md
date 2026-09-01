@@ -2,6 +2,21 @@
 
 Spindel integrates with [SCI](https://github.com/babashka/sci) (Small Clojure Interpreter) for sandboxed execution of spindel code. This enables agent isolation, security sandboxing, and dynamic code evaluation while maintaining full access to spindel's reactive primitives.
 
+SCI support is optional and is therefore not included in Spindel's published
+POM. Applications using this integration must add the replikativ compatibility
+distribution, which provides the forkable interpreter-world APIs:
+
+```clojure
+{:deps {org.replikativ/spindel {:mvn/version "<version>"}
+        org.replikativ/sci {:mvn/version "0.15.59-replikativ.1"}}}
+```
+
+Do not put `org.replikativ/sci` and `org.babashka/sci` on the same classpath:
+they provide the same `sci.*` namespaces, while only the replikativ coordinate
+currently contains the forkable runtime required by this integration. Once
+those changes are released upstream, this guide will return to the upstream
+coordinate.
+
 ## Overview
 
 SCI provides a safe subset of Clojure that runs in an interpreter. Spindel's SCI integration bridges the gap between native and interpreted contexts using a **BoundaryTask** wrapper pattern that propagates runtime bindings across the boundary.
@@ -12,6 +27,37 @@ Two APIs are provided:
 |-----|-----------|----------|
 | **Functional** | `spindel.sci.boundary` | `make-spin` with CPS functions — simpler, lower overhead |
 | **Macro** | `spindel.sci.macro` | Full `spin` macro with `await`/`track` — full language support |
+
+For a forkable application world, `org.replikativ.spindel.sci.world` is the
+canonical composition layer. It registers the interpreter as a world component
+and returns a stable reference instead of making callers carry a parallel
+`{:runtime ... :sci-ctx ...}` pair.
+
+```clojure
+(require '[org.replikativ.spindel.sci.world :as sci-world])
+
+(def interpreter (sci-world/create! rt))
+
+(binding [ec/*execution-context* rt]
+  (sci-world/eval-string*
+   interpreter
+   "(def memory (atom []))"))
+
+(def child (ctx/fork-context rt :mode :frozen))
+
+;; The same reference now selects the child's forked SCI heap.
+(binding [ec/*execution-context* child]
+  (sci-world/eval-string* interpreter
+                          "(swap! memory conj :child)"))
+```
+
+Suspended `spin` continuations carry an SCI continuation-context token. When
+resumed in a descendant Spindel context, the token is retargeted to the paired
+SCI component, so dynamic bindings and interpreter state continue in that
+world. Parent and child may then resume the copied computation independently.
+The macro/world APIs enable SCI's opt-in `:forkable` runtime mode themselves;
+callers cannot accidentally construct a standard SCI runtime that lacks the
+managed continuation world.
 
 ## Setup
 
@@ -102,7 +148,10 @@ The macro API provides the full `spin` syntax with CPS transformation:
 
 ## Exposing Native Spins to SCI
 
-Pass native spins via the `:native-spins` option. They are automatically wrapped with `BoundaryTask` to propagate runtime bindings:
+Pass native spins via the `:native-spins` option. They are installed as ambient
+capabilities: invoking one uses the caller's currently selected Spindel world,
+so an inherited capability cannot mutate the parent by retaining its creation
+runtime.
 
 ```clojure
 (require '[org.replikativ.spindel.spin.cps :refer [spin]])
@@ -132,12 +181,12 @@ Pass native spins via the `:native-spins` option. They are automatically wrapped
 
 ### Manual Wrapping
 
-You can also wrap spins manually using `wrap-spin-for-sci`:
+Use `wrap-spin-for-sci` only for an explicit cross-world task handle:
 
 ```clojure
 (def wrapped (boundary/wrap-spin-for-sci my-native-spin rt))
 ;; wrapped implements IFn and IDeref
-;; Call as: (wrapped resolve reject) — bindings established automatically
+;; The task executes in rt; callbacks re-enter their caller's world.
 ```
 
 ## Bidirectional Interop
@@ -160,44 +209,40 @@ Native code can directly invoke SCI-created spins because SCI functions implemen
 ;; => 42
 ```
 
-### SCI to Native (BoundaryTask)
+### SCI to Native
 
-SCI code calls native spins through BoundaryTask wrappers. The wrapper establishes `*execution-context*` and `*spin-id*` bindings before invoking the native spin:
+Inherited capabilities follow the ambient world. Explicit task handles retain
+their host world and restore the caller when they complete:
 
 ```
-Native Spin → wrap-spin-for-sci → BoundaryTask
-                                       ↓
-SCI code calls BoundaryTask(resolve, reject)
-                                       ↓
-BoundaryTask binds *execution-context* + *spin-id*
-                                       ↓
-Native spin executes with proper context
+:native-spins → AmbientBoundaryTask → caller's selected world
+
+explicit task → wrap-spin-for-sci → task's host world
+                                    ↓ completion
+                                caller's world
 ```
 
 ## Agent Isolation Pattern
 
-For agent systems (like ratatosk), each agent gets an isolated SCI context with a forked runtime:
+For agent systems, create the interpreter as a component before forking:
 
 ```clojure
 (require '[org.replikativ.spindel.engine.context :as ctx])
 
-(defn create-agent-context
-  "Create isolated agent environment with forked runtime and SCI sandbox."
-  [parent-ctx native-spins]
-  (let [forked-rt (ctx/fork-context parent-ctx)]
-    {:runtime forked-rt
-     :sci-ctx (macro/create-spin-macro-context
-                {:runtime forked-rt
-                 :native-spins native-spins})}))
+(def interpreter
+  (sci-world/create! rt {:native-spins {'tool-1 tool-spin-1}}))
 
 ;; Create isolated agents
-(def agent-a (create-agent-context rt {'tool-1 tool-spin-1}))
-(def agent-b (create-agent-context rt {'tool-2 tool-spin-2}))
+(def agent-a (ctx/fork-context rt :mode :frozen))
+(def agent-b (ctx/fork-context rt :mode :frozen))
 
-;; Each agent sees its own state (fork isolation)
-;; Each agent can only access its own native spins (SCI sandboxing)
-;; Parent runtime unaffected by agent mutations (COW)
+;; `interpreter` selects a distinct heap in rt, agent-a, and agent-b.
 ```
+
+Create different roots when agents need different capability sets. Within one
+root, `:forkable-components` can remove entire components from a child; SCI's
+own namespace and class allowlists govern what code can do inside an inherited
+interpreter.
 
 ### Isolation Guarantees
 

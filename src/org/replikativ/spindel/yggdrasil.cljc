@@ -938,6 +938,7 @@
 
    opts (optional): forwarded to `ctx/fork-context` —
      :mode      :following (default) | :frozen — overlay fork relation to parent
+     :executor  optional child executor (default: share the parent's executor)
      :snapshots {system-id -> snapshot-id} — pin those systems at fixed values
      :systems   :all (default) | :none | #{system-id ...} — systems visible and
        forked in the child. Excluded systems are hidden, never shared writable.

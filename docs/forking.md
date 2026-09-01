@@ -27,8 +27,44 @@ Spindel supports **O(1) copy-on-write forking** of execution contexts. Forks sha
   :state-updates {...}     ;; initial overlay state
   :bindings {:key "val"}   ;; fork-local configuration (merged with parent)
   :metadata {:label "my-fork"}
-  :process-id 42)          ;; override auto-assigned process ID
+  :process-id 42           ;; override auto-assigned process ID
+  :executor executor       ;; optional; otherwise shares the parent scheduler
+  :mode :frozen            ;; pin untouched state instead of following parent
+  :forkable-components #{}) ;; optional capability attenuation
 ```
+
+### Fork-selected world components
+
+Some world state is not an FRP signal and is not a mergeable substrate: an
+interpreter heap, capability table, or other process-local realization. Register
+such state with `org.replikativ.spindel.engine.component/register!`. It returns
+a stable `ComponentRef`; resolving that reference in a context selects the
+realization belonging to that world. Values implement `PForkable`, the same
+forking protocol already used by fork-aware signals.
+
+Components are fork-local and are copied automatically by `fork-context`.
+Passing `:forkable-components` explicitly selects the IDs available in the
+child, so a fork can attenuate capabilities instead of inheriting all of them.
+Components are runtime state, not settlement units: durable Yggdrasil systems
+and their merge/discard authority remain governed by `ForkHandle`. Portable
+snapshots deliberately omit components; an embedding reconstructs transient
+realizations from durable source, configuration, and capability descriptors.
+
+Component forks are restricted to rollback-free process-local values. Because
+component realization can happen before a child handle exists, it must not
+acquire a worktree, database branch, or other resource needing compensation.
+Those substrates remain Yggdrasil systems acquired and settled through
+`ForkHandle`; a component may hold the transient interpreter or client view over
+them. Registration requires an explicit forkable or shared declaration, so a
+mutable host object cannot be shared accidentally.
+
+Host callbacks are effects outside copy-on-write state and are isolated by
+default. A child completion is cached in that child but cannot fire a callback
+registered by another world. Inference coordinators deliberately attach the
+engine-only `:causal-follow` authority to callback edges that must survive
+particle resampling. The authority belongs to the edge rather than mutable world
+bindings, so interpreted code cannot promote its own egress. Engine listeners
+and duplicate pending callbacks are always fork-local.
 
 ## Isolation
 
@@ -56,11 +92,19 @@ A fork is **fully isolated from parent for its own writes** (fork→parent never
 | Parent mutates state on a *fork-local* path | Yes | No (fork has its own value or `nil`) |
 | Fork creates new state | No | Yes (in overlay) |
 
-**Fork-local paths** (full isolation, no fall-through from parent): `:continuations`, `:engine/pending`, `:engine/draining?`, `:engine/delayed-spins`, `:engine/timer-handles`, plus any path added via the OverlayBackend's `local-paths` set.
+**Fork-local paths** (full isolation, no fall-through from parent): `:continuations`, `:world/components`, `:world/forkable-components`, `:engine/pending`, `:engine/draining?`, `:engine/delayed-spins`, `:engine/timer-handles`, plus any path added via the OverlayBackend's `local-paths` set.
 
 **Shared paths** (overlay fall-through, parent-following on reads): everything else, including `:nodes`, `:subscriptions`, `:spin-tracking`, `:atoms`, and `:engine/cancelled-tokens`.
 
-If you need fully-isolated semantics on a shared path — a fork that does not track parent's later writes — use `snapshot-context` instead of `fork-context`. A snapshot returns a new root with `ImmutableBackend`, no parent, no fall-through. The cancellation interaction with `:engine/cancelled-tokens` (a shared path) is discussed in the source comments at `src/org/replikativ/spindel/effects/await.cljc` (search for `cancellable-external-pair`).
+If you need fully-isolated semantics on a shared path — a fork that does not
+track parent's later writes while remaining a writable child — use
+`(fork-context parent :mode :frozen)`. This materializes the parent's complete
+fork-time view once and uses it as the immutable base of the child's writable
+overlay. Use `snapshot-context` when the result itself should be an immutable,
+parentless checkpoint. The cancellation interaction with
+`:engine/cancelled-tokens` (a shared path) is discussed in the source comments
+at `src/org/replikativ/spindel/effects/await.cljc` (search for
+`cancellable-external-pair`).
 
 ## Overlay Backend
 
@@ -77,10 +121,10 @@ The fork itself is O(1) — only the overlay structure is created. State is copi
 A fork is fully isolated for *state*, but a few resources are shared with
 the parent context for performance:
 
-- **Executor**: Both parent and fork submit work to the same executor
+- **Executor by default**: Parent and fork submit work to the same executor
   (thread pool on JVM, event loop on CLJS). Concurrent forks compete for
-  the same workers. If you need an isolated executor, create a fresh root
-  context instead.
+  the same workers. Pass `:executor` to `fork-context`/`ygg/fork!` when the
+  child should use a separately managed scheduler.
 - **Drain thread / drain signal** (JVM): One background thread drains
   events for the parent and all of its forks.
 - **External side effects**: HTTP requests, file I/O, console output,

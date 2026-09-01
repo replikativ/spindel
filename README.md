@@ -169,6 +169,7 @@ index. The essentials:
 | [Pub/Sub](docs/pubsub.md) | `mult`, `pub`, buffers, async-sequence-based fan-out. |
 | [Distributed](docs/distributed.md) | `defn-spin-remote`, `spin-remote`, spin↔channel bridge; convergent signal sync; workspace reflection + cross-system forking. |
 | [SCI Integration](docs/sci-integration.md) | Sandboxed spin execution via the Small Clojure Interpreter. |
+| [Inference Worlds](docs/inference.md) | SMC particles as canonical forked worlds, lifecycle, failure recovery, and resource boundaries. |
 
 For contributor patterns and AI-assistant guidance (do's/don'ts when
 modifying the engine, project-specific conventions), see
