@@ -253,6 +253,8 @@
                               :subscriptions {}      ; Event subscriptions (reverse index of the continuation tables)
                               :engine/retired-conts {} ; Exact edges consumed by valid continuation retirement
                               :atoms {}              ; Fork-safe execution context atoms
+                              :world/components {}   ; Non-reactive fork-selected resources
+                              :world/forkable-components #{}
                               ;; Engine state
                               :engine/pending []
                               :engine/draining? false
@@ -420,12 +422,18 @@
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
   [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork executor
-                        forkable-signals]
+                        forkable-signals forkable-components]
                  :or {state-updates {}
                       bindings {}
                       metadata nil
                       process-id nil
                       mode :following}}]
+  (when-let [reserved (seq (select-keys state-updates
+                                        [:world/components
+                                         :world/forkable-components]))]
+    (throw (ex-info "World component state is owned by fork-context"
+                    {:type ::reserved-component-state
+                     :state/keys (set (keys reserved))})))
   (when-not (#{:following :frozen} mode)
     (throw (ex-info "Invalid execution-context fork mode"
                     {:type ::invalid-fork-mode
@@ -526,11 +534,41 @@
                          (transient {})
                          forkable-ids)))
 
+        ;; Normalize explicit collections so one component is acquired once.
+        ;; Component forks are rollback-free, process-local operations;
+        ;; durable resources belong behind Yggdrasil ForkHandles.
+        component-ids (set (if (nil? forkable-components)
+                             (rtp/get-state parent-ctx [:world/forkable-components])
+                             forkable-components))
+        parent-components (or (rtp/get-state parent-ctx [:world/components]) {})
+        unknown-component-ids (seq (remove #(contains? parent-components %)
+                                           component-ids))
+        _ (when unknown-component-ids
+            (throw (ex-info "Cannot fork unknown world components"
+                            {:type ::unknown-world-components
+                             :component/ids (set unknown-component-ids)
+                             :fork/parent (:fork-id parent-ctx)})))
+        forked-components
+        (persistent!
+         (reduce
+          (fn [ret component-id]
+            (if (contains? parent-components component-id)
+              (assoc! ret component-id
+                      (rtp/fork-value
+                       (get parent-components component-id)
+                       fork-id
+                       {:fork :component :mode mode}))
+              ret))
+          (transient {})
+          component-ids))
+
         ;; Initialize fork-local state (engine state, continuations, forked nodes)
         fork-local-state (cond-> (merge
                                   {:track-subscriptions (or parent-track-subscriptions {}) ; ← Copy parent's track conts!
                                    :await-conts (or parent-await-conts {})                 ; ← Copy parent's await conts!
                                    :subscriptions (or parent-subscriptions {})             ; ← Copy their reverse index!
+                                   :world/components forked-components
+                                   :world/forkable-components (set component-ids)
                                    :engine/retired-conts {} ; retirement history is world-local
                                    :engine/pending [] ; ← NO inherited events; see the claim-undo below
                                    :engine/draining? false
@@ -832,9 +870,14 @@
                         state)
 
         ;; Remove pending events if requested
-        final-state (if-not include-pending?
-                      (assoc cleaned-state :engine/pending [])
-                      cleaned-state)
+        final-state (cond-> cleaned-state
+                      (not include-pending?) (assoc :engine/pending [])
+                      ;; Components are live, process-local realizations. A
+                      ;; portable snapshot keeps their durable substrates and
+                      ;; descriptors elsewhere, never interpreter heaps or
+                      ;; capability objects.
+                      true (assoc :world/components {}
+                                  :world/forkable-components #{}))
 
         ;; Create immutable backend
         snapshot-backend (backend/create-immutable-backend
@@ -856,6 +899,46 @@
      nil   ; No :running atom — drain-events! treats this as always-allowed
      nil)  ; No drain-active counter — no stop-context! to wait on
     ))
+
+(defn materialized-fork-context
+  "Create an independent in-process child with a fully materialized backend.
+
+  This is `fork-context` followed by backend materialization, so it preserves
+  lineage, lifecycle ownership, continuation semantics, and component forking.
+  External forkable signals are rejected: they require the affine Yggdrasil
+  ForkHandle lifecycle and therefore canonical `:world-policy :fork` inference.
+  The child starts without copied queues, callbacks, listeners, or timers."
+  [source-ctx & {:keys [clean-in-flight?]
+                 :or {clean-in-flight? true}}]
+  (let [forkable-signals
+        (set (rtp/get-state source-ctx [:forkable-signals]))]
+    (when (seq forkable-signals)
+      (throw
+       (ex-info
+        "Materialized inference forks cannot own external forkable signals"
+        {:type ::materialized-external-state
+         :signal/ids forkable-signals
+         :hint "Use inference :world-policy :fork for affine Yggdrasil settlement."})))
+    (let [child (fork-context source-ctx
+                              :mode :frozen
+                              :forkable-signals #{})
+          effective-state (backend/backend-deref (:backend child))
+          materialized-state
+          (-> (if clean-in-flight?
+                (clean-in-flight-spins effective-state)
+                effective-state)
+              (assoc :engine/pending []
+                     :engine/draining? false
+                     :engine/delayed-spins (sorted-map)
+                     :engine/timer-handles {}
+                     :engine/retired-conts {}
+                     :listeners {}
+                     :pending-callbacks {}))]
+      (-> child
+          (assoc :backend (backend/create-atom-backend materialized-state))
+          (update :metadata assoc
+                  :materialized-fork? true
+                  :source-fork-id (:fork-id source-ctx))))))
 
 (defn restore-snapshot
   "Restore a snapshot to a live execution context.
