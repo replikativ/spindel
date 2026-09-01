@@ -2,6 +2,21 @@
 
 Spindel integrates with [SCI](https://github.com/babashka/sci) (Small Clojure Interpreter) for sandboxed execution of spindel code. This enables agent isolation, security sandboxing, and dynamic code evaluation while maintaining full access to spindel's reactive primitives.
 
+SCI support is optional and is therefore not included in Spindel's published
+POM. Applications using this integration must add the replikativ compatibility
+distribution, which provides the forkable interpreter-world APIs:
+
+```clojure
+{:deps {org.replikativ/spindel {:mvn/version "<version>"}
+        org.replikativ/sci {:mvn/version "0.15.59-replikativ.1"}}}
+```
+
+Do not put `org.replikativ/sci` and `org.babashka/sci` on the same classpath:
+they provide the same `sci.*` namespaces, while only the replikativ coordinate
+currently contains the forkable runtime required by this integration. Once
+those changes are released upstream, this guide will return to the upstream
+coordinate.
+
 ## Overview
 
 SCI provides a safe subset of Clojure that runs in an interpreter. Spindel's SCI integration bridges the gap between native and interpreted contexts using a **BoundaryTask** wrapper pattern that propagates runtime bindings across the boundary.
