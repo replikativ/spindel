@@ -22,6 +22,10 @@
 (defprotocol PSpin
   (spin-id [_] "Spin id of this spin."))
 
+(defprotocol PSpinBody
+  (spin-body [_]
+    "Return the CPS body used by the engine's reactive await slow path."))
+
 ;; =============================================================================
 ;; Result Type (from spin/result.cljc)
 ;; =============================================================================
@@ -145,6 +149,17 @@
 ;; Forward declaration for error handling
 (declare abort-spin-chain!)
 
+(defn- callback-visible-in-world?
+  "Whether a callback edge explicitly permits completion from another world."
+  [ctx origin-fork-id egress-policy]
+  (or (= (:fork-id ctx) origin-fork-id)
+      (and (= :causal-follow egress-policy)
+           (loop [candidate (:parent-ctx ctx)]
+             (cond
+               (nil? candidate) false
+               (= (:fork-id candidate) origin-fork-id) true
+               :else (recur (:parent-ctx candidate)))))))
+
 ;; spin-fn now arity-2 (resolve reject) relying on dynamic bindings (*execution-context*, *spin-id*).
 ;; Spin is STATELESS - no runtime reference, uses dynamic *execution-context* binding.
 
@@ -212,6 +227,7 @@
              (ec/enqueue-event! {:type :spin-execution
                                  :id spin-id
                                  :spin this
+                                 :callback-egress-policy ec/*callback-egress-policy*
                                  :resolve-fn (fn [value]
                                                (deliver result-promise (ok value)))
                                  :reject-fn (fn [e]
@@ -222,6 +238,9 @@
 (deftype Spin [spin-id spin-fn]
   PSpin
   (spin-id [_] spin-id)
+
+  PSpinBody
+  (spin-body [_] spin-fn)
 
   #?(:clj clojure.lang.IFn :cljs IFn)
   (#?(:clj invoke :cljs -invoke) [this resolve reject]
@@ -291,7 +310,14 @@
           ;; Case 2: Cache miss - execute spin
         :else
         (let [;; Local execution state (ephemeral, not in runtime)
-              callbacks-atom (atom [{:resolve resolve :reject reject}])
+              ;; A continuation can be copied into a child world. The initiating
+              ;; callback is process-local egress owned by the world that called
+              ;; this Spin; completing the copied child must cache its child
+              ;; result without firing the parent's callback.
+              callbacks-atom (atom [{:fork-id (:fork-id runtime)
+                                     :egress-policy ec/*callback-egress-policy*
+                                     :resolve resolve
+                                     :reject reject}])
               executing? (atom true)]
 
           (log/debug :spin/start {:spin-id spin-id})
@@ -325,7 +351,11 @@
 
                                 ;; Call all pending callbacks from local state
                               (let [callbacks @callbacks-atom]
-                                (doseq [{:keys [resolve]} callbacks]
+                                (doseq [{callback-fork-id :fork-id
+                                         :keys [resolve egress-policy]} callbacks
+                                        :when (callback-visible-in-world?
+                                               current-rt callback-fork-id
+                                               egress-policy)]
                                     ;; Call resolve via resume to handle Thunk returns
                                   (resume resolve value)))
 
@@ -362,7 +392,11 @@
 
                                 ;; Call all pending callbacks from local state
                               (let [callbacks @callbacks-atom]
-                                (doseq [{:keys [reject]} callbacks]
+                                (doseq [{callback-fork-id :fork-id
+                                         :keys [reject egress-policy]} callbacks
+                                        :when (callback-visible-in-world?
+                                               _current-rt callback-fork-id
+                                               egress-policy)]
                                     ;; Call reject via resume to handle Thunk returns
                                   (resume reject err)))
 
@@ -403,6 +437,42 @@
   Object
   (toString [_this]
     (str "#<Spin " spin-id ">")))
+
+(deftype CallbackEgressSpin [task policy]
+  PSpin
+  (spin-id [_] (spin-id task))
+
+  PSpinBody
+  (spin-body [_]
+    (let [body (spin-body task)]
+      (fn [resolve reject]
+        (binding [ec/*callback-egress-policy* policy]
+          (body resolve reject)))))
+
+  #?(:clj clojure.lang.IFn :cljs IFn)
+  (#?(:clj invoke :cljs -invoke) [_ resolve reject]
+    (binding [ec/*callback-egress-policy* policy]
+      (task resolve reject)))
+
+  #?(:clj clojure.lang.IDeref :cljs IDeref)
+  (#?(:clj deref :cljs -deref) [_]
+    (binding [ec/*callback-egress-policy* policy]
+      @task))
+
+  #?@(:clj
+      [clojure.lang.IBlockingDeref
+       (deref [_ timeout-ms timeout-val]
+              (binding [ec/*callback-egress-policy* policy]
+                (deref task timeout-ms timeout-val)))])
+
+  Object
+  (toString [_]
+    (str "#<CallbackEgressSpin " (spin-id task) " " policy ">")))
+
+(defn ^:no-doc with-causal-descendant-egress
+  "Authorize a host-owned Spin callback to complete from COW descendants."
+  [task]
+  (CallbackEgressSpin. task :causal-follow))
 
 ;; =============================================================================
 ;; Spin Creation
@@ -676,13 +746,13 @@
         ;; Then arm the external-resource cancellation gate (so a later delivery on
         ;; the abandoned reader is a no-op) and drop the now-spent cont.
             :external-await
-            (do (try
-                  (binding [ec/*execution-context* ctx
-                            ec/*spin-id*          sid
-                            pcps-async/*in-trampoline* false]
-                    (when-let [rj (:reject-fn cont)] (rj err)))
-                  (catch #?(:clj Throwable :cljs :default) _ nil))
-                nil)
+            (when-not (:cancellation-shielded? cont)
+              (try
+                (binding [ec/*execution-context* ctx
+                          ec/*spin-id*          sid
+                          pcps-async/*in-trampoline* false]
+                  (when-let [rj (:reject-fn cont)] (rj err)))
+                (catch #?(:clj Throwable :cljs :default) _ nil)))
         ;; Parked awaiting a child spin (incl. a reactive aseq/PSpin): resume THIS
         ;; parent into reject directly — the cont's :reject-fn is the parent body's
         ;; raw reject continuation, so invoking it unwinds the parent's try/finally

@@ -23,6 +23,7 @@ with **Getting Started**, then **Concepts**.
 - **[Pub/Sub](pubsub.md)** — `mult`, `pub`, buffers, async-sequence fan-out
 - **[Distributed](distributed.md)** — `defn-spin-remote`, `spin-remote`, the spin↔channel bridge, distributed-scope integration; convergent signal sync; workspace reflection + cross-system forking (`wire-topology!`, `fork-remote!`/`merge-fork-remote!`)
 - **[SCI Integration](sci-integration.md)** — sandboxed spin execution via the Small Clojure Interpreter
+- **[Inference Worlds](inference.md)** — SMC particles as canonical, isolated, affine worlds
 
 ## Internals & Reference
 

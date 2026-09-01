@@ -27,6 +27,13 @@
                  '[org.replikativ.spindel.signal :refer [signal]]
                  '[org.replikativ.spindel.test-async :refer [await-drain]]))
 
+(defn- keep-reachable!
+  "Keep test fixtures alive while manually simulating their Cleaner callbacks."
+  [& xs]
+  #?(:clj (doseq [x xs]
+            (java.lang.ref.Reference/reachabilityFence x))
+     :cljs nil))
+
 ;; =============================================================================
 ;; Cross-platform deterministic tests for full-cleanup-spin!
 ;; =============================================================================
@@ -51,6 +58,7 @@
                             (is (nil? (rtp/get-state ctx [:spins-meta sid])) "Meta should be removed")
                             (is (nil? (rtp/get-state ctx [:track-subscriptions sid])) "Track conts should be removed")
                             (is (nil? (rtp/get-state ctx [:await-conts sid])) "Await conts should be removed")
+                            (keep-reachable! s)
                             (done))
                           (fn [e] (is false (str "Spin failed: " e)) (done))))))))
 
@@ -72,6 +80,7 @@
               ;; Verify spin is removed from signal's observers
                             (let [sig-node (rtp/get-state ctx [:nodes sig-id])]
                               (is (not (contains? (:observers sig-node) sid)) "Spin should be removed from signal's observers"))
+                            (keep-reachable! s)
                             (done))
                           (fn [e] (is false (str "Spin failed: " e)) (done))))))))
 
@@ -95,6 +104,7 @@
                     ;; Verify child is removed from parent's observers
                                            (let [parent-node (rtp/get-state ctx [:nodes parent-id])]
                                              (is (not (contains? (:observers parent-node) child-id)) "Child should be removed from parent's observers"))
+                                           (keep-reachable! p c)
                                            (done))
                                          (fn [e] (is false (str "Child failed: " e)) (done)))))
                           (fn [e] (is false (str "Parent failed: " e)) (done))))))))
@@ -114,6 +124,7 @@
               ;; Spin has no observers - should be fully cleaned
                             (simple/try-gc-cleanup-spin! ctx sid)
                             (is (nil? (rtp/get-state ctx [:nodes sid])) "Spin with no observers should be fully cleaned")
+                            (keep-reachable! s)
                             (done))
                           (fn [e] (is false (str "Spin failed: " e)) (done))))))))
 
@@ -133,6 +144,7 @@
                                            (let [node (rtp/get-state ctx [:nodes parent-id])]
                                              (is (some? node) "Node should still exist (has observers)")
                                              (is (:orphaned? node) "Node should be marked orphaned"))
+                                           (keep-reachable! p c)
                                            (done))
                                          (fn [e] (is false (str "Child failed: " e)) (done)))))
                           (fn [e] (is false (str "Parent failed: " e)) (done))))))))
@@ -157,6 +169,7 @@
                                            (simple/try-gc-cleanup-spin! ctx child-id)
                                            (is (nil? (rtp/get-state ctx [:nodes child-id])) "Child should be cleaned")
                                            (is (nil? (rtp/get-state ctx [:nodes parent-id])) "Orphaned parent should be cleaned via cascade")
+                                           (keep-reachable! p c)
                                            (done))
                                          (fn [e] (is false (str "Child failed: " e)) (done)))))
                           (fn [e] (is false (str "Parent failed: " e)) (done))))))))
@@ -174,6 +187,7 @@
               ;; Clean again - should be a no-op, not throw
                             (simple/try-gc-cleanup-spin! ctx sid)
                             (is (nil? (rtp/get-state ctx [:nodes sid])) "Still cleaned")
+                            (keep-reachable! s)
                             (done))
                           (fn [e] (is false (str "Spin failed: " e)) (done))))))))
 

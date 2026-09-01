@@ -724,7 +724,8 @@ SCI integration — functional API. See [SCI Integration](sci-integration.md).
 | Function | Description |
 |----------|-------------|
 | `(create-spindel-sci-context opts)` | Create SCI context with spindel support |
-| `(wrap-spin-for-sci task runtime)` | Wrap native spin as BoundaryTask |
+| `(wrap-capability-for-sci task)` | Wrap an inherited capability for ambient-world execution |
+| `(wrap-spin-for-sci task runtime)` | Wrap an explicit task hosted by `runtime` |
 | `(make-spin-for-sci spin-fn id runtime)` | Create spin from SCI context |
 
 ### Options for `create-spindel-sci-context`
