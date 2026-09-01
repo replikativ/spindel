@@ -33,6 +33,7 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.seq.core :refer [gen-aseq]]
             [org.replikativ.spindel.spin.combinators :as comb]
+            [org.replikativ.spindel.test-helpers :as h]
             [is.simm.partial-cps.sequence :refer [anext]]
             [org.replikativ.spindel.core :as sp]))
 
@@ -47,6 +48,85 @@
            cont-id cont-ids
            :when (nil? (get-in state [:await-conts parent-id cont-id]))]
        {:child-id child-id :parent-id parent-id :cont-id cont-id}))))
+
+(deftest sequential-external-resumes-retain-owning-spin
+  (h/async-test [ctx done]
+                (let [mailbox (sync/mailbox)
+                      worker (spin
+                              (let [first-value (await mailbox)
+                                    first-owner ec/*spin-id*
+                                    second-value (await mailbox)]
+                                [first-value first-owner
+                                 second-value ec/*spin-id*]))
+                      worker-id (spin-core/spin-id worker)]
+                  (h/run-spin! worker
+                               (fn [result]
+                                 (is (= [:first worker-id :second worker-id]
+                                        result))
+                                 (done))
+                               (fn [error]
+                                 (is false (str error))
+                                 (done)))
+                  (sync/post! mailbox :first)
+                  (sync/post! mailbox :second))))
+
+(deftest cancellation-remains-typed-at-the-next-effect-boundary
+  (h/async-test [ctx done]
+                (let [first-gate (sync/deferred)
+                      second-gate (sync/deferred)
+                      worker (spin
+                              (try
+                                (await first-gate)
+                                (catch #?(:clj Throwable :cljs :default) _
+                                  :handled))
+                              (await second-gate))]
+                  (h/run-spin! worker
+                               (fn [value]
+                                 (is false (str "unexpected value " value))
+                                 (done))
+                               (fn [error]
+                                 (is (= spin-core/spin-cancelled
+                                        (:type (ex-data error))))
+                                 (is (ec/spin-is-cancelled?
+                                      (spin-core/spin-id worker)))
+                                 (done)))
+                  (spin-core/cancel-spin! worker))))
+
+#?(:clj
+   (deftest cancellation-between-check-and-external-registration-is-not-lost
+     (testing "an await that loses the entry-check/register race unwinds instead
+            of installing a permanently orphaned reader"
+       (let [execution-ctx (ctx/create-execution-context)
+             original-add ec/continuation-add!
+             cancelled? (atom false)
+             finalized (atom 0)
+             outcome (promise)]
+         (try
+           (binding [ec/*execution-context* execution-ctx]
+             (let [worker (spin
+                           (try
+                             (await (fn [_resolve _reject] nil))
+                             :unexpected
+                             (finally (swap! finalized inc))))]
+               (with-redefs [ec/continuation-add!
+                             (fn [spin-id cont]
+                               (when (and (= spin-id (spin-core/spin-id worker))
+                                          (compare-and-set! cancelled? false true))
+                                 ;; Force cancellation into the exact window after
+                                 ;; await-handler's entry check and before its
+                                 ;; external continuation becomes visible.
+                                 (spin-core/cancel-spin! worker))
+                               (original-add spin-id cont))]
+                 (worker #(deliver outcome [:ok %])
+                         #(deliver outcome [:error %])))
+               (let [[status error] (deref outcome 2000 [::timed-out nil])]
+                 (is (= :error status))
+                 (is (= spin-core/spin-cancelled (:type (ex-data error))))
+                 (is (= 1 @finalized))
+                 (is (empty? (ec/get-state
+                              [:await-conts (spin-core/spin-id worker)]))))))
+           (finally
+             (ctx/close-context! execution-ctx)))))))
 
 #?(:clj
    (deftest no-double-side-effect-after-track-resume-mid-deferred-await

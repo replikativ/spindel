@@ -329,9 +329,20 @@
           tap-seq (->TapSeq mult tap-id tap-state-atom)]
       ;; Register tap
       (swap! taps-atom assoc tap-id tap-state-atom)
-      ;; Start pump on first tap (lazy)
-      (when (compare-and-set! pump-started-atom false true)
-        (start-pump! mult))
+      (if @(:closed-atom mult)
+        ;; A late tap on an exhausted hot source must terminate immediately;
+        ;; otherwise it waits forever for a pump that cannot restart.
+        (do (close-tap! tap-state-atom)
+            (swap! taps-atom dissoc tap-id))
+        (do
+          ;; Start pump on first tap (lazy)
+          (when (compare-and-set! pump-started-atom false true)
+            (start-pump! mult))
+          ;; Close a tap that raced source exhaustion between registration and
+          ;; the first check above. close-tap! is idempotent.
+          (when @(:closed-atom mult)
+            (close-tap! tap-state-atom)
+            (swap! taps-atom dissoc tap-id))))
       tap-seq))
 
   (untap* [mult tap-id]

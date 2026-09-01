@@ -49,6 +49,7 @@
          (d/transact! @@ydb [{:foo/bar 1}]))
        (ygg/merge-fork! fork))                       ; merge each overlay down"
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.nodes :as nodes]
@@ -937,6 +938,7 @@
 
    opts (optional): forwarded to `ctx/fork-context` —
      :mode      :following (default) | :frozen — overlay fork relation to parent
+     :executor  optional child executor (default: share the parent's executor)
      :snapshots {system-id -> snapshot-id} — pin those systems at fixed values
      :systems   :all (default) | :none | #{system-id ...} — systems visible and
        forked in the child. Excluded systems are hidden, never shared writable.
@@ -1025,7 +1027,8 @@
                                         [(:id sr) snap])))
                            s))
             state-updates (-> (or (:state-updates opts) {})
-                              (assoc registry-key selected-reg
+                              (assoc registry-key
+                                     (backend/full-replacement selected-reg)
                                      :forkable-signals selected-signal-ids)
                               (update :nodes #(merge (or % {}) attenuated-nodes)))
             fopts  (cond-> (-> opts

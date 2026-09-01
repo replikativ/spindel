@@ -110,6 +110,34 @@
         (finally
           (ctx/stop-context! parent-ctx))))))
 
+(deftest frozen-fork-pins-untouched-parent-state
+  (let [parent-ctx (ctx/create-execution-context)]
+    (try
+      (rtp/swap-state! parent-ctx [:beliefs] (constantly {:score 1}))
+      (let [following (ctx/fork-context parent-ctx)
+            frozen (ctx/fork-context parent-ctx :mode :frozen)]
+        (rtp/swap-state! parent-ctx [:beliefs :score] (constantly 2))
+        (is (= 2 (rtp/get-state following [:beliefs :score]))
+            "the default child follows untouched parent state")
+        (is (= 1 (rtp/get-state frozen [:beliefs :score]))
+            "a particle-style frozen child keeps its fork-time view")
+        (rtp/swap-state! frozen [:beliefs :score] inc)
+        (is (= 2 (rtp/get-state frozen [:beliefs :score])))
+        (is (= 2 (rtp/get-state parent-ctx [:beliefs :score]))))
+      (finally
+        (ctx/stop-context! parent-ctx)))))
+
+(deftest fork-rejects-unknown-mode
+  (let [parent-ctx (ctx/create-execution-context)]
+    (try
+      (is (= ::ctx/invalid-fork-mode
+             (:type (ex-data
+                     (try
+                       (ctx/fork-context parent-ctx :mode :eventually)
+                       (catch clojure.lang.ExceptionInfo error error))))))
+      (finally
+        (ctx/stop-context! parent-ctx)))))
+
 (deftest test-fork-local-bindings
   (testing "Fork-local bindings are stored and merged correctly"
     (let [parent-ctx (ctx/create-execution-context

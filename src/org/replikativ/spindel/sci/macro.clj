@@ -25,10 +25,24 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.effects.await :as eff-await]
             [org.replikativ.spindel.effects.track :as eff-track]
             [org.replikativ.spindel.sci.boundary :as boundary]
             [is.simm.partial-cps.async :as async]
             [org.replikativ.spindel.sci.core :as sci-core]))
+
+(defn- same-world-or-descendant?
+  "True when `candidate` is the captured world or one of its COW descendants.
+
+  Continuation slice restoration may construct another ExecutionContext record
+  for the same branch, so stable fork identity—not object identity—is the base
+  case."
+  [candidate captured]
+  (loop [ctx candidate]
+    (cond
+      (nil? ctx) false
+      (= (:fork-id ctx) (:fork-id captured)) true
+      :else (recur (:parent-ctx ctx)))))
 
 (defn create-spin-macro-context
   "Create SCI context with full spin/await/track syntax support.
@@ -53,6 +67,10 @@
                     interrupt flag is set so timeouts and user-cancels unwind
                     the computation). Optional — omit for unbounded execution.
                     (Convenience; equivalent to `:sci-opts {:interrupt-fn …}`.)
+    :resolve-sci-context - Optional `(fn [execution-context] sci-context)` used
+                when a suspended continuation resumes in a descendant Spindel
+                world. Embeddings with forked interpreter components use this
+                to select the SCI world paired with the ambient runtime.
     :sci-opts - A map merged into the `sci/init` argument, so a consumer can set
                 ANY SCI option without spindel having to thread it through one key
                 at a time — e.g. `:load-fn` (resolve `(require …)` against the
@@ -80,14 +98,18 @@
                   x (await a)
                   y (await b)]
               (+ x y)))\"))  ; => 30"
-  [{:keys [runtime native-spins expose-track? interrupt-fn sci-opts]
+  [{:keys [runtime native-spins expose-track? interrupt-fn sci-opts resolve-sci-context]
     :or {native-spins {}
          expose-track? true
          sci-opts      {}}}]
-  (let [;; Wrap all native spins for SCI (BoundaryTask pattern)
+  (let [sci-execution-context (sci/new-dynamic-var '*execution-context* runtime)
+        sci-spin-id (sci/new-dynamic-var '*spin-id* nil)
+        sci-in-trampoline (sci/new-dynamic-var '*in-trampoline* false)
+        ;; Native capabilities follow the caller's selected world. Explicit
+        ;; cross-world task handles use boundary/wrap-spin-for-sci instead.
         wrapped-natives (into {}
                               (map (fn [[k v]]
-                                     [k (boundary/wrap-spin-for-sci v runtime)])
+                                     [k (boundary/wrap-capability-for-sci v)])
                                    native-spins))
 
         ;; Build namespace map — inject native primitives SCI code needs
@@ -103,8 +125,8 @@
                      {'make-spin spin-core/make-spin}
 
                      'org.replikativ.spindel.engine.core
-                     {'*execution-context* (sci/new-dynamic-var '*execution-context* runtime)
-                      '*spin-id* (sci/new-dynamic-var '*spin-id* nil)
+                     {'*execution-context* sci-execution-context
+                      '*spin-id* sci-spin-id
                       'current-execution-context ec/current-execution-context
                       'with-context (var ec/with-context)
                       'spin-current-result ec/spin-current-result
@@ -115,7 +137,7 @@
 
                      'is.simm.partial-cps.async
                      {'invoke-continuation async/invoke-continuation
-                      '*in-trampoline* (sci/new-dynamic-var '*in-trampoline* false)}}
+                      '*in-trampoline* sci-in-trampoline}}
 
                      ;; Optionally include track effect
                     (when expose-track?
@@ -132,6 +154,10 @@
         sci-ctx (sci/init
                  (-> sci-opts
                      (cond-> interrupt-fn (assoc :interrupt-fn interrupt-fn))
+                     ;; Spindel captures and retargets suspended continuations;
+                     ;; SCI's direct/standard runtime deliberately does not
+                     ;; maintain the managed world needed for that operation.
+                     (assoc :runtime-mode :forkable)
                      (update :features    #(or % #{:clj}))
                      (update :classes     merge (sci-core/common-classes))
                      (update :bindings    merge wrapped-natives)
@@ -140,15 +166,95 @@
     ;; Load partial-cps for CPS transformation support (runs inside SCI)
     (sci-core/load-partial-cps! sci-ctx)
 
+    ;; A native CPS awaitable (Deferred, Mailbox, Spin, tool callback, …) reads
+    ;; Spindel's host dynamic execution context when it registers its reader.
+    ;; SCI has distinct dynamic Vars, so crossing the interpreter boundary
+    ;; without an explicit bridge can silently register the continuation under
+    ;; spin-id nil. Besides conflating independent agent programs, cancellation
+    ;; can then neither find the parked slice nor run its catch/finally cleanup.
+    ;;
+    ;; Capture the host world at the await call and restore both host and SCI
+    ;; bindings whenever either continuation re-enters. Prefer the callback's
+    ;; current host context when the engine deliberately resumes in a COW fork;
+    ;; the captured values are only the boundary fallback.
+    (sci/add-namespace!
+     sci-ctx 'org.replikativ.spindel.engine.core
+     {'invoke-sci-awaitable
+      (fn [awaitable source-loc resolve reject]
+        (let [captured-ctx (ec/current-execution-context)
+              captured-spin-id ec/*spin-id*
+              captured-trampoline @sci-in-trampoline
+              captured-sci-context (sci/capture-continuation-context sci-ctx)
+              continuation-contexts (atom {sci-ctx captured-sci-context})
+              wrap-cont
+              (fn [continuation]
+                (fn [value]
+                  (let [ambient-ctx (try (ec/current-execution-context)
+                                         (catch Throwable _ nil))
+                        current-ctx (if (same-world-or-descendant?
+                                         ambient-ctx captured-ctx)
+                                      ambient-ctx
+                                      captured-ctx)
+                        target-sci-ctx (if resolve-sci-context
+                                         (resolve-sci-context current-ctx)
+                                         sci-ctx)
+                        continuation-context
+                        (or (get @continuation-contexts target-sci-ctx)
+                            (let [retargeted
+                                  (sci/retarget-continuation-context
+                                   captured-sci-context target-sci-ctx)]
+                              (get (swap! continuation-contexts
+                                          #(if (contains? % target-sci-ctx)
+                                             %
+                                             (assoc % target-sci-ctx retargeted)))
+                                   target-sci-ctx)))
+                        resume
+                        (sci/continuation-context-fn
+                         continuation-context
+                         (fn [resumed-value]
+                           (binding [ec/*execution-context* current-ctx
+                                     ;; A Spin keeps one identity across worlds. The
+                                     ;; ambient id belongs to the producer/drain that
+                                     ;; happened to resume this continuation and must
+                                     ;; never re-parent the consumer's next await.
+                                     ec/*spin-id* captured-spin-id]
+                             (sci/with-bindings
+                               {sci-execution-context current-ctx
+                                sci-spin-id captured-spin-id
+                                sci-in-trampoline captured-trampoline}
+                               (async/invoke-continuation continuation
+                                                          resumed-value)))))]
+                    (resume value))))]
+          (when-not captured-spin-id
+            (throw (ex-info "SCI await requires an owning Spin"
+                            {:type ::sci-await-outside-spin
+                             :source-loc source-loc})))
+          (binding [ec/*execution-context* captured-ctx
+                    ec/*spin-id* captured-spin-id]
+            (eff-await/await-handler awaitable captured-spin-id source-loc
+                                     (wrap-cont resolve) (wrap-cont reject)))))})
+
     ;; Extend partial-cps breakpoints to also recognize spindel's await namespace.
     ;; The async macro checks breakpoints at macro-expansion time, so updating the
     ;; var before defining spin ensures the CPS transformer recognizes await from
     ;; either namespace.
     (sci/eval-string* sci-ctx
                       "(in-ns 'is.simm.partial-cps.async)
-       (def breakpoints (assoc breakpoints
-                          'org.replikativ.spindel.effects.await/await
-                          'is.simm.partial-cps.async/await-handler))")
+       (defn spindel-await-handler [ctx r e]
+         (fn [args]
+           (let [[let-sym bindings invoke]
+                 ((await-handler ctx r e) args)]
+             (list let-sym bindings
+                   (list* 'org.replikativ.spindel.engine.core/invoke-sci-awaitable
+                          (first invoke)
+                          (select-keys (meta (first args)) [:file :line :column])
+                          (rest invoke))))))
+       (def breakpoints
+         (assoc breakpoints
+           'is.simm.partial-cps.async/await
+           'is.simm.partial-cps.async/spindel-await-handler
+           'org.replikativ.spindel.effects.await/await
+           'is.simm.partial-cps.async/spindel-await-handler))")
 
     ;; Re-export await under spindel's namespace for agent ergonomics
     (sci/eval-string* sci-ctx

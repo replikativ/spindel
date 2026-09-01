@@ -100,4 +100,5 @@
    'is.simm.partial_cps.runtime.Thunk (Class/forName "is.simm.partial_cps.runtime.Thunk")
    'org.replikativ.spindel.spin.core.Spin (Class/forName "org.replikativ.spindel.spin.core.Spin")
    'java.lang.Throwable java.lang.Throwable
+   'is.simm.partial-cps.ioc/Throwable java.lang.Throwable
    'is.simm.partial-cps.async/Throwable java.lang.Throwable})

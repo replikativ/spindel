@@ -1206,6 +1206,7 @@
           spin (:spin event)
           resolve-fn (:resolve-fn event)
           reject-fn (:reject-fn event)
+          callback-egress-policy (or (:callback-egress-policy event) :isolated)
           execution-context (:execution-context event)]  ; May be nil for normal spins
       (log/trace :engine/spin-execution {:spin-id tid})
       ;; Try to atomically claim execution
@@ -1245,6 +1246,7 @@
                               base-ctx)]
           (binding [ec/*execution-context* effective-ctx
                     ec/*spin-id* tid
+                    ec/*callback-egress-policy* callback-egress-policy
                     pcps-async/*in-trampoline* false]
             ;; Invoke spin (Spin implements IFn)
             (let [result (spin resolve-fn reject-fn)]
@@ -1294,7 +1296,8 @@
           (let [rctx (if (:slice-state claimed)
                        (restore-slice-state! context spin-id claimed)
                        context)]
-            (binding [ec/*execution-context* rctx]
+            (binding [ec/*execution-context* rctx
+                      ec/*spin-id* spin-id]
               (guarded-resume! rctx site spin-id cancel-token resolve value))
             nil))))
 

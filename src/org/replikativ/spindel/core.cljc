@@ -18,6 +18,7 @@
    [org.replikativ.spindel.spin.combinators :as combinators]
    [org.replikativ.spindel.spin.sync :as sync]
    [org.replikativ.spindel.spin.supervisor :as supervisor]
+   [org.replikativ.spindel.work :as work]
    [org.replikativ.spindel.atom :as ratom]
    [org.replikativ.spindel.semaphore :as semaphore]
    [org.replikativ.spindel.incremental.deltaable :as deltaable]
@@ -51,6 +52,12 @@
       See org.replikativ.spindel.spin.cps/spin for full docs."
      [& body]
      `(spin-cps/spin ~@body)))
+
+#?(:clj
+   (defmacro task
+     "Create a reusable CPS task for structured work admission."
+     [& body]
+     `(work/task ~@body)))
 
 #?(:clj
    (defmacro signal
@@ -226,6 +233,43 @@
   "Fire-and-forget execution of a spin. Returns nil. Errors are reported via
   the optional :on-error handler (defaults to logging)."
   sync/spawn!)
+
+;; =============================================================================
+;; Structured Work Admission
+;; =============================================================================
+
+(def work-admission
+  "Create a structured `:latest`, `:serial`, `:busy`, or bounded `:parallel`
+  work controller. See org.replikativ.spindel.work/work-admission."
+  work/work-admission)
+
+(def submit-work!
+  "Submit a value to a work-admission controller."
+  work/submit!)
+
+(def work-events
+  "Return a work-admission controller's event stream."
+  work/events)
+
+(def work-completion
+  "Return an awaitable completed when a work controller is quiescent."
+  work/completion)
+
+(def untap-work-events!
+  "Detach a work event tap."
+  work/untap-events!)
+
+(def work-snapshot
+  "Return a work-admission controller's current fork-local projection."
+  work/snapshot)
+
+(def close-work!
+  "Close a work controller after draining accepted work."
+  work/close!)
+
+(def cancel-work!
+  "Cancel queued and active work, then stop its controller."
+  work/cancel!)
 
 ;; =============================================================================
 ;; Fork-safe Atoms
