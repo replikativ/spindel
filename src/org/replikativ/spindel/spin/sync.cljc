@@ -15,19 +15,17 @@
 
   ;; 1-arity: Assign value via event queue (SAFE)
   ;; Returns true if this call won delivery rights, false if already claimed.
-  ;; Uses atomic swap! with local flag to guarantee exactly-once delivery semantics.
+  ;; The returned state identifies the winner even when swap! retries.
   ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
   (#?(:clj invoke :cljs -invoke) [_this value]
-   ;; Atomically claim delivery rights using local atom to detect winner
-    (let [i-won? (atom false)
-          _ (swap! state-atom
-                   (fn [state]
-                     (if (:delivery-claimed? state)
-                       state  ;; Already claimed - no change
-                       (do
-                         (reset! i-won? true)
-                         (assoc state :delivery-claimed? true)))))]
-      (if @i-won?
+    (let [claim-id (random-uuid)
+          claimed-state (swap! state-atom
+                               (fn [state]
+                                 (if (:delivery-claimed? state)
+                                   state
+                                   (assoc state :delivery-claimed? true
+                                          :delivery-claim-id claim-id))))]
+      (if (= claim-id (:delivery-claim-id claimed-state))
        ;; We won - enqueue delivery event and return true
         (do
           (ec/enqueue-event! {:type :deferred-delivery
