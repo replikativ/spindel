@@ -225,7 +225,7 @@
                       num-particles
                       (assoc opts :world-manager world-manager))
          _ (when world-manager
-             (swap! world-manager assoc :coordinator coordinator))
+             (swap! world-manager assoc :client coordinator))
 
           ;; PGIBBS: Check if we have a retained trace (for conditional SMC)
          pgibbs-retained-trace (:pgibbs-retained-trace opts)
