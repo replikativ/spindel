@@ -56,29 +56,27 @@
                          (or (and spin-id (ec/spin-is-cancelled? spin-id))
                              (and cancel-token cancelled-tokens
                                   (contains? cancelled-tokens cancel-token))))
-          value-to-resolve (atom nil)
-          _result-state (swap! state-atom
-                               (fn [state]
-                                 (if (:assigned? state)
-                                 ;; Already assigned - capture value for resolution, don't modify state
-                                   (do
-                                     (reset! value-to-resolve (:value state))
-                                     state)
-                                 ;; Not assigned - prune dead readers, then add ours
-                                   (update state :pending
-                                           (fn [ps]
-                                             (conj (if ctx
-                                                     (filterv (complement dead-reader?) (or ps []))
-                                                     (or ps []))
-                                                   {:spin-id current-spin-id
-                                                    :cancel-token current-cancel-token
-                                                    :resolve resolve}))))))]
-      (if-let [value @value-to-resolve]
+          result-state (swap! state-atom
+                              (fn [state]
+                                (if (:assigned? state)
+                                ;; Already assigned - return the immutable state
+                                ;; snapshot without registering another reader.
+                                  state
+                                ;; Not assigned - prune dead readers, then add ours
+                                  (update state :pending
+                                          (fn [ps]
+                                            (conj (if ctx
+                                                    (filterv (complement dead-reader?) (or ps []))
+                                                    (or ps []))
+                                                  {:spin-id current-spin-id
+                                                   :cancel-token current-cancel-token
+                                                   :resolve resolve}))))))]
+      (if (:assigned? result-state)
        ;; Was already assigned - resolve immediately
        ;; CRITICAL: Reset *in-trampoline* to ensure Thunks from recur are trampolined
        ;; When called synchronously inside a spin's trampoline, we need a fresh trampoline
         (binding [pcps-async/*in-trampoline* false]
-          (spin-core/resume resolve value))
+          (spin-core/resume resolve (:value result-state)))
        ;; Was not assigned - added to pending
         spin-core/incomplete))))
 
