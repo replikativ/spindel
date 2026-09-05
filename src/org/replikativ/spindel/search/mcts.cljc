@@ -13,7 +13,8 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.world.scope :as world-scope]))
+            [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.spindel.yggdrasil :as ygg]))
 
 (defn- finite-number? [value]
   (and (number? value)
@@ -24,8 +25,9 @@
 
 (defn- portable-number? [value]
   (and (finite-number? value)
-       #?(:clj (or (instance? Double value)
-                   (instance? Float value)
+       #?(:clj (or (and (instance? Double value)
+                        (or (not= value (Math/rint value))
+                            (<= (- max-safe-integer) value max-safe-integer)))
                    (and (or (instance? Byte value)
                             (instance? Short value)
                             (instance? Integer value)
@@ -178,9 +180,14 @@
 
 (defn- backpropagate [tree path reward]
   (reduce (fn [next-tree id]
-            (-> next-tree
-                (update-in [id :visits] inc)
-                (update-in [id :value-total] + (double reward))))
+            (let [value-total (+ (get-in next-tree [id :value-total])
+                                 (double reward))]
+              (when-not (finite-number? value-total)
+                (throw (ex-info "MCTS accumulated value must remain finite"
+                                {:type ::non-finite-value-total :node/id id})))
+              (-> next-tree
+                  (update-in [id :visits] inc)
+                  (assoc-in [id :value-total] value-total))))
           tree
           path))
 
@@ -197,7 +204,19 @@
                :phase phase
                :systems shared
                :fork/id (get-in world [:descriptor :fork/id])})))
+    (binding [ec/*execution-context* (:child-ctx world)]
+      ;; Search has no disposal authority for systems acquired after fork
+      ;; construction. Freeze registry shape before any environment callback,
+      ;; while leaving the registered forked systems themselves writable.
+      (ygg/freeze-world-shape!))
     world))
+
+(defn- reward-value [value]
+  (when-not (portable-number? value)
+    (throw (ex-info "MCTS reward must be a portable finite number"
+                    {:type ::invalid-reward
+                     :value-type (str (type value))})))
+  (double value))
 
 (defn- rollout
   [environment scope context state path simulation seed start-depth max-depth]
@@ -214,14 +233,14 @@
                         (await (context-call scope scratch-context :mcts/terminal
                                              #((:terminal? environment) current))))]
          (if (or terminal? (>= depth max-depth))
-           (double
+           (reward-value
             (await (context-call scope scratch-context :mcts/reward
                                  #((:reward environment) current))))
            (let [actions (action-vector
                           (await (context-call scope scratch-context :mcts/actions
                                                #((:actions environment) current))))]
              (if (empty? actions)
-               (double
+               (reward-value
                 (await (context-call scope scratch-context :mcts/reward
                                      #((:reward environment) current))))
                (let [idx (if-let [policy (:rollout-action environment)]
@@ -317,7 +336,8 @@
 
    environment requires:
    - :actions     state -> vector or Spin<vector> (observational)
-   - :transition state action -> next-state or Spin<next-state> (may mutate world)
+   - :transition state action -> next-state or Spin<next-state>
+                 (may mutate registered systems; registry shape is frozen)
    - :terminal?   state -> boolean or Spin<boolean> (observational)
    - :reward      state -> finite number or Spin<number> (observational)
 

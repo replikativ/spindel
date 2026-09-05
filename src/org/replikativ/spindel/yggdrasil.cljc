@@ -89,6 +89,7 @@
 ;;                                                  each of these signal values.
 (def registry-key :ygg-signals)
 (def ^:private fork-authority-key ::fork-authority)
+(def ^:private world-shape-key ::world-shape)
 
 ;; Registry shape is part of a fork's settlement authority. On the JVM this
 ;; lock closes the validation/CAS race between partition-fork! and a concurrent
@@ -104,13 +105,39 @@
   ([] (ensure-world-shape-mutable! (ec/current-execution-context)))
   ([ctx]
    (when-let [authority (rtp/get-state ctx [fork-authority-key])]
-     (let [{:keys [status operation]} @authority]
-       (when-not (= :open status)
+     (let [{:keys [status operation]} @authority
+           world-shape (rtp/get-state ctx [world-shape-key])]
+       (when (or (not= :open status) (= :frozen world-shape))
          (throw (ex-info "Fork world system registry is frozen"
                          {:type ::fork-world-shape-frozen
                           :status status
+                          :world-shape world-shape
                           :operation operation})))))
    true))
+
+(defn freeze-world-shape!
+  "Irreversibly prohibit system registration and removal in the current fork.
+
+   Existing systems remain writable according to their granted fork rights, and
+   the ForkHandle remains open for settlement. This is useful for speculative
+   evaluators which must not acquire child-only external resources after their
+   disposal policy has been fixed. Returns true when frozen."
+  []
+  (with-registry-authority-lock
+    (fn []
+      (let [ctx (ec/current-execution-context)
+            authority (rtp/get-state ctx [fork-authority-key])]
+        (when-not authority
+          (throw (ex-info "Only a fork world has shape authority"
+                          {:type ::not-a-fork-world})))
+        (let [{:keys [status operation]} @authority]
+          (when-not (= :open status)
+            (throw (ex-info "Cannot freeze a settled fork world"
+                            {:type ::fork-world-shape-frozen
+                             :status status
+                             :operation operation})))
+          (rtp/swap-state! ctx [world-shape-key] (constantly :frozen)))
+        true))))
 
 ;; =============================================================================
 ;; fork-value — how a context fork isolates a yggdrasil system value
@@ -1103,6 +1130,7 @@
           ;; mutable while OPEN, but partition-fork!'s atomic transition freezes
           ;; registry shape for every recursively subdivided capability.
           (rtp/swap-state! child-ctx [fork-authority-key] (constantly authority))
+          (rtp/swap-state! child-ctx [world-shape-key] (constantly :mutable))
           (->ForkHandle child-ctx parent-ctx fork-id descriptor authority token))))))))
 
 ;; `with-fork` is a JVM-only convenience macro. On cljs use the engine form it

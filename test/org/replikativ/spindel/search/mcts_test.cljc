@@ -27,6 +27,16 @@
   (is (> (mcts/uct-score 10 {:visits 2 :value-total 2.0} 1.0)
          (mcts/uct-score 10 {:visits 2 :value-total 0.0} 1.0))))
 
+(deftest portable-numbers-have-the-same-cross-runtime-boundary
+  (doseq [value [0 1 -1 1.25 -1.25 9007199254740991]]
+    (is (#'mcts/portable-number? value) (str "expected portable: " value)))
+  (doseq [value [##Inf ##-Inf ##NaN 9007199254740992.0]]
+    (is (not (#'mcts/portable-number? value))
+        (str "expected non-portable: " value)))
+  #?(:clj
+     (is (not (#'mcts/portable-number? (float 1.25)))
+         "JVM Float changes type, equality, and hash after EDN round-trip")))
+
 (deftest owned-context-evaluation-completes
   (async done
          (with-ctx [runtime]
@@ -175,6 +185,36 @@
                 (is (= 1 @terminal-checks)
                     "only the observational root check ran before rejection")
                 (done)))))))
+
+(deftest transitions-cannot-acquire-child-only-systems
+  (async done
+         (with-ctx [_runtime]
+           (let [scope* (atom nil)
+                 create world-scope/create]
+             (with-redefs [world-scope/create
+                           (fn [opts]
+                             (let [scope (create opts)]
+                               (reset! scope* scope)
+                               scope))]
+               (run-spin!
+                (mcts/search
+                 {:actions (constantly [:attempt])
+                  :transition (fn [state _]
+                                (ygg/register! (->SharedSystem :child-only))
+                                state)
+                  :terminal? (constantly false)
+                  :reward (constantly 0.0)}
+                 :root
+                 {:max-simulations 1 :max-depth 2 :max-nodes 2})
+                (fn [result]
+                  (is false (str "registry mutation unexpectedly succeeded: " result))
+                  (done))
+                (fn [error]
+                  (is (= ::ygg/fork-world-shape-frozen
+                         (:type (ex-data error))))
+                  (is (= :discarded (:status @@scope*)))
+                  (is (empty? (:handles @@scope*)))
+                  (done))))))))
 
 (deftest synchronous-spawn-rejection-releases-evaluation-lease
   (async done

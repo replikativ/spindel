@@ -871,6 +871,7 @@ context. See [Forking](forking.md#fork-registered-systems-and-settle-them-affine
 | Function | Description |
 |----------|-------------|
 | `(register! system)` / `(unregister! system-id)` | Add or remove a forkable Yggdrasil signal; rejected once that child world's settlement authority is partitioned/frozen. |
+| `(freeze-world-shape!)` | Irreversibly forbid registry additions/removals in the current open fork while retaining ordinary writes and settlement authority. |
 | `(fork! opts)` | Fork the reactive context and selected registered systems; returns the sole open `ForkHandle`. |
 | `(fork-descriptor handle)` | Portable world/system basis plus current owner and settlement status; excludes live authority. |
 | `(transfer-fork! handle owner)` | Atomically consume the caller's authority and return the new owner's handle. |
