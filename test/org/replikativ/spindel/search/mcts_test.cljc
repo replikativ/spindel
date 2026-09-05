@@ -1,5 +1,7 @@
 (ns org.replikativ.spindel.search.mcts-test
   (:require [clojure.test :refer [deftest is]]
+            #?(:clj [clojure.edn :as edn]
+               :cljs [cljs.reader :as edn])
             [org.replikativ.spindel.atom :as ratom]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as context]
@@ -8,9 +10,17 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.test-helpers :refer [async run-spin! with-ctx]]
-            [org.replikativ.spindel.world.scope :as world-scope])
+            [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.spindel.yggdrasil :as ygg]
+            [yggdrasil.protocols :as yp])
   #?(:cljs (:require-macros [org.replikativ.spindel.test-helpers
                              :refer [async with-ctx]])))
+
+(defrecord SharedSystem [id]
+  yp/SystemIdentity
+  (system-id [_] id)
+  (system-type [_] :shared-test)
+  (capabilities [_] nil))
 
 (deftest uct-prefers-unvisited-and-then-value
   (is (= ##Inf (mcts/uct-score 10 {:visits 0 :value-total 0.0} 1.0)))
@@ -59,6 +69,8 @@
                 (is (= :good (:search/selected-action first-result)))
                 (is (= (dissoc first-result :world/descriptors :search/nodes)
                        (dissoc second-result :world/descriptors :search/nodes)))
+                (is (= first-result (edn/read-string (pr-str first-result)))
+                    "the complete result round-trips as cross-runtime data")
                 (is (= 24 (:search/simulations first-result)))
                 (is (<= (:search/node-count first-result) 3))
                 (is (empty? @ambient)
@@ -95,6 +107,103 @@
             (fn [error]
               (is false (str "resource-bounded search failed: " error))
               (done))))))
+
+(deftest node-cap-search-continues-through-retained-children
+  (async done
+         (with-ctx [_runtime]
+           (run-spin!
+            (mcts/search
+             {:actions (fn [state] (if (:terminal? state) [] [:first :second]))
+              :transition (fn [_ action] {:terminal? true :action action})
+              :terminal? (fn [state] (:terminal? state))
+              :reward (constantly 1.0)}
+             {:terminal? false}
+             {:max-simulations 20 :max-depth 2 :max-nodes 2 :seed :node-cap})
+            (fn [result]
+              (let [child (first (remove #(nil? (:node/action %))
+                                         (:search/nodes result)))]
+                (is (= 20 (:search/simulations result)))
+                (is (= 2 (:search/node-count result)))
+                (is (> (:node/visits child) 1)
+                    "simulations descend through the retained child after saturation"))
+              (done))
+            (fn [error]
+              (is false (str "node-cap search failed: " error))
+              (done))))))
+
+(deftest shared-systems-are-rejected-before-speculative-callbacks
+  (async done
+         (with-ctx [_runtime]
+           (ygg/register! (->SharedSystem :ambient-only))
+           (let [transitions (atom 0)]
+             (run-spin!
+              (mcts/search
+               {:actions (constantly [:attempt])
+                :transition (fn [state _] (swap! transitions inc) state)
+                :terminal? (constantly false)
+                :reward (constantly 0.0)}
+               :root
+               {:max-simulations 1 :max-depth 2 :max-nodes 2})
+              (fn [result]
+                (is false (str "shared expansion unexpectedly succeeded: " result))
+                (done))
+              (fn [error]
+                (is (= ::mcts/shared-world-systems (:type (ex-data error))))
+                (is (= :expansion (:phase (ex-data error))))
+                (is (zero? @transitions))
+                (done)))))))
+
+(deftest shared-systems-are-rejected-before-rollout-callbacks
+  (async done
+         (with-ctx [_runtime]
+           (ygg/register! (->SharedSystem :ambient-only))
+           (let [terminal-checks (atom 0)]
+             (run-spin!
+              (mcts/search
+               {:actions (constantly [:attempt])
+                :transition (fn [state _] state)
+                :terminal? (fn [_] (swap! terminal-checks inc) false)
+                :reward (constantly 0.0)}
+               :root
+               {:max-simulations 1 :max-depth 2 :max-nodes 1})
+              (fn [result]
+                (is false (str "shared rollout unexpectedly succeeded: " result))
+                (done))
+              (fn [error]
+                (is (= ::mcts/shared-world-systems (:type (ex-data error))))
+                (is (= :rollout (:phase (ex-data error))))
+                (is (= 1 @terminal-checks)
+                    "only the observational root check ran before rejection")
+                (done)))))))
+
+(deftest synchronous-spawn-rejection-releases-evaluation-lease
+  (async done
+         (with-ctx [runtime]
+           (let [scope (world-scope/create {:purpose :test})
+                 search-activity (world-scope/begin-activity! scope :test/search)]
+             (with-redefs [org.replikativ.spindel.spin.sync/spawn!
+                           (fn
+                             ([_]
+                              (throw (ex-info "spawn rejected" {})))
+                             ([_ _]
+                              (throw (ex-info "spawn rejected" {}))))]
+               (run-spin!
+                (spin
+                 (await (#'mcts/context-call scope runtime :test/rejection
+                                             (constantly 42))))
+                (fn [result]
+                  (is false (str "spawn unexpectedly succeeded: " result))
+                  (world-scope/end-activity! scope search-activity)
+                  #?(:clj (done) :cljs (js/setTimeout done 0)))
+                (fn [error]
+                  (is (re-find #"spawn rejected" (str error)))
+                  (is (empty? (world-scope/activity-values
+                               scope :mcts/evaluation)))
+                  (world-scope/end-activity! scope search-activity)
+                  ;; A synchronous rejection reaches this callback before
+                  ;; `with-redefs` restores the CLJS Var. Defer completion so
+                  ;; cljs.test cannot start the next test against the stub.
+                  #?(:clj (done) :cljs (js/setTimeout done 0)))))))))
 
 (deftest terminal-root-produces-no-selected-action
   (async done
@@ -138,6 +247,18 @@
                      :reward (constantly 0.0)
                      :rollout-action :not-a-function}
                     :root))))
+
+#?(:clj
+   (deftest mutable-search-keys-are-rejected-before-world-work
+     (is (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"seed must be immutable cross-runtime data"
+          (mcts/search {:actions (constantly [])
+                        :transition (fn [state _] state)
+                        :terminal? (constantly true)
+                        :reward (constantly 0.0)}
+                       :root
+                       {:seed (byte-array [1 2 3])})))))
 
 (deftest initialization-failure-still-settles-the-scope
   (async done

@@ -20,6 +20,45 @@
        #?(:clj (Double/isFinite (double value))
           :cljs (js/Number.isFinite value))))
 
+(def ^:private max-safe-integer 9007199254740991)
+
+(defn- portable-number? [value]
+  (and (finite-number? value)
+       #?(:clj (or (instance? Double value)
+                   (instance? Float value)
+                   (and (or (instance? Byte value)
+                            (instance? Short value)
+                            (instance? Integer value)
+                            (instance? Long value))
+                        (<= (- max-safe-integer) value max-safe-integer)))
+          :cljs (or (not (integer? value))
+                    (<= (- max-safe-integer) value max-safe-integer)))))
+
+(defn- portable-value?
+  "True for the immutable, cross-runtime data subset accepted as a search key."
+  [value]
+  (cond
+    (or (nil? value) (boolean? value) (string? value)
+        (keyword? value) (symbol? value) (uuid? value)) true
+    (number? value) (portable-number? value)
+    (vector? value) (every? portable-value? value)
+    (list? value) (every? portable-value? value)
+    (set? value) (every? portable-value? value)
+    (and (map? value) (not (record? value)))
+    (every? (fn [[key item]]
+              (and (portable-value? key) (portable-value? item)))
+            value)
+    :else false))
+
+(defn- require-portable! [kind value]
+  (when-not (portable-value? value)
+    (throw (ex-info (str "MCTS " (name kind)
+                         " must be immutable cross-runtime data")
+                    {:type ::non-portable-value
+                     :kind kind
+                     :value-type (str (type value))})))
+  value)
+
 (defn- validate-options! [{:keys [max-simulations max-depth max-nodes
                                   exploration]}]
   (when-not (pos-int? max-simulations)
@@ -43,7 +82,7 @@
       (mod value n))))
 
 (defn- action-vector [value]
-  (let [actions (vec value)]
+  (let [actions (mapv #(require-portable! :action %) value)]
     (when-not (= (count actions) (count (set actions)))
       (throw (ex-info "MCTS actions must be unique at each state"
                       {:type ::duplicate-actions :actions actions})))
@@ -75,8 +114,16 @@
                           (binding [ec/*execution-context* caller-context
                                     pcps-async/*in-trampoline* false]
                             (spin-core/resume callback value))))]
-          (sync/spawn! task {:on-success #(finish! resolve %)
-                             :on-error #(finish! reject %)}))))))
+          (try
+            (sync/spawn! task {:on-success #(finish! resolve %)
+                               :on-error #(finish! reject %)})
+            (catch #?(:clj Throwable :cljs :default) error
+              ;; A synchronous terminal callback may throw after claiming the
+              ;; operation. Preserve that callback failure; otherwise release
+              ;; the evaluation lease and reject the still-pending await.
+              (if @settled?
+                (throw error)
+                (finish! reject error)))))))))
 
 (defn- cancel-evaluations! [scope]
   (doseq [{:keys [task context]}
@@ -113,13 +160,14 @@
     (:id (nth tied (deterministic-index
                     seed [:select simulation (:id node)] (count tied))))))
 
-(defn- select-path [tree root-id seed simulation exploration max-depth]
+(defn- select-path
+  [tree root-id seed simulation exploration max-depth max-nodes]
   (loop [node-id root-id
          path [root-id]]
     (let [node (get tree node-id)]
       (if (or (:terminal? node)
               (>= (:depth node) max-depth)
-              (seq (:untried node))
+              (and (seq (:untried node)) (< (count tree) max-nodes))
               (empty? (:children node)))
         path
         (let [child-id (choose-best-child tree node seed simulation exploration)]
@@ -136,11 +184,28 @@
           tree
           path))
 
+(defn- require-isolated-world! [world phase]
+  (let [systems (get-in world [:descriptor :fork/systems])
+        shared (->> systems
+                    (keep (fn [[system-id descriptor]]
+                            (when (= :shared (:kind descriptor)) system-id)))
+                    vec)]
+    (when (seq shared)
+      (throw (ex-info
+              "MCTS speculative world contains shared registered systems"
+              {:type ::shared-world-systems
+               :phase phase
+               :systems shared
+               :fork/id (get-in world [:descriptor :fork/id])})))
+    world))
+
 (defn- rollout
   [environment scope context state path simulation seed start-depth max-depth]
   (spin
-   (let [scratch (await (fn [resolve reject]
-                          (world-scope/fork! scope context resolve reject)))
+   (let [scratch (require-isolated-world!
+                  (await (fn [resolve reject]
+                           (world-scope/fork! scope context resolve reject)))
+                  :rollout)
          scratch-context (:child-ctx scratch)]
      (loop [current state
             depth start-depth
@@ -187,9 +252,11 @@
          idx (deterministic-index seed [:expand simulation parent-id]
                                   (count actions))
          action (nth actions idx)
-         world (await (fn [resolve reject]
-                        (world-scope/fork! scope (:context parent)
-                                           resolve reject)))
+         world (require-isolated-world!
+                (await (fn [resolve reject]
+                         (world-scope/fork! scope (:context parent)
+                                            resolve reject)))
+                :expansion)
          child-context (:child-ctx world)
          next-state
          (await (context-call scope child-context :mcts/transition
@@ -256,6 +323,8 @@
 
    Options include :max-simulations, :max-depth, :max-nodes, :exploration,
    :seed, :world-opts, and a pure :continue? predicate receiving progress.
+   Seed and actions must be immutable cross-runtime data. Speculative forks
+   containing identity-forked :shared systems are rejected before evaluation.
    All speculative worlds are discarded. The selected action is never applied
    to the ambient world."
   ([environment initial-state] (search environment initial-state {}))
@@ -273,6 +342,7 @@
                          :max-depth max-depth
                          :max-nodes max-nodes
                          :exploration exploration})
+     (require-portable! :seed seed)
      (doseq [key [:actions :transition :terminal? :reward]]
        (when-not (fn? (get environment key))
          (throw (ex-info (str "MCTS environment requires " key)
@@ -326,7 +396,7 @@
                                      :nodes (count @tree)}))
                 (let [selected-path
                       (select-path @tree root-id seed simulation
-                                   exploration max-depth)
+                                   exploration max-depth max-nodes)
                       leaf-id (peek selected-path)
                       leaf (get @tree leaf-id)
                       expandable? (and (seq (:untried leaf))
