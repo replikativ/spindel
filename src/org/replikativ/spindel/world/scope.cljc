@@ -15,6 +15,16 @@
 
 (declare maybe-complete-quiescence!)
 
+(defn- transition!
+  "Commit a pure [next-state result] transition; expose only its winning result."
+  [state-atom f]
+  (loop []
+    (let [before @state-atom
+          [after result] (f before)]
+      (if (compare-and-set! state-atom before after)
+        result
+        (recur)))))
+
 (defn create
   "Create a finite world-ownership scope from optional purpose and fork-opts.
    Lifecycle keys are scope-owned and override values in fork-opts."
@@ -30,8 +40,7 @@
          :cancel-requested? false
          :cleanup-started? false
          :quiescent? false
-         :quiescence-readers []
-         :cleanup (atom {:status :pending :readers []})}))
+         :quiescence-readers []}))
 
 (defn descriptors [scope]
   (let [{:keys [descriptors handles]} @scope]
@@ -118,100 +127,111 @@
   "Discard all owned worlds newest first. Returns a shared CPS operation."
   [scope]
   (fn [resolve reject]
-    (let [cleanup (:cleanup @scope)
-          immediate (volatile! nil)]
-      (loop []
-        (let [state @cleanup]
-          (when (and (= :failed (:status state))
-                     (= :open (:status @scope))
-                     (not (compare-and-set!
-                           cleanup state {:status :pending :readers []})))
-            (recur))))
-      (swap! cleanup
-             (fn [state]
-               (if (= :pending (:status state))
-                 (update state :readers conj {:resolve resolve :reject reject})
-                 (do (vreset! immediate state) state))))
-      (when-let [{:keys [status value error]} @immediate]
+    (let [reader {:resolve resolve :reject reject}
+          {:keys [handles immediate]}
+          (transition!
+           scope
+           (fn [state]
+             (case (:status state)
+               :open
+               (if (or (pos? (:pending-forks state))
+                       (seq (:activities state)))
+                 [state
+                  {:immediate
+                   {:status :failed
+                    :error
+                    (ex-info
+                     "Cannot discard a world scope while forks are in flight"
+                     {:type ::scope-busy
+                      :scope/id (:id state)
+                      :scope/status (:status state)})}}]
+                 [(assoc state
+                         :status :discarding
+                         :discard-readers [reader])
+                  {:handles (reverse (:handles state))}])
+
+               :discarding
+               [(update state :discard-readers (fnil conj []) reader) {}]
+
+               :discarded
+               [state {:immediate {:status :done :value nil}}]
+
+               :failed
+               [state {:immediate {:status :failed :error (:error state)}}]
+
+               [state {:immediate
+                       {:status :failed
+                        :error
+                        (ex-info
+                         "Cannot discard a consumed world scope"
+                         {:type ::scope-consumed
+                          :scope/id (:id state)
+                          :scope/status (:status state)})}}])))
+          notify!
+          (fn [readers status payload]
+            (let [callback-error (volatile! nil)]
+              (doseq [{:keys [resolve reject]} readers]
+                (try
+                  ((if (= status :done) resolve reject) payload)
+                  (catch #?(:clj Throwable :cljs :default) error
+                    (when-not @callback-error
+                      (vreset! callback-error error)))))
+              (when-let [error @callback-error]
+                (throw error))))
+          complete!
+          (fn [status payload update-state]
+            (let [readers
+                  (transition!
+                   scope
+                   (fn [state]
+                     (if (= :discarding (:status state))
+                       [(-> (update-state state)
+                            (dissoc :discard-readers))
+                        (:discard-readers state)]
+                       [state []])))]
+              (notify! readers status payload)))]
+      (when-let [{:keys [status value error]} immediate]
         (if (= :done status) (resolve value) (reject error)))
-      (letfn [(complete! [status payload]
-                (let [readers (volatile! [])]
-                  (swap! cleanup
-                         (fn [state]
-                           (if (= :pending (:status state))
-                             (do
-                               (vreset! readers (:readers state))
-                               (cond-> {:status status :readers []}
-                                 (= status :done) (assoc :value payload)
-                                 (= status :failed) (assoc :error payload)))
-                             state)))
-                  (let [callback-error (volatile! nil)]
-                    (doseq [{:keys [resolve reject]} @readers]
-                      (try
-                        ((if (= status :done) resolve reject) payload)
-                        (catch #?(:clj Throwable :cljs :default) error
-                          (when-not @callback-error
-                            (vreset! callback-error error)))))
-                    (when-let [error @callback-error]
-                      (throw error)))))
-              (fail! [handle error]
-                (swap! scope assoc
-                       :status (if (ygg/open-fork? handle) :open :failed)
-                       :error error)
-                (complete! :failed error))
-              (step [handles]
-                (if-let [handle (first handles)]
-                  (if (ygg/open-fork? handle)
-                    (binding [ec/*execution-context* (:parent-ctx handle)
-                              pcps-async/*in-trampoline* false]
-                      (invoke-once!
-                       (ygg/discard-fork! handle {:sync? false})
-                       (fn [_] (step (next handles)))
-                       (fn [error] (fail! handle error))))
-                    (step (next handles)))
-                  (do
-                    (swap! scope
-                           (fn [state]
-                             (-> state
-                                 (assoc :status :discarded
-                                        :descriptors
-                                        (mapv ygg/fork-descriptor
-                                              (:handles state))
-                                        :handles [])
-                                 (dissoc :client))))
-                    (complete! :done nil))))
-              (claim! []
-                (let [state @scope]
-                  (case (:status state)
-                    :open
-                    (if (or (pos? (:pending-forks state))
-                            (seq (:activities state)))
+      (when handles
+        (letfn [(fail! [handle error]
+                  (complete!
+                   :failed error
+                   #(assoc %
+                           :status (if (ygg/open-fork? handle) :open :failed)
+                           :error error)))
+                (step [remaining]
+                  (if-let [handle (first remaining)]
+                    (if (ygg/open-fork? handle)
+                      (binding [ec/*execution-context* (:parent-ctx handle)
+                                pcps-async/*in-trampoline* false]
+                        (invoke-once!
+                         (ygg/discard-fork! handle {:sync? false})
+                         (fn [_] (step (next remaining)))
+                         (fn [error] (fail! handle error))))
+                      (step (next remaining)))
+                    (let [descriptors
+                          (mapv ygg/fork-descriptor (:handles @scope))]
                       (complete!
-                       :failed
-                       (scope-error scope ::scope-busy
-                                    "Cannot discard a world scope while forks are in flight"))
-                      (if (compare-and-set! scope state
-                                            (assoc state :status :discarding))
-                        (step (reverse (:handles state)))
-                        (recur)))
-                    :discarded (complete! :done nil)
-                    :failed (complete! :failed (:error state))
-                    :discarding nil
-                    nil)))]
-        (when-not @immediate (claim!))))))
+                       :done nil
+                       #(-> %
+                            (assoc :status :discarded
+                                   :descriptors descriptors
+                                   :handles [])
+                            (dissoc :client :error))))))]
+          (step handles))))))
 
 (defn await-quiescence [scope]
   (fn [resolve _reject]
-    (let [immediate? (volatile! false)]
-      (swap! scope
-             (fn [state]
-               (if (or (:quiescent? state)
-                       (and (empty? (:activities state))
-                            (zero? (:pending-forks state))))
-                 (do (vreset! immediate? true)
-                     (assoc state :quiescent? true))
-                 (update state :quiescence-readers conj resolve))))
-      (when @immediate? (resolve nil)))))
+    (let [immediate?
+          (transition! scope
+                       (fn [state]
+                         (if (or (:quiescent? state)
+                                 (and (empty? (:activities state))
+                                      (zero? (:pending-forks state))))
+                           [(assoc state :quiescent? true) true]
+                           [(update state :quiescence-readers conj resolve)
+                            false])))]
+      (when immediate? (resolve nil)))))
 
 (defn discard-when-quiescent! [scope]
   (fn [resolve reject]
@@ -225,24 +245,21 @@
   ([scope kind] (begin-activity! scope kind nil))
   ([scope kind value]
    (let [activity-id (random-uuid)
-         error* (volatile! nil)]
-     (swap! scope
-            (fn [state]
-              (cond
-                (not= :open (:status state))
-                (do (vreset! error* (scope-error scope ::scope-consumed
-                                                 "Cannot enter a consumed world scope"))
-                    state)
+         error (transition! scope
+                            (fn [state]
+                              (cond
+                                (not= :open (:status state))
+                                [state (scope-error scope ::scope-consumed
+                                                    "Cannot enter a consumed world scope")]
 
-                (or (:cancel-requested? state) (:quiescent? state))
-                (do (vreset! error* (scope-error scope ::scope-cancelled
-                                                 "Cannot enter a closed world scope"))
-                    state)
+                                (or (:cancel-requested? state) (:quiescent? state))
+                                [state (scope-error scope ::scope-cancelled
+                                                    "Cannot enter a closed world scope")]
 
-                :else
-                (assoc-in state [:activities activity-id]
-                          {:kind kind :value value}))))
-     (if-let [error @error*] (throw error) activity-id))))
+                                :else
+                                [(assoc-in state [:activities activity-id]
+                                           {:kind kind :value value}) nil])))]
+     (if error (throw error) activity-id))))
 
 (defn activity-values
   "Return process-local activity values of kind."
@@ -262,40 +279,36 @@
   (let [specs (mapv #(update % :id (fn [id] (or id (random-uuid))))
                     activity-specs)
         ids (mapv :id specs)
-        result* (volatile! nil)
-        error* (volatile! nil)]
-    (swap! scope
-           (fn [state]
-             (let [remaining (dissoc (:activities state) activity-id)
-                   duplicate-ids? (not= (count ids) (count (set ids)))
-                   collisions (seq (filter #(contains? remaining %) ids))]
-               (cond
-                 (not (contains? (:activities state) activity-id))
-                 (do (vreset! error* (scope-error scope ::unknown-activity
-                                                  "World-scope activity is not live"))
-                     state)
+        result (transition! scope
+                            (fn [state]
+                              (let [remaining (dissoc (:activities state) activity-id)
+                                    duplicate-ids? (not= (count ids) (count (set ids)))
+                                    collisions (seq (filter #(contains? remaining %) ids))]
+                                (cond
+                                  (not (contains? (:activities state) activity-id))
+                                  [state {:error (scope-error scope ::unknown-activity
+                                                              "World-scope activity is not live")}]
 
-                 (or duplicate-ids? collisions)
-                 (do (vreset! error* (scope-error scope ::activity-id-collision
-                                                  "Replacement activity IDs must be unique"))
-                     state)
+                                  (or duplicate-ids? collisions)
+                                  [state {:error (scope-error scope ::activity-id-collision
+                                                              "Replacement activity IDs must be unique")}]
 
-                 :else
-                 (let [admit? (or (empty? specs)
-                                  (not (:cancel-requested? state)))
-                       replacements
-                       (if admit?
-                         (into {}
-                               (map (fn [{:keys [id kind value]}]
-                                      [id {:kind kind :value value}]))
-                               specs)
-                         {})]
-                   (vreset! result* {:admitted? admit?
-                                     :activity-ids (if admit? ids [])})
-                   (assoc state :activities (merge remaining replacements)))))))
-    (when-let [error @error*] (throw error))
+                                  :else
+                                  (let [admit? (or (empty? specs)
+                                                   (not (:cancel-requested? state)))
+                                        replacements
+                                        (if admit?
+                                          (into {}
+                                                (map (fn [{:keys [id kind value]}]
+                                                       [id {:kind kind :value value}]))
+                                                specs)
+                                          {})]
+                                    [(assoc state :activities (merge remaining replacements))
+                                     {:admitted? admit?
+                                      :activity-ids (if admit? ids [])}])))))]
+    (when-let [error (:error result)] (throw error))
     (maybe-complete-quiescence! scope)
-    @result*))
+    result))
 
 (defn end-activity! [scope activity-id]
   (swap! scope update :activities dissoc activity-id)
@@ -319,16 +332,25 @@
           (recur))))))
 
 (defn maybe-complete-quiescence! [scope]
-  (let [readers (volatile! [])]
-    (swap! scope
-           (fn [state]
-             (if (and (empty? (:activities state))
-                      (zero? (:pending-forks state)))
-               (do (vreset! readers (:quiescence-readers state))
-                   (assoc state :quiescent? true :quiescence-readers []))
-               state)))
-    (doseq [reader @readers] (reader nil))
-    (maybe-clean-cancelled! scope)))
+  (let [readers (transition! scope
+                             (fn [state]
+                               (if (and (empty? (:activities state))
+                                        (zero? (:pending-forks state)))
+                                 [(assoc state :quiescent? true :quiescence-readers [])
+                                  (:quiescence-readers state)]
+                                 [state []])))]
+    (try
+      (let [callback-error (volatile! nil)]
+        (doseq [reader readers]
+          (try
+            (reader nil)
+            (catch #?(:clj Throwable :cljs :default) error
+              (when-not @callback-error
+                (vreset! callback-error error)))))
+        (when-let [error @callback-error]
+          (throw error)))
+      (finally
+        (maybe-clean-cancelled! scope)))))
 
 (defn request-cancel!
   "Request cleanup after client-owned computation cancellation and quiescence."

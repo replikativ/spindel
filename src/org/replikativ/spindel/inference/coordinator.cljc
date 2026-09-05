@@ -177,23 +177,26 @@
     nil))
 
 (defn- claim-particle-generation-retirement! [manager]
-  (let [claimed? (volatile! false)]
-    (swap! manager
-           (fn [state]
-             (if (and (= :forking (:generation-phase state))
-                      (not (:cancel-requested? state)))
-               (do (vreset! claimed? true)
-                   (assoc state
-                          :generation-phase :retiring
-                          :retiring-context-ids
-                          (->> (:activities state)
-                               (keep (fn [[activity-id activity]]
-                                       (when (= :particle-context
-                                                (:kind activity))
-                                         activity-id)))
-                               set)))
-               state)))
-    @claimed?))
+  ;; A volatile written from inside swap! cannot prove that its invocation won:
+  ;; the function may have observed :forking on an abandoned CAS attempt. The
+  ;; old value returned by swap-vals! is from the committed transition itself.
+  (let [[before _after]
+        (swap-vals!
+         manager
+         (fn [state]
+           (if (and (= :forking (:generation-phase state))
+                    (not (:cancel-requested? state)))
+             (assoc state
+                    :generation-phase :retiring
+                    :retiring-context-ids
+                    (->> (:activities state)
+                         (keep (fn [[activity-id activity]]
+                                 (when (= :particle-context (:kind activity))
+                                   activity-id)))
+                         set))
+             state)))]
+    (and (= :forking (:generation-phase before))
+         (not (:cancel-requested? before)))))
 
 (defn complete-particle-generation-transition!
   "Admit replacement contexts unless cancellation won the transition."
@@ -257,15 +260,12 @@
 (defn- take-retirement!
   "Atomically claim a source context's expected retirement callback."
   [coordinator context]
-  (let [claimed (volatile! nil)
-        fork-id (:fork-id context)]
-    (swap! (:retiring-contexts coordinator)
-           (fn [retiring]
-             (if-let [entry (get retiring fork-id)]
-               (do (vreset! claimed entry)
-                   (dissoc retiring fork-id))
-               retiring)))
-    @claimed))
+  (let [fork-id (:fork-id context)
+        ;; This is a plain process-local atom, so swap-vals! gives us the entry
+        ;; from the CAS-winning prior state without a retry-sensitive capture.
+        [before _after]
+        (swap-vals! (:retiring-contexts coordinator) dissoc fork-id)]
+    (get before fork-id)))
 
 (defn- retirement-entry [coordinator context]
   (get @(:retiring-contexts coordinator) (:fork-id context)))
@@ -332,24 +332,31 @@
   status first prevents a concurrent cancellation from rejecting the same CPS
   slice twice. Terminal accounting still happens only through the particle's
   top-level reject callback."
-  [coordinator]
+  [coordinator retiring-context-ids]
   (when-let [particles (:particles coordinator)]
-    (let [claimed (volatile! [])
+    (let [retiring-context-ids (or retiring-context-ids #{})
+          eligible? (fn [state]
+                      (and (= :checkpoint (:status state))
+                           (not (contains? retiring-context-ids
+                                           (get-in state [:context :fork-id])))))
+          ;; As with retirement callback claims, derive ownership from the
+          ;; CAS-winning old state. A volatile populated inside swap! can retain
+          ;; entries from an abandoned retry and reject one checkpoint twice.
+          [before _after]
+          (swap-vals! particles
+                      (fn [states]
+                        (reduce-kv
+                         (fn [next-states particle-id state]
+                           (assoc next-states particle-id
+                                  (if (eligible? state)
+                                    (assoc state :status :cancelling)
+                                    state)))
+                         {}
+                         states)))
+          claimed (into [] (comp (map val) (filter eligible?)) before)
           error (ex-info "Inference particle cancelled"
                          {:type spin-core/spin-cancelled})]
-      (swap! particles
-             (fn [states]
-               (reduce-kv
-                (fn [next-states particle-id state]
-                  (if (= :checkpoint (:status state))
-                    (do
-                      (vswap! claimed conj state)
-                      (assoc next-states particle-id
-                             (assoc state :status :cancelling)))
-                    (assoc next-states particle-id state)))
-                {}
-                states)))
-      (doseq [{:keys [context checkpoint]} @claimed]
+      (doseq [{:keys [context checkpoint]} claimed]
         (try
           (resume-checkpoint-reject! context checkpoint error)
           (catch #?(:clj Throwable :cljs :default) unwind-error
@@ -379,7 +386,11 @@
           (catch #?(:clj Throwable :cljs :default) error
             (log/error :inference/particle-cancel-failed
                        {:fork-id (:fork-id context) :error error})))))
-    (cancel-kernel-checkpoints! client)
+    ;; The manager transition atomically publishes the source contexts owned by
+    ;; generation retirement before cancellation can win. Their checkpoints
+    ;; remain retirement's responsibility even during the short interval before
+    ;; retire-particle-generation! changes their particle statuses to :retiring.
+    (cancel-kernel-checkpoints! client retiring-context-ids)
     (maybe-clean-cancelled-worlds! manager)
     (discard-particle-worlds-when-quiescent! manager)))
 
