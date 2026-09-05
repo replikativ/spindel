@@ -8,7 +8,8 @@
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.effects.await :refer [await]]
-            [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
+            [org.replikativ.spindel.test-helpers :refer [async await-engine-idle!
+                                                         with-ctx run-spin!]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]])))
 
 ;; CLJ-only fixture
@@ -76,6 +77,31 @@
                             (is false (str "Spin failed: " err))
                             (done))))))))
 
+(deftest test-deferred-falsey-values-after-delivery
+  (testing "Already-delivered nil and false resolve instead of looking pending"
+    (async done
+           (with-ctx [ctx]
+             (letfn [(check-values! [values]
+                       (if-let [[value & remaining] (seq values)]
+                         (let [d (sync/deferred)]
+                           (is (true? (d value)))
+                           ;; Force delivery to become durable before the reader
+                           ;; registers. This covers the fast read path rather
+                           ;; than the ordinary pending-reader delivery path.
+                           (await-engine-idle!
+                            ctx
+                            (fn []
+                              (run-spin!
+                               (spin (await d))
+                               (fn [result]
+                                 (is (= value result))
+                                 (check-values! remaining))
+                               (fn [error]
+                                 (is false (str "Spin failed: " error))
+                                 (done))))))
+                         (done)))]
+               (check-values! [nil false]))))))
+
 ;; =============================================================================
 ;; CLJ-only tests: require Thread/sleep, future, promise
 ;; =============================================================================
@@ -96,6 +122,44 @@
              (is (= :shared-value @reader1) "Reader 1 should get value")
              (is (= :shared-value @reader2) "Reader 2 should get value")
              (is (= :shared-value @reader3) "Reader 3 should get value")))))))
+
+#?(:clj
+   (deftest test-deferred-concurrent-delivery-has-one-winner
+     (testing "Only the atomic delivery claimant reports success under contention"
+       (let [context (ec/current-execution-context)
+             worker-count 16
+             attempts 32
+             executor (java.util.concurrent.Executors/newFixedThreadPool worker-count)]
+         (try
+           (dotimes [attempt attempts]
+             (let [d (sync/deferred)
+                   ready (java.util.concurrent.CountDownLatch. worker-count)
+                   start (java.util.concurrent.CountDownLatch. 1)
+                   tasks
+                   (mapv
+                    (fn [value]
+                      (.submit
+                       executor
+                       ^java.util.concurrent.Callable
+                       (reify java.util.concurrent.Callable
+                         (call [_]
+                           (binding [ec/*execution-context* context]
+                             (.countDown ready)
+                             (.await start)
+                             (d value))))))
+                    (range worker-count))]
+               (is (.await ready 2 java.util.concurrent.TimeUnit/SECONDS)
+                   (str "all contenders reached the barrier on attempt " attempt))
+               (.countDown start)
+               (let [results
+                     (mapv #(.get ^java.util.concurrent.Future %
+                                  2 java.util.concurrent.TimeUnit/SECONDS)
+                           tasks)]
+                 (is (= 1 (count (filter true? results)))
+                     (str "exactly one delivery winner on attempt " attempt)))))
+           (finally
+             (.shutdownNow executor)
+             (.awaitTermination executor 2 java.util.concurrent.TimeUnit/SECONDS)))))))
 
 #?(:clj
    (deftest test-deferred-delivery-during-await

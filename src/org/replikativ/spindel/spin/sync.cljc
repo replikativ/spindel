@@ -15,19 +15,17 @@
 
   ;; 1-arity: Assign value via event queue (SAFE)
   ;; Returns true if this call won delivery rights, false if already claimed.
-  ;; Uses atomic swap! with local flag to guarantee exactly-once delivery semantics.
+  ;; The returned state identifies the winner even when swap! retries.
   ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
   (#?(:clj invoke :cljs -invoke) [_this value]
-   ;; Atomically claim delivery rights using local atom to detect winner
-    (let [i-won? (atom false)
-          _ (swap! state-atom
-                   (fn [state]
-                     (if (:delivery-claimed? state)
-                       state  ;; Already claimed - no change
-                       (do
-                         (reset! i-won? true)
-                         (assoc state :delivery-claimed? true)))))]
-      (if @i-won?
+    (let [claim-id (random-uuid)
+          claimed-state (swap! state-atom
+                               (fn [state]
+                                 (if (:delivery-claimed? state)
+                                   state
+                                   (assoc state :delivery-claimed? true
+                                          :delivery-claim-id claim-id))))]
+      (if (= claim-id (:delivery-claim-id claimed-state))
        ;; We won - enqueue delivery event and return true
         (do
           (ec/enqueue-event! {:type :deferred-delivery
@@ -56,29 +54,27 @@
                          (or (and spin-id (ec/spin-is-cancelled? spin-id))
                              (and cancel-token cancelled-tokens
                                   (contains? cancelled-tokens cancel-token))))
-          value-to-resolve (atom nil)
-          _result-state (swap! state-atom
-                               (fn [state]
-                                 (if (:assigned? state)
-                                 ;; Already assigned - capture value for resolution, don't modify state
-                                   (do
-                                     (reset! value-to-resolve (:value state))
-                                     state)
-                                 ;; Not assigned - prune dead readers, then add ours
-                                   (update state :pending
-                                           (fn [ps]
-                                             (conj (if ctx
-                                                     (filterv (complement dead-reader?) (or ps []))
-                                                     (or ps []))
-                                                   {:spin-id current-spin-id
-                                                    :cancel-token current-cancel-token
-                                                    :resolve resolve}))))))]
-      (if-let [value @value-to-resolve]
+          result-state (swap! state-atom
+                              (fn [state]
+                                (if (:assigned? state)
+                                ;; Already assigned - return the immutable state
+                                ;; snapshot without registering another reader.
+                                  state
+                                ;; Not assigned - prune dead readers, then add ours
+                                  (update state :pending
+                                          (fn [ps]
+                                            (conj (if ctx
+                                                    (filterv (complement dead-reader?) (or ps []))
+                                                    (or ps []))
+                                                  {:spin-id current-spin-id
+                                                   :cancel-token current-cancel-token
+                                                   :resolve resolve}))))))]
+      (if (:assigned? result-state)
        ;; Was already assigned - resolve immediately
        ;; CRITICAL: Reset *in-trampoline* to ensure Thunks from recur are trampolined
        ;; When called synchronously inside a spin's trampoline, we need a fresh trampoline
         (binding [pcps-async/*in-trampoline* false]
-          (spin-core/resume resolve value))
+          (spin-core/resume resolve (:value result-state)))
        ;; Was not assigned - added to pending
         spin-core/incomplete))))
 
