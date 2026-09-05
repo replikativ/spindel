@@ -66,7 +66,7 @@ Convenience re-export namespace. All functions below are also available from the
 | `(mailbox)` | Create FIFO message queue |
 | `(post! mbx msg)` | Post message from external context |
 | `(never)` | Spin that never completes |
-| `(spawn! spin)` / `(spawn! spin :on-error f)` | Fire-and-forget spin |
+| `(spawn! spin)` / `(spawn! spin {:on-success f :on-error g})` | Fire-and-forget spin with optional terminal observers |
 
 ### Fork-Safe Atoms
 
@@ -408,7 +408,7 @@ Synchronization primitives.
 | `(create-mailbox ctx)` | Create with explicit context |
 | `(post! mbx msg)` | Post from external context |
 | `(never)` | Spin that never completes |
-| `(spawn! spin)` / `(spawn! spin :on-error f)` | Fire-and-forget execution |
+| `(spawn! spin)` / `(spawn! spin {:on-success f :on-error g})` | Fire-and-forget execution with optional exactly-once terminal observers; observer failures do not alter the Spin result |
 
 ---
 

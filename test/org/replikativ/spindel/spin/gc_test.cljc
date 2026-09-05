@@ -19,7 +19,8 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
+            [org.replikativ.spindel.test-helpers :refer [async await-engine-idle!
+                                                         with-ctx run-spin!]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.signal :refer [signal]])))
 
@@ -250,8 +251,9 @@
            (binding [ec/*execution-context* ctx]
              (let [d (sync/create-deferred ctx)
                    s (spin (await d))
-                   sid (spin-core/spin-id s)]
-               (sync/spawn! s)
+                   sid (spin-core/spin-id s)
+                   successes (atom [])]
+               (sync/spawn! s {:on-success #(swap! successes conj %)})
                ;; Body suspends on the deferred await. The spin's instance MUST
                ;; be held in the engine's spawned-registry — otherwise GC could
                ;; reap it mid-await.
@@ -260,10 +262,122 @@
                ;; Deliver the deferred → body resumes → resolves → release should fire.
                (d :delivered)
                (simple/await-drain-complete! ctx)
+               (is (= [:delivered] @successes)
+                   "spawn! must pass the resolved value to on-success exactly once")
                (is (nil? (get (rtp/get-state ctx [:engine/spawned]) sid))
                    "spawn! must release the Spin from [:engine/spawned spin-id] after body resolves")))
            (finally
              (ctx/stop-context! ctx)))))))
+
+(deftest test-spawn-terminal-callback-runs-once-for-reactive-spin
+  (testing "spawn! observes the first result, not later reactive reruns"
+    (async done
+           (with-ctx [ctx]
+             (let [source (signal 0)
+                   callbacks (atom [])
+                   s (spin (let [{:keys [new]} (track source)] new))]
+               (sync/spawn! s {:on-success #(swap! callbacks conj %)})
+               (await-engine-idle!
+                ctx
+                (fn []
+                  (is (= [0] @callbacks))
+                  (reset! source 1)
+                  (await-engine-idle!
+                   ctx
+                   (fn []
+                     (is (= [0] @callbacks)
+                         "reactive invalidation must not settle the same spawn twice")
+                     (keep-reachable! s)
+                     (done))))))))))
+
+#?(:clj
+   (deftest test-spawn-terminal-callbacks-release-on-reject-and-pre-start-cancel
+     (let [ctx (ctx/create-execution-context)]
+       (try
+         (binding [ec/*execution-context* ctx]
+           (testing "rejection calls on-error exactly once and releases the GC pin"
+             (let [failure (ex-info "spawn rejected" {:test true})
+                   successes (atom [])
+                   errors (atom [])
+                   s (spin (throw failure))
+                   sid (spin-core/spin-id s)]
+               (sync/spawn! s {:on-success #(swap! successes conj %)
+                               :on-error #(swap! errors conj %)})
+               (simple/await-drain-complete! ctx)
+               (is (empty? @successes))
+               (is (= [failure] @errors))
+               (is (nil? (get (rtp/get-state ctx [:engine/spawned]) sid)))))
+
+           (testing "cancellation before spawn rejects once without running the body"
+             (let [body-runs (atom 0)
+                   successes (atom [])
+                   errors (atom [])
+                   s (spin (do (swap! body-runs inc) :unexpected))
+                   sid (spin-core/spin-id s)]
+               (spin-core/cancel-spin! s)
+               (sync/spawn! s {:on-success #(swap! successes conj %)
+                               :on-error #(swap! errors conj %)})
+               (simple/await-drain-complete! ctx)
+               (is (zero? @body-runs))
+               (is (empty? @successes))
+               (is (= 1 (count @errors)))
+               (is (= spin-core/spin-cancelled
+                      (:type (ex-data (first @errors)))))
+               (is (nil? (get (rtp/get-state ctx [:engine/spawned]) sid)))))
+
+           (testing "in-flight cancellation rejects exactly once and releases the GC pin"
+             (let [d (sync/create-deferred ctx)
+                   successes (atom [])
+                   errors (atom [])
+                   s (spin (await d))
+                   sid (spin-core/spin-id s)]
+               (sync/spawn! s {:on-success #(swap! successes conj %)
+                               :on-error #(swap! errors conj %)})
+               (is (identical? s (get (rtp/get-state ctx [:engine/spawned]) sid)))
+               (spin-core/cancel-spin! s)
+               (simple/await-drain-complete! ctx)
+               (is (empty? @successes))
+               (is (= 1 (count @errors)))
+               (is (= spin-core/spin-cancelled
+                      (:type (ex-data (first @errors)))))
+               (is (nil? (get (rtp/get-state ctx [:engine/spawned]) sid)))))
+
+           (testing "throwing terminal observers cannot reclassify the Spin result"
+             (let [success-callbacks (atom [])
+                   error-callbacks (atom [])
+                   success-spin (spin :value)
+                   success-id (spin-core/spin-id success-spin)]
+               (sync/spawn!
+                success-spin
+                {:on-success (fn [value]
+                               (swap! success-callbacks conj value)
+                               (throw (ex-info "success observer failed" {})))
+                 :on-error #(swap! error-callbacks conj %)})
+               (simple/await-drain-complete! ctx)
+               (let [cached (ec/spin-current-result success-id)]
+                 (is (= [:value] @success-callbacks))
+                 (is (empty? @error-callbacks))
+                 (is (spin-core/ok? cached))
+                 (is (= :value (spin-core/unwrap cached)))
+                 (is (nil? (get (rtp/get-state ctx [:engine/spawned]) success-id)))))
+
+             (let [body-failure (ex-info "body failed" {:body true})
+                   error-callbacks (atom [])
+                   failure-spin (spin (throw body-failure))
+                   failure-id (spin-core/spin-id failure-spin)]
+               (sync/spawn!
+                failure-spin
+                {:on-error (fn [error]
+                             (swap! error-callbacks conj error)
+                             (throw (ex-info "error observer failed" {})))})
+               (simple/await-drain-complete! ctx)
+               (let [cached (ec/spin-current-result failure-id)]
+                 (is (= [body-failure] @error-callbacks))
+                 (is (spin-core/error? cached))
+                 (is (= body-failure (:payload cached)))
+                 (is (nil? (get (rtp/get-state ctx [:engine/spawned]) failure-id)))))))
+         (finally
+           (ctx/stop-context! ctx))))))
 
 #?(:clj
    (deftest test-spawn-survives-gc-mid-await-jvm

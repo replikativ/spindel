@@ -412,14 +412,32 @@
 ;; Spawn
 ;; ============================================================================
 
+(defn- report-spawn-callback-error! [callback error]
+  ;; Terminal callbacks observe an already-decided Spin result. Their own
+  ;; failures must never re-enter the CPS body and reclassify that result.
+  (try
+    (binding [#?(:clj *out* :cljs *print-fn*)
+              #?(:clj *err* :cljs *print-err-fn*)]
+      (println "Error in spawn!" (name callback) "callback:" error))
+    (catch #?(:clj Throwable :cljs :default) _
+      nil)))
+
+(defn- invoke-spawn-callback! [callback f value]
+  (try
+    (f value)
+    (catch #?(:clj Throwable :cljs :default) error
+      (report-spawn-callback-error! callback error))))
+
 (defn spawn!
   "Start a spin as fire-and-forget. The spin runs asynchronously;
-   errors are passed to `on-error` (default: prints to stderr).
+   values are passed to `on-success` (default: ignored), and errors are
+   passed to `on-error` (default: prints to stderr).
 
    Works both inside and outside spins. Does not block.
 
    Usage:
      (spawn! (spin (do-work)))
+     (spawn! (spin (do-work)) {:on-success consume-result})
      (spawn! (spin (do-work)) {:on-error my-handler})
 
    GC contract: `spawn!` registers the Spin instance in the context's
@@ -435,10 +453,16 @@
    cleared from the resolve/reject callbacks, after which a later GC
    of the Spin object can safely clean up the now-quiescent node.
 
+   Terminal callbacks observe only the first resolution or rejection of this
+   spawn, even if a reactive Spin later reruns. Callback exceptions are
+   reported to stderr and cannot alter the Spin result or invoke the other
+   terminal callback.
+
    Returns nil."
   ([s] (spawn! s {}))
-  ([s {:keys [on-error]
-       :or {on-error (fn [e] (binding [#?(:clj *out* :cljs *print-fn*)
+  ([s {:keys [on-success on-error]
+       :or {on-success (fn [_])
+            on-error (fn [e] (binding [#?(:clj *out* :cljs *print-fn*)
                                        #?(:clj *err* :cljs *print-err-fn*)]
                                (println "Error in spawned spin:" e)))}}]
    (let [ctx #?(:clj (try (ec/current-execution-context)
@@ -446,14 +470,22 @@
                 :cljs (try (ec/current-execution-context)
                            (catch :default _ nil)))
          sid (when ctx (spin-core/spin-id s))
+         settled? (atom false)
          release! (fn []
                     (when ctx
                       (binding [ec/*execution-context* ctx]
                         (ec/swap-state! [:engine/spawned]
-                                        (fn [m] (dissoc m sid))))))]
+                                        (fn [m] (dissoc m sid))))))
+         settle! (fn [callback f value]
+                   ;; A reactive Spin may resolve again after invalidation.
+                   ;; spawn! observes only the first terminal outcome of this
+                   ;; particular invocation.
+                   (when (compare-and-set! settled? false true)
+                     (release!)
+                     (invoke-spawn-callback! callback f value)))]
      (when ctx
        (binding [ec/*execution-context* ctx]
          (ec/swap-state! [:engine/spawned] (fn [m] (assoc m sid s)))))
-     (s (fn [_] (release!))
-        (fn [e] (release!) (on-error e))))
-   nil))
+     (s (fn [value] (settle! :on-success on-success value))
+        (fn [e] (settle! :on-error on-error e)))
+     nil)))

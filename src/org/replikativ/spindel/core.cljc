@@ -230,8 +230,11 @@
   sync/never)
 
 (def spawn!
-  "Fire-and-forget execution of a spin. Returns nil. Errors are reported via
-  the optional :on-error handler (defaults to logging)."
+  "Fire-and-forget execution of a spin. Returns nil. Resolved values are
+  reported via the optional :on-success handler (defaults to ignoring them),
+  and errors via :on-error (defaults to logging). Only the first resolution or
+  rejection is observed. Callback failures are reported without changing the
+  Spin's terminal result."
   sync/spawn!)
 
 ;; =============================================================================
