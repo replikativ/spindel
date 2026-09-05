@@ -455,9 +455,10 @@
    cleared from the resolve/reject callbacks, after which a later GC
    of the Spin object can safely clean up the now-quiescent node.
 
-   Terminal callbacks are observers of an already-decided result. Callback
-   exceptions are reported to stderr and cannot alter the Spin result or
-   invoke the other terminal callback.
+   Terminal callbacks observe only the first resolution or rejection of this
+   spawn, even if a reactive Spin later reruns. Callback exceptions are
+   reported to stderr and cannot alter the Spin result or invoke the other
+   terminal callback.
 
    Returns nil."
   ([s] (spawn! s {}))
@@ -471,18 +472,22 @@
                 :cljs (try (ec/current-execution-context)
                            (catch :default _ nil)))
          sid (when ctx (spin-core/spin-id s))
+         settled? (atom false)
          release! (fn []
                     (when ctx
                       (binding [ec/*execution-context* ctx]
                         (ec/swap-state! [:engine/spawned]
-                                        (fn [m] (dissoc m sid))))))]
+                                        (fn [m] (dissoc m sid))))))
+         settle! (fn [callback f value]
+                   ;; A reactive Spin may resolve again after invalidation.
+                   ;; spawn! observes only the first terminal outcome of this
+                   ;; particular invocation.
+                   (when (compare-and-set! settled? false true)
+                     (release!)
+                     (invoke-spawn-callback! callback f value)))]
      (when ctx
        (binding [ec/*execution-context* ctx]
          (ec/swap-state! [:engine/spawned] (fn [m] (assoc m sid s)))))
-     (s (fn [value]
-          (release!)
-          (invoke-spawn-callback! :on-success on-success value))
-        (fn [e]
-          (release!)
-          (invoke-spawn-callback! :on-error on-error e))))
-   nil))
+     (s (fn [value] (settle! :on-success on-success value))
+        (fn [e] (settle! :on-error on-error e)))
+     nil)))
