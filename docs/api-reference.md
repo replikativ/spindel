@@ -7,6 +7,19 @@ Namespace-by-namespace listing of all public functions and macros.
 > `org.replikativ.spindel.…` form — see any file in `src/` or `examples/`
 > for canonical require lines.
 
+## `spindel.search.mcts`
+
+Finite, deterministic UCT search over canonical Yggdrasil worlds. See
+[Inference Worlds](inference.md#finite-monte-carlo-tree-search) for the
+environment contract, bounds, and settlement semantics.
+
+| Function | Description |
+|----------|-------------|
+| `(search environment initial-state)` / `(search environment initial-state opts)` | Return a `Spin` containing a portable search result after every speculative world has been discarded. |
+| `(uct-score parent-visits child exploration)` | Pure UCT score; unvisited children have infinite selection priority. |
+
+---
+
 ## `spindel.core`
 
 Convenience re-export namespace. All functions below are also available from their originating namespaces.

@@ -59,6 +59,55 @@ coordinator. This is an extraction of the existing ownership protocol, not a
 second world abstraction: Yggdrasil still owns substrate forks and settlement,
 while the execution context still owns reactive runtime state.
 
+## Finite Monte Carlo tree search
+
+`org.replikativ.spindel.search.mcts/search` performs deterministic, finite UCT
+search over the same canonical worlds. An environment supplies four functions:
+
+```clojure
+(require '[org.replikativ.spindel.search.mcts :as mcts])
+
+@(mcts/search
+  {:actions     (fn [state] (if (:done? state) [] [:left :right]))
+   :transition  (fn [state action] (assoc state :done? true :choice action))
+   :terminal?   :done?
+   :reward      (fn [state] (if (= :right (:choice state)) 1.0 0.0))}
+  {:done? false}
+  {:max-simulations 64
+   :max-depth 8
+   :max-nodes 128
+   :seed :example})
+;; => {:search/selected-action :right, ...}
+```
+
+Each expanded tree node owns a canonical child world. A rollout receives a
+scratch descendant, so its effects cannot mutate the stored node or the ambient
+world. `:transition` may change its current world; `:actions`, `:terminal?`, and
+`:reward` are observational environment contracts. They may return either plain
+values or Spins. All speculative worlds are discarded before the result is
+delivered, and the portable result contains node statistics plus settled world
+descriptors—not execution contexts or `ForkHandle`s.
+
+The implementation is deliberately sequential in its first version. A pure
+`:continue?` predicate receives `{:simulations n :nodes m}` before every
+simulation and can enforce a host resource reservation more precisely than a
+conversation-turn limit. `:max-simulations`, `:max-depth`, and `:max-nodes` are
+hard structural bounds. With `E` expanded nodes, at most `E` retained node
+worlds plus one transient rollout world are live during sequential search.
+
+Selection is deterministic for the same seed, environment, and results. Actions
+must be unique within a state. A custom pure `:rollout-action` receives the
+action vector and deterministic search coordinates and returns an action index.
+Applying `:search/selected-action` is intentionally a separate application
+effect: search never silently commits a hypothetical world to its caller.
+
+This version is a tree, not a transposition DAG. A future transposition table may
+share immutable statistics, but must never alias writable execution contexts or
+affine world handles. Multi-player/minimax value semantics, parallel rollouts,
+progress streaming, and persistent checkpoints likewise belong in explicit
+combinators rather than implicit behavior in this single-agent maximizing
+primitive.
+
 ## Failure and recovery
 
 Model failures are fail-fast. Spindel cooperatively cancels sibling particles,
