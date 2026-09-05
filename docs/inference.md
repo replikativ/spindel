@@ -87,7 +87,9 @@ callback in a speculative fork if Yggdrasil marks any registered system
 `:shared`; an identity-forked system is not speculative isolation. Ordinary
 mutable host objects captured by an environment closure are outside the world
 model and must not be used for hypothetical state. `:transition` may change its
-current world; `:actions`, `:terminal?`, and `:reward` are observational
+current registered systems, but the system registry itself is frozen before
+callbacks so search cannot acquire child-only external resources without a
+disposal owner. `:actions`, `:terminal?`, and `:reward` are observational
 environment contracts. They may return either plain values or Spins. All
 speculative worlds are discarded before the result is delivered, and the
 portable result contains node statistics plus settled world descriptors—not
