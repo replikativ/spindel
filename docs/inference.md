@@ -70,7 +70,7 @@ search over the same canonical worlds. An environment supplies four functions:
 @(mcts/search
   {:actions     (fn [state] (if (:done? state) [] [:left :right]))
    :transition  (fn [state action] (assoc state :done? true :choice action))
-   :terminal?   :done?
+   :terminal?   (fn [state] (:done? state))
    :reward      (fn [state] (if (= :right (:choice state)) 1.0 0.0))}
   {:done? false}
   {:max-simulations 64
@@ -81,22 +81,34 @@ search over the same canonical worlds. An environment supplies four functions:
 ```
 
 Each expanded tree node owns a canonical child world. A rollout receives a
-scratch descendant, so its effects cannot mutate the stored node or the ambient
-world. `:transition` may change its current world; `:actions`, `:terminal?`, and
-`:reward` are observational environment contracts. They may return either plain
-values or Spins. All speculative worlds are discarded before the result is
-delivered, and the portable result contains node statistics plus settled world
-descriptors—not execution contexts or `ForkHandle`s.
+scratch descendant, so its registered forkable effects cannot mutate the stored
+node or the ambient world. Search fails closed before running an environment
+callback in a speculative fork if Yggdrasil marks any registered system
+`:shared`; an identity-forked system is not speculative isolation. Ordinary
+mutable host objects captured by an environment closure are outside the world
+model and must not be used for hypothetical state. `:transition` may change its
+current world; `:actions`, `:terminal?`, and `:reward` are observational
+environment contracts. They may return either plain values or Spins. All
+speculative worlds are discarded before the result is delivered, and the
+portable result contains node statistics plus settled world descriptors—not
+execution contexts or `ForkHandle`s.
 
 The implementation is deliberately sequential in its first version. A pure
 `:continue?` predicate receives `{:simulations n :nodes m}` before every
-simulation and can enforce a host resource reservation more precisely than a
-conversation-turn limit. `:max-simulations`, `:max-depth`, and `:max-nodes` are
-hard structural bounds. With `E` expanded nodes, at most `E` retained node
-worlds plus one transient rollout world are live during sequential search.
+simulation and can admit it against a host resource reservation more precisely
+than a conversation-turn limit. Effects inside that simulation must still meter
+and enforce their actual consumption. `:max-simulations`, `:max-depth`, and
+`:max-nodes` are hard structural bounds. With `E` expanded nodes, at most `E`
+retained node worlds plus one transient rollout world are live during sequential
+search.
 
 Selection is deterministic for the same seed, environment, and results. Actions
-must be unique within a state. A custom pure `:rollout-action` receives the
+must be unique within a state. The seed and every action must be immutable,
+cross-runtime data: nil, booleans, strings, keywords, symbols, UUIDs, finite
+floating-point values, safe integers, and recursively composed vectors, lists,
+sets, and non-record maps. Host objects, records, mutable arrays, ratios,
+arbitrary-precision decimals, and integers outside the JavaScript safe range are
+rejected. A custom pure `:rollout-action` receives the
 action vector and deterministic search coordinates and returns an action index.
 Applying `:search/selected-action` is intentionally a separate application
 effect: search never silently commits a hypothetical world to its caller.
