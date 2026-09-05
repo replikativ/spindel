@@ -408,7 +408,7 @@ Synchronization primitives.
 | `(create-mailbox ctx)` | Create with explicit context |
 | `(post! mbx msg)` | Post from external context |
 | `(never)` | Spin that never completes |
-| `(spawn! spin)` / `(spawn! spin {:on-success f :on-error g})` | Fire-and-forget execution with optional terminal observers; observer failures do not alter the Spin result |
+| `(spawn! spin)` / `(spawn! spin {:on-success f :on-error g})` | Fire-and-forget execution with optional exactly-once terminal observers; observer failures do not alter the Spin result |
 
 ---
 

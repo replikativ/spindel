@@ -19,7 +19,8 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.spin.sync :as sync]
-            [org.replikativ.spindel.test-helpers :refer [async with-ctx run-spin!]])
+            [org.replikativ.spindel.test-helpers :refer [async await-engine-idle!
+                                                         with-ctx run-spin!]])
   #?(:cljs (:require-macros [org.replikativ.spindel.spin.cps :refer [spin]]
                             [org.replikativ.spindel.signal :refer [signal]])))
 
@@ -267,6 +268,27 @@
                    "spawn! must release the Spin from [:engine/spawned spin-id] after body resolves")))
            (finally
              (ctx/stop-context! ctx)))))))
+
+(deftest test-spawn-terminal-callback-runs-once-for-reactive-spin
+  (testing "spawn! observes the first result, not later reactive reruns"
+    (async done
+           (with-ctx [ctx]
+             (let [source (signal 0)
+                   callbacks (atom [])
+                   s (spin (let [{:keys [new]} (track source)] new))]
+               (sync/spawn! s {:on-success #(swap! callbacks conj %)})
+               (await-engine-idle!
+                ctx
+                (fn []
+                  (is (= [0] @callbacks))
+                  (reset! source 1)
+                  (await-engine-idle!
+                   ctx
+                   (fn []
+                     (is (= [0] @callbacks)
+                         "reactive invalidation must not settle the same spawn twice")
+                     (keep-reachable! s)
+                     (done))))))))))
 
 #?(:clj
    (deftest test-spawn-terminal-callbacks-release-on-reject-and-pre-start-cancel
