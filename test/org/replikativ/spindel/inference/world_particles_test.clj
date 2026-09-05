@@ -16,6 +16,7 @@
             [org.replikativ.spindel.inference.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [yggdrasil.convergent.gset :as g]))
 
@@ -93,7 +94,13 @@
             (is (every? map?
                         (map #(rtp/get-state
                                % [:inference :world-descriptor])
-                             (measure/get-contexts posterior)))))))
+                             (measure/get-contexts posterior))))
+            (is (every? #(= :discarded
+                            (:fork/status
+                             (rtp/get-state
+                              % [:inference :world-descriptor])))
+                        (measure/get-contexts posterior))
+                "posterior descriptors reflect final settlement"))))
       (finally
         (context/stop-context! root)))))
 
@@ -257,14 +264,15 @@
             (is (= ::still-waiting
                    (deref cancelled 100 ::still-waiting))
                 "the late fork callback cannot erase an unwinding source")
-            (is (= 1 (count (:active-contexts @@manager*))))
+            (is (= 1 (count (world-scope/activity-values
+                             @manager* :particle-context))))
             (deliver release-source-finalizer true)
             (is (= [:ok nil] (deref cancelled 5000 ::timed-out)))
             (is (instance? Throwable (deref outcome 5000 ::timed-out)))
             (is (zero? @child-entered))
             (is (= :discarded (:status @@manager*)))
-            (is (= 2 (count (:descriptors @@manager*)))
-                "the late child handle remains inside affine cleanup")
+            (is (= 1 (count (:descriptors @@manager*)))
+                "work not admitted before cancellation cannot create a world")
             (is (empty? (:handles @@manager*))))))
       (finally
         (deliver release-child-fork true)
@@ -650,7 +658,8 @@
                            (deref task 5000 ::timed-out)
                            (catch Throwable error error)))]
             (is (= true (deref second-pass 5000 ::timed-out)))
-            (is (= 2 (count (:active-contexts @@manager*)))
+            (is (= 2 (count (world-scope/activity-values
+                             @manager* :particle-context)))
                 "an :iterate completion is not a terminal world callback")
             (is (= [:ok nil]
                    (await-cps
