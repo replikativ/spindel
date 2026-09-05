@@ -32,6 +32,7 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.yggdrasil :as ygg]
+            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.inference.kernel :as k]
             [replikativ.logging :as log]
@@ -122,25 +123,16 @@
   inference execution. Handles remain host capabilities; only their portable
   descriptors may cross a durable boundary."
   [fork-opts]
-  (atom {:id (random-uuid)
-         :status :open
-         :fork-opts (or fork-opts {})
-         :handles []
-         :pending-forks 0
-         :active-contexts {}
-         :cancel-requested? false
-         :generation-phase nil
-         :cleanup-started? false
-         :quiescence (atom {:status :pending :readers []})
-         :cleanup (atom {:status :pending :readers []})}))
+  (doto (world-scope/create {:purpose :particle
+                             :fork-opts (or fork-opts {})})
+    (swap! assoc :generation-phase nil :generation-activity nil)))
 
 (declare maybe-complete-particle-quiescence!)
 
 (defn world-descriptors
   "Return the portable projections retained by a particle-world manager."
   [manager]
-  (let [{:keys [descriptors handles]} @manager]
-    (or descriptors (mapv ygg/fork-descriptor handles))))
+  (world-scope/descriptors manager))
 
 (defn- invoke-result!
   "Invoke a value-or-CPS result without assuming a JVM synchronous substrate."
@@ -154,257 +146,90 @@
 
 (defn fork-particle-world!
   "Fork `source-context` through the canonical Yggdrasil bridge and deliver its
-  ForkHandle. Particle forks are frozen at their source checkpoint: ordinary
-  execution state reads from the fork-time view and every registered external
-  system is independently forked through PForkable."
+  non-settleable world reference. Particle forks are frozen at their source
+  checkpoint: ordinary execution state reads from the fork-time view and every
+  registered external system is independently forked through PForkable."
   [manager source-context resolve reject]
-  (swap! manager update :pending-forks inc)
-  (let [{:keys [id fork-opts]} @manager
-        settled? (atom false)
-        finish! (fn [update-state f value]
-                  (when (compare-and-set! settled? false true)
-                    (swap! manager update-state)
-                    (try
-                      ;; Fork creation is an effect hosted by a child world,
-                      ;; but its continuation belongs to the source program.
-                      ;; Re-enter the caller explicitly so initialization does
-                      ;; not migrate the coordinating Spin into the new child.
-                      (binding [rtc/*execution-context* source-context]
-                        (f value))
-                      (finally
-                        (maybe-complete-particle-quiescence! manager)))))
-        opts (-> fork-opts
-                 (assoc :mode :frozen
-                        :purpose :particle
-                        :owner id
-                        :sync? false))]
-    (letfn [(succeed! [handle]
-              (finish! (fn [state]
-                         (-> state
-                             (update :handles conj handle)
-                             (update :pending-forks dec)))
-                       resolve handle))
-            (fail! [error]
-              (finish! #(update % :pending-forks dec) reject error))]
-      (binding [rtc/*execution-context* source-context
-                pcps-async/*in-trampoline* false]
-        (try
-          (invoke-result! (ygg/fork! opts) succeed! fail!)
-          (catch #?(:clj Throwable :cljs :default) error
-            (fail! error)))))))
+  (world-scope/fork! manager source-context resolve reject))
 
 (defn discard-particle-worlds!
-  "Discard all worlds owned by `manager`, newest generation first. Returns a
-  CPS operation and is idempotent after successful cleanup."
+  "Discard all worlds owned by manager, newest generation first."
   [manager]
-  (fn [resolve reject]
-    (let [cleanup (:cleanup @manager)
-          immediate (volatile! nil)]
-      ;; A read-only settlement preflight reopens its ForkHandle. Retrying gets
-      ;; a fresh subscriber generation; mutating/incomplete failures remain
-      ;; terminal in the manager and keep their memoized rejection.
-      (loop []
-        (let [state @cleanup]
-          (when (and (= :failed (:status state))
-                     (= :open (:status @manager))
-                     (not (compare-and-set!
-                           cleanup state {:status :pending :readers []})))
-            (recur))))
-      ;; Subscribe before trying to become the cleanup owner. Completion and
-      ;; subscription linearize on this atom, so concurrent callers neither
-      ;; hang nor execute settlement twice.
-      (swap! cleanup
-             (fn [state]
-               (if (= :pending (:status state))
-                 (update state :readers conj {:resolve resolve :reject reject})
-                 (do (vreset! immediate state) state))))
-      (when-let [{:keys [status value error]} @immediate]
-        (if (= :done status) (resolve value) (reject error)))
-      (letfn [(complete! [status payload]
-                (let [readers (volatile! [])]
-                  (swap! cleanup
-                         (fn [state]
-                           (if (= :pending (:status state))
-                             (do
-                               (vreset! readers (:readers state))
-                               (cond-> {:status status :readers []}
-                                 (= status :done) (assoc :value payload)
-                                 (= status :failed) (assoc :error payload)))
-                             state)))
-                  (doseq [{:keys [resolve reject]} @readers]
-                    ((if (= status :done) resolve reject) payload))))
-              (fail! [handle error]
-                (swap! manager assoc
-                       :status (if (ygg/open-fork? handle) :open :failed)
-                       :error error)
-                (complete! :failed error))
-              (step [handles]
-                (if-let [handle (first handles)]
-                  (if (ygg/open-fork? handle)
-                    (binding [rtc/*execution-context* (:parent-ctx handle)
-                              pcps-async/*in-trampoline* false]
-                      (invoke-result!
-                       (ygg/discard-fork! handle {:sync? false})
-                       (fn [_] (step (next handles)))
-                       (fn [error] (fail! handle error))))
-                    (step (next handles)))
-                  (do
-                    ;; Replace process-local affine capabilities with portable
-                    ;; audit projections. This releases every superseded
-                    ;; generation once the final measure no longer needs it.
-                    (swap! manager
-                           (fn [state]
-                             (-> state
-                                 (assoc :status :discarded
-                                        :descriptors
-                                        (mapv ygg/fork-descriptor
-                                              (:handles state))
-                                        :handles [])
-                                 (dissoc :coordinator))))
-                    (complete! :done nil))))
-              (claim! []
-                (let [state @manager]
-                  (case (:status state)
-                    :open
-                    (if (compare-and-set! manager state
-                                          (assoc state :status :discarding))
-                      (step (reverse (:handles state)))
-                      (recur))
-
-                    :discarded (complete! :done nil)
-                    :failed (complete! :failed (:error state))
-                    ;; Another caller owns :discarding; this caller is already
-                    ;; subscribed to the shared cleanup outcome.
-                    :discarding nil
-                    nil)))]
-        (when-not @immediate (claim!))))))
+  (world-scope/discard! manager))
 
 (defn await-particle-world-quiescence
   "Return a CPS operation resolved when no particle context is still running."
   [manager]
-  (fn [resolve _reject]
-    (let [quiescence (:quiescence @manager)
-          immediate? (volatile! false)]
-      (swap! quiescence
-             (fn [state]
-               (if (= :done (:status state))
-                 (do (vreset! immediate? true) state)
-                 (update state :readers conj resolve))))
-      (when @immediate? (resolve nil)))))
+  (world-scope/await-quiescence manager))
 
 (defn discard-particle-worlds-when-quiescent!
-  "Return a CPS operation that waits for terminal particle callbacks before
-  consuming world settlement authority."
+  "Wait for terminal particle callbacks before consuming world authority."
   [manager]
-  (fn [resolve reject]
-    ((await-particle-world-quiescence manager)
-     (fn [_]
-       (invoke-result! (discard-particle-worlds! manager) resolve reject))
-     reject)))
-
-(defn register-particle-contexts!
-  "Replace the live particle generation tracked by a world manager."
-  [manager contexts]
-  (swap! manager assoc
-         :active-contexts (into {} (map (juxt :fork-id identity)) contexts))
-  nil)
+  (world-scope/discard-when-quiescent! manager))
 
 (defn begin-particle-generation-transition!
-  "Keep quiescence closed while replacement worlds are constructed and their
-  superseded source generation unwinds."
+  "Keep quiescence closed during construction and source retirement."
   [manager]
-  (swap! manager assoc
-         :generation-transition? true
-         :generation-phase :forking)
-  nil)
+  (let [activity (world-scope/begin-activity! manager :particle-generation)]
+    (swap! manager assoc
+           :generation-activity activity
+           :generation-phase :forking)
+    nil))
 
-(defn- claim-particle-generation-retirement!
-  "Linearize source retirement against cancellation during child construction.
-  True means retirement owns the source checkpoints; false means cancellation
-  already owns them and the never-started children must not be admitted."
-  [manager]
-  (let [claimed? (volatile! false)]
-    (swap! manager
-           (fn [state]
-             (if (and (= :forking (:generation-phase state))
-                      (not (:cancel-requested? state)))
-               (do (vreset! claimed? true)
-                   (assoc state :generation-phase :retiring))
-               state)))
-    @claimed?))
+(defn- claim-particle-generation-retirement! [manager]
+  ;; A volatile written from inside swap! cannot prove that its invocation won:
+  ;; the function may have observed :forking on an abandoned CAS attempt. The
+  ;; old value returned by swap-vals! is from the committed transition itself.
+  (let [[before _after]
+        (swap-vals!
+         manager
+         (fn [state]
+           (if (and (= :forking (:generation-phase state))
+                    (not (:cancel-requested? state)))
+             (assoc state
+                    :generation-phase :retiring
+                    :retiring-context-ids
+                    (->> (:activities state)
+                         (keep (fn [[activity-id activity]]
+                                 (when (= :particle-context (:kind activity))
+                                   activity-id)))
+                         set))
+             state)))]
+    (and (= :forking (:generation-phase before))
+         (not (:cancel-requested? before)))))
 
 (defn complete-particle-generation-transition!
-  "Atomically admit `contexts` unless cancellation won the transition.
-
-  Returns false only when cancellation rejects a non-empty replacement. An
-  empty replacement closes a failed transition without erasing source contexts
-  that still owe terminal callbacks; callers route the failure separately."
+  "Admit replacement contexts unless cancellation won the transition."
   [manager contexts]
-  (let [contexts (vec contexts)
-        admitted? (volatile! false)]
-    (swap! manager
-           (fn [state]
-             (let [admit? (or (empty? contexts)
-                              (not (:cancel-requested? state)))]
-               (vreset! admitted? admit?)
-               (assoc state
-                      ;; Empty/cancelled replacements were never admitted.
-                      ;; Preserve any source contexts still unwinding so their
-                      ;; terminal callbacks remain the quiescence proof.
-                      :active-contexts
-                      (if (and (seq contexts) admit?)
-                        (into {} (map (juxt :fork-id identity)) contexts)
-                        (:active-contexts state))
-                      :generation-transition? false
-                      :generation-phase nil))))
-    (maybe-complete-particle-quiescence! manager)
-    @admitted?))
+  (if-let [activity (:generation-activity @manager)]
+    (let [exchange
+          (world-scope/exchange-activity!
+           manager activity
+           (mapv (fn [context]
+                   {:id (:fork-id context)
+                    :kind :particle-context
+                    :value context})
+                 contexts))]
+      (swap! manager dissoc
+             :generation-activity :generation-phase :retiring-context-ids)
+      (:admitted? exchange))
+    ;; Error unwinding closes a transition defensively after the rejecting
+    ;; completion may already have consumed its lease.
+    (if (empty? contexts)
+      true
+      (throw (ex-info "Particle generation transition is not active"
+                      {:type ::missing-generation-transition})))))
 
 (defn- maybe-clean-cancelled-worlds! [manager]
-  (loop []
-    (let [state @manager]
-      (when (and (:cancel-requested? state)
-                 (empty? (:active-contexts state))
-                 (not (:generation-transition? state))
-                 (zero? (:pending-forks state))
-                 (not (:cleanup-started? state)))
-        (if (compare-and-set! manager state (assoc state :cleanup-started? true))
-          (invoke-result!
-           (discard-particle-worlds! manager)
-           (constantly nil)
-           (fn [error]
-             (log/error :inference/particle-world-cleanup-failed
-                        {:error error})))
-          (recur))))))
+  (world-scope/maybe-complete-quiescence! manager))
 
 (defn- maybe-complete-particle-quiescence! [manager]
-  (let [{:keys [active-contexts generation-transition? pending-forks]} @manager]
-    (when (and (empty? active-contexts)
-               (not generation-transition?)
-               (zero? pending-forks))
-      (let [readers (volatile! [])
-            quiescence (:quiescence @manager)]
-        (swap! quiescence
-               (fn [state]
-                 (if (= :done (:status state))
-                   state
-                   (do (vreset! readers (:readers state))
-                       {:status :done :readers []}))))
-        (doseq [reader @readers] (reader nil))
-        (maybe-clean-cancelled-worlds! manager)))))
+  (world-scope/maybe-complete-quiescence! manager))
 
 (defn particle-context-terminal!
-  "Mark one particle context quiescent and trigger deferred failure cleanup."
+  "Mark one particle context quiescent and trigger deferred cleanup."
   [manager context]
-  (let [remaining (volatile! nil)]
-    (swap! manager
-           (fn [state]
-             (let [active (dissoc (:active-contexts state) (:fork-id context))]
-               (vreset! remaining active)
-               (assoc state :active-contexts active))))
-    (when (empty? @remaining)
-      (maybe-complete-particle-quiescence! manager))
-    nil))
+  (world-scope/end-activity! manager (:fork-id context)))
 
 (defn- cancellation-error []
   (ex-info "Inference particle cancelled"
@@ -435,15 +260,12 @@
 (defn- take-retirement!
   "Atomically claim a source context's expected retirement callback."
   [coordinator context]
-  (let [claimed (volatile! nil)
-        fork-id (:fork-id context)]
-    (swap! (:retiring-contexts coordinator)
-           (fn [retiring]
-             (if-let [entry (get retiring fork-id)]
-               (do (vreset! claimed entry)
-                   (dissoc retiring fork-id))
-               retiring)))
-    @claimed))
+  (let [fork-id (:fork-id context)
+        ;; This is a plain process-local atom, so swap-vals! gives us the entry
+        ;; from the CAS-winning prior state without a retry-sensitive capture.
+        [before _after]
+        (swap-vals! (:retiring-contexts coordinator) dissoc fork-id)]
+    (get before fork-id)))
 
 (defn- retirement-entry [coordinator context]
   (get @(:retiring-contexts coordinator) (:fork-id context)))
@@ -510,24 +332,31 @@
   status first prevents a concurrent cancellation from rejecting the same CPS
   slice twice. Terminal accounting still happens only through the particle's
   top-level reject callback."
-  [coordinator]
+  [coordinator retiring-context-ids]
   (when-let [particles (:particles coordinator)]
-    (let [claimed (volatile! [])
+    (let [retiring-context-ids (or retiring-context-ids #{})
+          eligible? (fn [state]
+                      (and (= :checkpoint (:status state))
+                           (not (contains? retiring-context-ids
+                                           (get-in state [:context :fork-id])))))
+          ;; As with retirement callback claims, derive ownership from the
+          ;; CAS-winning old state. A volatile populated inside swap! can retain
+          ;; entries from an abandoned retry and reject one checkpoint twice.
+          [before _after]
+          (swap-vals! particles
+                      (fn [states]
+                        (reduce-kv
+                         (fn [next-states particle-id state]
+                           (assoc next-states particle-id
+                                  (if (eligible? state)
+                                    (assoc state :status :cancelling)
+                                    state)))
+                         {}
+                         states)))
+          claimed (into [] (comp (map val) (filter eligible?)) before)
           error (ex-info "Inference particle cancelled"
                          {:type spin-core/spin-cancelled})]
-      (swap! particles
-             (fn [states]
-               (reduce-kv
-                (fn [next-states particle-id state]
-                  (if (= :checkpoint (:status state))
-                    (do
-                      (vswap! claimed conj state)
-                      (assoc next-states particle-id
-                             (assoc state :status :cancelling)))
-                    (assoc next-states particle-id state)))
-                {}
-                states)))
-      (doseq [{:keys [context checkpoint]} @claimed]
+      (doseq [{:keys [context checkpoint]} claimed]
         (try
           (resume-checkpoint-reject! context checkpoint error)
           (catch #?(:clj Throwable :cljs :default) unwind-error
@@ -543,24 +372,25 @@
   "Cooperatively cancel every live particle. Cleanup begins automatically once
   their resolve/reject callbacks prove quiescence."
   [manager]
-  (let [{:keys [active-contexts coordinator generation-phase]}
-        (swap! manager assoc :cancel-requested? true)
-        contexts (vals active-contexts)]
-    ;; During :retiring, retirement owns the source checkpoint rejection and
-    ;; will observe :cancel-requested? before admitting children. Cancelling the
-    ;; same continuations here would race/double-resume them. During :forking,
-    ;; cancellation owns the still-current sources; the transition gate keeps
-    ;; cleanup from consuming handles while child construction unwinds.
-    (when-not (= :retiring generation-phase)
-      (doseq [context contexts]
-        (when-let [task (rtp/get-state context [:inference :task])]
-          (try
-            (binding [rtc/*execution-context* context]
-              (spin-core/cancel-spin! task))
-            (catch #?(:clj Throwable :cljs :default) error
-              (log/error :inference/particle-cancel-failed
-                         {:fork-id (:fork-id context) :error error})))))
-      (cancel-kernel-checkpoints! coordinator))
+  (let [{:keys [client retiring-context-ids]}
+        (world-scope/request-cancel! manager)
+        contexts (world-scope/activity-values manager :particle-context)]
+    ;; Retirement owns only the captured source checkpoints. Replacement
+    ;; contexts admitted concurrently are not in that set and must be cancelled.
+    (doseq [context contexts
+            :when (not (contains? retiring-context-ids (:fork-id context)))]
+      (when-let [task (rtp/get-state context [:inference :task])]
+        (try
+          (binding [rtc/*execution-context* context]
+            (spin-core/cancel-spin! task))
+          (catch #?(:clj Throwable :cljs :default) error
+            (log/error :inference/particle-cancel-failed
+                       {:fork-id (:fork-id context) :error error})))))
+    ;; The manager transition atomically publishes the source contexts owned by
+    ;; generation retirement before cancellation can win. Their checkpoints
+    ;; remain retirement's responsibility even during the short interval before
+    ;; retire-particle-generation! changes their particle statuses to :retiring.
+    (cancel-kernel-checkpoints! client retiring-context-ids)
     (maybe-clean-cancelled-worlds! manager)
     (discard-particle-worlds-when-quiescent! manager)))
 
@@ -1248,8 +1078,6 @@
 (defn- resume-resampled-contexts!
   [coordinator particles-state particles-ordered should-resample?
    is-pgibbs? is-pgas? ancestor-idx contexts-with-checkpoints]
-  (when-let [manager (:world-manager coordinator)]
-    (register-particle-contexts! manager (mapv :context contexts-with-checkpoints)))
   ;; Reset weights if we resampled.
   (when should-resample?
     (doseq [{:keys [context]} contexts-with-checkpoints]
@@ -1310,13 +1138,16 @@
 (defn- project-settled-particle-context
   "Create a parentless immutable posterior context. Returning the settled
   execution context itself would retain its complete resampling ancestry."
-  [context]
+  [context descriptors-by-id]
   (let [inference-state (rtp/get-state context [:inference])
+        creation-descriptor (some-> inference-state :world :descriptor)
+        settled-descriptor (get descriptors-by-id
+                                (:fork/id creation-descriptor)
+                                creation-descriptor)
         projected (cond-> (select-keys inference-state
                                        projected-inference-keys)
                     (:world inference-state)
-                    (assoc :world-descriptor
-                           (ygg/fork-descriptor (:world inference-state))))]
+                    (assoc :world-descriptor settled-descriptor))]
     (assoc context
            :backend (backend/create-immutable-backend
                      {:inference projected}
@@ -1477,11 +1308,16 @@
               (invoke-result!
                (discard-particle-worlds! manager)
                (fn [_]
-                 (deliver!
-                  (m/empirical
-                   (mapv vector
-                         (mapv project-settled-particle-context contexts)
-                         log-weights))))
+                 (let [descriptors-by-id
+                       (into {} (map (juxt :fork/id identity))
+                             (world-descriptors manager))]
+                   (deliver!
+                    (m/empirical
+                     (mapv vector
+                           (mapv #(project-settled-particle-context
+                                   % descriptors-by-id)
+                                 contexts)
+                           log-weights)))))
                (fn [error]
                  (deliver! (->InferenceFailure :particle-world-cleanup
                                                error))))

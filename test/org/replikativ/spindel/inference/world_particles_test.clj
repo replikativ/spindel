@@ -16,6 +16,7 @@
             [org.replikativ.spindel.inference.measure :as measure]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [yggdrasil.convergent.gset :as g]))
 
@@ -33,6 +34,104 @@
     (operation #(deliver result [:ok %])
                #(deliver result [:error %]))
     (deref result 5000 ::timed-out)))
+
+(defn- coordinator-private [symbol]
+  (ns-resolve 'org.replikativ.spindel.inference.coordinator symbol))
+
+(deftest generation-retirement-claim-uses-the-committed-state
+  (let [manager (coordinator/create-world-manager {})
+        claim! (coordinator-private 'claim-particle-generation-retirement!)
+        real-swap-vals! swap-vals!]
+    (coordinator/begin-particle-generation-transition! manager)
+    (let [claimed?
+          (with-redefs
+           [clojure.core/swap-vals!
+            (fn [target f & args]
+              (when (identical? target manager)
+                ;; Evaluate and abandon this contender's transition, then let
+                ;; a competing retirement claim commit before its retry.
+                (apply f @target args)
+                (swap! target assoc
+                       :generation-phase :retiring
+                       :retiring-context-ids #{:competitor}))
+              (apply real-swap-vals! target f args))]
+            (claim! manager))]
+      (is (false? claimed?)
+          "observing :forking before a lost transition does not grant ownership")
+      (is (= #{:competitor} (:retiring-context-ids @manager))))
+    (coordinator/complete-particle-generation-transition! manager [])))
+
+(deftest retirement-callback-claim-uses-the-committed-prior-state
+  (let [retiring (atom {:source {:finish! identity}})
+        client {:retiring-contexts retiring}
+        context {:fork-id :source}
+        take! (coordinator-private 'take-retirement!)
+        real-swap-vals! swap-vals!
+        claimed
+        (with-redefs
+         [clojure.core/swap-vals!
+          (fn [target f & args]
+            (when (identical? target retiring)
+              ;; Evaluate and abandon this take, then let another terminal
+              ;; callback remove the entry before the retry commits.
+              (apply f @target args)
+              (swap! target dissoc :source))
+            (apply real-swap-vals! target f args))]
+          (take! client context))]
+    (is (nil? claimed)
+        "only the callback that removed the entry owns its finish function")))
+
+(deftest checkpoint-cancellation-claim-uses-the-committed-prior-state
+  (let [rejected (atom 0)
+        particles (atom {:particle
+                         {:context
+                          {:fork-id :particle
+                           :executor (executor/synchronous-executor)}
+                          :checkpoint
+                          {:reject (fn [_error] (swap! rejected inc))}
+                          :status :checkpoint}})
+        client {:particles particles}
+        cancel! (coordinator-private 'cancel-kernel-checkpoints!)
+        real-swap-vals! swap-vals!]
+    (with-redefs
+     [clojure.core/swap-vals!
+      (fn [target f & args]
+        (when (identical? target particles)
+          ;; Evaluate and abandon this checkpoint claim, then let a competing
+          ;; cancellation take ownership before the retry commits.
+          (apply f @target args)
+          (swap! target assoc-in [:particle :status] :cancelling))
+        (apply real-swap-vals! target f args))]
+      (cancel! client #{}))
+    (is (zero? @rejected)
+        "a checkpoint seen only by an abandoned attempt is not rejected twice")
+    (is (= :cancelling (get-in @particles [:particle :status])))))
+
+(deftest cancellation-does-not-claim-a-retiring-generation-checkpoint
+  (let [source-id :retiring-source
+        rejected (atom 0)
+        source-context {:fork-id source-id
+                        :executor (executor/synchronous-executor)}
+        particles (atom {:source {:context source-context
+                                  :checkpoint
+                                  {:reject (fn [_error] (swap! rejected inc))}
+                                  :status :checkpoint}})
+        client {:particles particles}
+        manager (coordinator/create-world-manager {})]
+    ;; This is the intentional hand-off interval: the manager has published
+    ;; retirement ownership, while the coordinator has not yet changed the
+    ;; source particle's status from :checkpoint to :retiring.
+    (swap! manager assoc
+           :client client
+           :generation-phase :retiring
+           :retiring-context-ids #{source-id}
+           :activities {source-id {:kind :particle-context
+                                   :value source-context}})
+    (coordinator/cancel-particle-worlds! manager)
+    (is (zero? @rejected)
+        "manager cancellation must not reject retirement-owned CPS slices")
+    (is (= :checkpoint (get-in @particles [:source :status])))
+    (is (:cancel-requested? @manager))))
 
 (deftest smc-resamples-independent-worlds-and-discards-the-tree
   (let [root (context/create-execution-context)
@@ -93,7 +192,13 @@
             (is (every? map?
                         (map #(rtp/get-state
                                % [:inference :world-descriptor])
-                             (measure/get-contexts posterior)))))))
+                             (measure/get-contexts posterior))))
+            (is (every? #(= :discarded
+                            (:fork/status
+                             (rtp/get-state
+                              % [:inference :world-descriptor])))
+                        (measure/get-contexts posterior))
+                "posterior descriptors reflect final settlement"))))
       (finally
         (context/stop-context! root)))))
 
@@ -257,14 +362,15 @@
             (is (= ::still-waiting
                    (deref cancelled 100 ::still-waiting))
                 "the late fork callback cannot erase an unwinding source")
-            (is (= 1 (count (:active-contexts @@manager*))))
+            (is (= 1 (count (world-scope/activity-values
+                             @manager* :particle-context))))
             (deliver release-source-finalizer true)
             (is (= [:ok nil] (deref cancelled 5000 ::timed-out)))
             (is (instance? Throwable (deref outcome 5000 ::timed-out)))
             (is (zero? @child-entered))
             (is (= :discarded (:status @@manager*)))
-            (is (= 2 (count (:descriptors @@manager*)))
-                "the late child handle remains inside affine cleanup")
+            (is (= 1 (count (:descriptors @@manager*)))
+                "work not admitted before cancellation cannot create a world")
             (is (empty? (:handles @@manager*))))))
       (finally
         (deliver release-child-fork true)
@@ -650,7 +756,8 @@
                            (deref task 5000 ::timed-out)
                            (catch Throwable error error)))]
             (is (= true (deref second-pass 5000 ::timed-out)))
-            (is (= 2 (count (:active-contexts @@manager*)))
+            (is (= 2 (count (world-scope/activity-values
+                             @manager* :particle-context)))
                 "an :iterate completion is not a terminal world callback")
             (is (= [:ok nil]
                    (await-cps

@@ -36,6 +36,29 @@ all particle `ForkHandle`s are consumed newest-generation first. Construction
 and resampling failures are also cleaned up automatically because no affected
 particle is running at those boundaries.
 
+## Reusable finite world scopes
+
+The lifecycle above is not specific to probabilities. The
+`org.replikativ.spindel.world.scope` namespace owns a finite family of
+canonical forks for any bounded algorithm such as MCTS or a simulation
+campaign. A scope provides fork construction, composable activity leases,
+atomic lease exchange, quiescence, cancellation hand-back, reverse-order
+discard, and portable descriptors. Once quiescence is published, admission is
+closed permanently.
+
+The algorithm remains responsible for its computations and ends each activity
+lease only after that computation has actually stopped. A live `ForkHandle`
+never leaves the scope; fork callers receive a child execution context and a
+portable descriptor, but no settlement authority. The scope never interprets
+a particle, tree node, Run, reward, or proposal. In particular, a search policy
+may share immutable statistics for a transposition, but it must not share a
+writable context or affine `ForkHandle`.
+
+SMC now uses this generic scope through compatibility functions in its
+coordinator. This is an extraction of the existing ownership protocol, not a
+second world abstraction: Yggdrasil still owns substrate forks and settlement,
+while the execution context still owns reactive runtime state.
+
 ## Failure and recovery
 
 Model failures are fail-fast. Spindel cooperatively cancels sibling particles,
