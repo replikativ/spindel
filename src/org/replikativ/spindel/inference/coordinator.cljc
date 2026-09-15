@@ -1056,7 +1056,7 @@
                        (vec (repeat n (/ 1.0 n))))  ; Uniform if all weights are 0
 
         ;; Sample ancestor index
-        u (rand)
+        u (m/uniform01)
         ancestor-idx (loop [i 0 cumsum 0.0]
                        (if (>= i n)
                          (dec n)

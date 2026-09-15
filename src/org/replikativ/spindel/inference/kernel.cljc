@@ -138,7 +138,7 @@
             proposed-log-weight (get-in proposed-ctx [:inference :log-weight] 0.0)
             log-accept-ratio (- proposed-log-weight current-log-weight)
             accept? (or (>= log-accept-ratio 0)
-                        (< (Math/log (rand)) log-accept-ratio))]
+                        (< (Math/log (m/uniform01)) log-accept-ratio))]
         (log/trace :mcmc/mh-step {:step step
                                   :accept? accept?
                                   :log-accept-ratio log-accept-ratio})
@@ -361,7 +361,7 @@
                    :result result
                    :log-weight current-log-weight})
 
-                (let [addr (rand-nth sample-addrs)
+                (let [addr (m/pick-uniformly sample-addrs)
                       entry (get trace addr)
                       proposed (ar/sample* (:distribution entry))]
 
@@ -377,7 +377,7 @@
         ;; Evaluating a proposal
         pending-proposal?
         (let [log-accept-ratio (- current-log-weight accepted-log-weight)
-              u (Math/log (rand))
+              u (Math/log (m/uniform01))
               accept? (or (>= log-accept-ratio 0)
                           (< u log-accept-ratio))
               new-completed (inc completed-iterations)
@@ -405,7 +405,7 @@
                :log-weight new-accepted-log-weight})
 
             (let [sample-addrs (vec (keys (filter (fn [[_ entry]] (not (:observed? entry))) new-accepted-trace)))
-                  addr (rand-nth sample-addrs)
+                  addr (m/pick-uniformly sample-addrs)
                   entry (get new-accepted-trace addr)
                   proposed (ar/sample* (:distribution entry))]
 
@@ -516,7 +516,7 @@
                    :result result
                    :log-weight current-log-weight})
 
-                (let [addr (rand-nth sample-addrs)
+                (let [addr (m/pick-uniformly sample-addrs)
                       entry (get trace addr)
                       current-value (:value entry)
                       proposed (random-walk-propose current-value step-size)]
@@ -533,7 +533,7 @@
 
         pending-proposal?
         (let [log-accept-ratio (- current-log-weight accepted-log-weight)
-              u (Math/log (rand))
+              u (Math/log (m/uniform01))
               accept? (or (>= log-accept-ratio 0)
                           (< u log-accept-ratio))
               new-completed (inc completed-iterations)
@@ -564,7 +564,7 @@
                :log-weight new-accepted-log-weight})
 
             (let [sample-addrs (continuous-sample-addrs new-accepted-trace)
-                  addr (rand-nth sample-addrs)
+                  addr (m/pick-uniformly sample-addrs)
                   entry (get new-accepted-trace addr)
                   current-value (:value entry)
                   proposed (random-walk-propose current-value step-size)]
@@ -622,7 +622,7 @@
 (defrecord RandomSelector [block-ids]
   PBlockSelector
   (select-block [_ _trace _iteration]
-    (rand-nth block-ids)))
+    (m/pick-uniformly block-ids)))
 
 (defn random-selector
   [block-ids]
@@ -755,7 +755,7 @@
 
         pending-proposal?
         (let [log-accept-ratio (- current-log-weight accepted-log-weight)
-              u (Math/log (rand))
+              u (Math/log (m/uniform01))
               accept? (or (>= log-accept-ratio 0)
                           (< u log-accept-ratio))
               new-completed (inc completed-iterations)
