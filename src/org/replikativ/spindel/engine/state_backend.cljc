@@ -62,8 +62,16 @@
     (if (empty? path)
       ;; Swap entire state
       (swap! state-atom f)
-      ;; Swap at path
-      (get-in (swap! state-atom update-in path f) path)))
+      ;; Swap at path. An update fn that keeps an absent target absent
+      ;; (`#(when % …)`) creates no entry: a nil node under `:nodes` has no
+      ;; owner, and no sweep removes it.
+      (get-in (swap! state-atom
+                     (fn [m]
+                       (if (= ::absent (get-in m path ::absent))
+                         (let [v (f nil)]
+                           (if (nil? v) m (assoc-in m path v)))
+                         (update-in m path f))))
+              path)))
 
   (backend-write-2! [_ path-a path-b f2]
     (swap! state-atom
@@ -355,7 +363,8 @@
             (let [v (get-in
                      (swap! overlay-atom
                             (fn [ov]
-                              (let [entity-in-overlay? (not= ::not-found
+                              (let [ov0 ov
+                                    entity-in-overlay? (not= ::not-found
                                                              (get-in ov entity-path ::not-found))
                                     tombstoned? (= deleted (get-in ov path))
                                     has-deleted-ancestor? (deleted-ancestor? ov path)
@@ -381,12 +390,19 @@
                                            ov))
                                 ;; Now apply f to the current value at path
                                     current (get-in ov path)
+                                    absent? (= ::not-found (get-in ov path ::not-found))
                                     new-val (f current)]
-                            ;; f keeps the target absent: keep the tombstone, so
-                            ;; the parent value stays hidden and no nil key appears.
-                                (assoc-in ov path (if (and tombstoned? (nil? new-val))
-                                                    deleted
-                                                    new-val)))))
+                                (cond
+                                  ;; f keeps a tombstoned target absent: keep the
+                                  ;; tombstone, so the parent value stays hidden.
+                                  (and tombstoned? (nil? new-val))
+                                  (assoc-in ov path deleted)
+                                  ;; f keeps an absent target absent: write nothing.
+                                  ;; A nil node under `:nodes` has no owner.
+                                  (and absent? (nil? new-val))
+                                  ov0
+                                  :else
+                                  (assoc-in ov path new-val)))))
                      path)]
               (when-not (= deleted v) v)))
 
