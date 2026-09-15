@@ -29,6 +29,7 @@
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.executor :as executor
              :refer [execute!]]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -420,6 +421,7 @@
 
 ;; Forward declaration
 (declare trigger-kernel-resample!)
+(declare resume-in-slice!)
 
 (defn pair-checkpoints
   "Match resampled contexts with their original checkpoints.
@@ -527,23 +529,30 @@
   (let [checkpoints (rtp/get-state context [:inference :checkpoints])
         trace (or (rtp/get-state context [:inference :trace]) {})
 
-        ;; Get checkpoint addresses in order (first = program start)
-        ;; Note: checkpoints are stored as {address -> checkpoint}
-        checkpoint-addrs (keys checkpoints)
+        ;; Checkpoint addresses in PROGRAM order (first = program start).
+        ;; They are stored as {address -> checkpoint}; map key order is
+        ;; insertion order only up to eight entries, so sort by the
+        ;; sequence number each checkpoint was stamped with.
+        checkpoint-addrs (map key (sort-by (comp :seq val) checkpoints))
 
         ;; Apply updates to trace - updates are raw values, trace has rich entries
         ;; Update the :value field of existing rich entries
         updated-trace (reduce-kv
                        (fn [t addr new-value]
                          (let [existing (get t addr)
-                               checkpoint (get checkpoints addr)]
-                           (if existing
-                              ;; Update existing entry's value
-                             (assoc t addr (assoc existing :value new-value))
-                              ;; Create new rich entry using checkpoint's source
-                             (assoc t addr {:value new-value
-                                            :distribution (:source checkpoint)
-                                            :observed? (some? (get-in checkpoint [:options :observe]))}))))
+                               checkpoint (get checkpoints addr)
+                               dist (or (:distribution existing) (:source checkpoint))]
+                           ;; The entry's :log-prob is the prior density OF THE
+                           ;; VALUE, so it is recomputed with the value: keeping
+                           ;; the old one made the random-walk kernel score a
+                           ;; proposal under the density of the point it left,
+                           ;; which is how a step outside a bounded prior's
+                           ;; support was never seen as −∞.
+                           (assoc t addr (merge (or existing
+                                                    {:distribution dist
+                                                     :observed? (some? (get-in checkpoint [:options :observe]))})
+                                                {:value new-value
+                                                 :log-prob (when dist (ar/observe* dist new-value))}))))
                        trace
                        updates)
 
@@ -572,21 +581,27 @@
     ;; Update trace with modifications
     (rtp/swap-state! context [:inference :trace] (constantly updated-trace))
 
-    ;; CRITICAL: Clear all checkpoints EXCEPT the one we're resuming from
-    ;; Re-execution will recreate them with fresh continuations
-    ;; This prevents "duplicate address" errors during MCMC iteration
-    (rtp/swap-state! context [:inference :checkpoints]
-                     (fn [chkpts]
-                       (select-keys chkpts [resume-addr])))
+    ;; Drop the checkpoints DOWNSTREAM of the resume point: re-execution
+    ;; re-creates them with fresh continuations, and with stable addresses
+    ;; the duplicate-address guard would fire on the stale ones. Keep the
+    ;; upstream ones and the resume site itself: their continuations are
+    ;; still valid, and a later proposal on an upstream site must be able to
+    ;; resume from it. Clearing everything but the resume site — the old
+    ;; behaviour — made every proposal on an upstream site fall back to the
+    ;; earliest surviving checkpoint, so that site's new value was written
+    ;; to the trace and never executed: the first sample of a program could
+    ;; not move at all.
+    (let [resume-seq (or (:seq checkpoint) 0)]
+      (rtp/swap-state! context [:inference :checkpoints]
+                       (fn [chkpts]
+                         (into {} (filter (fn [[_ c]] (<= (or (:seq c) 0) resume-seq)) chkpts)))))
 
-    ;; CRITICAL: Restore choice-stack to checkpoint state + checkpoint address
-    ;; The checkpoint stores the stack BEFORE push, continuation expects AFTER push
-    ;; This ensures MCMC re-execution generates same addresses as original run
-    (let [checkpoint-stack (or (:choice-stack checkpoint) [])
-          restored-stack (conj checkpoint-stack (:address checkpoint))]
-      (rtp/swap-state! context [:inference :choice-stack] (constantly restored-stack)))
-
-    ;; Resume from checkpoint with the (possibly modified) value
+    ;; Resume from checkpoint with the (possibly modified) value. The
+    ;; continuation runs in the environment captured at its own suspension
+    ;; (bindings, chain-head, tracking) — see `resume-in-slice!`. This used
+    ;; to restore an `[:inference :choice-stack]` that nothing reads since
+    ;; hash-chain addressing, and never reseeded the chain-head, so every
+    ;; re-run site minted a fresh address.
     (let [{:keys [resolve source options address]} checkpoint
           {:keys [observe]} options
           executor (:executor context)
@@ -603,10 +618,26 @@
 
       ;; Resume continuation
       (execute! executor
-                (fn []
-                  (binding [rtc/*execution-context* context
-                            pcps-async/*in-trampoline* false]
-                    (spin-core/resume resolve value)))))))
+                (fn [] (resume-in-slice! context checkpoint resolve value))))))
+
+(defn ^:no-doc resume-in-slice!
+  "Invoke a checkpoint's continuation in the environment it suspended in.
+
+   Restores the checkpoint's `:slice-state` (bindings, addressing
+   chain-head, dep tracking) exactly as the engine does for track/await
+   continuations, binds the execution context and the spin id, and resumes.
+   Without the chain-head restore a replayed body mints new addresses for
+   every site after the resume point. A checkpoint without a snapshot
+   (none are produced any more) resumes in the caller's context unchanged."
+  [context checkpoint cont value]
+  (let [spin-id (:spin-id checkpoint)
+        rctx (if (and spin-id (:slice-state checkpoint))
+               (simple/restore-slice-state! context spin-id checkpoint)
+               context)]
+    (binding [rtc/*execution-context* rctx
+              rtc/*spin-id* (or spin-id rtc/*spin-id*)
+              pcps-async/*in-trampoline* false]
+      (spin-core/resume cont value))))
 
 (defn resume-particle-with-value!
   "Resume particle execution from checkpoint with a specific value.
@@ -645,13 +676,11 @@
       (rtp/swap-state! context [:inference :log-weight]
                        (fn [w] (+ (or w 0.0) log-prob))))
 
-    ;; Execute continuation resume on particle's executor
-    ;; CRITICAL: Bind *execution-context* so resolve-fn reads updated particle-id
+    ;; Execute continuation resume on particle's executor, in the slice
+    ;; environment the checkpoint captured (binds *execution-context* so
+    ;; resolve-fn reads the updated particle-id).
     (execute! executor
-              (fn []
-                (binding [rtc/*execution-context* context
-                          pcps-async/*in-trampoline* false]
-                  (spin-core/resume resolve value))))))
+              (fn [] (resume-in-slice! context checkpoint resolve value)))))
 
 ;; =============================================================================
 ;; KernelCoordinator - Generic Kernel-Based Inference
@@ -998,7 +1027,7 @@
                     (binding [rtc/*execution-context* forked-ctx
                               pcps-async/*in-trampoline* false]
                       (try
-                        (spin-core/resume (:resolve checkpoint) value)
+                        (resume-in-slice! forked-ctx checkpoint (:resolve checkpoint) value)
                         (catch #?(:clj Throwable :cljs :default) t
                           (log/error :pgas/scoring-error {:idx idx :error (str t)})
                   ;; On error, deliver -Infinity and countdown

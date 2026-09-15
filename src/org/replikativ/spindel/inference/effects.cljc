@@ -10,6 +10,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.inference.address :as addr]
             [org.replikativ.spindel.inference.coordinator :as coord]
             [replikativ.logging :as log]
@@ -110,11 +111,24 @@
                        :source-loc source-loc
                        :existing existing})))
 
-    ;; Build checkpoint - hash-chain addressing makes choice-stack obsolete
-    ;; The address itself encodes the execution path via hash-chain
-    (let [checkpoint {:resolve resolve
+    ;; Build the checkpoint. It is a continuation the coordinator will
+    ;; resume later, possibly many times (MCMC replay), so like every
+    ;; track/await continuation it carries the per-slice environment it
+    ;; suspended in: bindings, addressing chain-head, dep tracking. The
+    ;; chain-head is the part replay cannot do without — at this point the
+    ;; cursor equals `address` itself, and reseeding it before a resume is
+    ;; what makes every downstream site re-mint the SAME address it had, so
+    ;; the trace stays the size of the model and a proposal lands on a live
+    ;; site. `:seq` is the program-order position: checkpoints live in a
+    ;; map, and map key order is not program order past eight entries.
+    (let [seq-no (or (rtp/get-state ctx [:inference :checkpoint-seq]) 0)
+          _ (rtp/swap-state! ctx [:inference :checkpoint-seq] (constantly (inc seq-no)))
+          checkpoint {:resolve resolve
                       :reject reject
                       :address address
+                      :spin-id spin-id
+                      :seq seq-no
+                      :slice-state (simple/capture-slice-state ctx spin-id)
                       :source source
                       :options {:observe observe
                                 :init init

@@ -569,7 +569,22 @@
                                         {}
                                         subs)))))))))
 
-(defn- restore-slice-state!
+(defn ^:no-doc capture-slice-state
+  "Snapshot the per-slice environment a continuation must resume in — the
+  context bindings, the addressing chain-head and the transient dep
+  tracking. The inverse of `restore-slice-state!`; see its docstring for
+  what each key is for. Every suspension point that will later be resumed
+  by the engine must take one of these: track and await do, and so does an
+  inference checkpoint (`inference/effects.cljc`), which used to be the one
+  continuation in the system without a snapshot — its replay then minted
+  fresh addresses for every re-run site and the MCMC trace grew without
+  bound."
+  [ctx spin-id]
+  {:bindings (:bindings ctx)
+   :chain-head (addressing/get-chain-head ctx)
+   :tracking (rtp/get-state ctx [:spin-tracking spin-id])})
+
+(defn ^:no-doc restore-slice-state!
   "Restore a continuation's per-slice `:slice-state` snapshot so the
   resumed body slice continues consistently with where it suspended.
 

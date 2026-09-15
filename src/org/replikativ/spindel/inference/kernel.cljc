@@ -463,6 +463,16 @@
   [current-value step-size]
   (+ current-value (* step-size (ar/sample* (ar/normal 0 1)))))
 
+(defn- log-prior
+  "Sum of the prior log-density over the trace's unobserved sites. Every
+  resume stores the site's `:log-prob`; the log-weight holds only the
+  observe terms. A symmetric random-walk proposal needs the JOINT in its
+  accept ratio — the prior does not cancel as it does for a prior-proposal
+  kernel — and without it a step outside a bounded prior's support was
+  accepted (measured: d₀ = 2037 m under U(200, 2000))."
+  [trace]
+  (reduce + 0.0 (keep (fn [[_ e]] (when-not (:observed? e) (:log-prob e))) trace)))
+
 (defrecord RandomWalkMHKernel [num-iterations step-size]
   PInferenceKernel
 
@@ -483,15 +493,18 @@
 
   (on-complete [_this ctx trace result]
     (let [current-log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)
+          current-log-joint (+ current-log-weight (log-prior trace))
           mcmc-state (get-rw-mcmc-state ctx)
           {:keys [completed-iterations accepted-trace accepted-log-weight
-                  accepted-result pending-proposal? acceptance-count]} mcmc-state]
+                  accepted-log-joint accepted-result pending-proposal?
+                  acceptance-count]} mcmc-state]
 
       (cond
         (nil? accepted-trace)
         (let [new-state {:completed-iterations 0
                          :accepted-trace trace
                          :accepted-log-weight current-log-weight
+                         :accepted-log-joint current-log-joint
                          :accepted-result result
                          :pending-proposal? false
                          :acceptance-count 0}]
@@ -532,8 +545,10 @@
                    :updates {addr proposed}})))))
 
         pending-proposal?
-        (let [log-accept-ratio (- current-log-weight accepted-log-weight)
+        (let [;; joint, not likelihood: symmetric proposal, so the prior stays
+              log-accept-ratio (- current-log-joint (or accepted-log-joint accepted-log-weight))
               u (Math/log (m/uniform01))
+              ;; a NaN ratio (−∞ − −∞) fails both tests and is a rejection
               accept? (or (>= log-accept-ratio 0)
                           (< u log-accept-ratio))
               new-completed (inc completed-iterations)
@@ -541,6 +556,7 @@
 
               new-accepted-trace (if accept? trace accepted-trace)
               new-accepted-log-weight (if accept? current-log-weight accepted-log-weight)
+              new-accepted-log-joint (if accept? current-log-joint accepted-log-joint)
               new-accepted-result (if accept? result accepted-result)]
 
           (log/debug :rw-mh/acceptance {:iteration completed-iterations
@@ -553,6 +569,7 @@
               (set-rw-mcmc-state! ctx {:completed-iterations new-completed
                                        :accepted-trace new-accepted-trace
                                        :accepted-log-weight new-accepted-log-weight
+                                       :accepted-log-joint new-accepted-log-joint
                                        :accepted-result new-accepted-result
                                        :pending-proposal? false
                                        :acceptance-count new-acceptance-count})
@@ -572,6 +589,7 @@
               (set-rw-mcmc-state! ctx {:completed-iterations new-completed
                                        :accepted-trace new-accepted-trace
                                        :accepted-log-weight new-accepted-log-weight
+                                       :accepted-log-joint new-accepted-log-joint
                                        :accepted-result new-accepted-result
                                        :pending-proposal? true
                                        :acceptance-count new-acceptance-count})
@@ -590,7 +608,13 @@
                          :mcmc-state mcmc-state}))))))
 
 (defn random-walk-mh-kernel
-  "Create RandomWalkMHKernel for continuous variables."
+  "Create RandomWalkMHKernel for continuous variables.
+
+  Whole-program Metropolis-Hastings with a symmetric Gaussian proposal on one
+  unobserved site per iteration; the program is replayed from that site with
+  every other site held at its trace value, and the proposal is accepted on
+  the ratio of joint densities (prior × likelihood). Requires the replay to
+  reproduce addresses — see `coordinator/resume-in-slice!`."
   [num-iterations & [{:keys [step-size] :or {step-size 0.1}}]]
   {:pre [(pos-int? num-iterations) (pos? step-size)]}
   (->RandomWalkMHKernel num-iterations step-size))

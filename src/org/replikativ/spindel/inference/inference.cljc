@@ -260,6 +260,7 @@
                         (constantly
                          {:log-weight 0.0
                           :choice-stack []
+                          :checkpoint-seq 0
                           :trace {}
                           :checkpoints {}
                           :particle-id particle-id
