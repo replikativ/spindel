@@ -26,8 +26,8 @@
   (let [root (ctx/create-execution-context)]
     (try (binding [rtc/*execution-context* root]
            (let [meas @(spin (aw/await (infer/kernel-infer (model-fn)
-                                                            (k/random-walk-mh-kernel iterations {:step-size step-size})
-                                                            1 {})))
+                                                           (k/random-walk-mh-kernel iterations {:step-size step-size})
+                                                           1 {})))
                  [c lw] (first (measure/get-particles meas))]
              (let [mh (rtp/get-state c [:inference :rw-mcmc])]
                {:ctx c :value (measure/get-value c) :log-weight lw
@@ -40,14 +40,14 @@
 
 (defn- three-site-model []
   (spin
-    (let [a (sample (ar/uniform-continuous -5.0 5.0))
-          b (sample (ar/uniform-continuous -5.0 5.0))
-          c (sample (ar/uniform-continuous -5.0 5.0))]
-      (swap! visited conj [a b c])
-      (observe (ar/normal a 0.5) 1.0)
-      (observe (ar/normal b 0.5) 2.0)
-      (observe (ar/normal c 0.5) 3.0)
-      [a b c])))
+   (let [a (sample (ar/uniform-continuous -5.0 5.0))
+         b (sample (ar/uniform-continuous -5.0 5.0))
+         c (sample (ar/uniform-continuous -5.0 5.0))]
+     (swap! visited conj [a b c])
+     (observe (ar/normal a 0.5) 1.0)
+     (observe (ar/normal b 0.5) 2.0)
+     (observe (ar/normal c 0.5) 3.0)
+     [a b c])))
 
 (deftest replay-keeps-the-trace-the-size-of-the-model
   (reset! visited [])
@@ -74,9 +74,9 @@
 (defn- conjugate-model []
   ;; prior N(0,1), one observation y = 2 with σ = 1 → posterior N(1, 1/2)
   (spin
-    (let [mu (sample (ar/normal 0.0 1.0))]
-      (observe (ar/normal mu 1.0) 2.0)
-      mu)))
+   (let [mu (sample (ar/normal 0.0 1.0))]
+     (observe (ar/normal mu 1.0) 2.0)
+     mu)))
 
 (deftest a-chain-lands-on-the-analytic-posterior
   ;; 60 independent seeded chains of 80 steps each; their end points are
@@ -93,9 +93,9 @@
   ;; prior U(0,1); the likelihood pulls toward 0.95, so an unguarded random
   ;; walk would drift past 1.0
   (spin
-    (let [p (sample (ar/uniform-continuous 0.0 1.0))]
-      (observe (ar/normal p 0.1) 0.95)
-      p)))
+   (let [p (sample (ar/uniform-continuous 0.0 1.0))]
+     (observe (ar/normal p 0.1) 0.95)
+     p)))
 
 (deftest a-proposal-outside-the-prior-is-rejected
   (doseq [seed (range 1 13)]
@@ -112,8 +112,8 @@
                (let [root (ctx/create-execution-context)]
                  (try (binding [rtc/*execution-context* root]
                         (let [meas @(spin (aw/await (infer/kernel-infer (conjugate-model)
-                                                                         (k/single-site-mh-kernel 80)
-                                                                         1 {})))]
+                                                                        (k/single-site-mh-kernel 80)
+                                                                        1 {})))]
                           (measure/get-value (first (first (measure/get-particles meas))))))
                       (finally (ctx/stop-context! root)))))
         finals (mapv run1 (range 1 61))
