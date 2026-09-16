@@ -68,9 +68,7 @@
   and `restore-slice-state!` (engine/impl/simple.cljc) for what each
   key is for."
   [ctx spin-id]
-  {:bindings (:bindings ctx)
-   :chain-head (addressing/get-chain-head ctx)
-   :tracking (rtp/get-state ctx [:spin-tracking spin-id])})
+  (simple/capture-slice-state ctx spin-id))
 
 (defn- spin-await-cont-map
   "Build the continuation map for a parent awaiting a child Spin.

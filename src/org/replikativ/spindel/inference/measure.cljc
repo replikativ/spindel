@@ -4,7 +4,27 @@
   Measures represent probability distributions over execution traces.
   This is the foundation for compositional inference algorithms."
   (:require [replikativ.logging :as log]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [anglican.runtime :as ar]))
+
+;; =============================================================================
+;; Inference randomness
+;; =============================================================================
+
+(defn uniform01
+  "One uniform draw from anglican's process-global generator, so resampling,
+   ancestor choice, the accept step and the site choice of every kernel obey
+   `setSeed` on `anglican.runtime/RNG` exactly like the program's samples do.
+   `clojure.core/rand` did not: it reads `Math/random`'s own unseedable
+   generator, which made a seeded run reproducible in its prior draws and
+   random in its resampling and moves."
+  []
+  (ar/sample* (ar/uniform-continuous 0.0 1.0)))
+
+(defn pick-uniformly
+  "A uniformly chosen element of a vector, drawn through `uniform01`."
+  [v]
+  (nth v (int (* (uniform01) (count v)))))
 
 ;; =============================================================================
 ;; PMeasure Protocol
@@ -95,7 +115,7 @@
   [weights n]
   {:pre [(every? #(and (>= % 0) (<= % 1)) weights)
          (< (Math/abs (- (reduce + weights) 1.0)) 1e-6)]}
-  (let [u (/ (rand) n)  ; Random offset
+  (let [u (/ (uniform01) n)  ; Random offset, from the seeded generator
         cumsum (reductions + 0 weights)]
     (loop [i 0
            j 0

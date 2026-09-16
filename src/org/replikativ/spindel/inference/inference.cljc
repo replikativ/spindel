@@ -260,6 +260,7 @@
                         (constantly
                          {:log-weight 0.0
                           :choice-stack []
+                          :checkpoint-seq 0
                           :trace {}
                           :checkpoints {}
                           :particle-id particle-id
@@ -512,7 +513,7 @@
 
                 ;; MH acceptance ratio: alpha = Z_new / Z_old
                log-alpha (- proposed-log-Z current-log-Z)
-               u (Math/log (rand))
+               u (Math/log (m/uniform01))
                accept? (or (>= log-alpha 0.0)
                            (< u log-alpha))
 
@@ -573,7 +574,7 @@
    (let [initial-measure (await (smc-infer model-task num-particles opts))
          initial-particles (m/get-particles initial-measure)
           ;; Select random particle's trace as initial retained trace
-         initial-retained-ctx (first (rand-nth initial-particles))
+         initial-retained-ctx (first (m/pick-uniformly initial-particles))
          initial-retained-trace (rtp/get-state initial-retained-ctx [:inference :trace])]
 
      (log/debug :pgibbs/initial-sweep {:retained-trace-size (count initial-retained-trace)})
@@ -615,7 +616,7 @@
                log-weights (mapv second sweep-particles)
                norm-weights (m/normalize-log-weights log-weights)
                 ;; Sample one index according to weights
-               u (rand)
+               u (m/uniform01)
                selected-idx (loop [i 0 cumsum 0.0]
                               (let [cumsum' (+ cumsum (nth norm-weights i))]
                                 (if (< u cumsum')
@@ -654,7 +655,7 @@
 (defn- sample-categorical
   "Sample an index from categorical distribution defined by probabilities."
   [probs]
-  (let [u (rand)]
+  (let [u (m/uniform01)]
     (loop [i 0
            cumsum 0.0]
       (if (>= i (count probs))
@@ -839,7 +840,7 @@
                               (let [measure (nth prev-measures node-idx)
                                     particles (m/get-particles measure)
                                       ;; Sample random particle from this node
-                                    [ctx _] (rand-nth particles)]
+                                    [ctx _] (m/pick-uniformly particles)]
                                 (rtp/get-state ctx [:inference :trace])))
                             csmc-indices)
                          ;; SMC nodes have no retained traces
@@ -866,7 +867,7 @@
                                      [ctx (+ lw log-weight-adj)])
                                    particles)
                                ;; Return one random particle
-                             (let [[ctx lw] (rand-nth particles)]
+                             (let [[ctx lw] (m/pick-uniformly particles)]
                                [[ctx (+ lw log-weight-adj)]]))))
                        (range num-nodes)))]
 
@@ -924,7 +925,7 @@
    (let [initial-measure (await (smc-infer model-task num-particles opts))
          initial-particles (m/get-particles initial-measure)
           ;; Select random particle's trace as initial retained trace
-         initial-retained-ctx (first (rand-nth initial-particles))
+         initial-retained-ctx (first (m/pick-uniformly initial-particles))
          initial-retained-trace (rtp/get-state initial-retained-ctx [:inference :trace])]
 
      (log/debug :pgas/initial-sweep {:retained-trace-size (count initial-retained-trace)})
@@ -966,7 +967,7 @@
                log-weights (mapv second sweep-particles)
                norm-weights (m/normalize-log-weights log-weights)
                 ;; Sample one index according to weights
-               u (rand)
+               u (m/uniform01)
                selected-idx (loop [i 0 cumsum 0.0]
                               (let [cumsum' (+ cumsum (nth norm-weights i))]
                                 (if (< u cumsum')
