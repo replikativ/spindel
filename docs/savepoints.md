@@ -78,7 +78,11 @@ The part of this Spindel does *not* copy today is `:state`. Anglican's
 checkpoint holds the state **as it was at the site**, which includes the
 log-weight accumulated up to there. Resuming a stored checkpoint (LMH, PGAS)
 therefore starts from the right weight and the right partial trace with no
-bookkeeping. This proposal restores that property.
+bookkeeping. Anglican gets this for free because its state is a value. In
+Spindel the state is a world, and the way to keep a world as it was is to
+fork it; this proposal restores the property that way. Anglican also ends a
+program with a third checkpoint type, `result`; the terminal sites below are
+that.
 
 **Gen.** A generative function is used through a small interface over
 *traces*: `simulate`, `generate` (run under constraints, return a weight),
@@ -128,21 +132,18 @@ handler needs:
  :savepoint/address  address        ; see Addresses
  :savepoint/seq      n              ; program order
  :savepoint/payload  payload
- :savepoint/resume   k              ; multi-shot; carries its slice state
- :savepoint/state    sigma          ; the world AS IT IS AT THE SITE
- :savepoint/portable {:fn sym :args data}   ; or nil
- :savepoint/scope    scope}         ; the world scope it belongs to
+ :savepoint/world    world          ; the world it is pending in
+ :savepoint/portable {:fn sym :args data}}  ; or nil
 ```
 
-**A savepoint is a value: a continuation together with the state it
-continues from.** `:savepoint/state` is a frozen view of the context
-(`fork-context :mode :frozen` already builds one from a dereference of the
-persistent backend) plus the snapshot id of every registered Yggdrasil system.
-Nothing is forked when a savepoint is built; a world is materialized from
-`sigma` only when a handler asks for one. Whatever a consumer accumulates in
-world state (a log-weight, a partial trace, a turn counter, a budget) is
-therefore captured at every site for free, and no consumer ever reconstructs
-it.
+**A savepoint is a continuation pending in a world.** It stays *pending*
+until that world is resumed from it or abandons it. While it is pending the
+world is exactly as it was at the site, so whatever a consumer accumulates in
+world state (a log-weight, a partial trace, a turn counter, a budget) is there
+for whoever continues it, and no consumer ever reconstructs it.
+
+The pending continuations are part of world state, so a fork of the world
+holds the same savepoints, pending in the fork.
 
 The engine gives the savepoint to the **handler** installed for that site in the current world.
 A handler is looked up in context state, as the inference coordinator is
@@ -155,27 +156,33 @@ cost one map and one lookup when nobody listens.
 ### What a handler may do
 
 ```clojure
-(resume sp value)            ; continue in sp's world
-(fork sp)                    ; => the same savepoint in a new world, at sigma
+(resume sp value)            ; continue sp's world; consumes sp
+(fork sp)                    ; => the same savepoint, pending in a new world
 (fork sp {:handlers h        ;    ... under other handlers
           :seed s            ;    ... with its own random stream
           :grant g})         ;    ... funded by a resource grant
-(hold sp)                    ; keep it; the computation stays suspended
+(abandon sp)                 ; unwind the computation; consumes sp
 (persist sp)                 ; tier 2: portable form, or throws if not portable
-(abandon sp)                 ; reject; the world is discarded by its scope
 ```
 
-`fork` goes through the savepoint's `WorldScope` (exists today:
-`world.scope/fork!`), so every forked world has an owner, is counted, and is
-discarded after quiescence. The new world starts **at `sigma`**, not at
-whatever the publishing world has become since. Resuming a forked savepoint
-runs the same continuation with the child world bound, which is what
-`resume-particle-with-value!` does today.
+`fork` goes through a `WorldScope` (exists today: `world.scope/fork!`), so
+every forked world has an owner, is counted, and is discarded after
+quiescence. Resuming a forked savepoint runs the same continuation with the
+child world bound, which is what `resume-particle-with-value!` does today.
+Not resuming is *holding*: the computation stays suspended, and needs no
+operation.
+
+**Anchors.** A world can only go forward, so a handler that wants to come
+back to a site forks the savepoint *before* resuming it and keeps the fork.
+That fork is an *anchor*: a world that is never run, only forked again. It is
+the state at the site, held the way Spindel holds every other state, and it
+costs what a frozen fork costs. Nothing is captured for a site nobody wants
+to return to.
 
 There is deliberately no weight, reward or state-delta argument on `resume`.
 A handler owns the world it resumes, so it writes to that world and then
-resumes; because the world starts at `sigma`, the write composes with
-exactly what was accumulated before the site. `factor`, importance weights and
+resumes; because a pending world is as it was at the site, the write composes
+with exactly what was accumulated before it. `factor`, importance weights and
 process rewards are all that one move (see *The inference layer*).
 
 The three `fork` options are the places where a fork is *not* a copy:
@@ -197,16 +204,14 @@ The three `fork` options are the places where a fork is *not* a copy:
 
 1. *Identity.* Under the default handler, `(savepoint s p)` is `p` and the
    program behaves as if the call were absent.
-2. *Continuation.* `(resume sp v)` is the rest of the computation, started in
-   state `sigma`, with the effect's value `v`.
+2. *Continuation.* `(resume sp v)` is the rest of the computation, from the
+   state at the site, with the effect's value `v`.
 3. *Independence.* Two resumes of two forks of one savepoint observe no
    writes of each other; neither changes the savepoint or its world.
-4. *Rewind.* Resuming a savepoint in its own world a second time is
-   `(resume (fork sp) v)` followed by `abandon` of the old world. In
-   particular it retracts every savepoint with a greater `:seq`, and every
-   write made after the site. An implementation may rewind in place (the
-   backend is persistent, so this is a swap of the state root) as long as the
-   difference cannot be observed.
+4. *Affinity.* A pending savepoint may be forked any number of times. It is
+   resumed or abandoned at most once, after which it is not pending and can
+   be neither forked nor resumed. The world is the affine thing; the way to
+   use a site twice is an anchor.
 5. *Portability.* If `sp` is portable, hydrating `(persist sp)` and resuming it
    is observationally the same as `(resume (fork sp) v)`, up to effects outside
    the world.
@@ -216,9 +221,23 @@ The three `fork` options are the places where a fork is *not* a copy:
 Law 5 is a requirement on the *program*, not something the engine can prove:
 the named function must do what the continuation does.
 
-An earlier draft said a savepoint may be resumed "at most once in its own
-world". Law 4 replaces that: the world is the affine thing, the savepoint is
-the copyable one.
+### Sessions and the end of a computation
+
+Someone must own the worlds. A **session** is one `WorldScope`, an activity
+lease per live world, and the callbacks of the computation it starts:
+
+```clojure
+(def s (open! world {:handlers {site handler} :seed 7}))
+(start! s task)          ; run a spin in the session's root world
+(close! s)               ; cancel, abandon what is pending, discard the worlds
+```
+
+The end of a computation reaches the handler table like any other point, at
+the terminal sites `:savepoint/result` and `:savepoint/error`, with the
+world it ended in. A terminal savepoint has no continuation. This is
+Anglican's `result` checkpoint, and it is what lets one handler drive a
+computation from its first site to its last in any number of worlds without
+a second notification channel.
 
 ## Addresses
 
@@ -243,7 +262,7 @@ derived instead of hand-written. An explicit `:id` still overrides it.
 A handler that records what happened produces a **trace**: a persistent value,
 
 ```clojure
-{:trace/entries {address {:savepoint sp        ; resumable, carries sigma
+{:trace/entries {address {:savepoint anchor    ; a fork taken before resuming
                           :value     v         ; what it was resumed with
                           :note      {...}}}   ; layer-specific, see below
  :trace/order   [address ...]                  ; by :seq
@@ -252,8 +271,9 @@ A handler that records what happened produces a **trace**: a persistent value,
 
 kept by a generic `recording` handler combinator that wraps any other handler.
 The trace is owned by the handler, never stored in the world it describes:
-each `sp` already carries the world at its site, including the trace prefix a
-consumer accumulated there.
+each anchor already is the world at its site, including whatever prefix a
+consumer accumulated there. A handler that will never return to a site
+records no anchor for it.
 
 The one derived operation is
 
@@ -262,11 +282,11 @@ The one derived operation is
 ```
 
 where `policy` is a function `(fn [site payload old-entry]) => {:value v
-:note n}` consulted at every site. `replay` forks the savepoint of the
+:note n}` consulted at every site. `replay` forks the anchor of the
 **earliest address the policy changes** and resumes it; downstream sites reach
 the policy with their old entry if the address still exists. Entries whose
 address is never reached are simply absent from the new trace, so stochastic
-control flow prunes itself. Because the fork starts at `sigma`, everything
+control flow prunes itself. Because the fork starts from the state at that site, everything
 upstream (values, weights, the trace prefix) is reused without re-execution.
 This is Anglican's LMH move and an asymptotic improvement on Gen's dynamic
 language, which re-executes from the start.
@@ -331,12 +351,12 @@ Tier 1 is the existing inference mechanism made public and generalized.
 
 - **Capture.** The continuation is captured with its per-slice environment
   (`capture-slice-state`, exists today): bindings, address frame and
-  dependency tracking, and with `sigma`. Restoring the address frame on resume
-  is what makes every downstream site mint the address it had before, so a
-  resumed computation is addressable the same way in every fork.
-- **Cost.** `sigma` is a dereference of a persistent backend plus one
-  snapshot id per system. It is taken only when a handler is installed for the
-  site; the default handler takes nothing (law 1).
+  dependency tracking. Restoring the address frame on resume is what makes
+  every downstream site mint the address it had before, so a resumed
+  computation is addressable the same way in every fork.
+- **Cost.** A site with a handler costs one map, one state write and one
+  executor hop on resume. A site without one costs a lookup (law 1). An anchor
+  costs a frozen fork.
 - **Safe point.** A savepoint may be forked only when its scope holds no
   activity other than the publishing computation itself (`world.scope`
   activity leases, exists today). In-flight host work (a blocking call, a
@@ -353,8 +373,8 @@ Tier 1 is the existing inference mechanism made public and generalized.
   every site resumed under it. *Neither*: the world is unforkable and `fork`
   fails closed, as MCTS does today. Pinned is new; today anything not
   forkable is "neither".
-- **Multi-shot.** A savepoint may be forked and resumed any number of times
-  (law 4 covers its own world).
+- **Multi-shot.** A savepoint may be forked any number of times and each
+  fork resumed once (law 4).
 
 ## Resources
 
@@ -438,7 +458,7 @@ shared namespace is an open question.
 | `choose` / `sample` / `observe` | site `:inference/choose`, payload = distribution and options; the inference coordinator is its handler | none to the API; the handler plumbing becomes the shared one |
 | `factor` (missing today) | site `:inference/factor`; the handler writes the weight and resumes | new; a site, not an effect |
 | SMC barrier | handler policy: collect savepoints *by site and sequence*, resample, re-fork | fixes "Mixed particle states" for computations of uneven length |
-| MCMC | `replay` plus accept over a persistent trace | **fixes a bug**: resume starts from `sigma`, so upstream observes stay in the weight, a rejected proposal leaves no state behind, and unreached sites are pruned |
+| MCMC | `replay` plus accept over a persistent trace | **fixes a bug**: a proposal resumes a fork of an anchor, so upstream observes stay in the weight, a rejected proposal leaves no state behind, and unreached sites are pruned |
 | trace `{address -> {:value :distribution :observed?}}` | the `recording` handler's trace with inference notes | per-site `:log-prob`; structural addresses |
 | MCTS | unchanged. Its environment is explicit state, so it needs no continuation. An adapter can present a computation with savepoints as an MCTS environment: actions are the values a savepoint may be resumed with, a transition is `(resume (fork sp) a)`, a node is the next savepoint | optional adapter |
 | `snapshot-context`, `serialize-context`, rebuild | unchanged; they become the context half of `persist` and hydration | none |
@@ -471,7 +491,7 @@ A trace of `:conversation/turn` savepoints is also the *rollout record* a
 trainer needs, provided the embedding's notes carry what cannot be
 reconstructed later. For reinforcement learning with verifiable rewards that
 is, per site: the fork's seed; a prefix id that covers the **world** (the
-hash of `sigma`'s portable form), not only the conversation; the pinned policy
+hash of the anchor's portable form), not only the conversation; the pinned policy
 version; the sampler's token log-probs and, separately, the trainer's
 recomputed ones; sampling parameters and a chat-template hash; token ids in
 and out; and per sibling set (the forks of one savepoint) a set id and the
@@ -495,10 +515,11 @@ These fail today and define "done" for the inference half:
 
 ## Plan
 
-1. `effects.savepoint`: the effect, the Savepoint value with `sigma`, handler
-   lookup in context state, the default handler, `resume` / `fork` / `hold` /
-   `abandon` over `world.scope`, fork options `:handlers` and `:seed` with a
-   world-local splittable random stream. Tests for laws 1 to 4.
+1. `effects.savepoint`: the effect, handler lookup in context state, the
+   default handler, `resume` / `fork` / `abandon`, sessions and terminal sites
+   over `world.scope`, fork options `:handlers` and `:seed`. Tests for laws 1
+   to 4. **Done.** (A world-local random stream drawing from the seed is part
+   of step 4.)
 2. Structural addresses for savepoints over `next-id` / `with-key`.
 3. The `recording` handler, the trace value, `replay`.
 4. Move `choose` onto it: per-site `:log-prob`, `:proposal`, `:parents`,
@@ -530,13 +551,16 @@ Steps 1 to 4 fix the MCMC defect and are one reviewable unit. An embedding
   fork inheritance gives nesting by world, and `fork`'s `:handlers` gives
   "the same savepoint under another handler". A stack within one world is not
   proposed.
-- Retention. A trace keeps a `sigma` per site alive. They share structure,
-  but a long chain over a large world needs a policy (keep every k-th, keep
-  only sites a kernel may target). Anglican has the same cost and no policy.
-- In-place rewind (law 4) is an optimisation of fork plus abandon. It is only
-  safe if engine-internal state (queue, timers, in-flight completions) is
-  either part of `sigma` or provably empty at a savepoint. Start with fork;
-  measure before adding rewind.
+- Retention. A trace keeps an anchor per site it may return to, and an anchor
+  is a world owned by the session's scope, which today discards its worlds
+  together at the end. A long chain needs to release single worlds
+  (`abandon` of an anchor should discard its handle) and a policy for which
+  sites to anchor. Anglican has the same cost and no policy.
+- Rewinding a world in place to an anchor's state, instead of continuing in a
+  fork of it, would save a world per move. The backend is persistent, so it is
+  a swap of the state root, but it is only safe if engine-internal state
+  (queue, timers, in-flight completions) is provably empty at a savepoint.
+  Start with forks; measure before adding it.
 - `:parents` is declared by the program. Deriving it, by static analysis of
   the spin body or by tracking sampled values through the dataflow, is
   attractive and out of scope.

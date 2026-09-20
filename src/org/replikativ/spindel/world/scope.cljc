@@ -241,13 +241,19 @@
 
 (defn begin-activity!
   "Acquire a process-local activity lease. New work is rejected after
-   cancellation or once quiescence has been published."
+   cancellation or once quiescence has been published. A caller that must
+   release the lease from elsewhere (a terminal callback that knows only its
+   world) supplies activity-id; it must not be live."
   ([scope kind] (begin-activity! scope kind nil))
-  ([scope kind value]
-   (let [activity-id (random-uuid)
-         error (transition! scope
+  ([scope kind value] (begin-activity! scope kind value (random-uuid)))
+  ([scope kind value activity-id]
+   (let [error (transition! scope
                             (fn [state]
                               (cond
+                                (contains? (:activities state) activity-id)
+                                [state (scope-error scope ::activity-id-collision
+                                                    "World-scope activity ID is already live")]
+
                                 (not= :open (:status state))
                                 [state (scope-error scope ::scope-consumed
                                                     "Cannot enter a consumed world scope")]
