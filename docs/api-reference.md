@@ -7,6 +7,19 @@ Namespace-by-namespace listing of all public functions and macros.
 > `org.replikativ.spindel.…` form — see any file in `src/` or `examples/`
 > for canonical require lines.
 
+## `spindel.search.mcts`
+
+Finite, deterministic UCT search over canonical Yggdrasil worlds. See
+[Inference Worlds](inference.md#finite-monte-carlo-tree-search) for the
+environment contract, bounds, and settlement semantics.
+
+| Function | Description |
+|----------|-------------|
+| `(search environment initial-state)` / `(search environment initial-state opts)` | Return a `Spin` containing a portable search result after every speculative world has been discarded. |
+| `(uct-score parent-visits child exploration)` | Pure UCT score; unvisited children have infinite selection priority. |
+
+---
+
 ## `spindel.core`
 
 Convenience re-export namespace. All functions below are also available from their originating namespaces.
@@ -858,6 +871,7 @@ context. See [Forking](forking.md#fork-registered-systems-and-settle-them-affine
 | Function | Description |
 |----------|-------------|
 | `(register! system)` / `(unregister! system-id)` | Add or remove a forkable Yggdrasil signal; rejected once that child world's settlement authority is partitioned/frozen. |
+| `(freeze-world-shape!)` | Irreversibly forbid registry additions/removals in the current open fork while retaining ordinary writes and settlement authority. |
 | `(fork! opts)` | Fork the reactive context and selected registered systems; returns the sole open `ForkHandle`. |
 | `(fork-descriptor handle)` | Portable world/system basis plus current owner and settlement status; excludes live authority. |
 | `(transfer-fork! handle owner)` | Atomically consume the caller's authority and return the new owner's handle. |
