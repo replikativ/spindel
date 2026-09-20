@@ -28,6 +28,9 @@
             [org.replikativ.spindel.inference.kernel :as k]
             [org.replikativ.spindel.inference.coordinator :as coord]
             [org.replikativ.spindel.inference.gradient :as grad]
+            [org.replikativ.spindel.inference.trace :as itrace]
+            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
@@ -148,6 +151,91 @@
 (defmacro ^:private inference-spin [& body]
   `(spin-core/with-causal-descendant-egress (spin ~@body)))
 
+;; =============================================================================
+;; Markov chains: replay plus accept
+;; =============================================================================
+
+(defn- block-gibbs-options
+  "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
+  and the selector see the trace in the coordinator's shape."
+  [{:keys [block-selector block-kernels address-classifier]}]
+  (let [block-of (atom nil)
+        proposals (atom nil)]
+    {:select
+     (fn [current iteration]
+       (let [legacy (itrace/legacy-trace current)
+             latent (set (itrace/latent-addresses current))
+             blocks (reduce-kv (fn [acc address entry]
+                                 (if-let [block-id (and (latent address)
+                                                        (address-classifier address entry))]
+                                   (update acc block-id (fnil conj #{}) address)
+                                   acc))
+                               {} legacy)
+             block-id (k/select-block block-selector legacy iteration)
+             targets (get blocks block-id #{})
+             kernel (get block-kernels block-id)]
+         (reset! block-of kernel)
+         (reset! proposals (when (and kernel (seq targets)
+                                      (not (instance? org.replikativ.spindel.inference.kernel.PriorBlockKernel kernel)))
+                             (k/propose-block kernel legacy targets)))
+         ;; Blocks are selected by id, independently of the trace.
+         {:targets targets :log-selection (constantly 0.0)}))
+     :propose
+     (fn [sp-value old-entry]
+       (if-let [proposed @proposals]
+         ;; A block kernel's move is taken to be symmetric (the random walk
+         ;; is; a custom kernel must be).
+         {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
+         (itrace/prior-proposal sp-value old-entry)))}))
+
+(defn- mh-options
+  "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels the
+  coordinator runs."
+  [kernel]
+  (case (k/kernel-id kernel)
+    :single-site-mh {:iterations (:num-iterations kernel)}
+    :random-walk-mh {:iterations (:num-iterations kernel)
+                     :propose (itrace/random-walk-proposal (:step-size kernel))}
+    :block-gibbs (assoc (block-gibbs-options kernel)
+                        :iterations (:num-iterations kernel))
+    nil))
+
+(defn- run-markov-chain
+  "One chain in its own world: run the model, move it `iterations` times,
+  project the final state, give every world back."
+  [model-task {:keys [iterations] :as step-opts} executor]
+  (inference-spin
+   (let [root (ctx/create-execution-context :executor executor)
+         session (sp/open! root {:purpose :mcmc :fork-opts {:systems :none}})]
+     (try
+       (let [initial (await (trace/run session model-task (itrace/policy)))
+             _ (when-let [error (:trace/error initial)]
+                 (throw (ex-info "Inference failed during model execution"
+                                 {:type ::inference-failed} error)))
+             {final :trace accepted :accepted}
+             (await (itrace/mh-chain initial iterations step-opts))
+             world (:trace/world final)]
+         (rtp/swap-state! world [:inference]
+                          (fn [state]
+                            (assoc state
+                                   :result (:trace/result final)
+                                   :trace (itrace/legacy-trace final)
+                                   :mcmc {:completed-iterations iterations
+                                          :acceptance-count accepted})))
+         [(coord/project-posterior-context world) 0.0])
+       (finally
+         (await-finalization (sp/close! session))
+         (ctx/stop-context! root))))))
+
+(defn- markov-chain-infer
+  [model-task step-opts num-chains opts]
+  (inference-spin
+   (let [executor (or (:executor opts) (sched/thread-pool-executor {:threads 2}))
+         chains (await (apply comb/parallel
+                              (mapv (fn [_] (run-markov-chain model-task step-opts executor))
+                                    (range num-chains))))]
+     (m/empirical (vec chains)))))
+
 (defn kernel-infer
   "Run inference using a PInferenceKernel.
 
@@ -187,6 +275,10 @@
                                         {:barrier-policy :every-observe}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
+  (if-let [step-opts (mh-options kernel)]
+    ;; Markov-chain kernels are replay plus accept over traces; each of the
+    ;; `num-particles` is an independent chain.
+    (markov-chain-infer model-task step-opts num-particles opts)
   (inference-spin
    (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
                                    :num-particles num-particles
@@ -358,7 +450,7 @@
          (finally
            (when (and world-manager (not @completed?))
              (await-finalization
-              (coord/cancel-particle-worlds! world-manager)))))))))
+              (coord/cancel-particle-worlds! world-manager))))))))))
 
 ;; =============================================================================
 ;; Convenience Functions (Delegate to kernel-infer)

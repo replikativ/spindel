@@ -1164,6 +1164,13 @@
   #{:log-weight :choice-stack :trace :particle-id :sweep :result
     :deterministic :interventions :mcmc :rw-mcmc :block-gibbs})
 
+(declare project-settled-particle-context)
+
+(defn project-posterior-context
+  "Create a parentless immutable posterior context from a world that ended."
+  [context]
+  (project-settled-particle-context context {}))
+
 (defn- project-settled-particle-context
   "Create a parentless immutable posterior context. Returning the settled
   execution context itself would retain its complete resampling ancestry."

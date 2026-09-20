@@ -13,6 +13,7 @@
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.inference.address :as addr]
             [org.replikativ.spindel.inference.coordinator :as coord]
+            [org.replikativ.spindel.effects.savepoint :as sp]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [anglican.runtime :as ar]))
@@ -65,7 +66,7 @@
 ;; Choose Effect Handler
 ;; =============================================================================
 
-(defn- choose-handler-fn
+(defn- coordinator-choose-fn
   "Algorithm-agnostic handler for choose effect.
 
   This is the ONLY handler for probabilistic programming - no separate sample/observe.
@@ -193,6 +194,27 @@
           ;; Continue with value
           (spin-core/resume resolve value))))))
 
+(defn- choose-handler-fn
+  "A choose site is a savepoint when its world handles `:inference/choose`: it
+  is published, and a trace policy decides and scores it (`inference.trace`).
+  Otherwise it speaks the coordinator protocol."
+  [runtime args resolve reject]
+  (let [ctx rtc/*execution-context*]
+    (if (sp/handled? ctx :inference/choose)
+      (let [{:keys [source options spin-id source-loc]} args
+            {:keys [id observe]} options]
+        (sp/publish! ctx
+                     {:site :inference/choose
+                      :payload {:dist source
+                                :observed? (some? observe)
+                                :value observe
+                                :options (dissoc options :id :observe)}
+                      :opts (when id {:id id})
+                      :spin-id spin-id
+                      :source-loc source-loc}
+                     resolve reject))
+      (coordinator-choose-fn runtime args resolve reject))))
+
 ;; Wrap handler function with async-effect to create PEffectHandler
 (def choose-handler
   "PEffectHandler implementation for choose effect."
@@ -262,6 +284,35 @@
     {:source source
      :options options}))
 
+(defn factor
+  "Multiply the weight of this execution by exp(`log-weight`): a score that is
+  not the density of a value (a soft constraint, a reward, a likelihood that
+  was computed elsewhere).
+
+  Must only be called inside a spin; outside, this throws."
+  [& _]
+  (throw (ex-info "factor called outside of spin context (should be CPS-transformed)" {})))
+
+(defn- factor-handler-fn
+  [_runtime args resolve reject]
+  (let [ctx rtc/*execution-context*
+        {:keys [log-weight spin-id source-loc]} args]
+    (if (sp/handled? ctx :inference/factor)
+      (sp/publish! ctx {:site :inference/factor
+                        :payload {:log-weight log-weight}
+                        :spin-id spin-id
+                        :source-loc source-loc}
+                   resolve reject)
+      (do (rtp/swap-state! ctx [:inference :log-weight]
+                           (fn [w] (+ (or w 0.0) log-weight)))
+          (spin-core/resume resolve nil)))))
+
+(def factor-handler
+  (eff/async-effect factor-handler-fn))
+
+(defn factor-adapter [args]
+  {:log-weight (first args)})
+
 (defn register-probabilistic-effects!
   "Register probabilistic effects with spindel effect system.
 
@@ -281,6 +332,11 @@
    'org.replikativ.spindel.inference.effects/sample
    choose-handler
    'org.replikativ.spindel.inference.effects/sample-adapter)
+
+  (eff/register-effect-by-symbol!
+   'org.replikativ.spindel.inference.effects/factor
+   factor-handler
+   'org.replikativ.spindel.inference.effects/factor-adapter)
 
   ;; Register observe (different syntax: observe dist value)
   (eff/register-effect-by-symbol!

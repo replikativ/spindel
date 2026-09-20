@@ -307,10 +307,18 @@
 
 (declare abandon claim!)
 
-(defn- savepoint-handler-fn
-  [_runtime args resolve reject]
+(defn handled?
+  "Whether `world` has a handler for `site`."
+  [world site]
+  (some? (handler-for world site)))
+
+(defn publish!
+  "Publish a savepoint from inside another effect's handler: the body of the
+  `savepoint` effect, for effects that ARE savepoints (`choose`, `factor`).
+  `args` is {:site :payload :opts :spin-id :source-loc}; `resolve`/`reject`
+  are the effect's continuations. Returns what the effect handler must return."
+  [world args resolve reject]
   (let [{:keys [site payload opts spin-id source-loc]} args
-        world ec/*execution-context*
         handler (handler-for world site)]
     (if-not handler
       ;; Law 1: no handler, no savepoint.
@@ -353,6 +361,10 @@
                   (log/error :savepoint/handler-failed-after-consuming
                              {:site site :address address :error error})))))
           spin-core/incomplete)))))
+
+(defn- savepoint-handler-fn
+  [_runtime args resolve reject]
+  (publish! ec/*execution-context* args resolve reject))
 
 (def savepoint-handler
   (eff/async-effect savepoint-handler-fn))
