@@ -285,37 +285,43 @@ derived instead of hand-written. An explicit `:id` still overrides it.
 
 ## Traces and replay
 
-A handler that records what happened produces a **trace**: a persistent value,
+`spindel.trace` (implemented). A **trace** is what a computation did at its
+savepoints, a persistent value:
 
 ```clojure
-{:trace/entries {address {:savepoint anchor    ; a fork taken before resuming
+{:trace/entries {address {:site :seq :payload
                           :value     v         ; what it was resumed with
-                          :note      {...}}}   ; layer-specific, see below
- :trace/order   [address ...]                  ; by :seq
- :trace/result  r}
+                          :note      {...}     ; layer-specific, see below
+                          :savepoint anchor}}  ; a fork taken before resuming
+ :trace/order   [address ...]                  ; program order
+ :trace/result  r                              ; or :trace/error e
+ :trace/world   world                          ; where the computation ended
+ :trace/session session}                       ; the owner of every world above
 ```
 
-kept by a generic `recording` handler combinator that wraps any other handler.
-The trace is owned by the handler, never stored in the world it describes:
-each anchor already is the world at its site, including whatever prefix a
-consumer accumulated there. A handler that will never return to a site
-records no anchor for it.
+The trace under construction is world state, so it forks with its world: a
+fork of an anchor starts with the entries upstream of its site and nothing
+else. A site that nobody will return to (`:anchor?`) records no anchor.
 
-The one derived operation is
+A **policy** decides a site: `(policy sp old-entry)` returns `{:value v :note
+n}`, or a CPS operation resolving that, so a policy may call a model or a
+network. `sp` is pending in the world that is about to continue; a policy that
+scores writes to that world. Two operations:
 
 ```clojure
-(replay trace policy)   ; => new trace
+(run session task policy)        ; => trace
+(replay trace address policy)    ; => new trace
 ```
 
-where `policy` is a function `(fn [site payload old-entry]) => {:value v
-:note n}` consulted at every site. `replay` forks the anchor of the
-**earliest address the policy changes** and resumes it; downstream sites reach
-the policy with their old entry if the address still exists. Entries whose
-address is never reached are simply absent from the new trace, so stochastic
-control flow prunes itself. Because the fork starts from the state at that site, everything
-upstream (values, weights, the trace prefix) is reused without re-execution.
-This is Anglican's LMH move and an asymptotic improvement on Gen's dynamic
-language, which re-executes from the start.
+`replay` forks the anchor at `address` and runs the rest again; downstream
+sites reach the policy with their entry in `trace` when their address still
+exists (`old-entry`). Entries that are not reached again are absent from the
+new trace, so stochastic control flow prunes itself. Because the fork starts
+from the state at that site, everything upstream (values, world state, the
+entries) is reused without re-execution. `trace` is not changed; after a
+decision between the two, `(release! loser winner)` gives back the worlds the
+winner does not share. This is Anglican's LMH move and an asymptotic
+improvement on Gen's dynamic language, which re-executes from the start.
 
 Gen's interface is then a table of policies:
 
@@ -337,19 +343,45 @@ second half of the MCMC defect above.
 
 ## The inference layer
 
-Inference adds a vocabulary of sites, notes and world-state keys on top. It
-adds no effect.
+`inference.trace` (implemented, except where marked). Inference adds a
+vocabulary of sites, notes and one world-state key on top. It adds no effect
+to the algebra: `sample`, `observe` and the new `factor` publish savepoints
+when their world handles the site, and speak the coordinator protocol
+otherwise.
 
-| Site | Payload | The handler resumes with |
+| Site | Payload | The policy resumes with |
 |---|---|---|
-| `:inference/choose` (`sample`) | `{:dist d :proposal q :parents [addr ..]}` | `v ~ q` (default `q = d`), having added `log d(v) - log q(v)` to the weight |
-| `:inference/choose` (`observe`) | `{:dist d :observe y}` | `y`, having added `log d(y)` |
+| `:inference/choose` (`sample`) | `{:dist d :options ..}` | a draw from `d`, a kept value, a constraint, or a proposal's draw having added `log d(v) - log q(v)` to the weight |
+| `:inference/choose` (`observe`) | `{:dist d :observed? true :value y}` | `y`, having added `log d(y)` |
 | `:inference/factor` | `{:log-weight w}` | `nil`, having added `w` |
 
-Notes per entry: `:dist`, `:log-prob` (the density **of every site, sampled
-ones included**; today only observes contribute to one scalar, which rules out
-score-function gradients, `assess` and learned-proposal weights),
-`:log-proposal`, `:parents`, `:observed?`.
+Notes per entry: `:dist`; `:log-prob`, the density **of every site, sampled
+ones included** (before, only observes contributed, to one scalar, which
+rules out score-function gradients, `assess`, the rescoring of kept values
+and learned-proposal weights); `:log-proposal` when the value was drawn;
+`:observed?`, `:constrained?`, `:kept?`, `:symmetric?`, `:factor?`,
+`:intervened?`. The importance weight accumulates at `[:inference
+:log-weight]` in the world.
+
+Metropolis-Hastings is `replay` plus an accept step (`mh-step`, `mh-chain`).
+A move selects a **set** of target sites (one for single-site MH, a block for
+block Gibbs), replays from the earliest, proposes at the targets, and keeps
+every other site's value, *rescored under its distribution as it is now*.
+
+    log a = [log p(new) - log p(old)]
+          + [log q(old | new) - log q(new | old)]
+          + [log s(targets | new) - log s(targets | old)]
+
+where `q(new | old)` is what the move drew afresh, `q(old | new)` is what of
+the old trace was not kept and the reverse move would have to draw, and `s`
+is the probability of selecting the targets, which changes when the move
+changed how many sites there are. `single-site-mh-kernel`,
+`random-walk-mh-kernel` and `block-gibbs-kernel` are descriptions that
+`kernel-infer` runs this way. Limit: the reverse move is scored under the
+prior, so a custom proposal must be the prior or symmetric.
+
+Not implemented: `:proposal` and `:parents` in the payload; SMC, PGibbs,
+PGAS, PIMH, IPMCMC and BBVI still run on the coordinator.
 
 `:proposal` and `:parents` are what amortized inference needs. A learned
 proposal is a function of the trace so far, called by the handler. `:parents`
@@ -487,7 +519,7 @@ shared namespace is an open question.
 | `factor` (missing today) | site `:inference/factor`; the handler writes the weight and resumes | new; a site, not an effect |
 | SMC barrier | handler policy: collect savepoints *by site and sequence*, resample, re-fork | fixes "Mixed particle states" for computations of uneven length |
 | MCMC | `replay` plus accept over a persistent trace | **fixes a bug**: a proposal resumes a fork of an anchor, so upstream observes stay in the weight, a rejected proposal leaves no state behind, and unreached sites are pruned |
-| trace `{address -> {:value :distribution :observed?}}` | the `recording` handler's trace with inference notes | per-site `:log-prob`; structural addresses |
+| trace `{address -> {:value :distribution :observed?}}` | a `spindel.trace` trace with inference notes (`legacy-trace` projects the old shape) | per-site `:log-prob`; structural addresses |
 | MCTS | unchanged. Its environment is explicit state, so it needs no continuation. An adapter can present a computation with savepoints as an MCTS environment: actions are the values a savepoint may be resumed with, a transition is `(resume (fork sp) a)`, a node is the next savepoint | optional adapter |
 | `snapshot-context`, `serialize-context`, rebuild | unchanged; they become the context half of `persist` and hydration | none |
 | `await`, `track`, `yield` | unchanged. They suspend for a value, a change or a consumer; none of them is a point offered to a handler | none |
@@ -531,15 +563,17 @@ the mean return of its forks. None of this is new algebra; it is the schema of
 
 ## Regression tests
 
-These fail today and define "done" for the inference half:
+`inference/mcmc-correctness-test` compares chains with analytic posteriors on
+models that are not laid out as "all samples, then all observes":
 
-1. An observe **upstream** of a later sample site, against the analytic
-   posterior, for every MCMC kernel (the model in *Why*).
-2. A model whose control flow depends on a sampled value: after a move that
-   changes the branch, the trace holds no entry from the branch not taken.
-3. SMC with particles that publish a different number of sites.
-4. `assess` of a full choice map equals the hand-computed log joint, which
-   needs per-site `:log-prob`.
+1. An observe **upstream** of the moved site (failed before, for both
+   kernels).
+2. A **kept sample downstream** of the moved site, which must be rescored
+   (failed before).
+3. A move that changes control flow, with the trans-dimensional ratio.
+
+Still to write: SMC with particles that publish a different number of sites,
+and `assess` of a full choice map against a hand-computed log joint.
 
 ## Plan
 
@@ -553,9 +587,11 @@ These fail today and define "done" for the inference half:
    (`addressing/site-address!`). **Implemented.**
 3. The trace value, `run` and `replay` under a policy (`spindel.trace`).
    **Implemented.**
-4. Move `choose` onto it: per-site `:log-prob`, `:proposal`, `:parents`,
-   `factor` as a site. Rewrite the MCMC kernels as `replay` plus accept. The
-   existing inference tests and the four regression tests are the suite.
+4. Move `choose` onto it: per-site `:log-prob`, `factor` as a site, the MCMC
+   kernels as `replay` plus accept, the in-place resume deleted.
+   **Implemented**; `mcmc-correctness-test` pins the two defects against
+   analytic posteriors. Open: `:proposal`, `:parents`, a world-local random
+   stream, and moving SMC and the particle MCMC methods off the coordinator.
 5. Barrier by site and sequence in the kernel coordinator, and the barrier-free
    policy.
 6. `PResourceAuthority` on `world.scope`: grant on fork, return on discard,
