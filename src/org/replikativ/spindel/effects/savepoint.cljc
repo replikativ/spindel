@@ -124,7 +124,7 @@
 ;; Session: ownership of the worlds
 ;; =============================================================================
 
-(defrecord Session [id scope lease root])
+(defrecord Session [id scope lease root closing?])
 
 (defn session [world]
   (rtp/get-state world [:savepoint/session]))
@@ -175,7 +175,7 @@
                     {:type ::session-exists})))
   (let [scope (world-scope/create {:purpose purpose :fork-opts fork-opts})
         lease (world-scope/begin-activity! scope :savepoint/session)
-        value (->Session (random-uuid) scope lease world)]
+        value (->Session (random-uuid) scope lease world (atom false))]
     (rtp/swap-state! world [:savepoint/session] (constantly value))
     (rtp/swap-state! world [:savepoint/seed] (constantly (or seed (random-uuid))))
     (install-handlers! world (or handlers {}))
@@ -212,6 +212,8 @@
 ;; The effect
 ;; =============================================================================
 
+(declare abandon)
+
 (defn- savepoint-handler-fn
   [_runtime args resolve reject]
   (let [{:keys [site payload opts spin-id source-loc]} args
@@ -221,7 +223,7 @@
       ;; Law 1: no handler, no savepoint.
       (spin-core/resume resolve payload)
       (let [address (or (:id opts)
-                        (addressing/next-address! world "sp" source-loc))
+                        (addressing/site-address! world "sp" site source-loc))
             seq-no (dec (rtp/swap-state! world [:savepoint/seq] (fnil inc 0)))
             entry {:savepoint/site site
                    :savepoint/address address
@@ -239,7 +241,14 @@
         (rtp/swap-state! world [:savepoint/pending]
                          (fn [m] (assoc (or m {}) address entry)))
         (log/trace :savepoint/published {:site site :address address :seq seq-no})
-        (handler (attach world entry))
+        ;; Publish, THEN look at the session: `close!` raises the flag and
+        ;; then scans for pending savepoints, so one of the two sees the other.
+        (if (some-> (session world) :closing? deref)
+          (try (abandon (attach world entry))
+               (catch #?(:clj Throwable :cljs :default) error
+                 (when-not (= ::not-pending (:type (ex-data error)))
+                   (throw error))))
+          (handler (attach world entry)))
         spin-core/incomplete))))
 
 (def savepoint-handler
@@ -379,6 +388,7 @@
   (let [scope (:scope session-value)]
     (fn [resolve reject]
       (try
+        (reset! (:closing? session-value) true)
         (let [worlds (world-scope/activity-values scope :savepoint/world)]
           (world-scope/request-cancel! scope)
           (doseq [world worlds]

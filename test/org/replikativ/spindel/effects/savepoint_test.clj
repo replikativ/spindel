@@ -139,3 +139,76 @@
       (is (= :discarded (:status @(:scope session))))
       (is (empty? (:activities @(:scope session))))
       (finally (context/stop-context! root)))))
+
+;; -----------------------------------------------------------------------------
+;; Addresses
+;; -----------------------------------------------------------------------------
+
+(defn- branching-program []
+  (spin
+   (let [extra? (savepoint :flag true)]
+     (when extra? (savepoint :extra 1))
+     (loop [i 0 seen []]
+       (if (< i 3)
+         (recur (inc i) (conj seen (savepoint :item i)))
+         (savepoint :tail seen))))))
+
+(defn- addresses-of
+  "Run `branching-program` answering :flag with `extra?`; site -> addresses."
+  [extra?]
+  (with-session [root session events {}]
+    (sp/start! session (binding [ec/*execution-context* root] (branching-program)))
+    (loop [seen {}]
+      (let [event (take! events)]
+        (if (:savepoint/terminal? event)
+          seen
+          (do (sp/resume event (if (= :flag (:savepoint/site event))
+                                 extra?
+                                 (:savepoint/payload event)))
+              (recur (update seen (:savepoint/site event) (fnil conj [])
+                             (:savepoint/address event)))))))))
+
+(deftest a-site-keeps-its-address-when-upstream-control-flow-changes
+  (let [with-extra (addresses-of true)
+        without-extra (addresses-of false)]
+    (is (= 1 (count (:extra with-extra))))
+    (is (nil? (:extra without-extra)))
+    (testing "downstream of the branch"
+      (is (= (:tail with-extra) (:tail without-extra)))
+      (is (= (:item with-extra) (:item without-extra))))
+    (testing "occurrences of one site are distinct and ordered alike"
+      (is (= 3 (count (set (:item with-extra))))))
+    (testing "and the same in a second execution"
+      (is (= with-extra (addresses-of true))))))
+
+(deftest a-fork-mints-the-addresses-its-source-would
+  (with-session [root session events {}]
+    (sp/start! session (binding [ec/*execution-context* root] (branching-program)))
+    (let [flag (take! events)
+          anchor (await-cps (sp/fork flag))
+          run (fn [sp-value]
+                (sp/resume sp-value false)
+                (loop [seen []]
+                  (let [event (take! events)]
+                    (if (:savepoint/terminal? event)
+                      seen
+                      (do (sp/resume event (:savepoint/payload event))
+                          (recur (conj seen (:savepoint/address event))))))))
+          original (run flag)]
+      (is (= 4 (count original)))
+      (is (= original (run (await-cps (sp/fork anchor))))))))
+
+(deftest close-wins-against-a-world-that-is-still-running
+  ;; The world is between two sites when the session closes: whichever of
+  ;; close! and the next savepoint comes second must see the other.
+  (dotimes [_ 50]
+    (let [root (context/create-execution-context)
+          events (java.util.concurrent.LinkedBlockingQueue.)
+          session (sp/open! root {:fork-opts {:systems :none}
+                                  :handlers {sp/any-site #(.put events %)}})]
+      (try
+        (sp/start! session (binding [ec/*execution-context* root] (program)))
+        (sp/resume (take! events) 1)
+        (await-cps (sp/close! session))
+        (is (= :discarded (:status @(:scope session))))
+        (finally (context/stop-context! root))))))

@@ -582,6 +582,7 @@
   [ctx spin-id]
   {:bindings (:bindings ctx)
    :chain-head (addressing/get-chain-head ctx)
+   :occurrences (addressing/get-occurrences ctx spin-id)
    :tracking (rtp/get-state ctx [:spin-tracking spin-id])})
 
 (defn ^:no-doc restore-slice-state!
@@ -602,6 +603,9 @@
     so any `(spin …)` / `(effect …)` in the post-resume slice mint the
     same ids as on the first run. Falls back to the body-start value
     when no snapshot was captured.
+
+  - `:occurrences` — the site-occurrence counters beside the chain-head
+    (`addressing/site-address!`), restored for the same reason.
 
   - `:bindings` — REPLACES the current context bindings and is returned
     as a NEW context. The other two are state mutations; this one is a
@@ -624,9 +628,10 @@
 
   Returns the context with `:slice-state`'s `:bindings` swapped in."
   [context spin-id cont]
-  (let [{:keys [bindings chain-head tracking]} (:slice-state cont)]
+  (let [{:keys [bindings chain-head occurrences tracking]} (:slice-state cont)]
     (when tracking
       (rtp/swap-state! context [:spin-tracking spin-id] (constantly tracking)))
+    (addressing/seed-occurrences! context spin-id occurrences)
     (addressing/seed-chain-head! context spin-id
                                  (or chain-head
                                      (addressing/body-start-chain-head spin-id)))

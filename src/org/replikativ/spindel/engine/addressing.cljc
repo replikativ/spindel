@@ -55,7 +55,9 @@
      (`compute-tree-address`, `with-keyed-context-fn`). The `next-id`/
      `with-key` helpers below also extend the same model to spin ids,
      available as primitives even though the `spin` macro currently
-     uses per-spin trace addressing."
+     uses per-spin trace addressing. `site-address!` adds an occurrence
+     counter for effect sites that are revisited across executions
+     (savepoints)."
   (:require [org.replikativ.spindel.engine.hash :as h]
             [clojure.string :as str]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -118,13 +120,27 @@
   (rtp/swap-state! ctx [:addressing :chain-heads spin-id]
                    (constantly new-head)))
 
+(defn get-occurrences
+  "The site-occurrence counters of `spin-id`'s current body run; see
+  `site-address!`."
+  [ctx spin-id]
+  (rtp/get-state ctx [:addressing :occurrences spin-id]))
+
+(defn seed-occurrences!
+  "Engine-side helper: seed the site-occurrence counters of `spin-id`. nil at
+  body entry, the suspend-time snapshot at continuation resume."
+  [ctx spin-id occurrences]
+  (rtp/swap-state! ctx [:addressing :occurrences spin-id]
+                   (constantly occurrences)))
+
 (defn seed-body-chain-head!
   "Engine-side helper: seed the per-spin chain-head cursor for `spin-id`
   with its `body-start-chain-head`. Called by the engine at the start
   of every cache-miss / rebuild body invocation; resume paths use
   `seed-chain-head!` with the captured snapshot instead."
   [ctx spin-id]
-  (seed-chain-head! ctx spin-id (body-start-chain-head spin-id)))
+  (seed-chain-head! ctx spin-id (body-start-chain-head spin-id))
+  (seed-occurrences! ctx spin-id nil))
 
 ;; =============================================================================
 ;; Address Generation
@@ -214,6 +230,25 @@
                     (assoc-in cur-ctx# [:bindings :address/key] ~k)]
             ~@body)
           (do ~@body)))))
+
+(defn site-address!
+  "Structural address of an effect site that a LATER execution must find
+  again: `next-id` over `[site source-loc occurrence]`, the surrounding spin
+  and the `with-key` frame, where `occurrence` counts how often this frame
+  reached this site in the current body run.
+
+  Unlike `next-address!` the result does not depend on which other sites ran
+  before it, so a site keeps its address when control flow upstream of it
+  changes. The counters live beside the chain-head and travel the same way:
+  reset at body entry, snapshotted into `:slice-state` at suspension."
+  [ctx prefix site source-loc]
+  (let [spin-id ec/*spin-id*
+        key (current-key ctx)
+        frame [site source-loc key]
+        counters (rtp/swap-state! ctx [:addressing :occurrences spin-id]
+                                  (fn [m] (update (or m {}) frame (fnil inc 0))))
+        occurrence (dec (get counters frame))]
+    (next-id prefix [site source-loc occurrence] spin-id key)))
 
 ;; =============================================================================
 ;; Source Location Helpers
