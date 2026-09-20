@@ -122,7 +122,10 @@
                    #(fail! sp %))
           (decide-site! sp nil policy old fail!)))
       sp/result-site (finish :trace/result)
-      sp/error-site (finish :trace/error)}}))
+      sp/error-site (finish :trace/error)
+      ;; Abandoned from outside (the session closed, or someone else's
+      ;; handler gave this world up): there is no trace to deliver.
+      sp/abandoned-site (fn [event] (once! reject (:savepoint/payload event)))}}))
 
 (defn run
   "Run `task` (a spin) in `session`'s root world under `policy`.
@@ -137,13 +140,14 @@
   ([session task policy] (run session task policy nil))
   ([session task policy opts]
    (fn [resolve reject]
+     (let [[resolve reject] (sp/in-callers-world resolve reject)]
      (try
        (sp/install-handlers! (:root session)
                              (:table (handlers-of (assoc opts :policy policy)
                                                   session resolve reject)))
        (sp/start! session task)
        (catch #?(:clj Throwable :cljs :default) error
-         (reject error))))))
+         (reject error)))))))
 
 (defn replay
   "Run the computation of `trace` again from `address` under `policy`.
@@ -158,7 +162,8 @@
   ([trace address policy] (replay trace address policy nil))
   ([trace address policy opts]
    (fn [resolve reject]
-     (let [anchor (get-in trace [:trace/entries address :savepoint])]
+     (let [[resolve reject] (sp/in-callers-world resolve reject)
+           anchor (get-in trace [:trace/entries address :savepoint])]
        (if-not (and anchor (sp/pending? anchor))
          (reject (ex-info "Trace holds no pending anchor at address"
                           {:type ::no-anchor :address address}))
@@ -180,8 +185,10 @@
   [(:fork-id (:savepoint/world anchor)) (:savepoint/address anchor)])
 
 (defn release!
-  "Abandon the anchors of `trace` that `retained` (another trace, or nil) does
-  not share. After a replay: release the loser against the winner."
+  "Give back the worlds of `trace` that `retained` (another trace, or nil) does
+  not share: its anchors are abandoned, the world it ended in is released.
+  After a replay: release the loser against the winner. `trace` must not be
+  read through its worlds afterwards."
   ([trace] (release! trace nil))
   ([trace retained]
    (let [shared (into #{} (keep (comp #(some-> % anchor-id) :savepoint))
@@ -192,4 +199,8 @@
                         (sp/pending? anchor))]
        (try (sp/abandon anchor)
             (catch #?(:clj Throwable :cljs :default) _ nil)))
+     (when-let [world (:trace/world trace)]
+       (when (and (:fork-id world)
+                  (not= (:fork-id world) (:fork-id (:trace/world retained))))
+         (sp/release-world! (:trace/session trace) world)))
      nil)))

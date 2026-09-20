@@ -21,7 +21,20 @@
 
   A `session` owns the worlds: one `world.scope`, an activity lease per live
   world, and the terminal callbacks. With no handler installed for a site the
-  effect is the identity on `payload`."
+  effect is the identity on `payload`.
+
+  A handler is called INLINE: on the publishing thread, inside the effect,
+  before the publishing slice has returned. It may call `resume`, `fork` and
+  `abandon` there (they hop through the world's executor and are trampolined
+  when that executor is synchronous) or hand the savepoint to someone else
+  and return. A handler that throws before consuming the savepoint fails the
+  computation with that error.
+
+  What a fork of a pending savepoint shares with its source is the world's
+  STATE. In-flight coordination is not state: a fork inherits no undrained
+  engine events and no timers (see `engine.context/fork-context`), so a
+  computation whose continuation waits on another spin of the same world must
+  not be forked while that spin is in flight."
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.effects :as eff]
@@ -61,10 +74,15 @@
 ;;
 ;; [:savepoint/handlers] {site (fn [sp])}     inherited by forks, replaceable
 ;; [:savepoint/session]  Session               process-local owner
-;; [:savepoint/pending]  {address entry}       continuations not yet consumed
+;; [:savepoint/pending]  {address entry}       continuations, or tombstones of
+;;                                             consumed ones
 ;; [:savepoint/seq]      long                  program order
 ;; [:savepoint/seed]     portable              this world's random seed
-;; [:savepoint/forks]    {address long}        fork index per site
+;; [:savepoint/task]     Spin                  the computation `start!` ran
+;; [:savepoint/ended]    token                 the world delivered its terminal
+;;
+;; Everything but :seq and :seed is process-local and is dropped by
+;; `state-backend/serialize-backend`.
 
 (def any-site
   "Handler-table key matching every site that has no entry of its own."
@@ -79,6 +97,11 @@
   "Site of the terminal event of a computation that threw. Its payload is the
   error; it has no continuation."
   :savepoint/error)
+
+(def abandoned-site
+  "Site of the terminal event of a computation that was abandoned or
+  cancelled. Its payload is the cancellation; it has no continuation."
+  :savepoint/abandoned)
 
 (defn handlers [world]
   (or (rtp/get-state world [:savepoint/handlers]) {}))
@@ -113,18 +136,42 @@
        (sort-by :savepoint/seq)
        (mapv #(attach world %))))
 
+(defn- live-entry
+  "The pending entry of `address` in `world`, or nil when there is none or it
+  was consumed."
+  [world address]
+  (let [entry (get (rtp/get-state world [:savepoint/pending]) address)]
+    (when (and entry (not (::claimed entry))) entry)))
+
 (defn pending?
   "True while `sp` may still be resumed, forked or abandoned."
   [sp]
-  (let [entry (get (rtp/get-state (:savepoint/world sp) [:savepoint/pending])
-                   (:savepoint/address sp))]
-    (and (some? entry) (not (::claimed entry)))))
+  (some? (live-entry (:savepoint/world sp) (:savepoint/address sp))))
+
+;; =============================================================================
+;; Callbacks cross worlds
+;; =============================================================================
+
+(defn ^:no-doc in-callers-world
+  "Wrap the callbacks of a CPS operation so they run in the world the
+  operation was INVOKED from. The operations here complete on the thread and
+  under the binding of some other world (a fork, the session root); a spin
+  that awaits one would otherwise finish its body inside that world, where its
+  own completion is not visible. Returns [resolve reject]."
+  [resolve reject]
+  (let [caller ec/*execution-context*
+        wrap (fn [callback]
+               (fn [value]
+                 (binding [ec/*execution-context* caller
+                           pcps-async/*in-trampoline* false]
+                   (callback value))))]
+    [(wrap resolve) (wrap reject)]))
 
 ;; =============================================================================
 ;; Session: ownership of the worlds
 ;; =============================================================================
 
-(defrecord Session [id scope lease root closing?])
+(defrecord Session [id scope lease root closing? started? fork-indices])
 
 (defn session [world]
   (rtp/get-state world [:savepoint/session]))
@@ -139,24 +186,66 @@
   (= spin-core/spin-cancelled (:type (ex-data error))))
 
 (defn- dispatch-terminal!
-  "Deliver a terminal event to the handler of the world it happened in."
+  "Deliver a terminal event to the handler of the world it happened in. A
+  terminal handler runs inside the computation's own completion callback, so
+  a throw must not travel back into it as a second outcome."
   [world site payload]
   (when-let [handler (handler-for world site)]
-    (handler {:savepoint/site site
-              :savepoint/payload payload
-              :savepoint/world world
-              :savepoint/terminal? true})))
+    (try
+      (handler {:savepoint/site site
+                :savepoint/payload payload
+                :savepoint/world world
+                :savepoint/terminal? true})
+      (catch #?(:clj Throwable :cljs :default) error
+        (log/error :savepoint/terminal-handler-failed {:site site :error error})))))
+
+(defn release-world!
+  "Discard one forked world of the session whose computation has ended (a
+  world that ended at `result-site` or `error-site` is kept until someone is
+  done reading it; an abandoned one is released by itself). Fire and forget:
+  a world that cannot be released now is discarded when the session closes."
+  [session-value world]
+  ((world-scope/release! (:scope session-value) world)
+   (constantly nil)
+   (fn [error]
+     (when-not (#{::world-scope/scope-consumed ::world-scope/unknown-world}
+                (:type (ex-data error)))
+       (log/warn :savepoint/release-failed {:fork-id (:fork-id world) :error error})))))
+
+(defn- ending-world
+  "The world a terminal callback fired in. The callbacks are closures of the
+  ROOT start; a continuation resumed in a forked world reaches them with that
+  world bound. A completion that arrives with no world of this session bound
+  can only be attributed to the root."
+  [session-value]
+  (let [ambient ec/*execution-context*]
+    (if (and ambient (identical? session-value (session ambient)))
+      ambient
+      (do (log/warn :savepoint/terminal-without-world
+                    {:session (:id session-value)
+                     :ambient (some-> ambient :fork-id)})
+          (:root session-value)))))
 
 (defn- terminal!
-  [session-value captured-world site payload]
-  ;; The callbacks are closures of the ROOT start; a continuation resumed in a
-  ;; forked world reaches them with that world bound.
-  (let [world (or ec/*execution-context* captured-world)]
-    (try
-      (when-not (and (= error-site site) (cancellation-error? payload))
-        (dispatch-terminal! world site payload))
-      (finally
-        (world-scope/end-activity! (:scope session-value) (world-id world))))))
+  [session-value site payload]
+  (let [world (ending-world session-value)
+        token #?(:clj (Object.) :cljs (js-obj))
+        first? (identical? token
+                           (rtp/swap-state! world [:savepoint/ended]
+                                            (fn [ended] (or ended token))))]
+    (when first?
+      (let [site (if (and (= error-site site) (cancellation-error? payload))
+                   abandoned-site
+                   site)]
+        (try
+          (dispatch-terminal! world site payload)
+          (finally
+            (world-scope/end-activity! (:scope session-value) (world-id world))
+            ;; Nobody reads an abandoned world; give it back now, so a long
+            ;; search does not hold every anchor it ever dropped.
+            (when (and (= abandoned-site site) (:fork-id world)
+                       (not @(:closing? session-value)))
+              (release-world! session-value world))))))))
 
 (defn open!
   "Open a session rooted at `world`.
@@ -175,7 +264,8 @@
                     {:type ::session-exists})))
   (let [scope (world-scope/create {:purpose purpose :fork-opts fork-opts})
         lease (world-scope/begin-activity! scope :savepoint/session)
-        value (->Session (random-uuid) scope lease world (atom false))]
+        value (->Session (random-uuid) scope lease world
+                        (atom false) (atom false) (atom {}))]
     (rtp/swap-state! world [:savepoint/session] (constantly value))
     (rtp/swap-state! world [:savepoint/seed] (constantly (or seed (random-uuid))))
     (install-handlers! world (or handlers {}))
@@ -188,6 +278,9 @@
   (let [world (:root session-value)
         scope (:scope session-value)
         spin-id (spin-core/spin-id task)]
+    (when-not (compare-and-set! (:started? session-value) false true)
+      (throw (ex-info "A savepoint session runs one computation"
+                      {:type ::already-started})))
     (world-scope/begin-activity! scope :savepoint/world world (world-id world))
     (rtp/swap-state! world [:savepoint/task] (constantly task))
     (ec/with-context world
@@ -198,10 +291,10 @@
                             :execution-context world
                             :callback-egress-policy :causal-follow
                             :resolve-fn (fn [value]
-                                          (terminal! session-value world result-site value)
+                                          (terminal! session-value result-site value)
                                           value)
                             :reject-fn (fn [error]
-                                         (terminal! session-value world error-site error))})
+                                         (terminal! session-value error-site error))})
         (catch #?(:clj Throwable :cljs :default) error
           (spin-core/cancel-spin! task)
           (world-scope/end-activity! scope (world-id world))
@@ -212,7 +305,7 @@
 ;; The effect
 ;; =============================================================================
 
-(declare abandon)
+(declare abandon claim!)
 
 (defn- savepoint-handler-fn
   [_runtime args resolve reject]
@@ -233,7 +326,7 @@
                         :reject reject
                         :spin-id spin-id
                         :slice-state (simple/capture-slice-state world spin-id)}}]
-        (when (get (rtp/get-state world [:savepoint/pending]) address)
+        (when (live-entry world address)
           (throw (ex-info "Duplicate savepoint address"
                           {:type ::duplicate-address
                            :savepoint/site site
@@ -243,13 +336,23 @@
         (log/trace :savepoint/published {:site site :address address :seq seq-no})
         ;; Publish, THEN look at the session: `close!` raises the flag and
         ;; then scans for pending savepoints, so one of the two sees the other.
-        (if (some-> (session world) :closing? deref)
-          (try (abandon (attach world entry))
-               (catch #?(:clj Throwable :cljs :default) error
-                 (when-not (= ::not-pending (:type (ex-data error)))
-                   (throw error))))
-          (handler (attach world entry)))
-        spin-core/incomplete))))
+        (let [sp (attach world entry)]
+          (if (some-> (session world) :closing? deref)
+            (try (abandon sp)
+                 (catch #?(:clj Throwable :cljs :default) error
+                   (when-not (= ::not-pending (:type (ex-data error)))
+                     (throw error))))
+            (try
+              (handler sp)
+              (catch #?(:clj Throwable :cljs :default) error
+                ;; Whoever consumed the savepoint owns the computation. If
+                ;; nobody did, the computation fails here, once.
+                (if (try (claim! sp :handler-failed) true
+                         (catch #?(:clj Throwable :cljs :default) _ false))
+                  (throw error)
+                  (log/error :savepoint/handler-failed-after-consuming
+                             {:site site :address address :error error})))))
+          spin-core/incomplete)))))
 
 (def savepoint-handler
   (eff/async-effect savepoint-handler-fn))
@@ -264,10 +367,12 @@
 ;; =============================================================================
 
 (defn- claim!
-  "Atomically consume `sp`'s pending entry; throws if it is not pending.
+  "Atomically consume `sp`; throws if it is not pending. Returns nil.
 
-  The winner is read off the committed state: `swap-state!` may retry its
-  function, and an overlay world cannot CAS a path it inherited."
+  One swap replaces the entry by a tombstone, so there is no moment at which a
+  savepoint is neither pending nor consumed. The winner is read off the
+  committed state: `swap-state!` may retry its function, and an overlay world
+  cannot CAS a path it inherited. The continuation itself travels in `sp`."
   [sp operation]
   (let [world (:savepoint/world sp)
         address (:savepoint/address sp)
@@ -277,17 +382,42 @@
                    (fn [m]
                      (let [entry (get m address)]
                        (if (and entry (not (::claimed entry)))
-                         (assoc m address (assoc entry ::claimed token))
-                         m))))
-        entry (get committed address)]
-    (when-not (and entry (identical? token (::claimed entry)))
+                         (assoc m address {::claimed token})
+                         m))))]
+    (when-not (identical? token (::claimed (get committed address)))
       (throw (ex-info "Savepoint is not pending in its world"
                       {:type ::not-pending
                        :operation operation
                        :savepoint/site (:savepoint/site sp)
                        :savepoint/address address})))
-    (rtp/swap-state! world [:savepoint/pending] (fn [m] (dissoc m address)))
-    entry))
+    nil))
+
+;; A handler may resume inline, and on a synchronous executor the continuation
+;; then runs inside the handler, inside the effect, to the next site, whose
+;; handler resumes inline again: one stack frame set per site. The outermost
+;; resume on a thread drains the ones made beneath it instead.
+(def ^:private draining
+  #?(:clj (ThreadLocal.) :cljs (volatile! nil)))
+
+(defn- trampolined!
+  [thunk]
+  (let [queue #?(:clj (.get ^ThreadLocal draining) :cljs @draining)]
+    (if queue
+      (vswap! queue conj thunk)
+      (let [queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
+                                :cljs cljs.core/PersistentQueue.EMPTY))
+            install! (fn [value]
+                       #?(:clj (.set ^ThreadLocal draining value)
+                          :cljs (vreset! draining value)))]
+        (install! queue)
+        (try
+          (thunk)
+          (loop []
+            (when-let [next-thunk (peek @queue)]
+              (vswap! queue pop)
+              (next-thunk)
+              (recur)))
+          (finally (install! nil)))))))
 
 (defn ^:no-doc continue-in-slice!
   "Invoke a continuation in the environment it suspended in (bindings,
@@ -308,18 +438,27 @@
   the world's executor."
   [sp value]
   (let [world (:savepoint/world sp)
-        k (::k (claim! sp :resume))]
+        k (::k sp)]
+    (when (some-> (session world) :closing? deref)
+      (throw (ex-info "Cannot resume in a closing session"
+                      {:type ::session-closing
+                       :savepoint/address (:savepoint/address sp)})))
+    (claim! sp :resume)
     (execute! (:executor world)
-              (fn [] (continue-in-slice! world k (:resolve k) value)))
+              (fn [] (trampolined!
+                      #(continue-in-slice! world k (:resolve k) value))))
     nil))
 
 (defn abandon
   "Unwind the computation suspended at `sp` with a cancellation, so `finally`
-  blocks run and its world becomes terminal. Consumes `sp`."
+  blocks run and its world ends at `abandoned-site`. Consumes `sp`."
   [sp]
   (let [world (:savepoint/world sp)
-        k (::k (claim! sp :abandon))
-        reject! (fn [w] (continue-in-slice! w k (:reject k) (cancellation-error)))]
+        k (::k sp)
+        _ (claim! sp :abandon)
+        reject! (fn [w]
+                  (trampolined!
+                   #(continue-in-slice! w k (:reject k) (cancellation-error))))]
     (try
       (execute! (:executor world) #(reject! world))
       (catch #?(:clj Throwable :cljs :default) scheduling-error
@@ -344,7 +483,8 @@
   ([sp] (fork sp nil))
   ([sp {child-handlers :handlers child-seed :seed}]
    (fn [resolve reject]
-     (let [world (:savepoint/world sp)
+     (let [[resolve reject] (in-callers-world resolve reject)
+           world (:savepoint/world sp)
            address (:savepoint/address sp)
            session-value (session world)]
        (cond
@@ -359,23 +499,33 @@
 
          :else
          (let [scope (:scope session-value)
-               index (dec (rtp/swap-state! world [:savepoint/forks address]
-                                           (fnil inc 0)))]
+               ;; Process-local, so that forking leaves its source untouched.
+               ;; Seeds are unique per world, hence so is the key.
+               index-key [(seed world) address]
+               index (dec (get (swap! (:fork-indices session-value)
+                                      update index-key (fnil inc 0))
+                               index-key))]
            (world-scope/fork!
             scope world
             (fn [{:keys [child-ctx]}]
               (try
-                (world-scope/begin-activity! scope :savepoint/world child-ctx
-                                             (world-id child-ctx))
-                (rtp/swap-state! child-ctx [:savepoint/seed]
-                                 (constantly (or child-seed
-                                                 (derive-seed (seed world) address index))))
-                (rtp/swap-state! child-ctx [:savepoint/forks] (constantly {}))
-                (when child-handlers
-                  (install-handlers! child-ctx child-handlers))
-                (resolve (attach child-ctx
-                                 (get (rtp/get-state child-ctx [:savepoint/pending])
-                                      address)))
+                ;; The child is the world as it was when the fork read it. A
+                ;; resume or abandon that won in between leaves nothing to
+                ;; continue there; that fork never becomes a live world.
+                (if-let [entry (live-entry child-ctx address)]
+                  (do
+                    (world-scope/begin-activity! scope :savepoint/world child-ctx
+                                                 (world-id child-ctx))
+                    (rtp/swap-state! child-ctx [:savepoint/seed]
+                                     (constantly (or child-seed
+                                                     (derive-seed (seed world) address index))))
+                    (when child-handlers
+                      (install-handlers! child-ctx child-handlers))
+                    (resolve (attach child-ctx entry)))
+                  (reject (ex-info "Cannot fork a savepoint that is not pending"
+                                   {:type ::not-pending
+                                    :operation :fork
+                                    :savepoint/address address})))
                 (catch #?(:clj Throwable :cljs :default) error
                   (reject error))))
             reject)))))))
@@ -388,6 +538,7 @@
   (let [scope (:scope session-value)]
     (fn [resolve reject]
       (try
+        (let [[resolve reject] (in-callers-world resolve reject)]
         (reset! (:closing? session-value) true)
         (let [worlds (world-scope/activity-values scope :savepoint/world)]
           (world-scope/request-cancel! scope)
@@ -410,6 +561,6 @@
            (fn [_]
              ;; request-cancel! discards on quiescence; joining is idempotent.
              ((world-scope/discard! scope) resolve reject))
-           reject))
+           reject)))
         (catch #?(:clj Throwable :cljs :default) error
           (reject error))))))

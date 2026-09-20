@@ -23,7 +23,7 @@ unrelated ways:
 
 | Mechanism (exists today) | Cost | Continuations | Survives a restart | Unit |
 |---|---|---|---|---|
-| `fork-context` (`:following` / `:frozen`) | O(1) | fork-local; not inherited | no | any context |
+| `fork-context` (`:following` / `:frozen`) | O(1) following; `:frozen` merges the parent's overlay once | fork-local; not inherited | no | any context |
 | `ygg/fork!` + `ForkHandle` | O(1) + systems | as above | systems do | a world |
 | inference checkpoint (`choose`) | O(1) | captured, multi-shot | no | a particle |
 | `snapshot-context` / `restore-snapshot` | full copy | dropped | no | whole context |
@@ -114,7 +114,8 @@ and performs no effect outside them.
 
 ```clojure
 (savepoint site payload)                       ; tier 1
-(savepoint site payload {:resume `after-turn    ; tier 2 as well
+(savepoint site payload {:id address})         ; an explicit, code-independent address
+(savepoint site payload {:resume `after-turn    ; tier 2 as well (not implemented)
                           :args [turn-number]})
 ```
 
@@ -138,16 +139,34 @@ handler needs:
 
 **A savepoint is a continuation pending in a world.** It stays *pending*
 until that world is resumed from it or abandons it. While it is pending the
-world is exactly as it was at the site, so whatever a consumer accumulates in
-world state (a log-weight, a partial trace, a turn counter, a budget) is there
-for whoever continues it, and no consumer ever reconstructs it.
+world's **state** is as it was at the site, so whatever a consumer accumulates
+in world state (a log-weight, a partial trace, a turn counter, a budget) is
+there for whoever continues it, and no consumer ever reconstructs it.
+
+State is not everything a running world has. A fork inherits no undrained
+engine events and no timers (`fork-context` drops them on purpose: an event is
+delivered in one world). A computation whose continuation waits on *another
+spin of the same world* that is still in flight will not see that spin finish
+in a fork. See *Safe point* below.
 
 The pending continuations are part of world state, so a fork of the world
 holds the same savepoints, pending in the fork.
 
-The engine gives the savepoint to the **handler** installed for that site in the current world.
+The engine gives the savepoint to the **handler**
 A handler is looked up in context state, as the inference coordinator is
 today, so it is inherited by forks and can be replaced in a child world.
+
+A table entry under `:savepoint/any` handles every site that has no entry of
+its own, the terminal sites included.
+
+**The handler is called inline**: on the publishing thread, inside the effect,
+before the publishing slice has returned. It may `resume`, `fork` or `abandon`
+right there, or hand the savepoint to someone else (a mailbox, a queue) and
+return. A handler that throws before it consumed the savepoint fails the
+computation with that error, once; the savepoint is consumed, so nothing can
+re-enter the failed computation. `resume` and `abandon` hop through the
+world's executor and are trampolined, so a handler that resumes inline on a
+synchronous executor does not grow the stack with the number of sites.
 
 **With no handler installed, `savepoint` continues immediately with
 `payload`.** A program may therefore declare safe points unconditionally; they
@@ -165,9 +184,13 @@ cost one map and one lookup when nobody listens.
 (persist sp)                 ; tier 2: portable form, or throws if not portable
 ```
 
-`fork` goes through a `WorldScope` (exists today: `world.scope/fork!`), so
+`resume` and `abandon` return nil. `fork` returns a CPS operation
+`(fn [resolve reject])`, as `world.scope` does, which a spin `await`s; its
+callbacks run in the world it was invoked from, not in the forked one. `fork`
+goes through a `WorldScope` (exists today: `world.scope/fork!`), so
 every forked world has an owner, is counted, and is discarded after
-quiescence. Resuming a forked savepoint runs the same continuation with the
+quiescence. A `fork` that loses against a concurrent `resume` of the same
+savepoint is rejected. Resuming a forked savepoint runs the same continuation with the
 child world bound, which is what `resume-particle-with-value!` does today.
 Not resuming is *holding*: the computation stays suspended, and needs no
 operation.
@@ -233,8 +256,11 @@ lease per live world, and the callbacks of the computation it starts:
 ```
 
 The end of a computation reaches the handler table like any other point, at
-the terminal sites `:savepoint/result` and `:savepoint/error`, with the
-world it ended in. A terminal savepoint has no continuation. This is
+the terminal sites `:savepoint/result`, `:savepoint/error` and
+`:savepoint/abandoned`, exactly once per world, with the world it ended in.
+An abandoned world is given back to the scope at once (`world.scope/release!`);
+a world that ended with a result or an error is kept until its reader
+releases it or the session closes. A terminal savepoint has no continuation. This is
 Anglican's `result` checkpoint, and it is what lets one handler drive a
 computation from its first site to its last in any number of worlds without
 a second notification channel.
@@ -357,12 +383,14 @@ Tier 1 is the existing inference mechanism made public and generalized.
 - **Cost.** A site with a handler costs one map, one state write and one
   executor hop on resume. A site without one costs a lookup (law 1). An anchor
   costs a frozen fork.
-- **Safe point.** A savepoint may be forked only when its scope holds no
-  activity other than the publishing computation itself (`world.scope`
-  activity leases, exists today). In-flight host work (a blocking call, a
-  future) is not part of any world; a handler that wants to fork waits for
-  quiescence, and a computation that publishes a savepoint while it owns such work is
-  in error. This is the rule MCTS already enforces for its own worlds.
+- **Safe point.** A fork copies state, not in-flight coordination (see
+  above), and host work (a blocking call, a future) belongs to no world at
+  all. So a savepoint should be forked only when its world has nothing in
+  flight besides the publishing computation. **Nothing enforces this today**:
+  `world.scope` leases are one per live world and say nothing about what runs
+  inside it. MCTS enforces the rule for its own worlds by construction.
+  Enforcing it here needs the engine to answer "is anything pending in this
+  world", which is an open item.
 - **Members of a world.** A world's members fork in one of three ways.
   *Forked*: process-local components by `PForkable`, registered Yggdrasil
   systems through the scope's `ForkHandle`. *Pinned*: a versioned value shared
@@ -518,10 +546,13 @@ These fail today and define "done" for the inference half:
 1. `effects.savepoint`: the effect, handler lookup in context state, the
    default handler, `resume` / `fork` / `abandon`, sessions and terminal sites
    over `world.scope`, fork options `:handlers` and `:seed`. Tests for laws 1
-   to 4. **Done.** (A world-local random stream drawing from the seed is part
-   of step 4.)
-2. Structural addresses for savepoints over `next-id` / `with-key`.
-3. The `recording` handler, the trace value, `replay`.
+   to 4, concurrency, handler failures, a synchronous executor.
+   **Implemented**, with `world.scope/release!` for single worlds. (A
+   world-local random stream drawing from the seed is part of step 4.)
+2. Structural addresses for savepoints over `next-id` / `with-key`
+   (`addressing/site-address!`). **Implemented.**
+3. The trace value, `run` and `replay` under a policy (`spindel.trace`).
+   **Implemented.**
 4. Move `choose` onto it: per-site `:log-prob`, `:proposal`, `:parents`,
    `factor` as a site. Rewrite the MCMC kernels as `replay` plus accept. The
    existing inference tests and the four regression tests are the suite.
@@ -551,11 +582,13 @@ Steps 1 to 4 fix the MCMC defect and are one reviewable unit. An embedding
   fork inheritance gives nesting by world, and `fork`'s `:handlers` gives
   "the same savepoint under another handler". A stack within one world is not
   proposed.
-- Retention. A trace keeps an anchor per site it may return to, and an anchor
-  is a world owned by the session's scope, which today discards its worlds
-  together at the end. A long chain needs to release single worlds
-  (`abandon` of an anchor should discard its handle) and a policy for which
-  sites to anchor. Anglican has the same cost and no policy.
+- Retention. A trace keeps an anchor per site it may return to. Single worlds
+  can be given back (`trace/release!`), so a chain holds the anchors of its
+  current trace only; what is still missing is a policy for which sites to
+  anchor at all. Anglican has the same cost and no policy.
+- No epoch. A `finally` block that reaches a savepoint site while its world is
+  being abandoned publishes to a handler that has moved on. Inference guards
+  the same thing with a sweep counter.
 - Rewinding a world in place to an anchor's state, instead of continuing in a
   fork of it, would save a world per move. The backend is persistent, so it is
   a swap of the state root, but it is only safe if engine-internal state

@@ -641,7 +641,13 @@
           ;; Remove continuations AND listeners — both contain non-serializable
           ;; closures (re-established by re-running spins / re-adding watches /
           ;; re-exporting signals after restore).
-          serializable-state (dissoc state :track-subscriptions :await-conts :listeners)]
+          ;; Savepoint sessions, handlers, pending continuations, tasks and
+          ;; traces are process-local for the same reason (their portable form
+          ;; is produced by the savepoint layer, not by dumping state).
+          serializable-state (dissoc state :track-subscriptions :await-conts :listeners
+                                     :savepoint/session :savepoint/handlers
+                                     :savepoint/pending :savepoint/task
+                                     :savepoint/ended :savepoint/trace)]
       (pr-str {:state serializable-state
                :metadata (:metadata backend)}))))
 

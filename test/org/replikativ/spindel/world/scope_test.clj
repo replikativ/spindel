@@ -9,10 +9,10 @@
   (let [result (promise)]
     (operation #(deliver result [:ok %])
                #(deliver result [:error %]))
-    (let [[status value :as outcome] (deref result 5000 ::timeout)]
+    (let [outcome (deref result 5000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
-      (if (= :ok status) value (throw value)))))
+      (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
 (defn- fork! [world-scope source]
   (let [result (promise)]
@@ -311,3 +311,33 @@
           (doseq [id (keys (:activities @world-scope))]
             (scope/end-activity! world-scope id))
           (is (nil? (await-cps (scope/discard! world-scope)))))))))
+
+(deftest a-single-world-is-released-before-the-scope-ends
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :search :fork-opts {:systems :none}})
+        session (scope/begin-activity! world-scope :session)
+        kept (binding [ec/*execution-context* root] (fork! world-scope root))
+        dropped (binding [ec/*execution-context* root] (fork! world-scope root))
+        dropped-ctx (:child-ctx dropped)]
+    (try
+      (testing "a world with a live lease is not released"
+        (scope/begin-activity! world-scope :context dropped-ctx (:fork-id dropped-ctx))
+        (is (= ::scope/world-busy
+               (:type (ex-data (try (await-cps (scope/release! world-scope dropped-ctx))
+                                    (catch Throwable error error))))))
+        (scope/end-activity! world-scope (:fork-id dropped-ctx)))
+      (testing "release discards that world only"
+        (is (nil? (await-cps (scope/release! world-scope dropped-ctx))))
+        (is (= [(:fork-id (:child-ctx kept))]
+               (mapv (comp :fork-id :child-ctx) (:handles @world-scope))))
+        (is (= 2 (count (scope/descriptors world-scope))) "its descriptor stays"))
+      (testing "a world is released once"
+        (is (= ::scope/unknown-world
+               (:type (ex-data (try (await-cps (scope/release! world-scope dropped-ctx))
+                                    (catch Throwable error error)))))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (is (= :discarded (:status @world-scope)))
+      (is (= 2 (count (scope/descriptors world-scope))))
+      (finally
+        (context/stop-context! root)))))

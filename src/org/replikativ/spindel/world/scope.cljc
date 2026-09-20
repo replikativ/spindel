@@ -42,9 +42,13 @@
          :quiescent? false
          :quiescence-readers []}))
 
-(defn descriptors [scope]
-  (let [{:keys [descriptors handles]} @scope]
-    (or descriptors (mapv ygg/fork-descriptor handles))))
+(defn descriptors
+  "The portable audit projection: every world the scope forked, released ones
+   first."
+  [scope]
+  (let [{:keys [descriptors released handles]} @scope]
+    (or descriptors
+        (into (vec released) (map ygg/fork-descriptor) handles))))
 
 (defn- scope-error [scope type message]
   (ex-info message
@@ -210,7 +214,9 @@
                          (fn [error] (fail! handle error))))
                       (step (next remaining)))
                     (let [descriptors
-                          (mapv ygg/fork-descriptor (:handles @scope))]
+                          (into (vec (:released @scope))
+                                (map ygg/fork-descriptor)
+                                (:handles @scope))]
                       (complete!
                        :done nil
                        #(-> %
@@ -219,6 +225,62 @@
                                    :handles [])
                             (dissoc :client :error))))))]
           (step handles))))))
+
+(defn release!
+  "Discard ONE owned world before the scope ends, so a long search need not
+   hold every world it ever forked. `context` is the world's context; it must
+   hold no activity lease (its computation is terminal). The release counts as
+   an in-flight fork operation: the scope is neither quiescent nor discardable
+   until it settles. The world's descriptor stays in `descriptors`.
+
+   Returns a CPS operation resolving nil."
+  [scope context]
+  (fn [resolve reject]
+    (let [fork-id (:fork-id context)
+          result
+          (transition!
+           scope
+           (fn [state]
+             (let [handle (first (filter #(= fork-id (:fork-id (:child-ctx %)))
+                                         (:handles state)))]
+               (cond
+                 (not= :open (:status state))
+                 [state {:error (scope-error scope ::scope-consumed
+                                             "Cannot release from a consumed world scope")}]
+
+                 (nil? handle)
+                 [state {:error (scope-error scope ::unknown-world
+                                             "World is not owned by this scope")}]
+
+                 (contains? (:activities state) fork-id)
+                 [state {:error (scope-error scope ::world-busy
+                                             "Cannot release a world that holds an activity lease")}]
+
+                 :else
+                 [(-> state
+                      (update :handles (fn [handles] (vec (remove #(identical? handle %) handles))))
+                      (update :pending-forks inc))
+                  {:handle handle}]))))
+          settle! (fn [handle released? callback value]
+                    (swap! scope (fn [state]
+                                   (cond-> (update state :pending-forks dec)
+                                     released?
+                                     (update :released (fnil conj [])
+                                             (ygg/fork-descriptor handle))
+                                     ;; still owned: the scope's discard retries it
+                                     (not released?)
+                                     (update :handles conj handle))))
+                    (try (callback value)
+                         (finally (maybe-complete-quiescence! scope))))]
+      (if-let [error (:error result)]
+        (reject error)
+        (let [handle (:handle result)]
+          (binding [ec/*execution-context* (:parent-ctx handle)
+                    pcps-async/*in-trampoline* false]
+            (invoke-once!
+             (ygg/discard-fork! handle {:sync? false})
+             (fn [_] (settle! handle true resolve nil))
+             (fn [error] (settle! handle false reject error)))))))))
 
 (defn await-quiescence [scope]
   (fn [resolve _reject]

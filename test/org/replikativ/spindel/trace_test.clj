@@ -5,7 +5,8 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.effects.await :as aw]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
@@ -151,3 +152,31 @@
                             trace/payload-policy))]
       (is (= "boom" (ex-message (:trace/error trace))))
       (is (= [[:step 1]] (values-by-site trace))))))
+
+(deftest a-spin-in-another-world-awaits-runs-and-replays
+  ;; The controller lives in one world, the computation and its forks in
+  ;; others: every completion crosses a world boundary on its way back.
+  (let [controller (context/create-execution-context)
+        root (context/create-execution-context)
+        session (sp/open! root {:seed 7 :fork-opts {:systems :none}})]
+    (try
+      (let [outcome
+            (binding [ec/*execution-context* controller]
+              (deref
+               (spin
+                (let [original (aw/await (trace/run session
+                                                    (binding [ec/*execution-context* root]
+                                                      (program))
+                                                    trace/payload-policy))
+                      address (second (:trace/order original))
+                      replayed (aw/await (trace/replay original address
+                                                       (trace/constrained-policy
+                                                        {address 20}
+                                                        trace/payload-policy)))]
+                  [(:trace/result original) (:trace/result replayed)]))
+               10000 ::timeout))]
+        (is (= [[1 2 3] [1 20 21]] outcome)))
+      (finally
+        (await-cps (sp/close! session))
+        (context/stop-context! root)
+        (context/stop-context! controller)))))
