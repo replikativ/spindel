@@ -358,6 +358,7 @@
                               (let [entity-in-overlay? (not= ::not-found
                                                              (get-in ov entity-path ::not-found))
                                     tombstoned? (= deleted (get-in ov path))
+                                    has-deleted-ancestor? (deleted-ancestor? ov path)
                                     full-top? (full-replacement-map?
                                                (get ov (first path)))
                                 ;; If entity not in overlay, copy from parent first.
@@ -365,8 +366,14 @@
                                 ;; at the target, an empty map only above a field.
                                 ;; An empty map at the target is a truthy non-record
                                 ;; value, and a node update fn calls a protocol on it.
-                                    ov (if entity-in-overlay?
+                                    ov (cond
+                                         has-deleted-ancestor?
                                          (revive-deleted-path ov path)
+
+                                         entity-in-overlay?
+                                         ov
+
+                                         :else
                                          (if-let [parent-entity (when (and parent-backend
                                                                            (not full-top?))
                                                                   (backend-read parent-backend entity-path))]
@@ -438,9 +445,15 @@
     ;; directly. After seeding, the fork has diverged from the parent's
     ;; copy — the standard overlay CoW semantic.
     (letfn [(seed [ov path]
-              (if (or (fork-local-path? (first path) local-paths)
-                      (nil? parent-backend))
+              (cond
+                (deleted-ancestor? ov path)
+                (revive-deleted-path ov path)
+
+                (or (fork-local-path? (first path) local-paths)
+                    (nil? parent-backend))
                 ov
+
+                :else
                 (let [depth (count path)
                       seed-path (if (>= depth 2)
                                   (vec (take 2 path)) ;; entity-level CoW
@@ -448,24 +461,16 @@
                       full-top? (full-replacement-map?
                                  (get ov (first path)))]
                   (if (not= ::not-found (get-in ov seed-path ::not-found))
-                    (cond
-                      (= deleted (get-in ov seed-path))
-                      ;; A whole-state transaction removed this entity.
-                      ;; Revive it as backend-read shows it: nil at the
-                      ;; target, an empty map only above a field.
-                      (revive-deleted-path ov path)
-
-                      (and (= depth 1)
-                           (map? (get-in ov seed-path))
-                           (not (record? (get-in ov seed-path)))
-                           (not (full-replacement-map? (get-in ov seed-path))))
+                    (if (and (= depth 1)
+                             (map? (get-in ov seed-path))
+                             (not (record? (get-in ov seed-path)))
+                             (not (full-replacement-map? (get-in ov seed-path))))
                       (assoc-in ov seed-path
                                 (mark-full-replacement
                                  (merge-entity-overlay
                                   (backend-read parent-backend seed-path)
                                   (get-in ov seed-path))))
-
-                      :else ov)
+                      ov)
                     (if-some [parent-val (when-not full-top?
                                            (backend-read parent-backend seed-path))]
                       (assoc-in ov seed-path
