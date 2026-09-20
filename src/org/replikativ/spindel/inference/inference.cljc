@@ -157,10 +157,12 @@
 
 (defn- block-gibbs-options
   "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
-  and the selector see the trace in the coordinator's shape."
+  and the selector see the trace in the coordinator's shape; only latent
+  sites are classified, and a step whose block is empty or has no kernel moves
+  nothing. The selection probability is taken to be the same in both traces,
+  which holds when a move does not change which sites belong to the block."
   [{:keys [block-selector block-kernels address-classifier]}]
-  (let [block-of (atom nil)
-        proposals (atom nil)]
+  (let [proposals (atom nil)]
     {:select
      (fn [current iteration]
        (let [legacy (itrace/legacy-trace current)
@@ -174,7 +176,6 @@
              block-id (k/select-block block-selector legacy iteration)
              targets (get blocks block-id #{})
              kernel (get block-kernels block-id)]
-         (reset! block-of kernel)
          (reset! proposals (when (and kernel (seq targets)
                                       (not (instance? org.replikativ.spindel.inference.kernel.PriorBlockKernel kernel)))
                              (k/propose-block kernel legacy targets)))
@@ -203,15 +204,25 @@
 (defn- run-markov-chain
   "One chain in its own world: run the model, move it `iterations` times,
   project the final state, give every world back."
-  [model-task {:keys [iterations] :as step-opts} executor]
+  [model-task kernel executor]
   (inference-spin
-   (let [root (ctx/create-execution-context :executor executor)
-         session (sp/open! root {:purpose :mcmc :fork-opts {:systems :none}})]
+   (let [;; per chain: a block Gibbs description closes over its own state
+         {:keys [iterations] :as step-opts} (mh-options kernel)
+         root (ctx/create-execution-context :executor executor)
+         session (sp/open! root {:purpose :mcmc :fork-opts {:systems :none}
+                                 :retain-released? false})]
      (try
-       (let [initial (await (trace/run session model-task (itrace/policy)))
-             _ (when-let [error (:trace/error initial)]
+       (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
+                                        {:anchor? itrace/anchor?}))
+             _ (when (contains? initial :trace/error)
                  (throw (ex-info "Inference failed during model execution"
-                                 {:type ::inference-failed} error)))
+                                 {:type ::inference-failed}
+                                 (:trace/error initial))))
+             ;; From an impossible state every ratio is NaN and nothing is
+             ;; ever accepted; say so instead of returning that state.
+             _ (when (= ##-Inf (itrace/log-joint initial))
+                 (throw (ex-info "The initial state of the chain has zero density"
+                                 {:type ::impossible-initial-state})))
              {final :trace accepted :accepted}
              (await (itrace/mh-chain initial iterations step-opts))
              world (:trace/world final)]
@@ -224,17 +235,34 @@
                                           :acceptance-count accepted})))
          [(coord/project-posterior-context world) 0.0])
        (finally
-         (await-finalization (sp/close! session))
-         (ctx/stop-context! root))))))
+         ;; Closing the session cancels and joins every world of the chain.
+         ;; The root is not stopped here: `stop-context!` waits for the
+         ;; context's drains, and this body may be running inside one.
+         (await-finalization (sp/close! session)))))))
 
 (defn- markov-chain-infer
-  [model-task step-opts num-chains opts]
+  [model-task kernel num-chains opts]
+  ;; Chains run in fresh worlds of their own. Running them in forks of the
+  ;; caller's world, as `:world-policy :fork` does for particles, is not
+  ;; implemented; refuse it, do not ignore it.
+  (when (or (= :fork (:world-policy opts)) (some? (:world-opts opts)))
+    (throw (ex-info "Markov-chain kernels run in fresh worlds"
+                    {:type ::invalid-world-policy
+                     :world-policy (:world-policy opts)
+                     :supported #{:fresh}})))
   (inference-spin
-   (let [executor (or (:executor opts) (sched/thread-pool-executor {:threads 2}))
-         chains (await (apply comb/parallel
-                              (mapv (fn [_] (run-markov-chain model-task step-opts executor))
-                                    (range num-chains))))]
-     (m/empirical (vec chains)))))
+   (let [own-executor (when-not (:executor opts)
+                        (sched/thread-pool-executor {:threads 2}))
+         executor (or (:executor opts) own-executor)]
+     (try
+       (let [chains (await (apply comb/parallel
+                                  (mapv (fn [_] (run-markov-chain model-task kernel executor))
+                                        (range num-chains))))]
+         (m/empirical (vec chains)))
+       (finally
+         (when own-executor
+           #?(:clj (.close ^java.lang.AutoCloseable own-executor)
+              :cljs nil)))))))
 
 (defn kernel-infer
   "Run inference using a PInferenceKernel.
@@ -275,10 +303,10 @@
                                         {:barrier-policy :every-observe}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
-  (if-let [step-opts (mh-options kernel)]
+  (if (mh-options kernel)
     ;; Markov-chain kernels are replay plus accept over traces; each of the
     ;; `num-particles` is an independent chain.
-    (markov-chain-infer model-task step-opts num-particles opts)
+    (markov-chain-infer model-task kernel num-particles opts)
   (inference-spin
    (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
                                    :num-particles num-particles

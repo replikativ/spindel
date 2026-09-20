@@ -257,7 +257,8 @@
   (on-complete [this ctx trace result]
     "Called when program execution completes.
 
-    Returns {:action :done, :trace trace, :result result, :log-weight w}."))
+    Returns {:action :done, :trace trace, :result result, :log-weight w}, or
+    {:action :iterate} to run the whole program again in place."))
 
 ;; =============================================================================
 ;; PriorKernel - Simple Forward Sampling (Importance Sampling)

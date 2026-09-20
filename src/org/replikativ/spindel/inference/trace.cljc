@@ -43,7 +43,7 @@
        #?(:clj (not (Double/isNaN (double x))) :cljs true)))
 
 (defn- decide-choose
-  [{:keys [constraints keep? draw]} sp old-entry]
+  [{:keys [constraints keep? draw init?]} sp old-entry]
   (let [{:keys [dist observed? value]} (:savepoint/payload sp)
         world (:savepoint/world sp)
         address (:savepoint/address sp)]
@@ -71,7 +71,12 @@
                       (ar/observe* dist (:value old-entry)))]
         (cond
           drawn
-          (let [lp (ar/observe* dist (:value drawn))]
+          (let [_ (when-not (or (:symmetric? drawn) (number? (:log-proposal drawn)))
+                    (throw (ex-info "A proposal returns :log-proposal or :symmetric? true"
+                                    {:type ::malformed-proposal
+                                     :address address
+                                     :proposal (dissoc drawn :value)})))
+                lp (ar/observe* dist (:value drawn))]
             (when-not (:symmetric? drawn)
               (add-weight! world (- lp (:log-proposal drawn))))
             {:value (:value drawn)
@@ -86,10 +91,15 @@
            :note {:dist dist :log-prob kept-lp :kept? true}}
 
           :else
-          (let [init (:init (:options (:savepoint/payload sp)))
-                v (if (and (some? init) (nil? old-entry)) init (ar/sample* dist))
+          (let [init (when init? (:init (:options (:savepoint/payload sp))))
+                v (if (some? init) init (ar/sample* dist))
                 lp (ar/observe* dist v)]
-            {:value v :note {:dist dist :log-prob lp :log-proposal lp}}))))))
+            {:value v
+             :note (cond-> {:dist dist :log-prob lp :log-proposal lp}
+                     ;; The old value was there and could not be kept. The
+                     ;; reverse move must be able to do the same; see
+                     ;; `mh-log-ratio`.
+                     (and keep? old-entry) (assoc :redrawn? true))}))))))
 
 (defn policy
   "The scoring policy.
@@ -102,6 +112,10 @@
     :draw        (fn [sp old-entry]) -> nil (not my site) or
                  {:value v :log-proposal lq}, or {:value v :symmetric? true}
                  for a symmetric move around the old value
+    :init?       start a sample site at its `:init` option. Only for the
+                 first state of a Markov chain, which may be anything; an
+                 `:init` value is not a draw, so it has no place in a move or
+                 in a weighted sample.
     :else        policy for every other site (default: its payload)
 
   With no options every sample site is drawn from its prior: forward
@@ -133,6 +147,14 @@
                      (assoc (get-in trace [:trace/entries address]) :address address)))
               (filter #(#{choose-site factor-site} (:site %))))
         (:trace/order trace)))
+
+(defn anchor?
+  "Whether a site is worth an anchor: only a site a move can start from. An
+  observe or a factor is never replayed from, and an anchor is a forked
+  world. Pass as `:anchor?` to `trace/run` and `trace/replay`."
+  [sp]
+  (and (= choose-site (:savepoint/site sp))
+       (not (:observed? (:savepoint/payload sp)))))
 
 (defn- latent? [entry]
   (and (= choose-site (:site entry))
@@ -182,8 +204,15 @@
   targets, `log-selection`; it differs between the traces when the move
   changed how many sites there are to select from.
 
+  A kept value that fell out of its site's support is drawn again
+  (`:redrawn?`). That is reversible only if the reverse move would redraw there
+  too, i.e. if the new value is outside the OLD support; otherwise the reverse
+  keeps it, the old state cannot be reached back, and the move is impossible.
+
   Entries upstream of the replayed address are the SAME entries in both
-  traces and cancel everywhere."
+  traces and cancel everywhere. That relies on a fork sharing the notes of its
+  source by reference, which holds for the in-process worlds a session forks
+  and would not survive a serialized trace."
   [old new log-selection]
   (let [old-entries (entries old)
         new-entries (entries new)
@@ -203,10 +232,18 @@
                         (remove #(:kept? (:note (get new-by-address (:address %)))))
                         (remove #(:symmetric? (:note (get new-by-address (:address %)))))
                         (map (comp :log-prob :note)))
-                  + 0.0 old-entries)]
-    (+ (- (log-joint new) (log-joint old))
-       (- backward forward)
-       (- (log-selection new) (log-selection old)))))
+                  + 0.0 old-entries)
+        irreversible? (some (fn [entry]
+                              (and (:redrawn? (:note entry))
+                                   (when-let [was (get old-by-address (:address entry))]
+                                     (finite? (ar/observe* (:dist (:note was))
+                                                           (:value entry))))))
+                            new-entries)]
+    (if irreversible?
+      ##-Inf
+      (+ (- (log-joint new) (log-joint old))
+         (- backward forward)
+         (- (log-selection new) (log-selection old))))))
 
 (defn uniform-site
   "Select one latent site uniformly. A selection is
@@ -241,6 +278,8 @@
                {:value v :symmetric? true}, for each target (default:
                `prior-proposal`). The reverse move is scored under the prior,
                so a proposal must be the prior or symmetric.
+    :constraints as for `policy`; the conditioning of the chain, which
+               every move must repeat
     :iteration passed to :select
 
   The computation is replayed from the earliest target; every other site
@@ -249,7 +288,7 @@
   {:trace t :accepted? boolean :log-ratio r}; a trace with nothing to move
   resolves unchanged."
   ([trace] (mh-step trace nil))
-  ([trace {:keys [select propose iteration]
+  ([trace {:keys [select propose iteration constraints]
            :or {select uniform-site propose prior-proposal iteration 0}}]
    (fn [resolve reject]
      (let [{:keys [targets log-selection]}
@@ -258,10 +297,11 @@
        (if-not from
          (resolve {:trace trace :accepted? false :log-ratio 0.0})
          (let [move (policy {:keep? true
+                             :constraints constraints
                              :draw (fn [sp old-entry]
                                      (when (contains? targets (:savepoint/address sp))
                                        (propose sp old-entry)))})]
-           ((trace/replay trace from move)
+           ((trace/replay trace from move {:anchor? anchor?})
             (fn [proposed]
               (try
                 (let [ratio (if (:trace/error proposed)

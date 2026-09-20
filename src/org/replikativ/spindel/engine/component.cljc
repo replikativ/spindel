@@ -8,7 +8,7 @@
   world's realization.
 
   Registration is fail-closed: a value must explicitly implement
-  `PWorldComponent`, or be wrapped with `forkable`/`shared`. Component forking
+  `PWorldComponent`, or be wrapped with `forkable`, `shared` or `pinned`. Component forking
   must be rollback-free and process-local. Effectful resources such as database
   branches and worktrees use Yggdrasil ForkHandles, where acquisition can be
   settled."
@@ -37,6 +37,13 @@
   rtp/PForkable
   (fork-value [this _fork-id _directive] this))
 
+(defrecord PinnedComponent [store version read]
+  PWorldComponent
+  (realization [_] (read store version))
+
+  rtp/PForkable
+  (fork-value [this _fork-id _directive] this))
+
 (defn forkable
   "Declare how a rollback-free process-local value is realized in a fork.
 
@@ -48,6 +55,18 @@
   "Explicitly declare that `value` may be shared by reference across worlds."
   [value]
   (->SharedComponent value))
+
+(defn pinned
+  "Declare a VERSIONED value that worlds share by reference but read at the
+  version they pinned: `(read store version)` is its realization. A fork reads
+  what its source read, whatever the store has become since; a world moves on
+  with `repin!`. For values that are too large to fork and must be common to
+  every world of a search, such as the parameters a population of rollouts
+  samples from while a trainer produces the next version. `version` is
+  portable data, so it can be recorded with whatever was computed under it
+  (`pinned-version`)."
+  [store version read]
+  (->PinnedComponent store version read))
 
 (defn component-ref?
   [x]
@@ -66,7 +85,7 @@
              "World component requires an explicit fork or sharing policy"
              {:type ::missing-fork-policy
               :component/id id
-              :hint "Implement PWorldComponent and PForkable, or use component/forkable or component/shared."})))
+              :hint "Implement PWorldComponent and PForkable, or use component/forkable, component/shared or component/pinned."})))
    (let [ref (->ComponentRef id)]
      (ec/swap-state!
       []
@@ -117,3 +136,26 @@
   "Return the bound world's `{component-id value}` map. Intended for inspection."
   []
   (update-vals (or (ec/get-state [:world/components]) {}) realization))
+
+(defn pinned-version
+  "The version `ref` is pinned at in `ctx` (default: the bound world), or nil
+  when it is not a pinned component."
+  ([ref] (pinned-version (ec/current-execution-context) ref))
+  ([ctx ref]
+   (let [component (get (ec/get-state-in ctx [:world/components]) (:id ref))]
+     (when (instance? PinnedComponent component)
+       (:version component)))))
+
+(defn repin!
+  "Move the bound world's pin of `ref` to `version`. World-local: forks taken
+  before keep the version they had."
+  [ref version]
+  (let [id (:id ref)]
+    (ec/swap-state!
+     [:world/components id]
+     (fn [component]
+       (when-not (instance? PinnedComponent component)
+         (throw (ex-info "Not a pinned world component"
+                         {:type ::not-pinned :component/id id})))
+       (assoc component :version version))))
+  nil)

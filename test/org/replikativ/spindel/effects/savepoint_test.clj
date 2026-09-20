@@ -403,3 +403,84 @@
           (recur (inc tries))))
       (is (= 1 (handles)))
       (is (sp/pending? (first anchors))))))
+
+;; -----------------------------------------------------------------------------
+;; Law 6: conservation
+;; -----------------------------------------------------------------------------
+
+(defn- toy-authority [ledger]
+  (reify org.replikativ.spindel.world.scope/PResourceAuthority
+    (grant! [_ source child amount]
+      (let [source-id (:fork-id source)
+            [before _] (swap-vals!
+                        ledger
+                        (fn [book]
+                          (if (>= (get-in book [source-id :balance] 0) amount)
+                            (-> book
+                                (update-in [source-id :balance] - amount)
+                                (assoc (:fork-id child) {:balance amount :from source-id}))
+                            book)))]
+        (when (< (get-in before [source-id :balance] 0) amount)
+          (throw (ex-info "Insufficient funds" {:type ::insufficient})))
+        nil))
+    (return! [_ context]
+      (swap! ledger (fn [book]
+                      (if-let [{:keys [balance from]} (get book (:fork-id context))]
+                        (-> book (update-in [from :balance] + balance) (dissoc (:fork-id context)))
+                        book)))
+      nil)))
+
+(deftest the-forks-of-a-savepoint-share-one-budget
+  (let [root (context/create-execution-context)
+        root-id (:fork-id root)
+        ledger (atom {root-id {:balance 10}})
+        events (java.util.concurrent.LinkedBlockingQueue.)
+        session (sp/open! root {:fork-opts {:systems :none}
+                                :authority (toy-authority ledger)
+                                :handlers {sp/any-site #(.put events %)}})]
+    (try
+      (sp/start! session (binding [ec/*execution-context* root] (program)))
+      (let [site (take! events)
+            funded (await-cps (sp/fork site {:grant 6}))]
+        (is (= 4 (get-in @ledger [root-id :balance])))
+        (testing "a second fork cannot be given what is no longer there"
+          (is (= ::insufficient
+                 (:type (ex-data (try (await-cps (sp/fork site {:grant 6}))
+                                      (catch Throwable error error))))))
+          (is (= 2 (count (org.replikativ.spindel.world.scope/activity-values
+                           (:scope session) :savepoint/world)))
+              "the root and the funded fork; the unfunded one never became a world")
+          (is (sp/pending? site)))
+        (testing "spends of two forks of one site are told apart"
+          (is (not= (sp/spend-key funded) (sp/spend-key site))))
+        (testing "an abandoned fork gives back what it has left"
+          (sp/abandon funded)
+          (is (= sp/abandoned-site (:savepoint/site (take! events))))
+          (loop [tries 0]
+            (when (and (< tries 100) (not= 10 (get-in @ledger [root-id :balance])))
+              (Thread/sleep 20)
+              (recur (inc tries))))
+          (is (= {root-id {:balance 10}} @ledger))))
+      (finally
+        (await-cps (sp/close! session))
+        (context/stop-context! root)))))
+
+(defn- same-site-in-two-branches []
+  (spin
+   (let [left? (savepoint :flag true)]
+     (if left?
+       (savepoint :leaf :left)
+       (savepoint :leaf :right)))))
+
+(deftest two-calls-of-one-site-are-told-apart-by-where-they-are
+  ;; Needs the call form from partial-cps (0.1.61+). Without it both leaves
+  ;; are "the first :leaf of this spin" and collide.
+  (let [leaf-address
+        (fn [left?]
+          (with-session [root session events {}]
+            (sp/start! session (binding [ec/*execution-context* root]
+                                 (same-site-in-two-branches)))
+            (sp/resume (take! events) left?)
+            (:savepoint/address (take! events))))]
+    (is (not= (leaf-address true) (leaf-address false)))
+    (is (= (leaf-address true) (leaf-address true)))))

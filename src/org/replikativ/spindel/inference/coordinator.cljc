@@ -513,111 +513,42 @@
 ;; Continuation Resume
 ;; =============================================================================
 
-(defn resume-from-checkpoint!
-  "Resume particle execution from a checkpoint, optionally with trace modifications.
+(defn replay-from-start!
+  "Run a completed particle again from its first checkpoint, in place: the
+   `:iterate` action. The log-weight is reset and every observe re-adds its
+   term; sample sites reach the kernel's `step` with the trace of the previous
+   pass.
 
-   This unified function handles both :modify (mid-execution replay) and
-   :iterate (post-completion replay) actions. Both are fundamentally the same:
-   apply updates to trace, then resume from earliest modified checkpoint.
-
-   Args:
-     context - Particle's execution context
-     updates - Map of {address -> new-value} to apply to trace (raw values)
-
-   Returns: nil (side effect: resumes continuation via scheduler)"
-  [context updates]
+   This is a FULL replay. Resuming a stored checkpoint in the middle of a
+   program, in place, cannot be made correct (the state at that checkpoint is
+   gone: upstream observes drop out of the weight, a rejected pass leaves its
+   state behind). Moves that change some sites and keep the rest are
+   `inference.trace/mh-step`, which replays in a fork of the world as it was."
+  [context]
   (let [checkpoints (rtp/get-state context [:inference :checkpoints])
-        trace (or (rtp/get-state context [:inference :trace]) {})
-
-        ;; Checkpoint addresses in PROGRAM order (first = program start).
-        ;; They are stored as {address -> checkpoint}; map key order is
-        ;; insertion order only up to eight entries, so sort by the
-        ;; sequence number each checkpoint was stamped with.
-        checkpoint-addrs (map key (sort-by (comp :seq val) checkpoints))
-
-        ;; Apply updates to trace - updates are raw values, trace has rich entries
-        ;; Update the :value field of existing rich entries
-        updated-trace (reduce-kv
-                       (fn [t addr new-value]
-                         (let [existing (get t addr)
-                               checkpoint (get checkpoints addr)
-                               dist (or (:distribution existing) (:source checkpoint))]
-                           ;; The entry's :log-prob is the prior density OF THE
-                           ;; VALUE, so it is recomputed with the value: keeping
-                           ;; the old one made the random-walk kernel score a
-                           ;; proposal under the density of the point it left,
-                           ;; which is how a step outside a bounded prior's
-                           ;; support was never seen as −∞.
-                           (assoc t addr (merge (or existing
-                                                    {:distribution dist
-                                                     :observed? (some? (get-in checkpoint [:options :observe]))})
-                                                {:value new-value
-                                                 :log-prob (when dist (ar/observe* dist new-value))}))))
-                       trace
-                       updates)
-
-        ;; Find earliest modified checkpoint (or first for full replay)
-        resume-addr (or (first (filter (set (keys updates)) checkpoint-addrs))
-                        (first checkpoint-addrs))
-
-        checkpoint (get checkpoints resume-addr)
-        ;; Extract raw value from rich trace entry
-        resume-entry (get updated-trace resume-addr)
-        resume-value (if (map? resume-entry) (:value resume-entry) resume-entry)]
-
+        ;; Program order: checkpoints live in a map, and map key order is not
+        ;; program order past eight entries.
+        checkpoint (first (sort-by :seq (vals checkpoints)))]
     (when-not checkpoint
-      (throw (ex-info "Cannot resume: no checkpoint found"
-                      {:resume-addr resume-addr
-                       :available-checkpoints checkpoint-addrs
-                       :updates (keys updates)})))
-
-    (log/debug :coordinator/resume-from-checkpoint {:resume-addr resume-addr
-                                                    :num-updates (count updates)
-                                                    :has-value? (some? resume-value)})
-
-    ;; Reset log-weight (will be recomputed during replay)
+      (throw (ex-info "Cannot replay: no checkpoint found" {})))
     (rtp/swap-state! context [:inference :log-weight] (constantly 0.0))
-
-    ;; Update trace with modifications
-    (rtp/swap-state! context [:inference :trace] (constantly updated-trace))
-
-    ;; Drop the checkpoints DOWNSTREAM of the resume point: re-execution
-    ;; re-creates them with fresh continuations, and with stable addresses
-    ;; the duplicate-address guard would fire on the stale ones. Keep the
-    ;; upstream ones and the resume site itself: their continuations are
-    ;; still valid, and a later proposal on an upstream site must be able to
-    ;; resume from it. Clearing everything but the resume site — the old
-    ;; behaviour — made every proposal on an upstream site fall back to the
-    ;; earliest surviving checkpoint, so that site's new value was written
-    ;; to the trace and never executed: the first sample of a program could
-    ;; not move at all.
-    (let [resume-seq (or (:seq checkpoint) 0)]
-      (rtp/swap-state! context [:inference :checkpoints]
-                       (fn [chkpts]
-                         (into {} (filter (fn [[_ c]] (<= (or (:seq c) 0) resume-seq)) chkpts)))))
-
-    ;; Resume from checkpoint with the (possibly modified) value. The
-    ;; continuation runs in the environment captured at its own suspension
-    ;; (bindings, chain-head, tracking) — see `resume-in-slice!`. This used
-    ;; to restore an `[:inference :choice-stack]` that nothing reads since
-    ;; hash-chain addressing, and never reseeded the chain-head, so every
-    ;; re-run site minted a fresh address.
+    ;; Re-execution re-creates every checkpoint after the first with fresh
+    ;; continuations; stale ones would trip the duplicate-address guard.
+    (rtp/swap-state! context [:inference :checkpoints]
+                     (constantly {(:address checkpoint) checkpoint}))
     (let [{:keys [resolve source options address]} checkpoint
           {:keys [observe]} options
-          executor (:executor context)
-          ;; Use updated value from trace, or sample fresh if not in trace
-          value (or resume-value
-                    (if observe observe (ar/sample* source)))]
-
-      ;; For observations, update log-weight
-      ;; NOTE: Use (some? observe) not just observe, because observe can be boolean false!
+          entry (get (rtp/get-state context [:inference :trace]) address)
+          value (cond
+                  (some? observe) observe
+                  (map? entry) (:value entry)
+                  (some? entry) entry
+                  :else (ar/sample* source))]
+      ;; NOTE: (some? observe), not observe: an observed value may be false.
       (when (some? observe)
-        (let [log-prob (ar/observe* source observe)]
-          (rtp/swap-state! context [:inference :log-weight]
-                           (fn [w] (+ (or w 0.0) log-prob)))))
-
-      ;; Resume continuation
-      (execute! executor
+        (rtp/swap-state! context [:inference :log-weight]
+                         (fn [w] (+ (or w 0.0) (ar/observe* source observe)))))
+      (execute! (:executor context)
                 (fn [] (resume-in-slice! context checkpoint resolve value))))))
 
 (defn ^:no-doc resume-in-slice!
@@ -690,7 +621,6 @@
 ;; It supports:
 ;; - :assign action: Simple forward sampling (like importance sampling)
 ;; - Barrier synchronization for SMC-style resampling
-;; - Future: :modify and :iterate actions for MCMC
 ;;
 ;; See the namespace docstring above for the architectural overview.
 
@@ -785,28 +715,7 @@
                         (future (trigger-kernel-resample! this)))))
 
                 ;; No barrier - resume immediately
-                  (resume-particle-with-value! context checkpoint value)))
-
-            ;; Modify existing trace values - replay from earliest modified checkpoint
-              :modify
-              (let [{:keys [updates]} kernel-result]
-                (log/debug :kernel-coord/modify {:particle-id particle-id
-                                                 :num-updates (count updates)})
-                (resume-from-checkpoint! context updates))
-
-            ;; Assign current value, then modify others and replay
-              :assign-and-modify
-              (let [{:keys [value updates]} kernel-result
-                    {:keys [address]} checkpoint]
-                (log/debug :kernel-coord/assign-and-modify {:particle-id particle-id
-                                                            :address address
-                                                            :value value
-                                                            :num-updates (count updates)})
-              ;; First record current assignment in trace
-                (rtp/swap-state! context [:inference :trace]
-                                 (fn [t] (assoc (or t {}) address value)))
-              ;; Then replay from earliest modified
-                (resume-from-checkpoint! context updates))))))))
+                  (resume-particle-with-value! context checkpoint value)))))))))
 
   (notify-complete! [this particle-id context result]
     (if-let [{:keys [finish!]} (take-retirement! this context)]
@@ -853,15 +762,17 @@
                   (when (= count total-particles)
                     (future (trigger-kernel-resample! this)))))
 
-            ;; Iterate - replay from beginning with optional updates
+            ;; Iterate - run the whole program again, in place
               :iterate
-              (let [{:keys [updates]} kernel-result]
-                (log/debug :kernel-coord/iterate {:particle-id particle-id
-                                                  :num-updates (count updates)})
+              (do
+                (when (seq (:updates kernel-result))
+                  (throw (ex-info "In-place partial replay is not supported; use inference.trace/mh-step"
+                                  {:type ::partial-replay-unsupported
+                                   :updates (keys (:updates kernel-result))})))
+                (log/debug :kernel-coord/iterate {:particle-id particle-id})
               ;; Clear result since we're re-running
                 (rtp/swap-state! context [:inference :result] (constantly nil))
-              ;; Resume from checkpoint (empty updates = full replay from first checkpoint)
-                (resume-from-checkpoint! context (or updates {})))))))))
+                (replay-from-start! context))))))))
 
   (notify-failed! [this particle-id context error]
     (if-let [{:keys [finish!]} (take-retirement! this context)]
@@ -1162,7 +1073,7 @@
 
 (def ^:private projected-inference-keys
   #{:log-weight :choice-stack :trace :particle-id :sweep :result
-    :deterministic :interventions :mcmc :rw-mcmc :block-gibbs})
+    :deterministic :interventions :mcmc})
 
 (declare project-settled-particle-context)
 

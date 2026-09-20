@@ -329,7 +329,7 @@ Gen's interface is then a table of policies:
 |---|---|
 | `simulate` | draw from the site's distribution |
 | `generate` (constraints) | constrained: that value, weight `log p`; else draw |
-| `update` (constraints) | constrained: that value; else keep the old value; new site: draw. Weight is the change in score; absent old entries are the discard |
+| `update` (constraints) | constrained: that value; else keep the old value; new site: draw. The weight is the change in score; the discard is the entries of the old trace that the new one lacks, which the caller reads off the two traces |
 | `regenerate` (selection) | selected: draw afresh; else keep |
 | `assess` | everything constrained; the weight is the log joint |
 | `propose` | draw from a proposal; note `log q` |
@@ -377,8 +377,14 @@ the old trace was not kept and the reverse move would have to draw, and `s`
 is the probability of selecting the targets, which changes when the move
 changed how many sites there are. `single-site-mh-kernel`,
 `random-walk-mh-kernel` and `block-gibbs-kernel` are descriptions that
-`kernel-infer` runs this way. Limit: the reverse move is scored under the
-prior, so a custom proposal must be the prior or symmetric.
+`kernel-infer` runs this way. A kept value that fell out of its site's
+support is drawn again, and the move is refused when the reverse move would
+keep the new value instead (overlapping supports), because the old state could
+then not be reached back. Limits: the reverse move is scored under the prior,
+so a custom proposal must be the prior or symmetric; a block's membership must
+not depend on the move; chains run in fresh worlds (`:world-policy :fork` is
+refused). The coordinator keeps `:iterate` as a FULL in-place replay; the
+partial in-place resume is gone.
 
 Not implemented: `:proposal` and `:parents` in the payload; SMC, PGibbs,
 PGAS, PIMH, IPMCMC and BBVI still run on the coordinator.
@@ -423,16 +429,17 @@ Tier 1 is the existing inference mechanism made public and generalized.
   inside it. MCTS enforces the rule for its own worlds by construction.
   Enforcing it here needs the engine to answer "is anything pending in this
   world", which is an open item.
-- **Members of a world.** A world's members fork in one of three ways.
-  *Forked*: process-local components by `PForkable`, registered Yggdrasil
-  systems through the scope's `ForkHandle`. *Pinned*: a versioned value shared
-  by reference, of which the fork records the version it read. Trainable
-  parameters are the case that matters: particles and rollouts must share one
-  parameter store, a training step produces a new version rather than
-  mutating the old one, and the pinned version is the *policy version* of
-  every site resumed under it. *Neither*: the world is unforkable and `fork`
-  fails closed, as MCTS does today. Pinned is new; today anything not
-  forkable is "neither".
+- **Members of a world.** A component of a world is realized in a fork in one
+  of three ways (`engine.component`). *Forked* (`forkable`, and registered
+  Yggdrasil systems through the scope's `ForkHandle`): the fork gets its own.
+  *Shared* (`shared`): one value by reference, for things that are safe to
+  share. *Pinned* (`pinned`, new): a **versioned** store shared by reference,
+  read at the version the world pinned; a fork reads what its source read and
+  a world moves on with `repin!`. Trainable parameters are the case that
+  matters: every particle and rollout samples from one parameter store, a
+  training step produces a new version instead of mutating the old one, and
+  `pinned-version` is the *policy version* to record with every site decided
+  under it (a policy's job; nothing records it by itself yet).
 - **Multi-shot.** A savepoint may be forked any number of times and each
   fork resumed once (law 4).
 
@@ -441,27 +448,34 @@ Tier 1 is the existing inference mechanism made public and generalized.
 A fork duplicates state. It must not duplicate **authority**. If a world may
 spend a budget (model tokens, money, device memory), N forks of it hold N
 references to one budget, and each may spend all of it. Spindel does not know
-what a budget is, so the rule is a hook on the scope, not a dependency:
+what a budget is, so the rule is a hook on the scope, not a dependency
+(implemented, `world.scope/PResourceAuthority`):
 
 ```clojure
 (defprotocol PResourceAuthority
-  (grant!   [a from-world to-world grant])   ; move, never copy
-  (return!  [a world])                        ; remainder goes back on discard
-  (escrow!  [a world key]))                   ; for persist
+  (grant!  [a source-world child-world grant])  ; move, never copy
+  (return! [a world]))                           ; the remainder, on discard
 ```
 
 - **`fork` takes a grant.** `(fork sp {:grant g})` moves `g` from the
-  publishing world's wallet to the child's. With an authority installed and no
-  grant, the child can spend nothing. The ledger that records this is **not a
-  member of any forked world**.
-- **Discard returns the remainder.** `world.scope/discard!` calls `return!`;
-  an embedding should not have to retry this from outside.
-- **A spend is identified by `[world address resume-index]`.** A ledger that
-  deduplicates by id (kontor does) will otherwise see the second resume of a
+  publishing world's wallet to the child's. A grant the source cannot afford
+  rejects the fork, and the child is discarded before it ever becomes a world
+  of the scope. With an authority installed and no grant, the child has no
+  wallet and can spend nothing. A world funds its own forks from what it was
+  granted, so budgets nest the way worlds do. The ledger that records this is
+  **not a member of any forked world**.
+- **Discard returns the remainder.** `release!` and `discard!` call `return!`
+  before they discard a world; an abandoned savepoint's world is released at
+  once, so an abandoned branch gives its budget back while the search is
+  still running.
+- **A spend is identified by world and site** (`savepoint/spend-key`). A world
+  continues from a site once, so the pair is unique. A ledger that
+  deduplicates by id (kontor does) would otherwise see the second fork of a
   savepoint as a replay of the first and silently not charge it.
-- **`persist` escrows.** A portable savepoint that names a wallet is authority
-  that could be hydrated twice. `persist` moves the world's remainder into an
-  escrow keyed by the savepoint's content hash; hydration claims it once.
+- **`persist` escrows** (not implemented; tier 2). A portable savepoint that
+  names a wallet is authority that could be hydrated twice. `persist` must
+  move the world's remainder into an escrow keyed by the savepoint's content
+  hash, which hydration claims once.
 - Coarse budgets live in the authority. Fine-grained ownership (a device
   buffer, a KV page) stays with the substrate's own leases; a transaction per
   page is far too slow. A world carries the *handle* (a pinned or forked
@@ -596,6 +610,7 @@ and `assess` of a full choice map against a hand-computed log joint.
    policy.
 6. `PResourceAuthority` on `world.scope`: grant on fork, return on discard,
    spend identity. Pinned members. Test for law 6 with a toy authority.
+   **Implemented**, except escrow, which belongs to step 7.
 7. `persist` and hydration for a world: component descriptors, system snapshot
    ids, named resume, escrow. Replay-based hydration stays as it is. Law 5.
 8. The MCTS adapter and the lifting macro, if wanted.

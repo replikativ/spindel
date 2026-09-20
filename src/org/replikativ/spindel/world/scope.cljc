@@ -15,6 +15,21 @@
 
 (declare maybe-complete-quiescence!)
 
+(defprotocol PResourceAuthority
+  "What a scope asks when its worlds may spend something that must not be
+   duplicated by forking: money, tokens, device memory. A fork copies state;
+   it must MOVE authority. The ledger behind an authority is not a member of
+   any forked world. Every method returns a value or a CPS operation
+   `(fn [resolve reject])`."
+  (grant! [authority source-context child-context grant]
+    "Move `grant` from the source world's wallet into a new wallet of the
+     child. Reject when the source cannot afford it; the fork then fails and
+     the child is discarded.")
+  (return! [authority context]
+    "Move what is left in the world's wallet back to where it was granted
+     from. Called once, before the world is discarded. A world without a
+     wallet is a no-op."))
+
 (defn- transition!
   "Commit a pure [next-state result] transition; expose only its winning result."
   [state-atom f]
@@ -26,14 +41,21 @@
         (recur)))))
 
 (defn create
-  "Create a finite world-ownership scope from optional purpose and fork-opts.
-   Lifecycle keys are scope-owned and override values in fork-opts."
-  [{:keys [purpose fork-opts]
-    :or {purpose :simulation fork-opts {}}}]
+  "Create a finite world-ownership scope from optional purpose, fork-opts and
+   a PResourceAuthority. Lifecycle keys are scope-owned and override values in
+   fork-opts."
+  [{:keys [purpose fork-opts authority retain-released?]
+    :or {purpose :simulation fork-opts {} retain-released? true}}]
   (atom {:id (random-uuid)
          :status :open
          :purpose purpose
          :fork-opts fork-opts
+         :authority authority
+         ;; Descriptors of worlds released early are part of the audit
+         ;; projection. A search that releases without bound (a Markov chain)
+         ;; turns this off.
+         :retain-released? retain-released?
+         :returned #{}
          :handles []
          :pending-forks 0
          :activities {}
@@ -87,15 +109,39 @@
         ;; claimed continuation belong to its executor/error boundary.
         (if @delivered? (throw error) (deliver! reject error))))))
 
+(defn- returning!
+  "Run `operation` after the scope's authority took back what is left in
+   `context`'s wallet, once per world: a discard that fails is retried, the
+   return before it is not. No authority: just run it."
+  [scope context operation reject]
+  (let [{:keys [authority returned]} @scope
+        fork-id (:fork-id context)]
+    (if (and authority (not (contains? returned fork-id)))
+      (invoke-once! (try (return! authority context)
+                         (catch #?(:clj Throwable :cljs :default) error
+                           (fn [_ reject-return] (reject-return error))))
+                    (fn [_]
+                      (swap! scope update :returned conj fork-id)
+                      (operation))
+                    reject)
+      (operation))))
+
 (defn fork!
   "Fork source-context into a frozen canonical child owned by scope.
 
+   `opts` may carry `:grant`: what the scope's PResourceAuthority moves from
+   the source world's wallet to the child's. A grant the source cannot afford
+   fails the fork and discards the child. With an authority and no grant the
+   child has no wallet.
+
    Resolves a non-settleable world reference containing :child-ctx and a
    portable :descriptor. The affine ForkHandle remains private to scope."
-  [scope source-context resolve reject]
+  ([scope source-context resolve reject]
+   (fork! scope source-context nil resolve reject))
+  ([scope source-context {:keys [grant]} resolve reject]
   (if-let [claim-error (claim-fork! scope)]
     (reject claim-error)
-    (let [{:keys [id purpose fork-opts]} @scope
+    (let [{:keys [id purpose fork-opts authority]} @scope
           settled? (atom false)
           finish! (fn [update-state callback value]
                     (when (compare-and-set! settled? false true)
@@ -106,13 +152,31 @@
                         (finally (maybe-complete-quiescence! scope)))))
           opts (-> fork-opts
                    (assoc :mode :frozen :purpose purpose :owner id :sync? false))]
-      (letfn [(succeed! [handle]
+      (letfn [(admit! [handle]
                 (finish! (fn [state]
                            (-> state
                                (update :handles conj handle)
                                (update :pending-forks dec)))
                          resolve {:child-ctx (:child-ctx handle)
                                   :descriptor (ygg/fork-descriptor handle)}))
+              (succeed! [handle]
+                (if (and authority (some? grant))
+                  ;; The fork is not a world of this scope until it is funded.
+                  (invoke-once!
+                   (try (grant! authority source-context (:child-ctx handle) grant)
+                        (catch #?(:clj Throwable :cljs :default) error
+                          (fn [_ reject-grant] (reject-grant error))))
+                   (fn [_] (admit! handle))
+                   (fn [grant-error]
+                     (binding [ec/*execution-context* (:parent-ctx handle)
+                               pcps-async/*in-trampoline* false]
+                       (invoke-once! (ygg/discard-fork! handle {:sync? false})
+                                     (fn [_] (fail! grant-error))
+                                     (fn [discard-error]
+                                       (log/error :world-scope/unfunded-fork-leaked
+                                                  {:scope/id id :error discard-error})
+                                       (fail! grant-error))))))
+                  (admit! handle)))
               (fail! [error]
                 (finish! #(update % :pending-forks dec) reject error))]
         (binding [ec/*execution-context* source-context
@@ -125,7 +189,7 @@
             (catch #?(:clj Throwable :cljs :default) error
               ;; A successful callback owns its continuation exception. Do not
               ;; reinterpret it as a second rejection and silently swallow it.
-              (if @settled? (throw error) (fail! error)))))))))
+              (if @settled? (throw error) (fail! error))))))))))
 
 (defn discard!
   "Discard all owned worlds newest first. Returns a shared CPS operation."
@@ -206,12 +270,16 @@
                 (step [remaining]
                   (if-let [handle (first remaining)]
                     (if (ygg/open-fork? handle)
-                      (binding [ec/*execution-context* (:parent-ctx handle)
-                                pcps-async/*in-trampoline* false]
-                        (invoke-once!
-                         (ygg/discard-fork! handle {:sync? false})
-                         (fn [_] (step (next remaining)))
-                         (fn [error] (fail! handle error))))
+                      (returning!
+                       scope (:child-ctx handle)
+                       (fn []
+                         (binding [ec/*execution-context* (:parent-ctx handle)
+                                   pcps-async/*in-trampoline* false]
+                           (invoke-once!
+                            (ygg/discard-fork! handle {:sync? false})
+                            (fn [_] (step (next remaining)))
+                            (fn [error] (fail! handle error)))))
+                       (fn [error] (fail! handle error)))
                       (step (next remaining)))
                     (let [descriptors
                           (into (vec (:released @scope))
@@ -265,6 +333,8 @@
                     (swap! scope (fn [state]
                                    (cond-> (update state :pending-forks dec)
                                      released?
+                                     (update :returned disj (:fork-id (:child-ctx handle)))
+                                     (and released? (:retain-released? state))
                                      (update :released (fnil conj [])
                                              (ygg/fork-descriptor handle))
                                      ;; still owned: the scope's discard retries it
@@ -275,12 +345,16 @@
       (if-let [error (:error result)]
         (reject error)
         (let [handle (:handle result)]
-          (binding [ec/*execution-context* (:parent-ctx handle)
-                    pcps-async/*in-trampoline* false]
-            (invoke-once!
-             (ygg/discard-fork! handle {:sync? false})
-             (fn [_] (settle! handle true resolve nil))
-             (fn [error] (settle! handle false reject error)))))))))
+          (returning!
+           scope (:child-ctx handle)
+           (fn []
+             (binding [ec/*execution-context* (:parent-ctx handle)
+                       pcps-async/*in-trampoline* false]
+               (invoke-once!
+                (ygg/discard-fork! handle {:sync? false})
+                (fn [_] (settle! handle true resolve nil))
+                (fn [error] (settle! handle false reject error)))))
+           (fn [error] (settle! handle false reject error))))))))
 
 (defn await-quiescence [scope]
   (fn [resolve _reject]
