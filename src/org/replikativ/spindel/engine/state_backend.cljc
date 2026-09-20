@@ -352,28 +352,43 @@
                 field-path (vec (drop 2 path))]  ;; Field within entity (e.g., [:dirty?])
 
             ;; Atomic copy-on-write + update in single swap!
-            (get-in
-             (swap! overlay-atom
-                    (fn [ov]
-                      (let [entity-in-overlay? (not= ::not-found
-                                                     (get-in ov entity-path ::not-found))
-                            full-top? (full-replacement-map?
-                                       (get ov (first path)))
-                        ;; If entity not in overlay, copy from parent first
-                            ov (if entity-in-overlay?
-                                 (if (= deleted (get-in ov entity-path))
-                                   (assoc-in ov entity-path {})
-                                   ov)
-                                 (if-let [parent-entity (when (and parent-backend
-                                                                   (not full-top?))
-                                                          (backend-read parent-backend entity-path))]
-                                   (assoc-in ov entity-path parent-entity)
-                                   ov))
-                        ;; Now apply f to the current value at path
-                            current (get-in ov path)
-                            new-val (f current)]
-                        (assoc-in ov path new-val))))
-             path))
+            (let [v (get-in
+                     (swap! overlay-atom
+                            (fn [ov]
+                              (let [entity-in-overlay? (not= ::not-found
+                                                             (get-in ov entity-path ::not-found))
+                                    tombstoned? (= deleted (get-in ov path))
+                                    has-deleted-ancestor? (deleted-ancestor? ov path)
+                                    full-top? (full-replacement-map?
+                                               (get ov (first path)))
+                                ;; If entity not in overlay, copy from parent first.
+                                ;; A tombstone revives as backend-read shows it: nil
+                                ;; at the target, an empty map only above a field.
+                                ;; An empty map at the target is a truthy non-record
+                                ;; value, and a node update fn calls a protocol on it.
+                                    ov (cond
+                                         has-deleted-ancestor?
+                                         (revive-deleted-path ov path)
+
+                                         entity-in-overlay?
+                                         ov
+
+                                         :else
+                                         (if-let [parent-entity (when (and parent-backend
+                                                                           (not full-top?))
+                                                                  (backend-read parent-backend entity-path))]
+                                           (assoc-in ov entity-path parent-entity)
+                                           ov))
+                                ;; Now apply f to the current value at path
+                                    current (get-in ov path)
+                                    new-val (f current)]
+                            ;; f keeps the target absent: keep the tombstone, so
+                            ;; the parent value stays hidden and no nil key appears.
+                                (assoc-in ov path (if (and tombstoned? (nil? new-val))
+                                                    deleted
+                                                    new-val)))))
+                     path)]
+              (when-not (= deleted v) v)))
 
           (and is-shared? parent-backend)
           ;; Shared depth-1 path: seed the overlay with parent's current
@@ -430,9 +445,15 @@
     ;; directly. After seeding, the fork has diverged from the parent's
     ;; copy — the standard overlay CoW semantic.
     (letfn [(seed [ov path]
-              (if (or (fork-local-path? (first path) local-paths)
-                      (nil? parent-backend))
+              (cond
+                (deleted-ancestor? ov path)
+                (revive-deleted-path ov path)
+
+                (or (fork-local-path? (first path) local-paths)
+                    (nil? parent-backend))
                 ov
+
+                :else
                 (let [depth (count path)
                       seed-path (if (>= depth 2)
                                   (vec (take 2 path)) ;; entity-level CoW
@@ -440,24 +461,16 @@
                       full-top? (full-replacement-map?
                                  (get ov (first path)))]
                   (if (not= ::not-found (get-in ov seed-path ::not-found))
-                    (cond
-                      (= deleted (get-in ov seed-path))
-                      ;; A whole-state transaction removed this entity.
-                      ;; Revive an empty fork-local entity before assoc-in
-                      ;; descends through the tombstone.
-                      (assoc-in ov seed-path {})
-
-                      (and (= depth 1)
-                           (map? (get-in ov seed-path))
-                           (not (record? (get-in ov seed-path)))
-                           (not (full-replacement-map? (get-in ov seed-path))))
+                    (if (and (= depth 1)
+                             (map? (get-in ov seed-path))
+                             (not (record? (get-in ov seed-path)))
+                             (not (full-replacement-map? (get-in ov seed-path))))
                       (assoc-in ov seed-path
                                 (mark-full-replacement
                                  (merge-entity-overlay
                                   (backend-read parent-backend seed-path)
                                   (get-in ov seed-path))))
-
-                      :else ov)
+                      ov)
                     (if-some [parent-val (when-not full-top?
                                            (backend-read parent-backend seed-path))]
                       (assoc-in ov seed-path
@@ -467,24 +480,31 @@
                       ov)))))]
       (swap! overlay-atom
              (fn [ov]
-               (let [ov (-> ov (seed path-a) (seed path-b))
+               (let [tombstoned-a? (= deleted (get-in ov path-a))
+                     tombstoned-b? (= deleted (get-in ov path-b))
+                     ov (-> ov (seed path-a) (seed path-b))
                      read-local (fn [path]
                                   (when-not (deleted-ancestor? ov path)
                                     (get-in ov path)))
                      [a' b'] (f2 (read-local path-a) (read-local path-b))]
+                 ;; f2 keeps a tombstoned target absent: keep the tombstone.
                  (-> ov
                      (assoc-in path-a
-                               (if (and (= 1 (count path-a))
-                                        (not (fork-local-path?
-                                              (first path-a) local-paths)))
+                               (cond
+                                 (and tombstoned-a? (nil? a')) deleted
+                                 (and (= 1 (count path-a))
+                                      (not (fork-local-path?
+                                            (first path-a) local-paths)))
                                  (mark-full-replacement a')
-                                 a'))
+                                 :else a'))
                      (assoc-in path-b
-                               (if (and (= 1 (count path-b))
-                                        (not (fork-local-path?
-                                              (first path-b) local-paths)))
+                               (cond
+                                 (and tombstoned-b? (nil? b')) deleted
+                                 (and (= 1 (count path-b))
+                                      (not (fork-local-path?
+                                            (first path-b) local-paths)))
                                  (mark-full-replacement b')
-                                 b')))))))
+                                 :else b')))))))
     nil)
 
   (backend-deref [_]

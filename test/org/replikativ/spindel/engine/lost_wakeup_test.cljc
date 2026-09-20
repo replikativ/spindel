@@ -26,6 +26,7 @@
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.state-backend :as backend]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.spin.supervisor :as sup]
@@ -297,6 +298,81 @@
          (is (= {:queue []}
                 (backend/backend-read parent [:atoms :mbx :value]))
              "revival remains isolated from the parent")))))
+
+(deftest overlay-entity-tombstone-reads-as-nil-in-update-fns
+     ;; A whole-state transaction reaps a spin node in a fork. A later
+     ;; register-spin! with the same id updates [:nodes id]. The update fn
+     ;; must see nil, as backend-read does. An empty map is truthy, the fn
+     ;; keeps it as the existing node, and `mark-dirty` throws on it.
+  (let [id :spin-x
+        node (fn [] (nodes/->spin-node nil :clean true false #{} {} nil #{}))
+        reaped-fork (fn []
+                      (let [parent (backend/create-atom-backend {:nodes {id (node)}})
+                            fork (backend/create-overlay-backend parent)]
+                        (backend/backend-write! fork [] #(update % :nodes dissoc id))
+                        [parent fork]))]
+    (testing "backend-write!: the entity tombstone reaches f as nil"
+      (let [[parent fork] (reaped-fork)
+            seen (atom ::none)]
+        (is (nil? (backend/backend-read fork [:nodes id])))
+        (backend/backend-write! fork [:nodes id]
+                                (fn [n] (reset! seen n) (or n (node))))
+        (is (nil? @seen))
+        (is (satisfies? nodes/PCacheable
+                        (backend/backend-read fork [:nodes id])))
+        (is (= :clean (:status (backend/backend-read parent [:nodes id])))
+            "revival remains isolated from the parent")))
+    (testing "backend-write!: f that returns nil keeps the entity absent"
+      (let [[_ fork] (reaped-fork)]
+        (is (nil? (backend/backend-write! fork [:nodes id] (fn [n] (when n (nodes/mark-dirty n))))))
+        (is (nil? (backend/backend-read fork [:nodes id])))
+        (is (not (contains? (backend/backend-read fork [:nodes]) id))
+            "no nil entry appears in the logical collection")))
+    (testing "backend-write! below the entity still revives an empty map"
+      (let [[_ fork] (reaped-fork)]
+        (backend/backend-write! fork [:nodes id :owned-spins] (constantly [:c]))
+        (is (= {:owned-spins [:c]} (backend/backend-read fork [:nodes id])))))
+    (testing "backend-write-2!: the entity tombstone reaches f2 as nil"
+      (let [[_ fork] (reaped-fork)
+            seen (atom ::none)]
+        (backend/backend-write-2! fork [:nodes id] [:engine/pending]
+                                  (fn [n pending]
+                                    (reset! seen n)
+                                    [(or n (node)) (conj (vec pending) :ev)]))
+        (is (nil? @seen))
+        (is (satisfies? nodes/PCacheable
+                        (backend/backend-read fork [:nodes id])))
+        (is (= [:ev] (backend/backend-read fork [:engine/pending])))))
+    (testing "backend-write-2!: f2 that returns nil keeps the entity absent"
+      (let [[_ fork] (reaped-fork)]
+        (backend/backend-write-2! fork [:nodes id] [:engine/pending]
+                                  (fn [n pending] [n pending]))
+        (is (nil? (backend/backend-read fork [:nodes id])))
+        (is (not (contains? (backend/backend-read fork [:nodes]) id)))))))
+
+(deftest overlay-ancestor-tombstone-revives-before-nested-write
+  (let [id :spin-x
+        node (fn [] (nodes/->spin-node nil :clean true false #{} {} nil #{}))
+        reaped-fork (fn []
+                      (let [parent (backend/create-atom-backend {:nodes {id (node)}})
+                            fork (backend/create-overlay-backend parent)]
+                        (backend/backend-write! fork [] #(dissoc % :nodes))
+                        [parent fork]))]
+    (testing "backend-write! revives a tombstoned containing collection"
+      (let [[parent fork] (reaped-fork)]
+        (backend/backend-write! fork [:nodes id] #(or % (node)))
+        (is (satisfies? nodes/PCacheable
+                        (backend/backend-read fork [:nodes id])))
+        (is (= :clean (:status (backend/backend-read parent [:nodes id])))
+            "revival remains isolated from the parent")))
+    (testing "backend-write-2! revives a tombstoned containing collection"
+      (let [[_ fork] (reaped-fork)]
+        (backend/backend-write-2! fork [:nodes id] [:engine/pending]
+                                  (fn [n pending]
+                                    [(or n (node)) (conj (vec pending) :ev)]))
+        (is (satisfies? nodes/PCacheable
+                        (backend/backend-read fork [:nodes id])))
+        (is (= [:ev] (backend/backend-read fork [:engine/pending])))))))
 
 ;; -----------------------------------------------------------------------------
 ;; 4c. Forkability: in-flight data-bearing events are inherited by forks
