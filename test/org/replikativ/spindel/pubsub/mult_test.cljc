@@ -78,7 +78,7 @@
 ;; =============================================================================
 
 (deftest test-mult-lazy-pump-start
-  (testing "pump doesn't start until first tap"
+  (testing "the pump starts at the first demand, not at the first tap"
     (let [source (vec->aseq [1 2 3])
           m (mult/mult source)]
 
@@ -86,10 +86,20 @@
       (is (nil? (mult/mult-pump m)))
       (is (not @(:pump-started-atom m)))
 
-      ;; Create tap - pump should start
-      (let [_ (mult/tap m (buf/fixed-buffer 10))]
-        (is (some? (mult/mult-pump m)))
-        (is @(:pump-started-atom m))))))
+      (let [first-tap (mult/tap m (buf/fixed-buffer 10))
+            second-tap (mult/tap m (buf/fixed-buffer 10))]
+        (testing "tapping pulls nothing"
+          (is (nil? (mult/mult-pump m)))
+          (is (not @(:pump-started-atom m))))
+        (testing "consuming does, and a tap made before that misses nothing"
+          (let [drain (fn [tap]
+                        @(spin (loop [s tap acc []]
+                                 (if-let [[item more] (await (anext s))]
+                                   (recur more (conj acc item))
+                                   acc))))]
+            (is (= [1 2 3] (drain first-tap)))
+            (is (some? (mult/mult-pump m)))
+            (is (= [1 2 3] (drain second-tap)))))))))
 
 (deftest test-mult-untap
   (testing "untap removes tap from mult"
@@ -313,6 +323,7 @@
              t (mult/tap m (buf/fixed-buffer 20))]
 
          ;; Let pump fill buffer via async delay
+         (mult/start! m)
          @(spin (await (comb/sleep 100)))
 
          ;; Untap while buffer has items

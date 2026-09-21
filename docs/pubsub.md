@@ -39,6 +39,26 @@ By default, the producer waits until **all** taps have accepted a value before p
 (def tap-buf (mult/tap m (buf/fixed-buffer 100)))
 ```
 
+### When pulling starts
+
+A mult pulls its source from the **first demand** on any of its taps (the
+first `anext`), not from the first `tap`. Every tap made before anybody
+consumes therefore sees every item, however many items the source already
+holds. A tap made while the mult is running joins the stream and sees what is
+delivered from then on. The pump runs in the execution context of the first
+tap, whoever makes the first demand.
+
+For taps that only buffer (a sliding window that is read now and then) over a
+source that must be drained regardless, start pulling explicitly:
+
+```clojure
+(mult/start! m)
+```
+
+`pub` follows the same rule: routing starts at the first demand of any
+subscriber, or at `(pub/start! p)`. A subscription to a pub whose source is
+exhausted ends at once.
+
 ### Lifecycle
 
 ```clojure
