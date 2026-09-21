@@ -137,6 +137,11 @@
   []
   (update-vals (or (ec/get-state [:world/components]) {}) realization))
 
+(defn pinned?
+  "Whether `component` (a registered value, not a ref) is a pinned one."
+  [component]
+  (instance? PinnedComponent component))
+
 (defn pinned-version
   "The version `ref` is pinned at in `ctx` (default: the bound world), or nil
   when it is not a pinned component."

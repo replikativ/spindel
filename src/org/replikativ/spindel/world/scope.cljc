@@ -28,7 +28,14 @@
   (return! [authority context]
     "Move what is left in the world's wallet back to where it was granted
      from. Called once, before the world is discarded. A world without a
-     wallet is a no-op."))
+     wallet is a no-op.")
+  (escrow! [authority context key]
+    "Move what is left in the world's wallet into an escrow named `key`: a
+     savepoint of the world is leaving the process, and the authority it could
+     spend must leave the world with it, or it exists twice.")
+  (claim! [authority key context]
+    "Move the escrow named `key` into a new wallet of `context`. Reject when
+     there is no such escrow: it was claimed already."))
 
 (defn- transition!
   "Commit a pure [next-state result] transition; expose only its winning result."
@@ -129,8 +136,9 @@
 (defn fork!
   "Fork source-context into a frozen canonical child owned by scope.
 
-   `opts` may carry `:grant`: what the scope's PResourceAuthority moves from
-   the source world's wallet to the child's. A grant the source cannot afford
+   `opts` may carry `:fork-opts`, merged over the scope's for this fork (e.g.
+   `:snapshots` to pin systems), and `:grant`: what the scope's
+   PResourceAuthority moves from the source world's wallet to the child's. A grant the source cannot afford
    fails the fork and discards the child. With an authority and no grant the
    child has no wallet.
 
@@ -138,7 +146,7 @@
    portable :descriptor. The affine ForkHandle remains private to scope."
   ([scope source-context resolve reject]
    (fork! scope source-context nil resolve reject))
-  ([scope source-context {:keys [grant]} resolve reject]
+  ([scope source-context {:keys [grant] extra-fork-opts :fork-opts} resolve reject]
   (if-let [claim-error (claim-fork! scope)]
     (reject claim-error)
     (let [{:keys [id purpose fork-opts authority]} @scope
@@ -150,7 +158,7 @@
                         (binding [ec/*execution-context* source-context]
                           (callback value))
                         (finally (maybe-complete-quiescence! scope)))))
-          opts (-> fork-opts
+          opts (-> (merge fork-opts extra-fork-opts)
                    (assoc :mode :frozen :purpose purpose :owner id :sync? false))]
       (letfn [(admit! [handle]
                 (finish! (fn [state]

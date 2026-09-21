@@ -54,7 +54,16 @@
 
 (defn savepoint
   "Publish a savepoint: `(savepoint site payload)` or
-  `(savepoint site payload {:id address})`.
+  `(savepoint site payload opts)` with
+
+    :id     an explicit address, independent of the code's layout
+    :resume a qualified symbol naming a function that continues the
+            computation from here without the continuation: called with
+            `:args` and then the value the savepoint is resumed with, it
+            returns the spin to run. Makes the savepoint portable
+            (`savepoint.portable/persist`).
+    :args   portable arguments for :resume
+    :state  the paths of world state :resume depends on
 
   `site` is portable data naming the kind of point, `payload` what the point
   offers its handler. Evaluates to whatever the handler resumes it with;
@@ -307,16 +316,12 @@
     (install-handlers! world (or handlers {}))
     value))
 
-(defn start!
-  "Run `task` (a spin) in the session's root world. Its savepoints reach the
-  world's handlers; its end reaches `result-site` or `error-site`."
-  [session-value task]
-  (let [world (:root session-value)
-        scope (:scope session-value)
+(defn ^:no-doc start-in!
+  "Run `task` in `world`, a world of the session, under a lease of its own.
+  Its savepoints reach the world's handlers; its end reaches a terminal site."
+  [session-value world task]
+  (let [scope (:scope session-value)
         spin-id (spin-core/spin-id task)]
-    (when-not (compare-and-set! (:started? session-value) false true)
-      (throw (ex-info "A savepoint session runs one computation"
-                      {:type ::already-started})))
     (world-scope/begin-activity! scope :savepoint/world world (world-id world))
     (rtp/swap-state! world [:savepoint/task] (constantly task))
     (ec/with-context world
@@ -336,6 +341,15 @@
           (world-scope/end-activity! scope (world-id world))
           (throw error))))
     nil))
+
+(defn start!
+  "Run `task` (a spin) in the session's root world. Its savepoints reach the
+  world's handlers; its end reaches `result-site` or `error-site`."
+  [session-value task]
+  (when-not (compare-and-set! (:started? session-value) false true)
+    (throw (ex-info "A savepoint session runs one computation"
+                    {:type ::already-started})))
+  (start-in! session-value (:root session-value) task))
 
 ;; =============================================================================
 ;; The effect
@@ -366,6 +380,11 @@
                    :savepoint/address address
                    :savepoint/seq seq-no
                    :savepoint/payload payload
+                   ;; tier 2: how to continue without the continuation
+                   :savepoint/portable (when (:resume opts)
+                                         {:fn (:resume opts)
+                                          :args (vec (:args opts))
+                                          :state (vec (:state opts))})
                    ::k {:resolve resolve
                         :reject reject
                         :spin-id spin-id

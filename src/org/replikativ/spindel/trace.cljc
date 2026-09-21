@@ -56,12 +56,14 @@
         (policy sp old-entry)))))
 
 (defn- invoke!
-  "Call a value-or-CPS result."
-  [operation resolve reject]
+  "Call `make-operation` and deliver its value-or-CPS result. It is a thunk so
+  that a policy which throws rejects the run, like one which rejects."
+  [make-operation resolve reject]
   (try
-    (if (fn? operation)
-      (operation resolve reject)
-      (resolve operation))
+    (let [operation (make-operation)]
+      (if (fn? operation)
+        (operation resolve reject)
+        (resolve operation)))
     (catch #?(:clj Throwable :cljs :default) error
       (reject error))))
 
@@ -83,7 +85,7 @@
 (defn- decide-site!
   "Decide `sp` with `policy`, record it with `anchor`, resume it."
   [sp anchor policy old fail!]
-  (invoke! (policy sp (get-in old [:trace/entries (:savepoint/address sp)]))
+  (invoke! #(policy sp (get-in old [:trace/entries (:savepoint/address sp)]))
            (fn [decision]
              (try
                (record! (:savepoint/world sp) sp decision anchor)
@@ -117,7 +119,7 @@
      {sp/any-site
       (fn [sp]
         (if (anchor? sp)
-          (invoke! (sp/fork sp)
+          (invoke! #(sp/fork sp)
                    #(decide-site! sp % policy old fail!)
                    #(fail! sp %))
           (decide-site! sp nil policy old fail!)))
@@ -170,7 +172,7 @@
          (let [{:keys [table fail!]}
                (handlers-of (assoc opts :policy policy :old trace)
                             (:trace/session trace) resolve reject)]
-           (invoke! (sp/fork anchor {:handlers table})
+           (invoke! #(sp/fork anchor {:handlers table})
                     ;; The anchor already is the state at this site.
                     #(decide-site! % anchor policy trace fail!)
                     reject)))))))

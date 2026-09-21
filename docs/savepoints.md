@@ -115,8 +115,9 @@ and performs no effect outside them.
 ```clojure
 (savepoint site payload)                       ; tier 1
 (savepoint site payload {:id address})         ; an explicit, code-independent address
-(savepoint site payload {:resume `after-turn    ; tier 2 as well (not implemented)
-                          :args [turn-number]})
+(savepoint site payload {:resume `after-turn    ; tier 2 as well
+                          :args [turn-number]
+                          :state [[:conversation]]})
 ```
 
 `savepoint` is an ordinary CPS effect (see *Custom Effects*). `site` is
@@ -454,7 +455,9 @@ what a budget is, so the rule is a hook on the scope, not a dependency
 ```clojure
 (defprotocol PResourceAuthority
   (grant!  [a source-world child-world grant])  ; move, never copy
-  (return! [a world]))                           ; the remainder, on discard
+  (return! [a world])                            ; the remainder, on discard
+  (escrow! [a world key])                        ; a savepoint leaves the process
+  (claim!  [a key world]))                       ; ... and arrives, once
 ```
 
 - **`fork` takes a grant.** `(fork sp {:grant g})` moves `g` from the
@@ -472,10 +475,10 @@ what a budget is, so the rule is a hook on the scope, not a dependency
   continues from a site once, so the pair is unique. A ledger that
   deduplicates by id (kontor does) would otherwise see the second fork of a
   savepoint as a replay of the first and silently not charge it.
-- **`persist` escrows** (not implemented; tier 2). A portable savepoint that
-  names a wallet is authority that could be hydrated twice. `persist` must
-  move the world's remainder into an escrow keyed by the savepoint's content
-  hash, which hydration claims once.
+- **`persist` escrows.** A portable savepoint that
+  names a wallet is authority that could be hydrated twice. `persist` moves
+  the world's remainder into an escrow keyed by the savepoint's content hash
+  (`escrow!`), which hydration claims once (`claim!`).
 - Coarse budgets live in the authority. Fine-grained ownership (a device
   buffer, a KV page) stays with the substrate's own leases; a transaction per
   page is far too slow. A world carries the *handle* (a pinned or forked
@@ -483,47 +486,66 @@ what a budget is, so the rule is a hook on the scope, not a dependency
 
 ## Tier 2: portable
 
-A closure cannot leave the process. A savepoint is *portable* when it carries
-`{:fn sym :args data}`: a top-level function and portable arguments that
-continue the computation. `persist` then yields plain data:
+`savepoint.portable` (implemented). A closure cannot leave the process. A
+savepoint is *portable* when it names a top-level function that continues the
+computation, portable arguments for it, and the paths of world state it
+depends on:
 
 ```clojure
-{:savepoint/site .. :savepoint/address .. :savepoint/seq ..
- :savepoint/payload ..
- :savepoint/portable {:fn my.ns/after-turn :args [3]}
- :world {:context  <serialize-context of the world's context>
-         :systems  {system-id snapshot-id}     ; Yggdrasil, durable
-         :components {component-id descriptor}}} ; how to rebuild each
+(savepoint :conversation/turn m {:resume `after-turn :args [k]
+                                 :state [[:conversation]]})
 ```
 
-Hydration restores the context (`deserialize-context` + `restore-snapshot`,
-exist today), reopens each system at its snapshot, rebuilds each component
-from its descriptor (portable snapshots omit components today, by design; the
-descriptor is the missing half), and calls `(my.ns/after-turn 3)` inside that
-world. **Resuming a portable savepoint and invoking a remote function are the
-same operation**: run a named function with portable arguments in a world,
-which is either hydrated here or lives on another peer.
+The function is called with `:args` and then with **the value the savepoint is
+resumed with**, and returns the spin to run: it is the continuation, written
+as a function. `persist` yields plain data:
 
-Two ways to make a savepoint portable:
+```clojure
+{:savepoint/id     <content hash of everything below>
+ :savepoint/site .. :savepoint/address .. :savepoint/seq .. :savepoint/payload ..
+ :savepoint/resume {:fn my.ns/after-turn :args [3]}
+ :world/seed    ..
+ :world/state   {[:conversation] {...}}       ; the declared paths, nothing else
+ :world/systems {system-id snapshot-id}       ; registered Yggdrasil systems
+ :world/pinned  {component-id version}        ; pinned components
+ :world/escrow? true}                         ; with a resource authority
+```
 
-1. **Named resume** (proposed): the program states `:resume` and `:args`. It
-   is explicit, checkable, and the only option for bodies that are not
-   replay-safe (agent conversations, anything driving external effects).
-2. **Replay** (exists today as rebuild): omit `:resume`; hydration re-executes
-   the model in rebuild mode up to the savepoint's address. It needs no
-   annotation and is correct only for replay-safe bodies.
+`(hydrate! session data value)` forks the session's root, the **host world**,
+pinned at the recorded snapshots (`ygg/fork!` `:snapshots`, exists today),
+repins the components, writes the state and the seed, claims the escrow, and
+runs `(apply f (conj args value))` in that world. The host must have the named
+systems and components registered; that is how a process says where they live.
+**Resuming a portable savepoint and invoking a remote function are the same
+operation**: run a named function with portable arguments in a world.
+
+Only declared state travels. An earlier draft serialized the whole context,
+which drags along the engine's state (nodes, continuations, subscriptions) and
+whatever unserializable objects sit in it. None of that is the computation's
+state: the named function starts a *new* computation, and what it needs from
+the old one the program declares. The portable form is small, is data, and its
+content hash is a prefix identity that is the same across runs and machines.
+
+`persist` does not consume the savepoint. With a resource authority it moves
+what is left in the world's wallet into an escrow named by the content hash,
+and `hydrate!` claims it, once: the second hydration of the same data is
+rejected. Without that the authority would exist both here and there.
+
+Replay-based hydration (rebuild, exists today) remains the way to restore a
+whole reactive context whose bodies are replay-safe; it needs no annotation
+and is not what an agent conversation or anything driving external effects
+can use.
 
 A `defn`-level macro in the style of `defn-go-remote`, lifting the rest of a
-body into a named function and checking its captured locals, is sugar over (1)
-and can follow later. Automatic lifting inside the CPS transform is
+body into a named function and checking its captured locals, is sugar over
+`:resume` and can follow later. Automatic lifting inside the CPS transform is
 deliberately not proposed: captured locals may not be portable, and a site's
 identity would have to survive code changes.
 
-**Naming.** On the JVM a qualified symbol resolves without a registry. In
-ClojureScript it does not. kabel already has a registry of portable functions
-for `go-remote`; this proposal should reuse it rather than add a second one.
-Whether spindel depends on that part of kabel or the registry moves to a small
-shared namespace is an open question.
+**Naming.** On the JVM a qualified symbol resolves without a registry
+(`requiring-resolve`). In ClojureScript it does not; `hydrate!` takes
+`:resolve`. kabel already has a registry of portable functions for
+`go-remote`, which is the natural thing to pass.
 
 ## What becomes of existing features
 
@@ -611,8 +633,9 @@ and `assess` of a full choice map against a hand-computed log joint.
 6. `PResourceAuthority` on `world.scope`: grant on fork, return on discard,
    spend identity. Pinned members. Test for law 6 with a toy authority.
    **Implemented**, except escrow, which belongs to step 7.
-7. `persist` and hydration for a world: component descriptors, system snapshot
-   ids, named resume, escrow. Replay-based hydration stays as it is. Law 5.
+7. `persist` and hydration for a world: declared state, system snapshot ids,
+   pinned versions, named resume, escrow. Law 5. **Implemented**
+   (`savepoint.portable`); systems with asynchronous snapshot ids are refused.
 8. The MCTS adapter and the lifting macro, if wanted.
 
 Steps 1 to 4 fix the MCMC defect and are one reviewable unit. An embedding
