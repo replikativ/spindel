@@ -281,9 +281,9 @@
            ;; thunk-type branch is gone.
            cps-fn-code `(fn [~r ~e]
                           (try
-                            (if is.simm.partial-cps.async/*in-trampoline*
+                            (if (is.simm.partial-cps.async/in-trampoline?)
                               ~(ioc/invert params expanded)
-                              (binding [is.simm.partial-cps.async/*in-trampoline* true]
+                              (binding [is.simm.partial-cps.async/*in-trampoline* (is.simm.partial-cps.async/trampoline-token)]
                                 (loop [result# ~(ioc/invert params expanded)]
                                   (if (is.simm.partial-cps.runtime/thunk? result#)
                                     (recur (is.simm.partial-cps.runtime/force-thunk result#))

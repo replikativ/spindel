@@ -137,9 +137,9 @@
             ;; Execute CPS body with trampoline support
             ;; If already in trampoline, return result directly (may be Thunk)
             ;; Otherwise, establish trampoline to unwrap Thunks from loop/recur
-            (if async/*in-trampoline*
+            (if (async/in-trampoline?)
               ~(ioc/invert params expanded)
-              (binding [async/*in-trampoline* true]
+              (binding [async/*in-trampoline* (async/trampoline-token)]
                 (loop [result# ~(ioc/invert params expanded)]
                   (if (instance? ~thunk-sym result#)
                     (recur ((.-f result#)))
