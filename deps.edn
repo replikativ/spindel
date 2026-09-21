@@ -6,8 +6,9 @@
         riddley/riddley {:mvn/version "0.2.0"}
         org.replikativ/logging {:mvn/version "0.1.3"}
         ;; 0.1.60 ships the optional core.async adapter (is.simm.partial-cps.core-async)
-        ;; that distributed.cps delegates to.
-        is.simm/partial-cps {:mvn/version "0.1.60"}
+        ;; that distributed.cps delegates to. 0.1.63: breakpoint handlers get the call
+        ;; :form (site addresses), `with-trampoline`, and the lost-continuation fixes.
+        is.simm/partial-cps {:mvn/version "0.1.63"}
         org.replikativ/yggdrasil {:mvn/version "0.3.35"}
         org.replikativ/hasch {:mvn/version "0.4.99"}
         org.clojure/core.async {:mvn/version "1.6.681"}
