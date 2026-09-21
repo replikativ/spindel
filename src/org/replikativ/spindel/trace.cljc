@@ -143,13 +143,13 @@
   ([session task policy opts]
    (fn [resolve reject]
      (let [[resolve reject] (sp/in-callers-world resolve reject)]
-     (try
-       (sp/install-handlers! (:root session)
-                             (:table (handlers-of (assoc opts :policy policy)
-                                                  session resolve reject)))
-       (sp/start! session task)
-       (catch #?(:clj Throwable :cljs :default) error
-         (reject error)))))))
+       (try
+         (sp/install-handlers! (:root session)
+                               (:table (handlers-of (assoc opts :policy policy)
+                                                    session resolve reject)))
+         (sp/start! session task)
+         (catch #?(:clj Throwable :cljs :default) error
+           (reject error)))))))
 
 (defn replay
   "Run the computation of `trace` again from `address` under `policy`.

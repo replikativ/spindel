@@ -75,7 +75,7 @@
                                                       (binding [ec/*execution-context* root] (model))
                                                       (itrace/policy {:constraints constraints})))
                         {final :trace} (await-cps (itrace/mh-chain initial 60
-                                                                  {:constraints constraints}))]
+                                                                   {:constraints constraints}))]
                     (is (= [:x] (itrace/latent-addresses final)))
                     (is (= 3.0 (second (:trace/result final))))
                     (first (:trace/result final)))))

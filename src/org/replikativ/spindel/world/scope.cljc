@@ -147,57 +147,57 @@
   ([scope source-context resolve reject]
    (fork! scope source-context nil resolve reject))
   ([scope source-context {:keys [grant] extra-fork-opts :fork-opts} resolve reject]
-  (if-let [claim-error (claim-fork! scope)]
-    (reject claim-error)
-    (let [{:keys [id purpose fork-opts authority]} @scope
-          settled? (atom false)
-          finish! (fn [update-state callback value]
-                    (when (compare-and-set! settled? false true)
-                      (swap! scope update-state)
-                      (try
-                        (binding [ec/*execution-context* source-context]
-                          (callback value))
-                        (finally (maybe-complete-quiescence! scope)))))
-          opts (-> (merge fork-opts extra-fork-opts)
-                   (assoc :mode :frozen :purpose purpose :owner id :sync? false))]
-      (letfn [(admit! [handle]
-                (finish! (fn [state]
-                           (-> state
-                               (update :handles conj handle)
-                               (update :pending-forks dec)))
-                         resolve {:child-ctx (:child-ctx handle)
-                                  :descriptor (ygg/fork-descriptor handle)}))
-              (succeed! [handle]
-                (if (and authority (some? grant))
+   (if-let [claim-error (claim-fork! scope)]
+     (reject claim-error)
+     (let [{:keys [id purpose fork-opts authority]} @scope
+           settled? (atom false)
+           finish! (fn [update-state callback value]
+                     (when (compare-and-set! settled? false true)
+                       (swap! scope update-state)
+                       (try
+                         (binding [ec/*execution-context* source-context]
+                           (callback value))
+                         (finally (maybe-complete-quiescence! scope)))))
+           opts (-> (merge fork-opts extra-fork-opts)
+                    (assoc :mode :frozen :purpose purpose :owner id :sync? false))]
+       (letfn [(admit! [handle]
+                 (finish! (fn [state]
+                            (-> state
+                                (update :handles conj handle)
+                                (update :pending-forks dec)))
+                          resolve {:child-ctx (:child-ctx handle)
+                                   :descriptor (ygg/fork-descriptor handle)}))
+               (succeed! [handle]
+                 (if (and authority (some? grant))
                   ;; The fork is not a world of this scope until it is funded.
-                  (invoke-once!
-                   (try (grant! authority source-context (:child-ctx handle) grant)
-                        (catch #?(:clj Throwable :cljs :default) error
-                          (fn [_ reject-grant] (reject-grant error))))
-                   (fn [_] (admit! handle))
-                   (fn [grant-error]
-                     (binding [ec/*execution-context* (:parent-ctx handle)
-                               pcps-async/*in-trampoline* false]
-                       (invoke-once! (ygg/discard-fork! handle {:sync? false})
-                                     (fn [_] (fail! grant-error))
-                                     (fn [discard-error]
-                                       (log/error :world-scope/unfunded-fork-leaked
-                                                  {:scope/id id :error discard-error})
-                                       (fail! grant-error))))))
-                  (admit! handle)))
-              (fail! [error]
-                (finish! #(update % :pending-forks dec) reject error))]
-        (binding [ec/*execution-context* source-context
-                  pcps-async/*in-trampoline* false]
-          (try
-            (let [operation (ygg/fork! opts)]
-              (if (fn? operation)
-                (operation succeed! fail!)
-                (succeed! operation)))
-            (catch #?(:clj Throwable :cljs :default) error
+                   (invoke-once!
+                    (try (grant! authority source-context (:child-ctx handle) grant)
+                         (catch #?(:clj Throwable :cljs :default) error
+                           (fn [_ reject-grant] (reject-grant error))))
+                    (fn [_] (admit! handle))
+                    (fn [grant-error]
+                      (binding [ec/*execution-context* (:parent-ctx handle)
+                                pcps-async/*in-trampoline* false]
+                        (invoke-once! (ygg/discard-fork! handle {:sync? false})
+                                      (fn [_] (fail! grant-error))
+                                      (fn [discard-error]
+                                        (log/error :world-scope/unfunded-fork-leaked
+                                                   {:scope/id id :error discard-error})
+                                        (fail! grant-error))))))
+                   (admit! handle)))
+               (fail! [error]
+                 (finish! #(update % :pending-forks dec) reject error))]
+         (binding [ec/*execution-context* source-context
+                   pcps-async/*in-trampoline* false]
+           (try
+             (let [operation (ygg/fork! opts)]
+               (if (fn? operation)
+                 (operation succeed! fail!)
+                 (succeed! operation)))
+             (catch #?(:clj Throwable :cljs :default) error
               ;; A successful callback owns its continuation exception. Do not
               ;; reinterpret it as a second rejection and silently swallow it.
-              (if @settled? (throw error) (fail! error))))))))))
+               (if @settled? (throw error) (fail! error))))))))))
 
 (defn discard!
   "Discard all owned worlds newest first. Returns a shared CPS operation."

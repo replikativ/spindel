@@ -83,49 +83,49 @@
   unfunded. Returns a CPS operation resolving the data."
   ([sp] (persist sp nil))
   ([sp {:keys [escrow?]}]
-  (fn [resolve reject]
-    (let [[resolve reject] (sp/in-callers-world resolve reject)]
-      (try
-        (let [world (:savepoint/world sp)
-              portable (:savepoint/portable sp)]
-          (when-not (sp/pending? sp)
-            (throw (ex-info "Cannot persist a savepoint that is not pending"
-                            {:type ::sp/not-pending :operation :persist})))
-          (when-not portable
-            (throw (ex-info "Savepoint names no :resume function"
-                            {:type ::not-portable
-                             :savepoint/site (:savepoint/site sp)})))
-          (let [body {:savepoint/site (:savepoint/site sp)
-                      :savepoint/seq (:savepoint/seq sp)
-                      :savepoint/payload (:savepoint/payload sp)
-                      :savepoint/resume (select-keys portable [:fn :args])
-                      :world/seed (sp/seed world)
-                      :world/state (into {} (map (fn [path] [path (rtp/get-state world path)]))
-                                         (:state portable))
-                      :world/systems (snapshot-ids world)
-                      :world/pinned (pinned-versions world)}
-                data (assoc body
-                            :savepoint/id (h/content-hash body)
-                            :savepoint/address (:savepoint/address sp))
-                authority (:authority @(:scope (sp/session world)))
-                escrowed-path [:savepoint/escrowed]]
-            (cond
-              (not (and escrow? authority))
-              (resolve data)
+   (fn [resolve reject]
+     (let [[resolve reject] (sp/in-callers-world resolve reject)]
+       (try
+         (let [world (:savepoint/world sp)
+               portable (:savepoint/portable sp)]
+           (when-not (sp/pending? sp)
+             (throw (ex-info "Cannot persist a savepoint that is not pending"
+                             {:type ::sp/not-pending :operation :persist})))
+           (when-not portable
+             (throw (ex-info "Savepoint names no :resume function"
+                             {:type ::not-portable
+                              :savepoint/site (:savepoint/site sp)})))
+           (let [body {:savepoint/site (:savepoint/site sp)
+                       :savepoint/seq (:savepoint/seq sp)
+                       :savepoint/payload (:savepoint/payload sp)
+                       :savepoint/resume (select-keys portable [:fn :args])
+                       :world/seed (sp/seed world)
+                       :world/state (into {} (map (fn [path] [path (rtp/get-state world path)]))
+                                          (:state portable))
+                       :world/systems (snapshot-ids world)
+                       :world/pinned (pinned-versions world)}
+                 data (assoc body
+                             :savepoint/id (h/content-hash body)
+                             :savepoint/address (:savepoint/address sp))
+                 authority (:authority @(:scope (sp/session world)))
+                 escrowed-path [:savepoint/escrowed]]
+             (cond
+               (not (and escrow? authority))
+               (resolve data)
 
               ;; this world's wallet already left with this id
-              (contains? (rtp/get-state world escrowed-path) (:savepoint/id data))
-              (resolve (assoc data :world/escrow? true))
+               (contains? (rtp/get-state world escrowed-path) (:savepoint/id data))
+               (resolve (assoc data :world/escrow? true))
 
-              :else
-              (invoke! #(world-scope/escrow! authority world (:savepoint/id data))
-                       (fn [_]
-                         (rtp/swap-state! world escrowed-path
-                                          (fn [ids] (conj (or ids #{}) (:savepoint/id data))))
-                         (resolve (assoc data :world/escrow? true)))
-                       reject))))
-        (catch #?(:clj Throwable :cljs :default) error
-          (reject error)))))))
+               :else
+               (invoke! #(world-scope/escrow! authority world (:savepoint/id data))
+                        (fn [_]
+                          (rtp/swap-state! world escrowed-path
+                                           (fn [ids] (conj (or ids #{}) (:savepoint/id data))))
+                          (resolve (assoc data :world/escrow? true)))
+                        reject))))
+         (catch #?(:clj Throwable :cljs :default) error
+           (reject error)))))))
 
 (defn- resolve-fn [sym]
   #?(:clj (or (some-> (requiring-resolve sym) deref)

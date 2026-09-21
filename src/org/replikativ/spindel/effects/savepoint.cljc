@@ -310,7 +310,7 @@
                                    :retain-released? retain-released?})
         lease (world-scope/begin-activity! scope :savepoint/session)
         value (->Session (random-uuid) scope lease world
-                        (atom false) (atom false) (atom {}) (atom #{}))]
+                         (atom false) (atom false) (atom {}) (atom #{}))]
     (rtp/swap-state! world [:savepoint/session] (constantly value))
     (rtp/swap-state! world [:savepoint/seed] (constantly (or seed (random-uuid))))
     (install-handlers! world (or handlers {}))
@@ -661,28 +661,28 @@
     (fn [resolve reject]
       (try
         (let [[resolve reject] (in-callers-world resolve reject)]
-        (reset! (:closing? session-value) true)
-        (let [worlds (world-scope/activity-values scope :savepoint/world)]
-          (world-scope/request-cancel! scope)
-          (doseq [world worlds]
-            (let [waiting (pending world)]
-              (if (seq waiting)
-                (doseq [sp waiting]
-                  (try (abandon sp)
-                       (catch #?(:clj Throwable :cljs :default) error
-                         (when-not (= ::not-pending (:type (ex-data error)))
-                           (log/error :savepoint/abandon-failed {:error error})))))
-                (when-let [task (rtp/get-state world [:savepoint/task])]
-                  (try
-                    (binding [ec/*execution-context* world]
-                      (spin-core/cancel-spin! task))
-                    (catch #?(:clj Throwable :cljs :default) error
-                      (log/error :savepoint/cancel-failed {:error error})))))))
-          (world-scope/end-activity! scope (:lease session-value))
-          ((world-scope/await-quiescence scope)
-           (fn [_]
+          (reset! (:closing? session-value) true)
+          (let [worlds (world-scope/activity-values scope :savepoint/world)]
+            (world-scope/request-cancel! scope)
+            (doseq [world worlds]
+              (let [waiting (pending world)]
+                (if (seq waiting)
+                  (doseq [sp waiting]
+                    (try (abandon sp)
+                         (catch #?(:clj Throwable :cljs :default) error
+                           (when-not (= ::not-pending (:type (ex-data error)))
+                             (log/error :savepoint/abandon-failed {:error error})))))
+                  (when-let [task (rtp/get-state world [:savepoint/task])]
+                    (try
+                      (binding [ec/*execution-context* world]
+                        (spin-core/cancel-spin! task))
+                      (catch #?(:clj Throwable :cljs :default) error
+                        (log/error :savepoint/cancel-failed {:error error})))))))
+            (world-scope/end-activity! scope (:lease session-value))
+            ((world-scope/await-quiescence scope)
+             (fn [_]
              ;; request-cancel! discards on quiescence; joining is idempotent.
-             ((world-scope/discard! scope) resolve reject))
-           reject)))
+               ((world-scope/discard! scope) resolve reject))
+             reject)))
         (catch #?(:clj Throwable :cljs :default) error
           (reject error))))))
