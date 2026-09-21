@@ -647,7 +647,8 @@
           serializable-state (dissoc state :track-subscriptions :await-conts :listeners
                                      :savepoint/session :savepoint/handlers
                                      :savepoint/pending :savepoint/task
-                                     :savepoint/ended :savepoint/trace)]
+                                     :savepoint/ended :savepoint/trace
+                                     :savepoint/escrowed)]
       (pr-str {:state serializable-state
                :metadata (:metadata backend)}))))
 

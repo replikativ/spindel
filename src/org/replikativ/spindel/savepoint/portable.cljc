@@ -68,11 +68,21 @@
   hash (a prefix identity that is the same across runs and machines). Throws
   when `sp` is not pending or names no `:resume`.
 
-  With a resource authority on the session, what is left in the world's
-  wallet moves into an escrow named by that id, so the authority cannot be
-  spent both here and wherever the data is hydrated. Returns a CPS operation
-  resolving the data."
-  [sp]
+  The id covers what the computation is (site, resume function, arguments,
+  payload) and what it starts from (state, seed, systems, pinned versions),
+  not where the site is in the source: an address moves with every edit.
+  Values that do not hash the same everywhere (functions, objects; an integral
+  double between the JVM and JavaScript) make an id that is only local.
+
+  `{:escrow? true}`, with a resource authority on the session: what is left
+  in the world's wallet moves into an escrow named by the id, and hydration
+  brings it along. The world here is then left with NOTHING to spend or to
+  grant, whether or not the data is ever hydrated; that is what conservation
+  costs. The first persisted savepoint of a world takes its wallet, persisting
+  it again takes nothing more, and without the option the data hydrates
+  unfunded. Returns a CPS operation resolving the data."
+  ([sp] (persist sp nil))
+  ([sp {:keys [escrow?]}]
   (fn [resolve reject]
     (let [[resolve reject] (sp/in-callers-world resolve reject)]
       (try
@@ -86,7 +96,6 @@
                             {:type ::not-portable
                              :savepoint/site (:savepoint/site sp)})))
           (let [body {:savepoint/site (:savepoint/site sp)
-                      :savepoint/address (:savepoint/address sp)
                       :savepoint/seq (:savepoint/seq sp)
                       :savepoint/payload (:savepoint/payload sp)
                       :savepoint/resume (select-keys portable [:fn :args])
@@ -95,15 +104,28 @@
                                          (:state portable))
                       :world/systems (snapshot-ids world)
                       :world/pinned (pinned-versions world)}
-                data (assoc body :savepoint/id (h/content-hash body))
-                authority (:authority @(:scope (sp/session world)))]
-            (if authority
+                data (assoc body
+                            :savepoint/id (h/content-hash body)
+                            :savepoint/address (:savepoint/address sp))
+                authority (:authority @(:scope (sp/session world)))
+                escrowed-path [:savepoint/escrowed]]
+            (cond
+              (not (and escrow? authority))
+              (resolve data)
+
+              ;; this world's wallet already left with this id
+              (contains? (rtp/get-state world escrowed-path) (:savepoint/id data))
+              (resolve (assoc data :world/escrow? true))
+
+              :else
               (invoke! #(world-scope/escrow! authority world (:savepoint/id data))
-                       (fn [_] (resolve (assoc data :world/escrow? true)))
-                       reject)
-              (resolve data))))
+                       (fn [_]
+                         (rtp/swap-state! world escrowed-path
+                                          (fn [ids] (conj (or ids #{}) (:savepoint/id data))))
+                         (resolve (assoc data :world/escrow? true)))
+                       reject))))
         (catch #?(:clj Throwable :cljs :default) error
-          (reject error))))))
+          (reject error)))))))
 
 (defn- resolve-fn [sym]
   #?(:clj (or (some-> (requiring-resolve sym) deref)
@@ -138,31 +160,54 @@
         {:fork-opts (when (seq (:world/systems data))
                       {:snapshots (:world/systems data)})}
         (fn [{world :child-ctx}]
-          (letfn [(run! []
-                    (try
-                      (doseq [[path v] (:world/state data)]
-                        (rtp/swap-state! world path (constantly v)))
-                      (rtp/swap-state! world [:savepoint/seed] (constantly (:world/seed data)))
-                      (rtp/swap-state! world [:savepoint/seq]
-                                       (constantly (inc (:savepoint/seq data))))
-                      (binding [ec/*execution-context* world]
-                        (doseq [[id version] (:world/pinned data)]
-                          (component/repin! (component/->ComponentRef id) version)))
-                      (when child-handlers
-                        (sp/install-handlers! world child-handlers))
-                      (let [{f :fn args :args} (:savepoint/resume data)
-                            task (binding [ec/*execution-context* world]
-                                   (apply ((or resolve-sym resolve-fn) f) (conj (vec args) value)))]
-                        (sp/start-in! session world task)
-                        (resolve world))
-                      (catch #?(:clj Throwable :cljs :default) error
-                        (sp/release-world! session world)
-                        (reject error))))]
-            (if (and authority (:world/escrow? data))
+          (letfn [(prepare! []
+                    ;; The host may have run computations of its own. Their
+                    ;; bookkeeping is not this world's: an inherited end would
+                    ;; swallow this computation's terminal, inherited pending
+                    ;; entries would be abandoned here on close.
+                    (doseq [path [[:savepoint/pending] [:savepoint/ended]
+                                  [:savepoint/task] [:savepoint/trace]
+                                  [:savepoint/escrowed]]]
+                      (rtp/swap-state! world path (constantly nil)))
+                    (doseq [[path v] (:world/state data)]
+                      (rtp/swap-state! world path (constantly v)))
+                    ;; as a fork of the savepoint would get: a seed of its own
+                    (rtp/swap-state! world [:savepoint/seed]
+                                     (constantly
+                                      (sp/derive-seed (:world/seed data)
+                                                      (:savepoint/address data)
+                                                      [:hydrated (:fork-id world)])))
+                    (rtp/swap-state! world [:savepoint/seq]
+                                     (constantly (inc (:savepoint/seq data))))
+                    (binding [ec/*execution-context* world]
+                      (doseq [[id version] (:world/pinned data)]
+                        (component/repin! (component/->ComponentRef id) version)))
+                    (when child-handlers
+                      (sp/install-handlers! world child-handlers))
+                    (let [{f :fn args :args} (:savepoint/resume data)
+                          task (binding [ec/*execution-context* world]
+                                 (apply ((or resolve-sym resolve-fn) f) (conj (vec args) value)))]
+                      (sp/start-in! session world task)))
+                  (run! []
+                    ;; decide inside the try, settle outside it
+                    (let [error (try (prepare!) nil
+                                     (catch #?(:clj Throwable :cljs :default) error error))]
+                      (if error
+                        (do (sp/release-world! session world)
+                            (reject error))
+                        (resolve world))))]
+            (cond
+              (not (:world/escrow? data)) (run!)
+
+              (nil? authority)
+              (do (sp/release-world! session world)
+                  (reject (ex-info "The data brings an escrow and the session has no authority to claim it"
+                                   {:type ::no-authority :savepoint/id (:savepoint/id data)})))
+
+              :else
               (invoke! #(world-scope/claim! authority (:savepoint/id data) world)
                        (fn [_] (run!))
                        (fn [error]
                          (sp/release-world! session world)
-                         (reject error)))
-              (run!))))
+                         (reject error))))))
         reject)))))

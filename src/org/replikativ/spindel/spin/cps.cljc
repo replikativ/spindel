@@ -139,11 +139,7 @@
             ;; Otherwise, establish trampoline to unwrap Thunks from loop/recur
             (if (async/in-trampoline?)
               ~(ioc/invert params expanded)
-              (binding [async/*in-trampoline* (async/trampoline-token)]
-                (loop [result# ~(ioc/invert params expanded)]
-                  (if (instance? ~thunk-sym result#)
-                    (recur ((.-f result#)))
-                    result#))))
+              (async/with-trampoline ~(ioc/invert params expanded)))
             (catch ~(if is-cljs? :default `Throwable) t# (~e t#)))))))
 
 #?(:clj

@@ -351,6 +351,10 @@
   "Remove a tap from mult."
   pubsub-mult/untap)
 
+(def start-mult!
+  "Start pulling a mult's source now, without waiting for a tap to be consumed."
+  pubsub-mult/start!)
+
 (def pub
   "Create a pub over source with topic-based routing."
   pubsub-pub/pub)
@@ -362,6 +366,10 @@
 (def unsub
   "Unsubscribe from a topic."
   pubsub-pub/unsub)
+
+(def start-pub!
+  "Start routing a pub now, without waiting for a subscriber to consume."
+  pubsub-pub/start!)
 
 (def partitioned
   "Create a hash-partitioned fan-out from source to N (power-of-2) partitions.

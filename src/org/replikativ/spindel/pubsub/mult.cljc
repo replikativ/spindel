@@ -344,7 +344,12 @@
   [mult]
   (let [{:keys [pump-started-atom context-atom on-start]} mult]
     (when (compare-and-set! pump-started-atom false true)
-      (when on-start (on-start))
+      ;; a hook that fails must not leave a mult that is marked started and
+      ;; has no pump
+      (when on-start
+        (try (on-start)
+             (catch #?(:clj Throwable :cljs :default) error
+               (report-fault! ::on-start-failed {:reason error}))))
       (binding [ec/*execution-context* (or @context-atom (ec/current-execution-context))]
         (start-pump! mult)))))
 
@@ -360,7 +365,9 @@
   PMult
   (tap* [mult tap-id buffer close?]
     (let [{:keys [taps-atom context-atom]} mult
-          _ (compare-and-set! context-atom nil (ec/current-execution-context))
+          ;; the var, not the accessor: a later tap may be made outside any
+          ;; bound context, and only the first one has to supply it
+          _ (compare-and-set! context-atom nil ec/*execution-context*)
           tap-state-atom (atom (create-tap-state buffer close?))
           tap-seq (->TapSeq mult tap-id tap-state-atom)]
       ;; Register tap

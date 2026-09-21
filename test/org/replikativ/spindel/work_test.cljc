@@ -6,6 +6,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.spin.combinators :as comb]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.test-helpers :as h]
             [org.replikativ.spindel.work :as work]
@@ -455,3 +456,29 @@
                  (is (= submit-count (:ingress (work/snapshot admission))))
                  (is (<= submit-count 1))
                  (is (nil? (work/submit! admission :late :late)))))))))))
+
+(deftest events-are-a-hot-stream-without-observers
+  ;; The controller's event bus must pull whether or not anybody observes: an
+  ;; observer sees what is emitted after it attaches, never a backlog, and the
+  ;; event mailbox does not grow while nobody listens.
+  (h/async-test [ctx done]
+                (let [admission (work/serial (fn [value] (work/task value)))]
+                  ;; work that nobody observes
+                  (work/submit! admission :unobserved :a)
+                  (h/run-spin!
+                   (spin
+                    ;; let the unobserved work run through
+                    (await (comb/sleep 150))
+                    (let [late (collect-events (work/events admission) 4)]
+                      (work/submit! admission :observed :b)
+                      (work/close! admission)
+                      (await late)))
+                   (fn [events]
+                     (is (= [:observed :observed :observed]
+                            (mapv :work/id (butlast events)))
+                         "only what was emitted after attaching")
+                     (is (= :work/controller-closed (:work/event (last events))))
+                     (done))
+                   (fn [error]
+                     (is false (str error))
+                     (done))))))

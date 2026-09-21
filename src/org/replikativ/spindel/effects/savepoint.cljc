@@ -218,10 +218,10 @@
 
 (defn- release-now! [session-value world]
   ;; the fork indices of its sites are of no use once it is gone
-  (let [world-seed (seed world)]
+  (let [id (world-id world)]
     (swap! (:fork-indices session-value)
            (fn [indices]
-             (reduce dissoc indices (filter #(= world-seed (first %)) (keys indices))))))
+             (reduce dissoc indices (filter #(= id (first %)) (keys indices))))))
   ((world-scope/release! (:scope session-value) world)
    (constantly nil)
    (fn [error]
@@ -476,25 +476,49 @@
 (defn- current-drain []
   #?(:clj (.get ^ThreadLocal draining) :cljs @draining))
 
+(def ^:private drain-batch
+  "How many queued continuations one task runs before handing the rest back to
+  the executor, so a long chain does not keep a pool thread to itself."
+  256)
+
 (defn- trampolined!
   "Run `thunk` as savepoint work of `executor` on this thread, then whatever it
-  queued."
+  queued. A continuation that throws does not take the queued ones with it:
+  they still run, and the first error is rethrown at the end."
   [executor thunk]
   (let [install! (fn [value]
-                   #?(:clj (.set ^ThreadLocal draining value)
+                   #?(:clj (if (nil? value)
+                             (.remove ^ThreadLocal draining)
+                             (.set ^ThreadLocal draining value))
                       :cljs (vreset! draining value)))
         outer (current-drain)
         queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
-                            :cljs cljs.core/PersistentQueue.EMPTY))]
+                            :cljs cljs.core/PersistentQueue.EMPTY))
+        failure (volatile! nil)
+        guarded (fn [f]
+                  (try (f)
+                       (catch #?(:clj Throwable :cljs :default) error
+                         (when-not @failure (vreset! failure error)))))]
     (install! {:executor executor :queue queue})
     (try
-      (thunk)
-      (loop []
+      (guarded thunk)
+      (loop [ran 0]
         (when-let [next-thunk (peek @queue)]
-          (vswap! queue pop)
-          (next-thunk)
-          (recur)))
-      (finally (install! outer)))))
+          (if (< ran drain-batch)
+            (do (vswap! queue pop)
+                (guarded next-thunk)
+                (recur (inc ran)))
+            ;; hand the tail back, in order
+            (let [tail @queue]
+              (vreset! queue (empty tail))
+              (execute! executor
+                        (fn [] (trampolined!
+                                executor
+                                ;; re-queue, so each one is guarded by itself
+                                (fn [] (vswap! (:queue (current-drain)) into tail)))))))))
+      (finally (install! outer)))
+    (when-let [error @failure]
+      (throw error))))
 
 (defn- schedule!
   "Run `thunk` on `executor`: behind the current continuation when this thread
@@ -551,7 +575,7 @@
           (trampolined! inline #(reject! (assoc world :executor inline))))))
     nil))
 
-(defn- derive-seed [parent-seed address index]
+(defn ^:no-doc derive-seed [parent-seed address index]
   (h/content-hash [:savepoint/seed parent-seed address index]))
 
 (defn fork
@@ -587,40 +611,45 @@
          :else
          (let [scope (:scope session-value)
                ;; Process-local, so that forking leaves its source untouched.
-               ;; Seeds are unique per world, hence so is the key.
-               index-key [(seed world) address]
+               index-key [(world-id world) address]
                index (dec (get (swap! (:fork-indices session-value)
                                       update index-key (fnil inc 0))
                                index-key))]
            (world-scope/fork!
             scope world {:grant grant}
             (fn [{:keys [child-ctx]}]
-              (try
-                ;; The child is the world as it was when the fork read it. A
-                ;; resume or abandon that won in between leaves nothing to
-                ;; continue there; that fork never becomes a live world.
-                (if-let [entry (live-entry child-ctx address)]
+              ;; Decide inside the try, settle outside it: what the caller's
+              ;; continuation throws is the caller's, not a failed fork.
+              (let [outcome
+                    (try
+                      ;; The child is the world as it was when the fork read
+                      ;; it. A resume or abandon that won in between leaves
+                      ;; nothing to continue there; that fork never becomes a
+                      ;; live world.
+                      (if-let [entry (live-entry child-ctx address)]
+                        (do
+                          (world-scope/begin-activity! scope :savepoint/world child-ctx
+                                                       (world-id child-ctx))
+                          (rtp/swap-state! child-ctx [:savepoint/seed]
+                                           (constantly (or child-seed
+                                                           (derive-seed (seed world) address index))))
+                          (when child-handlers
+                            (install-handlers! child-ctx child-handlers))
+                          {:ok (attach child-ctx entry)})
+                        {:error (ex-info "Cannot fork a savepoint that is not pending"
+                                         {:type ::not-pending
+                                          :operation :fork
+                                          :savepoint/address address})})
+                      (catch #?(:clj Throwable :cljs :default) error
+                        {:error error}))]
+                (if (contains? outcome :ok)
+                  (resolve (:ok outcome))
                   (do
-                    (world-scope/begin-activity! scope :savepoint/world child-ctx
-                                                 (world-id child-ctx))
-                    (rtp/swap-state! child-ctx [:savepoint/seed]
-                                     (constantly (or child-seed
-                                                     (derive-seed (seed world) address index))))
-                    (when child-handlers
-                      (install-handlers! child-ctx child-handlers))
-                    (resolve (attach child-ctx entry)))
-                  (do
-                    ;; A world of the scope with nothing to run; it may hold
-                    ;; a grant. It has no lease, so it can go back now.
+                    ;; A world of the scope with nothing to run; it may hold a
+                    ;; grant or a lease. Give both back.
+                    (world-scope/end-activity! scope (world-id child-ctx))
                     (release-world! session-value child-ctx)
-                    (reject (ex-info "Cannot fork a savepoint that is not pending"
-                                     {:type ::not-pending
-                                      :operation :fork
-                                      :savepoint/address address}))))
-                (catch #?(:clj Throwable :cljs :default) error
-                  (when-not (contains? (:activities @scope) (world-id child-ctx))
-                    (release-world! session-value child-ctx))
-                  (reject error))))
+                    (reject (:error outcome))))))
             reject)))))))
 
 (defn close!

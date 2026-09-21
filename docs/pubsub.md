@@ -59,6 +59,14 @@ source that must be drained regardless, start pulling explicitly:
 subscriber, or at `(pub/start! p)`. A subscription to a pub whose source is
 exhausted ends at once.
 
+One consequence for backpressure. A subscription that is made and never
+consumed does not pump its topic, so once routing runs (another subscriber
+consumes) its items queue up in the topic instead of filling its buffer and
+blocking the pub. That removes head-of-line blocking across topics, at the
+price of memory for a subscriber that never reads; `pub/start!` gives the
+buffer-and-block behaviour. A subscription made while the pub is already
+routing starts its topic at once, as before.
+
 ### Lifecycle
 
 ```clojure

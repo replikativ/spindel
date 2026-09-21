@@ -59,7 +59,7 @@
         (do (sp/resume event (answer (:turn (:savepoint/payload event))))
             (recur))))))
 
-(deftest hydrating-a-persisted-savepoint-is-resuming-a-fork-of-it
+(deftest hydrating-gives-what-resuming-a-fork-gives
   (let [root (context/create-execution-context)
         events (java.util.concurrent.LinkedBlockingQueue.)
         session (sp/open! root {:seed 7 :fork-opts {:systems :none}
@@ -163,13 +163,18 @@
                                 :handlers {sp/any-site #(.put events %)}})]
     (try
       (sp/start! session (binding [ec/*execution-context* root] (conversation 0)))
-      (let [data (await-cps (portable/persist (take! events)))
+      (let [site (take! events)
+            data (await-cps (portable/persist site {:escrow? true}))
             total #(+ (reduce + (vals (:wallets @ledger))) (reduce + (vals (:escrow @ledger))))]
         (is (= 10 (get-in @ledger [:escrow (:savepoint/id data)])))
         (is (zero? (get-in @ledger [:wallets (:fork-id root)])) "the world kept nothing")
         (let [world (await-cps (portable/hydrate! session data :x))]
           (is (= 10 (get-in @ledger [:wallets (:fork-id world)])))
           (is (= 10 (total))))
+        (testing "persisting again takes nothing more, and loses nothing"
+          (let [again (await-cps (portable/persist site {:escrow? true}))]
+            (is (= (:savepoint/id data) (:savepoint/id again)))
+            (is (= 10 (total)))))
         (testing "the same data cannot bring the authority a second time"
           (let [outcome (try (await-cps (portable/hydrate! session data :x))
                              (catch Throwable error error))]
@@ -179,3 +184,73 @@
       (finally
         (await-cps (sp/close! session))
         (context/stop-context! root)))))
+
+(defn- run-to-turn-1!
+  "A fresh session whose conversation is suspended at turn 1."
+  [seed]
+  (let [root (context/create-execution-context)
+        events (java.util.concurrent.LinkedBlockingQueue.)
+        session (sp/open! root {:seed seed :fork-opts {:systems :none}
+                                :handlers {sp/any-site #(.put events %)}})]
+    (sp/start! session (binding [ec/*execution-context* root] (conversation 0)))
+    (sp/resume (take! events) :a0)
+    {:root root :events events :session session :turn-1 (take! events)}))
+
+(defn- close-all! [{:keys [root session]}]
+  (await-cps (sp/close! session))
+  (context/stop-context! root))
+
+(deftest only-declared-state-travels-to-another-process
+  (let [source (run-to-turn-1! 7)
+        ;; state the savepoint does NOT declare
+        _ (rtp/swap-state! (:savepoint/world (:turn-1 source)) [:undeclared] (constantly :source-only))
+        data (await-cps (portable/persist (:turn-1 source)))
+        ;; a session that never ran this conversation: "another process"
+        host-root (context/create-execution-context)
+        host-events (java.util.concurrent.LinkedBlockingQueue.)
+        host (sp/open! host-root {:fork-opts {:systems :none}
+                                  :handlers {sp/any-site #(.put host-events %)}})]
+    (try
+      (let [world (await-cps (portable/hydrate! host (edn/read-string (pr-str data)) :b1))]
+        (is (= [[0 :a0] [1 :b1] [2 :b2]]
+               (drive! host-events (fn [k] (keyword (str "b" k))))))
+        (is (nil? (rtp/get-state world [:undeclared]))))
+      (testing "the id names the computation, not the run it was taken from"
+        (let [other (run-to-turn-1! 7)]
+          (try
+            (is (= (:savepoint/id data)
+                   (:savepoint/id (await-cps (portable/persist (:turn-1 other))))))
+            (finally (close-all! other)))))
+      (finally
+        (close-all! source)
+        (await-cps (sp/close! host))
+        (context/stop-context! host-root)))))
+
+(deftest a-host-that-already-finished-a-computation-can-still-hydrate
+  ;; The hydrated world is a fork of the host root. A root that has ended
+  ;; carries its end, and a root that is suspended carries pending savepoints;
+  ;; neither is the hydrated computation's.
+  (let [source (run-to-turn-1! 7)
+        data (await-cps (portable/persist (:turn-1 source)))
+        {:keys [events session] :as host} (run-to-turn-1! 8)]
+    (try
+      ;; finish the host's own conversation
+      (sp/resume (:turn-1 host) :h1)
+      (is (= [[0 :a0] [1 :h1] [2 :h2]] (drive! events (fn [k] (keyword (str "h" k))))))
+      (let [world (await-cps (portable/hydrate! session data :b1))]
+        (is (empty? (remove #(= 2 (:turn (:savepoint/payload %))) (sp/pending world)))
+            "nothing of the host's is pending in it")
+        (is (= [[0 :a0] [1 :b1] [2 :b2]] (drive! events (fn [k] (keyword (str "b" k)))))
+            "and it ends, with a terminal event of its own"))
+      (finally
+        (close-all! source)
+        (close-all! host)))))
+
+(deftest an-escrow-needs-an-authority-to-arrive
+  (let [source (run-to-turn-1! 7)
+        data (assoc (await-cps (portable/persist (:turn-1 source))) :world/escrow? true)]
+    (try
+      (is (= ::portable/no-authority
+             (:type (ex-data (try (await-cps (portable/hydrate! (:session source) data :x))
+                                  (catch Throwable error error))))))
+      (finally (close-all! source)))))

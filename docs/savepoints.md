@@ -475,7 +475,7 @@ what a budget is, so the rule is a hook on the scope, not a dependency
   continues from a site once, so the pair is unique. A ledger that
   deduplicates by id (kontor does) would otherwise see the second fork of a
   savepoint as a replay of the first and silently not charge it.
-- **`persist` escrows.** A portable savepoint that
+- **`persist` escrows, when asked.** A portable savepoint that
   names a wallet is authority that could be hydrated twice. `persist` moves
   the world's remainder into an escrow keyed by the savepoint's content hash
   (`escrow!`), which hydration claims once (`claim!`).
@@ -526,10 +526,29 @@ state: the named function starts a *new* computation, and what it needs from
 the old one the program declares. The portable form is small, is data, and its
 content hash is a prefix identity that is the same across runs and machines.
 
-`persist` does not consume the savepoint. With a resource authority it moves
-what is left in the world's wallet into an escrow named by the content hash,
-and `hydrate!` claims it, once: the second hydration of the same data is
-rejected. Without that the authority would exist both here and there.
+`persist` does not consume the savepoint. `(persist sp {:escrow? true})`, with
+a resource authority, moves what is left in the world's wallet into an escrow
+named by the content hash, and `hydrate!` claims it, once: the second
+hydration of the same data is rejected. The world here is then left with
+nothing to spend or to grant, whether or not the data is ever hydrated; that
+is what conservation costs, which is why it is opt-in. Without the option the
+data hydrates unfunded.
+
+The hydrated world is a fork of the host root, so it inherits the host's
+state. `hydrate!` clears the savepoint bookkeeping it would otherwise carry
+(the host's pending savepoints, its end, its trace) and gives the world a seed
+of its own, as a fork of the savepoint would get. What else the host root
+holds under undeclared paths is visible there; a host meant for hydration
+should be a world that runs nothing itself.
+
+Limits. The content id excludes the site's address, which moves with every
+edit of the source, and is stable across runs and machines only for values
+that hash alike everywhere: no functions or objects in payload or state, and
+an integral double hashes differently on the JVM and in JavaScript. Snapshot
+ids are read synchronously, which holds on the JVM; in ClojureScript `persist`
+refuses a world with registered systems. Site addresses in a hydrated world
+differ from those of the in-process fork (its spins are new), so law 5 is
+about what the computation does, not about how its sites are named.
 
 Replay-based hydration (rebuild, exists today) remains the way to restore a
 whole reactive context whose bodies are replay-safe; it needs no annotation

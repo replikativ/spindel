@@ -203,7 +203,7 @@
   PPub
   (sub* [pub topic buffer close?]
     (let [{:keys [mults-atom pump-started-atom closed-atom context-atom]} pub
-          _ (compare-and-set! context-atom nil (ec/current-execution-context))
+          _ (compare-and-set! context-atom nil ec/*execution-context*)
           ;; The pump starts when a subscriber first DEMANDS an item, not when
           ;; the first subscription is made: every subscription made before
           ;; anybody consumes then sees every item. Starting at the first `sub`
