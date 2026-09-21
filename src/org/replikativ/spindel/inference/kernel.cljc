@@ -237,12 +237,14 @@
 (defprotocol PInferenceKernel
   "Protocol for kernels that operate at checkpoints during program execution.
 
-  Unlike PKernel (which transforms measures post-hoc), PInferenceKernel
-  controls execution at each random variable/observation point:
+  Unlike PKernel (which transforms measures post-hoc), a PInferenceKernel
+  decides what value to assign at each random variable/observation point of a
+  particle the KernelCoordinator drives.
 
-  - Decides what value to assign at the current checkpoint
-  - Can modify previously assigned values (triggering re-execution)
-  - Controls iteration after program completes"
+  Markov-chain kernels (`single-site-mh-kernel`, `random-walk-mh-kernel`,
+  `block-gibbs-kernel`) implement `kernel-id` only: they are descriptions that
+  `inference/kernel-infer` runs as replay plus accept over traces
+  (`inference.trace`), not through the coordinator."
 
   (kernel-id [this]
     "Unique identifier for this kernel type (e.g., :prior, :single-site-mh).")
@@ -250,17 +252,13 @@
   (step [this ctx checkpoint trace]
     "Process a checkpoint with the current trace.
 
-    Returns one of:
-      {:action :assign, :value v}
-      {:action :modify, :updates {addr new-value, ...}}
-      {:action :assign-and-modify, :value v, :updates {addr new-value, ...}}")
+    Returns {:action :assign, :value v}.")
 
   (on-complete [this ctx trace result]
     "Called when program execution completes.
 
-    Returns one of:
-      {:action :done, :trace trace, :result result, :log-weight w}
-      {:action :iterate, :updates {addr new-value, ...}}"))
+    Returns {:action :done, :trace trace, :result result, :log-weight w}, or
+    {:action :iterate} to run the whole program again in place."))
 
 ;; =============================================================================
 ;; PriorKernel - Simple Forward Sampling (Importance Sampling)
@@ -295,138 +293,9 @@
 ;; SingleSiteMHKernel - Lightweight Metropolis-Hastings
 ;; =============================================================================
 
-(defn- get-mcmc-state
-  [ctx]
-  (or (rtp/get-state ctx [:inference :mcmc])
-      {:completed-iterations 0
-       :accepted-trace nil
-       :accepted-log-weight 0.0
-       :accepted-result nil
-       :pending-proposal? false}))
-
-(defn- set-mcmc-state!
-  [ctx state]
-  (rtp/swap-state! ctx [:inference :mcmc] (constantly state)))
-
 (defrecord SingleSiteMHKernel [num-iterations]
   PInferenceKernel
-
-  (kernel-id [_] :single-site-mh)
-
-  (step [_this ctx checkpoint trace]
-    (let [{:keys [source options address]} checkpoint
-          {:keys [observe init]} options]
-      (cond
-        (some? observe)
-        {:action :assign, :value observe}
-
-        (not (contains? trace address))
-        {:action :assign, :value (if (some? init) init (ar/sample* source))}
-
-        :else
-        {:action :assign, :value (get-in trace [address :value])})))
-
-  (on-complete [_this ctx trace result]
-    (let [current-log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)
-          mcmc-state (get-mcmc-state ctx)
-          {:keys [completed-iterations accepted-trace accepted-log-weight
-                  accepted-result pending-proposal?]} mcmc-state]
-
-      (cond
-        ;; First run - establish baseline
-        (nil? accepted-trace)
-        (let [new-state {:completed-iterations 0
-                         :accepted-trace trace
-                         :accepted-log-weight current-log-weight
-                         :accepted-result result
-                         :pending-proposal? false}]
-
-          (log/debug :mh/first-run {:log-weight current-log-weight
-                                    :trace-size (count trace)})
-
-          (if (>= 0 num-iterations)
-            (do
-              (set-mcmc-state! ctx new-state)
-              {:action :done
-               :trace trace
-               :result result
-               :log-weight current-log-weight})
-
-            (let [sample-addrs (vec (keys (filter (fn [[_ entry]] (not (:observed? entry))) trace)))]
-              (if (empty? sample-addrs)
-                (do
-                  (set-mcmc-state! ctx new-state)
-                  {:action :done
-                   :trace trace
-                   :result result
-                   :log-weight current-log-weight})
-
-                (let [addr (m/pick-uniformly sample-addrs)
-                      entry (get trace addr)
-                      proposed (ar/sample* (:distribution entry))]
-
-                  (set-mcmc-state! ctx (assoc new-state :pending-proposal? true))
-
-                  (log/debug :mh/propose {:iteration 0
-                                          :addr addr
-                                          :old-value (:value entry)
-                                          :proposed proposed})
-                  {:action :iterate
-                   :updates {addr proposed}})))))
-
-        ;; Evaluating a proposal
-        pending-proposal?
-        (let [log-accept-ratio (- current-log-weight accepted-log-weight)
-              u (Math/log (m/uniform01))
-              accept? (or (>= log-accept-ratio 0)
-                          (< u log-accept-ratio))
-              new-completed (inc completed-iterations)
-
-              new-accepted-trace (if accept? trace accepted-trace)
-              new-accepted-log-weight (if accept? current-log-weight accepted-log-weight)
-              new-accepted-result (if accept? result accepted-result)]
-
-          (log/debug :mh/acceptance {:iteration completed-iterations
-                                     :log-accept-ratio log-accept-ratio
-                                     :accept? accept?
-                                     :current-log-weight current-log-weight
-                                     :accepted-log-weight accepted-log-weight})
-
-          (if (>= new-completed num-iterations)
-            (do
-              (set-mcmc-state! ctx {:completed-iterations new-completed
-                                    :accepted-trace new-accepted-trace
-                                    :accepted-log-weight new-accepted-log-weight
-                                    :accepted-result new-accepted-result
-                                    :pending-proposal? false})
-              {:action :done
-               :trace new-accepted-trace
-               :result new-accepted-result
-               :log-weight new-accepted-log-weight})
-
-            (let [sample-addrs (vec (keys (filter (fn [[_ entry]] (not (:observed? entry))) new-accepted-trace)))
-                  addr (m/pick-uniformly sample-addrs)
-                  entry (get new-accepted-trace addr)
-                  proposed (ar/sample* (:distribution entry))]
-
-              (set-mcmc-state! ctx {:completed-iterations new-completed
-                                    :accepted-trace new-accepted-trace
-                                    :accepted-log-weight new-accepted-log-weight
-                                    :accepted-result new-accepted-result
-                                    :pending-proposal? true})
-
-              (log/debug :mh/propose {:iteration new-completed
-                                      :addr addr
-                                      :old-value (:value entry)
-                                      :proposed proposed})
-
-              {:action :iterate
-               :updates {addr proposed}})))
-
-        :else
-        (throw (ex-info "Unexpected on-complete state in SingleSiteMHKernel"
-                        {:trace trace
-                         :mcmc-state mcmc-state}))))))
+  (kernel-id [_] :single-site-mh))
 
 (defn single-site-mh-kernel
   "Create SingleSiteMHKernel for lightweight Metropolis-Hastings."
@@ -438,183 +307,21 @@
 ;; RandomWalkMHKernel
 ;; =============================================================================
 
-(defn- get-rw-mcmc-state
-  [ctx]
-  (or (rtp/get-state ctx [:inference :rw-mcmc])
-      {:completed-iterations 0
-       :accepted-trace nil
-       :accepted-log-weight 0.0
-       :accepted-result nil
-       :pending-proposal? false
-       :acceptance-count 0}))
-
-(defn- set-rw-mcmc-state!
-  [ctx state]
-  (rtp/swap-state! ctx [:inference :rw-mcmc] (constantly state)))
-
-(defn- continuous-sample-addrs
-  [trace]
-  (vec (keys (filter (fn [[_ entry]]
-                       (and (not (:observed? entry))
-                            true))
-                     trace))))
-
 (defn- random-walk-propose
   [current-value step-size]
   (+ current-value (* step-size (ar/sample* (ar/normal 0 1)))))
 
-(defn- log-prior
-  "Sum of the prior log-density over the trace's unobserved sites. Every
-  resume stores the site's `:log-prob`; the log-weight holds only the
-  observe terms. A symmetric random-walk proposal needs the JOINT in its
-  accept ratio — the prior does not cancel as it does for a prior-proposal
-  kernel — and without it a step outside a bounded prior's support was
-  accepted (measured: d₀ = 2037 m under U(200, 2000))."
-  [trace]
-  (reduce + 0.0 (keep (fn [[_ e]] (when-not (:observed? e) (:log-prob e))) trace)))
-
 (defrecord RandomWalkMHKernel [num-iterations step-size]
   PInferenceKernel
-
-  (kernel-id [_] :random-walk-mh)
-
-  (step [_this ctx checkpoint trace]
-    (let [{:keys [source options address]} checkpoint
-          {:keys [observe init]} options]
-      (cond
-        (some? observe)
-        {:action :assign, :value observe}
-
-        (not (contains? trace address))
-        {:action :assign, :value (if (some? init) init (ar/sample* source))}
-
-        :else
-        {:action :assign, :value (get-in trace [address :value])})))
-
-  (on-complete [_this ctx trace result]
-    (let [current-log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)
-          current-log-joint (+ current-log-weight (log-prior trace))
-          mcmc-state (get-rw-mcmc-state ctx)
-          {:keys [completed-iterations accepted-trace accepted-log-weight
-                  accepted-log-joint accepted-result pending-proposal?
-                  acceptance-count]} mcmc-state]
-
-      (cond
-        (nil? accepted-trace)
-        (let [new-state {:completed-iterations 0
-                         :accepted-trace trace
-                         :accepted-log-weight current-log-weight
-                         :accepted-log-joint current-log-joint
-                         :accepted-result result
-                         :pending-proposal? false
-                         :acceptance-count 0}]
-
-          (log/debug :rw-mh/first-run {:log-weight current-log-weight
-                                       :trace-size (count trace)})
-
-          (if (>= 0 num-iterations)
-            (do
-              (set-rw-mcmc-state! ctx new-state)
-              {:action :done
-               :trace trace
-               :result result
-               :log-weight current-log-weight})
-
-            (let [sample-addrs (continuous-sample-addrs trace)]
-              (if (empty? sample-addrs)
-                (do
-                  (set-rw-mcmc-state! ctx new-state)
-                  {:action :done
-                   :trace trace
-                   :result result
-                   :log-weight current-log-weight})
-
-                (let [addr (m/pick-uniformly sample-addrs)
-                      entry (get trace addr)
-                      current-value (:value entry)
-                      proposed (random-walk-propose current-value step-size)]
-
-                  (set-rw-mcmc-state! ctx (assoc new-state :pending-proposal? true))
-
-                  (log/debug :rw-mh/propose {:iteration 0
-                                             :addr addr
-                                             :current-value current-value
-                                             :proposed proposed
-                                             :step-size step-size})
-                  {:action :iterate
-                   :updates {addr proposed}})))))
-
-        pending-proposal?
-        (let [;; joint, not likelihood: symmetric proposal, so the prior stays
-              log-accept-ratio (- current-log-joint (or accepted-log-joint accepted-log-weight))
-              u (Math/log (m/uniform01))
-              ;; a NaN ratio (−∞ − −∞) fails both tests and is a rejection
-              accept? (or (>= log-accept-ratio 0)
-                          (< u log-accept-ratio))
-              new-completed (inc completed-iterations)
-              new-acceptance-count (if accept? (inc acceptance-count) acceptance-count)
-
-              new-accepted-trace (if accept? trace accepted-trace)
-              new-accepted-log-weight (if accept? current-log-weight accepted-log-weight)
-              new-accepted-log-joint (if accept? current-log-joint accepted-log-joint)
-              new-accepted-result (if accept? result accepted-result)]
-
-          (log/debug :rw-mh/acceptance {:iteration completed-iterations
-                                        :log-accept-ratio log-accept-ratio
-                                        :accept? accept?
-                                        :acceptance-rate (/ new-acceptance-count new-completed)})
-
-          (if (>= new-completed num-iterations)
-            (do
-              (set-rw-mcmc-state! ctx {:completed-iterations new-completed
-                                       :accepted-trace new-accepted-trace
-                                       :accepted-log-weight new-accepted-log-weight
-                                       :accepted-log-joint new-accepted-log-joint
-                                       :accepted-result new-accepted-result
-                                       :pending-proposal? false
-                                       :acceptance-count new-acceptance-count})
-              (log/debug :rw-mh/complete {:total-iterations new-completed
-                                          :acceptance-rate (/ new-acceptance-count new-completed)})
-              {:action :done
-               :trace new-accepted-trace
-               :result new-accepted-result
-               :log-weight new-accepted-log-weight})
-
-            (let [sample-addrs (continuous-sample-addrs new-accepted-trace)
-                  addr (m/pick-uniformly sample-addrs)
-                  entry (get new-accepted-trace addr)
-                  current-value (:value entry)
-                  proposed (random-walk-propose current-value step-size)]
-
-              (set-rw-mcmc-state! ctx {:completed-iterations new-completed
-                                       :accepted-trace new-accepted-trace
-                                       :accepted-log-weight new-accepted-log-weight
-                                       :accepted-log-joint new-accepted-log-joint
-                                       :accepted-result new-accepted-result
-                                       :pending-proposal? true
-                                       :acceptance-count new-acceptance-count})
-
-              (log/debug :rw-mh/propose {:iteration new-completed
-                                         :addr addr
-                                         :current-value current-value
-                                         :proposed proposed})
-
-              {:action :iterate
-               :updates {addr proposed}})))
-
-        :else
-        (throw (ex-info "Unexpected on-complete state in RandomWalkMHKernel"
-                        {:trace trace
-                         :mcmc-state mcmc-state}))))))
+  (kernel-id [_] :random-walk-mh))
 
 (defn random-walk-mh-kernel
   "Create RandomWalkMHKernel for continuous variables.
 
-  Whole-program Metropolis-Hastings with a symmetric Gaussian proposal on one
-  unobserved site per iteration; the program is replayed from that site with
-  every other site held at its trace value, and the proposal is accepted on
-  the ratio of joint densities (prior × likelihood). Requires the replay to
-  reproduce addresses — see `coordinator/resume-in-slice!`."
+  Metropolis-Hastings with a symmetric Gaussian proposal on one unobserved
+  site per iteration; the program is replayed from that site with every other
+  site held at its trace value and rescored, and the proposal is accepted on
+  the ratio of joint densities (see `inference.trace/mh-log-ratio`)."
   [num-iterations & [{:keys [step-size] :or {step-size 0.1}}]]
   {:pre [(pos-int? num-iterations) (pos? step-size)]}
   (->RandomWalkMHKernel num-iterations step-size))
@@ -681,168 +388,10 @@
   {:pre [(pos? step-size)]}
   (->RandomWalkBlockKernel step-size))
 
-(defn- get-block-gibbs-state
-  [ctx]
-  (or (rtp/get-state ctx [:inference :block-gibbs])
-      {:completed-iterations 0
-       :accepted-trace nil
-       :accepted-log-weight 0.0
-       :accepted-result nil
-       :pending-proposal? false
-       :current-block nil}))
-
-(defn- set-block-gibbs-state!
-  [ctx state]
-  (rtp/swap-state! ctx [:inference :block-gibbs] (constantly state)))
-
 (defrecord BlockGibbsKernel
            [num-iterations block-selector block-kernels address-classifier]
-
   PInferenceKernel
-
-  (kernel-id [_] :block-gibbs)
-
-  (step [_this ctx checkpoint trace]
-    (let [{:keys [source options address]} checkpoint
-          {:keys [observe init]} options]
-      (cond
-        (some? observe)
-        {:action :assign, :value observe}
-
-        (not (contains? trace address))
-        {:action :assign, :value (if (some? init) init (ar/sample* source))}
-
-        :else
-        {:action :assign, :value (get-in trace [address :value])})))
-
-  (on-complete [_this ctx trace result]
-    (let [current-log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)
-          state (get-block-gibbs-state ctx)
-          {:keys [completed-iterations accepted-trace accepted-log-weight
-                  accepted-result pending-proposal? current-block]} state
-
-          classify-trace (fn [trace]
-                           (reduce-kv
-                            (fn [acc addr entry]
-                              (if-let [block-id (address-classifier addr entry)]
-                                (update acc block-id (fnil conj #{}) addr)
-                                acc))
-                            {}
-                            trace))]
-
-      (cond
-        (nil? accepted-trace)
-        (let [new-state {:completed-iterations 0
-                         :accepted-trace trace
-                         :accepted-log-weight current-log-weight
-                         :accepted-result result
-                         :pending-proposal? false
-                         :current-block nil}]
-
-          (log/debug :block-gibbs/first-run {:log-weight current-log-weight
-                                             :trace-size (count trace)})
-
-          (if (>= 0 num-iterations)
-            (do
-              (set-block-gibbs-state! ctx new-state)
-              {:action :done
-               :trace trace
-               :result result
-               :log-weight current-log-weight})
-
-            (let [block-map (classify-trace trace)
-                  block-id (select-block block-selector trace 0)
-                  block-addrs (get block-map block-id #{})
-                  block-kernel (get block-kernels block-id)]
-
-              (if (or (empty? block-addrs) (nil? block-kernel))
-                (do
-                  (log/debug :block-gibbs/skip-block {:block-id block-id
-                                                      :reason (if (empty? block-addrs)
-                                                                :no-addresses
-                                                                :no-kernel)})
-                  (set-block-gibbs-state! ctx new-state)
-                  {:action :done
-                   :trace trace
-                   :result result
-                   :log-weight current-log-weight})
-
-                (let [proposals (propose-block block-kernel trace block-addrs)]
-                  (set-block-gibbs-state! ctx (assoc new-state
-                                                     :pending-proposal? true
-                                                     :current-block block-id))
-                  (log/debug :block-gibbs/propose {:iteration 0
-                                                   :block-id block-id
-                                                   :num-proposals (count proposals)})
-                  {:action :iterate
-                   :updates proposals})))))
-
-        pending-proposal?
-        (let [log-accept-ratio (- current-log-weight accepted-log-weight)
-              u (Math/log (m/uniform01))
-              accept? (or (>= log-accept-ratio 0)
-                          (< u log-accept-ratio))
-              new-completed (inc completed-iterations)
-
-              new-accepted-trace (if accept? trace accepted-trace)
-              new-accepted-log-weight (if accept? current-log-weight accepted-log-weight)
-              new-accepted-result (if accept? result accepted-result)]
-
-          (log/debug :block-gibbs/acceptance {:iteration completed-iterations
-                                              :block-id current-block
-                                              :log-accept-ratio log-accept-ratio
-                                              :accept? accept?})
-
-          (if (>= new-completed num-iterations)
-            (do
-              (set-block-gibbs-state! ctx {:completed-iterations new-completed
-                                           :accepted-trace new-accepted-trace
-                                           :accepted-log-weight new-accepted-log-weight
-                                           :accepted-result new-accepted-result
-                                           :pending-proposal? false
-                                           :current-block nil})
-              {:action :done
-               :trace new-accepted-trace
-               :result new-accepted-result
-               :log-weight new-accepted-log-weight})
-
-            (let [block-map (classify-trace new-accepted-trace)
-                  block-id (select-block block-selector new-accepted-trace new-completed)
-                  block-addrs (get block-map block-id #{})
-                  block-kernel (get block-kernels block-id)]
-
-              (if (or (empty? block-addrs) (nil? block-kernel))
-                (do
-                  (log/debug :block-gibbs/skip-block {:block-id block-id})
-                  (set-block-gibbs-state! ctx {:completed-iterations new-completed
-                                               :accepted-trace new-accepted-trace
-                                               :accepted-log-weight new-accepted-log-weight
-                                               :accepted-result new-accepted-result
-                                               :pending-proposal? false
-                                               :current-block nil})
-                  {:action :done
-                   :trace new-accepted-trace
-                   :result new-accepted-result
-                   :log-weight new-accepted-log-weight})
-
-                (let [proposals (propose-block block-kernel new-accepted-trace block-addrs)]
-                  (set-block-gibbs-state! ctx {:completed-iterations new-completed
-                                               :accepted-trace new-accepted-trace
-                                               :accepted-log-weight new-accepted-log-weight
-                                               :accepted-result new-accepted-result
-                                               :pending-proposal? true
-                                               :current-block block-id})
-
-                  (log/debug :block-gibbs/propose {:iteration new-completed
-                                                   :block-id block-id
-                                                   :num-proposals (count proposals)})
-                  {:action :iterate
-                   :updates proposals})))))
-
-        :else
-        (throw (ex-info "Unexpected on-complete state in BlockGibbsKernel"
-                        {:trace trace
-                         :state state}))))))
+  (kernel-id [_] :block-gibbs))
 
 (defn block-gibbs-kernel
   "Create a BlockGibbsKernel for block Gibbs sampling."

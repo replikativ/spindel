@@ -8,7 +8,7 @@
    - Backpressure by default: producer waits until ALL taps accept
    - Per-tap buffers: each tap can have different buffer configuration
    - Rendezvous default: nil buffer means synchronous handoff
-   - Lazy pump: pump spin starts on first tap
+   - Lazy pump: pump spin starts at the first demand on any tap
 
    Unlike core.async channels, PAsyncSeq is copy-on-read, so mult provides
    the coordination layer for synchronized fan-out."
@@ -102,9 +102,13 @@
     (reset! (:space-available-atom @tap-state-atom) (make-promise))
     (deliver-promise! old-promise :space-available)))
 
+(declare ensure-pumping!)
+
 (deftype TapSeq [mult-ref tap-id tap-state-atom]
   PAsyncSeq
   (anext [this]
+    ;; The first demand on any tap starts the pump; see `ensure-pumping!`.
+    (ensure-pumping! mult-ref)
     (spin
       ;; Use loop instead of recursive (await (anext this)) to avoid
       ;; stack overflow in CLJS where promise delivery is synchronous
@@ -217,7 +221,12 @@
      ;; The pump spin (runs in background)
             pump-spin-atom
      ;; Has pump started?
-            pump-started-atom])
+            pump-started-atom
+     ;; The execution context of the first tap: the pump runs there, whoever
+     ;; makes the first demand
+            context-atom
+     ;; Optional (fn []) called once when the pump starts (pub starts its own)
+            on-start])
 
 (defn- deliver-to-all-taps!
   "Deliver item to all taps, respecting backpressure.
@@ -282,9 +291,10 @@
    The pump runs as a detached spin - we enqueue its execution via the event system
    to ensure proper execution context binding."
   [mult]
-  (let [{:keys [source-aseq taps-atom closed-atom pump-spin-atom]} mult
-        ;; Capture context - needed for event-based execution
-        context (ec/current-execution-context)
+  (let [{:keys [source-aseq taps-atom closed-atom pump-spin-atom context-atom]} mult
+        ;; The context captured at the first tap - needed for event-based
+        ;; execution, and not the context of whoever consumes first
+        context (or @context-atom (ec/current-execution-context))
         pump (spin
               (loop [source source-aseq]
                 (if-let [result (await (anext source))]
@@ -321,10 +331,43 @@
                                                      :spin-id (spin-core/spin-id pump)}))})
     pump))
 
+(defn- ensure-pumping!
+  "Start the pump at the FIRST DEMAND on any tap, once.
+
+   The source is pulled, so nothing needs to move before somebody consumes.
+   Starting at the first `tap` instead made every later `tap` race the pump:
+   a second tap registered a moment after the first could miss the head of a
+   source that already had items, or find the source exhausted. With the pump
+   starting at the first demand, every tap made before anybody consumes sees
+   every item. A tap made after that still joins a running stream and sees
+   what is delivered from then on."
+  [mult]
+  (let [{:keys [pump-started-atom context-atom on-start]} mult]
+    (when (compare-and-set! pump-started-atom false true)
+      ;; a hook that fails must not leave a mult that is marked started and
+      ;; has no pump
+      (when on-start
+        (try (on-start)
+             (catch #?(:clj Throwable :cljs :default) error
+               (report-fault! ::on-start-failed {:reason error}))))
+      (binding [ec/*execution-context* (or @context-atom (ec/current-execution-context))]
+        (start-pump! mult)))))
+
+(defn start!
+  "Start pulling the source now, without waiting for a tap to be consumed: for
+   a mult whose taps only buffer (a sliding window read on demand) and whose
+   source must be drained regardless."
+  [mult]
+  (ensure-pumping! mult)
+  mult)
+
 (extend-type Mult
   PMult
   (tap* [mult tap-id buffer close?]
-    (let [{:keys [taps-atom pump-started-atom]} mult
+    (let [{:keys [taps-atom context-atom]} mult
+          ;; the var, not the accessor: a later tap may be made outside any
+          ;; bound context, and only the first one has to supply it
+          _ (compare-and-set! context-atom nil ec/*execution-context*)
           tap-state-atom (atom (create-tap-state buffer close?))
           tap-seq (->TapSeq mult tap-id tap-state-atom)]
       ;; Register tap
@@ -334,15 +377,12 @@
         ;; otherwise it waits forever for a pump that cannot restart.
         (do (close-tap! tap-state-atom)
             (swap! taps-atom dissoc tap-id))
-        (do
-          ;; Start pump on first tap (lazy)
-          (when (compare-and-set! pump-started-atom false true)
-            (start-pump! mult))
-          ;; Close a tap that raced source exhaustion between registration and
-          ;; the first check above. close-tap! is idempotent.
-          (when @(:closed-atom mult)
-            (close-tap! tap-state-atom)
-            (swap! taps-atom dissoc tap-id))))
+        ;; Close a tap that raced source exhaustion between registration and
+        ;; the first check above. close-tap! is idempotent. The pump is not
+        ;; started here but at the first demand (`ensure-pumping!`).
+        (when @(:closed-atom mult)
+          (close-tap! tap-state-atom)
+          (swap! taps-atom dissoc tap-id)))
       tap-seq))
 
   (untap* [mult tap-id]
@@ -360,8 +400,10 @@
 (defn mult
   "Create a mult over a source PAsyncSeq.
 
-   Returns a Mult that can be tapped multiple times. Each tap receives
-   all items from the source. The pump starts lazily on first tap.
+   Returns a Mult that can be tapped multiple times. Each tap made before the
+   first item is consumed receives all items from the source: the pump starts
+   at the first DEMAND on any tap (or at `start!`), in the execution context
+   of the first tap. `:on-start` is called once when it does.
 
    Example:
      (def m (mult source-aseq))
@@ -369,13 +411,15 @@
      (def tap2 (tap m))  ; rendezvous
 
      ;; Both tap1 and tap2 receive all items from source"
-  [source-aseq]
-  (->Mult source-aseq
-          (atom {})     ; taps
-          (atom false)  ; closed
-          (atom nil)    ; pump-spin
-          (atom false)  ; pump-started
-          ))
+  ([source-aseq] (mult source-aseq nil))
+  ([source-aseq {:keys [on-start]}]
+   (->Mult source-aseq
+           (atom {})     ; taps
+           (atom false)  ; closed
+           (atom nil)    ; pump-spin
+           (atom false)  ; pump-started
+           (atom nil)    ; context of the first tap
+           on-start)))
 
 ;; =============================================================================
 ;; Public API
@@ -415,7 +459,7 @@
 (defn mult-pump
   "Get the pump spin for a mult.
 
-   Returns nil if pump hasn't started (no taps yet).
+   Returns nil if pump hasn't started (nothing consumed yet).
    Can be used to await mult completion or check status."
   [mult]
   @(:pump-spin-atom mult))

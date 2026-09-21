@@ -28,6 +28,9 @@
             [org.replikativ.spindel.inference.kernel :as k]
             [org.replikativ.spindel.inference.coordinator :as coord]
             [org.replikativ.spindel.inference.gradient :as grad]
+            [org.replikativ.spindel.inference.trace :as itrace]
+            [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
@@ -148,6 +151,119 @@
 (defmacro ^:private inference-spin [& body]
   `(spin-core/with-causal-descendant-egress (spin ~@body)))
 
+;; =============================================================================
+;; Markov chains: replay plus accept
+;; =============================================================================
+
+(defn- block-gibbs-options
+  "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
+  and the selector see the trace in the coordinator's shape; only latent
+  sites are classified, and a step whose block is empty or has no kernel moves
+  nothing. The selection probability is taken to be the same in both traces,
+  which holds when a move does not change which sites belong to the block."
+  [{:keys [block-selector block-kernels address-classifier]}]
+  (let [proposals (atom nil)]
+    {:select
+     (fn [current iteration]
+       (let [legacy (itrace/legacy-trace current)
+             latent (set (itrace/latent-addresses current))
+             blocks (reduce-kv (fn [acc address entry]
+                                 (if-let [block-id (and (latent address)
+                                                        (address-classifier address entry))]
+                                   (update acc block-id (fnil conj #{}) address)
+                                   acc))
+                               {} legacy)
+             block-id (k/select-block block-selector legacy iteration)
+             targets (get blocks block-id #{})
+             kernel (get block-kernels block-id)]
+         (reset! proposals (when (and kernel (seq targets)
+                                      (not (instance? org.replikativ.spindel.inference.kernel.PriorBlockKernel kernel)))
+                             (k/propose-block kernel legacy targets)))
+         ;; Blocks are selected by id, independently of the trace.
+         {:targets targets :log-selection (constantly 0.0)}))
+     :propose
+     (fn [sp-value old-entry]
+       (if-let [proposed @proposals]
+         ;; A block kernel's move is taken to be symmetric (the random walk
+         ;; is; a custom kernel must be).
+         {:value (get proposed (:savepoint/address sp-value)) :symmetric? true}
+         (itrace/prior-proposal sp-value old-entry)))}))
+
+(defn- mh-options
+  "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels the
+  coordinator runs."
+  [kernel]
+  (case (k/kernel-id kernel)
+    :single-site-mh {:iterations (:num-iterations kernel)}
+    :random-walk-mh {:iterations (:num-iterations kernel)
+                     :propose (itrace/random-walk-proposal (:step-size kernel))}
+    :block-gibbs (assoc (block-gibbs-options kernel)
+                        :iterations (:num-iterations kernel))
+    nil))
+
+(defn- run-markov-chain
+  "One chain in its own world: run the model, move it `iterations` times,
+  project the final state, give every world back."
+  [model-task kernel executor]
+  (inference-spin
+   (let [;; per chain: a block Gibbs description closes over its own state
+         {:keys [iterations] :as step-opts} (mh-options kernel)
+         root (ctx/create-execution-context :executor executor)
+         session (sp/open! root {:purpose :mcmc :fork-opts {:systems :none}
+                                 :retain-released? false})]
+     (try
+       (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
+                                       {:anchor? itrace/anchor?}))
+             _ (when (contains? initial :trace/error)
+                 (throw (ex-info "Inference failed during model execution"
+                                 {:type ::inference-failed}
+                                 (:trace/error initial))))
+             ;; From an impossible state every ratio is NaN and nothing is
+             ;; ever accepted; say so instead of returning that state.
+             _ (when (= ##-Inf (itrace/log-joint initial))
+                 (throw (ex-info "The initial state of the chain has zero density"
+                                 {:type ::impossible-initial-state})))
+             {final :trace accepted :accepted}
+             (await (itrace/mh-chain initial iterations step-opts))
+             world (:trace/world final)]
+         (rtp/swap-state! world [:inference]
+                          (fn [state]
+                            (assoc state
+                                   :result (:trace/result final)
+                                   :trace (itrace/legacy-trace final)
+                                   :mcmc {:completed-iterations iterations
+                                          :acceptance-count accepted})))
+         [(coord/project-posterior-context world) 0.0])
+       (finally
+         ;; Closing the session cancels and joins every world of the chain.
+         ;; The root is not stopped here: `stop-context!` waits for the
+         ;; context's drains, and this body may be running inside one.
+         (await-finalization (sp/close! session)))))))
+
+(defn- markov-chain-infer
+  [model-task kernel num-chains opts]
+  ;; Chains run in fresh worlds of their own. Running them in forks of the
+  ;; caller's world, as `:world-policy :fork` does for particles, is not
+  ;; implemented; refuse it, do not ignore it.
+  (when (or (= :fork (:world-policy opts)) (some? (:world-opts opts)))
+    (throw (ex-info "Markov-chain kernels run in fresh worlds"
+                    {:type ::invalid-world-policy
+                     :world-policy (:world-policy opts)
+                     :supported #{:fresh}})))
+  (inference-spin
+   (let [own-executor (when-not (:executor opts)
+                        (sched/thread-pool-executor {:threads 2}))
+         executor (or (:executor opts) own-executor)]
+     (try
+       (let [chains (await (apply comb/parallel
+                                  (mapv (fn [_] (run-markov-chain model-task kernel executor))
+                                        (range num-chains))))]
+         (m/empirical (vec chains)))
+       (finally
+         (when own-executor
+           #?(:clj (.close ^java.lang.AutoCloseable own-executor)
+              :cljs nil)))))))
+
 (defn kernel-infer
   "Run inference using a PInferenceKernel.
 
@@ -187,178 +303,182 @@
                                         {:barrier-policy :every-observe}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
-  (inference-spin
-   (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
-                                   :num-particles num-particles
-                                   :barrier-policy (:barrier-policy opts :every-observe)})
+  (if (mh-options kernel)
+    ;; Markov-chain kernels are replay plus accept over traces; each of the
+    ;; `num-particles` is an independent chain.
+    (markov-chain-infer model-task kernel num-particles opts)
+    (inference-spin
+     (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
+                                     :num-particles num-particles
+                                     :barrier-policy (:barrier-policy opts :every-observe)})
 
-   (let [runtime rtc/*execution-context*
-         world-policy (get opts :world-policy :fresh)
-         _ (when-not (#{:fresh :fork} world-policy)
-             (throw (ex-info "Unknown inference world policy"
-                             {:type ::invalid-world-policy
-                              :world-policy world-policy
-                              :supported #{:fresh :fork}})))
-         _ (when (and (= :fork world-policy)
-                      (:pgas-ancestor-sampling? opts))
-             (throw
-              (ex-info
-               "PGAS ancestor scoring does not yet support canonical worlds"
-               {:type ::world-pgas-unsupported
-                :world-policy world-policy})))
+     (let [runtime rtc/*execution-context*
+           world-policy (get opts :world-policy :fresh)
+           _ (when-not (#{:fresh :fork} world-policy)
+               (throw (ex-info "Unknown inference world policy"
+                               {:type ::invalid-world-policy
+                                :world-policy world-policy
+                                :supported #{:fresh :fork}})))
+           _ (when (and (= :fork world-policy)
+                        (:pgas-ancestor-sampling? opts))
+               (throw
+                (ex-info
+                 "PGAS ancestor scoring does not yet support canonical worlds"
+                 {:type ::world-pgas-unsupported
+                  :world-policy world-policy})))
           ;; Create or use provided shared executor
-         shared-executor (or (:executor opts)
+           shared-executor (or (:executor opts)
                              ;; Canonical child worlds share the ambient runtime
                              ;; unless the caller explicitly delegates another
                              ;; scheduler. This keeps executor ownership with the
                              ;; enclosing world instead of leaking an inference-
                              ;; local pool after affine world settlement.
-                             (when (= :fork world-policy)
-                               (:executor runtime))
-                             (sched/thread-pool-executor {:threads 2}))
-         world-manager (when (= :fork world-policy)
-                         (coord/create-world-manager
-                          (assoc (:world-opts opts) :executor shared-executor)))
-         coordinator (coord/create-kernel-coordinator
-                      runtime
-                      kernel
-                      num-particles
-                      (assoc opts :world-manager world-manager))
-         _ (when world-manager
-             (swap! world-manager assoc :client coordinator))
+                               (when (= :fork world-policy)
+                                 (:executor runtime))
+                               (sched/thread-pool-executor {:threads 2}))
+           world-manager (when (= :fork world-policy)
+                           (coord/create-world-manager
+                            (assoc (:world-opts opts) :executor shared-executor)))
+           coordinator (coord/create-kernel-coordinator
+                        runtime
+                        kernel
+                        num-particles
+                        (assoc opts :world-manager world-manager))
+           _ (when world-manager
+               (swap! world-manager assoc :client coordinator))
 
           ;; PGIBBS: Check if we have a retained trace (for conditional SMC)
-         pgibbs-retained-trace (:pgibbs-retained-trace opts)
+           pgibbs-retained-trace (:pgibbs-retained-trace opts)
 
-         _initial-generation
-         (when world-manager
-           (coord/begin-particle-generation-transition! world-manager))
+           _initial-generation
+           (when world-manager
+             (coord/begin-particle-generation-transition! world-manager))
 
           ;; Initialize particles with coordinator reference
          ;; For PGIBBS: first particle is retained
-         initial-particles
-         (try
-           (let [particles
-                 (loop [idx 0
-                        particles []]
-                   (if (= idx num-particles)
-                     particles
-                     (let [world (when world-manager
-                                   (await
-                                    (fn [resolve reject]
-                                      (coord/fork-particle-world!
-                                       world-manager runtime resolve reject))))
-                           particle-ctx (if world
-                                          (:child-ctx world)
-                                          (ctx/create-execution-context
-                                           :executor shared-executor))
-                           particle-id (keyword (str "particle-" (gensym)))
-                           is-retained? (and pgibbs-retained-trace (= idx 0))]
+           initial-particles
+           (try
+             (let [particles
+                   (loop [idx 0
+                          particles []]
+                     (if (= idx num-particles)
+                       particles
+                       (let [world (when world-manager
+                                     (await
+                                      (fn [resolve reject]
+                                        (coord/fork-particle-world!
+                                         world-manager runtime resolve reject))))
+                             particle-ctx (if world
+                                            (:child-ctx world)
+                                            (ctx/create-execution-context
+                                             :executor shared-executor))
+                             particle-id (keyword (str "particle-" (gensym)))
+                             is-retained? (and pgibbs-retained-trace (= idx 0))]
 
-                       (rtp/swap-state!
-                        particle-ctx [:inference]
-                        (constantly
-                         {:log-weight 0.0
-                          :choice-stack []
-                          :checkpoint-seq 0
-                          :trace {}
-                          :checkpoints {}
-                          :particle-id particle-id
-                          :sweep 0
-                          :world world
-                          :inference-coordinator coordinator}))
-                       (rtp/swap-state! particle-ctx [:inference :task]
-                                        (constantly model-task))
+                         (rtp/swap-state!
+                          particle-ctx [:inference]
+                          (constantly
+                           {:log-weight 0.0
+                            :choice-stack []
+                            :checkpoint-seq 0
+                            :trace {}
+                            :checkpoints {}
+                            :particle-id particle-id
+                            :sweep 0
+                            :world world
+                            :inference-coordinator coordinator}))
+                         (rtp/swap-state! particle-ctx [:inference :task]
+                                          (constantly model-task))
 
-                       (when is-retained?
-                         (reset! (.-retained-particle-id coordinator) particle-id)
-                         (log/debug :kernel-infer/set-retained-particle
-                                    {:particle-id particle-id}))
+                         (when is-retained?
+                           (reset! (.-retained-particle-id coordinator) particle-id)
+                           (log/debug :kernel-infer/set-retained-particle
+                                      {:particle-id particle-id}))
 
-                       (recur (inc idx) (conj particles particle-ctx)))))]
-             (when (and world-manager
-                        (not (coord/complete-particle-generation-transition!
-                              world-manager particles)))
-               (throw (ex-info "Inference cancelled during particle initialization"
-                               {:type spin-core/spin-cancelled})))
-             particles)
-           (catch #?(:clj Throwable :cljs :default) error
-             (when world-manager
+                         (recur (inc idx) (conj particles particle-ctx)))))]
+               (when (and world-manager
+                          (not (coord/complete-particle-generation-transition!
+                                world-manager particles)))
+                 (throw (ex-info "Inference cancelled during particle initialization"
+                                 {:type spin-core/spin-cancelled})))
+               particles)
+             (catch #?(:clj Throwable :cljs :default) error
+               (when world-manager
                ;; Close the generation transaction, then wait past the owning
                ;; Spin's cancellation for every in-flight fork callback and
                ;; affine discard to finish.
-               (coord/complete-particle-generation-transition!
-                world-manager [])
-               (await-finalization
-                (coord/cancel-particle-worlds! world-manager)))
-             (throw error)))]
+                 (coord/complete-particle-generation-transition!
+                  world-manager [])
+                 (await-finalization
+                  (coord/cancel-particle-worlds! world-manager)))
+               (throw error)))]
 
-     (log/debug :kernel-infer/particles-initialized {:num-particles (count initial-particles)})
+       (log/debug :kernel-infer/particles-initialized {:num-particles (count initial-particles)})
 
      ;; Once particles are registered, this Spin owns their complete lifecycle.
      ;; Normal completion sets `completed?` only after world settlement and
      ;; posterior projection. Every other exit — especially cancellation of the
      ;; public inference Spin by an enclosing Run — cancels and joins the manager
      ;; before propagating the original result/error.
-     (let [completed? (atom false)]
-       (try
+       (let [completed? (atom false)]
+         (try
          ;; Start all particles. Initialization is all-or-nothing from the
          ;; caller's perspective, but an executor can reject midway through the
          ;; enqueue loop. In that case distinguish successfully started contexts
          ;; from contexts that never ran, then enter the normal supervised
          ;; cancellation/quiescence lifecycle.
-         (let [started (atom #{})]
-           (try
-             (doseq [particle-ctx initial-particles]
-               (start-particle! particle-ctx coordinator)
-               (swap! started conj (:fork-id particle-ctx)))
-             (catch #?(:clj Throwable :cljs :default) error
-               (when world-manager
-                 (doseq [particle-ctx initial-particles
-                         :when (not (contains? @started (:fork-id particle-ctx)))]
-                   (coord/particle-context-terminal! world-manager particle-ctx))
-                 (coord/cancel-particle-worlds! world-manager))
-               (throw
-                (ex-info
-                 "Inference failed while starting particles"
-                 (cond-> {:type ::particle-start-failed
-                          :started (count @started)
-                          :requested num-particles}
-                   world-manager
-                   (assoc :world/recovery
-                          (particle-world-recovery world-manager)))
-                 error)))))
+           (let [started (atom #{})]
+             (try
+               (doseq [particle-ctx initial-particles]
+                 (start-particle! particle-ctx coordinator)
+                 (swap! started conj (:fork-id particle-ctx)))
+               (catch #?(:clj Throwable :cljs :default) error
+                 (when world-manager
+                   (doseq [particle-ctx initial-particles
+                           :when (not (contains? @started (:fork-id particle-ctx)))]
+                     (coord/particle-context-terminal! world-manager particle-ctx))
+                   (coord/cancel-particle-worlds! world-manager))
+                 (throw
+                  (ex-info
+                   "Inference failed while starting particles"
+                   (cond-> {:type ::particle-start-failed
+                            :started (count @started)
+                            :requested num-particles}
+                     world-manager
+                     (assoc :world/recovery
+                            (particle-world-recovery world-manager)))
+                   error)))))
 
-         (log/debug :kernel-infer/particles-started)
+           (log/debug :kernel-infer/particles-started)
 
          ;; Await completion
-         (let [final-measure (await (coord/await-completion coordinator))]
+           (let [final-measure (await (coord/await-completion coordinator))]
 
            ;; A particle's spin aborted: the coordinator delivered a
            ;; failure marker instead of an EmpiricalMeasure. Re-throw so
            ;; the calling spin / @(spin …) propagates the error to the
            ;; agent / REPL caller, instead of returning a bogus measure.
-           (when (coord/inference-failure? final-measure)
-             (let [world-recovery
-                   (when world-manager (particle-world-recovery world-manager))]
-               (throw (ex-info "Inference failed during particle execution"
-                               (cond-> {:type ::inference-failed
-                                        :particle-id (:particle-id final-measure)}
-                                 world-recovery
-                                 (assoc :world/recovery world-recovery))
-                               (:error final-measure)))))
+             (when (coord/inference-failure? final-measure)
+               (let [world-recovery
+                     (when world-manager (particle-world-recovery world-manager))]
+                 (throw (ex-info "Inference failed during particle execution"
+                                 (cond-> {:type ::inference-failed
+                                          :particle-id (:particle-id final-measure)}
+                                   world-recovery
+                                   (assoc :world/recovery world-recovery))
+                                 (:error final-measure)))))
 
-           (log/debug :kernel-infer/complete
-                      {:num-particles num-particles
-                       :log-marginal (m/log-marginal final-measure)
-                       :ess (m/effective-sample-size final-measure)})
+             (log/debug :kernel-infer/complete
+                        {:num-particles num-particles
+                         :log-marginal (m/log-marginal final-measure)
+                         :ess (m/effective-sample-size final-measure)})
 
-           (reset! completed? true)
-           final-measure)
-         (finally
-           (when (and world-manager (not @completed?))
-             (await-finalization
-              (coord/cancel-particle-worlds! world-manager)))))))))
+             (reset! completed? true)
+             final-measure)
+           (finally
+             (when (and world-manager (not @completed?))
+               (await-finalization
+                (coord/cancel-particle-worlds! world-manager))))))))))
 
 ;; =============================================================================
 ;; Convenience Functions (Delegate to kernel-infer)

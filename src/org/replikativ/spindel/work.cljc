@@ -560,9 +560,12 @@
          inbox (sync/mailbox)
          event-stream (sync/mailbox)
          event-bus (mult/mult (EventSource. event-stream))
-         ;; Start the hot pump immediately. This private sliding tap bounds the
-         ;; no-observer case without retaining an unbounded replay history.
+         ;; A hot stream: events must flow whether or not anybody observes. A
+         ;; mult pulls from the first demand, and this anchor is never read, so
+         ;; start it explicitly. The private sliding tap bounds the no-observer
+         ;; case without retaining an unbounded replay history.
          event-anchor (mult/tap event-bus (buffer/sliding-buffer 1))
+         _ (mult/start! event-bus)
          handles (clojure.core/atom {})
          state (ratom/atom {:strategy strategy
                             :concurrency effective-concurrency

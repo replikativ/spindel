@@ -29,7 +29,7 @@
                                                            (k/random-walk-mh-kernel iterations {:step-size step-size})
                                                            1 {})))
                  [c lw] (first (measure/get-particles meas))]
-             (let [mh (rtp/get-state c [:inference :rw-mcmc])]
+             (let [mh (rtp/get-state c [:inference :mcmc])]
                {:ctx c :value (measure/get-value c) :log-weight lw
                 :mh (assoc mh :acceptance-rate
                            (/ (double (:acceptance-count mh 0))

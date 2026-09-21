@@ -283,7 +283,8 @@
                          (yield (first xs))
                          (recur (rest xs)))))
                 p (pub/pub src :topic)]
-            (pub/sub p :t0)             ; one subscriber; starts the pump
+            (pub/sub p :t0)             ; one subscriber, which never consumes
+            (pub/start! p)              ; so route without waiting for demand
             ;; Wait for the pump to drain the source.
             (loop [tries 0]
               (when (and (not (pub/pub-closed? p)) (< tries 300))

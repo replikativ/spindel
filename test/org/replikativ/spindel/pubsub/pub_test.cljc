@@ -151,8 +151,11 @@
          ;; Not closed before pump starts (no subscription yet)
          (is (not (pub/pub-closed? p)))
 
-         ;; Subscribe starts the pump
+         ;; Subscribing pulls nothing; routing starts at the first demand or
+         ;; at an explicit start
          (pub/sub p :a (buf/fixed-buffer 10))
+         (is (not (pub/pub-closed? p)))
+         (pub/start! p)
 
          ;; Let pump run to completion via async delay
          @(spin (await (comb/sleep 200)))
@@ -170,6 +173,7 @@
              sub-a (pub/sub p :a (buf/fixed-buffer 20))]
 
          ;; Let pump fill buffer via async delay
+         (pub/start! p)
          @(spin (await (comb/sleep 100)))
 
          ;; Unsub while buffer has items
@@ -256,8 +260,13 @@
          (binding [ec/*execution-context* ctx]
            (dotimes [i n-items]
              (sync/post! mbox {:type :x :n i})))
-         ;; Wait for the slow consumer to drain (30ms × n + slack).
-         (Thread/sleep (+ 200 (* 30 n-items)))
+         ;; Wait for the slow consumer to drain. How long that takes depends on
+         ;; the machine (measured 0.35 to 1.2 s under load), so wait for the
+         ;; items, with a deadline, not for a fixed time.
+         (let [deadline (+ (System/currentTimeMillis) 10000)]
+           (while (and (< (count @got) n-items)
+                       (< (System/currentTimeMillis) deadline))
+             (Thread/sleep 10)))
          (is (= n-items (count @got)) "all items delivered")
          (is (= (vec (range n-items)) @got)
              "items delivered in FIFO order under backpressure")))))

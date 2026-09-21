@@ -9,10 +9,10 @@
   (let [result (promise)]
     (operation #(deliver result [:ok %])
                #(deliver result [:error %]))
-    (let [[status value :as outcome] (deref result 5000 ::timeout)]
+    (let [outcome (deref result 5000 ::timeout)]
       (when (= ::timeout outcome)
         (throw (ex-info "CPS operation timed out" {})))
-      (if (= :ok status) value (throw value)))))
+      (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
 
 (defn- fork! [world-scope source]
   (let [result (promise)]
@@ -311,3 +311,117 @@
           (doseq [id (keys (:activities @world-scope))]
             (scope/end-activity! world-scope id))
           (is (nil? (await-cps (scope/discard! world-scope)))))))))
+
+(deftest a-single-world-is-released-before-the-scope-ends
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :search :fork-opts {:systems :none}})
+        session (scope/begin-activity! world-scope :session)
+        kept (binding [ec/*execution-context* root] (fork! world-scope root))
+        dropped (binding [ec/*execution-context* root] (fork! world-scope root))
+        dropped-ctx (:child-ctx dropped)]
+    (try
+      (testing "a world with a live lease is not released"
+        (scope/begin-activity! world-scope :context dropped-ctx (:fork-id dropped-ctx))
+        (is (= ::scope/world-busy
+               (:type (ex-data (try (await-cps (scope/release! world-scope dropped-ctx))
+                                    (catch Throwable error error))))))
+        (scope/end-activity! world-scope (:fork-id dropped-ctx)))
+      (testing "release discards that world only"
+        (is (nil? (await-cps (scope/release! world-scope dropped-ctx))))
+        (is (= [(:fork-id (:child-ctx kept))]
+               (mapv (comp :fork-id :child-ctx) (:handles @world-scope))))
+        (is (= 2 (count (scope/descriptors world-scope))) "its descriptor stays"))
+      (testing "a world is released once"
+        (is (= ::scope/unknown-world
+               (:type (ex-data (try (await-cps (scope/release! world-scope dropped-ctx))
+                                    (catch Throwable error error)))))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (is (= :discarded (:status @world-scope)))
+      (is (= 2 (count (scope/descriptors world-scope))))
+      (finally
+        (context/stop-context! root)))))
+
+;; -----------------------------------------------------------------------------
+;; Resources: a fork moves authority, it does not copy it
+;; -----------------------------------------------------------------------------
+
+(defn- toy-authority
+  "A ledger outside every world: {world-id {:balance n :from parent-id}}."
+  [ledger]
+  (reify scope/PResourceAuthority
+    (grant! [_ source child amount]
+      (let [source-id (:fork-id source)
+            child-id (:fork-id child)
+            [before _] (swap-vals!
+                        ledger
+                        (fn [book]
+                          (if (>= (get-in book [source-id :balance] 0) amount)
+                            (-> book
+                                (update-in [source-id :balance] - amount)
+                                (assoc child-id {:balance amount :from source-id}))
+                            book)))]
+        (when (< (get-in before [source-id :balance] 0) amount)
+          (throw (ex-info "Insufficient funds" {:type ::insufficient})))
+        nil))
+    (return! [_ context]
+      (swap! ledger
+             (fn [book]
+               (if-let [{:keys [balance from]} (get book (:fork-id context))]
+                 (-> book
+                     (update-in [from :balance] + balance)
+                     (dissoc (:fork-id context)))
+                 book)))
+      nil)))
+
+(defn- fork-with! [world-scope source opts]
+  (let [result (promise)]
+    (scope/fork! world-scope source opts
+                 #(deliver result [:ok %])
+                 #(deliver result [:error %]))
+    (let [outcome (deref result 5000 ::timeout)]
+      (when (= ::timeout outcome) (throw (ex-info "World fork timed out" {})))
+      (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
+
+(deftest forks-never-hold-more-than-their-source-could-spend
+  (let [root (context/create-execution-context)
+        root-id (:fork-id root)
+        ledger (atom {root-id {:balance 10}})
+        world-scope (scope/create {:purpose :search
+                                   :fork-opts {:systems :none}
+                                   :authority (toy-authority ledger)})
+        session (scope/begin-activity! world-scope :session)
+        total #(reduce + (map :balance (vals @ledger)))]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [a (fork-with! world-scope root {:grant 4})
+              b (fork-with! world-scope root {:grant 4})]
+          (is (= 2 (get-in @ledger [root-id :balance])))
+          (is (= 10 (total)))
+          (testing "a grant the source cannot afford fails the fork and leaves no world"
+            (is (= ::insufficient
+                   (:type (ex-data (try (fork-with! world-scope root {:grant 4})
+                                        (catch Throwable error error))))))
+            (is (= 2 (count (:handles @world-scope))))
+            (is (zero? (:pending-forks @world-scope)))
+            (is (= 10 (total))))
+          (testing "a fork without a grant has no wallet"
+            (let [c (fork-with! world-scope root nil)]
+              (is (nil? (get @ledger (:fork-id (:child-ctx c)))))))
+          (testing "a world funds its own forks from what it was granted"
+            (let [a-ctx (:child-ctx a)
+                  grandchild (binding [ec/*execution-context* a-ctx]
+                               (fork-with! world-scope a-ctx {:grant 3}))]
+              (is (= 1 (get-in @ledger [(:fork-id a-ctx) :balance])))
+              (is (= 3 (get-in @ledger [(:fork-id (:child-ctx grandchild)) :balance])))))
+          (testing "releasing a world returns what it has left"
+            (swap! ledger update-in [(:fork-id (:child-ctx b)) :balance] - 1) ; b spent 1
+            (await-cps (scope/release! world-scope (:child-ctx b)))
+            (is (= 5 (get-in @ledger [root-id :balance])))
+            (is (= 9 (total)) "what was spent is gone, nothing else"))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (testing "discarding the scope returns the rest, newest world first"
+        (is (= {root-id {:balance 9}} @ledger)))
+      (finally
+        (context/stop-context! root)))))

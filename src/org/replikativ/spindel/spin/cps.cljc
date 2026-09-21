@@ -42,8 +42,15 @@
 
 ;; Factory: create a breakpoint handler that dispatches via symbol-call dispatch
 (defn- make-symbol-call-breakpoint ^:private [sym]
-  (fn [{:keys [spin-id env]} r e]
-    (let [current-ns (str *ns*)]
+  (fn [{:keys [spin-id env form]} r e]
+    (let [;; Where this call is in the source. partial-cps hands the handler
+          ;; the call form from 0.1.61 on; before that a site is known by its
+          ;; namespace only, and sites of one effect in one spin can be told
+          ;; apart only by the order in which they run.
+          {:keys [line column]} (meta form)
+          current-ns (if line
+                       {:ns (str *ns*) :line line :column column}
+                       (str *ns*))]
       (fn [args]
         `(let [resolve# (fn [value#]
                           (try
@@ -130,13 +137,9 @@
             ;; Execute CPS body with trampoline support
             ;; If already in trampoline, return result directly (may be Thunk)
             ;; Otherwise, establish trampoline to unwrap Thunks from loop/recur
-            (if async/*in-trampoline*
+            (if (async/in-trampoline?)
               ~(ioc/invert params expanded)
-              (binding [async/*in-trampoline* true]
-                (loop [result# ~(ioc/invert params expanded)]
-                  (if (instance? ~thunk-sym result#)
-                    (recur ((.-f result#)))
-                    result#))))
+              (async/with-trampoline ~(ioc/invert params expanded)))
             (catch ~(if is-cljs? :default `Throwable) t# (~e t#)))))))
 
 #?(:clj

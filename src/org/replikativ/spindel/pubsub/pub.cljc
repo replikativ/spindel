@@ -9,6 +9,8 @@
    - Per-topic mults: each topic has its own mult for fan-out
    - Buffer function: customize buffer per topic
    - Lazy topic creation: mults created on first subscription to topic
+   - Lazy pump: the source is pulled from the first DEMAND of any subscriber,
+     so subscriptions made before anybody consumes all see every item
 
    Example:
      (def p (pub source-aseq :type))
@@ -39,9 +41,10 @@
 
 (defn- ensure-topic-mult!
   "Ensure a mult exists for the given topic. Creates one if needed.
+   `on-start` is called when a consumer first demands an item of the topic.
 
    Returns the mult for the topic."
-  [mults-atom topic]
+  [mults-atom topic on-start]
   (or (:mult (get @mults-atom topic))
       (let [;; Create a promise-based async sequence for this topic
             ;; Items will be pushed when they arrive.
@@ -83,7 +86,7 @@
                                       (await (anext this)))))))))
 
             ;; Create mult over the topic seq
-            topic-mult (mult/mult topic-aseq)
+            topic-mult (mult/mult topic-aseq {:on-start on-start})
 
             ;; Store the push function for delivering items
             push-fn (fn [item]
@@ -151,7 +154,9 @@
      ;; The pump spin
             pump-spin-atom
      ;; Has pump started?
-            pump-started-atom])
+            pump-started-atom
+     ;; The execution context of the first subscription; the pump runs there
+            context-atom])
 
 (defn- start-pub-pump!
   "Start the pump spin that pulls from source and routes to topic mults.
@@ -159,9 +164,10 @@
    The pump runs as a detached spin - we enqueue its execution via the event system
    to ensure proper execution context binding."
   [pub]
-  (let [{:keys [source-aseq topic-fn mults-atom closed-atom pump-spin-atom]} pub
-        ;; Capture runtime - needed for event-based execution
-        runtime (ec/current-execution-context)
+  (let [{:keys [source-aseq topic-fn mults-atom closed-atom pump-spin-atom context-atom]} pub
+        ;; The context of the first subscription - needed for event-based
+        ;; execution, and not the context of whoever consumes first
+        runtime (or @context-atom (ec/current-execution-context))
         pump (spin
               (loop [source source-aseq]
                 (if-let [result (await (anext source))]
@@ -196,13 +202,33 @@
 (extend-type Pub
   PPub
   (sub* [pub topic buffer close?]
-    (let [{:keys [mults-atom pump-started-atom]} pub
-          topic-mult (ensure-topic-mult! mults-atom topic)]
-      ;; Start pump on first subscription (lazy)
-      (when (compare-and-set! pump-started-atom false true)
-        (start-pub-pump! pub))
-      ;; Create tap on topic mult
-      (mult/tap topic-mult buffer close?)))
+    (let [{:keys [mults-atom pump-started-atom closed-atom context-atom]} pub
+          _ (compare-and-set! context-atom nil ec/*execution-context*)
+          ;; The pump starts when a subscriber first DEMANDS an item, not when
+          ;; the first subscription is made: every subscription made before
+          ;; anybody consumes then sees every item. Starting at the first `sub`
+          ;; made the second one race the pump, which dropped the items of a
+          ;; topic that was not subscribed yet.
+          start-pump! (fn []
+                        (when (compare-and-set! pump-started-atom false true)
+                          (binding [ec/*execution-context*
+                                    (or @context-atom (ec/current-execution-context))]
+                            (start-pub-pump! pub))))
+          topic-mult (ensure-topic-mult! mults-atom topic start-pump!)
+          tap-seq (mult/tap topic-mult buffer close?)]
+      ;; Joining a pub that is already routing: its topic must move items into
+      ;; this subscription's buffer without waiting to be asked, as the other
+      ;; topics do.
+      (when @pump-started-atom
+        (mult/start! topic-mult))
+      ;; A subscription to an exhausted pub must end, not wait for a pump that
+      ;; will never close its topic. Registered first, checked second: the
+      ;; pump closes the topics it sees when it ends, and sees this one or we
+      ;; see its flag.
+      (when @closed-atom
+        (when-let [{:keys [close-fn]} (get @mults-atom topic)]
+          (close-fn)))
+      tap-seq))
 
   (unsub* [pub topic tap-seq]
     (let [{:keys [mults-atom]} pub]
@@ -266,6 +292,7 @@
           (atom false)  ; closed
           (atom nil)    ; pump-spin
           (atom false)  ; pump-started
+          (atom nil)    ; context of the first subscription
           )))
 
 (defn sub
@@ -287,6 +314,20 @@
    (sub pub topic buffer true))
   ([pub topic buffer close?]
    (sub* pub topic buffer close?)))
+
+(defn start!
+  "Start routing now, without waiting for a subscriber to consume: for
+   subscriptions that only buffer (a window read on demand) over a source that
+   must be drained regardless. Subscriptions made afterwards join a running
+   stream."
+  [pub]
+  (let [{:keys [pump-started-atom context-atom mults-atom]} pub]
+    (when (compare-and-set! pump-started-atom false true)
+      (binding [ec/*execution-context* (or @context-atom (ec/current-execution-context))]
+        (start-pub-pump! pub)))
+    (doseq [[_topic {topic-mult :mult}] @mults-atom]
+      (mult/start! topic-mult))
+    pub))
 
 (defn unsub
   "Unsubscribe from a topic."
