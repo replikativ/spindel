@@ -2250,15 +2250,16 @@
                                         (assoc-in state' [:subscriptions event-key spin-id] spin-subs')
                                         (update-in state' [:subscriptions event-key] dissoc spin-id))))
                                   rt-state
-                                  await-conts)))
-              ;; Deferred reap: a spin whose Cleaner fired while it was
-              ;; still live was ORPHANED (not full-cleaned — see
-              ;; gc-quiescent? / try-gc-cleanup-spin!). Now that it has
-              ;; completed and its ephemeral conts are cleared, this
-              ;; generation boundary is the natural point to drop the node
-              ;; for real — otherwise completed orphans accumulate. Same
-              ;; quiescence predicate as the GC path: reap ONLY provably
-              ;; inert state.
+                                  await-conts))))
+            ;; Deferred reap: a spin whose Cleaner fired while it was
+            ;; still live was ORPHANED (not full-cleaned — see
+            ;; gc-quiescent? / try-gc-cleanup-spin!). Once it is complete and
+            ;; has no ephemeral conts, this generation boundary drops the node.
+            ;; The reap runs for an orphan with no await conts too: such an
+            ;; orphan gets no other pass, so it stays for the life of the
+            ;; context. Same quiescence predicate as the GC path: reap ONLY
+            ;; provably inert state.
+            (when (:orphaned? node)
               (let [node' (rtp/get-state context [:nodes spin-id])]
                 (when (and (:orphaned? node')
                            (gc-quiescent? context spin-id node'))
