@@ -6,8 +6,7 @@
   - RefBackend: STM transactional state (ref-based, JVM only)
   - ImmutableBackend: Readonly snapshots (serializable)
   - OverlayBackend: Fork with delta storage (memory efficient)"
-  (:require [clojure.set :as set]
-            [incognito.edn :refer [read-string-safe]]))
+  (:require [incognito.edn :refer [read-string-safe]]))
 
 ;; =============================================================================
 ;; Protocol
@@ -233,6 +232,65 @@
    (apply dissoc (or parent-state {}) local-paths)
    overlay))
 
+(defn- entity-changes!
+  "Add to the transient `acc` the entity-level changes between two versions of
+  the top-level map `top-key`.
+
+  An update fn keeps the object of each entity it does not touch, so
+  `identical?` settles most entries. Only a different object gets the full
+  `=` comparison. A removed entity becomes a tombstone."
+  [acc top-key old-value new-value]
+  (let [acc (reduce-kv (fn [acc' entity-id new-entity]
+                         (let [old-entity (get old-value entity-id)]
+                           (if (or (identical? old-entity new-entity)
+                                   (= old-entity new-entity))
+                             acc'
+                             (conj! acc' [[top-key entity-id] new-entity]))))
+                       acc
+                       new-value)]
+    (reduce-kv (fn [acc' entity-id old-entity]
+                 (if (or (contains? new-value entity-id) (nil? old-entity))
+                   acc'
+                   (conj! acc' [[top-key entity-id] deleted])))
+               acc
+               old-value)))
+
+(defn- whole-state-changes
+  "The overlay writes that turn the materialized state `merged` into
+  `new-state`, as `[path value]` pairs.
+
+  A whole-state transaction runs for every cached result and every recorded
+  dependency. The earlier diff built key sets of every top-level map, also of
+  maps the update fn did not touch. In a fork of a large parent that cost
+  milliseconds per transaction. This diff skips an identical top-level value
+  at once and walks the entries of a changed map without building sets."
+  [merged new-state]
+  (let [acc (reduce-kv
+             (fn [acc top-key new-value]
+               (let [old-value (get merged top-key)]
+                 (cond
+                   (identical? old-value new-value)
+                   acc
+
+                   (and (map? old-value) (not (record? old-value))
+                        (map? new-value) (not (record? new-value)))
+                   (entity-changes! acc top-key old-value new-value)
+
+                   (= old-value new-value)
+                   acc
+
+                   :else
+                   (conj! acc [[top-key] (mark-full-replacement new-value)]))))
+             (transient [])
+             new-state)]
+    (persistent!
+     (reduce-kv (fn [acc top-key old-value]
+                  (if (or (contains? new-state top-key) (nil? old-value))
+                    acc
+                    (conj! acc [[top-key] deleted])))
+                acc
+                merged))))
+
 (defn fork-local-path?
   "Check if path is fork-local (should not fall back to parent).
 
@@ -294,39 +352,7 @@
                                       (backend-deref parent-backend))
                        merged (merged-overlay-state parent-state ov local-paths)
                        new-state (f merged)
-                       top-keys (set/union (set (keys merged))
-                                           (set (keys new-state)))
-                       changes
-                       (reduce
-                        (fn [acc top-key]
-                          (let [old-value (get merged top-key)
-                                new-value (get new-state top-key)]
-                            (if (and (map? old-value)
-                                     (not (record? old-value))
-                                     (map? new-value)
-                                     (not (record? new-value)))
-                              (reduce
-                               (fn [acc' entity-id]
-                                 (let [old-entity (get old-value entity-id)
-                                       present? (contains? new-value entity-id)
-                                       new-entity (when present?
-                                                    (get new-value entity-id))]
-                                   (if (= old-entity new-entity)
-                                     acc'
-                                     (conj acc'
-                                           [[top-key entity-id]
-                                            (if present? new-entity deleted)]))))
-                               acc
-                               (set/union (set (keys old-value))
-                                          (set (keys new-value))))
-                              (if (= old-value new-value)
-                                acc
-                                (conj acc [[top-key]
-                                           (if (contains? new-state top-key)
-                                             (mark-full-replacement new-value)
-                                             deleted)])))))
-                        []
-                        top-keys)]
+                       changes (whole-state-changes merged new-state)]
                    ;; Reset on every retry; only the invocation whose CAS commits
                    ;; determines the auxiliary return value.
                    (vreset! committed new-state)
