@@ -137,7 +137,7 @@
   ;; another world (a sibling, or a fork of this context) has no state here:
   ;; its readers would never wake. Say so at the call site.
   (ratom/check-present! (ratom/atom-id #?(:clj (.-state-atom ^Deferred deferred)
-                                           :cljs (.-state-atom ^js deferred)))
+                                          :cljs (.-state-atom ^js deferred)))
                         :deliver)
   ;; Get execution-context from dynamic binding (*execution-context* is available via with-context or binding propagation)
   ;; Enqueue delivery event - caller returns before continuations execute
@@ -375,7 +375,7 @@
    - External: Must enqueue to prevent caller waiting for itself"
   [mailbox msg]
   (ratom/check-present! (ratom/atom-id #?(:clj (.-state-atom ^Mailbox mailbox)
-                                           :cljs (.-state-atom ^js mailbox)))
+                                          :cljs (.-state-atom ^js mailbox)))
                         :post)
   ;; Enqueue post event - caller returns before waiter resumes
   (ec/enqueue-event! {:type :mailbox-post

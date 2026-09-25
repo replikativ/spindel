@@ -66,8 +66,8 @@
         ;; worker, a future) must not turn the signal back into silence.
         (throw (do (log/error ::missing-state data)
                    (ex-info (str "Runtime atom " id " has no state in the bound context " ctx
-                             " (" (name op) "): it belongs to another world")
-                        (assoc data :type ::missing-state))))
+                                 " (" (name op) "): it belongs to another world")
+                            (assoc data :type ::missing-state))))
         (when (and (< (count @warned) 10000)
                    (not (contains? @warned [id ctx])))
           (swap! warned conj [id ctx])
