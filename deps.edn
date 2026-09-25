@@ -17,6 +17,9 @@
 
  :aliases
  {:test {:extra-paths ["test"]
+         ;; An access to a runtime atom, deferred or mailbox from a world that
+         ;; has no state for it fails the test instead of warning.
+         :jvm-opts ["-Dspindel.missing-state=throw"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
                       ;; datahike's kabel-writer client (datahike.kabel.*), used by the
                       ;; cross-system-sync + workspace-peer-integration tests, SHIPS in the
