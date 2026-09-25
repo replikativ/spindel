@@ -133,6 +133,12 @@
 
    See ENGINE_AND_EXECUTION_MODEL.md for details."
   [deferred value]
+  ;; The delivery is processed in the BOUND context. A deferred created in
+  ;; another world (a sibling, or a fork of this context) has no state here:
+  ;; its readers would never wake. Say so at the call site.
+  (ratom/check-present! (ratom/atom-id #?(:clj (.-state-atom ^Deferred deferred)
+                                           :cljs (.-state-atom ^js deferred)))
+                        :deliver)
   ;; Get execution-context from dynamic binding (*execution-context* is available via with-context or binding propagation)
   ;; Enqueue delivery event - caller returns before continuations execute
   (ec/enqueue-event! {:type :deferred-delivery
@@ -212,6 +218,9 @@
   ;; - Circular waits from external contexts
   ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
   (#?(:clj invoke :cljs -invoke) [_this msg]
+    ;; The post is processed in the BOUND context: say so here, at the call
+    ;; site, when that world has no state for this mailbox.
+    (ratom/check-present! (ratom/atom-id state-atom) :post)
    ;; Enqueue post event - breaks call stack, ensures proper trampoline handling
     (ec/enqueue-event! {:type :mailbox-post
                         :mailbox _this
@@ -365,6 +374,9 @@
    - Internal: Inline resume is safe (no circular waits)
    - External: Must enqueue to prevent caller waiting for itself"
   [mailbox msg]
+  (ratom/check-present! (ratom/atom-id #?(:clj (.-state-atom ^Mailbox mailbox)
+                                           :cljs (.-state-atom ^js mailbox)))
+                        :post)
   ;; Enqueue post event - caller returns before waiter resumes
   (ec/enqueue-event! {:type :mailbox-post
                       :mailbox mailbox

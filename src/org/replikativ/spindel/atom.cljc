@@ -1,6 +1,7 @@
 (ns org.replikativ.spindel.atom
   (:refer-clojure :exclude [atom])
-  (:require [org.replikativ.spindel.engine.core :as ec]))
+  (:require [org.replikativ.spindel.engine.core :as ec]
+            [replikativ.logging :as log]))
 
 ;; Fork-safe atoms that store state inside the runtime.
 ;; API is 100% compatible with clojure.core/atom for easy migration.
@@ -31,6 +32,49 @@
               (ec/swap-state! [:listeners] (fn [ls] (dissoc ls atom-id))))))))))
 
 ;; =============================================================================
+;; Missing state: the bound world never had this atom
+;; =============================================================================
+;;
+;; An atom's state lives in the context that created it and in that context's
+;; forks (copy-on-write, reads fall through to the parent). Rebinding to any of
+;; them is how forking works. Rebinding to a context OUTSIDE that lineage (a
+;; sibling, or an ancestor of the creating context) finds no entry: a deref
+;; answers nil, a swap starts an unrelated entry, a deferred delivery reaches
+;; none of its readers, all silently. The entry cannot have been reaped under a
+;; live caller (the Cleaner fires only once the RuntimeAtom is unreachable), so
+;; a missing entry at access time always means the wrong world.
+
+(defonce ^{:doc "What an access finds when the bound context has no state for
+  the atom: :warn (log once per atom and context), :throw, or :ignore. Tests
+  run with :throw."}
+  missing-state-mode
+  (clojure.core/atom #?(:clj (keyword (or (System/getProperty "spindel.missing-state") "warn"))
+                        :cljs :warn)))
+
+(defonce ^:private warned (clojure.core/atom #{}))
+
+(defn check-present!
+  "Signal (per `missing-state-mode`) an access to atom `id` in a context that
+   has no state for it. `op` names the access. Returns nil."
+  [id op]
+  (when (and (not= :ignore @missing-state-mode)
+             (nil? (ec/get-state [:atoms id])))
+    (let [ctx (:fork-id (ec/current-execution-context))
+          data {:atom id :op op :context ctx}]
+      (if (= :throw @missing-state-mode)
+        ;; Logged too: a caller that catches and drops the exception (a
+        ;; worker, a future) must not turn the signal back into silence.
+        (throw (do (log/error ::missing-state data)
+                   (ex-info (str "Runtime atom " id " has no state in the bound context " ctx
+                             " (" (name op) "): it belongs to another world")
+                        (assoc data :type ::missing-state))))
+        (when (and (< (count @warned) 10000)
+                   (not (contains? @warned [id ctx])))
+          (swap! warned conj [id ctx])
+          (log/warn ::missing-state data)))))
+  nil)
+
+;; =============================================================================
 ;; Watch dispatch — swap-site firing (shared with SignalRef via ec/notify-listeners!)
 ;; =============================================================================
 
@@ -41,6 +85,7 @@
    fn can be retried). Listeners live at the fork-local [:listeners id], so a fork
    swap fires the fork's listeners only. Returns the new value."
   [ref id f]
+  (check-present! id :swap)
   (let [ov (volatile! nil)
         nv (ec/swap-state! [:atoms id :value]
                            (fn [old] (vreset! ov old) (f old)))]
@@ -56,7 +101,9 @@
      clojure.lang.IDeref
      (deref [_this]
        ;; Use dynamically bound *execution-context* - no captured runtime!
-       (ec/get-state [:atoms id :value]))
+       (if-let [entry (ec/get-state [:atoms id])]
+         (:value entry)
+         (check-present! id :deref)))
 
      clojure.lang.IMeta
      (meta [_this]
@@ -102,7 +149,9 @@
      IDeref
      (-deref [_this]
        ;; Use dynamically bound *execution-context* - no captured runtime!
-       (ec/get-state [:atoms id :value]))
+       (if-let [entry (ec/get-state [:atoms id])]
+         (:value entry)
+         (check-present! id :deref)))
 
      IMeta
      (-meta [_this]
@@ -131,6 +180,11 @@
        (swap-and-notify! this id (fn [v] (f v a b))))
      (-swap! [this f a b xs]
        (swap-and-notify! this id (fn [v] (apply f v a b xs))))))
+
+(defn atom-id
+  "The id under which runtime atom `a` keeps its state (`[:atoms id]`)."
+  [a]
+  #?(:clj (.-id ^RuntimeAtom a) :cljs (.-id ^js a)))
 
 ;; =============================================================================
 ;; Public API
