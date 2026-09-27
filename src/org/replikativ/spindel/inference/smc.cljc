@@ -74,6 +74,197 @@
                 (let [v (get retained address)]
                   {:value v :log-proposal (ar/observe* (:dist (:savepoint/payload sp)) v)}))))}))
 
+(defn- stream-site?
+  "A sample site whose value arrives from outside (`(sample d :stream true)`),
+  see `stream`."
+  [sp]
+  (and (= itrace/choose-site (:savepoint/site sp))
+       (:stream (:options (:savepoint/payload sp)))))
+
+(defn- run-particles
+  "The particle machinery shared by `smc` and `stream`. Starts `model` with
+  `n` particles and returns `{:supply! (fn [value])}`.
+
+  Particles run until each is parked or has returned. Parked at an observe:
+  when all are, the population is resampled (see `smc`) and resumed. Parked
+  at a stream site: when all particles are parked there or have returned,
+  `on-idle` gets the current measure; `supply!` then scores every stream site
+  with the value, which turns them into an ordinary barrier. When all have
+  returned, `on-done` gets the final measure; `on-error` any failure."
+  [model n {:keys [resample-threshold policy executor retained] :as opts}
+   {:keys [on-idle on-done on-error]}]
+  (let [threshold (or resample-threshold 0.5)
+        policy (or policy (itrace/policy))
+        policy-of (if retained
+                    (let [rp (retained-policy retained)]
+                      (fn [slot] (if (= 0 slot) rp policy)))
+                    (constantly policy))
+        root (if executor
+               (ctx/create-execution-context :executor executor)
+               (ctx/create-execution-context))
+        session (sp/open! root (merge {:purpose :smc
+                                       :fork-opts {:systems :none}
+                                       :retain-released? false}
+                                      (dissoc opts :resample-threshold :policy :executor :retained)))
+        ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
+        ;;                                    site), resumed with v after the barrier
+        ;;  :streaming {slot sp}               at a stream site, waiting for a value
+        ;;  :done {slot {:sample s :log-weight w}}
+        ;;  :log-z accumulated :in-barrier? :finished?}
+        state (atom {:parked {} :streaming {} :done {} :log-z 0.0})
+        close! (fn []
+                 ((sp/close! session)
+                  (fn [_] nil)
+                  (fn [e] (log/warn :smc/close-failed {:error e}))))
+        finish! (fn [callback outcome]
+                  (when-not (:finished? (first (swap-vals! state assoc :finished? true)))
+                    (callback outcome)
+                    (close!)))
+        fail! #(finish! on-error %)
+        measure (fn [{:keys [parked streaming done log-z]}]
+                  (assoc (m/empirical
+                          (mapv (fn [slot]
+                                  (if-let [d (get done slot)]
+                                    [(:sample d) (:log-weight d)]
+                                    (let [w (:savepoint/world (or (:sp (get parked slot))
+                                                                  (get streaming slot)))]
+                                      [(sample-of w nil) (weight-of w)])))
+                                (range n)))
+                         :log-normalizer log-z))]
+    (letfn [(arrived! []
+              ;; the last arrival claims the barrier, atomically: two particles
+              ;; may arrive on two executor threads at once
+              (let [[before after]
+                    (swap-vals! state
+                                (fn [{:keys [parked streaming done in-barrier?] :as st}]
+                                  (if (and (not in-barrier?)
+                                           (= n (+ (count parked) (count streaming) (count done))))
+                                    (assoc st :in-barrier? true)
+                                    st)))]
+                (when (and (:in-barrier? after) (not (:in-barrier? before)))
+                  (let [{:keys [parked streaming]} after]
+                    (cond
+                      (seq parked) (barrier!)
+                      (seq streaming) (do (swap! state assoc :in-barrier? false)
+                                          (on-idle (measure after)))
+                      :else (finish! on-done (measure after)))))))
+
+            (run-site! [sp]
+              (try
+                (let [slot (slot-of (:savepoint/world sp))]
+                  (if (stream-site? sp)
+                    (do (swap! state assoc-in [:streaming slot] sp)
+                        (arrived!))
+                    (let [{:keys [value]} (decide! (policy-of slot) sp)]
+                      (if (:observed? (:savepoint/payload sp))
+                        (do (swap! state assoc-in [:parked slot] {:sp sp :value value})
+                            (arrived!))
+                        (sp/resume sp value)))))
+                (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+
+            (spawn! [first-sp]
+              ;; the root's first savepoint becomes N particle worlds
+              ((all-forked (vec (repeat n first-sp)))
+               (fn [children]
+                 (sp/abandon first-sp)
+                 (doseq [[slot child] (map-indexed vector children)]
+                   (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
+                   (run-site! child)))
+               fail!))
+
+            (barrier! []
+              (let [{:keys [parked streaming done]} @state
+                    slots (vec (range n))
+                    world-of (fn [slot] (:savepoint/world (or (:sp (get parked slot))
+                                                              (get streaming slot))))
+                    log-ws (mapv #(if-let [d (get done %)] (:log-weight d) (weight-of (world-of %)))
+                                 slots)
+                    weights (m/normalize-log-weights log-ws)
+                    resample? (or (some? retained)
+                                  (< (m/compute-ess weights) (* threshold n)))]
+                (if-not resample?
+                  (do (swap! state assoc :parked {} :in-barrier? false)
+                      (doseq [[_ {:keys [sp value]}] (sort-by key parked)]
+                        (sp/resume sp value)))
+                  (let [ancestors (if retained
+                                    ;; conditional: 0 keeps its lineage
+                                    (into [0] (repeatedly (dec n) #(m/sample-categorical weights)))
+                                    (m/systematic-resample weights n))
+                        live? #(or (contains? parked %) (contains? streaming %))
+                        forked-slots (filterv #(live? (nth ancestors %)) slots)
+                        source (fn [a] (or (:sp (get parked a)) (get streaming a)))]
+                    (swap! state update :log-z + (m/log-mean-exp log-ws))
+                    ((all-forked (mapv #(source (nth ancestors %)) forked-slots))
+                     (fn [children]
+                       (let [carried (into {} (keep (fn [slot]
+                                                      (when-let [d (get done (nth ancestors slot))]
+                                                        [slot (assoc d :log-weight 0.0)])))
+                                           slots)
+                             placed (map (fn [slot child]
+                                           (let [a (nth ancestors slot)
+                                                 w (:savepoint/world child)]
+                                             (rtp/swap-state! w [:inference :slot] (constantly slot))
+                                             (rtp/swap-state! w [:inference :log-weight] (constantly 0.0))
+                                             [slot child (get parked a)]))
+                                         forked-slots children)
+                             parked' (into {} (keep (fn [[slot child p]]
+                                                      (when p [slot {:sp child :value (:value p)}])))
+                                           placed)
+                             streaming' (into {} (keep (fn [[slot child p]] (when-not p [slot child])))
+                                              placed)]
+                         (doseq [[_ {:keys [sp]}] parked] (sp/abandon sp))
+                         (doseq [[_ s] streaming] (sp/abandon s))
+                         (swap! state assoc :parked {} :streaming streaming' :done carried
+                                :in-barrier? false)
+                         (if (empty? parked')
+                           (arrived!)
+                           (doseq [[_ {:keys [sp value]}] (sort-by key parked')]
+                             (sp/resume sp value)))))
+                     fail!)))))
+
+            (supply! [value]
+              ;; every particle waiting at a stream site scores `value` there;
+              ;; that is an ordinary barrier from here on
+              (try
+                (let [{:keys [streaming]} @state
+                      parked (into {} (map (fn [[slot sp]]
+                                             (let [policy (itrace/policy
+                                                           {:constraints {(:savepoint/address sp) value}})]
+                                               (decide! policy sp)
+                                               [slot {:sp sp :value value}])))
+                                   streaming)]
+                  (swap! state assoc :streaming {} :parked parked)
+                  (arrived!))
+                (catch #?(:clj Throwable :cljs :default) e (fail! e))))]
+      (try
+        (sp/install-handlers!
+         root
+         {sp/any-site
+          (fn [s]
+            (if (nil? (slot-of (:savepoint/world s)))
+              (spawn! s)
+              (run-site! s)))
+          sp/result-site
+          (fn [{world :savepoint/world result :savepoint/payload}]
+            (if-let [slot (slot-of world)]
+              (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
+                                                      :log-weight (weight-of world)})
+                  ;; the Sample holds what the measure needs; give the world
+                  ;; back now instead of holding every finished particle until
+                  ;; the session closes
+                  (sp/release-world! session world)
+                  (arrived!))
+              ;; a program without savepoints: one deterministic particle
+              (finish! on-done (m/empirical (vec (repeat n [(sample-of world result) 0.0]))))))
+          sp/error-site
+          (fn [{error :savepoint/payload}] (fail! error))
+          sp/abandoned-site (fn [_] nil)})
+        (sp/start! session model)
+        (catch #?(:clj Throwable :cljs :default) e
+          (log/error :smc/start-failed {:error e})
+          (fail! e)))
+      {:supply! supply! :close! close!})))
+
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
   (ESS fraction, default 0.5), `:policy` (an `inference.trace/policy`,
@@ -85,134 +276,49 @@
   keeps its own lineage while the other n−1 draw their ancestors.
 
   Resolves an `EmpiricalMeasure` of `Sample`s (result + trace) whose
-  `log-marginal` is the SMC evidence estimate."
-  [model n & [{:keys [resample-threshold policy executor retained] :as opts}]]
-  (let [threshold (or resample-threshold 0.5)
-        policy (or policy (itrace/policy))
-        policy-of (if retained
-                    (let [rp (retained-policy retained)]
-                      (fn [slot] (if (= 0 slot) rp policy)))
-                    (constantly policy))]
-    (fn [resolve reject]
-      (let [root (if executor
-                   (ctx/create-execution-context :executor executor)
-                   (ctx/create-execution-context))
-            session (sp/open! root (merge {:purpose :smc
-                                           :fork-opts {:systems :none}
-                                           :retain-released? false}
-                                          (dissoc opts :resample-threshold :policy :executor :retained)))
-            ;; {:waiting {slot sp} :done {slot {:sample s :log-weight w}}
-            ;;  :log-z accumulated :spawned? bool :finished? bool}
-            state (atom {:waiting {} :done {} :log-z 0.0})
-            finish! (fn [outcome deliver]
-                      (when-not (:finished? (first (swap-vals! state assoc :finished? true)))
-                        (deliver outcome)
-                        ((sp/close! session)
-                         (fn [_] nil)
-                         (fn [e] (log/warn :smc/close-failed {:error e})))))
-            fail! #(finish! % reject)]
-        (letfn [(arrived! []
-                  ;; the last arrival claims the barrier, atomically: two
-                  ;; particles may arrive on two executor threads at once
-                  (let [[before after]
-                        (swap-vals! state
-                                    (fn [{:keys [waiting done in-barrier?] :as st}]
-                                      (if (and (not in-barrier?)
-                                               (= n (+ (count waiting) (count done))))
-                                        (assoc st :in-barrier? true)
-                                        st)))]
-                    (when (and (:in-barrier? after) (not (:in-barrier? before)))
-                      (barrier!))))
+  `log-marginal` is the SMC evidence estimate. A model with stream sites
+  runs with `stream` instead."
+  [model n & [opts]]
+  (fn [resolve reject]
+    (run-particles model n opts
+                   {:on-done resolve
+                    :on-error reject
+                    :on-idle (fn [_]
+                               (reject (ex-info "The model has stream sites; run it with smc/stream"
+                                                {:type ::stream-sites})))})))
 
-                (run-site! [sp]
-                  (try
-                    (let [{:keys [value]} (decide! (policy-of (slot-of (:savepoint/world sp))) sp)]
-                      (if (:observed? (:savepoint/payload sp))
-                        (do (swap! state assoc-in [:waiting (slot-of (:savepoint/world sp))] sp)
-                            (arrived!))
-                        (sp/resume sp value)))
-                    (catch #?(:clj Throwable :cljs :default) e (fail! e))))
+(defn stream
+  "Online SMC: `model` marks the sites whose values arrive from outside as
+  stream sites — `(sample (normal x 1) :id [:y t] :stream true)` — and
+  particles run until each waits at its next one. Resolves a step
 
-                (spawn! [first-sp]
-                  ;; the root's first savepoint becomes N particle worlds
-                  ((all-forked (vec (repeat n first-sp)))
-                   (fn [children]
-                     (sp/abandon first-sp)
-                     (doseq [[slot child] (map-indexed vector children)]
-                       (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
-                       (run-site! child)))
-                   fail!))
+    {:measure  the posterior over the trajectories so far
+     :push     (fn [y]) -> CPS resolving the next step, after every particle
+               scored y at its stream site, the population was resampled as
+               needed, and each ran on to its next stream site (or returned)
+     :done?    true once every particle has returned (no :push then)
+     :close    (fn []) giving the worlds back}
 
-                (barrier! []
-                  (let [{:keys [waiting done]} @state]
-                    (if (empty? waiting)
-                      (finish! (assoc (m/empirical (mapv (fn [slot] [(get-in done [slot :sample])
-                                                                     (get-in done [slot :log-weight])])
-                                                         (range n)))
-                                      :log-normalizer (:log-z @state))
-                               resolve)
-                      (let [slots (vec (range n))
-                            log-ws (mapv #(if-let [s (get waiting %)]
-                                            (weight-of (:savepoint/world s))
-                                            (get-in done [% :log-weight]))
-                                         slots)
-                            weights (m/normalize-log-weights log-ws)
-                            resample? (or (some? retained)
-                                          (< (m/compute-ess weights) (* threshold n)))]
-                        (if-not resample?
-                          (do (swap! state assoc :waiting {} :in-barrier? false)
-                              (doseq [[_ s] (sort-by key waiting)]
-                                (sp/resume s (:value (:savepoint/payload s)))))
-                          (let [ancestors (if retained
-                                            ;; conditional: 0 keeps its lineage
-                                            (into [0] (repeatedly (dec n) #(m/sample-categorical weights)))
-                                            (m/systematic-resample weights n))
-                                forked-slots (filterv #(contains? waiting (nth ancestors %)) slots)]
-                            (swap! state update :log-z + (m/log-mean-exp log-ws))
-                            ((all-forked (mapv #(get waiting (nth ancestors %)) forked-slots))
-                             (fn [children]
-                               (let [carried (into {} (keep (fn [slot]
-                                                              (when-let [d (get done (nth ancestors slot))]
-                                                                [slot (assoc d :log-weight 0.0)])))
-                                                   slots)]
-                                 (doseq [[_ s] waiting] (sp/abandon s))
-                                 (swap! state assoc :waiting {} :done carried :in-barrier? false)
-                                 (doseq [[slot child] (map vector forked-slots children)]
-                                   (let [w (:savepoint/world child)]
-                                     (rtp/swap-state! w [:inference :slot] (constantly slot))
-                                     (rtp/swap-state! w [:inference :log-weight] (constantly 0.0))))
-                                 (if (empty? children)
-                                   (arrived!)
-                                   (doseq [child children]
-                                     (sp/resume child (:value (:savepoint/payload child)))))))
-                             fail!)))))))]
-          (try
-            (sp/install-handlers!
-             root
-             {sp/any-site
-              (fn [s]
-                (if (nil? (slot-of (:savepoint/world s)))
-                  (spawn! s)
-                  (run-site! s)))
-              sp/result-site
-              (fn [{world :savepoint/world result :savepoint/payload}]
-                (if-let [slot (slot-of world)]
-                  (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
-                                                          :log-weight (weight-of world)})
-                      ;; the Sample holds what the measure needs; give the
-                      ;; world back now instead of holding every finished
-                      ;; particle until the session closes
-                      (sp/release-world! session world)
-                      (arrived!))
-                  ;; a program without savepoints: one deterministic particle
-                  (finish! (m/empirical (vec (repeat n [(sample-of world result) 0.0]))) resolve)))
-              sp/error-site
-              (fn [{error :savepoint/payload}] (fail! error))
-              sp/abandoned-site (fn [_] nil)})
-            (sp/start! session model)
-            (catch #?(:clj Throwable :cljs :default) e
-              (log/error :smc/start-failed {:error e})
-              (fail! e))))))))
+  Each push costs the particles' work up to their next stream site; nothing
+  already seen is re-run. `opts` as for `smc`."
+  [model n & [opts]]
+  (fn [resolve reject]
+    (let [waiting (atom [resolve reject])
+          controller (atom nil)
+          step (fn [done? m]
+                 (let [[res _] @waiting]
+                   (res (cond-> {:measure m :done? done?
+                                 :close (fn [] ((:close! @controller)))}
+                          (not done?)
+                          (assoc :push (fn [y]
+                                         (fn [res' rej']
+                                           (reset! waiting [res' rej'])
+                                           ((:supply! @controller) y))))))))]
+      (reset! controller
+              (run-particles model n opts
+                             {:on-idle #(step false %)
+                              :on-done #(step true %)
+                              :on-error (fn [e] ((second @waiting) e))})))))
 
 ;; =============================================================================
 ;; Particle MCMC on savepoint SMC
