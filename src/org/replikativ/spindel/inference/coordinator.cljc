@@ -399,6 +399,13 @@
 ;; Helper: Snapshot-Based Context Forking
 ;; =============================================================================
 
+(defn particle-id
+  "The id of the particle in `slot` of generation `generation` (the sweep).
+  Deterministic, so the coordinator's particle map iterates in the same order
+  in every run of a seeded inference."
+  [generation slot]
+  (keyword (str "particle-" generation "-" slot)))
+
 (defn fork-particle-context
   "Create an independent, fully materialized child particle context.
 
@@ -994,14 +1001,16 @@
   the barrier's observe, which is already recorded) and the completed
   particles carried over as they are. Completed particles count as arrived
   at the next barrier; if every slot is complete the population is done."
-  [coordinator contexts-with-checkpoints resample? retained-position carried]
+  [coordinator contexts-with-checkpoints slot-numbers resample? retained-position carried]
   (reset! (:particles coordinator) {})
   (reset! (:barrier-count coordinator) 0)
   (let [retained-pid @(:retained-particle-id coordinator)
         sweep @(:current-sweep coordinator)
         running (vec (map-indexed
-                      (fn [i {:keys [context particle-id world] :as entry}]
-                        (let [pid (if (= i retained-position) retained-pid particle-id)]
+                      (fn [i {:keys [context world] :as entry}]
+                        (let [pid (if (= i retained-position)
+                                    retained-pid
+                                    (particle-id sweep (nth slot-numbers i)))]
                           (when resample?
                             (rtp/swap-state! context [:inference :log-weight] (constantly 0.0)))
                           (rtp/swap-state! context [:inference :particle-id] (constantly pid))
@@ -1125,7 +1134,11 @@
                 (nth waiting-idxs
                      (perform-ancestor-sampling (mapv state-of waiting-idxs)
                                                 @(:pgibbs-retained-trace coordinator)
-                                                (:executor (:parent-runtime coordinator))))
+                                                ;; the particles' executor, not the
+                                                ;; caller's: scoring draws from the
+                                                ;; seeded generator, and a run is only
+                                                ;; reproducible if it draws in one order
+                                                (:executor (:context (state-of (first waiting-idxs))))))
                 retained-slot))
             ancestors (if resample?
                         (ancestor-indices weights n retained-slot retained-ancestor)
@@ -1139,7 +1152,7 @@
                                :when (= :complete (:status st))]
                            {:particle-id (if (= slot retained-slot)
                                            @(:retained-particle-id coordinator)
-                                           (keyword (str "particle-" (gensym))))
+                                           (particle-id @(:current-sweep coordinator) slot))
                             :state (cond-> st resample? (assoc :log-weight 0.0))}))
             ;; the waiting sources: forked into the next generation, then retired
             waiting-state (into {} (map #(nth entries %)) waiting-idxs)
@@ -1158,7 +1171,7 @@
                      (retire-particle-generation! coordinator waiting-state)
                      (fn [_]
                        (if (complete-particle-generation-transition! manager (mapv :context cwc))
-                         (resume-resampled-contexts! coordinator cwc resample? retained-position carried)
+                         (resume-resampled-contexts! coordinator cwc (mapv first checkpoint-slots) resample? retained-position carried)
                          ;; Cancellation landed while source finalizers were
                          ;; running. The children were never started.
                          (notify-failed! coordinator :particle-generation
@@ -1176,7 +1189,7 @@
                       (notify-failed! coordinator :particle-generation
                                       (:parent-runtime coordinator)
                                       (cancellation-error))))
-                  (resume-resampled-contexts! coordinator cwc resample? retained-position carried))))]
+                  (resume-resampled-contexts! coordinator cwc (mapv first checkpoint-slots) resample? retained-position carried))))]
 
         (log/debug :kernel-coord/barrier {:sweep @(:current-sweep coordinator)
                                           :resample? resample?
