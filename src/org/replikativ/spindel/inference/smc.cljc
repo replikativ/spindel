@@ -173,6 +173,10 @@
                 (if-let [slot (slot-of world)]
                   (do (swap! state assoc-in [:done slot] {:sample (sample-of world result)
                                                           :log-weight (weight-of world)})
+                      ;; the Sample holds what the measure needs; give the
+                      ;; world back now instead of holding every finished
+                      ;; particle until the session closes
+                      (sp/release-world! session world)
                       (arrived!))
                   ;; a program without savepoints: one deterministic particle
                   (finish! (m/empirical (vec (repeat n [(sample-of world result) 0.0]))) resolve)))
