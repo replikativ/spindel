@@ -114,8 +114,12 @@
                 (when (compare-and-set! delivered? false true)
                   (callback value)))
         fail! (fn [sp error]
-                (try (sp/abandon sp) (catch #?(:clj Throwable :cljs :default) _ nil))
-                (once! reject error))
+                ;; Report the error BEFORE abandoning: the abandon unwinds on
+                ;; the executor and reaches `abandoned-site`, whose handler
+                ;; rejects with the cancellation — first come, first
+                ;; delivered, so it could win the race and hide the error.
+                (once! reject error)
+                (try (sp/abandon sp) (catch #?(:clj Throwable :cljs :default) _ nil)))
         finish (fn [k]
                  (fn [event]
                    (let [world (:savepoint/world event)]
