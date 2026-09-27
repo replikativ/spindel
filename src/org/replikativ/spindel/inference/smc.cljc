@@ -91,7 +91,7 @@
   `on-idle` gets the current measure; `supply!` then scores every stream site
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
-  [model n {:keys [resample-threshold policy executor retained] :as opts}
+  [model n {:keys [resample-threshold policy executor retained ancestor-sampling?] :as opts}
    {:keys [on-idle on-done on-error]}]
   (let [threshold (or resample-threshold 0.5)
         policy (or policy (itrace/policy))
@@ -105,7 +105,7 @@
         session (sp/open! root (merge {:purpose :smc
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
-                                      (dissoc opts :resample-threshold :policy :executor :retained)))
+                                      (dissoc opts :resample-threshold :policy :executor :retained :ancestor-sampling?)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
@@ -173,6 +173,53 @@
                fail!))
 
             (barrier! []
+              (if (and retained ancestor-sampling? (contains? (:parked @state) 0))
+                ;; PGAS: the retained particle redraws the past it continues
+                ;; from, ∝ w_i · p(retained future | particle i's past)
+                (let [parked (:parked @state)
+                      candidates (vec (sort (keys parked)))]
+                  ((score-futures (mapv #(get parked %) candidates))
+                   (fn [scores]
+                     (let [combined (mapv (fn [slot score]
+                                            (+ (weight-of (:savepoint/world (:sp (get parked slot)))) score))
+                                          candidates scores)]
+                       (resample-with! (nth candidates
+                                            (m/sample-categorical (m/normalize-log-weights combined))))))
+                   fail!))
+                (resample-with! 0)))
+
+            (score-futures [entries]
+              ;; each parked particle's future replayed on the retained values
+              ;; in a fork under a handler table of its own; its final weight
+              ;; (from 0) is log p(retained latents, observations | its past)
+              (fn [resolve reject]
+                (let [k (count entries)
+                      scores (object-array k)
+                      remaining (atom k)
+                      failed? (atom false)
+                      scoring (itrace/policy {:constraints retained})
+                      done! (fn [i score]
+                              (aset scores i score)
+                              (when (zero? (swap! remaining dec))
+                                (resolve (vec scores))))]
+                  (dotimes [i k]
+                    (let [{:keys [sp value]} (nth entries i)]
+                      ((sp/fork sp {:handlers
+                                    {sp/any-site (fn [s] (sp/resume s (:value (decide! scoring s))))
+                                     sp/result-site (fn [{w :savepoint/world}]
+                                                      (let [score (weight-of w)]
+                                                        (sp/release-world! session w)
+                                                        (done! i score)))
+                                     sp/error-site (fn [{w :savepoint/world}]
+                                                     (sp/release-world! session w)
+                                                     (done! i ##-Inf))
+                                     sp/abandoned-site (fn [_] nil)}})
+                       (fn [child]
+                         (rtp/swap-state! (:savepoint/world child) [:inference :log-weight] (constantly 0.0))
+                         (sp/resume child value))
+                       (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
+
+            (resample-with! [retained-ancestor]
               (let [{:keys [parked streaming done]} @state
                     slots (vec (range n))
                     world-of (fn [slot] (:savepoint/world (or (:sp (get parked slot))
@@ -187,8 +234,10 @@
                       (doseq [[_ {:keys [sp value]}] (sort-by key parked)]
                         (sp/resume sp value)))
                   (let [ancestors (if retained
-                                    ;; conditional: 0 keeps its lineage
-                                    (into [0] (repeatedly (dec n) #(m/sample-categorical weights)))
+                                    ;; conditional: slot 0 continues from its own
+                                    ;; lineage, or the past PGAS drew for it
+                                    (into [retained-ancestor]
+                                          (repeatedly (dec n) #(m/sample-categorical weights)))
                                     (m/systematic-resample weights n))
                         live? #(or (contains? parked %) (contains? streaming %))
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
@@ -273,7 +322,10 @@
 
   `:retained` {address value} makes it CONDITIONAL SMC (particle Gibbs):
   particle 0 follows those choices, every barrier resamples, and particle 0
-  keeps its own lineage while the other n−1 draw their ancestors.
+  keeps its own lineage while the other n−1 draw their ancestors. With
+  `:ancestor-sampling? true` particle 0 instead redraws its ancestor at every
+  barrier, ∝ w_i · p(retained future | particle i's past), the future scored
+  by replaying each particle in a fork on the retained values (PGAS).
 
   Resolves an `EmpiricalMeasure` of `Sample`s (result + trace) whose
   `log-marginal` is the SMC evidence estimate. A model with stream sites
@@ -370,6 +422,14 @@
                        rej))))
           resolve reject)))
      reject)))
+
+(defn pgas
+  "Particle Gibbs with ancestor sampling (Lindsten et al. 2014): `pgibbs`
+  whose retained particle redraws its ancestor at every barrier. Improves
+  mixing where plain particle Gibbs degenerates; costs a replay of the
+  retained future per parked particle per barrier."
+  [model n iterations & [opts]]
+  (pgibbs model n iterations (assoc opts :ancestor-sampling? true)))
 
 (defn pimh
   "Particle independent Metropolis-Hastings: each iteration proposes a fresh
