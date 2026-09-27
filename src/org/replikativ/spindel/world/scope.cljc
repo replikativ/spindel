@@ -10,6 +10,7 @@
    audit projection retained after successful cleanup."
   (:require [is.simm.partial-cps.async :as pcps-async]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [replikativ.logging :as log]))
 
@@ -199,6 +200,10 @@
               ;; reinterpret it as a second rejection and silently swallow it.
                (if @settled? (throw error) (fail! error))))))))))
 
+(def ^:private hop-depth
+  "Worlds `discard!` walks on one stack before continuing on a fresh one."
+  200)
+
 (defn discard!
   "Discard all owned worlds newest first. Returns a shared CPS operation."
   [scope]
@@ -275,9 +280,16 @@
                    #(assoc %
                            :status (if (ygg/open-fork? handle) :open :failed)
                            :error error)))
-                (step [remaining]
-                  (if-let [handle (first remaining)]
-                    (if (ygg/open-fork? handle)
+                (step [remaining depth]
+                  ;; A discard usually completes inline, so each continues
+                  ;; the next from inside its own callback: ~20 frames per
+                  ;; world, and a scope of ~650 worlds overflowed the stack —
+                  ;; the overflow then failed `fail!` too and the discard
+                  ;; never resolved (#71). Every `hop-depth` worlds the walk
+                  ;; continues from a fresh task on the world's executor
+                  ;; instead; inline if that executor refuses the task.
+                  (let [remaining (drop-while (complement ygg/open-fork?) remaining)]
+                    (if-let [handle (first remaining)]
                       (returning!
                        scope (:child-ctx handle)
                        (fn []
@@ -285,22 +297,28 @@
                                    pcps-async/*in-trampoline* false]
                            (invoke-once!
                             (ygg/discard-fork! handle {:sync? false})
-                            (fn [_] (step (next remaining)))
+                            (fn [_]
+                              (if (< depth hop-depth)
+                                (step (next remaining) (inc depth))
+                                (let [continue! #(step (next remaining) 0)]
+                                  (try
+                                    (executor/execute! (:executor (:parent-ctx handle)) continue!)
+                                    (catch #?(:clj Throwable :cljs :default) _
+                                      (continue!))))))
                             (fn [error] (fail! handle error)))))
                        (fn [error] (fail! handle error)))
-                      (step (next remaining)))
-                    (let [descriptors
-                          (into (vec (:released @scope))
-                                (map ygg/fork-descriptor)
-                                (:handles @scope))]
-                      (complete!
-                       :done nil
-                       #(-> %
-                            (assoc :status :discarded
-                                   :descriptors descriptors
-                                   :handles [])
-                            (dissoc :client :error))))))]
-          (step handles))))))
+                      (let [descriptors
+                            (into (vec (:released @scope))
+                                  (map ygg/fork-descriptor)
+                                  (:handles @scope))]
+                        (complete!
+                         :done nil
+                         #(-> %
+                              (assoc :status :discarded
+                                     :descriptors descriptors
+                                     :handles [])
+                              (dissoc :client :error)))))))]
+          (step handles 0))))))
 
 (defn release!
   "Discard ONE owned world before the scope ends, so a long search need not

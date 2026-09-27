@@ -425,3 +425,18 @@
         (is (= {root-id {:balance 9}} @ledger)))
       (finally
         (context/stop-context! root)))))
+
+(deftest discarding-thousands-of-worlds-does-not-grow-the-stack
+  ;; Discards complete inline; chained through their callbacks the walk grew
+  ;; ~20 frames per world, and a scope of ~650 worlds overflowed the stack
+  ;; and never resolved (#71).
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :many :fork-opts {:systems :none}})
+        ;; an activity holds the scope open while it grows
+        lease (scope/begin-activity! world-scope :generation)]
+    (binding [ec/*execution-context* root]
+      (dotimes [_ 3000] (fork! world-scope root)))
+    (is (= 3000 (count (:handles @world-scope))))
+    (scope/end-activity! world-scope lease)
+    (is (nil? (await-cps (scope/discard! world-scope))))
+    (is (= :discarded (:status @world-scope)))))

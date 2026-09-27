@@ -485,7 +485,10 @@
   (let [particle-vec (vec particles)
         particle-ids (mapv first particle-vec)
         particle-states (mapv second particle-vec)]
-    (letfn [(step [remaining acc]
+    ;; Forks usually complete inline, each continuing the next from its own
+    ;; callback; every 200 the walk continues on a fresh executor task so
+    ;; the depth does not grow with the population (as `world.scope/discard!`).
+    (letfn [(step [remaining acc depth]
               (if-let [source-context (first remaining)]
                 (let [original-idx
                       (first
@@ -503,19 +506,24 @@
                       (fork-particle-world!
                        manager source-context
                        (fn [handle]
-                         (step
-                          (next remaining)
-                          (conj acc
-                                {:context (:child-ctx handle)
-                                 :world handle
-                                 :checkpoint checkpoint
-                                 :particle-id
-                                 (keyword (str "particle-" (gensym)))
-                                 :source-particle-id original-particle-id
-                                 :original-idx original-idx})))
+                         (let [acc (conj acc
+                                         {:context (:child-ctx handle)
+                                          :world handle
+                                          :checkpoint checkpoint
+                                          :particle-id
+                                          (keyword (str "particle-" (gensym)))
+                                          :source-particle-id original-particle-id
+                                          :original-idx original-idx})]
+                           (if (< depth 200)
+                             (step (next remaining) acc (inc depth))
+                             (let [continue! #(step (next remaining) acc 0)]
+                               (try
+                                 (execute! (:executor source-context) continue!)
+                                 (catch #?(:clj Throwable :cljs :default) _
+                                   (continue!)))))))
                        reject))))
                 (resolve acc)))]
-      (step resampled-contexts []))))
+      (step resampled-contexts [] 0))))
 
 ;; =============================================================================
 ;; Continuation Resume
