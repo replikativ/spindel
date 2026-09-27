@@ -67,7 +67,7 @@
     (catch #?(:clj Throwable :cljs :default) error
       (reject error))))
 
-(defn- record!
+(defn record!
   "Add a decided site to the trace under construction. An address reached
   twice in one computation is an error: two sites named alike (an `:id`
   reused in a loop) would otherwise share one entry, and a replay or a

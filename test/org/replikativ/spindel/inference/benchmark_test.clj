@@ -17,6 +17,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.inference.inference :as infer]
             [org.replikativ.spindel.inference.kernel :as k]
+            [org.replikativ.spindel.inference.smc :as smc]
             [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.inference.effects :refer [sample observe]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -39,7 +40,14 @@
   (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG (long seed))
   (let [root (ctx/create-execution-context)]
     (try (binding [rtc/*execution-context* root]
-           (let [r (deref (future @(spin (aw/await (make-inference)))) 300000 ::timeout)]
+           (let [op (make-inference)
+                 r (if (instance? org.replikativ.spindel.spin.core.Spin op)
+                     (deref (future @(spin (aw/await op))) 300000 ::timeout)
+                     ;; a CPS operation (fn [resolve reject])
+                     (let [p (promise)]
+                       (op #(deliver p %) #(deliver p %))
+                       (let [v (deref p 300000 ::timeout)]
+                         (if (instance? Throwable v) (throw v) v))))]
              (when (= r ::timeout) (throw (ex-info "inference timed out" {})))
              r))
          (finally (ctx/stop-context! root)))))
@@ -224,6 +232,10 @@
     (let [meas (run-infer 1 #(infer/importance-sampling (conjugate-model) 2000 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.3)
           (str (m/log-marginal meas) " vs " conjugate-log-evidence))))
+  (testing "SMC on savepoints: the same estimate"
+    (let [meas (run-infer 3 #(smc/smc (conjugate-model) 500 {:executor serial-executor}))]
+      (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.3)
+          (str (m/log-marginal meas) " vs " conjugate-log-evidence))))
   (testing "SMC: the normalizer accumulated across resampling"
     (let [meas (run-infer 2 #(infer/smc-infer (conjugate-model) 500 {:executor serial-executor}))]
       (is (< (Math/abs (- (m/log-marginal meas) conjugate-log-evidence)) 0.3)
@@ -241,6 +253,7 @@
   (let [o {:executor serial-executor}]
     {:importance (fn [mf n] (infer/importance-sampling (mf) n o))
      :smc        (fn [mf n] (infer/smc-infer (mf) (quot n 4) o))
+     :smc-sp     (fn [mf n] (smc/smc (mf) (quot n 4) o))
      :lmh        (fn [mf n] (infer/kernel-infer (mf) (k/single-site-mh-kernel (quot n 4) {:samples :all :burn (quot n 8)}) 4 o))
      :rmh        (fn [mf n] (infer/kernel-infer (mf) (k/random-walk-mh-kernel (quot n 4) {:step-size 0.5 :samples :all :burn (quot n 8)}) 4 o))
      :pimh       (fn [mf n] (infer/pimh-infer (mf) 20 (quot n 40) o))
@@ -294,13 +307,13 @@
         (is (< kl 0.05) (str algo " KL " kl))))))
 
 (deftest particles-reach-different-numbers-of-observes
-  (doseq [algo [:smc :pimh :pgibbs]]
+  (doseq [algo [:smc :smc-sp :pimh :pgibbs]]
     (testing algo
       (let [p (w-mean #(if % 1.0 0.0) (check algo varlen-model 4000 16))]
         (is (< (Math/abs (- p varlen-truth)) 0.05) (str algo " p(b) " p " vs " varlen-truth))))))
 
 (deftest hmm-benchmark
-  (doseq [algo [:smc :pgibbs :pgas :lmh]]
+  (doseq [algo [:smc :smc-sp :pgibbs :pgas :lmh]]
     (testing algo
       (let [err (hmm-error (check algo #(apply hmm-model hmm-args) 12000 17))]
         (is (< err 0.05) (str algo " rms " err))))))
