@@ -21,6 +21,7 @@
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.measure :as m]
+            [anglican.runtime :as ar]
             [replikativ.logging :as log]))
 
 (defn- slot-of [world] (rtp/get-state world [:inference :slot]))
@@ -60,17 +61,38 @@
                (resolve (vec children))))
            (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 
+(defn- retained-policy
+  "The policy of the retained particle: a sample site whose address `retained`
+  holds takes that value, drawn — for the weight — with its own density as the
+  proposal, so it contributes nothing to the weight; any other site is drawn
+  from its prior."
+  [retained]
+  (itrace/policy
+   {:draw (fn [sp _]
+            (let [address (:savepoint/address sp)]
+              (when (contains? retained address)
+                (let [v (get retained address)]
+                  {:value v :log-proposal (ar/observe* (:dist (:savepoint/payload sp)) v)}))))}))
+
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
   (ESS fraction, default 0.5), `:policy` (an `inference.trace/policy`,
   default the prior with no options), `:executor` for the root world, and
   session options (`effects.savepoint/open!`).
 
+  `:retained` {address value} makes it CONDITIONAL SMC (particle Gibbs):
+  particle 0 follows those choices, every barrier resamples, and particle 0
+  keeps its own lineage while the other n−1 draw their ancestors.
+
   Resolves an `EmpiricalMeasure` of `Sample`s (result + trace) whose
   `log-marginal` is the SMC evidence estimate."
-  [model n & [{:keys [resample-threshold policy executor] :as opts}]]
+  [model n & [{:keys [resample-threshold policy executor retained] :as opts}]]
   (let [threshold (or resample-threshold 0.5)
-        policy (or policy (itrace/policy))]
+        policy (or policy (itrace/policy))
+        policy-of (if retained
+                    (let [rp (retained-policy retained)]
+                      (fn [slot] (if (= 0 slot) rp policy)))
+                    (constantly policy))]
     (fn [resolve reject]
       (let [root (if executor
                    (ctx/create-execution-context :executor executor)
@@ -78,7 +100,7 @@
             session (sp/open! root (merge {:purpose :smc
                                            :fork-opts {:systems :none}
                                            :retain-released? false}
-                                          (dissoc opts :resample-threshold :policy :executor)))
+                                          (dissoc opts :resample-threshold :policy :executor :retained)))
             ;; {:waiting {slot sp} :done {slot {:sample s :log-weight w}}
             ;;  :log-z accumulated :spawned? bool :finished? bool}
             state (atom {:waiting {} :done {} :log-z 0.0})
@@ -104,7 +126,7 @@
 
                 (run-site! [sp]
                   (try
-                    (let [{:keys [value]} (decide! policy sp)]
+                    (let [{:keys [value]} (decide! (policy-of (slot-of (:savepoint/world sp))) sp)]
                       (if (:observed? (:savepoint/payload sp))
                         (do (swap! state assoc-in [:waiting (slot-of (:savepoint/world sp))] sp)
                             (arrived!))
@@ -135,12 +157,16 @@
                                             (get-in done [% :log-weight]))
                                          slots)
                             weights (m/normalize-log-weights log-ws)
-                            resample? (< (m/compute-ess weights) (* threshold n))]
+                            resample? (or (some? retained)
+                                          (< (m/compute-ess weights) (* threshold n)))]
                         (if-not resample?
                           (do (swap! state assoc :waiting {} :in-barrier? false)
                               (doseq [[_ s] (sort-by key waiting)]
                                 (sp/resume s (:value (:savepoint/payload s)))))
-                          (let [ancestors (m/systematic-resample weights n)
+                          (let [ancestors (if retained
+                                            ;; conditional: 0 keeps its lineage
+                                            (into [0] (repeatedly (dec n) #(m/sample-categorical weights)))
+                                            (m/systematic-resample weights n))
                                 forked-slots (filterv #(contains? waiting (nth ancestors %)) slots)]
                             (swap! state update :log-z + (m/log-mean-exp log-ws))
                             ((all-forked (mapv #(get waiting (nth ancestors %)) forked-slots))
@@ -187,3 +213,77 @@
             (catch #?(:clj Throwable :cljs :default) e
               (log/error :smc/start-failed {:error e})
               (fail! e))))))))
+
+;; =============================================================================
+;; Particle MCMC on savepoint SMC
+;; =============================================================================
+
+(defn- normalized
+  "A measure's particles with their weights normalized to sum to one."
+  [measure]
+  (let [ps (m/get-particles measure)
+        lse (m/log-sum-exp (mapv second ps))]
+    (mapv (fn [[s lw]] [s (- lw lse)]) ps)))
+
+(defn- choices-of
+  "{address value} of the unobserved sample sites of a Sample's trace."
+  [sample]
+  (into {} (keep (fn [[a e]] (when-not (:observed? e) [a (:value e)])))
+        (m/get-trace sample)))
+
+(defn- sweeps
+  "Run `step` — (fn [state]) -> CPS resolving [state' samples] — `k` times,
+  pooling the samples. Resolves an EmpiricalMeasure."
+  [k init step]
+  (fn [resolve reject]
+    (letfn [(go [i state acc]
+                (if (= i k)
+                  (resolve (m/empirical acc))
+                  ((step state)
+                   (fn [[state' samples]] (go (inc i) state' (into acc samples)))
+                   reject)))]
+      (go 0 init []))))
+
+(defn pgibbs
+  "Particle Gibbs (Andrieu et al. 2010) as iterated conditional SMC: each
+  sweep keeps the trajectory drawn from the previous one, and every sweep's
+  particles are pooled, normalized per sweep. `opts` as for `smc`."
+  [model n iterations & [opts]]
+  (fn [resolve reject]
+    ((smc model n opts)
+     (fn [initial]
+       (let [pick (fn [measure]
+                    (let [ps (m/get-particles measure)]
+                      (choices-of (first (nth ps (m/sample-categorical
+                                                  (m/normalize-log-weights (mapv second ps))))))))]
+         ((sweeps iterations (pick initial)
+                  (fn [retained]
+                    (fn [res rej]
+                      ((smc model n (assoc opts :retained retained))
+                       (fn [sweep] (res [(pick sweep) (normalized sweep)]))
+                       rej))))
+          resolve reject)))
+     reject)))
+
+(defn pimh
+  "Particle independent Metropolis-Hastings: each iteration proposes a fresh
+  SMC sweep and accepts it on the ratio of evidence estimates; the current
+  sweep's particles, normalized, are emitted every iteration. `opts` as for
+  `smc`."
+  [model n iterations & [opts]]
+  (fn [resolve reject]
+    ((smc model n opts)
+     (fn [initial]
+       ((sweeps iterations [(normalized initial) (m/log-marginal initial)]
+                (fn [[current log-z]]
+                  (fn [res rej]
+                    ((smc model n opts)
+                     (fn [proposed]
+                       (let [log-z' (m/log-marginal proposed)
+                             ratio (- log-z' log-z)
+                             accept? (or (>= ratio 0.0) (< (Math/log (m/uniform01)) ratio))
+                             state' (if accept? [(normalized proposed) log-z'] [current log-z])]
+                         (res [state' (first state')])))
+                     rej))))
+        resolve reject))
+     reject)))

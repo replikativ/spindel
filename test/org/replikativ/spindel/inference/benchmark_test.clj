@@ -254,6 +254,8 @@
     {:importance (fn [mf n] (infer/importance-sampling (mf) n o))
      :smc        (fn [mf n] (infer/smc-infer (mf) (quot n 4) o))
      :smc-sp     (fn [mf n] (smc/smc (mf) (quot n 4) o))
+     :pgibbs-sp  (fn [mf n] (smc/pgibbs (mf) 20 (quot n 40) o))
+     :pimh-sp    (fn [mf n] (smc/pimh (mf) 20 (quot n 40) o))
      :lmh        (fn [mf n] (infer/kernel-infer (mf) (k/single-site-mh-kernel (quot n 4) {:samples :all :burn (quot n 8)}) 4 o))
      :rmh        (fn [mf n] (infer/kernel-infer (mf) (k/random-walk-mh-kernel (quot n 4) {:step-size 0.5 :samples :all :burn (quot n 8)}) 4 o))
      :pimh       (fn [mf n] (infer/pimh-infer (mf) 20 (quot n 40) o))
@@ -307,13 +309,13 @@
         (is (< kl 0.05) (str algo " KL " kl))))))
 
 (deftest particles-reach-different-numbers-of-observes
-  (doseq [algo [:smc :smc-sp :pimh :pgibbs]]
+  (doseq [algo [:smc :smc-sp :pimh :pgibbs :pimh-sp :pgibbs-sp]]
     (testing algo
       (let [p (w-mean #(if % 1.0 0.0) (check algo varlen-model 4000 16))]
         (is (< (Math/abs (- p varlen-truth)) 0.05) (str algo " p(b) " p " vs " varlen-truth))))))
 
 (deftest hmm-benchmark
-  (doseq [algo [:smc :smc-sp :pgibbs :pgas :lmh]]
+  (doseq [algo [:smc :smc-sp :pgibbs :pgibbs-sp :pgas :lmh]]
     (testing algo
       (let [err (hmm-error (check algo #(apply hmm-model hmm-args) 12000 17))]
         (is (< err 0.05) (str algo " rms " err))))))
