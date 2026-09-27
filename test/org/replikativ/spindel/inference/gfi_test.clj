@@ -3,6 +3,7 @@
   models, and MH-by-selection against an analytic posterior."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.inference.gfi :as gfi]
+            [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.inference.effects :refer [sample observe]]
@@ -100,6 +101,11 @@
     (testing "regenerating nothing is the identity"
       (let [t (await-cps (gfi/simulate (hierarchical root)))]
         (is (identical? t (:trace (await-cps (gfi/regenerate t #{})))))
+        (await-cps (gfi/close! t))))
+    (testing "a selector selects like the set of its addresses"
+      (let [t (await-cps (gfi/simulate (hierarchical root)))
+            {t' :trace} (await-cps (gfi/regenerate t (sel/id :z)))]
+        (is (= (get (itrace/choices t) :x) (get (itrace/choices t') :x)) "x kept")
         (await-cps (gfi/close! t))))
     (testing "alternating x and z moves sample x | y ~ N(2/3, 2/3)"
       (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG 7)

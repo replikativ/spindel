@@ -23,6 +23,7 @@
   is about to resume, so the weight of a fork starts from the weight at its
   site."
   (:require [org.replikativ.spindel.trace :as trace]
+            [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.inference.measure :as m]
             [anglican.runtime :as ar]))
@@ -42,16 +43,72 @@
        #?(:clj (not (Double/isInfinite (double x))) :cljs (js/isFinite x))
        #?(:clj (not (Double/isNaN (double x))) :cljs true)))
 
+(defn- shifted
+  "`dist` moved by `delta`: x = x₀ + δ, x₀ ~ dist."
+  [dist delta]
+  (reify ar/distribution
+    (sample* [_] (+ (ar/sample* dist) delta))
+    (observe* [_ v] (ar/observe* dist (- v delta)))))
+
+(defn- intervention-pairs
+  "`interventions` as [selector transform] pairs. A key that is not a
+  selector is an address; a value that is not a transform map is `{:do v}`
+  (the form `inference.effects/intervene!` writes)."
+  [interventions]
+  (for [[k v] interventions]
+    [(if (fn? k) k (sel/id k))
+     (if (and (map? v) (some #{:do :dist :shift :policy} (keys v))) v {:do v})]))
+
+(defn- intervention-for [opts sp]
+  (let [world (:savepoint/world sp)
+        d (sel/describe sp)]
+    (some (fn [[selects? transform]] (when (selects? d) transform))
+          (concat (intervention-pairs (:interventions opts))
+                  (intervention-pairs (rtp/get-state world [:inference :interventions]))))))
+
+(defn- choices-so-far
+  "{address value} of the sample sites this computation decided so far."
+  [world]
+  (into {} (keep (fn [[address entry]]
+                   (when (= :inference/choose (:site entry)) [address (:value entry)])))
+        (:trace/entries (rtp/get-state world [:savepoint/trace]))))
+
+(declare decide-choose)
+
+(defn- decide-intervened
+  "A site under an intervention. `{:do v}` and `{:policy f}` fix the value
+  (f sees the choices made so far) and score nothing: the site is no longer
+  random. `{:dist d}` and `{:shift δ}` replace the site's mechanism and decide
+  it as a site of the new distribution."
+  [opts sp old-entry {:keys [policy dist shift] :as transform}]
+  (let [payload (:savepoint/payload sp)
+        world (:savepoint/world sp)]
+    (cond
+      (contains? transform :do)
+      {:value (:do transform)
+       :note {:dist (:dist payload) :log-prob 0.0 :intervened? true :constrained? true}}
+
+      policy
+      {:value (policy (choices-so-far world))
+       :note {:dist (:dist payload) :log-prob 0.0 :intervened? true :constrained? true}}
+
+      :else
+      (let [new-dist (or dist (shifted (:dist payload) shift))
+            decision (decide-choose (assoc opts ::no-interventions true)
+                                    (assoc sp :savepoint/payload (assoc payload :dist new-dist))
+                                    old-entry)]
+        (assoc-in decision [:note :intervened?] true)))))
+
 (defn- decide-choose
-  [{:keys [constraints keep? draw init?]} sp old-entry]
+  [{:keys [constraints keep? draw init?] :as opts} sp old-entry]
   (let [{:keys [dist observed? value]} (:savepoint/payload sp)
         world (:savepoint/world sp)
-        address (:savepoint/address sp)]
+        address (:savepoint/address sp)
+        intervention (when-not (::no-interventions opts) (intervention-for opts sp))]
     (cond
-      ;; Pearl's do-operator: the site takes the value and scores nothing.
-      (contains? (rtp/get-state world [:inference :interventions]) address)
-      {:value (get (rtp/get-state world [:inference :interventions]) address)
-       :note {:dist dist :log-prob 0.0 :intervened? true :constrained? true}}
+      ;; Pearl's do-operator and its soft/shift/policy variants
+      intervention
+      (decide-intervened opts sp old-entry intervention)
 
       observed?
       (let [lp (ar/observe* dist value)]
@@ -112,6 +169,12 @@
     :draw        (fn [sp old-entry]) -> nil (not my site) or
                  {:value v :log-proposal lq}, or {:value v :symmetric? true}
                  for a symmetric move around the old value
+    :interventions {selector transform}: a selected sample site takes
+                 `{:do v}` (that value, no score), `{:policy (fn [choices])}`
+                 (a value from the choices made so far), `{:dist d}` (a new
+                 mechanism) or `{:shift δ}` (the old one moved by δ). A key
+                 that is not a selector (`spindel.select`) is an address; the
+                 world's `[:inference :interventions]` (`intervene!`) apply too
     :init?       start a sample site at its `:init` option. Only for the
                  first state of a Markov chain, which may be anything; an
                  `:init` value is not a draw, so it has no place in a move or
