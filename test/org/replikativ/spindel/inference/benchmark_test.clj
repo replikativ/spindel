@@ -10,7 +10,10 @@
    particles that reach different numbers of observes.
 
    Runs are seeded through anglican's RNG and every algorithm runs its
-   particles on one single-threaded executor, so a run is reproducible."
+   particles on one single-threaded executor, so the particle methods (IS,
+   SMC, PIMH, PGibbs, PGAS) repeat exactly. MH chains and IPMCMC nodes run
+   concurrently and share the one generator, so their draws interleave in
+   scheduling order; their budgets leave room for that."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.inference.inference :as infer]
             [org.replikativ.spindel.inference.kernel :as k]

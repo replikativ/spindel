@@ -386,7 +386,11 @@
                                             (:child-ctx world)
                                             (ctx/create-execution-context
                                              :executor shared-executor))
-                             particle-id (keyword (str "particle-" (gensym)))
+                             ;; generation-slot ids, not gensyms: the particle map's
+                             ;; order decides which draw goes to which particle, so
+                             ;; a seeded run is reproducible only if it is the same
+                             ;; in every run
+                             particle-id (coord/particle-id 0 idx)
                              is-retained? (and pgibbs-retained-trace (= idx 0))]
 
                          (rtp/swap-state!
