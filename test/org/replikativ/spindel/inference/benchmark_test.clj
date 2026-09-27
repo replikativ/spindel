@@ -256,6 +256,7 @@
      :smc-sp     (fn [mf n] (smc/smc (mf) (quot n 4) o))
      :pgibbs-sp  (fn [mf n] (smc/pgibbs (mf) 20 (quot n 40) o))
      :pimh-sp    (fn [mf n] (smc/pimh (mf) 20 (quot n 40) o))
+     :pgas-sp    (fn [mf n] (smc/pgas (mf) 30 (quot n 60) o))
      :lmh        (fn [mf n] (infer/kernel-infer (mf) (k/single-site-mh-kernel (quot n 4) {:samples :all :burn (quot n 8)}) 4 o))
      :rmh        (fn [mf n] (infer/kernel-infer (mf) (k/random-walk-mh-kernel (quot n 4) {:step-size 0.5 :samples :all :burn (quot n 8)}) 4 o))
      :pimh       (fn [mf n] (infer/pimh-infer (mf) 20 (quot n 40) o))
@@ -317,7 +318,7 @@
         (is (< (Math/abs (- p varlen-truth)) 0.05) (str algo " p(b) " p " vs " varlen-truth))))))
 
 (deftest hmm-benchmark
-  (doseq [algo [:smc :smc-sp :pgibbs :pgibbs-sp :pgas :lmh]]
+  (doseq [algo [:smc :smc-sp :pgibbs :pgibbs-sp :pgas :pgas-sp :lmh]]
     (testing algo
       (let [err (hmm-error (check algo #(apply hmm-model hmm-args) 12000 17))]
         (is (< err 0.05) (str algo " rms " err))))))
