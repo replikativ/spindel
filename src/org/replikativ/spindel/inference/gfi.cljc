@@ -55,6 +55,12 @@
        (fn [error]
          ((sp/close! session) (fn [_] (reject error)) (fn [_] (reject error))))))))
 
+(defn run-policy
+  "Run `model` under any `inference.trace/policy` in a root world and session
+  of its own (options as for `simulate`). Resolves the trace."
+  ([model policy] (run-policy model policy nil))
+  ([model policy opts] (run model policy opts)))
+
 (defn close!
   "Give back every world of `trace`'s session: the trace and every trace
   replayed from it. Returns a CPS operation."

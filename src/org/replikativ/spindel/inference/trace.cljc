@@ -24,6 +24,7 @@
   site."
   (:require [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.select :as sel]
+            [org.replikativ.spindel.inference.mechanism :as mech]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.inference.measure :as m]
             [anglican.runtime :as ar]))
@@ -110,6 +111,14 @@
       intervention
       (decide-intervened opts sp old-entry intervention)
 
+      ;; a counterfactual world: the site's mechanism under its (possibly
+      ;; new) parents, fed the noise abducted from the factual world. This
+      ;; comes before `observed?`: an observed site is predicted, not held
+      ;; at its data.
+      (and (contains? (:noise opts) address) (mech/mechanism? dist))
+      (let [v (mech/push dist (get (:noise opts) address))]
+        {:value v :note {:dist dist :log-prob (ar/observe* dist v) :counterfactual? true}})
+
       observed?
       (let [lp (ar/observe* dist value)]
         (add-weight! world lp)
@@ -175,6 +184,10 @@
                  mechanism) or `{:shift δ}` (the old one moved by δ). A key
                  that is not a selector (`spindel.select`) is an address; the
                  world's `[:inference :interventions]` (`intervene!`) apply too
+    :noise       {address u}: the site takes its mechanism's value for u
+                 (`inference.mechanism`), observed sites included — a
+                 counterfactual world. Sites without noise are marked
+                 `:unaligned?`
     :init?       start a sample site at its `:init` option. Only for the
                  first state of a Markov chain, which may be anything; an
                  `:init` value is not a draw, so it has no place in a move or
@@ -189,7 +202,13 @@
      (fn [sp old-entry]
        (let [site (:savepoint/site sp)]
          (cond
-           (= choose-site site) (decide-choose opts sp old-entry)
+           (= choose-site site)
+           (cond-> (decide-choose opts sp old-entry)
+             ;; with :noise, a site that got no factual noise (it did not
+             ;; exist in the factual world, or its law is not a mechanism)
+             ;; is reported
+             (and (:noise opts) (not (contains? (:noise opts) (:savepoint/address sp))))
+             (update :note (fn [n] (if (:intervened? n) n (assoc n :unaligned? true)))))
 
            (= factor-site site)
            (let [w (:log-weight (:savepoint/payload sp))]
