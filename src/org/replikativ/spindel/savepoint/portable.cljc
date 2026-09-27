@@ -107,7 +107,8 @@
                  data (assoc body
                              :savepoint/id (h/content-hash body)
                              :savepoint/address (:savepoint/address sp))
-                 authority (:authority @(:scope (sp/session world)))
+                 ;; a world without a session persists unfunded data
+                 authority (some-> (sp/session world) :scope deref :authority)
                  escrowed-path [:savepoint/escrowed]]
              (cond
                (not (and escrow? authority))
@@ -133,6 +134,80 @@
      :cljs (throw (ex-info "Pass :resolve to hydrate! on this platform"
                            {:type ::unknown-resume :fn sym}))))
 
+(defn- prepare-and-start!
+  "Make `world` the continuation of `data` in `session` and start the named
+  function there: clear inherited savepoint bookkeeping, write the declared
+  state, the seed and the sequence, repin components, install handlers, run.
+  Throws on failure; `world` is the caller's to release."
+  [session world data value {resolve-sym :resolve child-handlers :handlers}]
+  ;; The host may have run computations of its own. Their bookkeeping is not
+  ;; this world's: an inherited end would swallow this computation's terminal,
+  ;; inherited pending entries would be abandoned here on close.
+  (doseq [path [[:savepoint/pending] [:savepoint/ended]
+                [:savepoint/task] [:savepoint/trace]
+                [:savepoint/escrowed]]]
+    (rtp/swap-state! world path (constantly nil)))
+  (doseq [[path v] (:world/state data)]
+    (rtp/swap-state! world path (constantly v)))
+  ;; as a fork of the savepoint would get: a seed of its own
+  (rtp/swap-state! world [:savepoint/seed]
+                   (constantly
+                    (sp/derive-seed (:world/seed data)
+                                    (:savepoint/address data)
+                                    [:hydrated (:fork-id world)])))
+  (rtp/swap-state! world [:savepoint/seq]
+                   (constantly (inc (:savepoint/seq data))))
+  (binding [ec/*execution-context* world]
+    (doseq [[id version] (:world/pinned data)]
+      (component/repin! (component/->ComponentRef id) version)))
+  (when child-handlers
+    (sp/install-handlers! world child-handlers))
+  (let [{f :fn args :args} (:savepoint/resume data)
+        task (binding [ec/*execution-context* world]
+               (apply ((or resolve-sym resolve-fn) f) (conj (vec args) value)))]
+    (sp/start-in! session world task)))
+
+(defn- continue-in!
+  "Claim `data`'s escrow for `world` (when it brings one), then prepare and
+  start. `release!` gives the world back on failure."
+  [session world data value opts release! resolve reject]
+  (let [authority (:authority @(:scope session))
+        run! (fn []
+               ;; decide inside the try, settle outside it
+               (let [error (try (prepare-and-start! session world data value opts) nil
+                                (catch #?(:clj Throwable :cljs :default) error error))]
+                 (if error
+                   (do (release!) (reject error))
+                   (resolve world))))]
+    (cond
+      (not (:world/escrow? data)) (run!)
+
+      (nil? authority)
+      (do (release!)
+          (reject (ex-info "The data brings an escrow and the session has no authority to claim it"
+                           {:type ::no-authority :savepoint/id (:savepoint/id data)})))
+
+      :else
+      (invoke! #(world-scope/claim! authority (:savepoint/id data) world)
+               (fn [_] (run!))
+               (fn [error] (release!) (reject error))))))
+
+(defn hydrate-into!
+  "Continue the persisted savepoint `data` with `value` in `world`, a world
+  the EMBEDDER forked and owns (pinned at `(:world/systems data)`, e.g. with
+  `ygg/fork!` `:snapshots`), where `session` is that world's own session
+  (`savepoint/open!` on it). Everything `hydrate!` does after its fork: the
+  state, seed, pinned versions and escrow as recorded, the named function
+  started. The session never releases `world`: an embedder that settles its
+  worlds (merges, discards, keeps them for review) keeps doing so.
+
+  Options as for `hydrate!`. Returns a CPS operation resolving `world`."
+  ([session world data value] (hydrate-into! session world data value nil))
+  ([session world data value opts]
+   (fn [resolve reject]
+     (let [[resolve reject] (sp/in-callers-world resolve reject)]
+       (continue-in! session world data value opts (constantly nil) resolve reject)))))
+
 (defn hydrate!
   "Continue the persisted savepoint `data` with `value`, in a new world of
   `session`.
@@ -140,6 +215,7 @@
   The session's root is the HOST world: the systems and pinned components the
   data names must be registered there. The new world is a fork of it, pinned
   at the recorded snapshots and versions, with the recorded state and seed.
+  (`hydrate-into!` when the embedder forks and owns the world.)
 
   Options:
     :resolve  (fn [sym]) -> the resume function (default: `requiring-resolve`
@@ -149,65 +225,14 @@
   Returns a CPS operation resolving the new world. The computation's
   savepoints and its end reach that world's handlers."
   ([session data value] (hydrate! session data value nil))
-  ([session data value {resolve-sym :resolve child-handlers :handlers}]
+  ([session data value opts]
    (fn [resolve reject]
-     (let [[resolve reject] (sp/in-callers-world resolve reject)
-           scope (:scope session)
-           host (:root session)
-           authority (:authority @scope)]
+     (let [[resolve reject] (sp/in-callers-world resolve reject)]
        (world-scope/fork!
-        scope host
+        (:scope session) (:root session)
         {:fork-opts (when (seq (:world/systems data))
                       {:snapshots (:world/systems data)})}
         (fn [{world :child-ctx}]
-          (letfn [(prepare! []
-                    ;; The host may have run computations of its own. Their
-                    ;; bookkeeping is not this world's: an inherited end would
-                    ;; swallow this computation's terminal, inherited pending
-                    ;; entries would be abandoned here on close.
-                    (doseq [path [[:savepoint/pending] [:savepoint/ended]
-                                  [:savepoint/task] [:savepoint/trace]
-                                  [:savepoint/escrowed]]]
-                      (rtp/swap-state! world path (constantly nil)))
-                    (doseq [[path v] (:world/state data)]
-                      (rtp/swap-state! world path (constantly v)))
-                    ;; as a fork of the savepoint would get: a seed of its own
-                    (rtp/swap-state! world [:savepoint/seed]
-                                     (constantly
-                                      (sp/derive-seed (:world/seed data)
-                                                      (:savepoint/address data)
-                                                      [:hydrated (:fork-id world)])))
-                    (rtp/swap-state! world [:savepoint/seq]
-                                     (constantly (inc (:savepoint/seq data))))
-                    (binding [ec/*execution-context* world]
-                      (doseq [[id version] (:world/pinned data)]
-                        (component/repin! (component/->ComponentRef id) version)))
-                    (when child-handlers
-                      (sp/install-handlers! world child-handlers))
-                    (let [{f :fn args :args} (:savepoint/resume data)
-                          task (binding [ec/*execution-context* world]
-                                 (apply ((or resolve-sym resolve-fn) f) (conj (vec args) value)))]
-                      (sp/start-in! session world task)))
-                  (run! []
-                    ;; decide inside the try, settle outside it
-                    (let [error (try (prepare!) nil
-                                     (catch #?(:clj Throwable :cljs :default) error error))]
-                      (if error
-                        (do (sp/release-world! session world)
-                            (reject error))
-                        (resolve world))))]
-            (cond
-              (not (:world/escrow? data)) (run!)
-
-              (nil? authority)
-              (do (sp/release-world! session world)
-                  (reject (ex-info "The data brings an escrow and the session has no authority to claim it"
-                                   {:type ::no-authority :savepoint/id (:savepoint/id data)})))
-
-              :else
-              (invoke! #(world-scope/claim! authority (:savepoint/id data) world)
-                       (fn [_] (run!))
-                       (fn [error]
-                         (sp/release-world! session world)
-                         (reject error))))))
+          (continue-in! session world data value opts
+                        #(sp/release-world! session world) resolve reject))
         reject)))))
