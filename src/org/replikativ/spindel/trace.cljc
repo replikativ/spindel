@@ -5,7 +5,7 @@
   value it was resumed with, a note, and an *anchor* (a fork of the savepoint
   taken before it was resumed, i.e. the world as it was at the site).
 
-    {:trace/entries {address {:site :seq :payload :value :note :savepoint}}
+    {:trace/entries {address {:site :path :seq :payload :value :note :savepoint}}
      :trace/order   [address ...]        ; program order
      :trace/result  r | :trace/error e
      :trace/world   the world the computation ended in
@@ -67,15 +67,26 @@
     (catch #?(:clj Throwable :cljs :default) error
       (reject error))))
 
-(defn- record! [world sp decision anchor]
+(defn- record!
+  "Add a decided site to the trace under construction. An address reached
+  twice in one computation is an error: two sites named alike (an `:id`
+  reused in a loop) would otherwise share one entry, and a replay or a
+  constraint could not tell them apart."
+  [world sp decision anchor]
   (rtp/swap-state!
    world [:savepoint/trace]
    (fn [trace]
      (let [address (:savepoint/address sp)]
+       (when (contains? (:trace/entries trace) address)
+         (throw (ex-info "Duplicate site address in one computation"
+                         {:type ::duplicate-address
+                          :address address
+                          :site (:savepoint/site sp)})))
        (-> (or trace empty-trace)
            (update :trace/order conj address)
            (assoc-in [:trace/entries address]
                      {:site (:savepoint/site sp)
+                      :path (:savepoint/path sp)
                       :seq (:savepoint/seq sp)
                       :payload (:savepoint/payload sp)
                       :value (:value decision)
@@ -182,6 +193,12 @@
   [trace addresses]
   (let [wanted (set addresses)]
     (first (filter wanted (:trace/order trace)))))
+
+(defn by-path
+  "{path address} of the sites of `trace`: how a readable path
+  (`addressing/with-scope`, `:id`) finds the address a site ran under."
+  [trace]
+  (into {} (map (fn [[address entry]] [(:path entry) address])) (:trace/entries trace)))
 
 (defn- anchor-id [anchor]
   [(:fork-id (:savepoint/world anchor)) (:savepoint/address anchor)])

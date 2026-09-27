@@ -231,24 +231,38 @@
             ~@body)
           (do ~@body)))))
 
+(defn site-address+path!
+  "The address and the readable path of an effect site.
+
+  With `id` (the site's `:id` option) the site is named and `id` is its
+  address. A vector id is a hierarchical name — `[:step 3 :x]`, Gen's
+  `:step => 3 => :x` — and its path is that vector; a scalar id's path is
+  `[id]`. Without, the address is structural: `next-id` over
+  `[site source-loc occurrence]`, the surrounding spin and the `with-key`
+  frame, where `occurrence` counts how often this frame reached this site in
+  the current body run; the path is `[[site source-loc occurrence]]`.
+
+  Unlike `next-address!` neither depends on which other sites ran before, so
+  a site keeps its address when control flow upstream of it changes. The
+  counters live beside the chain-head and travel the same way: reset at body
+  entry, snapshotted into `:slice-state` at suspension."
+  [ctx prefix site source-loc id]
+  (if (some? id)
+    [id (if (vector? id) id [id])]
+    (let [spin-id ec/*spin-id*
+          key (current-key ctx)
+          frame [site source-loc key]
+          counters (rtp/swap-state! ctx [:addressing :occurrences spin-id]
+                                    (fn [m] (update (or m {}) frame (fnil inc 0))))
+          occurrence (dec (get counters frame))]
+      [(next-id prefix [site source-loc occurrence] spin-id key)
+       [[site source-loc occurrence]]])))
+
 (defn site-address!
   "Structural address of an effect site that a LATER execution must find
-  again: `next-id` over `[site source-loc occurrence]`, the surrounding spin
-  and the `with-key` frame, where `occurrence` counts how often this frame
-  reached this site in the current body run.
-
-  Unlike `next-address!` the result does not depend on which other sites ran
-  before it, so a site keeps its address when control flow upstream of it
-  changes. The counters live beside the chain-head and travel the same way:
-  reset at body entry, snapshotted into `:slice-state` at suspension."
+  again; see `site-address+path!`."
   [ctx prefix site source-loc]
-  (let [spin-id ec/*spin-id*
-        key (current-key ctx)
-        frame [site source-loc key]
-        counters (rtp/swap-state! ctx [:addressing :occurrences spin-id]
-                                  (fn [m] (update (or m {}) frame (fnil inc 0))))
-        occurrence (dec (get counters frame))]
-    (next-id prefix [site source-loc occurrence] spin-id key)))
+  (first (site-address+path! ctx prefix site source-loc nil)))
 
 ;; =============================================================================
 ;; Source Location Helpers
