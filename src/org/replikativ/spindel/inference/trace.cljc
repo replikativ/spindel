@@ -260,11 +260,15 @@
     {:value v :log-proposal (ar/observe* dist v)}))
 
 (defn random-walk-proposal
-  "A symmetric Gaussian step of `step-size` around a target's old value."
+  "A symmetric Gaussian step of `step-size` around a real-valued target's
+  old value. A discrete target (a boolean, an integer count) has no such
+  step; it gets a prior proposal."
   [step-size]
-  (fn [_sp old-entry]
-    {:value (+ (:value old-entry) (* step-size (ar/sample* (ar/normal 0.0 1.0))))
-     :symmetric? true}))
+  (fn [sp old-entry]
+    (if (double? (:value old-entry))
+      {:value (+ (:value old-entry) (* step-size (ar/sample* (ar/normal 0.0 1.0))))
+       :symmetric? true}
+      (prior-proposal sp old-entry))))
 
 (defn mh-step
   "One Metropolis-Hastings move on `trace`.

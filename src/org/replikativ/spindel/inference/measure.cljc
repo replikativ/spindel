@@ -82,19 +82,38 @@
   [log-weights]
   (when (empty? log-weights)
     (throw (ex-info "log-sum-exp requires non-empty sequence" {})))
-  (let [log-max (apply max log-weights)
-        sum-exp (reduce + (map #(Math/exp (- % log-max)) log-weights))]
-    (+ log-max (Math/log sum-exp))))
+  (let [log-max (apply max log-weights)]
+    (if (= log-max ##-Inf)
+      ##-Inf
+      (+ log-max (Math/log (reduce + (map #(Math/exp (- % log-max)) log-weights)))))))
+
+(defn log-mean-exp
+  "log of the mean of exp(x_i)."
+  [log-weights]
+  (- (log-sum-exp log-weights) (Math/log (count log-weights))))
+
+(defn sample-categorical
+  "One index drawn from normalized weights, through `uniform01`."
+  [weights]
+  (let [u (uniform01)
+        n (count weights)]
+    (loop [i 0 cumsum 0.0]
+      (if (>= i (dec n))
+        (dec n)
+        (let [cumsum' (+ cumsum (nth weights i))]
+          (if (< u cumsum') i (recur (inc i) cumsum')))))))
 
 (defn normalize-log-weights
   "Convert log-weights to normalized linear weights.
 
   Returns vector of weights summing to 1.0"
   [log-weights]
-  (let [log-max (apply max log-weights)
-        weights (mapv #(Math/exp (- % log-max)) log-weights)
-        total (reduce + weights)]
-    (mapv #(/ % total) weights)))
+  (let [log-max (apply max log-weights)]
+    (if (= log-max ##-Inf)
+      (vec (repeat (count log-weights) (/ 1.0 (count log-weights))))
+      (let [weights (mapv #(Math/exp (- % log-max)) log-weights)
+            total (reduce + weights)]
+        (mapv #(/ % total) weights)))))
 
 (defn compute-ess
   "Compute effective sample size from normalized weights.
@@ -180,8 +199,11 @@
           indices (systematic-resample weights n)]
       (mapv #(nth particles %) indices)))
 
-  (log-marginal [_]
-    (log-sum-exp (mapv second particles)))
+  (log-marginal [this]
+    ;; the normalizer accumulated at earlier resampling steps (a coordinator
+    ;; attaches it as :log-normalizer) plus the log MEAN current weight
+    (+ (or (:log-normalizer this) 0.0)
+       (log-mean-exp (mapv second particles))))
 
   (effective-sample-size [_]
     (let [log-weights (mapv second particles)
@@ -278,8 +300,16 @@
 ;; Context Value Extraction
 ;; =============================================================================
 
+(defrecord Sample [result trace])
+
+(defn sample-particle
+  "A particle that carries only a program result and its trace — what a
+   pooled MCMC estimate keeps per draw, instead of pinning a context."
+  [result trace]
+  (->Sample result trace))
+
 (defn get-value
-  "Extract the program result from an execution context.
+  "Extract the program result from an execution context (or a Sample).
 
   The result is stored in [:inference :result] after execution completes.
 
@@ -288,7 +318,16 @@
 
   Returns: The value returned by the probabilistic program"
   [context]
-  (rtp/get-state context [:inference :result]))
+  (if (instance? Sample context)
+    (:result context)
+    (rtp/get-state context [:inference :result])))
+
+(defn get-trace
+  "The trace {address -> entry} of a particle (context or Sample)."
+  [context]
+  (if (instance? Sample context)
+    (:trace context)
+    (rtp/get-state context [:inference :trace])))
 
 ;; =============================================================================
 ;; Print Methods (avoid StackOverflow from circular refs)

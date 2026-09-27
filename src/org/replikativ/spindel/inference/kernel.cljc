@@ -297,11 +297,22 @@
   PInferenceKernel
   (kernel-id [_] :single-site-mh))
 
+(defn- chain-output
+  "Attach a Markov-chain kernel's output options (extra record keys)."
+  [kernel {:keys [samples burn] :or {samples :final burn 0}}]
+  {:pre [(#{:final :all} samples) (nat-int? burn)]}
+  (assoc kernel :samples samples :burn burn))
+
 (defn single-site-mh-kernel
-  "Create SingleSiteMHKernel for lightweight Metropolis-Hastings."
-  [num-iterations]
+  "Create SingleSiteMHKernel for lightweight Metropolis-Hastings.
+
+  Output options (all Markov-chain kernels): `:samples :final` (default)
+  emits each chain's last state; `:samples :all` emits every state after
+  the first `:burn` moves, equally weighted — an MCMC estimate from few
+  chains instead of one draw per chain."
+  [num-iterations & [opts]]
   {:pre [(pos-int? num-iterations)]}
-  (->SingleSiteMHKernel num-iterations))
+  (chain-output (->SingleSiteMHKernel num-iterations) opts))
 
 ;; =============================================================================
 ;; RandomWalkMHKernel
@@ -321,10 +332,16 @@
   Metropolis-Hastings with a symmetric Gaussian proposal on one unobserved
   site per iteration; the program is replayed from that site with every other
   site held at its trace value and rescored, and the proposal is accepted on
-  the ratio of joint densities (see `inference.trace/mh-log-ratio`)."
-  [num-iterations & [{:keys [step-size] :or {step-size 0.1}}]]
+  the ratio of joint densities (see `inference.trace/mh-log-ratio`). A
+  discrete site gets a prior proposal instead of a step.
+
+  Output options (all Markov-chain kernels): `:samples :final` (default)
+  emits each chain's last state; `:samples :all` emits every state after
+  the first `:burn` moves, equally weighted — an MCMC estimate from few
+  chains instead of one draw per chain."
+  [num-iterations & [{:keys [step-size] :or {step-size 0.1} :as opts}]]
   {:pre [(pos-int? num-iterations) (pos? step-size)]}
-  (->RandomWalkMHKernel num-iterations step-size))
+  (chain-output (->RandomWalkMHKernel num-iterations step-size) opts))
 
 ;; =============================================================================
 ;; BlockGibbsKernel
@@ -394,10 +411,16 @@
   (kernel-id [_] :block-gibbs))
 
 (defn block-gibbs-kernel
-  "Create a BlockGibbsKernel for block Gibbs sampling."
-  [num-iterations block-selector block-kernels address-classifier]
+  "Create a BlockGibbsKernel for block Gibbs sampling.
+
+  Output options (all Markov-chain kernels): `:samples :final` (default)
+  emits each chain's last state; `:samples :all` emits every state after
+  the first `:burn` moves, equally weighted — an MCMC estimate from few
+  chains instead of one draw per chain."
+  [num-iterations block-selector block-kernels address-classifier & [opts]]
   {:pre [(pos-int? num-iterations)
          (satisfies? PBlockSelector block-selector)
          (map? block-kernels)
          (fn? address-classifier)]}
-  (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier))
+  (chain-output (->BlockGibbsKernel num-iterations block-selector block-kernels address-classifier)
+                opts))
