@@ -261,7 +261,9 @@
      :pimh       (fn [mf n] (infer/pimh-infer (mf) 20 (quot n 40) o))
      :pgibbs     (fn [mf n] (infer/pgibbs-infer (mf) 20 (quot n 40) o))
      :pgas       (fn [mf n] (infer/pgas-infer (mf) 30 (quot n 60) o))
-     :ipmcmc     (fn [mf n] (infer/ipmcmc-infer (mf) 20 (quot n 160) (assoc o :num-nodes 4)))}))
+     ;; IPMCMC's nodes run in parallel on the one generator, so it is the one
+     ;; particle method whose runs depend on scheduling: a margin for that
+     :ipmcmc     (fn [mf n] (infer/ipmcmc-infer (mf) 30 (quot n 100) (assoc o :num-nodes 4)))}))
 
 (defn check [algo model-fn budget seed]
   (weighted-values (run-infer seed #((get algorithms algo) model-fn budget))))
