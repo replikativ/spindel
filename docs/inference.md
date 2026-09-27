@@ -1,8 +1,12 @@
 # Inference Worlds
 
 Spindel's inference combinators execute probabilistic programs as `Spin`
-values. Pure models can keep the default `:world-policy :fresh`. A model that
-reads or changes registered room systems can request canonical worlds:
+values. Pure models can keep the default `:world-policy :fresh`, under which
+the particle methods (`smc-infer`, `pimh-infer`, `pgibbs-infer`, `pgas-infer`,
+`ipmcmc-infer`) run as savepoint handlers (`inference.smc`): particles are
+frozen forks of savepoints, and the measure holds `Sample`s (result and
+trace). A model that reads or changes registered room systems can request
+canonical worlds:
 
 ```clojure
 (smc-infer model 32
