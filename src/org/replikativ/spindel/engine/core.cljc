@@ -6,7 +6,8 @@
 	org.replikativ.spindel.engine.protocols. Concrete implementations live under
 	org.replikativ.spindel.engine.impl.* (e.g., atoms, sequential, stm)."
   (:require [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.bindings :as bindings]))
+            [org.replikativ.spindel.engine.bindings :as bindings]
+            #?(:clj [is.simm.partial-cps.ioc :as ioc])))
 
 ;; =============================================================================
 ;; Dynamic vars
@@ -34,6 +35,33 @@
   addressing cursor, etc.) via its state backend. Forks are O(1)
   overlay-backend copies of this record."
   nil)
+
+(defn restore-scope
+  "What `*execution-context*` is restored to when a continuation leaves a
+  `binding` form that rebound it. `saved` is the context outside the form,
+  `entered` the one the form bound, `current` the one the continuation fires
+  in.
+
+  A SCOPE form (`with-key`, `dom.addressing/with-parent-addr`) binds the same
+  world with extra `:bindings`. The world is supplied from outside — whoever
+  resumes a continuation binds the world to continue in, so the same
+  continuation can be resumed in a fork or rerun elsewhere — so the world
+  stays `current` and only the scope goes back: the `:bindings` are replaced,
+  as `restore-slice-state!` replaces them. Restoring `saved` wholesale pulled
+  a continuation resumed in a fork back into the world the form was entered
+  in (#64).
+
+  A form that SWITCHES worlds (binds a context over another backend: a
+  restored snapshot, a fork, another runtime) returns to the world it left:
+  `saved`."
+  [saved current entered]
+  (if (and saved current entered
+           (identical? (:backend saved) (:backend entered)))
+    (assoc current :bindings (:bindings saved))
+    saved))
+
+#?(:clj
+   (ioc/register-binding-restorer! `*execution-context* `restore-scope))
 
 (def ^:dynamic *spin-id*
   "The spin whose body is currently executing on this call stack.
