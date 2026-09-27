@@ -26,6 +26,7 @@
   (:refer-clojure :exclude [update])
   (:require [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.measure :as m]))
@@ -151,13 +152,16 @@
                  :discard discard}))))))
 
 (defn- selected [trace selection]
-  (filterv (if (set? selection) selection #(selection % (get (entry-map trace) %)))
-           (itrace/latent-addresses trace)))
+  (let [entries (:trace/entries trace)]
+    (filterv (if (set? selection)
+               selection
+               #(sel/selects? selection (sel/describe % (get entries %))))
+             (itrace/latent-addresses trace))))
 
 (defn regenerate
   "Draw the selected sample sites afresh from their priors and run the
   computation again from the earliest of them, keeping every other site.
-  `selection` is a set of addresses or a predicate (fn [address entry]).
+  `selection` is a set of addresses or a selector (`spindel.select`).
 
   Resolves {:trace t' :weight w}, w = the Metropolis-Hastings log ratio of
   the move without a site-selection term: accepting on it is MH with this
