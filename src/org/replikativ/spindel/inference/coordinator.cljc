@@ -422,6 +422,7 @@
 ;; Forward declaration
 (declare trigger-kernel-resample!)
 (declare resume-in-slice!)
+(declare notify-failed!)
 
 (defn pair-checkpoints
   "Match resampled contexts with their original checkpoints.
@@ -570,48 +571,58 @@
               pcps-async/*in-trampoline* false]
       (spin-core/resume cont value))))
 
-(defn resume-particle-with-value!
-  "Resume particle execution from checkpoint with a specific value.
-
-  This is the unified resume function used by all coordinators.
-  Updates trace and weight, then resumes the continuation.
-
-  Args:
-    context - Particle's execution context
-    checkpoint - Checkpoint map with {:resolve :source :options :address}
-    value - The value to resume with (sampled or observed)
-
-  Returns: nil (side effect: resumes continuation via scheduler)"
-  [context checkpoint value]
-  (let [{:keys [resolve source options address]} checkpoint
-        {:keys [observe]} options
-        executor (:executor context)
+(defn record-choice!
+  "Record the value chosen at a checkpoint: the trace entry (value,
+   distribution, its log-density) and, for an observe, its likelihood in the
+   particle's log-weight. `log-weight-delta` is an extra weight term (the
+   density of a reused retained latent during PGAS scoring)."
+  [context checkpoint value & [log-weight-delta]]
+  (let [{:keys [source options address]} checkpoint
+        observed? (some? (:observe options))
         log-prob (ar/observe* source value)]
-
-    (log/debug :coordinator/resume-particle {:address address
-                                             :value value
-                                             :has-observe? (some? observe)})
-
-    ;; Update trace with rich entry (for MCMC kernel access)
     (rtp/swap-state! context [:inference :trace]
                      (fn [trace]
                        (assoc (or trace {}) address
                               {:value value
                                :distribution source
                                :log-prob log-prob
-                               :observed? (some? observe)})))
-
-    ;; For observations, update log-weight
-    ;; NOTE: Use (some? observe) not just observe, because observe can be boolean false!
-    (when (some? observe)
+                               :observed? observed?})))
+    ;; NOTE: observed?, not observe: an observed value may be false.
+    (when (or observed? log-weight-delta)
       (rtp/swap-state! context [:inference :log-weight]
-                       (fn [w] (+ (or w 0.0) log-prob))))
+                       (fn [w] (+ (or w 0.0)
+                                  (if observed? log-prob 0.0)
+                                  (or log-weight-delta 0.0)))))))
 
-    ;; Execute continuation resume on particle's executor, in the slice
-    ;; environment the checkpoint captured (binds *execution-context* so
-    ;; resolve-fn reads the updated particle-id).
-    (execute! executor
-              (fn [] (resume-in-slice! context checkpoint resolve value)))))
+(defn resume-choice!
+  "Resume a checkpoint's continuation with `value` on the particle's
+   executor, in the slice environment the checkpoint captured (binds
+   *execution-context* so resolve-fn reads the updated particle-id)."
+  [context checkpoint value]
+  (execute! (:executor context)
+            (fn [] (resume-in-slice! context checkpoint (:resolve checkpoint) value))))
+
+(defn resume-particle-with-value!
+  "Record `value` at the checkpoint (trace entry, observe weight) and resume
+  the particle with it."
+  [context checkpoint value & [log-weight-delta]]
+  (log/debug :coordinator/resume-particle {:address (:address checkpoint) :value value})
+  (record-choice! context checkpoint value log-weight-delta)
+  (resume-choice! context checkpoint value))
+
+(defn- arrive-at-barrier!
+  "Count one particle in; the last to arrive processes the barrier. A throw
+  there would die silently in the future and leave the inference hanging, so
+  it fails the inference instead."
+  [coordinator]
+  (let [count (swap! (:barrier-count coordinator) inc)]
+    (log/debug :kernel-coord/barrier-count {:count count :total (:total-particles coordinator)})
+    (when (= count (:total-particles coordinator))
+      (future
+        (try (trigger-kernel-resample! coordinator)
+             (catch #?(:clj Throwable :cljs :default) t
+               (log/error :kernel-coord/barrier-failed {:error t})
+               (notify-failed! coordinator :barrier (:parent-runtime coordinator) t)))))))
 
 ;; =============================================================================
 ;; KernelCoordinator - Generic Kernel-Based Inference
@@ -637,6 +648,7 @@
             delivered?       ; atom: flag to ensure we only deliver once
             world-manager    ; canonical particle worlds, or nil for legacy fresh roots
             retiring-contexts ; atom: fork-id -> expected generation-retirement callback
+            log-normalizer   ; atom: log Z accumulated at resampling steps
    ;; PGIBBS/PGAS support
             pgibbs-retained-trace  ; atom: retained trace for PGIBBS/PGAS (nil if not using)
             retained-particle-id   ; atom: particle-id of retained particle
@@ -694,11 +706,11 @@
             (case (:action kernel-result)
             ;; Simple assignment - resume immediately or barrier
               :assign
-              (let [{:keys [value]} kernel-result]
-
-              ;; If barrier policy requires waiting at observations
+              (let [{:keys [value log-weight-delta]} kernel-result]
+                ;; Record first: at a barrier the observe's likelihood must be
+                ;; in the weight the population is resampled on.
+                (record-choice! context checkpoint value log-weight-delta)
                 (if (and (= barrier-policy :every-observe) (some? observe))
-                ;; Store state and wait at barrier
                   (do
                     (swap! particles assoc particle-id
                            {:context context
@@ -707,15 +719,8 @@
                             :status :checkpoint
                             :log-weight (rtp/get-state context [:inference :log-weight])
                             :retained? is-retained?})
-
-                    (let [count (swap! barrier-count inc)]
-                      (log/debug :kernel-coord/barrier-count {:count count :total total-particles})
-                      (when (= count total-particles)
-                      ;; All particles at barrier - trigger resample logic
-                        (future (trigger-kernel-resample! this)))))
-
-                ;; No barrier - resume immediately
-                  (resume-particle-with-value! context checkpoint value)))))))))
+                    (arrive-at-barrier! this))
+                  (resume-choice! context checkpoint value)))))))))
 
   (notify-complete! [this particle-id context result]
     (if-let [{:keys [finish!]} (take-retirement! this context)]
@@ -756,11 +761,7 @@
                 (when world-manager
                   (particle-context-terminal! world-manager context))
 
-              ;; Increment barrier count for completion
-                (let [count (swap! barrier-count inc)]
-                  (log/debug :kernel-coord/completion-count {:count count :total total-particles})
-                  (when (= count total-particles)
-                    (future (trigger-kernel-resample! this)))))
+                (arrive-at-barrier! this))
 
             ;; Iterate - run the whole program again, in place
               :iterate
@@ -843,8 +844,11 @@
 
       (log/trace :scoring-coord/checkpoint {:address address :value value :from-retained? (some? retained-value)})
 
-      ;; Resume immediately with value
-      (resume-particle-with-value! context checkpoint value)))
+      ;; A reused retained latent contributes its transition density: the
+      ;; ancestor weight is p(retained future, observations | past).
+      (resume-particle-with-value! context checkpoint value
+                                   (when (and (not (some? observe)) (some? retained-value))
+                                     (ar/observe* source value)))))
 
   (notify-complete! [_this _particle-id context _result]
     ;; Deliver final log-weight and signal completion
@@ -898,9 +902,8 @@
     executor - Executor for running scoring particles
 
   Returns: Vector of ancestor log-weights (one per particle)"
-  [particles-state retained-trace executor]
-  (let [particle-vec (vec (vals particles-state))
-        n (count particle-vec)
+  [particle-vec retained-trace executor]
+  (let [n (count particle-vec)
         ;; Shared latch for all scoring particles
         scoring-complete (java.util.concurrent.CountDownLatch. n)
         ;; Individual promises for each particle's result
@@ -961,115 +964,64 @@
           (mapv (comp #(or % 0.0) :log-weight) particle-vec))))))
 
 (defn perform-ancestor-sampling
-  "Perform PGAS ancestor sampling using re-execution from checkpoints.
-
-  At each barrier:
-  1. Fork each particle and run forward with retained trace values
-  2. Compute ancestor weights from scoring particles' final log-weights
-  3. Sample ancestor index proportionally
-
-  Args:
-    particles-state - Map of particle states at barrier
-    retained-trace - Full retained trace
-    executor - Executor for scoring particles
-
-  Returns: Index of selected ancestor in particles-state order"
-  [particles-state retained-trace executor]
-  (let [particle-vec (vec (vals particles-state))
-        n (count particle-vec)
-
-        ;; Run scoring particles to get ancestor weights
-        ancestor-log-weights (run-ancestor-scoring-particles! particles-state retained-trace executor)
-
-        ;; Add current particle weights (weight up to barrier + weight from scoring)
-        combined-weights (mapv (fn [p score-w]
-                                 (+ (or (:log-weight p) 0.0) (or score-w 0.0)))
-                               particle-vec
-                               ancestor-log-weights)
-
-        ;; Normalize and sample
-        max-lw (if (empty? combined-weights) 0.0 (apply max combined-weights))
-        weights (mapv #(Math/exp (- % max-lw)) combined-weights)
-        total-w (reduce + weights)
-        norm-weights (if (> total-w 0)
-                       (mapv #(/ % total-w) weights)
-                       (vec (repeat n (/ 1.0 n))))  ; Uniform if all weights are 0
-
-        ;; Sample ancestor index
-        u (m/uniform01)
-        ancestor-idx (loop [i 0 cumsum 0.0]
-                       (if (>= i n)
-                         (dec n)
-                         (let [cumsum' (+ cumsum (nth norm-weights i))]
-                           (if (< u cumsum')
-                             i
-                             (recur (inc i) cumsum')))))]
-
-    (log/debug :pgas/ancestor-sampled {:ancestor-idx ancestor-idx
-                                       :combined-weights combined-weights
-                                       :norm-weights norm-weights})
-
+  "Index into `particle-vec` (the particles waiting at the barrier) of the
+  ancestor the retained particle continues from, drawn
+  ∝ w_i · p(retained future, observations | particle i's past)."
+  [particle-vec retained-trace executor]
+  (let [scores (run-ancestor-scoring-particles! particle-vec retained-trace executor)
+        combined (mapv (fn [p s] (+ (or (:log-weight p) 0.0) (or s 0.0))) particle-vec scores)
+        ancestor-idx (m/sample-categorical (m/normalize-log-weights combined))]
+    (log/debug :pgas/ancestor-sampled {:ancestor-idx ancestor-idx :combined-weights combined})
     ancestor-idx))
 
 ;; =============================================================================
 ;; Kernel Coordinator Resample Logic
 ;; =============================================================================
 
-(defn- resume-resampled-contexts!
-  [coordinator particles-state particles-ordered should-resample?
-   is-pgibbs? is-pgas? ancestor-idx contexts-with-checkpoints]
-  ;; Reset weights if we resampled.
-  (when should-resample?
-    (doseq [{:keys [context]} contexts-with-checkpoints]
-      (rtp/swap-state! context [:inference :log-weight] (constantly 0.0))))
+(defn- ancestor-indices
+  "Ancestor index per slot. Plain SMC: systematic resampling. Conditional
+  SMC (PGibbs/PGAS): the retained slot's ancestor is fixed — its own lineage,
+  or the PGAS draw — and the other N−1 are drawn multinomially, so the
+  retained trajectory can never be resampled away."
+  [weights n retained-slot retained-ancestor]
+  (if retained-slot
+    (vec (for [slot (range n)]
+           (if (= slot retained-slot) retained-ancestor (m/sample-categorical weights))))
+    (m/systematic-resample weights n)))
 
+(defn- resume-resampled-contexts!
+  "Install the next generation: the forked waiting particles (resumed past
+  the barrier's observe, which is already recorded) and the completed
+  particles carried over as they are. Completed particles count as arrived
+  at the next barrier; if every slot is complete the population is done."
+  [coordinator contexts-with-checkpoints resample? retained-position carried]
   (reset! (:particles coordinator) {})
   (reset! (:barrier-count coordinator) 0)
-
   (let [retained-pid @(:retained-particle-id coordinator)
-        effective-retained-idx
-        (if (and is-pgas? ancestor-idx)
-          ancestor-idx
-          (when is-pgibbs?
-            (first
-             (keep-indexed
-              (fn [i p] (when (= (first p) retained-pid) i))
-              particles-state))))
-        new-retained-pid
-        (when effective-retained-idx
-          (some->> contexts-with-checkpoints
-                   (filter #(= (:original-idx %) effective-retained-idx))
-                   first
-                   :particle-id))]
-
-    (log/debug :kernel-coord/retained-tracking
-               {:is-pgas? is-pgas?
-                :ancestor-idx ancestor-idx
-                :effective-retained-idx effective-retained-idx
-                :new-retained-pid new-retained-pid})
-
-    (when (and is-pgibbs? new-retained-pid)
-      (reset! (:retained-particle-id coordinator) new-retained-pid))
-
-    (doseq [{:keys [context checkpoint particle-id original-idx world]}
-            contexts-with-checkpoints]
-      (let [orig-state (nth particles-ordered original-idx)
-            value (:value orig-state)
-            is-new-retained? (and is-pgibbs?
-                                  (= particle-id new-retained-pid))]
-        (rtp/swap-state! context [:inference :particle-id]
-                         (constantly particle-id))
-        (rtp/swap-state! context [:inference :sweep]
-                         (constantly @(:current-sweep coordinator)))
-        (when world
-          (rtp/swap-state! context [:inference :world]
-                           (constantly world)))
-        (swap! (:particles coordinator) assoc particle-id
-               {:context context
-                :world world
-                :status :running
-                :retained? is-new-retained?})
-        (resume-particle-with-value! context checkpoint value)))))
+        sweep @(:current-sweep coordinator)
+        running (vec (map-indexed
+                      (fn [i {:keys [context particle-id world] :as entry}]
+                        (let [pid (if (= i retained-position) retained-pid particle-id)]
+                          (when resample?
+                            (rtp/swap-state! context [:inference :log-weight] (constantly 0.0)))
+                          (rtp/swap-state! context [:inference :particle-id] (constantly pid))
+                          (rtp/swap-state! context [:inference :sweep] (constantly sweep))
+                          (when world
+                            (rtp/swap-state! context [:inference :world] (constantly world)))
+                          (assoc entry :particle-id pid)))
+                      contexts-with-checkpoints))]
+    (doseq [{:keys [particle-id state]} carried]
+      (swap! (:particles coordinator) assoc particle-id state))
+    (doseq [{:keys [context world particle-id]} running]
+      (swap! (:particles coordinator) assoc particle-id
+             {:context context :world world :status :running
+              :retained? (= particle-id retained-pid)}))
+    (if (and (seq carried) (= (count carried) (:total-particles coordinator)))
+      (trigger-kernel-resample! coordinator)
+      (do
+        (swap! (:barrier-count coordinator) + (count carried))
+        (doseq [{:keys [context checkpoint value]} running]
+          (resume-choice! context checkpoint value))))))
 
 (def ^:private projected-inference-keys
   #{:log-weight :choice-stack :trace :particle-id :sweep :result
@@ -1107,174 +1059,144 @@
            :drain-active nil)))
 
 (defn trigger-kernel-resample!
-  "Trigger barrier processing for KernelCoordinator.
+  "Process a barrier: every particle is waiting at an observe or complete.
 
-  Called when all particles reach a barrier (checkpoint or completion).
-  Performs ESS-based resampling if needed, then resumes particles.
+  The whole population is resampled when its ESS falls below the threshold
+  (always, in conditional SMC), and the log mean weight is folded into the
+  evidence. Waiting ancestors are forked and resumed; completed ones — a
+  particle that reached fewer observes than the others — are carried along
+  with their final weight. When every particle is complete the measure is
+  delivered.
 
-  PGIBBS mode: If pgibbs-retained-trace is set, the retained particle
-  follows its fixed trace at sample sites.
-
-  PGAS mode: If pgas-ancestor-sampling? is true, performs ancestor sampling
-  at each barrier to select which particle's history the retained particle adopts."
+  PGIBBS mode: the retained particle's lineage survives every resampling and
+  it follows its fixed trace at sample sites. PGAS mode: the retained
+  particle also redraws which particle's past it continues from."
   [coordinator]
   (swap! (:current-sweep coordinator) inc)
 
   (let [particles-state @(:particles coordinator)
-        statuses (map (comp :status val) particles-state)
-        all-checkpoint? (every? #(= :checkpoint %) statuses)
-        all-complete? (every? #(= :complete %) statuses)
+        entries (vec particles-state)
+        n (count entries)
+        state-of #(val (nth entries %))
         is-pgibbs? (some? @(:pgibbs-retained-trace coordinator))
         is-pgas? (and is-pgibbs? (:pgas-ancestor-sampling? coordinator))]
 
-    (log/debug :kernel-coord/trigger-resample {:sweep @(:current-sweep coordinator)
-                                               :all-checkpoint? all-checkpoint?
-                                               :all-complete? all-complete?
-                                               :is-pgibbs? is-pgibbs?
-                                               :is-pgas? is-pgas?})
-
-    (cond
-      ;; All particles hit checkpoint - resample and continue
-      all-checkpoint?
-      (let [;; PGAS: Perform ancestor sampling to select retained particle's ancestor
-            ;; This determines which particle's history the retained particle adopts
-            ancestor-idx (when is-pgas?
-                           (let [retained-trace @(:pgibbs-retained-trace coordinator)
-                                 executor (:executor (:parent-runtime coordinator))]
-                             (perform-ancestor-sampling particles-state retained-trace executor)))
-
-            _ (when ancestor-idx
-                (log/debug :pgas/selected-ancestor {:ancestor-idx ancestor-idx}))
-
-            ;; Standard SMC processing
-            contexts (mapv (comp :context val) particles-state)
-            log-weights (mapv (comp :log-weight val) particles-state)
-
-            measure (m/empirical (mapv vector contexts log-weights))
-
-            ;; Calculate ESS
-            ess (m/effective-sample-size measure)
-            n (:total-particles coordinator)
-
-            _ (log/debug :kernel-coord/checkpoint-reached {:ess ess
-                                                           :threshold (* (:resample-threshold coordinator) n)
-                                                           :is-pgibbs? is-pgibbs?})
-
-            ;; Resample if ESS < threshold
-            should-resample? (< ess (* (:resample-threshold coordinator) n))
-
-            resampled-contexts
-            (if should-resample?
-              (let [weights (m/normalize-log-weights log-weights)
-                    indices (m/systematic-resample weights n)]
-                (mapv #(nth contexts %) indices))
-              contexts)
-
-            ;; Pair with original checkpoints and fork
-            particles-ordered (vec (vals particles-state))
-            original-contexts-ordered (mapv :context particles-ordered)
-            continue!
-            (fn [contexts-with-checkpoints]
-              (if-let [manager (:world-manager coordinator)]
-                (if (claim-particle-generation-retirement! manager)
-                  (invoke-result!
-                   (retire-particle-generation! coordinator particles-state)
-                   (fn [_]
-                     (if (complete-particle-generation-transition!
-                          manager (mapv :context contexts-with-checkpoints))
-                       (resume-resampled-contexts!
-                        coordinator particles-state particles-ordered
-                        should-resample? is-pgibbs? is-pgas? ancestor-idx
-                        contexts-with-checkpoints)
-                       ;; Cancellation landed while source finalizers were
-                       ;; running. The children were never started; close the
-                       ;; coordinator and let normal manager cleanup settle all
-                       ;; source/child handles.
-                       (notify-failed! coordinator :particle-generation
-                                       (:parent-runtime coordinator)
-                                       (cancellation-error))))
-                   (fn [retirement-error]
-                     (complete-particle-generation-transition! manager [])
-                     (notify-failed! coordinator :particle-retirement
-                                     (:parent-runtime coordinator)
-                                     retirement-error)))
-                  ;; Cancellation won while child worlds were being forked and
-                  ;; already owns the old source checkpoints. Never retire them
-                  ;; a second time or admit the replacement generation.
-                  (do
-                    (complete-particle-generation-transition! manager [])
-                    (notify-failed! coordinator :particle-generation
-                                    (:parent-runtime coordinator)
-                                    (cancellation-error))))
-                (resume-resampled-contexts!
-                 coordinator particles-state particles-ordered
-                 should-resample? is-pgibbs? is-pgas? ancestor-idx
-                 contexts-with-checkpoints)))]
-
-        (if-let [manager (:world-manager coordinator)]
-          (do
-            ;; Hold quiescence before the first asynchronous child fork. A
-            ;; concurrent cancellation may unwind the source particles, but it
-            ;; cannot settle the tree until every in-flight fork callback has
-            ;; crossed `continue!` or the failure callback below.
-            (begin-particle-generation-transition! manager)
-            (pair-world-checkpoints!
-             manager resampled-contexts original-contexts-ordered particles-state
-             continue!
-             (fn [fork-error]
-               (complete-particle-generation-transition! manager [])
-               ;; Source particles are suspended, not terminal: structured
-               ;; cancellation must unwind their parked continuations and user
-               ;; finally blocks before automatic quiescent cleanup consumes the
-               ;; source and partially constructed child worlds.
-               (notify-failed! coordinator :particle-world
-                               (:parent-runtime coordinator) fork-error))))
-          (continue!
-           (pair-checkpoints resampled-contexts
-                             original-contexts-ordered
-                             particles-state))))
-
+    (if (every? #(= :complete (:status (val %))) entries)
       ;; All particles completed - deliver final result
-      all-complete?
       (when (compare-and-set! (:delivered? coordinator) false true)
         (let [final-particles (vals particles-state)
               contexts (mapv :context final-particles)
-              log-weights (mapv :log-weight final-particles)
-              legacy-measure (when-not (:world-manager coordinator)
-                               (m/empirical
-                                (mapv vector contexts log-weights)))]
-
+              log-weights (mapv #(or (:log-weight %) 0.0) final-particles)
+              with-evidence #(assoc % :log-normalizer @(:log-normalizer coordinator))
+              deliver!
+              (fn [value]
+                (binding [rtc/*execution-context* (:parent-runtime coordinator)]
+                  (sync/deliver! (:on-complete coordinator) value)))]
           (log/debug :kernel-coord/all-complete {:num-sweeps @(:current-sweep coordinator)
                                                  :num-particles (count contexts)})
-          (let [deliver!
-                (fn [value]
-                  (binding [rtc/*execution-context*
-                            (:parent-runtime coordinator)]
-                    (sync/deliver! (:on-complete coordinator) value)))]
-            (if-let [manager (:world-manager coordinator)]
-              (invoke-result!
-               (discard-particle-worlds! manager)
-               (fn [_]
-                 (let [descriptors-by-id
-                       (into {} (map (juxt :fork/id identity))
-                             (world-descriptors manager))]
-                   (deliver!
+          (if-let [manager (:world-manager coordinator)]
+            (invoke-result!
+             (discard-particle-worlds! manager)
+             (fn [_]
+               (let [descriptors-by-id (into {} (map (juxt :fork/id identity))
+                                             (world-descriptors manager))]
+                 (deliver!
+                  (with-evidence
                     (m/empirical
                      (mapv vector
-                           (mapv #(project-settled-particle-context
-                                   % descriptors-by-id)
-                                 contexts)
-                           log-weights)))))
-               (fn [error]
-                 (deliver! (->InferenceFailure :particle-world-cleanup
-                                               error))))
-              (deliver! legacy-measure)))))
+                           (mapv #(project-settled-particle-context % descriptors-by-id) contexts)
+                           log-weights))))))
+             (fn [error]
+               (deliver! (->InferenceFailure :particle-world-cleanup error))))
+            (deliver! (with-evidence (m/empirical (mapv vector contexts log-weights)))))))
 
-      ;; Mixed state
-      :else
-      (throw (ex-info "KernelCoordinator: Mixed particle states"
-                      {:checkpoint-count (count (filter #(= :checkpoint %) statuses))
-                       :complete-count (count (filter #(= :complete %) statuses))})))))
+      (let [log-weights (mapv #(or (:log-weight (state-of %)) 0.0) (range n))
+            weights (m/normalize-log-weights log-weights)
+            retained-slot (when is-pgibbs?
+                            (first (keep-indexed
+                                    (fn [i [pid _]] (when (= pid @(:retained-particle-id coordinator)) i))
+                                    entries)))
+            resample? (or (some? retained-slot)
+                          (< (m/compute-ess weights) (* (:resample-threshold coordinator) n)))
+            waiting-idxs (filterv #(= :checkpoint (:status (state-of %))) (range n))
+            retained-ancestor
+            (when retained-slot
+              (if (and is-pgas? (= :checkpoint (:status (state-of retained-slot))))
+                (nth waiting-idxs
+                     (perform-ancestor-sampling (mapv state-of waiting-idxs)
+                                                @(:pgibbs-retained-trace coordinator)
+                                                (:executor (:parent-runtime coordinator))))
+                retained-slot))
+            ancestors (if resample?
+                        (ancestor-indices weights n retained-slot retained-ancestor)
+                        (vec (range n)))
+            slots (map-indexed vector ancestors)
+            checkpoint-slots (filterv #(= :checkpoint (:status (state-of (second %)))) slots)
+            retained-position (first (keep-indexed (fn [i [slot _]] (when (= slot retained-slot) i))
+                                                   checkpoint-slots))
+            carried (vec (for [[slot a] slots
+                               :let [st (state-of a)]
+                               :when (= :complete (:status st))]
+                           {:particle-id (if (= slot retained-slot)
+                                           @(:retained-particle-id coordinator)
+                                           (keyword (str "particle-" (gensym))))
+                            :state (cond-> st resample? (assoc :log-weight 0.0))}))
+            ;; the waiting sources: forked into the next generation, then retired
+            waiting-state (into {} (map #(nth entries %)) waiting-idxs)
+            original-contexts-ordered (mapv (comp :context val) waiting-state)
+            resampled-contexts (mapv #(:context (state-of (second %))) checkpoint-slots)
+            with-values (fn [contexts-with-checkpoints]
+                          (mapv (fn [{:keys [original-idx] :as e}]
+                                  (assoc e :value (:value (val (nth (vec waiting-state) original-idx)))))
+                                contexts-with-checkpoints))
+            continue!
+            (fn [contexts-with-checkpoints]
+              (let [cwc (with-values contexts-with-checkpoints)]
+                (if-let [manager (:world-manager coordinator)]
+                  (if (claim-particle-generation-retirement! manager)
+                    (invoke-result!
+                     (retire-particle-generation! coordinator waiting-state)
+                     (fn [_]
+                       (if (complete-particle-generation-transition! manager (mapv :context cwc))
+                         (resume-resampled-contexts! coordinator cwc resample? retained-position carried)
+                         ;; Cancellation landed while source finalizers were
+                         ;; running. The children were never started.
+                         (notify-failed! coordinator :particle-generation
+                                         (:parent-runtime coordinator)
+                                         (cancellation-error))))
+                     (fn [retirement-error]
+                       (complete-particle-generation-transition! manager [])
+                       (notify-failed! coordinator :particle-retirement
+                                       (:parent-runtime coordinator)
+                                       retirement-error)))
+                    ;; Cancellation won while child worlds were being forked
+                    ;; and already owns the old source checkpoints.
+                    (do
+                      (complete-particle-generation-transition! manager [])
+                      (notify-failed! coordinator :particle-generation
+                                      (:parent-runtime coordinator)
+                                      (cancellation-error))))
+                  (resume-resampled-contexts! coordinator cwc resample? retained-position carried))))]
+
+        (log/debug :kernel-coord/barrier {:sweep @(:current-sweep coordinator)
+                                          :resample? resample?
+                                          :waiting (count waiting-idxs)
+                                          :is-pgibbs? is-pgibbs?})
+        (when resample?
+          (swap! (:log-normalizer coordinator) + (m/log-mean-exp log-weights)))
+
+        (if-let [manager (:world-manager coordinator)]
+          (do
+            ;; Hold quiescence before the first asynchronous child fork.
+            (begin-particle-generation-transition! manager)
+            (pair-world-checkpoints!
+             manager resampled-contexts original-contexts-ordered waiting-state
+             continue!
+             (fn [fork-error]
+               (complete-particle-generation-transition! manager [])
+               (notify-failed! coordinator :particle-world
+                               (:parent-runtime coordinator) fork-error))))
+          (continue! (pair-checkpoints resampled-contexts original-contexts-ordered waiting-state)))))))
 
 ;; =============================================================================
 ;; KernelCoordinator Constructor
@@ -1308,6 +1230,7 @@
    (atom false)                                     ; delivered?
    (:world-manager opts)                            ; world-manager
    (atom {})                                        ; retiring-contexts
+   (atom 0.0)                                       ; log-normalizer
     ;; PGIBBS/PGAS fields
    (atom (:pgibbs-retained-trace opts))             ; pgibbs-retained-trace
    (atom nil)                                       ; retained-particle-id (set by first particle)
