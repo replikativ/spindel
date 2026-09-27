@@ -207,6 +207,54 @@ silently reclassified as child-only.
 advance completes. A read-only preflight failure reopens the handle; failure
 after durable mutation begins leaves it `:incomplete` for explicit recovery.
 
+## Copies: alternatives that settle at most once
+
+`merge-fork!` and `discard-fork!` settle a fork exactly once; `partition-fork!`
+splits that one settlement over disjoint systems, and every part settles. A
+*copy* is the other split: `(ygg/copy-fork! handle k)` consumes an open handle
+and returns `k` frozen forks of its world as it is now — alternatives that
+share ONE settlement. The first member to `merge-fork!` settles the family:
+its world merges into the copied world and that into the original parent.
+Every other member can then only `discard-fork!`
+(`::copy-family-settled`); discarding every copy of a world discards that
+world. Copies of a member join the same family, so resampling a particle
+twice still ends in at most one settlement.
+
+```clojure
+(let [w (ygg/fork!)
+      [a b c] (ygg/copy-fork! w 3)]   ; w is consumed
+  ... run a, b, c ...
+  (ygg/merge-fork! b)                 ; b → w → parent
+  (ygg/discard-fork! a)
+  (ygg/discard-fork! c))
+```
+
+Whether a world may be copied depends on its systems. `register!` takes a
+structural grade:
+
+| Grade | Copy | Discard | Examples |
+|---|---|---|---|
+| `:unrestricted` (default) | yes | yes | datahike/git branches, CRDTs, drafts |
+| `:relevant` | yes | only by compensating (`:compensate`) | posted ledger entries, audit trails |
+| `:linear` | no — unless its linear operations are deferred (`:realize`) | no | legal numbers, period seals, sends |
+| `:affine` | no | yes | live handles, streams |
+| `:divisible` | split (not yet) | return (not yet) | budgets |
+
+A system forked as `:kind :shared` counts as `:linear`. `copy-fork!` refuses
+(`::copy-forbidden`, naming the systems) and leaves the handle open when a
+system may not be copied. Two hooks carry the rest:
+
+- `:compensate` runs before any fork holding the system is discarded, with
+  `{:system-id :child-ctx :parent-ctx :fork-id}` — what a relevant system does
+  instead of dropping state (e.g. post reversals). If it throws, the fork
+  stays open.
+- `:realize` runs when a fork holding the system merges into a world that is
+  not itself a fork. A copy family merges through the copied world first, so
+  a deferred linear operation — a gapless legal number — happens once, for the
+  one world that settles, never for a discarded alternative.
+
+Copy families settle synchronously (JVM); a member cannot be partitioned.
+
 ## Fork and the spin cache
 
 Spin results live on each `SpinNode` in the unified `:nodes` map. A fork:

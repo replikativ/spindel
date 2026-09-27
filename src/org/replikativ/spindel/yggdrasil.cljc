@@ -90,6 +90,7 @@
 (def registry-key :ygg-signals)
 (def ^:private fork-authority-key ::fork-authority)
 (def ^:private world-shape-key ::world-shape)
+(def ^:private policies-key ::system-policies)
 
 ;; Registry shape is part of a fork's settlement authority. On the JVM this
 ;; lock closes the validation/CAS race between partition-fork! and a concurrent
@@ -320,21 +321,45 @@
    isolated overlay/branch).
 
    Args:
-     sys - Yggdrasil system (must implement SystemIdentity; Snapshotable for forks)
+     sys  - Yggdrasil system (must implement SystemIdentity; Snapshotable for forks)
+     opts - optional settlement policy of the system:
+       :grade      which structural rules its state admits when worlds are
+                   copied (`copy-fork!`) or discarded:
+                     :unrestricted (default) copy and discard freely
+                     :relevant   copy, but a discard must compensate
+                     :linear     neither (legal numbers, seals, sends)
+                     :affine     discard, never copy (live handles)
+                     :divisible  split on copy, return on discard
+       :compensate (fn [{:keys [system-id child-ctx parent-ctx fork-id]}])
+                   runs before a fork holding the system is discarded: what
+                   a :relevant system does instead of dropping state
+       :realize    (fn [{:keys [system-id child-ctx parent-ctx fork-id]}])
+                   runs when a fork holding the system is merged into a world
+                   that is not itself a fork — the one place deferred linear
+                   operations (a gapless legal number) become real. A :linear
+                   system with :realize defers its linear operations and may
+                   be copied.
 
    Returns: YggRef
 
    Example:
      (def ygit (register! (git/create \".\")))
      @ygit  ; => the git system"
-  [sys]
-  (with-registry-authority-lock
-    (fn []
-      (ensure-world-shape-mutable!)
-      (let [sys-id (ygg/system-id sys)
-            sig    (ys/ygg-signal sys)]
-        (ec/swap-state! [registry-key] #(assoc (or % {}) sys-id sig))
-        (->YggRef sys-id)))))
+  ([sys] (register! sys nil))
+  ([sys {:keys [grade compensate realize]}]
+   (with-registry-authority-lock
+     (fn []
+       (ensure-world-shape-mutable!)
+       (let [sys-id (ygg/system-id sys)
+             sig    (ys/ygg-signal sys)]
+         (ec/swap-state! [registry-key] #(assoc (or % {}) sys-id sig))
+         (when (or grade compensate realize)
+           (ec/swap-state! [policies-key]
+                           #(assoc (or % {}) sys-id
+                                   (cond-> {:grade (or grade :unrestricted)}
+                                     compensate (assoc :compensate compensate)
+                                     realize (assoc :realize realize)))))
+         (->YggRef sys-id))))))
 
 (defn unregister!
   "Remove the system identified by `sys-id` — the mirror of `register!`. Drops it
@@ -345,8 +370,18 @@
       (ensure-world-shape-mutable!)
       (when-let [sig-ref (get (registry) sys-id)]
         (ec/swap-state! [registry-key] #(dissoc % sys-id))
+        (ec/swap-state! [policies-key] #(dissoc % sys-id))
         (ec/swap-state! [:forkable-signals] #(disj (or % #{}) (:id sig-ref)))
         true))))
+
+(defn- system-policy [ctx sys-id]
+  (get (rtp/get-state ctx [policies-key]) sys-id))
+
+(defn system-grade
+  "The structural grade of registered system `sys-id` (see `register!`):
+   :unrestricted unless registered otherwise."
+  ([sys-id] (system-grade (ec/current-execution-context) sys-id))
+  ([ctx sys-id] (or (:grade (system-policy ctx sys-id)) :unrestricted)))
 
 (defn system
   "Get a registered system by id from the current context — the EFFECTIVE writable
@@ -599,6 +634,10 @@
   ;; Fail on affine authority before inspecting caller-supplied partition data;
   ;; an in-flight advance/settlement is the governing state of the capability.
   (ensure-open-authority! fork-handle)
+  (when (:family fork-handle)
+    (throw (ex-info "A copy family member settles with its family; it cannot be partitioned"
+                    {:type ::invalid-fork-partition
+                     :fork-id (:fork-id fork-handle)})))
   (let [parts (vec partitions)
         descriptor (:descriptor fork-handle)
         described (set (keys (:fork/systems descriptor)))
@@ -1438,29 +1477,245 @@
                                       co)
             :child-ctx child-ctx})))))))
 
+(defn- handle-systems
+  "The system ids a handle settles: its partition's, or every system of the
+   child world."
+  [fork-handle]
+  (or (handle-system-scope fork-handle)
+      (set (keys (registry (:child-ctx fork-handle))))))
+
+(defn- run-system-hooks!
+  "Call each system's `hook` (see `register!`) for the systems of the handle."
+  [fork-handle hook]
+  (let [child (:child-ctx fork-handle)
+        parent (:parent-ctx child)]
+    (doseq [sid (sort-by str (handle-systems fork-handle))
+            :let [f (get (system-policy child sid) hook)]
+            :when f]
+      (f {:system-id sid :child-ctx child :parent-ctx parent
+          :fork-id (:fork-id fork-handle)}))))
+
+(defn- final-settlement?
+  "Whether merging `fork-handle` lands in a world that is not itself a fork:
+   where deferred linear operations become real."
+  [fork-handle]
+  (nil? (some-> (:parent-ctx (:child-ctx fork-handle))
+                (rtp/get-state [fork-authority-key]))))
+
+(defn- and-then
+  "Apply `f` to a value-or-CPS result."
+  [x f]
+  (if (fn? x)
+    (fn [resolve reject]
+      (x (fn [v] (try (resolve (f v))
+                      (catch #?(:clj Throwable :cljs :default) e (reject e))))
+         reject))
+    (f x)))
+
+(defn- merge-fork*
+  [fork-handle opts]
+  (settle-fork! fork-handle :merge opts
+                #(and-then (merge-fork-context! fork-handle (dissoc opts :on-merge))
+                           (fn [payload]
+                             (when (final-settlement? fork-handle)
+                               (run-system-hooks! fork-handle :realize))
+                             payload))
+                #(select-keys % [:merged :child-only])
+                (:on-merge opts)))
+
+(defn- discard-fork*
+  [fork-handle opts]
+  (settle-fork! fork-handle :discard opts
+                ;; compensation runs in preflight: if it throws, nothing was
+                ;; dropped and the fork stays open
+                #(do (run-system-hooks! fork-handle :compensate)
+                     (discard-fork-context! fork-handle (dissoc opts :on-discard)))
+                (constantly nil)
+                (:on-discard opts)))
+
+;; =============================================================================
+;; Copy families (additive contraction: alternatives that settle at most once)
+;; =============================================================================
+;;
+;; A family is one atom:
+;;   {:id uuid :status :open | :merging | :merged | :discarded :winner fork-id
+;;    :nodes {fork-id {:via fork-id-or-nil     ; the handle it was copied from
+;;                     :internal ForkHandle    ; a copied (consumed) handle, held
+;;                                             ; by the family to settle it later
+;;                     :children #{fork-id}    ; its copies still unsettled
+;;                     :settled :merged | :discarded}}}
+;; Members carry it as `:family`. Merging a member merges it into the world it
+;; was copied from and then that world, up to the original handle, into its
+;; parent; discarding the last copy of a world discards that world.
+
+(defn- ensure-sync! [opts operation]
+  (when-not (:sync? (merge yc/default-opts opts))
+    (throw (ex-info "Copy families settle synchronously"
+                    {:type ::async-copy-unsupported :operation operation}))))
+
+(defn- copy-forbidden
+  "{system-id grade} of the systems of `fork-handle` whose state may not be
+   copied."
+  [fork-handle]
+  (let [child (:child-ctx fork-handle)]
+    (into {}
+          (keep (fn [sid]
+                  (let [grade (if (= :shared (get-in (:descriptor fork-handle)
+                                                     [:fork/systems sid :kind]))
+                                :linear
+                                (system-grade child sid))
+                        deferred? (and (= :linear grade)
+                                       (:realize (system-policy child sid)))]
+                    (when (and (contains? #{:affine :linear :divisible} grade)
+                               (not deferred?))
+                      [sid grade]))))
+          (handle-systems fork-handle))))
+
+(defn copy-fork!
+  "Consume the OPEN `fork-handle` and return `k` copies of its world as it is
+   now: alternatives that share ONE settlement. The first member to
+   `merge-fork!` settles the family — its world merges into the copied one,
+   and that into the original parent — and every other member may then only
+   `discard-fork!`. Discarding every copy of a world discards that world.
+   Copies of a member join the same family (resampling a particle twice).
+
+   The copies are frozen forks of the world (`opts` are `fork!` options), so
+   each is coherent. Copying is refused while a system of the world may not
+   be copied: `:affine`, `:linear` without `:realize`, `:divisible` (not yet
+   split), or a `:shared` system (see `register!`). JVM / synchronous only."
+  ([fork-handle k] (copy-fork! fork-handle k {}))
+  ([fork-handle k opts]
+   (ensure-sync! opts :copy)
+   (when-not (pos-int? k)
+     (throw (ex-info "copy-fork! needs a positive number of copies"
+                     {:type ::invalid-copy-count :k k})))
+   (ensure-open-authority! fork-handle)
+   (let [forbidden (copy-forbidden fork-handle)]
+     (when (seq forbidden)
+       (throw (ex-info "World holds systems that cannot be copied"
+                       {:type ::copy-forbidden
+                        :fork-id (:fork-id fork-handle)
+                        :systems forbidden}))))
+   (let [family (or (:family fork-handle)
+                    (atom {:id (random-uuid) :status :open :nodes {}}))
+         fid (:fork-id fork-handle)
+         owner (:owner @(:authority fork-handle))
+         internal (transfer-fork! fork-handle [::copy-family (:id @family)])
+         copies (binding [ec/*execution-context* (:child-ctx internal)]
+                  (vec (repeatedly k #(fork! (merge {:mode :frozen :owner owner :purpose :copy}
+                                                    opts)))))]
+     (swap! family
+            (fn [f]
+              (reduce (fn [f c] (assoc-in f [:nodes (:fork-id c)] {:via fid :children #{}}))
+                      (update-in f [:nodes fid] merge
+                                 {:internal internal
+                                  :children (set (map :fork-id copies))})
+                      copies)))
+     (mapv #(assoc % :family family) copies))))
+
+(defn copy-family
+  "A portable view of the copy family of `fork-handle`, or nil."
+  [fork-handle]
+  (when-let [family (:family fork-handle)]
+    (let [f @family]
+      (-> (select-keys f [:id :status :winner])
+          (assoc :members (into {} (map (fn [[id n]] [id (select-keys n [:via :settled])]))
+                                (:nodes f)))))))
+
+(defn- claim-family!
+  [family fork-id]
+  (loop []
+    (let [f @family]
+      (cond
+        (= :open (:status f))
+        (when-not (compare-and-set! family f (assoc f :status :merging :winner fork-id))
+          (recur))
+
+        (= fork-id (:winner f)) nil
+
+        :else
+        (throw (ex-info "The copy family has already settled"
+                        {:type ::copy-family-settled
+                         :fork-id fork-id
+                         :family (:id f)
+                         :status (:status f)
+                         :winner (:winner f)}))))))
+
+(defn- merge-family-member!
+  [fork-handle opts]
+  (ensure-sync! opts :merge)
+  (let [family (:family fork-handle)]
+    (claim-family! family (:fork-id fork-handle))
+    (let [result (merge-fork* fork-handle opts)]
+      (loop [via (get-in @family [:nodes (:fork-id fork-handle) :via])]
+        (when via
+          (let [{:keys [internal]} (get-in @family [:nodes via])]
+            (merge-fork* internal {})
+            (swap! family assoc-in [:nodes via :settled] :merged)
+            (recur (get-in @family [:nodes via :via])))))
+      (swap! family assoc :status :merged)
+      result)))
+
+(defn- winner-path
+  "The worlds a winning member merges through: its copied-from chain."
+  [f]
+  (loop [id (some->> (:winner f) (get (:nodes f)) :via) acc #{}]
+    (if id (recur (get-in f [:nodes id :via]) (conj acc id)) acc)))
+
+(defn- release-copied-world!
+  "`child-id` is settled: drop it from its world's copies, and discard that
+   world when it was the last one and the world is not on the merged path."
+  [family via child-id]
+  (when via
+    (let [[before after] (swap-vals! family update-in [:nodes via :children] disj child-id)
+          node (get-in after [:nodes via])]
+      (when (and (seq (get-in before [:nodes via :children]))
+                 (empty? (:children node))
+                 (nil? (:settled node))
+                 ;; the worlds the winner merges through are the winner's
+                 (not (contains? (winner-path after) via)))
+        (discard-fork* (:internal node) {})
+        (swap! family assoc-in [:nodes via :settled] :discarded)
+        (if-let [up (:via node)]
+          (release-copied-world! family up via)
+          (swap! family (fn [f] (cond-> f (= :open (:status f)) (assoc :status :discarded)))))))))
+
+(defn- discard-family-member!
+  [fork-handle opts]
+  (ensure-sync! opts :discard)
+  (let [family (:family fork-handle)
+        id (:fork-id fork-handle)
+        result (discard-fork* fork-handle opts)]
+    (when-not (get-in @family [:nodes id :settled])
+      (swap! family assoc-in [:nodes id :settled] :discarded)
+      (release-copied-world! family (get-in @family [:nodes id :via]) id))
+    result))
+
 (defn merge-fork!
   "Merge an OPEN fork's overlays to its parent exactly once. Repeating the same
    successful operation returns its cached result; discard/transfer afterwards
    fails without touching the substrate. `:on-merge`, when supplied, runs once
    after terminal settlement; its failure is reported as `:callback-status
-   :failed` and never reopens the already-mutated world."
+   :failed` and never reopens the already-mutated world.
+
+   A member of a copy family (`copy-fork!`) settles the whole family: it is
+   refused with `::copy-family-settled` once another member has merged."
   ([fork-handle] (merge-fork! fork-handle {}))
   ([fork-handle opts]
-   (settle-fork! fork-handle :merge opts
-                 #(merge-fork-context! fork-handle (dissoc opts :on-merge))
-                 #(select-keys % [:merged :child-only])
-                 (:on-merge opts))))
+   (if (:family fork-handle)
+     (merge-family-member! fork-handle opts)
+     (merge-fork* fork-handle opts))))
 
 (defn discard-fork!
   "Discard an OPEN fork exactly once. Repeating the same successful operation is
    idempotent and returns the cached result. `:on-discard` has the same
-   post-commit, single-execution semantics as `:on-merge`."
+   post-commit, single-execution semantics as `:on-merge`. The systems' `:compensate`
+   hooks (see `register!`) run first; a hook that throws leaves the fork open."
   ([fork-handle] (discard-fork! fork-handle {}))
   ([fork-handle opts]
-   (settle-fork! fork-handle :discard opts
-                 #(discard-fork-context! fork-handle (dissoc opts :on-discard))
-                 (constantly nil)
-                 (:on-discard opts))))
+   (if (:family fork-handle)
+     (discard-family-member! fork-handle opts)
+     (discard-fork* fork-handle opts))))
 
 ;; =============================================================================
 ;; Merge From Parent (Parent → Child sync)
