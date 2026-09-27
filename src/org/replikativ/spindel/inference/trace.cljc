@@ -156,7 +156,10 @@
   (and (= choose-site (:savepoint/site sp))
        (not (:observed? (:savepoint/payload sp)))))
 
-(defn- latent? [entry]
+(defn latent?
+  "Whether a trace entry is a sample site inference may move: not observed,
+  not constrained."
+  [entry]
   (and (= choose-site (:site entry))
        (not (:observed? (:note entry)))
        (not (:constrained? (:note entry)))))
