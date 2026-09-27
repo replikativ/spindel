@@ -589,8 +589,8 @@
 (defn record-choice!
   "Record the value chosen at a checkpoint: the trace entry (value,
    distribution, its log-density) and, for an observe, its likelihood in the
-   particle's log-weight. `log-weight-delta` is an extra weight term (the
-   density of a reused retained latent during PGAS scoring)."
+   particle's log-weight. `log-weight-delta` is an extra weight term a
+   kernel reports (e.g. log p − log q of a variational proposal)."
   [context checkpoint value & [log-weight-delta]]
   (let [{:keys [source options address]} checkpoint
         observed? (some? (:observe options))
@@ -620,9 +620,9 @@
 (defn resume-particle-with-value!
   "Record `value` at the checkpoint (trace entry, observe weight) and resume
   the particle with it."
-  [context checkpoint value & [log-weight-delta]]
+  [context checkpoint value]
   (log/debug :coordinator/resume-particle {:address (:address checkpoint) :value value})
-  (record-choice! context checkpoint value log-weight-delta)
+  (record-choice! context checkpoint value)
   (resume-choice! context checkpoint value))
 
 (defn- arrive-at-barrier!
@@ -664,10 +664,9 @@
             world-manager    ; canonical particle worlds, or nil for legacy fresh roots
             retiring-contexts ; atom: fork-id -> expected generation-retirement callback
             log-normalizer   ; atom: log Z accumulated at resampling steps
-   ;; PGIBBS/PGAS support
-            pgibbs-retained-trace  ; atom: retained trace for PGIBBS/PGAS (nil if not using)
-            retained-particle-id   ; atom: particle-id of retained particle
-            pgas-ancestor-sampling?] ; boolean: enable ancestor sampling at barriers
+   ;; PGIBBS support
+            pgibbs-retained-trace  ; atom: retained trace for PGIBBS (nil if not using)
+            retained-particle-id]  ; atom: particle-id of retained particle
 
   InferenceCoordinator
 
@@ -825,183 +824,18 @@
     on-complete))
 
 ;; =============================================================================
-;; ScoringCoordinator - Lightweight coordinator for PGAS ancestor scoring
-;; =============================================================================
-;;
-;; This coordinator runs particles to completion in forward-sampling mode,
-;; using pre-populated trace values. Used by PGAS to compute ancestor weights.
-
-(defrecord ScoringCoordinator
-           [retained-trace   ; Map of {address -> trace-entry} for future values
-            result-promise   ; Promise to deliver final log-weight
-            latch]           ; CountDownLatch to signal completion
-
-  InferenceCoordinator
-
-  (notify-checkpoint! [_this _particle-id context checkpoint]
-    ;; Forward sampling: use trace value if available, otherwise sample
-    (let [{:keys [address source options]} checkpoint
-          {:keys [observe]} options
-          trace (or (rtp/get-state context [:inference :trace]) {})
-
-          ;; Check retained trace for pre-populated value
-          retained-entry (get retained-trace address)
-          retained-value (when retained-entry
-                           (if (map? retained-entry)
-                             (:value retained-entry)
-                             retained-entry))
-
-          ;; Determine value: observe > retained > sample
-          value (cond
-                  (some? observe) observe
-                  (some? retained-value) retained-value
-                  :else (ar/sample* source))]
-
-      (log/trace :scoring-coord/checkpoint {:address address :value value :from-retained? (some? retained-value)})
-
-      ;; A reused retained latent contributes its transition density: the
-      ;; ancestor weight is p(retained future, observations | past).
-      (resume-particle-with-value! context checkpoint value
-                                   (when (and (not (some? observe)) (some? retained-value))
-                                     (ar/observe* source value)))))
-
-  (notify-complete! [_this _particle-id context _result]
-    ;; Deliver final log-weight and signal completion
-    (let [final-weight (or (rtp/get-state context [:inference :log-weight]) 0.0)]
-      (log/debug :scoring-coord/complete {:final-weight final-weight})
-      (deliver result-promise final-weight)
-      (.countDown latch)))
-
-  (notify-failed! [_this _particle-id _context error]
-    ;; Scoring: a failed particle has zero likelihood (log-weight -Inf).
-    ;; Deliver the -Inf weight and count down so the outer latch unblocks
-    ;; instead of waiting forever for a particle that will never report.
-    (log/error :scoring-coord/particle-failed {:error error})
-    (deliver result-promise #?(:clj Double/NEGATIVE_INFINITY
-                               :cljs js/Number.NEGATIVE_INFINITY))
-    (.countDown latch))
-
-  (await-completion [_this]
-    ;; Not used for scoring - we use the latch externally
-    nil))
-
-(defn create-scoring-coordinator
-  "Create a lightweight coordinator for PGAS ancestor scoring.
-
-  Args:
-    retained-trace - Map of future trace values
-    result-promise - Promise to deliver final log-weight
-    latch - CountDownLatch to signal completion
-
-  Returns: ScoringCoordinator instance"
-  [retained-trace result-promise latch]
-  (->ScoringCoordinator retained-trace result-promise latch))
-
-;; =============================================================================
-;; PGAS Ancestor Sampling via Continuation Re-execution
-;; =============================================================================
-
-(defn run-ancestor-scoring-particles!
-  "Fork each particle and run forward using retained trace to compute ancestor weights.
-
-  For PGAS, we need to evaluate: p(retained_future | particle_i_state).
-  This is done by:
-  1. Fork each particle at the current barrier
-  2. Install a ScoringCoordinator that uses retained trace values
-  3. Resume each fork from its checkpoint
-  4. ScoringCoordinator delivers final log-weights when particles complete
-
-  Args:
-    particles-state - Map of particle states at barrier
-    retained-trace - Full retained trace
-    executor - Executor for running scoring particles
-
-  Returns: Vector of ancestor log-weights (one per particle)"
-  [particle-vec retained-trace executor]
-  (let [n (count particle-vec)
-        ;; Shared latch for all scoring particles
-        scoring-complete (java.util.concurrent.CountDownLatch. n)
-        ;; Individual promises for each particle's result
-        result-promises (vec (repeatedly n promise))]
-
-    (log/debug :pgas/start-ancestor-scoring {:n-particles n})
-
-    ;; Fork and run each particle with its own ScoringCoordinator
-    (doseq [[idx p] (map-indexed vector particle-vec)]
-      (let [ctx (:context p)
-            checkpoint (:checkpoint p)
-            value (:value p)
-
-            ;; Fork the context
-            forked-ctx (fork-particle-context ctx)
-
-            ;; Create ScoringCoordinator for this particle
-            scoring-coord (create-scoring-coordinator
-                           retained-trace
-                           (nth result-promises idx)
-                           scoring-complete)]
-
-        ;; Reset log-weight to 0 for scoring (we'll recompute from current point)
-        (rtp/swap-state! forked-ctx [:inference :log-weight] (constantly 0.0))
-
-        ;; Install ScoringCoordinator - this handles checkpoints and completion
-        (rtp/swap-state! forked-ctx [:inference :inference-coordinator] (constantly scoring-coord))
-
-        ;; Clear checkpoints to avoid duplicate address detection
-        (rtp/swap-state! forked-ctx [:inference :checkpoints] (constantly {}))
-
-        ;; Resume from checkpoint - ScoringCoordinator will handle the rest
-        (execute! executor
-                  (fn []
-                    (binding [rtc/*execution-context* forked-ctx
-                              pcps-async/*in-trampoline* false]
-                      (try
-                        (resume-in-slice! forked-ctx checkpoint (:resolve checkpoint) value)
-                        (catch #?(:clj Throwable :cljs :default) t
-                          (log/error :pgas/scoring-error {:idx idx :error (str t)})
-                  ;; On error, deliver -Infinity and countdown
-                          (deliver (nth result-promises idx) #?(:clj Double/NEGATIVE_INFINITY :cljs js/Number.NEGATIVE_INFINITY))
-                          (.countDown scoring-complete))))))))
-
-    ;; Wait for all scoring particles to complete (with timeout)
-    (let [timeout-ms 30000
-          completed? (.await scoring-complete timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)]
-      (if completed?
-        ;; Collect weights
-        (let [weights (mapv (fn [p] (or (deref p 100 #?(:clj Double/NEGATIVE_INFINITY :cljs js/Number.NEGATIVE_INFINITY))
-                                        #?(:clj Double/NEGATIVE_INFINITY :cljs js/Number.NEGATIVE_INFINITY)))
-                            result-promises)]
-          (log/debug :pgas/ancestor-scoring-complete {:weights weights})
-          weights)
-        ;; Timeout - use current weights
-        (do
-          (log/warn :pgas/ancestor-scoring-timeout)
-          (mapv (comp #(or % 0.0) :log-weight) particle-vec))))))
-
-(defn perform-ancestor-sampling
-  "Index into `particle-vec` (the particles waiting at the barrier) of the
-  ancestor the retained particle continues from, drawn
-  ∝ w_i · p(retained future, observations | particle i's past)."
-  [particle-vec retained-trace executor]
-  (let [scores (run-ancestor-scoring-particles! particle-vec retained-trace executor)
-        combined (mapv (fn [p s] (+ (or (:log-weight p) 0.0) (or s 0.0))) particle-vec scores)
-        ancestor-idx (m/sample-categorical (m/normalize-log-weights combined))]
-    (log/debug :pgas/ancestor-sampled {:ancestor-idx ancestor-idx :combined-weights combined})
-    ancestor-idx))
-
-;; =============================================================================
 ;; Kernel Coordinator Resample Logic
 ;; =============================================================================
 
 (defn- ancestor-indices
   "Ancestor index per slot. Plain SMC: systematic resampling. Conditional
-  SMC (PGibbs/PGAS): the retained slot's ancestor is fixed — its own lineage,
-  or the PGAS draw — and the other N−1 are drawn multinomially, so the
-  retained trajectory can never be resampled away."
-  [weights n retained-slot retained-ancestor]
+  SMC (PGibbs): the retained slot keeps its own lineage and the other N−1
+  are drawn multinomially, so the retained trajectory can never be
+  resampled away."
+  [weights n retained-slot]
   (if retained-slot
     (vec (for [slot (range n)]
-           (if (= slot retained-slot) retained-ancestor (m/sample-categorical weights))))
+           (if (= slot retained-slot) slot (m/sample-categorical weights))))
     (m/systematic-resample weights n)))
 
 (defn- resume-resampled-contexts!
@@ -1086,8 +920,7 @@
   delivered.
 
   PGIBBS mode: the retained particle's lineage survives every resampling and
-  it follows its fixed trace at sample sites. PGAS mode: the retained
-  particle also redraws which particle's past it continues from."
+  it follows its fixed trace at sample sites."
   [coordinator]
   (swap! (:current-sweep coordinator) inc)
 
@@ -1095,8 +928,7 @@
         entries (vec particles-state)
         n (count entries)
         state-of #(val (nth entries %))
-        is-pgibbs? (some? @(:pgibbs-retained-trace coordinator))
-        is-pgas? (and is-pgibbs? (:pgas-ancestor-sampling? coordinator))]
+        is-pgibbs? (some? @(:pgibbs-retained-trace coordinator))]
 
     (if (every? #(= :complete (:status (val %))) entries)
       ;; All particles completed - deliver final result
@@ -1136,20 +968,8 @@
             resample? (or (some? retained-slot)
                           (< (m/compute-ess weights) (* (:resample-threshold coordinator) n)))
             waiting-idxs (filterv #(= :checkpoint (:status (state-of %))) (range n))
-            retained-ancestor
-            (when retained-slot
-              (if (and is-pgas? (= :checkpoint (:status (state-of retained-slot))))
-                (nth waiting-idxs
-                     (perform-ancestor-sampling (mapv state-of waiting-idxs)
-                                                @(:pgibbs-retained-trace coordinator)
-                                                ;; the particles' executor, not the
-                                                ;; caller's: scoring draws from the
-                                                ;; seeded generator, and a run is only
-                                                ;; reproducible if it draws in one order
-                                                (:executor (:context (state-of (first waiting-idxs))))))
-                retained-slot))
             ancestors (if resample?
-                        (ancestor-indices weights n retained-slot retained-ancestor)
+                        (ancestor-indices weights n retained-slot)
                         (vec (range n)))
             slots (map-indexed vector ancestors)
             checkpoint-slots (filterv #(= :checkpoint (:status (state-of (second %)))) slots)
@@ -1233,8 +1053,7 @@
     opts - Optional map with:
       :barrier-policy - :every-observe | :manual | :none (default :every-observe)
       :resample-threshold - ESS threshold (default 0.5)
-      :pgibbs-retained-trace - Retained trace for PGIBBS/PGAS (nil for standard SMC)
-      :pgas-ancestor-sampling? - Enable ancestor sampling at barriers (default false)
+      :pgibbs-retained-trace - Retained trace for PGIBBS (nil for standard SMC)
 
   Returns: KernelCoordinator instance"
   [runtime kernel num-particles & [opts]]
@@ -1252,7 +1071,6 @@
    (:world-manager opts)                            ; world-manager
    (atom {})                                        ; retiring-contexts
    (atom 0.0)                                       ; log-normalizer
-    ;; PGIBBS/PGAS fields
+    ;; PGIBBS fields
    (atom (:pgibbs-retained-trace opts))             ; pgibbs-retained-trace
-   (atom nil)                                       ; retained-particle-id (set by first particle)
-   (:pgas-ancestor-sampling? opts false)))          ; pgas-ancestor-sampling?
+   (atom nil)))                                     ; retained-particle-id (set by first particle)
