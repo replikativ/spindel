@@ -231,32 +231,63 @@
             ~@body)
           (do ~@body)))))
 
+(defn current-scope
+  "The readable scope path pushed by `with-scope` frames ([] at the top)."
+  [ctx]
+  (or (when ctx (get-in ctx [:bindings :address/scope])) []))
+
+#?(:clj
+   (defmacro with-scope
+     "Push the elements of `path` (a vector, `[:step i]`) onto the readable
+     scope of every savepoint site reached in `body`: Gen's `:step => i`.
+     Inside a scope a site named `:x` is addressed `[:step i :x]`; an unnamed
+     site's structural address includes the scope. Scopes nest.
+
+       (loop [i 0 …]
+         (with-scope [:step i]
+           (sample (normal 0 1) :id :x)))   ; [:step 0 :x], [:step 1 :x] …
+
+     A scope form: it binds the same world with an extra `:address/scope`, so
+     a continuation that leaves it keeps the world it was resumed in
+     (`engine.core/restore-scope`)."
+     [path & body]
+     `(let [cur-ctx# ec/*execution-context*]
+        (if cur-ctx#
+          (binding [ec/*execution-context*
+                    (update-in cur-ctx# [:bindings :address/scope] (fnil into []) ~path)]
+            ~@body)
+          (do ~@body)))))
+
 (defn site-address+path!
   "The address and the readable path of an effect site.
 
-  With `id` (the site's `:id` option) the site is named and `id` is its
-  address. A vector id is a hierarchical name — `[:step 3 :x]`, Gen's
-  `:step => 3 => :x` — and its path is that vector; a scalar id's path is
-  `[id]`. Without, the address is structural: `next-id` over
-  `[site source-loc occurrence]`, the surrounding spin and the `with-key`
-  frame, where `occurrence` counts how often this frame reached this site in
-  the current body run; the path is `[[site source-loc occurrence]]`.
+  With `id` (the site's `:id` option) the site is named: its path is the
+  scope (`with-scope`) followed by `id` — a vector id is itself a
+  hierarchical name, `[:step 3 :x]`, Gen's `:step => 3 => :x` — and so is its
+  address; at the top level a scalar id is its own address. Without, the
+  address is structural: `next-id` over `[site source-loc occurrence]`, the
+  surrounding spin, the `with-key` frame and the scope, where `occurrence`
+  counts how often this frame reached this site in the current body run; the
+  path is the scope followed by `[site source-loc occurrence]`.
 
   Unlike `next-address!` neither depends on which other sites ran before, so
   a site keeps its address when control flow upstream of it changes. The
   counters live beside the chain-head and travel the same way: reset at body
   entry, snapshotted into `:slice-state` at suspension."
   [ctx prefix site source-loc id]
-  (if (some? id)
-    [id (if (vector? id) id [id])]
-    (let [spin-id ec/*spin-id*
-          key (current-key ctx)
-          frame [site source-loc key]
-          counters (rtp/swap-state! ctx [:addressing :occurrences spin-id]
-                                    (fn [m] (update (or m {}) frame (fnil inc 0))))
-          occurrence (dec (get counters frame))]
-      [(next-id prefix [site source-loc occurrence] spin-id key)
-       [[site source-loc occurrence]]])))
+  (let [scope (current-scope ctx)]
+    (if (some? id)
+      (let [path (into scope (if (vector? id) id [id]))]
+        [(if (seq scope) path id) path])
+      (let [spin-id ec/*spin-id*
+            key (current-key ctx)
+            frame (cond-> [site source-loc key] (seq scope) (conj scope))
+            counters (rtp/swap-state! ctx [:addressing :occurrences spin-id]
+                                      (fn [m] (update (or m {}) frame (fnil inc 0))))
+            occurrence (dec (get counters frame))]
+        [(next-id prefix (cond-> [site source-loc occurrence] (seq scope) (conj scope))
+                  spin-id key)
+         (conj scope [site source-loc occurrence])]))))
 
 (defn site-address!
   "Structural address of an effect site that a LATER execution must find

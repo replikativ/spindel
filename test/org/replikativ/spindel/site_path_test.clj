@@ -4,6 +4,7 @@
   every trace entry records its path."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.engine.addressing :refer [with-scope]]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.effects :refer [sample observe]]
@@ -74,3 +75,27 @@
                                       (when (< i 2)
                                         (sample (ar/normal 0.0 1.0) :id :x)
                                         (recur (inc i)))))))))
+
+(deftest a-scope-prefixes-names-and-nests
+  (let [t (run #(spin
+                 [(loop [i 0 xs []]
+                    (if (= i 2)
+                      xs
+                      (recur (inc i) (conj xs (with-scope [:step i]
+                                                (sample (ar/normal 0.0 1.0) :id :x))))))
+                  (with-scope [:a]
+                    (with-scope [:b 2]
+                      (sample (ar/normal 0.0 1.0) :id :y)))
+                  (sample (ar/normal 0.0 1.0) :id :top)])
+               {[:step 1 :x] 0.5})]
+    (is (= [[:step 0 :x] [:step 1 :x] [:a :b 2 :y] :top] (:trace/order t))
+        "the scope does not leak past its form, across suspensions")
+    (is (= 0.5 (second (first (:trace/result t)))) "constrained from outside by scoped name")))
+
+(deftest unnamed-sites-in-different-scopes-are-different-sites
+  (let [t (run #(spin [(with-scope [:a] (sample (ar/normal 0.0 1.0)))
+                       (with-scope [:b] (sample (ar/normal 0.0 1.0)))]))
+        [pa pb] (map #(get-in t [:trace/entries % :path]) (:trace/order t))]
+    (is (= 2 (count (distinct (:trace/order t)))))
+    (is (= :a (first pa)))
+    (is (= :b (first pb)))))
