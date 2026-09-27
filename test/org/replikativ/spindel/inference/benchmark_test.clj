@@ -76,25 +76,25 @@
 
 (defn gaussian-model [observations sigma mu0 sigma0]
   (spin
-    (let [mu (sample (ar/normal mu0 sigma0))]
-      (loop [os observations]
-        (when (seq os)
-          (observe (ar/normal mu sigma) (first os))
-          (recur (rest os))))
-      mu)))
+   (let [mu (sample (ar/normal mu0 sigma0))]
+     (loop [os observations]
+       (when (seq os)
+         (observe (ar/normal mu sigma) (first os))
+         (recur (rest os))))
+     mu)))
 
 (def gaussian-args [[9.0 8.0] (Math/sqrt 2.0) 1.0 (Math/sqrt 5.0)])
 (def gaussian-truth [7.25 (Math/sqrt (/ 1.0 1.2))])
 
 (defn hmm-model [observations init-dist trans-dists obs-dists]
   (spin
-    (loop [os observations
-           states [(sample init-dist)]]
-      (if (empty? os)
-        states
-        (let [state (sample (get trans-dists (peek states)))]
-          (observe (get obs-dists state) (first os))
-          (recur (rest os) (conj states state)))))))
+   (loop [os observations
+          states [(sample init-dist)]]
+     (if (empty? os)
+       states
+       (let [state (sample (get trans-dists (peek states)))]
+         (observe (get obs-dists state) (first os))
+         (recur (rest os) (conj states state)))))))
 
 (def hmm-args
   [[0.9 0.8 0.7 0.0 -0.025 -5.0 -2.0 -0.1 0.0 0.13 0.45 6 0.2 0.3 -1 -1]
@@ -127,13 +127,13 @@
 
 (defn branching-model []
   (spin
-    (let [count-prior (ar/poisson 4)
-          r (sample count-prior)
-          l (if (< 4 r)
-              6
-              (+ 1 (fib (* 3 r)) (sample count-prior)))]
-      (observe (ar/poisson l) 6)
-      r)))
+   (let [count-prior (ar/poisson 4)
+         r (sample count-prior)
+         l (if (< 4 r)
+             6
+             (+ 1 (fib (* 3 r)) (sample count-prior)))]
+     (observe (ar/poisson l) 6)
+     r)))
 
 (def branching-truth
   ;; exact enumeration of p(r | obs) (anglican's truth is a Monte-Carlo of this)
@@ -156,9 +156,9 @@
   "x ~ N(0,1), ten observations y=1 ~ N(x,1). Closed-form evidence."
   []
   (spin
-    (let [x (sample (ar/normal 0 1))]
-      (loop [i 0] (when (< i 10) (observe (ar/normal x 1) 1.0) (recur (inc i))))
-      x)))
+   (let [x (sample (ar/normal 0 1))]
+     (loop [i 0] (when (< i 10) (observe (ar/normal x 1) 1.0) (recur (inc i))))
+     x)))
 
 (def conjugate-log-evidence
   ;; y ~ N(0, I + 11ᵀ): det = 1+n, quad = Σy² − (Σy)²/(1+n)
@@ -169,30 +169,30 @@
   "An observe sits between the two latents: a move on z must still see y₁."
   []
   (spin
-    (let [x (sample (ar/normal 0 1))]
-      (observe (ar/normal x 1) 2.0)
-      (let [z (sample (ar/normal 0 1))]
-        (observe (ar/normal z 1) -2.0)
-        [x z]))))
+   (let [x (sample (ar/normal 0 1))]
+     (observe (ar/normal x 1) 2.0)
+     (let [z (sample (ar/normal 0 1))]
+       (observe (ar/normal z 1) -2.0)
+       [x z]))))
 
 (defn hierarchical-model
   "z's prior depends on x: a move on x changes z's density.
    Posterior of x: y = x + e₁ + e₂ with y = 2 → N(2/3, 2/3)."
   []
   (spin
-    (let [x (sample (ar/normal 0 1))
-          z (sample (ar/normal x 1))]
-      (observe (ar/normal z 1) 2.0)
-      x)))
+   (let [x (sample (ar/normal 0 1))
+         z (sample (ar/normal x 1))]
+     (observe (ar/normal z 1) 2.0)
+     x)))
 
 (defn switch-model
   "Which latent exists depends on b. p(b | y=5) ∝ ½N(5;0,√2) vs ½N(5;5,√2)."
   []
   (spin
-    (let [b (sample (ar/flip 0.5))
-          v (if b (sample (ar/normal 0 1)) (sample (ar/normal 5 1)))]
-      (observe (ar/normal v 1) 5.0)
-      b)))
+   (let [b (sample (ar/flip 0.5))
+         v (if b (sample (ar/normal 0 1)) (sample (ar/normal 5 1)))]
+     (observe (ar/normal v 1) 5.0)
+     b)))
 
 (def switch-truth
   (let [l (fn [mu] (Math/exp (/ (- (* (- 5 mu) (- 5 mu))) 4.0)))]
@@ -203,10 +203,10 @@
    p(b | …) ∝ ½·N(0.5;0,1) vs ½ — b=true pays the extra observe."
   []
   (spin
-    (let [b (sample (ar/flip 0.5))]
-      (when b (observe (ar/normal 0 1) 0.5))
-      (observe (ar/normal 0 1) 0.1)
-      b)))
+   (let [b (sample (ar/flip 0.5))]
+     (when b (observe (ar/normal 0 1) 0.5))
+     (observe (ar/normal 0 1) 0.1)
+     b)))
 
 (def varlen-truth
   (let [a (Math/exp (ar/observe* (ar/normal 0 1) 0.5))]
