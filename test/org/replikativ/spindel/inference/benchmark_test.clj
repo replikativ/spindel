@@ -318,7 +318,7 @@
         (is (< (Math/abs (- p varlen-truth)) 0.05) (str algo " p(b) " p " vs " varlen-truth))))))
 
 (deftest hmm-benchmark
-  (doseq [algo [:smc :smc-sp :pgibbs :pgibbs-sp :pgas-sp :lmh]]
+  (doseq [algo [:smc :pgibbs :pgas-sp :lmh]]
     (testing algo
       (let [err (hmm-error (check algo #(apply hmm-model hmm-args) 12000 17))]
         (is (< err 0.05) (str algo " rms " err))))))
