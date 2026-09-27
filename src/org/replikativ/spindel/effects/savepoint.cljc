@@ -373,11 +373,11 @@
     (if-not handler
       ;; Law 1: no handler, no savepoint.
       (spin-core/resume resolve payload)
-      (let [address (or (:id opts)
-                        (addressing/site-address! world "sp" site source-loc))
+      (let [[address path] (addressing/site-address+path! world "sp" site source-loc (:id opts))
             seq-no (dec (rtp/swap-state! world [:savepoint/seq] (fnil inc 0)))
             entry {:savepoint/site site
                    :savepoint/address address
+                   :savepoint/path path
                    :savepoint/seq seq-no
                    :savepoint/payload payload
                    ;; tier 2: how to continue without the continuation
