@@ -8,7 +8,8 @@
         ;; 0.1.60 ships the optional core.async adapter (is.simm.partial-cps.core-async)
         ;; that distributed.cps delegates to. 0.1.63: breakpoint handlers get the call
         ;; :form (site addresses), `with-trampoline`, and the lost-continuation fixes.
-        is.simm/partial-cps {:mvn/version "0.1.63"}
+        ;; 0.1.65: binding restorers (engine.core/restore-scope, #64).
+        is.simm/partial-cps {:mvn/version "0.1.65"}
         org.replikativ/yggdrasil {:mvn/version "0.3.35"}
         org.replikativ/hasch {:mvn/version "0.4.99"}
         org.clojure/core.async {:mvn/version "1.6.681"}
