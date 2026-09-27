@@ -526,7 +526,15 @@ state: the named function starts a *new* computation, and what it needs from
 the old one the program declares. The portable form is small, is data, and its
 content hash is a prefix identity that is the same across runs and machines.
 
-`persist` does not consume the savepoint. `(persist sp {:escrow? true})`, with
+`(hydrate-into! session world data value)` is the same with a world the *embedder* forked
+and owns (pinned at `(:world/systems data)`, e.g. `ygg/fork!` `:snapshots`), in that
+world's own session: everything after `hydrate!`'s fork, and the session never releases the
+world. An embedder that settles its worlds itself (dvergr merges, discards or keeps a Run's
+world for review) resumes through it; `hydrate!` is a fork of the session root plus
+`hydrate-into!`.
+
+`persist` does not consume the savepoint. A world without a session persists unfunded
+data (escrow needs a session's authority). `(persist sp {:escrow? true})`, with
 a resource authority, moves what is left in the world's wallet into an escrow
 named by the content hash, and `hydrate!` claims it, once: the second
 hydration of the same data is rejected. The world here is then left with

@@ -10,6 +10,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.spindel.yggdrasil :as ygg]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
 
 (defn- await-cps [operation]
@@ -254,3 +255,56 @@
              (:type (ex-data (try (await-cps (portable/hydrate! (:session source) data :x))
                                   (catch Throwable error error))))))
       (finally (close-all! source)))))
+
+(deftest a-world-without-a-session-persists-unfunded-data
+  (let [root (context/create-execution-context)
+        persisted (promise)]
+    (try
+      (sp/install-handlers! root {:conversation/turn
+                                  (fn [p]
+                                    ((portable/persist p)
+                                     (fn [data] (deliver persisted [:ok data]) (sp/resume p :go))
+                                     (fn [e] (deliver persisted [:error e]) (sp/resume p :go))))})
+      (let [done (promise)]
+        (binding [ec/*execution-context* root]
+          ((spin (savepoint :conversation/turn {:turn 0} {:resume `after-turn :args [0]}))
+           #(deliver done [:ok %]) #(deliver done [:error %])))
+        (is (= [:ok :go] (deref done 5000 ::timeout))))
+      (let [[status data] (deref persisted 5000 [::timeout])]
+        (is (= :ok status) (pr-str data))
+        (is (= {:fn `after-turn :args [0]} (:savepoint/resume data)))
+        (is (nil? (:world/escrow? data))))
+      (finally (context/stop-context! root)))))
+
+(deftest hydrating-into-an-embedders-world-is-hydrating
+  (let [root (context/create-execution-context)
+        events (java.util.concurrent.LinkedBlockingQueue.)
+        session (sp/open! root {:seed 7 :fork-opts {:systems :none}
+                                :handlers {sp/any-site #(.put events %)}})]
+    (try
+      (sp/start! session (binding [ec/*execution-context* root] (conversation 0)))
+      (sp/resume (take! events) :a0)
+      (let [turn-1 (take! events)
+            wire (edn/read-string (pr-str (await-cps (portable/persist turn-1))))
+            _ (await-cps (portable/hydrate! session wire :b1))
+            hydrated (drive! events (fn [k] (keyword (str "b" k))))
+            ;; the embedder forks and owns the world (from a host of its own,
+            ;; with no session), and gives it its own session
+            host (context/create-execution-context)
+            handle (binding [ec/*execution-context* host] (ygg/fork! {:systems :none :purpose :test}))
+            world (:child-ctx handle)
+            own (sp/open! world {:seed 7 :handlers {sp/any-site #(.put events %)}})]
+        (try
+          (is (= world (await-cps (portable/hydrate-into! own world wire :b1))))
+          (is (= hydrated (drive! events (fn [k] (keyword (str "b" k)))))
+              "the same continuation as hydrate! gives")
+          (is (ygg/open-fork? handle) "the session did not settle the embedder's world")
+          (finally
+            (await-cps (sp/close! own))
+            (binding [ec/*execution-context* host] (ygg/discard-fork! handle))
+            (context/stop-context! host)))
+        (sp/resume turn-1 :a1)
+        (drive! events (fn [k] (keyword (str "a" k)))))
+      (finally
+        (await-cps (sp/close! session))
+        (context/stop-context! root)))))
