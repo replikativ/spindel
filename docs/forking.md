@@ -96,6 +96,22 @@ A fork is **fully isolated from parent for its own writes** (fork→parent never
 
 **Shared paths** (overlay fall-through, parent-following on reads): everything else, including `:nodes`, `:subscriptions`, `:spin-tracking`, `:atoms`, and `:engine/cancelled-tokens`.
 
+### Following is a workspace, not a coherent view
+
+A following fork falls through to the parent **per path, until it touches the
+path** — and a read inside a spin touches it: `track` and `await` record their
+observer on the node, which copies the node into the child's overlay. After
+that the child keeps its value while the parent moves on. Nothing is pushed:
+a spin in the child is not re-run by a change in the parent. So one child can
+see a signal it read before a parent change next to a spin the parent
+recomputed after it (`a = 1` beside `d = 10·a = 20`).
+
+That is the intended contract for an isolated agent that follows along and is
+rebased explicitly (`merge-fork-from-parent!` for durable systems). Anything
+that needs a consistent view of the parent — inference particles, MCMC
+proposals, counterfactual worlds, a what-if — uses a frozen fork.
+`fork_coherence_test.clj` pins both behaviours.
+
 If you need fully-isolated semantics on a shared path — a fork that does not
 track parent's later writes while remaining a writable child — use
 `(fork-context parent :mode :frozen)`. This materializes the parent's complete
