@@ -46,6 +46,10 @@
                  (for [d (set/difference (elements child-ctx system-id)
                                          (elements parent-ctx system-id))]
                    {:intent/id (prov d) :footprint (set (nth d 2)) :draft d}))
+      :parent-footprint (fn [{:keys [system-id child-ctx parent-ctx]}]
+                          (into #{} (mapcat #(nth % 2))
+                                (set/difference (elements parent-ctx system-id)
+                                                (elements child-ctx system-id))))
       :stamp (fn [{:keys [system-id parent-ctx final? contributions]}]
                (when (pos? @failures)
                  (swap! failures dec)
@@ -161,3 +165,89 @@
         ;; only consulted for systems that report a change
         (is (not= :conflict (:tier (ygg/family-review [a b c])))
             "a convergent system cannot conflict")))))
+
+;; --- single worlds and at-most-one families settle by intents too -----------
+
+(deftest a-single-world-is-stamped-when-it-merges
+  (with-book [book]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 2 :line-1))
+      (add! w "book" (draft :w-2 1 :order-1))
+      (ygg/merge-fork! w)
+      (is (= {:w-2 1 :w-1 2} (:numbers @(:journal book))))
+      (is (= #{:w-1 :w-2} (set (map prov (elements "book"))))))))
+
+(deftest a-claim-the-parent-made-meanwhile-conflicts
+  (with-book [book]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :line-1))
+      ;; the parent matched the same bank line after the fork
+      (swap! (ygg/system-signal "book") #(g/conj % (draft :root-1 1 :line-1)))
+      (let [e (try (ygg/merge-fork! w) nil (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= ::ygg/merge-conflict (:type e)))
+        (is (= [{:system "book" :key :line-1 :members #{(:fork-id w)} :with :parent}]
+               (:conflicts e))))
+      (is (= {} (:numbers @(:journal book))) "nothing stamped")
+      (ygg/discard-fork! w))))
+
+(deftest an-at-most-one-family-stamps-the-copied-world-and-the-winner
+  (with-book [book]
+    (let [w (ygg/fork!)
+          _ (add! w "book" (draft :w-1 1 :order-1))
+          [a b] (ygg/copy-fork! w 2)]
+      (add! a "book" (draft :a-1 2 :line-1))
+      (add! b "book" (draft :b-1 3 :line-2))
+      (ygg/merge-fork! a)
+      (ygg/discard-fork! b)
+      (is (= {:w-1 1 :a-1 2} (:numbers @(:journal book))))
+      (is (= #{:w-1 :a-1} (set (map prov (elements "book"))))))))
+
+(deftest a-failed-single-stamp-is-retried
+  (with-book [book 1]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :x))
+      (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w))))
+      (is (= {} (:numbers @(:journal book))))
+      (is (= 1 (count (ygg/retry-stamps!))))
+      (is (= {:w-1 1} (:numbers @(:journal book))))
+      (is (= [] (ygg/retry-stamps!)) "nothing pending"))))
+
+(deftest a-settled-family-cannot-settle-again
+  (with-book [book]
+    (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)]
+      (add! a "book" (draft :a-1 1 :x))
+      (add! b "book" (draft :b-1 2 :y))
+      (ygg/settle-family! [a])
+      (is (nil? (ygg/settle-family! [a])) "the same settlement again is a no-op")
+      (is (= ::ygg/copy-family-settled (thrown-type #(ygg/settle-family! [b]))))
+      (is (= ::ygg/copy-family-settled (thrown-type #(ygg/merge-fork! b))))
+      (ygg/discard-fork! b)
+      (is (= {:a-1 1} (:numbers @(:journal book)))))))
+
+(deftest a-long-lived-world-settles-as-it-goes
+  (with-book [book]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :line-1))
+      (ygg/checkpoint! w)
+      (is (= {:w-1 1} (:numbers @(:journal book))) "settled while the world goes on")
+      (is (= #{:w-1} (set (map prov (elements (:child-ctx w) "book"))))
+          "the world continues from its parent's new head")
+      (add! w "book" (draft :w-2 2 :line-2))
+      (ygg/checkpoint! w)
+      (is (= {:w-1 1 :w-2 2} (:numbers @(:journal book))) "only what came after")
+      (testing "the parent's claims between checkpoints are checked"
+        (add! w "book" (draft :w-3 3 :line-3))
+        (swap! (ygg/system-signal "book") #(g/conj % (draft :root-1 3 :line-3)))
+        (is (= ::ygg/merge-conflict (thrown-type #(ygg/checkpoint! w)))))
+      (ygg/discard-fork! w)
+      (is (= {:w-1 1 :w-2 2} (:numbers @(:journal book)))))))
+
+(deftest a-checkpointed-world-merges-only-the-rest
+  (with-book [book]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :line-1))
+      (ygg/checkpoint! w)
+      (add! w "book" (draft :w-2 2 :line-2))
+      (ygg/merge-fork! w)
+      (is (= {:w-1 1 :w-2 2} (:numbers @(:journal book))))
+      (is (= #{:w-1 :w-2} (set (map prov (elements "book"))))))))

@@ -313,6 +313,32 @@ The tiers are the ones dvergr's fork review and simmis' task routing use: a
 agent or a person, a `:conflict` one needs a decision about which intents to
 drop.
 
+### Every world settles intent systems this way
+
+An intent system is never merged as state, whatever the settlement: a plain
+`merge-fork!` of a single world, the winner of an at-most-one family, and a
+reconciled family all extract intents and stamp them into the parent. Each
+world is autonomous — an agent books, numbers and reverses in its world as in
+the root — and the parent decides what that becomes when it takes the world
+in. The intents are also checked against what the parent itself claimed
+since the fork (`:parent-footprint`): a bank line the parent matched
+meanwhile makes the merge throw `::merge-conflict` without changing anything.
+Settlement results carry `:stamps`, what each system's stamp returned (a
+renumber map, say). A stamp that fails after a single merge stays pending in
+the parent; `retry-stamps!` retries it.
+
+Long-lived worlds settle as they go:
+
+```clojure
+(ygg/checkpoint! w)   ; stamp the intents so far, rebase the world, keep it open
+```
+
+A checkpoint stamps the world's intents into the parent and re-forks those
+systems from the parent's new head, so the world continues with the settled
+state and the next checkpoint (or the final merge) carries only what came
+after. The parent's record stays current, and it can close a period once the
+worlds with entries in it have checkpointed.
+
 ## Fork and the spin cache
 
 Spin results live on each `SpinNode` in the unified `:nodes` map. A fork:
