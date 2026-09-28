@@ -27,6 +27,7 @@
             [org.replikativ.spindel.inference.mechanism :as mech]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.inference.measure :as m]
+            [org.replikativ.spindel.inference.random :as random]
             [anglican.runtime :as ar]))
 
 (def choose-site :inference/choose)
@@ -203,7 +204,8 @@
        (let [site (:savepoint/site sp)]
          (cond
            (= choose-site site)
-           (cond-> (decide-choose opts sp old-entry)
+           (cond-> (random/in-world-stream (:savepoint/world sp) (:savepoint/address sp)
+                                           #(decide-choose opts sp old-entry))
              ;; with :noise, a site that got no factual noise (it did not
              ;; exist in the factual world, or its law is not a mechanism)
              ;; is reported
@@ -381,7 +383,9 @@
            :or {select uniform-site propose prior-proposal iteration 0}}]
    (fn [resolve reject]
      (let [{:keys [targets log-selection]}
-           (when (seq (latent-addresses trace)) (select trace iteration))
+           (when (seq (latent-addresses trace))
+             (random/in-world-stream (:trace/world trace) [::select iteration]
+                                     #(select trace iteration)))
            from (trace/earliest trace targets)]
        (if-not from
          (resolve {:trace trace :accepted? false :log-ratio 0.0})
@@ -398,7 +402,10 @@
                               (mh-log-ratio trace proposed log-selection))
                       accept? (and (not (#?(:clj Double/isNaN :cljs js/isNaN) ratio))
                                    (or (>= ratio 0.0)
-                                       (< (Math/log (m/uniform01)) ratio)))]
+                                       (< (Math/log (random/in-world-stream
+                                                     (:trace/world proposed) ::accept
+                                                     m/uniform01))
+                                          ratio)))]
                   (if accept?
                     (trace/release! trace proposed)
                     (trace/release! proposed trace))

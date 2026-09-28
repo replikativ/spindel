@@ -31,6 +31,7 @@
   - Spin-returning API (non-blocking, composable via await)
   - Measure-centric post-processing (query, predict)"
   (:require [org.replikativ.spindel.inference.measure :as m]
+            [org.replikativ.spindel.inference.random :as random]
             [org.replikativ.spindel.inference.kernel :as k]
             [org.replikativ.spindel.inference.smc :as smc]
             [org.replikativ.spindel.inference.coordinator :as coord]
@@ -212,12 +213,12 @@
   "One chain in its own world: run the model, move it `iterations` times,
   give every world back. Returns the chain's particles: its projected final
   state, or (kernel `:samples :all`) every state after `:burn` as a Sample."
-  [model-task kernel executor]
+  [model-task kernel executor seed]
   (inference-spin
    (let [;; per chain: a block Gibbs description closes over its own state
          {:keys [iterations] :as step-opts} (mh-options kernel)
          root (ctx/create-execution-context :executor executor)
-         session (sp/open! root {:purpose :mcmc :fork-opts {:systems :none}
+         session (sp/open! root {:purpose :mcmc :seed seed :fork-opts {:systems :none}
                                  :retain-released? false})]
      (try
        (let [initial (await (trace/run session model-task (itrace/policy {:init? true})
@@ -276,9 +277,10 @@
                         (sched/thread-pool-executor {:threads 2}))
          executor (or (:executor opts) own-executor)]
      (try
-       (let [chains (await (apply comb/parallel
-                                  (mapv (fn [_] (run-markov-chain model-task kernel executor))
-                                        (range num-chains))))]
+       (let [;; drawn here, in order: the chains then run concurrently
+             seeds (vec (repeatedly num-chains random/fresh-seed))
+             chains (await (apply comb/parallel
+                                  (mapv #(run-markov-chain model-task kernel executor %) seeds)))]
          (m/empirical (into [] cat chains)))
        (finally
          (when own-executor
