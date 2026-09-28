@@ -1487,6 +1487,21 @@
             ;; Decrement the active counter so stop-context! can complete.
             (when drain-active (swap! drain-active dec))))))))
 
+(defn- settled-state?
+  [context state]
+  (let [active (some-> (:drain-active context) deref)]
+    (and (not (get state :engine/draining?))
+         (empty? (get state :engine/pending))
+         (or (nil? active) (zero? active)))))
+
+(defn events-settled?
+  "Whether every event posted to `context` has been processed: no drain is
+  running or entered and none is queued. Then a signal change has reached
+  everything it invalidates, so what is clean is current. Spin bodies may
+  still be running (their nodes are not clean). Does not block."
+  [context]
+  (settled-state? context (backend/backend-deref (:backend context))))
+
 (defn await-drain-complete!
   "Wait for event queue to drain AND all spins to complete execution.
 
@@ -1524,18 +1539,10 @@
   ;; drain has been entered but not yet acquired the lock, and it would be
   ;; invisible to a check that only looked at :engine/draining?. Counting
   ;; the entry catches it.
-  (let [drain-active (:drain-active context)
-        idle? (fn []
-                (let [state    (backend/backend-deref (:backend context))
-                      draining (get state :engine/draining?)
-                      pending  (get state :engine/pending)
-                      nodes    (get state :nodes)
-                      running? (some (fn [[_id n]] (:running? n)) nodes)
-                      active   (when drain-active @drain-active)]
-                  (and (not draining)
-                       (empty? pending)
-                       (not running?)
-                       (or (nil? active) (zero? active)))))]
+  (let [idle? (fn []
+                (let [state (backend/backend-deref (:backend context))]
+                  (and (settled-state? context state)
+                       (not (some (fn [[_id n]] (:running? n)) (get state :nodes))))))]
     #?(:clj
        (let [start (System/currentTimeMillis)
              deadline (+ start timeout-ms)]
