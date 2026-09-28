@@ -188,8 +188,14 @@
                (handlers-of (assoc opts :policy policy :old trace)
                             (:trace/session trace) resolve reject)]
            (invoke! #(sp/fork anchor {:handlers table})
-                    ;; The anchor already is the state at this site.
-                    #(decide-site! % anchor policy trace fail!)
+                    (fn [fork]
+                      ;; Downstream spins the old run computed and this one
+                      ;; reaches again unchanged are adopted, not re-run.
+                      (when-let [source (:trace/world trace)]
+                        (rtp/swap-state! (:savepoint/world fork) [:engine/reuse-source]
+                                         (constantly source)))
+                      ;; The anchor already is the state at this site.
+                      (decide-site! fork anchor policy trace fail!))
                     reject)))))))
 
 (defn earliest

@@ -394,6 +394,9 @@
                           {:type ::duplicate-address
                            :savepoint/site site
                            :savepoint/address address})))
+        ;; a replay must reach this site again, so no world may adopt the
+        ;; spin that holds it
+        (simple/mark-reuse-barrier! world spin-id)
         (rtp/swap-state! world [:savepoint/pending]
                          (fn [m] (assoc (or m {}) address entry)))
         (log/trace :savepoint/published {:site site :address address :seq seq-no})

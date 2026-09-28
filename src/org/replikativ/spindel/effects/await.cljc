@@ -139,6 +139,14 @@
                   (pcps-async/invoke-continuation resolve (:payload child-result))
                   (pcps-async/invoke-continuation reject (:payload child-result))))})
 
+(defn- completing-world
+  "The world a child completes in: the one bound when it completes, else the
+  one the await ran in. They differ when the child's continuation was forked
+  and resumed in another world (a savepoint's fork, a replay): its completion
+  belongs to that world, where the parent's continuation waits too."
+  [await-ctx]
+  (or ec/*execution-context* await-ctx))
+
 (defn- await-spin
   "Direct await handler for Spin.
 
@@ -259,7 +267,7 @@
                               (ec/graph-commit-deps! awaited-spin-id)
                               (when-not @in-sync-phase
                                 ;; Async completion: fire event so parent continuation resumes
-                                (simple/enqueue-completion-event! ctx awaited-spin-id))
+                                (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
                               v)
               child-reject (fn [e]
                              (vreset! child-error e)
@@ -267,7 +275,7 @@
                              (ec/spin-cache-result! awaited-spin-id (spin-core/error e))
                              (ec/graph-commit-deps! awaited-spin-id)
                              (when-not @in-sync-phase
-                               (simple/enqueue-completion-event! ctx awaited-spin-id))
+                               (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
                              nil)
               is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
               cont-map (spin-await-cont-map spin-id spin-ref awaited-spin-id

@@ -324,6 +324,16 @@ decision between the two, `(release! loser winner)` gives back the worlds the
 winner does not share. This is Anglican's LMH move and an asymptotic
 improvement on Gen's dynamic language, which re-executes from the start.
 
+Downstream is reused too, where the change does not reach. The replay world
+names the old run's world its reuse source. A `(spin …)` it creates again
+adopts the old run's result, and the spins that one created, when its
+captured locals are `identical?` to the old ones and every signal it tracked
+and spin it awaited outside itself holds the identical value. This is the
+rule a world applies to its own spins when a parent re-runs. A spin that
+reached a savepoint is always run again, since its site must be decided and
+recorded. Like any cached spin, an adopted one does not repeat its side
+effects, so keep effects out of computation spins.
+
 Gen's interface is then a table of policies:
 
 | Operation | Policy at a site |
