@@ -193,6 +193,7 @@
                         (map #(rtp/get-state
                                % [:inference :world-descriptor])
                              (measure/get-contexts posterior))))
+            (is (= 4 (count (measure/world-descriptors posterior))))
             (is (every? #(= :discarded
                             (:fork/status
                              (rtp/get-state
@@ -781,5 +782,15 @@
           (is (= [:ok nil] (await-cps ((:discard! recovery)))))
           (is (= :discarded (:status @(:manager recovery))))
           (is (empty? (:handles @(:manager recovery))))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest pure-inference-has-no-world-descriptors
+  (let [root (context/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [posterior @(spin (await (inference/smc-infer (spin 7) 2 {:world-policy :fresh})))]
+          (is (= [7 7] (mapv measure/get-value (measure/get-contexts posterior))))
+          (is (= [] (measure/world-descriptors posterior)))))
       (finally
         (context/stop-context! root)))))

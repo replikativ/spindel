@@ -322,6 +322,15 @@
     (:result context)
     (rtp/get-state context [:inference :result])))
 
+(defn world-descriptors
+  "The world descriptors of `measure`'s particles that ran in canonical worlds
+  (`:world-policy :fork`), in particle order. Particles of pure inference are
+  `Sample`s with no world, and contribute none."
+  [measure]
+  (into [] (keep #(when-not (instance? Sample %)
+                    (rtp/get-state % [:inference :world-descriptor])))
+        (get-contexts measure)))
+
 (defn get-trace
   "The trace {address -> entry} of a particle (context or Sample)."
   [context]
