@@ -419,14 +419,16 @@
 (defn mh-chain
   "`n` Metropolis-Hastings moves from `trace`; `opts` as for `mh-step`.
   Returns a CPS operation resolving {:trace final :accepted k}. `:on-step`
-  (fn [step-result]) sees every move."
+  (fn [step-result]) sees every move. `:step` (fn [trace opts]) -> CPS
+  resolving a step result replaces `mh-step` as the move (e.g.
+  `inference.hmc/within-gibbs`)."
   ([trace n] (mh-chain trace n nil))
-  ([trace n {:keys [on-step] :as opts}]
+  ([trace n {:keys [on-step] move :step :or {move mh-step} :as opts}]
    (fn [resolve reject]
      (letfn [(step [current i accepted]
                (if (= i n)
                  (resolve {:trace current :accepted accepted})
-                 ((mh-step current (assoc opts :iteration i))
+                 ((move current (assoc opts :iteration i))
                   (fn [{:keys [accepted?] next-trace :trace :as result}]
                     (when on-step (on-step result))
                     (step next-trace (inc i) (if accepted? (inc accepted) accepted)))
