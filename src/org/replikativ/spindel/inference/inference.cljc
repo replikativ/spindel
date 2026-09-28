@@ -32,6 +32,7 @@
   - Measure-centric post-processing (query, predict)"
   (:require [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.inference.random :as random]
+            [org.replikativ.spindel.inference.hmc :as hmc]
             [org.replikativ.spindel.inference.kernel :as k]
             [org.replikativ.spindel.inference.smc :as smc]
             [org.replikativ.spindel.inference.coordinator :as coord]
@@ -207,6 +208,8 @@
                      :propose (itrace/random-walk-proposal (:step-size kernel))}
     :block-gibbs (assoc (block-gibbs-options kernel)
                         :iterations (:num-iterations kernel))
+    :hmc {:iterations (:num-iterations kernel)
+          :step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
     nil))
 
 (defn- run-markov-chain

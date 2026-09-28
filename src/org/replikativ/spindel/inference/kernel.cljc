@@ -344,6 +344,24 @@
   (chain-output (->RandomWalkMHKernel num-iterations step-size) opts))
 
 ;; =============================================================================
+;; HMCKernel
+;; =============================================================================
+
+(defrecord HMCKernel [num-iterations step-size steps]
+  PInferenceKernel
+  (kernel-id [_] :hmc))
+
+(defn hmc-kernel
+  "Hamiltonian Monte Carlo on the block sites of a program
+  (`inference.block`), within Gibbs: every iteration moves each block site by
+  HMC (`:step-size`, `:steps` leapfrog steps) and one other latent site by
+  single-site MH (`inference.hmc/within-gibbs`). Output options as for every
+  Markov-chain kernel."
+  [num-iterations & [{:keys [step-size steps] :or {step-size 0.1 steps 10} :as opts}]]
+  {:pre [(pos-int? num-iterations) (pos? step-size) (pos-int? steps)]}
+  (chain-output (->HMCKernel num-iterations step-size steps) opts))
+
+;; =============================================================================
 ;; BlockGibbsKernel
 ;; =============================================================================
 
