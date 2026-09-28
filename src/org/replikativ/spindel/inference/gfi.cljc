@@ -29,7 +29,8 @@
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
-            [org.replikativ.spindel.inference.measure :as m]))
+            [org.replikativ.spindel.inference.measure :as m]
+            [org.replikativ.spindel.inference.random :as random]))
 
 (defn- then [operation f]
   (fn [resolve reject]
@@ -46,6 +47,7 @@
                (ctx/create-execution-context :executor executor)
                (ctx/create-execution-context))
         session (sp/open! root (merge {:purpose :gfi
+                                       :seed (random/fresh-seed)
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :executor)))]

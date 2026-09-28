@@ -21,6 +21,7 @@
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.measure :as m]
+            [org.replikativ.spindel.inference.random :as random]
             [anglican.runtime :as ar]
             [replikativ.logging :as log]))
 
@@ -103,6 +104,7 @@
                (ctx/create-execution-context :executor executor)
                (ctx/create-execution-context))
         session (sp/open! root (merge {:purpose :smc
+                                       :seed (random/fresh-seed)
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :resample-threshold :policy :executor :retained :ancestor-sampling?)))
