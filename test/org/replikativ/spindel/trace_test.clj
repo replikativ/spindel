@@ -180,3 +180,18 @@
         (await-cps (sp/close! session))
         (context/stop-context! root)
         (context/stop-context! controller)))))
+
+(deftest a-site-inside-a-nested-spin-replays-and-closes
+  ;; The nested spin's completion belongs to the world its continuation runs
+  ;; in: a replay from its site (a fork) resumes the parent there, and closing
+  ;; the session abandons its anchor and ends that world.
+  (with-session [root session]
+    (let [trace (await-cps (trace/run session
+                                      (binding [ec/*execution-context* root]
+                                        (spin [(aw/await (spin (savepoint :inner 7))) :done]))
+                                      trace/payload-policy))
+          address (first (:trace/order trace))
+          replayed (await-cps (trace/replay trace address
+                                            (trace/constrained-policy {address 9} trace/payload-policy)))]
+      (is (= [7 :done] (:trace/result trace)))
+      (is (= [9 :done] (:trace/result replayed))))))

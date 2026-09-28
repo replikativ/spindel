@@ -2071,6 +2071,90 @@
   (or (not= (set (keys old)) (set (keys new)))
       (boolean (some (fn [[k v]] (not (identical? v (get old k)))) new))))
 
+;; -----------------------------------------------------------------------------
+;; Reuse across worlds
+;; -----------------------------------------------------------------------------
+;;
+;; A world re-running a computation that another world already ran (a replay
+;; from a trace's anchor) names that world its REUSE SOURCE. A :computation
+;; spin registering for the first time in the world may then adopt the
+;; source's node for it — result, deps and the spins it created — when that
+;; subtree is complete and clean, reached no reuse barrier, and everything it
+;; depends on outside itself holds the identical value in both worlds. The
+;; registration then continues as a re-registration: identical captures keep
+;; the adopted result, changed ones mark it dirty and the body re-runs (its
+;; children may again be adopted). This is the in-world caching rule of
+;; `register-spin!`, extended to the world the computation came from.
+
+(defn mark-reuse-barrier!
+  "Mark `spin-id` as a spin whose body another world may not skip by adopting
+  it: it reached a site that has to be seen (a savepoint, whose decision a
+  trace records)."
+  [context spin-id]
+  (when spin-id
+    (rtp/swap-state! context [:engine/reuse-barriers] #(conj (or % #{}) spin-id))))
+
+(defn- adoptable-subtree
+  "The ids of the spin subtree at `spin-id` in `source` that `target` may
+  adopt, or nil."
+  [source target spin-id]
+  (let [barriers (or (rtp/get-state source [:engine/reuse-barriers]) #{})
+        subtree (loop [todo [spin-id] seen #{}]
+                  (if-let [id (peek todo)]
+                    (let [node (rtp/get-state source [:nodes id])]
+                      (cond
+                        (contains? seen id) (recur (pop todo) seen)
+                        (or (not (instance? #?(:clj org.replikativ.spindel.engine.nodes.SpinNode
+                                               :cljs nodes/SpinNode) node))
+                            (not= :computation (:kind node))
+                            (not= :clean (:status node))
+                            (not (:completed? node))
+                            (:running? node)
+                            (contains? barriers id)
+                            (some? (rtp/get-state target [:nodes id])))
+                        nil
+                        :else (recur (into (pop todo) (:created-spins node)) (conj seen id))))
+                    seen))
+        same? (fn [dep field]
+                (identical? (get (rtp/get-state source [:nodes dep]) field)
+                            (get (rtp/get-state target [:nodes dep]) field)))]
+    (when (and subtree
+               (every? (fn [id]
+                         (let [{:keys [signals spins]} (:deps (rtp/get-state source [:nodes id]))]
+                           (and (every? #(same? % :snapshot) signals)
+                                (every? #(or (contains? subtree %) (same? % :result)) spins))))
+                       subtree))
+      subtree)))
+
+(defn- adopt-subtree!
+  "Copy the nodes of `subtree` from `source` into `target`, keeping only the
+  observer edges that exist there, and register them with their outside deps."
+  [source target subtree]
+  (doseq [id subtree
+          :let [node (rtp/get-state source [:nodes id])
+                present? #(or (contains? subtree %) (some? (rtp/get-state target [:nodes %])))]]
+    (rtp/swap-state! target [:nodes id]
+                     (constantly (update node :observers #(into #{} (filter present?) %))))
+    (rtp/swap-state! target [:spins-meta id]
+                     (constantly (rtp/get-state source [:spins-meta id])))
+    (let [{:keys [signals spins]} (:deps node)]
+      (doseq [dep (concat signals (remove subtree spins))]
+        (rtp/swap-state! target [:nodes dep]
+                         (fn [dep-node] (some-> dep-node (nodes/add-observer id))))))))
+
+(defn- adopt-from-reuse-source!
+  "Adopt `spin-id`'s subtree from `context`'s reuse source, when it has one
+  and the subtree qualifies. A source that cannot be read (released since)
+  adopts nothing."
+  [context spin-id]
+  (when-let [source (rtp/get-state context [:engine/reuse-source])]
+    (try
+      (when-let [subtree (adoptable-subtree source context spin-id)]
+        (adopt-subtree! source context subtree)
+        (log/trace :engine/adopted {:spin-id spin-id :count (count subtree)}))
+      (catch #?(:clj Throwable :cljs :default) e
+        (log/debug :engine/adoption-skipped {:spin-id spin-id :error e})))))
+
 (defn register-spin!
   "Register a spin's metadata in the context.
 
@@ -2088,6 +2172,9 @@
   [context spin-id spin-meta]
   ;; Get the current spin-id (creator) from dynamic binding
   (let [creator-id ec/*spin-id*]
+
+    (when (= :computation (:kind spin-meta))
+      (adopt-from-reuse-source! context spin-id))
 
     ;; Write metadata
     (rtp/swap-state! context [:spins-meta spin-id] (constantly spin-meta))
