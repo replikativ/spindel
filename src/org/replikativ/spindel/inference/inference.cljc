@@ -9,6 +9,12 @@
   - importance-sampling: Delegates to kernel-infer with PriorKernel, no barriers
   - smc-infer: Delegates to kernel-infer with PriorKernel, barriers at observe
 
+  The particle methods (smc-infer, pimh-infer, pgibbs-infer, pgas-infer, and
+  the sweeps of ipmcmc-infer) run on savepoint SMC (`inference.smc`) for
+  pure inference (`:world-policy :fresh`, the default): their measures hold
+  `Sample`s (result + trace) rather than particle contexts. With
+  `:world-policy :fork` they stay on the coordinator below.
+
   All functions return Spin<EmpiricalMeasure> for composability.
 
   Architecture in one paragraph: each particle runs the probabilistic
@@ -26,6 +32,7 @@
   - Measure-centric post-processing (query, predict)"
   (:require [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.inference.kernel :as k]
+            [org.replikativ.spindel.inference.smc :as smc]
             [org.replikativ.spindel.inference.coordinator :as coord]
             [org.replikativ.spindel.inference.gradient :as grad]
             [org.replikativ.spindel.inference.trace :as itrace]
@@ -502,11 +509,31 @@
 ;; Convenience Functions (Delegate to kernel-infer)
 ;; =============================================================================
 
+(defn- on-savepoints?
+  "Whether a particle method runs on savepoint SMC (`inference.smc`): pure
+  inference in fresh worlds does; `:world-policy :fork` stays on the
+  coordinator, whose canonical worlds carry recovery and settlement."
+  [opts]
+  (= :fresh (get opts :world-policy :fresh)))
+
+(defn- on-savepoints
+  "A spin resolving the savepoint CPS `operation`, a failure reported as
+  `::inference-failed` with the model's error as its cause."
+  [operation]
+  (inference-spin
+   (try
+     (await operation)
+     (catch #?(:clj Throwable :cljs :default) e
+       (throw (ex-info "Inference failed during particle execution"
+                       {:type ::inference-failed} e))))))
+
 (defn smc-infer
   "Run SMC inference on probabilistic program.
 
-  Sequential Monte Carlo with resampling at observe barriers.
-  Delegates to kernel-infer with PriorKernel and :barrier-policy :every-observe.
+  Sequential Monte Carlo with resampling at observe barriers. Pure inference
+  (`:world-policy :fresh`, the default) runs `inference.smc/smc`, whose
+  particles are `Sample`s; `:world-policy :fork` delegates to kernel-infer
+  with PriorKernel and :barrier-policy :every-observe.
 
   Args:
   - model-task: Spin (from model function) - Probabilistic program to infer
@@ -523,11 +550,13 @@
             measure (await (smc-infer model 100 {:executor shared-exec}))]
         (query measure identity)))"
   [model-task num-particles & [opts]]
-  ;; SMC = PriorKernel with barriers at every observe
-  (kernel-infer model-task
-                (k/prior-kernel)
-                num-particles
-                (assoc opts :barrier-policy :every-observe)))
+  (if (on-savepoints? opts)
+    (on-savepoints (smc/smc model-task num-particles opts))
+    ;; SMC = PriorKernel with barriers at every observe
+    (kernel-infer model-task
+                  (k/prior-kernel)
+                  num-particles
+                  (assoc opts :barrier-policy :every-observe))))
 
 (defn importance-sampling
   "Run importance sampling inference on probabilistic program.
@@ -614,23 +643,25 @@
 
   Returns: Spin<EmpiricalMeasure>"
   [model-task num-particles num-iterations & [opts]]
-  (spin
-   (let [initial (await (smc-infer model-task num-particles opts))]
-     (loop [current (normalized-samples initial)
-            current-log-Z (m/log-marginal initial)
-            iteration 0
-            all-samples []]
-       (if (>= iteration num-iterations)
-         (m/empirical all-samples)
-         (let [proposed (await (smc-infer model-task num-particles opts))
-               proposed-log-Z (m/log-marginal proposed)
-               log-alpha (- proposed-log-Z current-log-Z)
-               accept? (or (>= log-alpha 0.0) (< (Math/log (m/uniform01)) log-alpha))
-               [current' log-Z'] (if accept?
-                                   [(normalized-samples proposed) proposed-log-Z]
-                                   [current current-log-Z])]
-           (log/trace :pimh/mh-step {:iteration iteration :log-alpha log-alpha :accept? accept?})
-           (recur current' log-Z' (inc iteration) (into all-samples current'))))))))
+  (if (on-savepoints? opts)
+    (on-savepoints (smc/pimh model-task num-particles num-iterations opts))
+    (spin
+     (let [initial (await (smc-infer model-task num-particles opts))]
+       (loop [current (normalized-samples initial)
+              current-log-Z (m/log-marginal initial)
+              iteration 0
+              all-samples []]
+         (if (>= iteration num-iterations)
+           (m/empirical all-samples)
+           (let [proposed (await (smc-infer model-task num-particles opts))
+                 proposed-log-Z (m/log-marginal proposed)
+                 log-alpha (- proposed-log-Z current-log-Z)
+                 accept? (or (>= log-alpha 0.0) (< (Math/log (m/uniform01)) log-alpha))
+                 [current' log-Z'] (if accept?
+                                     [(normalized-samples proposed) proposed-log-Z]
+                                     [current current-log-Z])]
+             (log/trace :pimh/mh-step {:iteration iteration :log-alpha log-alpha :accept? accept?})
+             (recur current' log-Z' (inc iteration) (into all-samples current')))))))))
 
 (defn- csmc-chain
   "Iterated conditional SMC: each sweep keeps one retained trajectory (from
@@ -668,7 +699,9 @@
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
   [model-task num-particles num-iterations & [opts]]
-  (csmc-chain model-task num-particles num-iterations false opts))
+  (if (on-savepoints? opts)
+    (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
+    (csmc-chain model-task num-particles num-iterations false opts)))
 
 ;; =============================================================================
 ;; IPMCMC - Interacting Particle MCMC
@@ -747,16 +780,23 @@
 
    Returns: Spin<Measure>"
   [model-task num-particles retained-trace opts]
-  (if retained-trace
+  (cond
+    ;; SMC sweep (no retained trace)
+    (nil? retained-trace)
+    (smc-infer model-task num-particles opts)
+
+    (on-savepoints? opts)
+    (on-savepoints (smc/smc model-task num-particles
+                            (assoc opts :retained (smc/retained-choices retained-trace))))
+
     ;; CSMC sweep with retained trace
+    :else
     (kernel-infer model-task
                   (k/prior-kernel)
                   num-particles
                   (assoc opts
                          :barrier-policy :every-observe
-                         :pgibbs-retained-trace retained-trace))
-    ;; SMC sweep (no retained trace)
-    (smc-infer model-task num-particles opts)))
+                         :pgibbs-retained-trace retained-trace))))
 
 (defn- run-parallel-sweeps
   "Run SMC/CSMC sweeps in parallel across all nodes.
@@ -874,7 +914,9 @@
       "PGAS ancestor scoring does not yet support canonical worlds"
       {:type ::world-pgas-unsupported
        :world-policy :fork})))
-  (csmc-chain model-task num-particles num-iterations true opts))
+  (if (on-savepoints? opts)
+    (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
+    (csmc-chain model-task num-particles num-iterations true opts)))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)

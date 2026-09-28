@@ -332,12 +332,13 @@
   runs with `stream` instead."
   [model n & [opts]]
   (fn [resolve reject]
-    (run-particles model n opts
-                   {:on-done resolve
-                    :on-error reject
-                    :on-idle (fn [_]
-                               (reject (ex-info "The model has stream sites; run it with smc/stream"
-                                                {:type ::stream-sites})))})))
+    (let [[resolve reject] (sp/in-callers-world resolve reject)]
+      (run-particles model n opts
+                     {:on-done resolve
+                      :on-error reject
+                      :on-idle (fn [_]
+                                 (reject (ex-info "The model has stream sites; run it with smc/stream"
+                                                  {:type ::stream-sites})))}))))
 
 (defn stream
   "Online SMC: `model` marks the sites whose values arrive from outside as
@@ -355,7 +356,7 @@
   already seen is re-run. `opts` as for `smc`."
   [model n & [opts]]
   (fn [resolve reject]
-    (let [waiting (atom [resolve reject])
+    (let [waiting (atom (sp/in-callers-world resolve reject))
           controller (atom nil)
           step (fn [done? m]
                  (let [[res _] @waiting]
@@ -364,7 +365,7 @@
                           (not done?)
                           (assoc :push (fn [y]
                                          (fn [res' rej']
-                                           (reset! waiting [res' rej'])
+                                           (reset! waiting (sp/in-callers-world res' rej'))
                                            ((:supply! @controller) y))))))))]
       (reset! controller
               (run-particles model n opts
@@ -383,11 +384,13 @@
         lse (m/log-sum-exp (mapv second ps))]
     (mapv (fn [[s lw]] [s (- lw lse)]) ps)))
 
-(defn- choices-of
-  "{address value} of the unobserved sample sites of a Sample's trace."
-  [sample]
-  (into {} (keep (fn [[a e]] (when-not (:observed? e) [a (:value e)])))
-        (m/get-trace sample)))
+(defn retained-choices
+  "{address value} of the unobserved sample sites of `trace` (a Sample's):
+  the `:retained` of a conditional sweep that keeps that trajectory."
+  [trace]
+  (into {} (keep (fn [[a e]] (when-not (:observed? e) [a (:value e)]))) trace))
+
+(defn- choices-of [sample] (retained-choices (m/get-trace sample)))
 
 (defn- sweeps
   "Run `step` — (fn [state]) -> CPS resolving [state' samples] — `k` times,
