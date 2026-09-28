@@ -559,8 +559,10 @@
 (defn importance-sampling
   "Run importance sampling inference on probabilistic program.
 
-  Simple importance sampling without resampling barriers.
-  Delegates to kernel-infer with PriorKernel and :barrier-policy :none.
+  Simple importance sampling without resampling. Pure inference
+  (`:world-policy :fresh`, the default) runs `inference.smc/smc` with
+  resampling off; `:world-policy :fork` delegates to kernel-infer with
+  PriorKernel and :barrier-policy :none.
 
   Args:
   - model-task: Spin (from model function) - Probabilistic program
@@ -576,11 +578,14 @@
             measure (await (importance-sampling model 1000 {:executor shared-exec}))]
         (query measure identity)))"
   [model-task num-samples & [opts]]
-  ;; Importance sampling = PriorKernel with no barriers
-  (kernel-infer model-task
-                (k/prior-kernel)
-                num-samples
-                (assoc opts :barrier-policy :none)))
+  (if (on-savepoints? opts)
+    ;; savepoint SMC that never resamples: ESS never falls below 0
+    (on-savepoints (smc/smc model-task num-samples (assoc opts :resample-threshold 0.0)))
+    ;; Importance sampling = PriorKernel with no barriers
+    (kernel-infer model-task
+                  (k/prior-kernel)
+                  num-samples
+                  (assoc opts :barrier-policy :none))))
 
 ;; =============================================================================
 ;; Helper Functions
