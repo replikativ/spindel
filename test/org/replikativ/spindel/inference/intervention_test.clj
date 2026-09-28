@@ -6,6 +6,7 @@
   (E[Y | do(X=1)] = 1)."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.inference.random :as random]
             [org.replikativ.spindel.select :as sel]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
@@ -28,7 +29,7 @@
   "One run of `(make)` under `policy-opts`; returns [result log-weight trace]."
   [make policy-opts]
   (let [root (context/create-execution-context)
-        session (sp/open! root {:fork-opts {:systems :none} :retain-released? false})
+        session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})
         t (await-cps (trace/run session (binding [ec/*execution-context* root] (make))
                                 (itrace/policy policy-opts)))]
     (await-cps (sp/close! session))

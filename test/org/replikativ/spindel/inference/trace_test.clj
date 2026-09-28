@@ -2,6 +2,7 @@
   "The inference layer over savepoint traces, through its own API."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.inference.random :as random]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.effects :refer [sample observe factor]]
@@ -20,7 +21,7 @@
 
 (defmacro ^:private with-session [[root session] & body]
   `(let [~root (context/create-execution-context)
-         ~session (sp/open! ~root {:fork-opts {:systems :none} :retain-released? false})]
+         ~session (sp/open! ~root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})]
      (try
        ~@body
        (finally
