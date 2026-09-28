@@ -489,26 +489,6 @@
         (deliver release-discard true)
         (context/close-context! root)))))
 
-(deftest canonical-worlds-reject-unsafe-pgas-scoring
-  (let [root (context/create-execution-context)]
-    (try
-      (binding [ec/*execution-context* root]
-        (let [result
-              @(spin
-                (try
-                  (await
-                   (inference/smc-infer
-                    (spin :done) 2
-                    {:world-policy :fork
-                     :pgas-ancestor-sampling? true}))
-                  :unexpected-success
-                  (catch Throwable error error)))]
-          (is (instance? Throwable result))
-          (is (= ::inference/world-pgas-unsupported
-                 (:type (ex-data result))))))
-      (finally
-        (context/stop-context! root)))))
-
 (deftest public-pgas-rejects-worlds-before-starting-the-model
   (let [root (context/create-execution-context)
         invocations (atom 0)]

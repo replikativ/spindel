@@ -340,13 +340,6 @@
                                {:type ::invalid-world-policy
                                 :world-policy world-policy
                                 :supported #{:fresh :fork}})))
-           _ (when (and (= :fork world-policy)
-                        (:pgas-ancestor-sampling? opts))
-               (throw
-                (ex-info
-                 "PGAS ancestor scoring does not yet support canonical worlds"
-                 {:type ::world-pgas-unsupported
-                  :world-policy world-policy})))
           ;; Create or use provided shared executor
            shared-executor (or (:executor opts)
                              ;; Canonical child worlds share the ambient runtime
@@ -667,9 +660,8 @@
   "Iterated conditional SMC: each sweep keeps one retained trajectory (from
    the previous sweep) alive through resampling, the next retained
    trajectory is drawn from the sweep's weights, and every sweep's
-   particles are emitted normalized. With `ancestor-sampling?` the retained
-   particle also redraws its ancestor at each barrier (PGAS)."
-  [model-task num-particles num-iterations ancestor-sampling? opts]
+   particles are emitted normalized."
+  [model-task num-particles num-iterations opts]
   (spin
    (let [initial (await (smc-infer model-task num-particles opts))
          pick (fn [measure]
@@ -684,8 +676,7 @@
          (let [sweep (await (kernel-infer model-task (k/prior-kernel) num-particles
                                           (assoc opts
                                                  :barrier-policy :every-observe
-                                                 :pgibbs-retained-trace retained-trace
-                                                 :pgas-ancestor-sampling? ancestor-sampling?)))]
+                                                 :pgibbs-retained-trace retained-trace)))]
            (recur (pick sweep) (inc iteration) (into all-samples (normalized-samples sweep)))))))))
 
 (defn pgibbs-infer
@@ -701,7 +692,7 @@
   [model-task num-particles num-iterations & [opts]]
   (if (on-savepoints? opts)
     (on-savepoints (smc/pgibbs model-task num-particles num-iterations opts))
-    (csmc-chain model-task num-particles num-iterations false opts)))
+    (csmc-chain model-task num-particles num-iterations opts)))
 
 ;; =============================================================================
 ;; IPMCMC - Interacting Particle MCMC
@@ -908,15 +899,15 @@
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
   [model-task num-particles num-iterations & [opts]]
-  (when (= :fork (:world-policy opts))
-    (throw
-     (ex-info
-      "PGAS ancestor scoring does not yet support canonical worlds"
-      {:type ::world-pgas-unsupported
-       :world-policy :fork})))
-  (if (on-savepoints? opts)
-    (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    (csmc-chain model-task num-particles num-iterations true opts)))
+  (case (get opts :world-policy :fresh)
+    :fresh (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
+    :fork (throw (ex-info "PGAS ancestor scoring does not yet support canonical worlds"
+                          {:type ::world-pgas-unsupported
+                           :world-policy :fork}))
+    (throw (ex-info "Unknown inference world policy"
+                    {:type ::invalid-world-policy
+                     :world-policy (:world-policy opts)
+                     :supported #{:fresh :fork}}))))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)
