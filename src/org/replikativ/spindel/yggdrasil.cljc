@@ -339,6 +339,26 @@
                    operations (a gapless legal number) become real. A :linear
                    system with :realize defers its linear operations and may
                    be copied.
+       :intents    (fn [{:keys [system-id child-ctx parent-ctx fork-id]}]) -> [intent]
+                   what a world did to the system beyond its parent, as
+                   intents {:intent/id stable-id :footprint #{key} ...}: the
+                   system settles a reconciled copy family (`settle-family!`)
+                   by replaying intents, never by merging its state. Two
+                   members whose footprints share a key conflict. Requires
+                   :stamp.
+       :stamp      (fn [{:keys [system-id parent-ctx final? contributions]}])
+                   apply `contributions` ([{:member id :intents [...]}], the
+                   copied world's own first, then the members in a canonical
+                   order) to the parent. `final?`: the parent is not a fork,
+                   so deferred linear operations become real. Must be
+                   idempotent per :intent/id: a failed settlement is retried.
+       :parent-footprint (fn [{:keys [system-id child-ctx parent-ctx fork-id]}]) -> #{key}
+                   for an intent system: the keys the PARENT claimed since the
+                   fork; an intent claiming one conflicts (`::merge-conflict`).
+       :footprint  (fn [{:keys [system-id child-ctx parent-ctx fork-id]}]) -> #{key}
+                   for a system settled by merging state: the keys a world
+                   changed. Without it, two members of a reconciled family that
+                   both change the system conflict.
 
    Returns: YggRef
 
@@ -346,19 +366,25 @@
      (def ygit (register! (git/create \".\")))
      @ygit  ; => the git system"
   ([sys] (register! sys nil))
-  ([sys {:keys [grade compensate realize]}]
+  ([sys {:keys [grade compensate realize intents stamp footprint parent-footprint]}]
+   (when (and intents (not stamp))
+     (throw (ex-info "A system that settles by intents needs :stamp"
+                     {:type ::intents-without-stamp})))
    (with-registry-authority-lock
      (fn []
        (ensure-world-shape-mutable!)
        (let [sys-id (ygg/system-id sys)
              sig    (ys/ygg-signal sys)]
          (ec/swap-state! [registry-key] #(assoc (or % {}) sys-id sig))
-         (when (or grade compensate realize)
+         (when (or grade compensate realize intents footprint parent-footprint)
            (ec/swap-state! [policies-key]
                            #(assoc (or % {}) sys-id
                                    (cond-> {:grade (or grade :unrestricted)}
                                      compensate (assoc :compensate compensate)
-                                     realize (assoc :realize realize)))))
+                                     realize (assoc :realize realize)
+                                     intents (assoc :intents intents :stamp stamp)
+                                     parent-footprint (assoc :parent-footprint parent-footprint)
+                                     footprint (assoc :footprint footprint)))))
          (->YggRef sys-id))))))
 
 (defn unregister!
@@ -1358,8 +1384,13 @@
       (:sync? (merge yc/default-opts opts))
       (async
        (when-let [parent-ctx (:parent-ctx child-ctx)]
-         (let [pairs (handle-shared-pairs fork-handle)
-               co (handle-child-only fork-handle)]
+         (let [skip (::skip-systems opts #{})
+               all-pairs (handle-shared-pairs fork-handle)
+               ;; systems settled by replaying intents: their overlays are
+               ;; dropped, not merged (see `settle-family!`)
+               skipped (filterv #(contains? skip (first %)) all-pairs)
+               pairs (filterv #(not (contains? skip (first %))) all-pairs)
+               co (into {} (remove #(contains? skip (key %))) (handle-child-only fork-handle))]
            ;; Carrying a newly registered child system changes the parent's
            ;; world shape. Reject before any substrate mutation when that parent
            ;; has already been partitioned/frozen.
@@ -1396,8 +1427,17 @@
          ;; parent ygg-signal is repointed only AFTER; a throwing/rejecting durable op
          ;; leaves that system's parent untouched and propagates (git/datahike have no
          ;; cross-store 2PC — the pre-check makes mid-merge failure unlikely).
-           (when (or (seq pairs) (seq co))
+           (when (or (seq pairs) (seq co) (seq skipped))
              (mark-settlement-mutating! fork-handle :merge))
+           (loop [ps (seq skipped)]
+             (when ps
+               (let [[sid _ cval _] (first ps)]
+                 (cond
+                   (ovl/overlay? cval) (ygg/discard! cval)
+                   (and (satisfies? ygg/Branchable cval)
+                        (managed-branch? fork-handle sid cval))
+                   (await (ygg/delete-branch! cval (ygg/current-branch cval) (merge yc/default-opts opts)))))
+               (recur (next ps))))
            (let [merged (loop [ps (seq pairs) acc []]
                           (if ps
                             (let [[sid sig-ref cval psys] (first ps)
@@ -1565,7 +1605,8 @@
                                 :linear
                                 (system-grade child sid))
                         deferred? (and (= :linear grade)
-                                       (:realize (system-policy child sid)))]
+                                       (let [policy (system-policy child sid)]
+                                         (or (:realize policy) (:intents policy))))]
                     (when (and (contains? #{:affine :linear :divisible} grade)
                                (not deferred?))
                       [sid grade]))))
@@ -1618,7 +1659,7 @@
   [fork-handle]
   (when-let [family (:family fork-handle)]
     (let [f @family]
-      (-> (select-keys f [:id :status :winner])
+      (-> (select-keys f [:id :status :winner :winners])
           (assoc :members (into {} (map (fn [[id n]] [id (select-keys n [:via :settled])]))
                                 (:nodes f)))))))
 
@@ -1641,20 +1682,56 @@
                          :status (:status f)
                          :winner (:winner f)}))))))
 
+(declare intent-systems contribution parent-conflicts stamp-plan run-stamp!)
+
 (defn- merge-family-member!
   [fork-handle opts]
   (ensure-sync! opts :merge)
-  (let [family (:family fork-handle)]
+  (let [family (:family fork-handle)
+        chain (loop [via (get-in @family [:nodes (:fork-id fork-handle) :via]) acc []]
+                (if via
+                  (recur (get-in @family [:nodes via :via])
+                         (conj acc [via (get-in @family [:nodes via :internal])]))
+                  acc))
+        top (or (second (peek chain)) fork-handle)
+        skip (intent-systems fork-handle)
+        ;; what each world adds to the one above it, outermost first
+        contributions (when (seq skip)
+                        (mapv contribution (cons fork-handle (map second chain))))
+        contributions (vec (reverse contributions))]
+    (let [f @family]
+      (when-not (or (= :open (:status f)) (= (:fork-id fork-handle) (:winner f)))
+        (throw (ex-info "The copy family has already settled"
+                        {:type ::copy-family-settled :fork-id (:fork-id fork-handle)
+                         :family (:id f) :status (:status f) :winner (:winner f)}))))
+    (when (seq skip)
+      (when-let [conflicts (seq (parent-conflicts top contributions))]
+        (throw (ex-info "The world's intents conflict with its parent's"
+                        {:type ::merge-conflict :conflicts (vec conflicts)}))))
     (claim-family! family (:fork-id fork-handle))
-    (let [result (merge-fork* fork-handle opts)]
-      (loop [via (get-in @family [:nodes (:fork-id fork-handle) :via])]
-        (when via
-          (let [{:keys [internal]} (get-in @family [:nodes via])]
-            (merge-fork* internal {})
-            (swap! family assoc-in [:nodes via :settled] :merged)
-            (recur (get-in @family [:nodes via :via])))))
+    (let [result (merge-fork* fork-handle (assoc opts ::skip-systems skip))]
+      (doseq [[via internal] chain]
+        (merge-fork* internal {::skip-systems skip})
+        (swap! family assoc-in [:nodes via :settled] :merged))
       (swap! family assoc :status :merged)
-      result)))
+      (cond-> result
+        (seq skip) (assoc :stamps (run-stamp! (stamp-plan top contributions skip)))))))
+
+(defn- merge-single!
+  "Merge a fork that is not a copy. Systems settled by intents are not
+   merged as state: their intents are checked against the parent's and
+   stamped into it."
+  [fork-handle opts]
+  (let [skip (intent-systems fork-handle)]
+    (if (empty? skip)
+      (merge-fork* fork-handle opts)
+      (let [_ (ensure-sync! opts :merge)
+            c (contribution fork-handle)]
+        (when-let [conflicts (seq (parent-conflicts fork-handle [c]))]
+          (throw (ex-info "The world's intents conflict with its parent's"
+                          {:type ::merge-conflict :conflicts (vec conflicts)})))
+        (let [result (merge-fork* fork-handle (assoc opts ::skip-systems skip))]
+          (assoc result :stamps (run-stamp! (stamp-plan fork-handle [c] skip))))))))
 
 (defn- winner-path
   "The worlds a winning member merges through: its copied-from chain."
@@ -1699,12 +1776,17 @@
    :failed` and never reopens the already-mutated world.
 
    A member of a copy family (`copy-fork!`) settles the whole family: it is
-   refused with `::copy-family-settled` once another member has merged."
+   refused with `::copy-family-settled` once another member has merged.
+
+   A system registered with `:intents` is not merged as state: the world's
+   intents are checked against what the parent claimed since the fork
+   (`::merge-conflict`, nothing changed) and stamped into the parent. A stamp
+   that throws is kept pending in the parent (`retry-stamps!`)."
   ([fork-handle] (merge-fork! fork-handle {}))
   ([fork-handle opts]
    (if (:family fork-handle)
      (merge-family-member! fork-handle opts)
-     (merge-fork* fork-handle opts))))
+     (merge-single! fork-handle opts))))
 
 (defn discard-fork!
   "Discard an OPEN fork exactly once. Repeating the same successful operation is
@@ -1716,6 +1798,301 @@
    (if (:family fork-handle)
      (discard-family-member! fork-handle opts)
      (discard-fork* fork-handle opts))))
+
+;; =============================================================================
+;; Reconciled families (multiplicative settlement of several copies)
+;; =============================================================================
+;;
+;; Several members of one copy family may settle together when their
+;; contributions are disjoint (lambda-join's join side condition): a system
+;; settled by intents reports each member's intents with footprints, one
+;; settled by merging state may report the keys it changed. Footprints must
+;; not overlap between members; then the members' ordinary systems merge into
+;; the copied world, that world into its parent, and every intent is stamped
+;; into that parent in one canonical order. Conflicts are data, never a
+;; silent resolution.
+
+(defn- delta-changed?
+  "Whether a system delta (`fork-diff`) records a change. A convergent system
+   reports none: its merges commute."
+  [delta]
+  (cond
+    (nil? delta) false
+    (contains? delta :error) true
+    (contains? delta :files) (boolean (seq (:files delta)))
+    (contains? delta :summary) (pos? (long (or (:added-datoms (:summary delta)) 0)))
+    (map? delta) (boolean (seq delta))
+    :else true))
+
+(defn- intent-systems [fork-handle]
+  (let [child (:child-ctx fork-handle)]
+    (into #{} (filter #(:intents (system-policy child %))) (handle-systems fork-handle))))
+
+(defn- contribution
+  "What the world of `fork-handle` contributes to its parent: its intents per
+   intent system, footprints of its other changed systems, and their deltas."
+  [fork-handle]
+  (let [child (:child-ctx fork-handle)
+        parent (:parent-ctx child)
+        fid (:fork-id fork-handle)
+        by-intents (intent-systems fork-handle)
+        args (fn [sid] {:system-id sid :child-ctx child :parent-ctx parent :fork-id fid})
+        diff (fork-diff fork-handle)]
+    {:member fid
+     :intents (into {} (for [sid (sort-by str by-intents)]
+                         [sid (vec ((:intents (system-policy child sid)) (args sid)))]))
+     :diff (into {} (remove (fn [[sid _]] (contains? by-intents sid))) diff)
+     :footprints (into {} (for [[sid delta] diff
+                                :when (and (not (contains? by-intents sid)) (delta-changed? delta))]
+                            [sid (if-let [f (:footprint (system-policy child sid))]
+                                   (set (f (args sid)))
+                                   ::whole-system)]))}))
+
+(defn- member-conflicts
+  "Conflicts between the contributions `cs`: footprint keys two members share.
+   The same intent in two members (same :intent/id) is one intent."
+  [cs]
+  (let [claims (for [{:keys [member intents footprints]} cs
+                     claim (concat
+                            (for [[sid is] intents, i is, k (:footprint i)]
+                              [[sid k] member (:intent/id i)])
+                            (for [[sid fp] footprints
+                                  k (if (set? fp) fp [::whole-system])]
+                              [[sid k] member nil]))]
+                 claim)]
+    (vec (for [[[sid k] cl] (group-by first claims)
+               :let [members (set (map second cl))
+                     ids (set (map #(nth % 2) cl))]
+               :when (and (> (count members) 1)
+                          (not (and (= 1 (count ids)) (some? (first ids)))))]
+           {:system sid :key k :members members}))))
+
+(defn- parent-claims
+  "{system-id #{key}}: what the parent of `fork-handle` claimed since the fork,
+   per intent system with a `:parent-footprint` (see `register!`)."
+  [fork-handle]
+  (let [child (:child-ctx fork-handle)
+        parent (:parent-ctx child)]
+    (into {} (for [sid (intent-systems fork-handle)
+                   :let [f (:parent-footprint (system-policy child sid))]
+                   :when f]
+               [sid (set (f {:system-id sid :child-ctx child :parent-ctx parent
+                             :fork-id (:fork-id fork-handle)}))]))))
+
+(defn- parent-conflicts
+  "Intents of `contributions` whose footprint the parent of `fork-handle`
+   claimed since the fork."
+  [fork-handle contributions]
+  (let [claims (parent-claims fork-handle)]
+    (vec (distinct
+          (for [{:keys [member intents]} contributions
+                [sid is] intents
+                i is
+                k (:footprint i)
+                :when (contains? (get claims sid) k)]
+            {:system sid :key k :members #{member} :with :parent})))))
+
+(defn- stamp-plan
+  "The stamp of `contributions` into the parent of `fork-handle`."
+  [fork-handle contributions systems]
+  (let [child (:child-ctx fork-handle)]
+    {:parent-ctx (:parent-ctx child)
+     :final? (final-settlement? fork-handle)
+     :contributions contributions
+     :systems (sort-by str systems)
+     :policies (into {} (map (fn [sid] [sid (system-policy child sid)])) systems)}))
+
+(declare stamp!)
+
+(def ^:private pending-stamps-key ::pending-stamps)
+
+(defn- run-stamp!
+  "Stamp `plan`; one that throws is kept pending in its parent world."
+  [plan]
+  (try
+    (stamp! plan)
+    (catch #?(:clj Throwable :cljs :default) error
+      (let [id (random-uuid)]
+        (rtp/swap-state! (:parent-ctx plan) [pending-stamps-key]
+                         #(assoc (or % {}) id plan))
+        (throw (ex-info "Stamping the world's intents failed; retry-stamps! retries it"
+                        {:type ::stamp-failed :pending id} error))))))
+
+(defn retry-stamps!
+  "Retry the stamps that failed into world `ctx` (default: the current one).
+   Stamps are idempotent per intent, so a retry numbers nothing twice.
+   Returns the ids retried; one that fails again stays pending and throws."
+  ([] (retry-stamps! (ec/current-execution-context)))
+  ([ctx]
+   (vec (for [[id plan] (rtp/get-state ctx [pending-stamps-key])]
+          (do (stamp! plan)
+              (rtp/swap-state! ctx [pending-stamps-key] #(dissoc % id))
+              id)))))
+
+(defn- reseat-systems!
+  "Drop the child's state of `sids` and fork the parent's current head again:
+   the world continues from what its parent now holds."
+  [fork-handle sids]
+  (let [child (:child-ctx fork-handle)
+        opts (merge yc/default-opts {:sync? true})]
+    (doseq [[sid sig-ref cval psys] (handle-shared-pairs fork-handle)
+            :when (contains? sids sid)]
+      (cond
+        (ovl/overlay? cval) (ygg/discard! cval)
+        (and (satisfies? ygg/Branchable cval) (managed-branch? fork-handle sid cval))
+        (ygg/delete-branch! cval (ygg/current-branch cval) opts))
+      (set-node-value! child sig-ref
+                       (rtp/fork-value (ys/effective-system psys) (:fork-id fork-handle)
+                                       {:mode (get-in (:descriptor fork-handle)
+                                                      [:fork/systems sid :mode] :frozen)})))))
+
+(defn checkpoint!
+  "Settle what the world of `fork-handle` has done so far in its systems
+   settled by intents, and keep the world open: its intents are checked
+   against the parent's (`::merge-conflict`, nothing changed), stamped into
+   the parent, and those systems of the world then continue from the
+   parent's new head (a rebase), so the next checkpoint or merge carries
+   only what came after. Other systems are untouched until the world merges.
+   For long-lived worlds: settling as they go keeps the parent's record
+   current and lets it close periods. Call it while the world is idle.
+   Returns {system-id what its :stamp returned}. JVM / synchronous only; not
+   for copy-family members, which settle with their family."
+  [fork-handle]
+  (ensure-open-authority! fork-handle)
+  (when (:family fork-handle)
+    (throw (ex-info "A copy family member settles with its family"
+                    {:type ::checkpoint-in-family :fork-id (:fork-id fork-handle)})))
+  (let [skip (intent-systems fork-handle)]
+    (when (seq skip)
+      (let [c (contribution fork-handle)]
+        (when-let [conflicts (seq (parent-conflicts fork-handle [c]))]
+          (throw (ex-info "The world's intents conflict with its parent's"
+                          {:type ::merge-conflict :conflicts (vec conflicts)})))
+        (let [stamps (run-stamp! (stamp-plan fork-handle [c] skip))]
+          (reseat-systems! fork-handle skip)
+          stamps)))))
+
+(defn- family-of [members]
+  (let [families (set (map :family members))]
+    (when (or (some nil? families) (not= 1 (count families)))
+      (throw (ex-info "Members of one copy family settle together"
+                      {:type ::not-one-family})))
+    (first families)))
+
+(defn- copied-world
+  "The node the `members` were copied from: reconciled settlement handles one
+   level of copies."
+  [family members]
+  (let [f @family
+        vias (set (map #(get-in f [:nodes (:fork-id %) :via]) members))
+        via (first vias)]
+    (when (or (not= 1 (count vias)) (nil? via) (get-in f [:nodes via :via]))
+      (throw (ex-info "Reconciled settlement handles copies of one world, one level deep"
+                      {:type ::nested-reconcile-unsupported})))
+    [via (get-in f [:nodes via :internal])]))
+
+(defn family-review
+  "What deciding a reconciled settlement of `members` (copies of one world,
+   see `settle-family!`) needs: {:tier :contributions :conflicts}, `:tier` as
+   dvergr and simmis read it — `:trivial` (nothing contributed), `:reviewable`
+   or `:conflict`. JVM / synchronous only."
+  [members]
+  (let [family (family-of members)
+        [_ internal] (copied-world family members)
+        cs (mapv contribution (sort-by #(str (:fork-id %)) members))
+        conflicts (into (member-conflicts cs)
+                        (parent-conflicts internal (cons (contribution internal) cs)))]
+    {:tier (cond
+             (seq conflicts) :conflict
+             (every? (fn [{:keys [intents footprints]}]
+                       (and (every? empty? (vals intents)) (empty? footprints)))
+                     cs) :trivial
+             :else :reviewable)
+     :contributions cs
+     :conflicts conflicts}))
+
+(defn- stamp!
+  "Stamp every intent system's contributions into the parent. Returns
+   {system-id what its :stamp returned} (e.g. a renumber map)."
+  [{:keys [parent-ctx final? contributions systems policies]}]
+  (into {}
+        (for [sid systems
+              :let [cs (vec (for [c contributions
+                                  :let [is (get-in c [:intents sid])]
+                                  :when (seq is)]
+                              {:member (:member c) :intents is}))]]
+          [sid ((:stamp (get policies sid))
+                {:system-id sid :parent-ctx parent-ctx :final? final? :contributions cs})])))
+
+(defn settle-family!
+  "Settle several `members` of one copy family together (a reconciled
+   settlement): their contributions must be disjoint (`family-review`), or
+   the settlement throws `::family-conflict` with the conflicts and changes
+   nothing. Then each member's systems merge into the copied world, except
+   those settled by intents, whose state is dropped; the copied world merges
+   into its parent; and every intent — the copied world's own first, then the
+   members' by fork id — is stamped into that parent (`register!` :stamp).
+   The family is then `:merged`; its other members may only be discarded.
+
+   A stamp that throws leaves the family `:failed` with the stamp pending:
+   calling `settle-family!` again with any member retries it (stamps are
+   idempotent per intent). JVM / synchronous only."
+  ([members] (settle-family! members {}))
+  ([members opts]
+   (ensure-sync! opts :merge)
+   (let [family (family-of members)
+         f @family]
+     (cond
+       (and (= :merged (:status f))
+            (every? #(contains? (:winners f) (:fork-id %)) members))
+       nil
+
+       (not (#{:open :failed} (:status f)))
+       (throw (ex-info "The copy family has already settled"
+                       {:type ::copy-family-settled :family (:id f) :status (:status f)}))
+
+       (= :failed (:status f))
+       (let [{:keys [pending]} f]
+         (try
+           (let [stamps (stamp! pending)]
+             (swap! family assoc :status :merged)
+             (-> pending (dissoc :policies) (assoc :stamps stamps)))
+           (catch #?(:clj Throwable :cljs :default) error
+             (throw (ex-info "Stamping a reconciled family failed again"
+                             {:type ::family-stamp-failed :family (:id f)} error)))))
+
+       :else
+       (let [[via internal] (copied-world family members)
+             {:keys [conflicts contributions]} (family-review members)
+             ids (set (map :fork-id members))]
+         (when (seq conflicts)
+           (throw (ex-info "The members' contributions conflict"
+                           {:type ::family-conflict :family (:id f) :conflicts conflicts})))
+         (when-not (compare-and-set! family f (assoc f :status :merging :winners ids))
+           (throw (ex-info "The copy family has already settled"
+                           {:type ::copy-family-settled :family (:id f)
+                            :status (:status @family)})))
+         (let [skip (into #{} (mapcat intent-systems) (cons internal members))
+               base (contribution internal)
+               world-child (:child-ctx internal)
+               pending {:parent-ctx (:parent-ctx world-child)
+                        :final? (final-settlement? internal)
+                        :contributions (into [base] contributions)
+                        :systems (sort-by str skip)
+                        :policies (into {} (map (fn [sid] [sid (system-policy world-child sid)])) skip)}]
+           (doseq [m (sort-by #(str (:fork-id %)) members)]
+             (merge-fork* m {::skip-systems skip})
+             (swap! family assoc-in [:nodes (:fork-id m) :settled] :merged))
+           (merge-fork* internal {::skip-systems skip})
+           (swap! family assoc-in [:nodes via :settled] :merged)
+           (try
+             (let [stamps (stamp! pending)]
+               (swap! family assoc :status :merged)
+               (-> pending (dissoc :policies) (assoc :stamps stamps)))
+             (catch #?(:clj Throwable :cljs :default) error
+               (swap! family assoc :status :failed :pending pending)
+               (throw (ex-info "Stamping a reconciled family failed; settle-family! retries it"
+                               {:type ::family-stamp-failed :family (:id f)} error))))))))))
 
 ;; =============================================================================
 ;; Merge From Parent (Parent → Child sync)

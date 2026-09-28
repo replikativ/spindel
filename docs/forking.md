@@ -277,6 +277,68 @@ system may not be copied. Two hooks carry the rest:
 
 Copy families settle synchronously (JVM); a member cannot be partitioned.
 
+### Reconciled settlement: several copies land together
+
+When copies did *different* work rather than competing alternatives — agents
+each drafting their own invoices, say — several of them may settle together,
+provided their contributions are disjoint:
+
+```clojure
+(ygg/family-review [a b c])   ; {:tier :trivial|:reviewable|:conflict
+                              ;  :contributions [...] :conflicts [...]}
+(ygg/settle-family! [a c])    ; the chosen members; discard the rest
+```
+
+A system that must not be merged as state (a legal book) settles by
+**intents**: registered with `:intents`, it reports what a world did as
+intents with a stable `:intent/id` and a `:footprint` (the keys it claims — a
+bank line it matched, an order it billed), and its `:stamp` applies them to the
+parent. Other systems merge as state; with a `:footprint` hook they report the
+keys they changed, without one two members that both changed them conflict.
+A convergent system never conflicts: its merges commute.
+
+Settlement requires that no footprint key is claimed by two members (the same
+intent in two members counts once). Otherwise `family-review` reports
+`:conflict` and `settle-family!` throws `::family-conflict` without changing
+anything — conflicts are data, for a person or an agent to decide, never
+resolved by picking one side's state. Then each member's ordinary systems
+merge into the copied world, it into its parent, and every intent — the copied
+world's own first, then the members' by fork id — is stamped into that parent
+at once, with `:final?` true when the parent is not a fork. A stamp that throws
+leaves the family `:failed`; `settle-family!` retries it, so stamps must be
+idempotent per intent.
+
+The tiers are the ones dvergr's fork review and simmis' task routing use: a
+`:trivial` family can settle automatically, a `:reviewable` one goes to an
+agent or a person, a `:conflict` one needs a decision about which intents to
+drop.
+
+### Every world settles intent systems this way
+
+An intent system is never merged as state, whatever the settlement: a plain
+`merge-fork!` of a single world, the winner of an at-most-one family, and a
+reconciled family all extract intents and stamp them into the parent. Each
+world is autonomous — an agent books, numbers and reverses in its world as in
+the root — and the parent decides what that becomes when it takes the world
+in. The intents are also checked against what the parent itself claimed
+since the fork (`:parent-footprint`): a bank line the parent matched
+meanwhile makes the merge throw `::merge-conflict` without changing anything.
+Settlement results carry `:stamps`, what each system's stamp returned (a
+renumber map, say). A stamp that fails after a single merge stays pending in
+the parent; `retry-stamps!` retries it.
+
+Long-lived worlds settle as they go:
+
+```clojure
+(ygg/checkpoint! w)   ; stamp the intents so far, rebase the world, keep it open
+```
+
+A checkpoint stamps the world's intents into the parent and re-forks those
+systems from the parent's new head, so the world continues with the settled
+state and the next checkpoint (or the final merge) carries only what came
+after. The parent's record stays current, and it can close a period once the
+worlds with entries in it have checkpointed.
+
 ## Fork and the spin cache
 
 Spin results live on each `SpinNode` in the unified `:nodes` map. A fork:

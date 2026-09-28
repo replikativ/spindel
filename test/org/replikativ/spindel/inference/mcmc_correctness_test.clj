@@ -16,6 +16,7 @@
   reject the specific wrong ratio it is there for."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.inference.random :as random]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.inference.inference :as infer]
@@ -42,7 +43,7 @@
   [model-fn step-opts steps burn-in seed]
   (.setSeed ^org.apache.commons.math3.random.RandomGenerator ar/RNG (long seed))
   (let [root (ctx/create-execution-context)
-        session (sp/open! root {:fork-opts {:systems :none} :retain-released? false})
+        session (sp/open! root {:seed (random/fresh-seed) :fork-opts {:systems :none} :retain-released? false})
         seen (atom [])]
     (try
       (let [initial (await-cps (trace/run session
