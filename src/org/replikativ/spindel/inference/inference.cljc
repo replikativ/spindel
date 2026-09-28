@@ -943,6 +943,29 @@
     {:action :done :trace trace :result result
      :log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)}))
 
+(defn- variational-draw
+  "The proposal of a savepoint BBVI iteration: a latent site whose q (the
+  site's prior, the first time its address is seen) has a gradient draws from
+  q; `inference.trace/policy` then weights it by p/q."
+  [q-dists]
+  (fn [sp _old-entry]
+    (let [address (:savepoint/address sp)
+          prior (:dist (:savepoint/payload sp))
+          q (get (swap! q-dists #(if (contains? % address) % (assoc % address prior))) address)]
+      (when (grad/has-gradient? q)
+        (let [v (ar/sample* q)]
+          {:value v :log-proposal (ar/observe* q v)})))))
+
+(defn- q-gradients
+  "{address ∇log q(value)} of the latent sites of a Sample's trace that
+  `qs` has a differentiable q for."
+  [qs trace]
+  (into {} (keep (fn [[address {:keys [value observed?]}]]
+                   (let [q (get qs address)]
+                     (when (and (not observed?) q (grad/has-gradient? q))
+                       [address (grad/compute-gradient q value)]))))
+        trace))
+
 (defn- optimal-scaling
   "Control variate coefficient Cov(f,g)/Var(g)."
   [f g]
@@ -1025,12 +1048,23 @@
          accumulators (atom {})
          kernel (->VariationalKernel q-dists)]
      (loop [iteration 0]
-       (let [measure (await (kernel-infer model-task kernel num-particles
-                                          (assoc opts :barrier-policy :none)))]
+       (let [qs @q-dists
+             measure (if (on-savepoints? opts)
+                       (await (on-savepoints
+                               (smc/smc model-task num-particles
+                                        (assoc opts
+                                               :resample-threshold 0.0
+                                               :policy (itrace/policy {:draw (variational-draw q-dists)})))))
+                       (await (kernel-infer model-task kernel num-particles
+                                            (assoc opts :barrier-policy :none))))]
          (if (>= (inc iteration) num-iterations)
            (assoc measure :variational-dists @q-dists)
            (let [particles (m/get-particles measure)
-                 grads (mapv (fn [[c _]] (or (rtp/get-state c [:inference :q-grads]) {})) particles)]
+                 grads (mapv (fn [[c _]]
+                               (if (instance? org.replikativ.spindel.inference.measure.Sample c)
+                                 (q-gradients (merge @q-dists qs) (m/get-trace c))
+                                 (or (rtp/get-state c [:inference :q-grads]) {})))
+                             particles)]
              (update-variational-dists! q-dists accumulators
                                         (aggregate-gradients grads (mapv second particles))
                                         (/ base-lr (Math/pow (inc iteration) robbins-monro))
