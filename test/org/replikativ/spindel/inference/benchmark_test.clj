@@ -262,8 +262,15 @@
      ;; particle method whose runs depend on scheduling: a margin for that
      :ipmcmc     (fn [mf n] (infer/ipmcmc-infer (mf) 30 (quot n 100) (assoc o :num-nodes 4)))}))
 
-(defn check [algo model-fn budget seed]
-  (weighted-values (run-infer seed #((get algorithms algo) model-fn budget))))
+(defn check
+  "Weighted values of `algo` on `model-fn`. Prints a line per run: the
+   benchmarks take minutes, and CI stops a test silent for five."
+  [algo model-fn budget seed]
+  (let [t0 (System/nanoTime)
+        values (weighted-values (run-infer seed #((get algorithms algo) model-fn budget)))]
+    (println "  benchmark" algo (long (/ (- (System/nanoTime) t0) 1e6)) "ms")
+    (flush)
+    values))
 
 (deftest gaussian-benchmark
   ;; not :lmh — its prior proposals N(1, √5) land in the posterior
