@@ -112,6 +112,28 @@ that needs a consistent view of the parent — inference particles, MCMC
 proposals, counterfactual worlds, a what-if — uses a frozen fork.
 `fork_coherence_test.clj` pins both behaviours.
 
+### Live what-ifs
+
+To watch the parent *as it would be* with some signals changed, and keep
+watching as it moves, use `world.what-if`:
+
+```clojure
+(require '[org.replikativ.spindel.world.what-if :as wi])
+
+(def w (wi/what-if parent {price 120}))            ; overrides {signal value}
+(def stop (wi/watch! w #(spin (margin (track price) (track cost)))
+                     (fn [m] (println "margin if price were 120:" m))))
+(wi/freeze w)   ; a frozen copy of the current view: a world of its own
+(wi/stop! w)
+```
+
+A what-if's view is a frozen fork of the parent *now*, with the overrides
+written in. When the parent changes a signal that a watched computation
+read, the next view is derived from the parent once it has settled, and the
+watches run again. Each view is one moment of the parent, never a mix, and
+overridden signals keep their override. A what-if owns no history and is
+never settled; `freeze` it to keep a moment.
+
 If you need fully-isolated semantics on a shared path — a fork that does not
 track parent's later writes while remaining a writable child — use
 `(fork-context parent :mode :frozen)`. This materializes the parent's complete
