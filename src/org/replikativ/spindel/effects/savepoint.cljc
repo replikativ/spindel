@@ -300,16 +300,21 @@
                session ends (default true; false for unbounded searches)
     :authority a `world.scope/PResourceAuthority`; forks then take a `:grant`
                and a world gives back what it has left when it is discarded
+    :scope     an open world scope the session's worlds join instead of a
+               scope of its own (whose options then apply), e.g. the scope
+               that owns `world`, so `world` can be copied (`copy`); closing
+               the session discards it
 
   Returns the Session. The caller must `close!` it."
-  [world {:keys [handlers seed purpose fork-opts authority retain-released?]
+  [world {:keys [handlers seed purpose fork-opts authority retain-released? scope]
           :or {purpose :savepoint fork-opts {} retain-released? true}}]
   (when (session world)
     (throw (ex-info "World already belongs to a savepoint session"
                     {:type ::session-exists})))
-  (let [scope (world-scope/create {:purpose purpose :fork-opts fork-opts
-                                   :authority authority
-                                   :retain-released? retain-released?})
+  (let [scope (or scope
+                  (world-scope/create {:purpose purpose :fork-opts fork-opts
+                                       :authority authority
+                                       :retain-released? retain-released?}))
         lease (world-scope/begin-activity! scope :savepoint/session)
         value (->Session (random-uuid) scope lease world
                          (atom false) (atom false) (atom {}) (atom #{}))]
@@ -655,6 +660,67 @@
                     (world-scope/end-activity! scope (world-id child-ctx))
                     (release-world! session-value child-ctx)
                     (reject (:error outcome))))))
+            reject)))))))
+
+(defn copy
+  "`k` copies of the pending savepoint `sp`, each in a new world that starts
+  as `sp`'s world is now, consuming `sp`: its world is neither resumed nor
+  unwound, it continues in its copies, which settle at most once
+  (`world.scope/copy!`). The world must be one of the session's scope. A
+  world holding a system that may not be copied is refused; with the
+  session's authority each copy is funded — `:grant`, `:grants`, or
+  `:split? true` for an even share of what the world has left. Refused, `sp`
+  stays pending and its world untouched. JVM / synchronous substrates only.
+
+  Returns a CPS operation resolving the copies' savepoints, in order."
+  ([sp k] (copy sp k nil))
+  ([sp k {:keys [grant grants split?]}]
+   (fn [resolve reject]
+     (let [[resolve reject] (in-callers-world resolve reject)
+           world (:savepoint/world sp)
+           address (:savepoint/address sp)
+           session-value (session world)]
+       (cond
+         (nil? session-value)
+         (reject (ex-info "Savepoint world has no session" {:type ::no-session}))
+
+         (not (pending? sp))
+         (reject (ex-info "Cannot copy a savepoint that is not pending"
+                          {:type ::not-pending
+                           :operation :copy
+                           :savepoint/address address}))
+
+         :else
+         (let [scope (:scope session-value)
+               index-key [(world-id world) address]]
+           (world-scope/copy!
+            scope world k {:grant grant :grants grants :split? split?}
+            (fn [copies]
+              (let [outcome
+                    (try
+                      ;; the copies were taken while `sp` was pending; a
+                      ;; resume or abandon that won meanwhile makes them
+                      ;; copies of nothing
+                      (claim! sp :copy)
+                      (world-scope/end-activity! scope (world-id world))
+                      {:ok (mapv (fn [{:keys [child-ctx]}]
+                                   (let [index (dec (get (swap! (:fork-indices session-value)
+                                                                update index-key (fnil inc 0))
+                                                         index-key))]
+                                     (world-scope/begin-activity! scope :savepoint/world child-ctx
+                                                                  (world-id child-ctx))
+                                     (rtp/swap-state! child-ctx [:savepoint/seed]
+                                                      (constantly (derive-seed (seed world) address index)))
+                                     (attach child-ctx (live-entry child-ctx address))))
+                                 copies)}
+                      (catch #?(:clj Throwable :cljs :default) error
+                        {:error error}))]
+                (if (contains? outcome :ok)
+                  (resolve (:ok outcome))
+                  (do (doseq [{:keys [child-ctx]} copies]
+                        (world-scope/end-activity! scope (world-id child-ctx))
+                        (release-world! session-value child-ctx))
+                      (reject (:error outcome))))))
             reject)))))))
 
 (defn close!

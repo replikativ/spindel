@@ -16,29 +16,41 @@ canonical worlds:
 ```
 
 The model runs in a frozen `ygg/fork!` of the ambient execution context, the
-root, owned by a world scope of its own. Every particle method
+root, owned by a world scope of the inference that the session's worlds join. Every particle method
 (`smc-infer`, `importance-sampling`, `pimh-infer`, `pgibbs-infer`, `pgas-infer`,
 `ipmcmc-infer`, `bbvi-infer`, `kernel-infer` with a PInferenceKernel) then runs
 savepoint SMC there; a method of several sweeps runs each in canonical worlds of
 its own. Each
-particle is a frozen fork of the root and runs the whole model: a model that
+particle is a frozen copy of the root and runs the whole model: a model that
 reads or changes room systems may make effects that are random without a
 sample site (a model call), so particles never share a prefix, as pure
-inference does up to the first random choice. At resampling, each
-selected ancestor is forked again. Selecting one ancestor three times
-therefore produces three independently writable child worlds, not three
-aliases to one context. A superseded world is abandoned: its computation
-unwinds (its `finally` blocks run) in that world.
+inference does up to the first random choice. At resampling, each selected
+ancestor is copied as many times as it was selected
+(`effects.savepoint/copy`, `world.scope/copy!`): three copies are three
+independently writable worlds, not three aliases to one context, and the
+ancestor's world continues in them instead of unwinding. An ancestor selected
+by none is abandoned: its computation unwinds (its `finally` blocks run) in
+that world.
+
+Particles are copies, so the structural grades of the world's systems apply
+(`ygg/register!` `:grade`): a world holding a system that may not be copied —
+a live handle (`:affine`), a `:linear` system that does not settle by
+intents, a `:shared` system — is refused before the model runs. With
+`:authority` (a `world.scope/PResourceAuthority`) and `:grant`, the root is
+granted `:grant` from the caller's wallet, every particle an even share of the
+root's, and every copy an even share of what its ancestor has left
+(`PResourceAuthority/balance`); what a world has not spent goes back when it
+is discarded. Copying is JVM-only; in ClojureScript particles are forks.
 
 This makes inference a composition of existing Spindel operations:
 
 ```text
 ambient world
   -> fork the root
-  -> fork N frozen particles of the root, each running the model
+  -> copy the root into N frozen particles, each running the model
   -> run until a probabilistic checkpoint
   -> score and select ancestors
-  -> fork each selected ancestor, abandon the sources
+  -> copy each selected ancestor, abandon the others
   -> resume
   -> project values and traces into an EmpiricalMeasure of Samples
   -> discard the speculative world tree, then the root

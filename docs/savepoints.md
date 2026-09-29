@@ -180,6 +180,9 @@ cost one map and one lookup when nobody listens.
 (fork sp {:handlers h        ;    ... under other handlers
           :seed s            ;    ... with its own random stream
           :grant g})         ;    ... funded by a resource grant
+(copy sp k)                  ; => k copies, each pending in a new world; consumes sp:
+                             ;    its world continues in them (world.scope/copy!:
+                             ;    grades checked, :grant/:grants/:split? budgets)
 (abandon sp)                 ; unwind the computation; consumes sp
 (persist sp)                 ; tier 2: portable form, or throws if not portable
 ```

@@ -287,47 +287,41 @@
 ;; Canonical particle worlds (`:world-policy :fork`)
 ;; -----------------------------------------------------------------------------
 ;;
-;; The model runs in a frozen fork of the caller's world, owned by a scope of
-;; its own; savepoint SMC opens its session there, so every particle world is
-;; a fork of that root and sees the caller's systems as they were, and
-;; nothing a particle writes reaches the caller. Each particle runs the whole
-;; model (`smc/start-site`). When inference ends, however
-;; it ends, the session is closed and the root discarded before the result
-;; or error is delivered; particles keep their worlds' descriptors.
-
-(defn- canonical-scopes
-  "The scopes of a canonical inference: the root's, then the session's once
-  it is open."
-  [scope root]
-  (cond-> [scope] (some-> root sp/session) (conj (:scope (sp/session root)))))
-
-(defn- canonical-descriptors [scope root]
-  (into [] (mapcat world-scope/descriptors) (canonical-scopes scope root)))
+;; The model runs in a frozen fork of the caller's world, the root, owned by
+;; a world scope of the inference; savepoint SMC opens its session there and
+;; its worlds join that scope, so every particle world descends from the root,
+;; sees the caller's systems as they were, and nothing a particle writes
+;; reaches the caller. Each particle runs the whole model (`smc/start-site`).
+;; Particles are made by copying worlds (JVM): a world holding a system that
+;; may not be copied is refused, and with an `:authority` the root is granted
+;; `:grant` from the caller's wallet and every copy an even share of its
+;; world's. When inference ends, however it ends, the session is closed and
+;; every world discarded before the result or error is delivered; particles
+;; keep their worlds' descriptors.
 
 (defn- close-canonical!
-  "CPS: close the session in `root` (cancelling and joining its worlds),
-  then discard the root once its scope is quiescent — a root fork still in
+  "CPS: give up the inference's `lease` on `scope`, then close the session in
+  `root` (cancelling and joining its worlds, discarding the scope) — or,
+  with no session, discard the scope once quiescent, a root fork still in
   flight included. Idempotent."
-  [scope root]
+  [scope lease root]
   (fn [resolve reject]
-    (let [discard-root #((world-scope/discard-when-quiescent! scope) resolve reject)]
-      (if-let [session (some-> root sp/session)]
-        ((sp/close! session) (fn [_] (discard-root)) reject)
-        (discard-root)))))
+    (world-scope/end-activity! scope lease)
+    (if-let [session (some-> root sp/session)]
+      ((sp/close! session) resolve reject)
+      ((world-scope/discard-when-quiescent! scope) resolve reject))))
 
 (defn- canonical-recovery
   "What a host needs when a canonical inference failed: the worlds'
   descriptors and the operations that finish their cleanup, should the
   automatic one have failed. Process-local."
-  [scope root]
-  (let [scopes (canonical-scopes scope root)
-        session-scope (peek scopes)]
-    {:status (:status @session-scope)
-     :manager session-scope
-     :await-quiescent (world-scope/await-quiescence session-scope)
-     :cancel! #(doseq [s scopes] (world-scope/request-cancel! s))
-     :discard! #(close-canonical! scope root)
-     :descriptors (canonical-descriptors scope root)}))
+  [scope lease root]
+  {:status (:status @scope)
+   :manager scope
+   :await-quiescent (world-scope/await-quiescence scope)
+   :cancel! #(world-scope/request-cancel! scope)
+   :discard! #(close-canonical! scope lease root)
+   :descriptors (world-scope/descriptors scope)})
 
 (defn- with-world-descriptors
   "`measure` whose particles carry their worlds' settled descriptors."
@@ -345,19 +339,25 @@
 (defn- in-canonical-worlds
   "Savepoint SMC (`smc/smc`) of `model-task` with `n` particles in canonical
   worlds of the caller's (see above). `:world-opts` are the forks' options
-  (`:systems`, `:rights`, `:snapshots`); `:executor` the worlds' executor."
+  (`:systems`, `:rights`, `:snapshots`); `:executor` the worlds' executor;
+  `:authority` a `world.scope/PResourceAuthority` and `:grant` what the
+  inference may spend of the caller's wallet."
   [model-task n opts]
   (inference-spin
    (let [caller rtc/*execution-context*
          world-opts (or (:world-opts opts) {})
-         scope (world-scope/create {:purpose :inference
+         scope (world-scope/create {:purpose :particle
+                                    :authority (:authority opts)
                                     :fork-opts (cond-> world-opts
                                                  (:executor opts) (assoc :executor (:executor opts)))})
+         ;; holds the scope open until the session joins it
+         lease (world-scope/begin-activity! scope :inference)
          root (volatile! nil)
          measure (volatile! nil)]
      (try
        (vreset! root (:child-ctx (await (fn [resolve reject]
-                                          (world-scope/fork! scope caller resolve reject)))))
+                                          (world-scope/fork! scope caller {:grant (:grant opts)}
+                                                             resolve reject)))))
        (rtp/swap-state! @root [:inference :canonical?] (constantly true))
        (vreset! measure
                 (await (smc/smc (binding [rtc/*execution-context* @root]
@@ -368,19 +368,19 @@
                                         (await model-task)))
                                 n
                                 (-> opts
-                                    (dissoc :world-policy :world-opts :executor)
-                                    (assoc :root @root :purpose :particle
-                                           :fork-opts world-opts :retain-released? true)))))
+                                    (dissoc :world-policy :world-opts :executor :authority :grant)
+                                    (assoc :root @root :scope scope
+                                           :copy? #?(:clj true :cljs false))))))
        (catch #?(:clj Throwable :cljs :default) e
          (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
                   e
                   (ex-info "Inference failed during particle execution"
                            {:type ::inference-failed
-                            :world/recovery (canonical-recovery scope @root)}
+                            :world/recovery (canonical-recovery scope lease @root)}
                            e))))
        (finally
-         (await-finalization (close-canonical! scope @root))))
-     (with-world-descriptors @measure (canonical-descriptors scope @root)))))
+         (await-finalization (close-canonical! scope lease @root))))
+     (with-world-descriptors @measure (world-scope/descriptors scope)))))
 
 (defn- particles
   "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'

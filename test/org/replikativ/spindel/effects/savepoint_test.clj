@@ -515,3 +515,36 @@
         (await-cps (sp/close! session))
         (binding [ec/*execution-context* caller] (ygg/discard-fork! handle))
         (context/stop-context! caller)))))
+
+(deftest a-copied-savepoint-continues-in-its-copies
+  (let [caller (context/create-execution-context)
+        events (java.util.concurrent.LinkedBlockingQueue.)
+        world-scope (org.replikativ.spindel.world.scope/create
+                     {:purpose :test :fork-opts {:systems :none}})
+        lease (org.replikativ.spindel.world.scope/begin-activity! world-scope :test)
+        root (:child-ctx (await-cps (fn [resolve reject]
+                                      (org.replikativ.spindel.world.scope/fork!
+                                       world-scope caller resolve reject))))
+        session (sp/open! root {:seed 7 :scope world-scope
+                                :handlers {sp/any-site #(.put events %)}})]
+    (org.replikativ.spindel.world.scope/end-activity! world-scope lease)
+    (try
+      (sp/start! session (binding [ec/*execution-context* root] (program)))
+      (let [first-site (take! events)]
+        (testing "a copy that is refused leaves the savepoint pending"
+          (with-redefs [ygg/copy-fork! (fn [& _] (throw (ex-info "refused" {:type ::refused})))]
+            (is (thrown? clojure.lang.ExceptionInfo (await-cps (sp/copy first-site 2)))))
+          (is (sp/pending? first-site)))
+        (let [[a b] (await-cps (sp/copy first-site 2))]
+          (is (not (sp/pending? first-site)) "the source is consumed")
+          (is (not= (sp/seed (:savepoint/world a)) (sp/seed (:savepoint/world b))))
+          (doseq [[c x y] [[a 1 2] [b 10 20]]]
+            (sp/resume c x)
+            (sp/resume (take! events) y)
+            (let [end (take! events)]
+              (is (= [x y (+ x y)] (:savepoint/payload end)))
+              (is (= (:fork-id (:savepoint/world c)) (:fork-id (:savepoint/world end))))))))
+      (finally
+        (await-cps (sp/close! session))
+        (is (= :discarded (:status @world-scope)) "closing the session discards the joined scope")
+        (context/stop-context! caller)))))
