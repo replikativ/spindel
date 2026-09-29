@@ -11,7 +11,10 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             #?(:clj  [is.simm.partial-cps.async :refer [async await]]
                :cljs [is.simm.partial-cps.async :refer [await]]))
-  #?(:cljs (:require-macros [is.simm.partial-cps.async :refer [async]])))
+  ;; ClojureScript takes the `signal` and `batch` macros from this namespace's
+  ;; JVM side, so `sig/signal` resolves wherever this namespace is required.
+  #?(:cljs (:require-macros [is.simm.partial-cps.async :refer [async]]
+                            [org.replikativ.spindel.signal])))
 
 ;; =============================================================================
 ;; Batching Support
