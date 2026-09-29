@@ -6,14 +6,18 @@
   `coordinator.cljc`:
 
   - kernel-infer: Core inference function using PInferenceKernel
-  - importance-sampling: Delegates to kernel-infer with PriorKernel, no barriers
-  - smc-infer: Delegates to kernel-infer with PriorKernel, barriers at observe
+  - importance-sampling: savepoint SMC that never resamples
+  - smc-infer: savepoint SMC (`inference.smc`), resampling at observes
 
-  The particle methods (smc-infer, pimh-infer, pgibbs-infer, pgas-infer, and
-  the sweeps of ipmcmc-infer) run on savepoint SMC (`inference.smc`) for
-  pure inference (`:world-policy :fresh`, the default): their measures hold
-  `Sample`s (result + trace) rather than particle contexts. With
-  `:world-policy :fork` they stay on the coordinator below.
+  smc-infer, importance-sampling and the prior kernel run on savepoint SMC
+  in either world policy: pure inference (`:world-policy :fresh`, the
+  default) in fresh worlds, `:world-policy :fork` in canonical forks of the
+  caller's world (see `in-canonical-worlds`); their measures hold `Sample`s
+  (result + trace, and a canonical particle's world descriptor). The other
+  particle methods (pimh-infer, pgibbs-infer, pgas-infer, the sweeps of
+  ipmcmc-infer) run on savepoint SMC for pure inference; with
+  `:world-policy :fork` they, and any other PInferenceKernel, stay on the
+  coordinator below.
 
   All functions return Spin<EmpiricalMeasure> for composability.
 
@@ -39,6 +43,7 @@
             [org.replikativ.spindel.inference.gradient :as grad]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
+            [org.replikativ.spindel.world.scope :as world-scope]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -290,6 +295,8 @@
            #?(:clj (.close ^java.lang.AutoCloseable own-executor)
               :cljs nil)))))))
 
+(declare particles)
+
 (defn kernel-infer
   "Run inference using a PInferenceKernel.
 
@@ -329,10 +336,19 @@
                                         {:barrier-policy :every-observe}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
-  (if (mh-options kernel)
+  (cond
+    (mh-options kernel)
     ;; Markov-chain kernels are replay plus accept over traces; each of the
     ;; `num-particles` is an independent chain.
     (markov-chain-infer model-task kernel num-particles opts)
+
+    ;; the prior kernel is savepoint SMC, or importance sampling without barriers
+    (= :prior (k/kernel-id kernel))
+    (particles model-task num-particles
+               (cond-> (dissoc opts :barrier-policy)
+                 (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0)))
+
+    :else
     (inference-spin
      (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
                                      :num-particles num-particles
@@ -507,12 +523,22 @@
 ;; Convenience Functions (Delegate to kernel-infer)
 ;; =============================================================================
 
-(defn- on-savepoints?
-  "Whether a particle method runs on savepoint SMC (`inference.smc`): pure
-  inference in fresh worlds does; `:world-policy :fork` stays on the
-  coordinator, whose canonical worlds carry recovery and settlement."
+(defn- world-policy
+  "The `:world-policy` of `opts`, :fresh by default; refuses any other."
   [opts]
-  (= :fresh (get opts :world-policy :fresh)))
+  (let [policy (get opts :world-policy :fresh)]
+    (when-not (#{:fresh :fork} policy)
+      (throw (ex-info "Unknown inference world policy"
+                      {:type ::invalid-world-policy
+                       :world-policy policy
+                       :supported #{:fresh :fork}})))
+    policy))
+
+(defn- on-savepoints?
+  "Whether a particle method whose canonical worlds are not on savepoints
+  yet runs on savepoint SMC: pure inference in fresh worlds does."
+  [opts]
+  (= :fresh (world-policy opts)))
 
 (defn- on-savepoints
   "A spin resolving the savepoint CPS `operation`, a failure reported as
@@ -524,6 +550,113 @@
      (catch #?(:clj Throwable :cljs :default) e
        (throw (ex-info "Inference failed during particle execution"
                        {:type ::inference-failed} e))))))
+
+;; -----------------------------------------------------------------------------
+;; Canonical particle worlds (`:world-policy :fork`)
+;; -----------------------------------------------------------------------------
+;;
+;; The model runs in a frozen fork of the caller's world, owned by a scope of
+;; its own; savepoint SMC opens its session there, so every particle world is
+;; a fork of that root and sees the caller's systems as they were, and
+;; nothing a particle writes reaches the caller. Each particle runs the whole
+;; model (`smc/start-site`). When inference ends, however
+;; it ends, the session is closed and the root discarded before the result
+;; or error is delivered; particles keep their worlds' descriptors.
+
+(defn- canonical-scopes
+  "The scopes of a canonical inference: the root's, then the session's once
+  it is open."
+  [scope root]
+  (cond-> [scope] (some-> root sp/session) (conj (:scope (sp/session root)))))
+
+(defn- canonical-descriptors [scope root]
+  (into [] (mapcat world-scope/descriptors) (canonical-scopes scope root)))
+
+(defn- close-canonical!
+  "CPS: close the session in `root` (cancelling and joining its worlds),
+  then discard the root once its scope is quiescent — a root fork still in
+  flight included. Idempotent."
+  [scope root]
+  (fn [resolve reject]
+    (let [discard-root #((world-scope/discard-when-quiescent! scope) resolve reject)]
+      (if-let [session (some-> root sp/session)]
+        ((sp/close! session) (fn [_] (discard-root)) reject)
+        (discard-root)))))
+
+(defn- canonical-recovery
+  "What a host needs when a canonical inference failed: the worlds'
+  descriptors and the operations that finish their cleanup, should the
+  automatic one have failed. Process-local."
+  [scope root]
+  (let [scopes (canonical-scopes scope root)
+        session-scope (peek scopes)]
+    {:status (:status @session-scope)
+     :manager session-scope
+     :await-quiescent (world-scope/await-quiescence session-scope)
+     :cancel! #(doseq [s scopes] (world-scope/request-cancel! s))
+     :discard! #(close-canonical! scope root)
+     :descriptors (canonical-descriptors scope root)}))
+
+(defn- with-world-descriptors
+  "`measure` whose particles carry their worlds' settled descriptors."
+  [measure descriptors]
+  (let [by-id (into {} (map (juxt :fork/id identity)) descriptors)]
+    (update measure :particles
+            (fn [particles]
+              (mapv (fn [[s w]]
+                      [(if-let [id (:world-id s)]
+                         (-> s (dissoc :world-id) (assoc :world-descriptor (get by-id id)))
+                         s)
+                       w])
+                    particles)))))
+
+(defn- in-canonical-worlds
+  "Savepoint SMC (`smc/smc`) of `model-task` with `n` particles in canonical
+  worlds of the caller's (see above). `:world-opts` are the forks' options
+  (`:systems`, `:rights`, `:snapshots`); `:executor` the worlds' executor."
+  [model-task n opts]
+  (inference-spin
+   (let [caller rtc/*execution-context*
+         world-opts (or (:world-opts opts) {})
+         scope (world-scope/create {:purpose :inference
+                                    :fork-opts (cond-> world-opts
+                                                 (:executor opts) (assoc :executor (:executor opts)))})
+         root (volatile! nil)
+         measure (volatile! nil)]
+     (try
+       (vreset! root (:child-ctx (await (fn [resolve reject]
+                                          (world-scope/fork! scope caller resolve reject)))))
+       (rtp/swap-state! @root [:inference :canonical?] (constantly true))
+       (vreset! measure
+                (await (smc/smc (binding [rtc/*execution-context* @root]
+                                  ;; every particle runs the whole model: a
+                                  ;; canonical model's effects may be random
+                                  ;; without a sample site
+                                  (spin (sp/savepoint smc/start-site nil)
+                                        (await model-task)))
+                                n
+                                (-> opts
+                                    (dissoc :world-policy :world-opts :executor)
+                                    (assoc :root @root :purpose :particle
+                                           :fork-opts world-opts :retain-released? true)))))
+       (catch #?(:clj Throwable :cljs :default) e
+         (throw (if (= spin-core/spin-cancelled (:type (ex-data e)))
+                  e
+                  (ex-info "Inference failed during particle execution"
+                           {:type ::inference-failed
+                            :world/recovery (canonical-recovery scope @root)}
+                           e))))
+       (finally
+         (await-finalization (close-canonical! scope @root))))
+     (with-world-descriptors @measure (canonical-descriptors scope @root)))))
+
+(defn- particles
+  "Savepoint SMC of `model-task` with `n` particles in the worlds `opts`'
+  `:world-policy` names."
+  [model-task n opts]
+  (case (world-policy opts)
+    :fresh (on-savepoints (smc/smc model-task n opts))
+    :fork (in-canonical-worlds model-task n opts)))
 
 (defn smc-infer
   "Run SMC inference on probabilistic program.
@@ -548,13 +681,7 @@
             measure (await (smc-infer model 100 {:executor shared-exec}))]
         (query measure identity)))"
   [model-task num-particles & [opts]]
-  (if (on-savepoints? opts)
-    (on-savepoints (smc/smc model-task num-particles opts))
-    ;; SMC = PriorKernel with barriers at every observe
-    (kernel-infer model-task
-                  (k/prior-kernel)
-                  num-particles
-                  (assoc opts :barrier-policy :every-observe))))
+  (particles model-task num-particles opts))
 
 (defn importance-sampling
   "Run importance sampling inference on probabilistic program.
@@ -578,14 +705,8 @@
             measure (await (importance-sampling model 1000 {:executor shared-exec}))]
         (query measure identity)))"
   [model-task num-samples & [opts]]
-  (if (on-savepoints? opts)
-    ;; savepoint SMC that never resamples: ESS never falls below 0
-    (on-savepoints (smc/smc model-task num-samples (assoc opts :resample-threshold 0.0)))
-    ;; Importance sampling = PriorKernel with no barriers
-    (kernel-infer model-task
-                  (k/prior-kernel)
-                  num-samples
-                  (assoc opts :barrier-policy :none))))
+  ;; savepoint SMC that never resamples: ESS never falls below 0
+  (particles model-task num-samples (assoc opts :resample-threshold 0.0)))
 
 ;; =============================================================================
 ;; Helper Functions

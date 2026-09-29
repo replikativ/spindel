@@ -15,30 +15,42 @@ canonical worlds:
    :resample-threshold 0.5})
 ```
 
-Each initial particle is a frozen `ygg/fork!` of the ambient execution
-context. At resampling, each selected ancestor is forked again. Selecting one
-ancestor three times therefore produces three independently writable child
-worlds, not three aliases to one context.
+The model runs in a frozen `ygg/fork!` of the ambient execution context, the
+root, owned by a world scope of its own. `smc-infer`, `importance-sampling` and
+`kernel-infer` with the prior kernel then run savepoint SMC there. Each
+particle is a frozen fork of the root and runs the whole model: a model that
+reads or changes room systems may make effects that are random without a
+sample site (a model call), so particles never share a prefix, as pure
+inference does up to the first random choice. At resampling, each
+selected ancestor is forked again. Selecting one ancestor three times
+therefore produces three independently writable child worlds, not three
+aliases to one context. A superseded world is abandoned: its computation
+unwinds (its `finally` blocks run) in that world.
 
 This makes inference a composition of existing Spindel operations:
 
 ```text
 ambient world
-  -> fork N frozen particles
+  -> fork the root
+  -> fork N frozen particles of the root, each running the model
   -> run until a probabilistic checkpoint
   -> score and select ancestors
-  -> fork each selected ancestor
+  -> fork each selected ancestor, abandon the sources
   -> resume
-  -> project values and traces into an EmpiricalMeasure
-  -> discard the speculative world tree
+  -> project values and traces into an EmpiricalMeasure of Samples
+  -> discard the speculative world tree, then the root
 ```
 
-The `EmpiricalMeasure` retains result and trace projections in parentless,
-immutable contexts. It therefore retains neither the resampling ancestry nor
-writable settlement authority. On successful completion,
-all particle `ForkHandle`s are consumed newest-generation first. Construction
-and resampling failures are also cleaned up automatically because no affected
-particle is running at those boundaries.
+The `EmpiricalMeasure` holds `Sample`s: each particle's result, its trace and
+its world's settled descriptor (`measure/world-descriptors`). It retains
+neither contexts, the resampling ancestry, nor settlement authority. However
+inference ends — a result, a failure, or the cancellation of its Spin — every
+world is discarded before the outcome is delivered.
+
+The other particle methods (`pimh-infer`, `pgibbs-infer`, `ipmcmc-infer`) and
+any other `PInferenceKernel` with `:world-policy :fork` still run on the
+coordinator, which forks each initial particle from the ambient world and
+retains parentless immutable projections of the particle contexts.
 
 ## Reusable finite world scopes
 
@@ -58,10 +70,10 @@ a particle, tree node, Run, reward, or proposal. In particular, a search policy
 may share immutable statistics for a transposition, but it must not share a
 writable context or affine `ForkHandle`.
 
-SMC now uses this generic scope through compatibility functions in its
-coordinator. This is an extraction of the existing ownership protocol, not a
-second world abstraction: Yggdrasil still owns substrate forks and settlement,
-while the execution context still owns reactive runtime state.
+Savepoint sessions own their worlds through a scope, and so do canonical
+inference and the coordinator. This is an extraction of the existing ownership
+protocol, not a second world abstraction: Yggdrasil still owns substrate forks
+and settlement, while the execution context still owns reactive runtime state.
 
 ## Finite Monte Carlo tree search
 
@@ -143,7 +155,8 @@ recovery operations:
 ;;     :descriptors [<portable fork descriptors> ...]}
 ```
 
-Descriptors are safe durable/audit projections. The manager, operations, and
+`:descriptors` lists the root, then the particle worlds. Descriptors are
+safe durable/audit projections. The manager, operations, and
 its live handles are process-local capabilities. A supervising host can await
 quiescence and retry cleanup if automatic settlement encountered a recoverable
 preflight failure. Cleanup is idempotent, concurrent callers share one result,
