@@ -200,6 +200,139 @@
               ;; reinterpret it as a second rejection and silently swallow it.
                (if @settled? (throw error) (fail! error))))))))))
 
+(defn- discard-opts
+  "A copy family settles synchronously; other worlds discard asynchronously."
+  [handle]
+  (if (:family handle) {} {:sync? false}))
+
+(defn- copied-world-discarded? [{:keys [context member]}]
+  (= :discarded (get-in (ygg/copy-family member) [:members (:fork-id context) :settled])))
+
+(defn- return-copied!
+  "Give back what the copied worlds whose last copy is gone have left, newest
+   first: their copies returned into them before."
+  [scope done fail]
+  (if-let [entry (last (filter copied-world-discarded? (:copied @scope)))]
+    (returning! scope (:context entry)
+                (fn []
+                  (swap! scope (fn [state]
+                                 (-> state
+                                     (update :copied (fn [cs] (vec (remove #(identical? entry %) cs))))
+                                     (update :returned disj (:fork-id (:context entry))))))
+                  (return-copied! scope done fail))
+                fail)
+    (done)))
+
+(defn- settle-now
+  "The value of an authority operation that settles before it returns, as a
+   copy must: it is synchronous."
+  [operation]
+  (let [outcome (volatile! nil)]
+    (invoke-once! operation #(vreset! outcome [:ok %]) #(vreset! outcome [:error %]))
+    (case (first @outcome)
+      :ok (second @outcome)
+      :error (throw (second @outcome))
+      (throw (ex-info "A resource authority must settle synchronously to fund copies"
+                      {:type ::asynchronous-authority})))))
+
+(defn- authority-op [f]
+  (try (f)
+       (catch #?(:clj Throwable :cljs :default) error
+         (fn [_ reject] (reject error)))))
+
+(defn copy!
+  "Copy the scope's world `context` into `k` alternatives that settle at most
+   once (`ygg/copy-fork!`): the world becomes a copied world that never runs
+   again, and its copies are the scope's worlds in its place.
+
+   With an authority, each copy is funded from the copied world's wallet —
+   `:grants`, one per copy, or `:grant` for every copy — so copying never
+   multiplies a budget. A grant the world cannot afford fails the copy: the
+   grants made are returned, the copies discarded, and the world stays as it
+   was. Discarded copies give back what they have left into the copied
+   world, and the copied world, after its last copy, to where it was granted
+   from. `:fork-opts` are merged over the scope's.
+
+   Resolves [{:child-ctx :descriptor}], one per copy. JVM / synchronous only."
+  ([scope context k resolve reject] (copy! scope context k nil resolve reject))
+  ([scope context k {:keys [grant grants] extra-fork-opts :fork-opts} resolve reject]
+   (let [fork-id (:fork-id context)
+         grants (or grants (when (some? grant) (vec (repeat k grant))))
+         claimed
+         (transition!
+          scope
+          (fn [state]
+            (let [handle (first (filter #(= fork-id (:fork-id (:child-ctx %))) (:handles state)))]
+              (cond
+                (or (not= :open (:status state)) (:quiescent? state))
+                [state {:error (scope-error scope ::scope-consumed
+                                            "Cannot copy in a consumed world scope")}]
+
+                (:cancel-requested? state)
+                [state {:error (scope-error scope ::scope-cancelled
+                                            "Cannot copy in a cancelled world scope")}]
+
+                (nil? handle)
+                [state {:error (scope-error scope ::unknown-world
+                                            "World is not owned by this scope")}]
+
+                (and grants (not= k (count grants)))
+                [state {:error (ex-info "copy! needs one grant per copy"
+                                        {:type ::grant-count :k k :grants (count grants)})}]
+
+                :else
+                [(-> state
+                     (update :handles (fn [hs] (vec (remove #(identical? handle %) hs))))
+                     (update :pending-forks inc))
+                 {:handle handle
+                  :position (count (take-while #(not (identical? handle %)) (:handles state)))}]))))]
+     (if-let [error (:error claimed)]
+       (reject error)
+       (let [{:keys [id purpose fork-opts authority]} @scope
+             handle (:handle claimed)
+             fund! (fn [copies]
+                     (let [funded (volatile! [])]
+                       (try
+                         (doseq [[c g] (map vector copies grants)]
+                           (settle-now (authority-op #(grant! authority context (:child-ctx c) g)))
+                           (vswap! funded conj c))
+                         (catch #?(:clj Throwable :cljs :default) error
+                           (doseq [c (rseq @funded)]
+                             (try (settle-now (authority-op #(return! authority (:child-ctx c))))
+                                  (catch #?(:clj Throwable :cljs :default) return-error
+                                    (log/error :world-scope/unreturned-copy-grant
+                                               {:scope/id id :error return-error}))))
+                           (throw error)))))
+             outcome
+             (try
+               {:copies (ygg/copy-fork!
+                         handle k
+                         (cond-> (-> (merge fork-opts extra-fork-opts)
+                                     (assoc :mode :frozen :purpose purpose :owner id :sync? true))
+                           (and authority grants) (assoc :admit fund!)))}
+               (catch #?(:clj Throwable :cljs :default) error
+                 {:error error}))]
+         (swap! scope
+                (fn [state]
+                  (-> (if-let [copies (:copies outcome)]
+                        (-> state
+                            (update :handles into copies)
+                            (update :copied (fnil conj []) {:context context :member (first copies)}))
+                        ;; the world stays the scope's, where it was: the
+                        ;; scope discards its worlds newest first
+                        (update state :handles
+                                (fn [hs] (let [[before after] (split-at (:position claimed) hs)]
+                                           (vec (concat before [handle] after))))))
+                      (update :pending-forks dec))))
+         (try
+           (binding [ec/*execution-context* context]
+             (if-let [copies (:copies outcome)]
+               (resolve (mapv (fn [c] {:child-ctx (:child-ctx c)
+                                       :descriptor (ygg/fork-descriptor c)})
+                              copies))
+               (reject (:error outcome))))
+           (finally (maybe-complete-quiescence! scope))))))))
+
 (def ^:private hop-depth
   "Worlds `discard!` walks on one stack before continuing on a fresh one."
   200)
@@ -296,7 +429,7 @@
                          (binding [ec/*execution-context* (:parent-ctx handle)
                                    pcps-async/*in-trampoline* false]
                            (invoke-once!
-                            (ygg/discard-fork! handle {:sync? false})
+                            (ygg/discard-fork! handle (discard-opts handle))
                             (fn [_]
                               (if (< depth hop-depth)
                                 (step (next remaining) (inc depth))
@@ -307,17 +440,23 @@
                                       (continue!))))))
                             (fn [error] (fail! handle error)))))
                        (fn [error] (fail! handle error)))
-                      (let [descriptors
-                            (into (vec (:released @scope))
-                                  (map ygg/fork-descriptor)
-                                  (:handles @scope))]
-                        (complete!
-                         :done nil
-                         #(-> %
-                              (assoc :status :discarded
-                                     :descriptors descriptors
-                                     :handles [])
-                              (dissoc :client :error)))))))]
+                      (return-copied!
+                       scope
+                       (fn []
+                         (let [descriptors
+                               (into (vec (:released @scope))
+                                     (map ygg/fork-descriptor)
+                                     (:handles @scope))]
+                           (complete!
+                            :done nil
+                            #(-> %
+                                 (assoc :status :discarded
+                                        :descriptors descriptors
+                                        :handles [])
+                                 (dissoc :client :error)))))
+                       (fn [error]
+                         (complete! :failed error
+                                    #(assoc % :status :open :error error)))))))]
           (step handles 0))))))
 
 (defn release!
@@ -377,8 +516,13 @@
              (binding [ec/*execution-context* (:parent-ctx handle)
                        pcps-async/*in-trampoline* false]
                (invoke-once!
-                (ygg/discard-fork! handle {:sync? false})
-                (fn [_] (settle! handle true resolve nil))
+                (ygg/discard-fork! handle (discard-opts handle))
+                (fn [_]
+                  (return-copied! scope
+                                  #(settle! handle true resolve nil)
+                                  ;; the world is gone; a copied world not
+                                  ;; returned yet is retried by `discard!`
+                                  #(settle! handle true reject %)))
                 (fn [error] (settle! handle false reject error)))))
            (fn [error] (settle! handle false reject error))))))))
 

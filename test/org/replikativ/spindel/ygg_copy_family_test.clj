@@ -162,3 +162,21 @@
       (is (= {:draft-0-1 1 :draft-1-1 2} (:numbers @journal))
           "discarded copies drafted too, and consumed no number")
       (is (= 2 @realized) "the intermediate merge into the copied world realizes nothing"))))
+
+(deftest a-refused-admission-leaves-the-world-as-it-was
+  (let [ctx (sp/create-execution-context)]
+    (sp/with-context ctx
+      (ygg/register! (mem-gset "kb"))
+      (let [w (ygg/fork!)
+            _ (add! w "kb" :mine)
+            seen (atom nil)]
+        (is (= ::refused
+               (thrown-type #(ygg/copy-fork! w 3 {:admit (fn [copies]
+                                                           (reset! seen copies)
+                                                           (throw (ex-info "no" {:type ::refused})))}))))
+        (is (= 3 (count @seen)) "admission sees every copy")
+        (is (every? #(= :discarded (:status (ygg/fork-disposition %))) @seen) "the copies are gone")
+        (is (ygg/open-fork? w) "the world is still its owner's, not a family's")
+        (is (nil? (:family w)))
+        (ygg/merge-fork! w)
+        (is (= #{:mine} (elements "kb")))))))
