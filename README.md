@@ -106,11 +106,11 @@ and `await-drain-complete!` (the REPL barrier in `engine.impl.simple`
   embeds a TipTap (ProseMirror) editor as a foreign subtree;
   Spindel manages the surrounding vnode tree, TipTap owns its
   subtree, and a signal feeds the live content back through Spindel.
-- **Probabilistic programming**
-  ([src/.../inference](src/org/replikativ/spindel/inference)) —
-  `sample` / `observe` / `constrain` are registered as Spindel
-  effects so inference programs are spins, MCMC kernels are forks,
-  and trace addresses are deterministic by source-loc.
+- **Probabilistic programming** —
+  [foerster](https://github.com/replikativ/foerster) builds inference on
+  savepoints: `sample` / `observe` / `factor` sites are savepoints, so
+  SMC particles and MCMC moves are forks of worlds, and trace addresses are
+  deterministic by site.
 - **Distributed scopes** — [`defn-spin-remote`](src/org/replikativ/spindel/distributed/macros.cljc)
   lets you define a function that executes on a remote peer with
   explicit boundary-crossing arguments; pairs with
@@ -169,7 +169,7 @@ index. The essentials:
 | [Pub/Sub](docs/pubsub.md) | `mult`, `pub`, buffers, async-sequence-based fan-out. |
 | [Distributed](docs/distributed.md) | `defn-spin-remote`, `spin-remote`, spin↔channel bridge; convergent signal sync; workspace reflection + cross-system forking. |
 | [SCI Integration](docs/sci-integration.md) | Sandboxed spin execution via the Small Clojure Interpreter. |
-| [Inference Worlds](docs/inference.md) | SMC particles and finite MCTS as canonical forked worlds, lifecycle, failure recovery, and resource boundaries. |
+| [World Scopes and Search](docs/world-scopes.md) | Finite families of canonical forked worlds, Monte Carlo tree search, recursive SCI interpreters. Inference over worlds is [foerster](https://github.com/replikativ/foerster). |
 
 For contributor patterns and AI-assistant guidance (do's/don'ts when
 modifying the engine, project-specific conventions), see
