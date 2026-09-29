@@ -158,29 +158,24 @@
 
   - sym: fully-qualified symbol used in code (e.g., 'org.replikativ.spindel.spin/await)
   - handler: PEffectHandler instance OR keyword marker for direct handlers
-  - adapter-var-sym: fully-qualified var symbol naming an adapter
-    (fn [args-vector] args-map)
+  - adapter: the adapter (fn [args-vector] args-map), or the fully-qualified
+    symbol of its var (resolved on Clojure only: in ClojureScript a symbol
+    cannot be resolved at runtime, so an effect called through dispatch
+    there must pass the function)
 
   Keyword handlers are markers for direct handlers that bypass dispatch.
-  The spin macro checks for keyword handlers and uses direct breakpoints.
-
-  Stores the adapter function (on Clojure) to avoid context resolution issues."
-  ([sym handler adapter-var-sym]
-   (register-effect-by-symbol! sym handler adapter-var-sym nil))
-  ([sym handler adapter-var-sym direct-handler-sym]
+  The spin macro checks for keyword handlers and uses direct breakpoints."
+  ([sym handler adapter]
+   (register-effect-by-symbol! sym handler adapter nil))
+  ([sym handler adapter direct-handler-sym]
    {:pre [(symbol? sym)
           (or (satisfies? PEffectHandler handler) (keyword? handler))
-          (symbol? adapter-var-sym)]}
-   #?(:clj
-      (let [v (requiring-resolve adapter-var-sym)
-            f @v]
-        (swap! effect-syntax-registry assoc sym {:handler handler
-                                                 :adapter-fn f
-                                                 :direct-handler-sym direct-handler-sym}))
-      :cljs
-      (swap! effect-syntax-registry assoc sym {:handler handler
-                                               :adapter adapter-var-sym
-                                               :direct-handler-sym direct-handler-sym}))
+          (or (symbol? adapter) (fn? adapter))]}
+   (swap! effect-syntax-registry assoc sym
+          (cond-> {:handler handler :direct-handler-sym direct-handler-sym}
+            (fn? adapter) (assoc :adapter-fn adapter)
+            (symbol? adapter) #?(:clj (assoc :adapter-fn @(requiring-resolve adapter))
+                                 :cljs (assoc :adapter adapter))))
    nil))
 
 ;; Runtime dispatch for symbol-invoked effects
