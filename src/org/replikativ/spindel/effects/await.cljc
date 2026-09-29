@@ -259,35 +259,41 @@
               child-error (volatile! nil)
               child-completed? (volatile! false)
               in-sync-phase (volatile! true)
-              ;; The volatiles above are the awaiting world's: the child's
-              ;; continuation may be forked into other worlds (a savepoint
-              ;; forked while the child still runs synchronously) and complete
-              ;; there, on another thread, during this world's sync phase. Such
-              ;; a completion is always an event in its own world, where the
-              ;; parent's continuation waits too; only a completion in THIS
-              ;; world may be taken inline.
-              here? (fn [world] (= (:fork-id world) (:fork-id ctx)))
+              ;; Only the invocation below may complete the child inline: on
+              ;; this thread, during the sync phase. The child's continuation
+              ;; may also be forked into other worlds (a savepoint forked while
+              ;; the child still runs synchronously) and complete there, on
+              ;; another thread, during this sync phase. Such a completion
+              ;; must not be taken as this world's; it is an event in its own
+              ;; world, where the parent's continuation waits too. (The
+              ;; context bound at completion cannot tell them apart: callbacks
+              ;; commonly run under a binding of some other world.)
+              sync-thread #?(:clj (Thread/currentThread) :cljs nil)
+              inline? (fn []
+                        (and @in-sync-phase
+                             #?(:clj (identical? sync-thread (Thread/currentThread))
+                                :cljs true)))
               child-resolve (fn [v]
-                              (let [world (completing-world ctx)]
-                                (when (here? world)
+                              (let [inline (inline?)]
+                                (when inline
                                   (vreset! child-value v)
                                   (vreset! child-completed? true))
                                 (ec/spin-cache-result! awaited-spin-id (spin-core/ok v))
                                 ;; Commit deps so child registers as signal observer
                                 (ec/graph-commit-deps! awaited-spin-id)
-                                (when-not (and @in-sync-phase (here? world))
+                                (when-not inline
                                   ;; Async completion: fire event so parent continuation resumes
-                                  (simple/enqueue-completion-event! world awaited-spin-id)))
+                                  (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id)))
                               v)
               child-reject (fn [e]
-                             (let [world (completing-world ctx)]
-                               (when (here? world)
+                             (let [inline (inline?)]
+                               (when inline
                                  (vreset! child-error e)
                                  (vreset! child-completed? true))
                                (ec/spin-cache-result! awaited-spin-id (spin-core/error e))
                                (ec/graph-commit-deps! awaited-spin-id)
-                               (when-not (and @in-sync-phase (here? world))
-                                 (simple/enqueue-completion-event! world awaited-spin-id)))
+                               (when-not inline
+                                 (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id)))
                              nil)
               is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
               cont-map (spin-await-cont-map spin-id spin-ref awaited-spin-id
