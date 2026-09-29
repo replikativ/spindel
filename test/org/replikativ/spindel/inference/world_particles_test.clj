@@ -8,9 +8,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.state-backend :as backend]
-            [org.replikativ.spindel.inference.coordinator :as coordinator]
-            [org.replikativ.spindel.inference.effects :refer [observe]]
+            [org.replikativ.spindel.inference.effects :refer [observe sample]]
             [org.replikativ.spindel.inference.inference :as inference]
             [org.replikativ.spindel.inference.kernel :as kernel]
             [org.replikativ.spindel.inference.measure :as measure]
@@ -35,126 +33,6 @@
                #(deliver result [:error %]))
     (deref result 5000 ::timed-out)))
 
-(defn- coordinator-private [symbol]
-  (ns-resolve 'org.replikativ.spindel.inference.coordinator symbol))
-
-(deftest generation-retirement-claim-uses-the-committed-state
-  (let [manager (coordinator/create-world-manager {})
-        claim! (coordinator-private 'claim-particle-generation-retirement!)
-        real-swap-vals! swap-vals!]
-    (coordinator/begin-particle-generation-transition! manager)
-    (let [claimed?
-          (with-redefs
-           [clojure.core/swap-vals!
-            (fn [target f & args]
-              (when (identical? target manager)
-                ;; Evaluate and abandon this contender's transition, then let
-                ;; a competing retirement claim commit before its retry.
-                (apply f @target args)
-                (swap! target assoc
-                       :generation-phase :retiring
-                       :retiring-context-ids #{:competitor}))
-              (apply real-swap-vals! target f args))]
-            (claim! manager))]
-      (is (false? claimed?)
-          "observing :forking before a lost transition does not grant ownership")
-      (is (= #{:competitor} (:retiring-context-ids @manager))))
-    (coordinator/complete-particle-generation-transition! manager [])))
-
-(deftest retirement-callback-claim-uses-the-committed-prior-state
-  (let [retiring (atom {:source {:finish! identity}})
-        client {:retiring-contexts retiring}
-        context {:fork-id :source}
-        take! (coordinator-private 'take-retirement!)
-        real-swap-vals! swap-vals!
-        claimed
-        (with-redefs
-         [clojure.core/swap-vals!
-          (fn [target f & args]
-            (when (identical? target retiring)
-              ;; Evaluate and abandon this take, then let another terminal
-              ;; callback remove the entry before the retry commits.
-              (apply f @target args)
-              (swap! target dissoc :source))
-            (apply real-swap-vals! target f args))]
-          (take! client context))]
-    (is (nil? claimed)
-        "only the callback that removed the entry owns its finish function")))
-
-(deftest checkpoint-cancellation-claim-uses-the-committed-prior-state
-  (let [rejected (atom 0)
-        particles (atom {:particle
-                         {:context
-                          {:fork-id :particle
-                           :executor (executor/synchronous-executor)}
-                          :checkpoint
-                          {:reject (fn [_error] (swap! rejected inc))}
-                          :status :checkpoint}})
-        client {:particles particles}
-        cancel! (coordinator-private 'cancel-kernel-checkpoints!)
-        real-swap-vals! swap-vals!]
-    (with-redefs
-     [clojure.core/swap-vals!
-      (fn [target f & args]
-        (when (identical? target particles)
-          ;; Evaluate and abandon this checkpoint claim, then let a competing
-          ;; cancellation take ownership before the retry commits.
-          (apply f @target args)
-          (swap! target assoc-in [:particle :status] :cancelling))
-        (apply real-swap-vals! target f args))]
-      (cancel! client #{}))
-    (is (zero? @rejected)
-        "a checkpoint seen only by an abandoned attempt is not rejected twice")
-    (is (= :cancelling (get-in @particles [:particle :status])))))
-
-(deftest cancellation-does-not-claim-a-retiring-generation-checkpoint
-  (let [source-id :retiring-source
-        rejected (atom 0)
-        source-context {:fork-id source-id
-                        :executor (executor/synchronous-executor)}
-        particles (atom {:source {:context source-context
-                                  :checkpoint
-                                  {:reject (fn [_error] (swap! rejected inc))}
-                                  :status :checkpoint}})
-        client {:particles particles}
-        manager (coordinator/create-world-manager {})]
-    ;; This is the intentional hand-off interval: the manager has published
-    ;; retirement ownership, while the coordinator has not yet changed the
-    ;; source particle's status from :checkpoint to :retiring.
-    (swap! manager assoc
-           :client client
-           :generation-phase :retiring
-           :retiring-context-ids #{source-id}
-           :activities {source-id {:kind :particle-context
-                                   :value source-context}})
-    (coordinator/cancel-particle-worlds! manager)
-    (is (zero? @rejected)
-        "manager cancellation must not reject retirement-owned CPS slices")
-    (is (= :checkpoint (get-in @particles [:source :status])))
-    (is (:cancel-requested? @manager))))
-
-(deftest public-pgas-rejects-worlds-before-starting-the-model
-  (let [root (context/create-execution-context)
-        invocations (atom 0)]
-    (try
-      (binding [ec/*execution-context* root]
-        (let [result
-              @(spin
-                (try
-                  (await
-                   (inference/pgas-infer
-                    (spin (swap! invocations inc) :done)
-                    2 1 {:world-policy :fork}))
-                  :unexpected-success
-                  (catch Throwable error error)))]
-          (is (instance? Throwable result))
-          (is (= ::inference/world-pgas-unsupported
-                 (:type (ex-data result))))
-          (is (zero? @invocations)
-              "the public wrapper rejects before its initial SMC sweep")))
-      (finally
-        (context/stop-context! root)))))
-
 (deftest world-policy-is-explicit
   (let [root (context/create-execution-context)]
     (try
@@ -171,95 +49,6 @@
                  (:type (ex-data result))))))
       (finally
         (context/stop-context! root)))))
-
-(deftest read-only-cleanup-failure-can-be-retried
-  (let [root (context/create-execution-context)
-        manager (coordinator/create-world-manager {})
-        discard ygg/discard-fork!
-        attempts (atom 0)]
-    (try
-      (binding [ec/*execution-context* root]
-        (is (= :ok
-               (first
-                (await-cps
-                 (fn [resolve reject]
-                   (coordinator/fork-particle-world!
-                    manager root resolve reject))))))
-        (let [first-result
-              (with-redefs
-               [ygg/discard-fork!
-                (fn [handle opts]
-                  (if (= 1 (swap! attempts inc))
-                    (fn [_resolve reject]
-                      (reject (ex-info "synthetic preflight failure" {})))
-                    (discard handle opts)))]
-                (let [failed (await-cps
-                              (coordinator/discard-particle-worlds! manager))
-                      retried (await-cps
-                               (coordinator/discard-particle-worlds! manager))]
-                  [failed retried]))]
-          (is (= :error (ffirst first-result)))
-          (is (= [:ok nil] (second first-result)))
-          (is (= :discarded (:status @manager)))
-          (is (empty? (:handles @manager)))))
-      (finally
-        (context/stop-context! root)))))
-
-(deftest iterative-particles-remain-live-until-their-final-completion
-  (let [root (context/create-execution-context
-              {:executor (executor/thread-pool-executor 4)})
-        manager* (atom nil)
-        second-pass (promise)
-        arrivals (atom 0)
-        create-manager coordinator/create-world-manager
-        iterative-kernel
-        (reify kernel/PInferenceKernel
-          (kernel-id [_] :world-lifecycle-regression)
-          (step [_ _ checkpoint _]
-            {:action :assign
-             :value (or (get-in checkpoint [:options :observe]) 0.0)})
-          (on-complete [_ particle _trace _result]
-            (rtp/swap-state! particle [:test :iterate?] (constantly true))
-            {:action :iterate :updates {}}))]
-    (try
-      (binding [ec/*execution-context* root]
-        (with-redefs
-         [coordinator/create-world-manager
-          (fn [opts]
-            (let [manager (create-manager opts)]
-              (reset! manager* manager)
-              manager))]
-          (let [model
-                (spin
-                 (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
-                 (when (rtp/get-state ec/*execution-context*
-                                      [:test :iterate?])
-                   (when (= 2 (swap! arrivals inc))
-                     (deliver second-pass true))
-                   (await (fn [_resolve _reject] nil)))
-                 :done)
-                task (inference/kernel-infer
-                      model iterative-kernel 2
-                      {:world-policy :fork :barrier-policy :none})
-                result (future
-                         (try
-                           (deref task 5000 ::timed-out)
-                           (catch Throwable error error)))]
-            (is (= true (deref second-pass 5000 ::timed-out)))
-            (is (= 2 (count (world-scope/activity-values
-                             @manager* :particle-context)))
-                "an :iterate completion is not a terminal world callback")
-            (is (= [:ok nil]
-                   (await-cps
-                    (coordinator/cancel-particle-worlds! @manager*))))
-            (is (not= ::timed-out (deref result 5000 ::timed-out)))
-            (is (= [:ok nil]
-                   (await-cps
-                    (coordinator/discard-particle-worlds-when-quiescent!
-                     @manager*))))
-            (is (= :discarded (:status @@manager*))))))
-      (finally
-        (context/close-context! root)))))
 
 (deftest pure-inference-has-no-world-descriptors
   (let [root (context/create-execution-context)]
@@ -530,5 +319,68 @@
           (is (= [:ok nil] (await-cps (:await-quiescent recovery))))
           (is (= [:ok nil] (await-cps ((:discard! recovery)))))
           (is (= :discarded (:status @(:manager recovery))))))
+      (finally
+        (context/stop-context! root)))))
+
+(defn- latent-model []
+  (spin
+   (let [x (sample (ar/normal 0.0 1.0) :id :x)]
+     (observe (ar/normal x 1.0) 0.5 :id :y)
+     x)))
+
+(defn- sweeps-of [posterior n]
+  (partition n (mapv measure/get-value (measure/get-contexts posterior))))
+
+(deftest conditional-sweeps-keep-their-trajectory-in-canonical-worlds
+  ;; slot 0 of every particle Gibbs sweep follows the trajectory drawn from
+  ;; the sweep before, so each sweep holds a value of the previous one (PGAS
+  ;; redraws the retained particle's past, which here is all of it)
+  (let [root (context/create-execution-context)
+        n 4]
+    (try
+      (binding [ec/*execution-context* root]
+        (doseq [[method run] [[:pgibbs #(inference/pgibbs-infer (latent-model) n 3 {:world-policy :fork})]
+                              [:pgas #(inference/pgas-infer (latent-model) n 3 {:world-policy :fork})]]]
+          (let [posterior @(spin (await (run)))
+                sweeps (sweeps-of posterior n)]
+            (is (= 3 (count sweeps)) (str method))
+            (when (= :pgibbs method)
+              (doseq [[before after] (partition 2 1 sweeps)]
+                (is (seq (filter (set before) after)) "keeps the retained value")))
+            (is (= (* 3 n) (count (measure/world-descriptors posterior))))
+            (is (every? #(= :discarded (:fork/status %)) (measure/world-descriptors posterior))))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest interacting-particle-mcmc-runs-in-canonical-worlds
+  (let [root (context/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [posterior @(spin (await (inference/ipmcmc-infer
+                                       (latent-model) 3 2
+                                       {:world-policy :fork :num-nodes 2 :num-csmc-nodes 1})))]
+          (is (pos? (count (measure/get-contexts posterior))))
+          (is (every? #(= :particle (:fork/purpose %)) (measure/world-descriptors posterior)))))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest a-kernel-decides-the-latent-sites
+  (let [root (context/create-execution-context)
+        fixed (reify kernel/PInferenceKernel
+                (kernel-id [_] :fixed)
+                (step [_ _ checkpoint _]
+                  {:action :assign
+                   :value (or (get-in checkpoint [:options :observe]) 42.0)
+                   :log-weight-delta -1.0}))]
+    (try
+      (binding [ec/*execution-context* root]
+        (doseq [policy [:fresh :fork]]
+          (let [posterior @(spin (await (inference/kernel-infer (latent-model) fixed 3
+                                                                {:world-policy policy
+                                                                 :barrier-policy :none})))]
+            (is (= [42.0 42.0 42.0] (mapv measure/get-value (measure/get-contexts posterior))))
+            (is (every? #(< (Math/abs (- % (+ -1.0 (ar/observe* (ar/normal 42.0 1.0) 0.5)))) 1e-9)
+                        (mapv second (measure/get-particles posterior)))
+                "the delta and the observation make the weight"))))
       (finally
         (context/stop-context! root)))))

@@ -1,45 +1,24 @@
 (ns org.replikativ.spindel.inference.inference
   "Compositional probabilistic inference algorithms.
 
-  Implements spin-returning inference functions on top of the kernel
-  abstraction in `kernel.cljc` and the `KernelCoordinator` in
-  `coordinator.cljc`:
+  Every method runs a probabilistic program as a savepoint handler: SMC
+  (`inference.smc`) for the particle methods — smc-infer,
+  importance-sampling, pimh-infer, pgibbs-infer, pgas-infer, ipmcmc-infer,
+  bbvi-infer and kernel-infer with a PInferenceKernel — and replay plus
+  accept over traces (`inference.trace`) for the Markov-chain kernels.
 
-  - kernel-infer: Core inference function using PInferenceKernel
-  - importance-sampling: savepoint SMC that never resamples
-  - smc-infer: savepoint SMC (`inference.smc`), resampling at observes
+  Pure inference (`:world-policy :fresh`, the default) runs in fresh worlds;
+  `:world-policy :fork` in canonical forks of the caller's world (see
+  `in-canonical-worlds`). Particle measures hold `Sample`s (result, trace,
+  and a canonical particle's world descriptor).
 
-  smc-infer, importance-sampling and the prior kernel run on savepoint SMC
-  in either world policy: pure inference (`:world-policy :fresh`, the
-  default) in fresh worlds, `:world-policy :fork` in canonical forks of the
-  caller's world (see `in-canonical-worlds`); their measures hold `Sample`s
-  (result + trace, and a canonical particle's world descriptor). The other
-  particle methods (pimh-infer, pgibbs-infer, pgas-infer, the sweeps of
-  ipmcmc-infer) run on savepoint SMC for pure inference; with
-  `:world-policy :fork` they, and any other PInferenceKernel, stay on the
-  coordinator below.
-
-  All functions return Spin<EmpiricalMeasure> for composability.
-
-  Architecture in one paragraph: each particle runs the probabilistic
-  program in its own forked execution context. `sample` / `observe`
-  effects post to the shared KernelCoordinator. The coordinator's
-  PInferenceKernel decides what to do at each checkpoint — assign a
-  fresh sample (importance), wait for all particles and resample
-  (SMC), etc. Per-particle results are folded into an
-  `EmpiricalMeasure` (weighted samples) delivered through `on-complete`.
-
-  Key design principles:
-  - Unified kernel protocol (PInferenceKernel controls checkpoint behavior)
-  - Single coordinator (KernelCoordinator handles all inference patterns)
-  - Spin-returning API (non-blocking, composable via await)
-  - Measure-centric post-processing (query, predict)"
+  All functions return Spin<EmpiricalMeasure> for composability;
+  post-processing is measure-centric (query, predict)."
   (:require [org.replikativ.spindel.inference.measure :as m]
             [org.replikativ.spindel.inference.random :as random]
             [org.replikativ.spindel.inference.hmc :as hmc]
             [org.replikativ.spindel.inference.kernel :as k]
             [org.replikativ.spindel.inference.smc :as smc]
-            [org.replikativ.spindel.inference.coordinator :as coord]
             [org.replikativ.spindel.inference.gradient :as grad]
             [org.replikativ.spindel.inference.trace :as itrace]
             [org.replikativ.spindel.effects.savepoint :as sp]
@@ -48,6 +27,7 @@
             [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.executor :as sched]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -56,111 +36,6 @@
             [replikativ.logging :as log]
             [anglican.runtime :as ar]
             [clojure.set :as set]))
-
-;; =============================================================================
-;; Particle Execution
-;; =============================================================================
-
-(defn start-particle!
-  "Start a particle's spin execution on its own executor.
-
-  Enqueues the spin to the particle's executor with a custom resolve-fn
-  that notifies the coordinator when the spin completes.
-
-  Args:
-    context - Particle's execution context
-    coordinator - InferenceCoordinator instance
-
-  Returns: nil (side effect: spin enqueued)"
-  [context coordinator]
-  (let [task (rtp/get-state context [:inference :task])
-        particle-id (rtp/get-state context [:inference :particle-id])]
-
-    (when-not task
-      (throw (ex-info "No task found in particle context"
-                      {:particle-id particle-id})))
-
-    (log/trace :smc/start-particle {:particle-id particle-id
-                                    :spin-id (spin-core/spin-id task)})
-
-    ;; Enqueue spin to particle's own executor
-    (rtc/with-context context
-      (let [spin-id (spin-core/spin-id task)
-            ;; Custom resolve-fn that notifies coordinator on completion
-            ;; CRITICAL: Read particle-id from *execution-context* dynamically,
-            ;; NOT from captured closure! This allows forked contexts to complete
-            ;; with their NEW particle-id after resampling.
-            resolve-fn (fn [value]
-                         ;; Read CURRENT particle-id from execution context
-                         ;; Fall back to captured context if *execution-context* not bound
-                         (let [current-ctx (or rtc/*execution-context* context)
-                               current-pid (rtp/get-state current-ctx [:inference :particle-id])
-                               current-coord (rtp/get-state current-ctx [:inference :inference-coordinator])]
-                           (log/trace :smc/task-completed {:particle-id current-pid
-                                                           :spin-id spin-id})
-                           ;; Notify coordinator with CURRENT state (not captured)
-                           (when current-coord
-                             (coord/notify-complete! current-coord current-pid current-ctx value)))
-                         value)  ; Return value for spin result flow
-
-            reject-fn (fn [error]
-                        ;; Read current particle-id + coordinator from the
-                        ;; *current* execution context (same reasoning as
-                        ;; resolve-fn above: forked contexts after
-                        ;; resampling carry a new particle-id).
-                        (let [current-ctx   (or rtc/*execution-context* context)
-                              current-pid   (rtp/get-state current-ctx [:inference :particle-id])
-                              current-coord (rtp/get-state current-ctx [:inference :inference-coordinator])]
-                          (log/error :smc/task-failed {:particle-id current-pid
-                                                       :spin-id spin-id
-                                                       :error error})
-                          ;; CRITICAL: notify the coordinator. Without this
-                          ;; the coordinator's barrier-count never reaches
-                          ;; total-particles, on-complete is never
-                          ;; delivered, and (await (await-completion …))
-                          ;; hangs forever — pinning every particle
-                          ;; context (and its daemon drain thread) as
-                          ;; reachable. (Re-throwing here doesn't help —
-                          ;; the engine event loop catches it and the
-                          ;; coordinator is none the wiser.)
-                          (if current-coord
-                            (coord/notify-failed! current-coord current-pid current-ctx error)
-                            ;; No coordinator wired up — rethrow rather
-                            ;; than silently swallow.
-                            (throw error))))]
-
-        ;; Enqueue spin execution event. PEngine currently appends the event
-        ;; before asking its executor to drain, so executor rejection can throw
-        ;; after the event became visible. Cache cancellation immediately: a
-        ;; later drain can then only observe the cancelled result, never run the
-        ;; particle body in a world the startup recovery has already settled.
-        (try
-          (rtc/enqueue-event! {:type :spin-execution
-                               :id spin-id
-                               :spin task
-                               :execution-context context
-                               :callback-egress-policy :causal-follow
-                               :resolve-fn resolve-fn
-                               :reject-fn reject-fn})
-          (catch #?(:clj Throwable :cljs :default) error
-            (spin-core/cancel-spin! task)
-            (when-let [manager (:world-manager coordinator)]
-              (coord/particle-context-terminal! manager context))
-            (throw error)))))))
-
-;; =============================================================================
-;; Kernel-Based Inference
-;; =============================================================================
-
-(defn- particle-world-recovery [world-manager]
-  {:status (:status @world-manager)
-   :manager world-manager
-   :await-quiescent
-   (coord/await-particle-world-quiescence world-manager)
-   :cancel! #(coord/cancel-particle-worlds! world-manager)
-   :discard!
-   #(coord/discard-particle-worlds-when-quiescent! world-manager)
-   :descriptors (coord/world-descriptors world-manager)})
 
 (defmacro ^:private inference-spin [& body]
   `(spin-core/with-causal-descendant-egress (spin ~@body)))
@@ -171,7 +46,7 @@
 
 (defn- block-gibbs-options
   "Translate a BlockGibbsKernel into `itrace/mh-step` options. The classifier
-  and the selector see the trace in the coordinator's shape; only latent
+  and the selector see the trace in its legacy shape; only latent
   sites are classified, and a step whose block is empty or has no kernel moves
   nothing. The selection probability is taken to be the same in both traces,
   which holds when a move does not change which sites belong to the block."
@@ -204,8 +79,8 @@
          (itrace/prior-proposal sp-value old-entry)))}))
 
 (defn- mh-options
-  "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels the
-  coordinator runs."
+  "`itrace/mh-step` options of a Markov-chain kernel, or nil for kernels
+  that decide sites of savepoint SMC."
   [kernel]
   (case (k/kernel-id kernel)
     :single-site-mh {:iterations (:num-iterations kernel)}
@@ -216,6 +91,22 @@
     :hmc {:iterations (:num-iterations kernel)
           :step (hmc/within-gibbs (select-keys kernel [:step-size :steps]))}
     nil))
+
+(defn- project-posterior-context
+  "A parentless immutable context holding what the posterior needs of
+  `world`'s inference state: the world itself would retain its ancestry."
+  [world]
+  (assoc world
+         :backend (backend/create-immutable-backend
+                   {:inference (select-keys (rtp/get-state world [:inference])
+                                            [:log-weight :trace :result :mcmc])}
+                   {:source-fork-id (:fork-id world)
+                    :projection :inference-posterior})
+         :parent-ctx nil
+         :bindings {}
+         :metadata {:inference/projection true}
+         :running nil
+         :drain-active nil))
 
 (defn- run-markov-chain
   "One chain in its own world: run the model, move it `iterations` times,
@@ -263,7 +154,7 @@
                                           :acceptance-count accepted})))
          (if (= :all (:samples kernel))
            @samples
-           [[(coord/project-posterior-context world) 0.0]]))
+           [[(project-posterior-context world) 0.0]]))
        (finally
          ;; Closing the session cancels and joins every world of the chain.
          ;; The root is not stopped here: `stop-context!` waits for the
@@ -297,21 +188,37 @@
 
 (declare particles)
 
-(defn kernel-infer
-  "Run inference using a PInferenceKernel.
+(defn- kernel-policy
+  "An `inference.trace` policy that asks `kernel` (a PInferenceKernel) for
+  every latent site's value; the value's `:log-weight-delta` (default 0) is
+  what it adds to the particle's weight."
+  [kernel]
+  (itrace/policy
+   {:draw (fn [sp _old-entry]
+            (let [world (:savepoint/world sp)
+                  {:keys [dist options]} (:savepoint/payload sp)
+                  {:keys [value log-weight-delta]}
+                  (k/step kernel world
+                          {:source dist :options options :address (:savepoint/address sp)}
+                          (itrace/legacy-trace (rtp/get-state world [:savepoint/trace])))]
+              {:value value
+               :log-proposal (- (ar/observe* dist value) (or log-weight-delta 0.0))}))}))
 
-  This is the new kernel-based inference API that provides more flexibility
-  than importance-sampling or smc-infer. The kernel controls:
-  - What value to assign at each checkpoint
-  - Whether to use barriers at observations (for SMC-like behavior)
-  - Whether to iterate after program completion (for MCMC)
+(defn kernel-infer
+  "Run inference with a kernel.
+
+  Markov-chain kernels (`single-site-mh-kernel`, `random-walk-mh-kernel`,
+  `block-gibbs-kernel`, `hmc-kernel`) run `num-particles` independent chains.
+  Any other PInferenceKernel runs savepoint SMC whose latent sites take the
+  value the kernel's `step` gives (the prior kernel: a draw from the prior).
 
   Args:
   - model-task: Spin (from model function) - Probabilistic program to infer
-  - kernel: PInferenceKernel instance (e.g., prior-kernel, single-site-mh-kernel)
-  - num-particles: Number of particles
+  - kernel: a kernel (e.g., prior-kernel, single-site-mh-kernel)
+  - num-particles: Number of particles (chains)
   - opts: Optional map with:
-    - :barrier-policy - :every-observe | :none (default :every-observe for SMC behavior)
+    - :barrier-policy - :every-observe (default, SMC) | :none (importance
+      sampling)
     - :resample-threshold - ESS threshold (default 0.5)
     - :executor - Shared executor for all particles
     - :world-policy - :fresh (default) for pure inference, or :fork to
@@ -326,198 +233,23 @@
     ;; Importance sampling with prior kernel
     (spin
       (let [model (coin-flip-model)
-            measure (await (kernel-infer model (prior-kernel) 100))]
-        (query measure identity)))
-
-    ;; SMC with prior kernel (default barrier policy)
-    (spin
-      (let [model (coin-flip-model)
             measure (await (kernel-infer model (prior-kernel) 100
-                                        {:barrier-policy :every-observe}))]
+                                         {:barrier-policy :none}))]
         (query measure identity)))"
   [model-task kernel num-particles & [opts]]
-  (cond
-    (mh-options kernel)
-    ;; Markov-chain kernels are replay plus accept over traces; each of the
-    ;; `num-particles` is an independent chain.
-    (markov-chain-infer model-task kernel num-particles opts)
+  (let [smc-opts (cond-> (dissoc opts :barrier-policy)
+                   (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0))]
+    (cond
+      (mh-options kernel)
+      ;; Markov-chain kernels are replay plus accept over traces; each of the
+      ;; `num-particles` is an independent chain.
+      (markov-chain-infer model-task kernel num-particles opts)
 
-    ;; the prior kernel is savepoint SMC, or importance sampling without barriers
-    (= :prior (k/kernel-id kernel))
-    (particles model-task num-particles
-               (cond-> (dissoc opts :barrier-policy)
-                 (= :none (:barrier-policy opts)) (assoc :resample-threshold 0.0)))
+      (= :prior (k/kernel-id kernel))
+      (particles model-task num-particles smc-opts)
 
-    :else
-    (inference-spin
-     (log/debug :kernel-infer/start {:kernel-id (k/kernel-id kernel)
-                                     :num-particles num-particles
-                                     :barrier-policy (:barrier-policy opts :every-observe)})
-
-     (let [runtime rtc/*execution-context*
-           world-policy (get opts :world-policy :fresh)
-           _ (when-not (#{:fresh :fork} world-policy)
-               (throw (ex-info "Unknown inference world policy"
-                               {:type ::invalid-world-policy
-                                :world-policy world-policy
-                                :supported #{:fresh :fork}})))
-          ;; Create or use provided shared executor
-           shared-executor (or (:executor opts)
-                             ;; Canonical child worlds share the ambient runtime
-                             ;; unless the caller explicitly delegates another
-                             ;; scheduler. This keeps executor ownership with the
-                             ;; enclosing world instead of leaking an inference-
-                             ;; local pool after affine world settlement.
-                               (when (= :fork world-policy)
-                                 (:executor runtime))
-                               (sched/thread-pool-executor {:threads 2}))
-           world-manager (when (= :fork world-policy)
-                           (coord/create-world-manager
-                            (assoc (:world-opts opts) :executor shared-executor)))
-           coordinator (coord/create-kernel-coordinator
-                        runtime
-                        kernel
-                        num-particles
-                        (assoc opts :world-manager world-manager))
-           _ (when world-manager
-               (swap! world-manager assoc :client coordinator))
-
-          ;; PGIBBS: Check if we have a retained trace (for conditional SMC)
-           pgibbs-retained-trace (:pgibbs-retained-trace opts)
-
-           _initial-generation
-           (when world-manager
-             (coord/begin-particle-generation-transition! world-manager))
-
-          ;; Initialize particles with coordinator reference
-         ;; For PGIBBS: first particle is retained
-           initial-particles
-           (try
-             (let [particles
-                   (loop [idx 0
-                          particles []]
-                     (if (= idx num-particles)
-                       particles
-                       (let [world (when world-manager
-                                     (await
-                                      (fn [resolve reject]
-                                        (coord/fork-particle-world!
-                                         world-manager runtime resolve reject))))
-                             particle-ctx (if world
-                                            (:child-ctx world)
-                                            (ctx/create-execution-context
-                                             :executor shared-executor))
-                             ;; generation-slot ids, not gensyms: the particle map's
-                             ;; order decides which draw goes to which particle, so
-                             ;; a seeded run is reproducible only if it is the same
-                             ;; in every run
-                             particle-id (coord/particle-id 0 idx)
-                             is-retained? (and pgibbs-retained-trace (= idx 0))]
-
-                         (rtp/swap-state!
-                          particle-ctx [:inference]
-                          (constantly
-                           {:log-weight 0.0
-                            :choice-stack []
-                            :checkpoint-seq 0
-                            :trace {}
-                            :checkpoints {}
-                            :particle-id particle-id
-                            :sweep 0
-                            :world world
-                            :inference-coordinator coordinator}))
-                         (rtp/swap-state! particle-ctx [:inference :task]
-                                          (constantly model-task))
-
-                         (when is-retained?
-                           (reset! (.-retained-particle-id coordinator) particle-id)
-                           (log/debug :kernel-infer/set-retained-particle
-                                      {:particle-id particle-id}))
-
-                         (recur (inc idx) (conj particles particle-ctx)))))]
-               (when (and world-manager
-                          (not (coord/complete-particle-generation-transition!
-                                world-manager particles)))
-                 (throw (ex-info "Inference cancelled during particle initialization"
-                                 {:type spin-core/spin-cancelled})))
-               particles)
-             (catch #?(:clj Throwable :cljs :default) error
-               (when world-manager
-               ;; Close the generation transaction, then wait past the owning
-               ;; Spin's cancellation for every in-flight fork callback and
-               ;; affine discard to finish.
-                 (coord/complete-particle-generation-transition!
-                  world-manager [])
-                 (await-finalization
-                  (coord/cancel-particle-worlds! world-manager)))
-               (throw error)))]
-
-       (log/debug :kernel-infer/particles-initialized {:num-particles (count initial-particles)})
-
-     ;; Once particles are registered, this Spin owns their complete lifecycle.
-     ;; Normal completion sets `completed?` only after world settlement and
-     ;; posterior projection. Every other exit — especially cancellation of the
-     ;; public inference Spin by an enclosing Run — cancels and joins the manager
-     ;; before propagating the original result/error.
-       (let [completed? (atom false)]
-         (try
-         ;; Start all particles. Initialization is all-or-nothing from the
-         ;; caller's perspective, but an executor can reject midway through the
-         ;; enqueue loop. In that case distinguish successfully started contexts
-         ;; from contexts that never ran, then enter the normal supervised
-         ;; cancellation/quiescence lifecycle.
-           (let [started (atom #{})]
-             (try
-               (doseq [particle-ctx initial-particles]
-                 (start-particle! particle-ctx coordinator)
-                 (swap! started conj (:fork-id particle-ctx)))
-               (catch #?(:clj Throwable :cljs :default) error
-                 (when world-manager
-                   (doseq [particle-ctx initial-particles
-                           :when (not (contains? @started (:fork-id particle-ctx)))]
-                     (coord/particle-context-terminal! world-manager particle-ctx))
-                   (coord/cancel-particle-worlds! world-manager))
-                 (throw
-                  (ex-info
-                   "Inference failed while starting particles"
-                   (cond-> {:type ::particle-start-failed
-                            :started (count @started)
-                            :requested num-particles}
-                     world-manager
-                     (assoc :world/recovery
-                            (particle-world-recovery world-manager)))
-                   error)))))
-
-           (log/debug :kernel-infer/particles-started)
-
-         ;; Await completion
-           (let [final-measure (await (coord/await-completion coordinator))]
-
-           ;; A particle's spin aborted: the coordinator delivered a
-           ;; failure marker instead of an EmpiricalMeasure. Re-throw so
-           ;; the calling spin / @(spin …) propagates the error to the
-           ;; agent / REPL caller, instead of returning a bogus measure.
-             (when (coord/inference-failure? final-measure)
-               (let [world-recovery
-                     (when world-manager (particle-world-recovery world-manager))]
-                 (throw (ex-info "Inference failed during particle execution"
-                                 (cond-> {:type ::inference-failed
-                                          :particle-id (:particle-id final-measure)}
-                                   world-recovery
-                                   (assoc :world/recovery world-recovery))
-                                 (:error final-measure)))))
-
-             (log/debug :kernel-infer/complete
-                        {:num-particles num-particles
-                         :log-marginal (m/log-marginal final-measure)
-                         :ess (m/effective-sample-size final-measure)})
-
-             (reset! completed? true)
-             final-measure)
-           (finally
-             (when (and world-manager (not @completed?))
-               (await-finalization
-                (coord/cancel-particle-worlds! world-manager))))))))))
+      :else
+      (particles model-task num-particles (assoc smc-opts :policy (kernel-policy kernel))))))
 
 ;; =============================================================================
 ;; Convenience Functions (Delegate to kernel-infer)
@@ -747,12 +479,12 @@
 ;; =============================================================================
 
 (defn- normalized-samples
-  "A sweep's particles as lightweight samples whose weights sum to one, so
-   sweeps can be pooled into one MCMC estimate."
+  "A sweep's particles (`Sample`s) with weights that sum to one, so sweeps
+   can be pooled into one MCMC estimate."
   [measure]
   (let [ps (m/get-particles measure)
         lse (m/log-sum-exp (mapv second ps))]
-    (mapv (fn [[c lw]] [(m/sample-particle (m/get-value c) (m/get-trace c)) (- lw lse)]) ps)))
+    (mapv (fn [[s lw]] [s (- lw lse)]) ps)))
 
 (defn pimh-infer
   "Particle Independent Metropolis-Hastings (Andrieu et al. 2010).
@@ -804,10 +536,8 @@
             all-samples []]
        (if (>= iteration num-iterations)
          (m/empirical all-samples)
-         (let [sweep (await (kernel-infer model-task (k/prior-kernel) num-particles
-                                          (assoc opts
-                                                 :barrier-policy :every-observe
-                                                 :pgibbs-retained-trace retained-trace)))]
+         (let [sweep (await (particles model-task num-particles
+                                       (assoc opts :retained (smc/retained-choices retained-trace))))]
            (recur (pick sweep) (inc iteration) (into all-samples (normalized-samples sweep)))))))))
 
 (defn pgibbs-infer
@@ -907,18 +637,10 @@
     (nil? retained-trace)
     (smc-infer model-task num-particles opts)
 
-    (on-savepoints? opts)
-    (on-savepoints (smc/smc model-task num-particles
-                            (assoc opts :retained (smc/retained-choices retained-trace))))
-
     ;; CSMC sweep with retained trace
     :else
-    (kernel-infer model-task
-                  (k/prior-kernel)
-                  num-particles
-                  (assoc opts
-                         :barrier-policy :every-observe
-                         :pgibbs-retained-trace retained-trace))))
+    (particles model-task num-particles
+               (assoc opts :retained (smc/retained-choices retained-trace)))))
 
 (defn- run-parallel-sweeps
   "Run SMC/CSMC sweeps in parallel across all nodes.
@@ -1030,44 +752,13 @@
   Returns: Spin<EmpiricalMeasure> of every sweep's particles, each sweep
   normalized to total weight one."
   [model-task num-particles num-iterations & [opts]]
-  (case (get opts :world-policy :fresh)
-    :fresh (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
-    :fork (throw (ex-info "PGAS ancestor scoring does not yet support canonical worlds"
-                          {:type ::world-pgas-unsupported
-                           :world-policy :fork}))
-    (throw (ex-info "Unknown inference world policy"
-                    {:type ::invalid-world-policy
-                     :world-policy (:world-policy opts)
-                     :supported #{:fresh :fork}}))))
+  (if (on-savepoints? opts)
+    (on-savepoints (smc/pgas model-task num-particles num-iterations opts))
+    (csmc-chain model-task num-particles num-iterations (assoc opts :ancestor-sampling? true))))
 
 ;; =============================================================================
 ;; Black Box Variational Inference (BBVI)
 ;; =============================================================================
-
-(defrecord VariationalKernel [q-dists]
-  ;; q-dists: atom {address -> distribution}, shared by all particles.
-  ;; A latent site samples from q (initialized to the site's prior the first
-  ;; time the address is seen), contributes log p − log q to the weight,
-  ;; and records ∇ log q at its value for the gradient step.
-  k/PInferenceKernel
-  (kernel-id [_] :variational)
-  (step [_ ctx checkpoint _trace]
-    (let [{:keys [source options address]} checkpoint
-          {:keys [observe]} options]
-      (if (some? observe)
-        {:action :assign :value observe}
-        (let [q (get (swap! q-dists #(if (contains? % address) % (assoc % address source)))
-                     address)]
-          (if (grad/has-gradient? q)
-            (let [v (ar/sample* q)]
-              (rtp/swap-state! ctx [:inference :q-grads]
-                               #(assoc (or % {}) address (grad/compute-gradient q v)))
-              {:action :assign :value v
-               :log-weight-delta (- (ar/observe* source v) (ar/observe* q v))})
-            {:action :assign :value (ar/sample* source)})))))
-  (on-complete [_ ctx trace result]
-    {:action :done :trace trace :result result
-     :log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)}))
 
 (defn- variational-draw
   "The proposal of a savepoint BBVI iteration: a latent site whose q (the
@@ -1171,28 +862,20 @@
          robbins-monro (or (:robbins-monro opts) 0.0)
          adagrad (get opts :adagrad true)
          q-dists (atom {})
-         accumulators (atom {})
-         kernel (->VariationalKernel q-dists)]
+         accumulators (atom {})]
      (loop [iteration 0]
        (let [qs @q-dists
-             measure (if (on-savepoints? opts)
-                       (await (on-savepoints
-                               (smc/smc model-task num-particles
-                                        (assoc opts
-                                               :resample-threshold 0.0
-                                               :policy (itrace/policy {:draw (variational-draw q-dists)})))))
-                       (await (kernel-infer model-task kernel num-particles
-                                            (assoc opts :barrier-policy :none))))]
+             measure (await (particles model-task num-particles
+                                       (assoc opts
+                                              :resample-threshold 0.0
+                                              :policy (itrace/policy {:draw (variational-draw q-dists)}))))]
          (if (>= (inc iteration) num-iterations)
            (assoc measure :variational-dists @q-dists)
-           (let [particles (m/get-particles measure)
-                 grads (mapv (fn [[c _]]
-                               (if (instance? org.replikativ.spindel.inference.measure.Sample c)
-                                 (q-gradients (merge @q-dists qs) (m/get-trace c))
-                                 (or (rtp/get-state c [:inference :q-grads]) {})))
-                             particles)]
+           (let [ps (m/get-particles measure)
+                 grads (mapv (fn [[c _]] (q-gradients (merge @q-dists qs) (m/get-trace c)))
+                             ps)]
              (update-variational-dists! q-dists accumulators
-                                        (aggregate-gradients grads (mapv second particles))
+                                        (aggregate-gradients grads (mapv second ps))
                                         (/ base-lr (Math/pow (inc iteration) robbins-monro))
                                         adagrad)
              (recur (inc iteration)))))))))

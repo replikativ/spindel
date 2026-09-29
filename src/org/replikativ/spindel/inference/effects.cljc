@@ -4,15 +4,14 @@
   This provides the fundamental primitive for compositional probabilistic programming:
   - choose: Unified effect for both sampling and observation
 
-  The choose effect is algorithm-agnostic and works with any InferenceCoordinator
-  implementation via protocol dispatch."
+  A choose site is a savepoint when its world handles `:inference/choose`
+  (inference: `inference.smc`, `inference.trace`); otherwise it is forward
+  simulation."
   (:require [org.replikativ.spindel.engine.core :as rtc]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
-            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.inference.address :as addr]
-            [org.replikativ.spindel.inference.coordinator :as coord]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
@@ -66,138 +65,43 @@
 ;; Choose Effect Handler
 ;; =============================================================================
 
-(defn- coordinator-choose-fn
-  "Algorithm-agnostic handler for choose effect.
-
-  This is the ONLY handler for probabilistic programming - no separate sample/observe.
-  It notifies the coordinator and suspends, letting the coordinator decide values.
-
-  Args:
-    runtime: Runtime instance
-    args: Map with :source, :options, :spin-id, :source-loc
-    resolve: Continuation to resolve with value
-    reject: Continuation to reject with error
-
-  The coordinator receives checkpoint and decides:
-  - Importance sampling: Sample or use observed value
-  - SMC: Resample from prior or use observed value
-  - MCMC: Use trace value or propose new value"
-  [runtime args resolve reject]
-  ;; Extract args from map (dispatch adds :spin-id and :source-loc)
-  (let [{:keys [source options spin-id source-loc]} args
-        {:keys [id observe init where tags]} options
+(defn- forward-choose-fn
+  "A choose site outside inference: forward simulation. An observed site
+  takes its value and scores it into the world's weight; a latent site takes
+  its intervention (`intervene!`), the value a pre-populated trace holds for
+  it, or a draw from its distribution. Every site is recorded in the world's
+  trace."
+  [_runtime args resolve _reject]
+  (let [{:keys [source options source-loc]} args
+        {:keys [id observe]} options
         ctx rtc/*execution-context*
-          ;; Use hash-chain addressing (unified with spin macro)
-          ;; Each choose site advances the chain, ensuring deterministic addresses
-        address (or id (addr/make-address ctx source-loc))
-        coordinator (rtp/get-state ctx [:inference :inference-coordinator])
-        particle-id (rtp/get-state ctx [:inference :particle-id])]
-
-    (log/debug :choose/called {:address address
-                               :has-observe? (some? observe)
-                               :has-coordinator? (some? coordinator)})
-
-    ;; Check for interventions (Pearl's do-operator)
-    (when-let [intervention-value (get (or (rtp/get-state ctx [:inference :interventions]) {}) address)]
-      (log/debug :choose/intervention {:address address :value intervention-value})
-      ;; Intervention: return fixed value, don't update weight or trace
-      ;; Hash-chain already advanced via make-address, no push needed
+        address (or id (addr/make-address ctx source-loc))]
+    (if-let [intervention-value (get (rtp/get-state ctx [:inference :interventions]) address)]
+      ;; Pearl's do-operator: the value is fixed, nothing is scored or traced
       (spin-core/resume resolve intervention-value)
-      (throw (ex-info "Unreachable - spin-core/resume should not return" {})))
-
-    ;; Detect duplicate addresses (MCMC invariant violation)
-    (when-let [existing (get (or (rtp/get-state ctx [:inference :checkpoints]) {}) address)]
-      (throw (ex-info "Duplicate address in choose site"
-                      {:address address
-                       :source-loc source-loc
-                       :existing existing})))
-
-    ;; Build the checkpoint. It is a continuation the coordinator will
-    ;; resume later, possibly many times (MCMC replay), so like every
-    ;; track/await continuation it carries the per-slice environment it
-    ;; suspended in: bindings, addressing chain-head, dep tracking. The
-    ;; chain-head is the part replay cannot do without — at this point the
-    ;; cursor equals `address` itself, and reseeding it before a resume is
-    ;; what makes every downstream site re-mint the SAME address it had, so
-    ;; the trace stays the size of the model and a proposal lands on a live
-    ;; site. `:seq` is the program-order position: checkpoints live in a
-    ;; map, and map key order is not program order past eight entries.
-    (let [seq-no (or (rtp/get-state ctx [:inference :checkpoint-seq]) 0)
-          _ (rtp/swap-state! ctx [:inference :checkpoint-seq] (constantly (inc seq-no)))
-          checkpoint {:resolve resolve
-                      :reject reject
-                      :address address
-                      :spin-id spin-id
-                      :seq seq-no
-                      :slice-state (simple/capture-slice-state ctx spin-id)
-                      :source source
-                      :options {:observe observe
-                                :init init
-                                :where where
-                                :tags tags}
-                      :source-loc source-loc}]
-
-      ;; DEBUG: Log checkpoint construction
-      (log/debug :choose/checkpoint-created {:address address
-                                             :source source
-                                             :has-source? (some? source)
-                                             :source-type (type source)})
-
-      ;; Store checkpoint (PLURAL - for MCMC we keep all)
-      (rtp/swap-state! ctx [:inference :checkpoints]
-                       (fn [chkpts] (assoc (or chkpts {}) address checkpoint)))
-
-      ;; Hash-chain already advanced via make-address, no push needed
-
-      ;; If coordinator present, notify and suspend
-      (if coordinator
-        (do
-          (log/debug :choose/notify-coordinator {:address address :particle-id particle-id})
-
-          ;; Notify coordinator - it will call resume-particle!
-          (coord/notify-checkpoint! coordinator particle-id ctx checkpoint)
-
-          ;; Suspend execution
-          spin-core/incomplete)
-
-        ;; No coordinator: forward sampling mode
-        ;; Check trace first for pre-populated values (used by PGAS scoring particles)
-        (let [existing-trace (rtp/get-state ctx [:inference :trace])
-              existing-entry (get existing-trace address)
-              existing-value (when existing-entry
-                               (if (map? existing-entry)
-                                 (:value existing-entry)
-                                 existing-entry))
-              value (cond
-                      ;; Observed value takes precedence
-                      (some? observe) observe
-                      ;; Use existing trace value if present
-                      (some? existing-value) existing-value
-                      ;; Otherwise sample fresh
-                      :else (ar/sample* source))]
-          (log/trace :choose/forward-sampling {:address address :value value :from-trace? (some? existing-value)})
-
-          ;; Update trace (even if value came from trace, to ensure consistent format)
-          (rtp/swap-state! ctx [:inference :trace]
-                           (fn [trace] (assoc (or trace {}) address
-                                              {:value value
-                                               :distribution source
-                                               :observed? (some? observe)})))
-
-          ;; If observed, update weight
-          ;; NOTE: Use (some? observe) not just observe, because observe can be boolean false!
-          (when (some? observe)
-            (let [log-prob (ar/observe* source observe)]
-              (rtp/swap-state! ctx [:inference :log-weight]
-                               (fn [w] (+ (or w 0.0) log-prob)))))
-
-          ;; Continue with value
-          (spin-core/resume resolve value))))))
+      (let [existing (get (rtp/get-state ctx [:inference :trace]) address)
+            existing-value (if (map? existing) (:value existing) existing)
+            value (cond
+                    ;; observe can be boolean false
+                    (some? observe) observe
+                    (some? existing-value) existing-value
+                    :else (ar/sample* source))]
+        (log/trace :choose/forward-sampling {:address address :value value
+                                             :from-trace? (some? existing-value)})
+        (rtp/swap-state! ctx [:inference :trace]
+                         (fn [trace] (assoc (or trace {}) address
+                                            {:value value
+                                             :distribution source
+                                             :observed? (some? observe)})))
+        (when (some? observe)
+          (rtp/swap-state! ctx [:inference :log-weight]
+                           (fn [w] (+ (or w 0.0) (ar/observe* source observe)))))
+        (spin-core/resume resolve value)))))
 
 (defn- choose-handler-fn
   "A choose site is a savepoint when its world handles `:inference/choose`: it
   is published, and a trace policy decides and scores it (`inference.trace`).
-  Otherwise it speaks the coordinator protocol."
+  Otherwise it is forward simulation."
   [runtime args resolve reject]
   (let [ctx rtc/*execution-context*]
     (if (sp/handled? ctx :inference/choose)
@@ -213,7 +117,7 @@
                       :spin-id spin-id
                       :source-loc source-loc}
                      resolve reject))
-      (coordinator-choose-fn runtime args resolve reject))))
+      (forward-choose-fn runtime args resolve reject))))
 
 ;; Wrap handler function with async-effect to create PEffectHandler
 (def choose-handler

@@ -60,7 +60,7 @@ mutable host object cannot be shared accidentally.
 
 Host callbacks are effects outside copy-on-write state and are isolated by
 default. A child completion is cached in that child but cannot fire a callback
-registered by another world. Inference coordinators deliberately attach the
+registered by another world. Savepoint sessions and inference deliberately attach the
 engine-only `:causal-follow` authority to callback edges that must survive
 particle resampling. The authority belongs to the edge rather than mutable world
 bindings, so interpreted code cannot promote its own egress. Engine listeners

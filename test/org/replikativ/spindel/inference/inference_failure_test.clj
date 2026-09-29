@@ -1,23 +1,8 @@
 (ns org.replikativ.spindel.inference.inference-failure-test
   "Regression test: a particle's spin failure must resolve the inference
-  (re-throwing the failure to the caller) — NOT hang forever waiting for
-  the coordinator to see all particles complete.
-
-  The bug this guards against: `start-particle!`'s reject-fn used to
-  just log :smc/task-failed and (throw error), never notifying the
-  coordinator. KernelCoordinator gates completion on
-  `barrier-count == total-particles`, incremented only by
-  notify-complete!. A failed particle never reported in →
-  `(:on-complete coordinator)` was never delivered → kernel-infer's
-  `(await (await-completion …))` waited forever, blocking the calling
-  thread AND keeping every particle context (its daemon drain thread)
-  reachable. Observed in production as 14k leaked `Thread-N` and 6/8
-  core.async dispatch threads parked on un-timed CountDownLatch.await.
-
-  Fix: notify-failed! on the InferenceCoordinator protocol. The
-  KernelCoordinator marks the particle :failed and delivers an
-  InferenceFailure marker to on-complete (deliver-once). kernel-infer
-  re-throws on the marker."
+  (re-throwing the failure to the caller) — NOT hang forever waiting for the
+  other particles. Observed in production (on the retired coordinator) as
+  14k leaked threads and parked dispatch threads."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [org.replikativ.spindel.inference.inference :as infer]
