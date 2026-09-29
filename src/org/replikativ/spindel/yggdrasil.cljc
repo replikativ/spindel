@@ -329,7 +329,8 @@
                      :relevant   copy, but a discard must compensate
                      :linear     neither (legal numbers, seals, sends)
                      :affine     discard, never copy (live handles)
-                     :divisible  split on copy, return on discard
+                     :divisible  a conserved quantity: never copied (a
+                                 scope's resource authority splits wallets)
        :compensate (fn [{:keys [system-id child-ctx parent-ctx fork-id]}])
                    runs before a fork holding the system is discarded: what
                    a :relevant system does instead of dropping state
@@ -1647,10 +1648,15 @@
 
    The copies are frozen forks of the world (`opts` are `fork!` options), so
    each is coherent. Copying is refused while a system of the world may not
-   be copied: `:affine`, `:linear` without `:realize`, `:divisible` (not yet
-   split), or a `:shared` system (see `register!`). JVM / synchronous only."
+   be copied: `:affine`, `:linear` without `:realize`, `:divisible`, or a
+   `:shared` system (see `register!`). A conserved quantity is split between
+   copies by a scope's resource authority instead (`world.scope/copy!`).
+
+   `:admit` (fn [copies]), when given, runs once the copies exist and before
+   the family takes the world: a throw discards the copies and leaves
+   `fork-handle` open and its world untouched. JVM / synchronous only."
   ([fork-handle k] (copy-fork! fork-handle k {}))
-  ([fork-handle k opts]
+  ([fork-handle k {:keys [admit] :as opts}]
    (ensure-sync! opts :copy)
    (when-not (pos-int? k)
      (throw (ex-info "copy-fork! needs a positive number of copies"
@@ -1666,10 +1672,16 @@
                     (atom {:id (random-uuid) :status :open :nodes {}}))
          fid (:fork-id fork-handle)
          owner (:owner @(:authority fork-handle))
-         internal (transfer-fork! fork-handle [::copy-family (:id @family)])
-         copies (binding [ec/*execution-context* (:child-ctx internal)]
+         copies (binding [ec/*execution-context* (:child-ctx fork-handle)]
                   (vec (repeatedly k #(fork! (merge {:mode :frozen :owner owner :purpose :copy}
-                                                    opts)))))]
+                                                    (dissoc opts :admit))))))
+         internal (try
+                    (when admit (admit copies))
+                    ;; refused when the handle was settled meanwhile
+                    (transfer-fork! fork-handle [::copy-family (:id @family)])
+                    (catch #?(:clj Throwable :cljs :default) error
+                      (doseq [c (rseq copies)] (discard-fork* c {}))
+                      (throw error)))]
      (swap! family
             (fn [f]
               (reduce (fn [f c] (assoc-in f [:nodes (:fork-id c)] {:via fid :children #{}}))

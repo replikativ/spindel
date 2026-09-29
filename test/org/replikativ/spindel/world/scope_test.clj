@@ -426,6 +426,73 @@
       (finally
         (context/stop-context! root)))))
 
+(defn- copy-with! [world-scope context k opts]
+  (let [result (promise)]
+    (scope/copy! world-scope context k opts
+                 #(deliver result [:ok %])
+                 #(deliver result [:error %]))
+    (let [outcome (deref result 5000 ::timeout)]
+      (when (= ::timeout outcome) (throw (ex-info "World copy timed out" {})))
+      (if (= :ok (first outcome)) (second outcome) (throw (second outcome))))))
+
+(deftest copies-split-their-world-s-budget
+  (let [root (context/create-execution-context)
+        root-id (:fork-id root)
+        ledger (atom {root-id {:balance 10}})
+        world-scope (scope/create {:purpose :search
+                                   :fork-opts {:systems :none}
+                                   :authority (toy-authority ledger)})
+        session (scope/begin-activity! world-scope :session)
+        total #(reduce + (map :balance (vals @ledger)))
+        balance #(get-in @ledger [(:fork-id (:child-ctx %)) :balance])]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [w (fork-with! world-scope root {:grant 8})
+              w-id (:fork-id (:child-ctx w))]
+          (testing "a grant the world cannot afford leaves it as it was"
+            (is (= ::insufficient
+                   (:type (ex-data (try (copy-with! world-scope (:child-ctx w) 3 {:grant 3})
+                                        (catch Throwable error error))))))
+            (is (= {root-id {:balance 2} w-id {:balance 8 :from root-id}} @ledger)
+                "the grants made are returned, no copy holds a wallet")
+            (is (= [w-id] (map (comp :fork-id :child-ctx) (:handles @world-scope))))
+            (is (zero? (:pending-forks @world-scope))))
+          (testing "one grant per copy"
+            (is (= ::scope/grant-count
+                   (:type (ex-data (try (copy-with! world-scope (:child-ctx w) 2 {:grants [1]})
+                                        (catch Throwable error error)))))))
+          (let [[a b c] (copy-with! world-scope (:child-ctx w) 3 {:grants [2 2 3]})]
+            (testing "each copy is funded from the world's wallet: nothing is multiplied"
+              (is (= [2 2 3] (map balance [a b c])))
+              (is (= 1 (get-in @ledger [w-id :balance])))
+              (is (= 10 (total))))
+            (testing "the copied world is no longer the scope's to run"
+              (is (= 3 (count (:handles @world-scope))))
+              (is (= ::scope/unknown-world
+                     (:type (ex-data (try (copy-with! world-scope (:child-ctx w) 2 nil)
+                                          (catch Throwable error error)))))))
+            (testing "a released copy returns into the copied world"
+              (swap! ledger update-in [(:fork-id (:child-ctx a)) :balance] - 1) ; a spent 1
+              (await-cps (scope/release! world-scope (:child-ctx a)))
+              (is (= 2 (get-in @ledger [w-id :balance])))
+              (is (= 9 (total))))
+            (testing "copies of a copy draw on that copy"
+              (let [[b1 b2] (copy-with! world-scope (:child-ctx b) 2 {:grant 1})]
+                (is (= [1 1] (map balance [b1 b2])))
+                (is (zero? (balance b))))))
+          (testing "releasing the last copy of a world returns that world too"
+            (let [[x] (copy-with! world-scope (:child-ctx (fork-with! world-scope root {:grant 1})) 1 {:grant 1})]
+              (await-cps (scope/release! world-scope (:child-ctx x)))
+              (is (= 2 (get-in @ledger [root-id :balance])) "x into its world, the world into root")
+              (is (= 9 (total)))))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (testing "discarding the scope returns everything, copies before their worlds"
+        (is (= {root-id {:balance 9}} @ledger))
+        (is (empty? (:copied @world-scope))))
+      (finally
+        (context/stop-context! root)))))
+
 (deftest discarding-thousands-of-worlds-does-not-grow-the-stack
   ;; Discards complete inline; chained through their callbacks the walk grew
   ;; ~20 frames per world, and a scope of ~650 worlds overflowed the stack
