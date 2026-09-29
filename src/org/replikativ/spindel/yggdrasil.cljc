@@ -1241,6 +1241,10 @@
             (catch #?(:clj Throwable :cljs :default) t
               (ygt/diff-error psnap fsnap (ex-message t)))))))))
 
+(defn- intent-args [child-ctx parent-ctx sid]
+  {:system-id sid :child-ctx child-ctx :parent-ctx parent-ctx
+   :fork-id (:fork-id child-ctx)})
+
 (defn- context-diff-scoped
   [child-ctx scope]
   (convey-context
@@ -1254,10 +1258,16 @@
          (if ps
            (let [[sid _ cval psys] (first ps)
                  fsys (ys/effective-system cval)
-                 acc* (if (and (satisfies? ygg/Mergeable fsys)
-                               (satisfies? ygg/Graphable fsys))
+                 intents (:intents (system-policy child-ctx sid))
+                 acc* (cond
+                        ;; a system that settles by intents: its intents ARE
+                        ;; what the world contributes (its state is never merged)
+                        intents
+                        (assoc acc sid {:intents (vec (intents (intent-args child-ctx parent-ctx sid)))})
+                        (and (satisfies? ygg/Mergeable fsys)
+                             (satisfies? ygg/Graphable fsys))
                         (assoc acc sid (await (system-merge-base-diff fsys psys)))
-                        acc)]
+                        :else acc)]
              (recur (next ps) acc*))
            acc)))))))
 
@@ -1265,7 +1275,9 @@
   "Per-system delta of a forked context vs its parent — the unified diff a
    reviewer reads: {system-id -> typed yggdrasil delta (GitDiff / DatahikeDiff /
    DiffError)}. nil when the context has no parent. Non-Mergeable systems are
-  omitted."
+  omitted. A system that settles by intents (`register!` :intents) reports
+  `{:intents [...]}` — what its settlement would stamp — instead of a state
+  delta."
   [child-ctx]
   (context-diff-scoped child-ctx nil))
 
@@ -1282,7 +1294,18 @@
          (if ps
            (let [[sid _ cval psys] (first ps)
                  fsys (ys/effective-system cval)
-                 more (if (satisfies? ygg/Mergeable fsys)
+                 {:keys [intents parent-footprint]} (system-policy child-ctx sid)
+                 more (cond
+                        ;; its conflicts are the parent's claims on its intents'
+                        ;; footprints, never a state conflict
+                        intents
+                        (let [args (intent-args child-ctx parent-ctx sid)
+                              claims (if parent-footprint (set (parent-footprint args)) #{})]
+                          (vec (distinct (for [i (intents args)
+                                               k (:footprint i)
+                                               :when (contains? claims k)]
+                                           {:system sid :key k :intent (:intent/id i) :with :parent}))))
+                        (satisfies? ygg/Mergeable fsys)
                         (try
                           (let [ps1 (let [v (ygg/snapshot-id psys)]
                                       (if (fn? v) (await v) v))
@@ -1292,13 +1315,15 @@
                                 cs (if (fn? pres) (await pres) pres)]
                             (mapv #(assoc % :system sid) cs))
                           (catch #?(:clj Throwable :cljs :default) _ nil))
-                        nil)]
+                        :else nil)]
              (recur (next ps) (into acc (or more []))))
            acc)))))))
 
 (defn context-conflicts
   "Per-system conflicts of a forked context vs its parent, each tagged
-   `:system`. nil when the context has no parent."
+   `:system`. nil when the context has no parent. For a system that settles
+   by intents: the intents whose footprint the parent claimed since the fork
+   (`register!` :parent-footprint)."
   [child-ctx]
   (context-conflicts-scoped child-ctx nil))
 
