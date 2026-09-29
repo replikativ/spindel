@@ -13,8 +13,11 @@
 
 ## Status
 
-Beta. JVM: 772 tests / 2606 assertions; CLJS: 363 tests / 1374
+Beta. JVM: 1131 tests / 4742 assertions; CLJS: 448 tests / 1689
 assertions. Public API may evolve before 1.0.
+
+Probabilistic inference is [foerster](https://github.com/replikativ/foerster),
+built on spindel's savepoints and world scopes.
 
 For the architectural overview see
 [`docs/engine.md`](docs/engine.md). For runtime dispatch / events /
@@ -386,7 +389,6 @@ src/org/replikativ/spindel/
 │   ├── cache.cljc               # Per-element cache for refs / attrs
 │   ├── router.cljc, ssr.cljc
 ├── distributed/                 # Optional: kabel-based distributed scopes
-├── inference/                   # Optional: probabilistic programming
 └── sci/                         # Optional: SCI sandbox integration
 ```
 

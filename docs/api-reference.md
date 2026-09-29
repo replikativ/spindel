@@ -10,7 +10,7 @@ Namespace-by-namespace listing of all public functions and macros.
 ## `spindel.search.mcts`
 
 Finite, deterministic UCT search over canonical Yggdrasil worlds. See
-[Inference Worlds](inference.md#finite-monte-carlo-tree-search) for the
+[World Scopes and Search](world-scopes.md#finite-monte-carlo-tree-search) for the
 environment contract, bounds, and settlement semantics.
 
 | Function | Description |

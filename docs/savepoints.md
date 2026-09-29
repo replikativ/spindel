@@ -220,10 +220,9 @@ The three `fork` options are the places where a fork is *not* a copy:
 - `:seed` gives the child its own random stream. Without it N forks of one
   savepoint under a deterministic policy are N copies of one future. The
   default derives the seed from `[parent-seed address fork-index]`, so a run
-  is reproducible and the seed can be logged. (Today draws come from the
-  process-global `anglican.runtime/RNG`, which is neither world-local nor
-  reproducible under concurrency; a world-local splittable stream is part of
-  this work.)
+  is reproducible and the seed can be logged. foerster draws from streams
+  keyed by a world's seed and the site (`foerster.random`), so a seeded run
+  draws the same numbers however its worlds are scheduled.
 - `:grant` is the resource rule; see *Resources*.
 
 ### Laws
@@ -356,7 +355,10 @@ second half of the MCMC defect above.
 
 ## The inference layer
 
-`inference.trace` (implemented, except where marked). Inference adds a
+The inference layer is [foerster](https://github.com/replikativ/foerster),
+split out of spindel; `inference.*` below are its namespaces
+(`org.replikativ.foerster.*`). `inference.trace` (implemented, except where
+marked). Inference adds a
 vocabulary of sites, notes and one world-state key on top. It adds no effect
 to the algebra: `sample`, `observe` and the new `factor` publish savepoints
 when their world handles the site, and simulate forward otherwise.
