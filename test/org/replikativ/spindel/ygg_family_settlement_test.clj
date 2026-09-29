@@ -251,3 +251,17 @@
       (ygg/merge-fork! w)
       (is (= {:w-1 1 :w-2 2} (:numbers @(:journal book))))
       (is (= #{:w-1 :w-2} (set (map prov (elements "book"))))))))
+
+(deftest a-reviewer-sees-intents-and-the-parent-s-claims
+  (with-book [_]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :line-1))
+      (add! w "book" (draft :w-2 2 :line-2))
+      (swap! (ygg/system-signal "book") #(g/conj % (draft :root-1 1 :line-2)))
+      (let [diff (ygg/context-diff (:child-ctx w))
+            conflicts (ygg/context-conflicts (:child-ctx w))]
+        (is (= #{:w-1 :w-2} (set (map :intent/id (get-in diff ["book" :intents]))))
+            "the diff of an intent system is its intents")
+        (is (= [{:system "book" :key :line-2 :intent :w-2 :with :parent}] conflicts)
+            "its conflicts are the parent's claims on their footprints"))
+      (ygg/discard-fork! w))))
