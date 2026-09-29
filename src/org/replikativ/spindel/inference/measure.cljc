@@ -200,8 +200,8 @@
       (mapv #(nth particles %) indices)))
 
   (log-marginal [this]
-    ;; the normalizer accumulated at earlier resampling steps (a coordinator
-    ;; attaches it as :log-normalizer) plus the log MEAN current weight
+    ;; the normalizer accumulated at earlier resampling steps (SMC attaches
+    ;; it as :log-normalizer) plus the log MEAN current weight
     (+ (or (:log-normalizer this) 0.0)
        (log-mean-exp (mapv second particles))))
 

@@ -33,7 +33,7 @@ Each consumer invents its own notion of a *safe point* and its own way to
 *resume*:
 
 - SMC and MCMC capture a continuation at `choose` sites and resume it in a
-  re-forked world (`inference.effects`, `inference.coordinator`).
+  re-forked world (`inference.effects`, `inference.smc`).
 - MCTS (`search.mcts`) needs no continuation: its environment is a set of
   functions over explicit state, and a node is a frozen world.
 - Run worlds in an embedding (dvergr) are settled at the end of a Run; an
@@ -68,10 +68,9 @@ algorithm is a multimethod on `[algorithm checkpoint-type]`. That is an
 algebraic effect with one handler per algorithm. Forking is free because the
 state is a pure value, and a site's identity is `[id occurrence]`.
 
-Spindel's `choose` handler already has this shape (exists today): it builds
-`{:resolve :reject :address :seq :slice-state :source :options}` (it calls
-this a checkpoint, in the *Concepts* sense), stores it and
-notifies the coordinator found in the context. The execution context plays the
+Spindel's `choose` site has this shape: it publishes a savepoint — the
+continuation, its address and slice state, and the site's distribution and
+options — to the handler found in the context. The execution context plays the
 part of `:state`, which is why forking means forking a world.
 
 The part of this Spindel does *not* copy today is `:state`. Anglican's
@@ -154,8 +153,8 @@ The pending continuations are part of world state, so a fork of the world
 holds the same savepoints, pending in the fork.
 
 The engine gives the savepoint to the **handler**
-A handler is looked up in context state, as the inference coordinator is
-today, so it is inherited by forks and can be replaced in a child world.
+A handler is looked up in context state, so it is inherited by forks and can
+be replaced in a child world.
 
 A table entry under `:savepoint/any` handles every site that has no entry of
 its own, the terminal sites included.
@@ -357,8 +356,7 @@ second half of the MCMC defect above.
 `inference.trace` (implemented, except where marked). Inference adds a
 vocabulary of sites, notes and one world-state key on top. It adds no effect
 to the algebra: `sample`, `observe` and the new `factor` publish savepoints
-when their world handles the site, and speak the coordinator protocol
-otherwise.
+when their world handles the site, and simulate forward otherwise.
 
 | Site | Payload | The policy resumes with |
 |---|---|---|
@@ -394,13 +392,9 @@ keep the new value instead (overlapping supports), because the old state could
 then not be reached back. Limits: the reverse move is scored under the prior,
 so a custom proposal must be the prior or symmetric; a block's membership must
 not depend on the move; chains run in fresh worlds (`:world-policy :fork` is
-refused). The coordinator keeps `:iterate` as a FULL in-place replay; the
-partial in-place resume is gone.
+refused). The in-place resume is gone.
 
-Not implemented: `:proposal` and `:parents` in the payload. With
-`:world-policy :fork`, PIMH, PGibbs, IPMCMC and custom kernels still run on
-the coordinator; SMC, importance sampling and the prior kernel run on
-savepoints in canonical worlds too (`docs/inference.md`).
+Not implemented: `:proposal` and `:parents` in the payload.
 
 `:proposal` and `:parents` are what amortized inference needs. A learned
 proposal is a function of the trace so far, called by the handler. `:parents`
@@ -590,7 +584,7 @@ identity would have to survive code changes.
 
 | Feature | As a savepoint | Change |
 |---|---|---|
-| `choose` / `sample` / `observe` | site `:inference/choose`, payload = distribution and options; the inference coordinator is its handler | none to the API; the handler plumbing becomes the shared one |
+| `choose` / `sample` / `observe` | site `:inference/choose`, payload = distribution and options; inference's handlers (`inference.smc`, `inference.trace`) | none to the API; the handler plumbing becomes the shared one |
 | `factor` (missing today) | site `:inference/factor`; the handler writes the weight and resumes | new; a site, not an effect |
 | SMC barrier | handler policy: collect savepoints *by site and sequence*, resample, re-fork | fixes "Mixed particle states" for computations of uneven length |
 | MCMC | `replay` plus accept over a persistent trace | **fixes a bug**: a proposal resumes a fork of an anchor, so upstream observes stay in the weight, a rejected proposal leaves no state behind, and unreached sites are pruned |
@@ -665,10 +659,9 @@ and `assess` of a full choice map against a hand-computed log joint.
 4. Move `choose` onto it: per-site `:log-prob`, `factor` as a site, the MCMC
    kernels as `replay` plus accept, the in-place resume deleted.
    **Implemented**; `mcmc-correctness-test` pins the two defects against
-   analytic posteriors. Open: `:proposal`, `:parents`, a world-local random
-   stream, and moving SMC and the particle MCMC methods off the coordinator.
-5. Barrier by site and sequence in the kernel coordinator, and the barrier-free
-   policy.
+   analytic posteriors. Open: `:proposal` and `:parents`.
+5. Barrier by site and sequence, and the barrier-free policy. **Implemented**
+   as savepoint SMC (`inference.smc`); the coordinator is retired.
 6. `PResourceAuthority` on `world.scope`: grant on fork, return on discard,
    spend identity. Pinned members. Test for law 6 with a toy authority.
    **Implemented**, except escrow, which belongs to step 7.

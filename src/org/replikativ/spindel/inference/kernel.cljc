@@ -11,17 +11,13 @@
   Two protocol layers:
   - `PKernel`        — operates on measures (post hoc). Used for
                        resampling, MCMC moves, etc.
-  - `PInferenceKernel` — operates on particles *at checkpoints* during
-                       execution. The KernelCoordinator
-                       (`coordinator.cljc`) calls
-                       `decide-checkpoint` whenever a particle hits
-                       `sample` or `observe`; the kernel returns
-                       `[:assign value]`, `[:modify ...]`, or
-                       `[:iterate ...]` to drive the particle forward.
+  - `PInferenceKernel` — decides a particle's latent sites during
+                       execution: `inference/kernel-infer` runs savepoint
+                       SMC whose sample sites take the value the kernel's
+                       `step` gives.
                        This is what makes importance sampling vs SMC
                        a choice of kernel, not a choice of engine."
   (:require [org.replikativ.spindel.inference.measure :as m]
-            [org.replikativ.spindel.engine.protocols :as rtp]
             [replikativ.logging :as log]
             [anglican.runtime :as ar]))
 
@@ -235,30 +231,28 @@
 ;; =============================================================================
 
 (defprotocol PInferenceKernel
-  "Protocol for kernels that operate at checkpoints during program execution.
+  "Protocol for kernels that operate at the random choices of a particle.
 
   Unlike PKernel (which transforms measures post-hoc), a PInferenceKernel
-  decides what value to assign at each random variable/observation point of a
-  particle the KernelCoordinator drives.
+  decides what value a latent site of a particle takes: `inference/kernel-infer`
+  asks its `step` at every sample site of savepoint SMC.
 
   Markov-chain kernels (`single-site-mh-kernel`, `random-walk-mh-kernel`,
-  `block-gibbs-kernel`) implement `kernel-id` only: they are descriptions that
-  `inference/kernel-infer` runs as replay plus accept over traces
-  (`inference.trace`), not through the coordinator."
+  `block-gibbs-kernel`, `hmc-kernel`) implement `kernel-id` only: they are
+  descriptions that `inference/kernel-infer` runs as replay plus accept over
+  traces (`inference.trace`)."
 
   (kernel-id [this]
     "Unique identifier for this kernel type (e.g., :prior, :single-site-mh).")
 
   (step [this ctx checkpoint trace]
-    "Process a checkpoint with the current trace.
+    "Decide a latent site of the particle whose world is `ctx`: `checkpoint`
+    is {:source distribution :options site-options :address address},
+    `trace` the particle's trace so far.
 
-    Returns {:action :assign, :value v}.")
-
-  (on-complete [this ctx trace result]
-    "Called when program execution completes.
-
-    Returns {:action :done, :trace trace, :result result, :log-weight w}, or
-    {:action :iterate} to run the whole program again in place."))
+    Returns {:action :assign, :value v} and optionally `:log-weight-delta`,
+    what the value adds to the particle's weight (default 0: a draw from the
+    site's distribution)."))
 
 ;; =============================================================================
 ;; PriorKernel - Simple Forward Sampling (Importance Sampling)
@@ -276,13 +270,7 @@
                   (some? observe) observe
                   (some? init) init
                   :else (ar/sample* source))]
-      {:action :assign, :value value}))
-
-  (on-complete [_ ctx trace result]
-    {:action :done
-     :trace trace
-     :result result
-     :log-weight (or (rtp/get-state ctx [:inference :log-weight]) 0.0)}))
+      {:action :assign, :value value})))
 
 (defn prior-kernel
   "Create a PriorKernel for simple importance sampling."

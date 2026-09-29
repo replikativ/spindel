@@ -16,8 +16,11 @@ canonical worlds:
 ```
 
 The model runs in a frozen `ygg/fork!` of the ambient execution context, the
-root, owned by a world scope of its own. `smc-infer`, `importance-sampling` and
-`kernel-infer` with the prior kernel then run savepoint SMC there. Each
+root, owned by a world scope of its own. Every particle method
+(`smc-infer`, `importance-sampling`, `pimh-infer`, `pgibbs-infer`, `pgas-infer`,
+`ipmcmc-infer`, `bbvi-infer`, `kernel-infer` with a PInferenceKernel) then runs
+savepoint SMC there; a method of several sweeps runs each in canonical worlds of
+its own. Each
 particle is a frozen fork of the root and runs the whole model: a model that
 reads or changes room systems may make effects that are random without a
 sample site (a model call), so particles never share a prefix, as pure
@@ -47,11 +50,6 @@ neither contexts, the resampling ancestry, nor settlement authority. However
 inference ends — a result, a failure, or the cancellation of its Spin — every
 world is discarded before the outcome is delivered.
 
-The other particle methods (`pimh-infer`, `pgibbs-infer`, `ipmcmc-infer`) and
-any other `PInferenceKernel` with `:world-policy :fork` still run on the
-coordinator, which forks each initial particle from the ambient world and
-retains parentless immutable projections of the particle contexts.
-
 ## Reusable finite world scopes
 
 The lifecycle above is not specific to probabilities. The
@@ -70,8 +68,8 @@ a particle, tree node, Run, reward, or proposal. In particular, a search policy
 may share immutable statistics for a transposition, but it must not share a
 writable context or affine `ForkHandle`.
 
-Savepoint sessions own their worlds through a scope, and so do canonical
-inference and the coordinator. This is an extraction of the existing ownership
+Savepoint sessions own their worlds through a scope, and so does canonical
+inference. This is an extraction of the existing ownership
 protocol, not a second world abstraction: Yggdrasil still owns substrate forks
 and settlement, while the execution context still owns reactive runtime state.
 
@@ -195,7 +193,3 @@ does not need to be exposed to untrusted Dvergr programs; recursive
 self-programming is a curated capability, not ambient reflection. The world
 API gives SCI opaque IDs backed by a host registry. Raw `ForkHandle` records
 contain mutable affine authority and must never cross the sandbox boundary.
-
-PGAS ancestor scoring still uses legacy snapshot particles, so Spindel rejects
-`:world-policy :fork` together with `:pgas-ancestor-sampling?`. That combination
-can be enabled once auxiliary scoring particles also use canonical worlds.

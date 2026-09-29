@@ -104,7 +104,7 @@
 (def ^:dynamic *callback-egress-policy*
   "Authority attached to callbacks created by the current host invocation.
 
-  The default is world-local. Inference coordinators may bind
+  The default is world-local. Savepoint sessions and inference may bind
   `:causal-follow` when a continuation copied into a descendant is explicitly
   authorized to complete the coordinating callback. This authority is captured
   on the callback edge; interpreted code cannot grant it by rebinding a world."

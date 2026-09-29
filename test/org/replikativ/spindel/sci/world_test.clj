@@ -4,7 +4,6 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
-            [org.replikativ.spindel.inference.coordinator :as coordinator]
             [org.replikativ.spindel.sci.world :as world]
             [org.replikativ.spindel.spin.core :as spin-core]))
 
@@ -167,7 +166,7 @@
         (binding [ec/*execution-context* parent
                   ec/*callback-egress-policy* :causal-follow]
           (worker #(deliver result %) #(deliver result %)))
-        (let [particle (coordinator/fork-particle-context parent)
+        (let [particle (context/materialized-fork-context parent :clean-in-flight? false)
               particle-interpreter (world/context-in particle interpreter-ref)]
           (try
             (is (= (:fork-id parent) (:fork-id (:parent-ctx particle))))

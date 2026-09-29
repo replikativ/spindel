@@ -436,7 +436,7 @@
        (step trace 0 0)))))
 
 (defn legacy-trace
-  "`trace` in the shape the coordinator keeps at `[:inference :trace]`:
+  "`trace` in the legacy shape of a particle's trace (`[:inference :trace]`):
   {address {:value :distribution :log-prob :observed?}}."
   [trace]
   (into {}
