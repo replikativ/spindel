@@ -548,3 +548,36 @@
         (await-cps (sp/close! session))
         (is (= :discarded (:status @world-scope)) "closing the session discards the joined scope")
         (context/stop-context! caller)))))
+
+(deftest forks-of-an-awaited-child-each-resume-their-parent
+  ;; A parent awaits a child that publishes a savepoint. The handler forks the
+  ;; savepoint while the child still runs synchronously inside the parent's
+  ;; await, and the forks resume on other threads: each fork's child
+  ;; completes in its own world during the awaiting world's sync phase. Its
+  ;; parent must resume there too — the await's sync bookkeeping belongs to
+  ;; the awaiting world only (a shared flag lost these wake-ups).
+  (dotimes [_ 20]
+    (let [root (context/create-execution-context)
+          k 8
+          results (java.util.concurrent.LinkedBlockingQueue.)
+          child (fn [] (spin (savepoint :step 0)))
+          session (sp/open! root
+                            {:fork-opts {:systems :none}
+                             :handlers
+                             {:step (fn [s]
+                                      (dotimes [i k]
+                                        ((sp/fork s)
+                                         (fn [c] (sp/resume c (inc i)))
+                                         (fn [e] (.put results [:error e]))))
+                                      (sp/abandon s))
+                              sp/result-site #(.put results (:savepoint/payload %))
+                              sp/abandoned-site (fn [_] nil)}})]
+      (try
+        (sp/start! session (binding [ec/*execution-context* root]
+                             (spin (* 10 (org.replikativ.spindel.effects.await/await (child))))))
+        (is (= (set (map #(* 10 (inc %)) (range k)))
+               (set (repeatedly k #(take! results))))
+            "every fork's parent resumed with its own child's value")
+        (finally
+          (await-cps (sp/close! session))
+          (context/stop-context! root))))))
