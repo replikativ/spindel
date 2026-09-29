@@ -507,3 +507,56 @@
     (scope/end-activity! world-scope lease)
     (is (nil? (await-cps (scope/discard! world-scope))))
     (is (= :discarded (:status @world-scope)))))
+
+(defn- wallet-authority
+  "A ledger outside every world: {world-id {:wallet {resource n} :from id}}."
+  [ledger]
+  (let [id :fork-id]
+    (reify scope/PResourceAuthority
+      (grant! [_ source child grant]
+        (swap! ledger
+               (fn [book]
+                 (let [left (merge-with - (get-in book [(id source) :wallet]) grant)]
+                   (when (some neg? (vals left))
+                     (throw (ex-info "Insufficient funds" {:type ::insufficient})))
+                   (-> book
+                       (assoc-in [(id source) :wallet] left)
+                       (assoc (id child) {:wallet grant :from (id source)})))))
+        nil)
+      (return! [_ context]
+        (swap! ledger
+               (fn [book]
+                 (if-let [{:keys [wallet from]} (get book (id context))]
+                   (-> book
+                       (update-in [from :wallet] #(merge-with + % wallet))
+                       (dissoc (id context)))
+                   book)))
+        nil)
+      (balance [_ context] (get-in @ledger [(id context) :wallet])))))
+
+(deftest copies-split-what-their-world-has-left
+  (let [root (context/create-execution-context)
+        root-id (:fork-id root)
+        ledger (atom {root-id {:wallet {:tokens 100 :euro 10.0}}})
+        world-scope (scope/create {:purpose :search
+                                   :fork-opts {:systems :none}
+                                   :authority (wallet-authority ledger)})
+        session (scope/begin-activity! world-scope :session)
+        wallet #(get-in @ledger [(:fork-id (:child-ctx %)) :wallet])]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [w (fork-with! world-scope root {:grant {:tokens 20 :euro 4.0}})
+              w-id (:fork-id (:child-ctx w))
+              _ (swap! ledger update-in [w-id :wallet :tokens] - 3) ; w spent 3 of 20
+              copies (copy-with! world-scope (:child-ctx w) 3 {:split? true})]
+          (is (every? #(= {:tokens 5 :euro (/ 4.0 3)} (wallet %)) copies)
+              "an even share of what is left, integers rounded down")
+          (is (= 2 (get-in @ledger [w-id :wallet :tokens])) "the rest stays with the copied world")
+          (is (< (Math/abs (get-in @ledger [w-id :wallet :euro])) 1e-9))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (testing "everything comes back but what was spent"
+        (is (= 97 (get-in @ledger [root-id :wallet :tokens])))
+        (is (< (Math/abs (- 10.0 (get-in @ledger [root-id :wallet :euro]))) 1e-9)))
+      (finally
+        (context/stop-context! root)))))

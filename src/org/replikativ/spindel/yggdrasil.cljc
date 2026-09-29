@@ -1700,6 +1700,12 @@
           (assoc :members (into {} (map (fn [[id n]] [id (select-keys n [:via :settled])]))
                                 (:nodes f)))))))
 
+(defn copied-descriptor
+  "The descriptor of the world `fork-id` that `member`'s family copied (see
+  `fork-descriptor`), as it is now, or nil."
+  [member fork-id]
+  (some-> (:family member) deref (get-in [:nodes fork-id :internal]) fork-descriptor))
+
 (defn- claim-family!
   [family fork-id]
   (loop []

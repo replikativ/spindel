@@ -72,6 +72,33 @@
                (resolve (vec children))))
            (fn [e] (when (compare-and-set! failed? false true) (reject e)))))))))
 
+(defn- all-copied
+  "Copy each distinct savepoint of `sps` (a vector) as many times as it
+  occurs (`effects.savepoint/copy`, splitting its world's budget); resolves
+  the copies in `sps`' order. Copying is synchronous."
+  [sps]
+  (fn [resolve reject]
+    (try
+      (let [by-world (group-by #(:fork-id (:savepoint/world %)) sps)
+            copies (into {}
+                         (map (fn [[id group]]
+                                (let [out (volatile! nil)]
+                                  ((sp/copy (first group) (count group) {:split? true})
+                                   #(vreset! out [:ok %]) #(vreset! out [:error %]))
+                                  (case (first @out)
+                                    :ok [id (second @out)]
+                                    :error (throw (second @out))
+                                    (throw (ex-info "A copy did not settle synchronously"
+                                                    {:type ::asynchronous-copy}))))))
+                         by-world)
+            taken (volatile! {})]
+        (resolve (mapv (fn [sp]
+                         (let [id (:fork-id (:savepoint/world sp))
+                               i (get (vswap! taken update id (fnil inc 0)) id)]
+                           (nth (get copies id) (dec i))))
+                       sps)))
+      (catch #?(:clj Throwable :cljs :default) e (reject e)))))
+
 (defn- retained-policy
   "The policy of the retained particle: a sample site whose address `retained`
   holds takes that value, drawn — for the weight — with its own density as the
@@ -102,7 +129,7 @@
   `on-idle` gets the current measure; `supply!` then scores every stream site
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
-  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root] :as opts}
+  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root copy?] :as opts}
    {:keys [on-idle on-done on-error]}]
   (let [threshold (or resample-threshold 0.5)
         policy (or policy (itrace/policy))
@@ -119,7 +146,7 @@
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
                                       (dissoc opts :resample-threshold :policy :executor :retained
-                                              :ancestor-sampling? :root)))
+                                              :ancestor-sampling? :root :copy?)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
@@ -178,9 +205,11 @@
 
             (spawn! [first-sp]
               ;; the root's first savepoint becomes N particle worlds
-              ((all-forked (vec (repeat n first-sp)))
+              ((if copy?
+                 (all-copied (vec (repeat n first-sp)))
+                 (all-forked (vec (repeat n first-sp))))
                (fn [children]
-                 (sp/abandon first-sp)
+                 (when-not copy? (sp/abandon first-sp))
                  (doseq [[slot child] (map-indexed vector children)]
                    (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
                    (if (= start-site (:savepoint/site child))
@@ -259,7 +288,9 @@
                         forked-slots (filterv #(live? (nth ancestors %)) slots)
                         source (fn [a] (or (:sp (get parked a)) (get streaming a)))]
                     (swap! state update :log-z + (m/log-mean-exp log-ws))
-                    ((all-forked (mapv #(source (nth ancestors %)) forked-slots))
+                    ((if copy?
+                       (all-copied (mapv #(source (nth ancestors %)) forked-slots))
+                       (all-forked (mapv #(source (nth ancestors %)) forked-slots)))
                      (fn [children]
                        (let [carried (into {} (keep (fn [slot]
                                                       (when-let [d (get done (nth ancestors slot))]
@@ -277,8 +308,11 @@
                                            placed)
                              streaming' (into {} (keep (fn [[slot child p]] (when-not p [slot child])))
                                               placed)]
-                         (doseq [[_ {:keys [sp]}] parked] (sp/abandon sp))
-                         (doseq [[_ s] streaming] (sp/abandon s))
+                         ;; a copied source continues in its copies; the
+                         ;; others end here
+                         (doseq [sp (concat (map :sp (vals parked)) (vals streaming))
+                                 :when (sp/pending? sp)]
+                           (sp/abandon sp))
                          (swap! state assoc :parked {} :streaming streaming' :done carried
                                 :in-barrier? false)
                          (if (empty? parked')
@@ -334,8 +368,11 @@
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
   (ESS fraction, default 0.5), `:policy` (an `inference.trace/policy`,
   default the prior with no options), `:executor` for the root world,
-  `:root` a world to run in instead of a fresh one, and session options
-  (`effects.savepoint/open!`).
+  `:root` a world to run in instead of a fresh one, `:copy? true` to make
+  particles by copying worlds (`effects.savepoint/copy`: a world holding a
+  system that may not be copied is refused, each copy gets an even share of
+  its world's budget; the root must be a world of the session's `:scope`),
+  and session options (`effects.savepoint/open!`).
 
   `:retained` {address value} makes it CONDITIONAL SMC (particle Gibbs):
   particle 0 follows those choices, every barrier resamples, and particle 0

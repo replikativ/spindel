@@ -36,7 +36,11 @@
      spend must leave the world with it, or it exists twice.")
   (claim! [authority key context]
     "Move the escrow named `key` into a new wallet of `context`. Reject when
-     there is no such escrow: it was claimed already."))
+     there is no such escrow: it was claimed already.")
+  (balance [authority context]
+    "What is left in the world's wallet, {resource amount}; nil when it has
+     none. A value or a CPS operation, like the others; `copy!` asks it to
+     split a world's budget between its copies."))
 
 (defn- transition!
   "Commit a pure [next-state result] transition; expose only its winning result."
@@ -72,13 +76,20 @@
          :quiescent? false
          :quiescence-readers []}))
 
+(defn- live-descriptors
+  "Descriptors of the scope's copied worlds, then of its worlds."
+  [{:keys [copied-worlds handles]}]
+  (-> []
+      (into (keep (fn [[member fork-id]] (ygg/copied-descriptor member fork-id))) copied-worlds)
+      (into (map ygg/fork-descriptor) handles)))
+
 (defn descriptors
-  "The portable audit projection: every world the scope forked, released ones
-   first."
+  "The portable audit projection: every world the scope forked or copied,
+   released ones first."
   [scope]
-  (let [{:keys [descriptors released handles]} @scope]
+  (let [{:keys [descriptors released] :as state} @scope]
     (or descriptors
-        (into (vec released) (map ygg/fork-descriptor) handles))))
+        (into (vec released) (live-descriptors state)))))
 
 (defn- scope-error [scope type message]
   (ex-info message
@@ -240,14 +251,22 @@
        (catch #?(:clj Throwable :cljs :default) error
          (fn [_ reject] (reject error)))))
 
+(defn- share
+  "One of `k` even shares of `resources`: integer amounts rounded down."
+  [resources k]
+  (into {} (map (fn [[r amount]]
+                  [r (if (integer? amount) (quot amount k) (/ amount k))]))
+        resources))
+
 (defn copy!
   "Copy the scope's world `context` into `k` alternatives that settle at most
    once (`ygg/copy-fork!`): the world becomes a copied world that never runs
    again, and its copies are the scope's worlds in its place.
 
    With an authority, each copy is funded from the copied world's wallet —
-   `:grants`, one per copy, or `:grant` for every copy — so copying never
-   multiplies a budget. A grant the world cannot afford fails the copy: the
+   `:grants`, one per copy, `:grant` for every copy, or `:split? true` for an
+   even share of what the world has left (integer amounts rounded down; the
+   rest stays with the copied world) — so copying never multiplies a budget. A grant the world cannot afford fails the copy: the
    grants made are returned, the copies discarded, and the world stays as it
    was. Discarded copies give back what they have left into the copied
    world, and the copied world, after its last copy, to where it was granted
@@ -255,15 +274,26 @@
 
    Resolves [{:child-ctx :descriptor}], one per copy. JVM / synchronous only."
   ([scope context k resolve reject] (copy! scope context k nil resolve reject))
-  ([scope context k {:keys [grant grants] extra-fork-opts :fork-opts} resolve reject]
+  ([scope context k {:keys [grant grants split?] extra-fork-opts :fork-opts} resolve reject]
    (let [fork-id (:fork-id context)
-         grants (or grants (when (some? grant) (vec (repeat k grant))))
+         authority (:authority @scope)
+         grants (try
+                  (or grants
+                      (when (some? grant) (vec (repeat k grant)))
+                      (when (and split? authority)
+                        (when-let [left (settle-now (authority-op #(balance authority context)))]
+                          (vec (repeat k (share left k))))))
+                  (catch #?(:clj Throwable :cljs :default) error
+                    {::error error}))
          claimed
          (transition!
           scope
           (fn [state]
             (let [handle (first (filter #(= fork-id (:fork-id (:child-ctx %))) (:handles state)))]
               (cond
+                (::error grants)
+                [state {:error (::error grants)}]
+
                 (or (not= :open (:status state)) (:quiescent? state))
                 [state {:error (scope-error scope ::scope-consumed
                                             "Cannot copy in a consumed world scope")}]
@@ -317,7 +347,8 @@
                   (-> (if-let [copies (:copies outcome)]
                         (-> state
                             (update :handles into copies)
-                            (update :copied (fnil conj []) {:context context :member (first copies)}))
+                            (update :copied (fnil conj []) {:context context :member (first copies)})
+                            (update :copied-worlds (fnil conj []) [(first copies) fork-id]))
                         ;; the world stays the scope's, where it was: the
                         ;; scope discards its worlds newest first
                         (update state :handles
@@ -444,9 +475,7 @@
                        scope
                        (fn []
                          (let [descriptors
-                               (into (vec (:released @scope))
-                                     (map ygg/fork-descriptor)
-                                     (:handles @scope))]
+                               (into (vec (:released @scope)) (live-descriptors @scope))]
                            (complete!
                             :done nil
                             #(-> %

@@ -113,12 +113,12 @@
                                             (measure/get-contexts posterior))
                                     "no execution context is retained"))
                               (testing "every world is discarded before the posterior is delivered"
-                                (is (= 2 (count @scopes)) "the root's scope and the session's")
+                                (is (= 1 (count @scopes)) "the root and the session's worlds share one")
                                 (is (settled? @scopes)))))))
       (finally
         (context/stop-context! root)))))
 
-(deftest every-superseded-world-unwinds
+(deftest every-lineage-ends-once
   (let [root (context/create-execution-context
               {:executor (executor/thread-pool-executor 4)})
         finalized (atom [])
@@ -137,9 +137,9 @@
                                                    :resample-threshold 2.0})))
                             5000 ::timed-out)]
           (is (= (repeat n :done) (mapv measure/get-value (measure/get-contexts result))))
-          ;; the resampled sources and their children; the root does not run
-          ;; the model
-          (is (= (* 2 n) (count @finalized)))
+          ;; a resampled world continues in its copies instead of unwinding:
+          ;; the model ends once per particle, in its final world
+          (is (= n (count @finalized)))
           (is (apply distinct? @finalized) "each world reaches one terminal path")))
       (finally
         (context/close-context! root)))))
@@ -259,23 +259,21 @@
         (deliver release-fork true)
         (context/close-context! root)))))
 
-(deftest a-fork-failure-fails-inference-and-leaves-no-world
-  (doseq [failing [3 6]] ; a first particle, a resampled one
+(deftest a-copy-failure-fails-inference-and-leaves-no-world
+  (doseq [failing [1 2]] ; the particles, a resampling
     (let [root (context/create-execution-context)
-          forks (atom 0)
-          fork-world world-scope/fork!]
+          copies (atom 0)
+          copy-world ygg/copy-fork!]
       (try
         (binding [ec/*execution-context* root]
           (capturing-scopes [scopes]
                             (let [result
                                   (with-redefs
-                                   [world-scope/fork!
-                                    (fn fork*
-                                      ([scope source resolve reject] (fork* scope source nil resolve reject))
-                                      ([scope source opts resolve reject]
-                                       (if (= failing (swap! forks inc))
-                                         (reject (ex-info "synthetic fork failure" {:fork failing}))
-                                         (fork-world scope source opts resolve reject))))]
+                                   [ygg/copy-fork!
+                                    (fn [handle k opts]
+                                      (if (= failing (swap! copies inc))
+                                        (throw (ex-info "synthetic copy failure" {:copy failing}))
+                                        (copy-world handle k opts)))]
                                     (deref (spin (try
                                                    (await (inference/smc-infer
                                                            (observed-model) 4
@@ -283,8 +281,8 @@
                                                    (catch Throwable error error)))
                                            5000 ::timed-out))
                                   recovery (:world/recovery (ex-data result))]
-                              (is (= ::inference/inference-failed (:type (ex-data result))) (str "fork " failing))
-                              (is (= {:fork failing} (ex-data (ex-cause result))))
+                              (is (= ::inference/inference-failed (:type (ex-data result))) (str "copy " failing))
+                              (is (= {:copy failing} (ex-data (ex-cause result))))
                               (is (map? recovery))
                               (is (= [:ok nil] (await-cps ((:discard! recovery)))) "cleanup is idempotent")
                               (is (settled? @scopes)))))
@@ -310,9 +308,8 @@
               recovery (:world/recovery (ex-data result))]
           (is (= ::inference/inference-failed (:type (ex-data result))))
           (is (= {:stage :model} (ex-data (ex-cause result))))
-          (is (= [:inference :particle :particle :particle]
-                 (mapv :fork/purpose (:descriptors recovery)))
-              "the root, then the particles")
+          (is (= 4 (count (:descriptors recovery))) "the root, then the particles")
+          (is (every? #(= :particle (:fork/purpose %)) (:descriptors recovery)))
           (is (every? #(keyword? (:fork/id %)) (:descriptors recovery)))
           (is (instance? clojure.lang.IAtom (:manager recovery))
               "the live recovery capability stays process-local")
@@ -382,5 +379,73 @@
             (is (every? #(< (Math/abs (- % (+ -1.0 (ar/observe* (ar/normal 42.0 1.0) 0.5)))) 1e-9)
                         (mapv second (measure/get-particles posterior)))
                 "the delta and the observation make the weight"))))
+      (finally
+        (context/stop-context! root)))))
+
+(defn- wallet-authority
+  "A ledger outside every world: {world-id {:wallet {resource n} :from id}}."
+  [ledger]
+  (reify world-scope/PResourceAuthority
+    (grant! [_ source child grant]
+      (swap! ledger
+             (fn [book]
+               (let [left (merge-with - (get-in book [(:fork-id source) :wallet]) grant)]
+                 (when (some neg? (vals left))
+                   (throw (ex-info "Insufficient funds" {})))
+                 (-> book
+                     (assoc-in [(:fork-id source) :wallet] left)
+                     (assoc (:fork-id child) {:wallet grant :from (:fork-id source)})))))
+      nil)
+    (return! [_ context]
+      (swap! ledger
+             (fn [book]
+               (if-let [{:keys [wallet from]} (get book (:fork-id context))]
+                 (-> book
+                     (update-in [from :wallet] #(merge-with + % wallet))
+                     (dissoc (:fork-id context)))
+                 book)))
+      nil)
+    (balance [_ context] (get-in @ledger [(:fork-id context) :wallet]))))
+
+(deftest particles-split-the-inference-s-budget
+  (let [root (context/create-execution-context)
+        ledger (atom {(:fork-id root) {:wallet {:tokens 100}}})
+        tokens #(get-in @ledger [(:fork-id ec/*execution-context*) :wallet :tokens])]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [posterior @(spin (await (inference/smc-infer
+                                       (spin
+                                        (let [at-start (tokens)]
+                                          (observe (ar/normal 0.0 1.0) 0.0 :id :evidence)
+                                          [at-start (tokens)]))
+                                       4 {:world-policy :fork
+                                          :authority (wallet-authority ledger)
+                                          :grant {:tokens 12}
+                                          :resample-threshold 2.0})))
+              budgets (mapv measure/get-value (measure/get-contexts posterior))]
+          (is (every? #(= 3 (first %)) budgets) "each particle starts with an even share")
+          (is (every? #(<= (second %) 3) budgets) "a resampled world's share is split among its copies")
+          (is (= {(:fork-id root) {:wallet {:tokens 100}}} @ledger)
+              "every world gives back what it has left; nothing is multiplied")))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest a-world-that-may-not-be-copied-is-not-made-into-particles
+  (let [root (context/create-execution-context)
+        ran? (atom false)]
+    (try
+      (binding [ec/*execution-context* root]
+        (ygg/register! (mem-gset "live-handle") {:grade :affine})
+        (capturing-scopes [scopes]
+                          (let [result (deref (spin (try
+                                                      (await (inference/smc-infer
+                                                              (spin (reset! ran? true) :done) 3
+                                                              {:world-policy :fork}))
+                                                      (catch Throwable error error)))
+                                              5000 ::timed-out)]
+                            (is (= ::inference/inference-failed (:type (ex-data result))))
+                            (is (= ::ygg/copy-forbidden (:type (ex-data (ex-cause result)))))
+                            (is (not @ran?) "refused before the model runs")
+                            (is (settled? @scopes)))))
       (finally
         (context/stop-context! root)))))
