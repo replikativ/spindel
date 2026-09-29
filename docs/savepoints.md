@@ -397,8 +397,10 @@ not depend on the move; chains run in fresh worlds (`:world-policy :fork` is
 refused). The coordinator keeps `:iterate` as a FULL in-place replay; the
 partial in-place resume is gone.
 
-Not implemented: `:proposal` and `:parents` in the payload; SMC, PGibbs,
-PGAS, PIMH, IPMCMC and BBVI still run on the coordinator.
+Not implemented: `:proposal` and `:parents` in the payload. With
+`:world-policy :fork`, PIMH, PGibbs, IPMCMC and custom kernels still run on
+the coordinator; SMC, importance sampling and the prior kernel run on
+savepoints in canonical worlds too (`docs/inference.md`).
 
 `:proposal` and `:parents` are what amortized inference needs. A learned
 proposal is a function of the trace so far, called by the handler. `:parents`

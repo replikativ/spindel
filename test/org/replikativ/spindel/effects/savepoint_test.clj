@@ -6,7 +6,8 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.spin.cps :refer [spin]]))
+            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.yggdrasil :as ygg]))
 
 (defn- await-cps [operation]
   (let [result (promise)]
@@ -484,3 +485,33 @@
             (:savepoint/address (take! events))))]
     (is (not= (leaf-address true) (leaf-address false)))
     (is (= (leaf-address true) (leaf-address true)))))
+
+(deftest a-session-rooted-in-a-fork-ends-each-world-in-that-world
+  ;; A fork's state holds a copy of what is written into it (an overlay marks
+  ;; replaced values with metadata): the session read back in a world of a
+  ;; session rooted in a fork is not identical to the session. Its forks'
+  ;; ends were attributed to the root, which had ended, and were lost.
+  (let [caller (context/create-execution-context)
+        events (java.util.concurrent.LinkedBlockingQueue.)
+        handle (binding [ec/*execution-context* caller]
+                 (ygg/fork! {:mode :frozen :systems :none}))
+        root (:child-ctx handle)
+        session (sp/open! root {:seed 7 :fork-opts {:systems :none}
+                                :handlers {sp/any-site #(.put events %)}})]
+    (try
+      (sp/start! session (binding [ec/*execution-context* root] (program)))
+      (let [first-site (take! events)
+            branch (await-cps (sp/fork first-site))
+            branch-world (:fork-id (:savepoint/world branch))]
+        (sp/abandon first-site)
+        (is (= sp/abandoned-site (:savepoint/site (take! events))))
+        (sp/resume branch 1)
+        (sp/resume (take! events) 2)
+        (let [end (take! events)]
+          (is (= sp/result-site (:savepoint/site end)))
+          (is (= branch-world (:fork-id (:savepoint/world end))))
+          (is (= [1 2 3] (:savepoint/payload end)))))
+      (finally
+        (await-cps (sp/close! session))
+        (binding [ec/*execution-context* caller] (ygg/discard-fork! handle))
+        (context/stop-context! caller)))))

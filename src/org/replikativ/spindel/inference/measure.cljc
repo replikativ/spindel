@@ -324,10 +324,11 @@
 
 (defn world-descriptors
   "The world descriptors of `measure`'s particles that ran in canonical worlds
-  (`:world-policy :fork`), in particle order. Particles of pure inference are
-  `Sample`s with no world, and contribute none."
+  (`:world-policy :fork`), in particle order. Particles of pure inference ran
+  in no such world, and contribute none."
   [measure]
-  (into [] (keep #(when-not (instance? Sample %)
+  (into [] (keep #(if (instance? Sample %)
+                    (:world-descriptor %)
                     (rtp/get-state % [:inference :world-descriptor])))
         (get-contexts measure)))
 

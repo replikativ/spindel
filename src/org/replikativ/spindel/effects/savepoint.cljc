@@ -255,7 +255,9 @@
   can only be attributed to the root."
   [session-value]
   (let [ambient ec/*execution-context*]
-    (if (and ambient (identical? session-value (session ambient)))
+    ;; by id: a world's state may hold a copy of the session (an overlay
+    ;; marks what it replaces with metadata)
+    (if (and ambient (= (:id session-value) (:id (session ambient))))
       ambient
       (do (log/warn :savepoint/terminal-without-world
                     {:session (:id session-value)

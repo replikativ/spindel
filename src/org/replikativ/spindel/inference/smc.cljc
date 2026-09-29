@@ -25,13 +25,23 @@
             [anglican.runtime :as ar]
             [replikativ.logging :as log]))
 
+(def start-site
+  "The site of a savepoint a program publishes before anything else when each
+  particle must run it from its start: a program whose effects are random
+  without a sample site (a model call, a tool) must not share its prefix.
+  Otherwise the prefix up to the first random choice runs once and is
+  forked."
+  ::start)
+
 (defn- slot-of [world] (rtp/get-state world [:inference :slot]))
 (defn- weight-of [world] (or (rtp/get-state world [:inference :log-weight]) 0.0))
 
 (defn- sample-of
-  "The measure's particle for a world that returned `result`."
+  "The measure's particle for a world that returned `result`. A particle of a
+  canonical world names it (`:world-id`), for its descriptor."
   [world result]
-  (m/sample-particle result (itrace/legacy-trace (rtp/get-state world [:savepoint/trace]))))
+  (cond-> (m/sample-particle result (itrace/legacy-trace (rtp/get-state world [:savepoint/trace])))
+    (rtp/get-state world [:inference :canonical?]) (assoc :world-id (:fork-id world))))
 
 (defn- decide!
   "Decide `sp` under `policy` and record it in its world's trace. Returns
@@ -92,7 +102,7 @@
   `on-idle` gets the current measure; `supply!` then scores every stream site
   with the value, which turns them into an ordinary barrier. When all have
   returned, `on-done` gets the final measure; `on-error` any failure."
-  [model n {:keys [resample-threshold policy executor retained ancestor-sampling?] :as opts}
+  [model n {:keys [resample-threshold policy executor retained ancestor-sampling? root] :as opts}
    {:keys [on-idle on-done on-error]}]
   (let [threshold (or resample-threshold 0.5)
         policy (or policy (itrace/policy))
@@ -100,14 +110,16 @@
                     (let [rp (retained-policy retained)]
                       (fn [slot] (if (= 0 slot) rp policy)))
                     (constantly policy))
-        root (if executor
-               (ctx/create-execution-context :executor executor)
-               (ctx/create-execution-context))
+        root (cond
+               root root
+               executor (ctx/create-execution-context :executor executor)
+               :else (ctx/create-execution-context))
         session (sp/open! root (merge {:purpose :smc
                                        :seed (random/fresh-seed)
                                        :fork-opts {:systems :none}
                                        :retain-released? false}
-                                      (dissoc opts :resample-threshold :policy :executor :retained :ancestor-sampling?)))
+                                      (dissoc opts :resample-threshold :policy :executor :retained
+                                              :ancestor-sampling? :root)))
         ;; {:parked {slot {:sp sp :value v}}  at an observe (or a supplied stream
         ;;                                    site), resumed with v after the barrier
         ;;  :streaming {slot sp}               at a stream site, waiting for a value
@@ -171,7 +183,9 @@
                  (sp/abandon first-sp)
                  (doseq [[slot child] (map-indexed vector children)]
                    (rtp/swap-state! (:savepoint/world child) [:inference :slot] (constantly slot))
-                   (run-site! child)))
+                   (if (= start-site (:savepoint/site child))
+                     (sp/resume child nil)
+                     (run-site! child))))
                fail!))
 
             (barrier! []
@@ -319,8 +333,9 @@
 (defn smc
   "Run `model` (a spin) with `n` particles. Options: `:resample-threshold`
   (ESS fraction, default 0.5), `:policy` (an `inference.trace/policy`,
-  default the prior with no options), `:executor` for the root world, and
-  session options (`effects.savepoint/open!`).
+  default the prior with no options), `:executor` for the root world,
+  `:root` a world to run in instead of a fresh one, and session options
+  (`effects.savepoint/open!`).
 
   `:retained` {address value} makes it CONDITIONAL SMC (particle Gibbs):
   particle 0 follows those choices, every barrier resamples, and particle 0
