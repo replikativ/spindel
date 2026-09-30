@@ -233,3 +233,28 @@
       (is (sp/pending? (:trace/pending replayed)))
       (is (= [1 [0 1 2]] ((juxt :extra :items) (:trace/result original))) "the original is a value")
       (trace/release! replayed original))))
+
+(deftest releasing-a-partial-trace-abandons-its-pending-site
+  (with-session [root session]
+    (let [partial (await-cps (trace/run session
+                                        (binding [ec/*execution-context* root] (branching-program))
+                                        trace/payload-policy
+                                        {:until second-item?}))]
+      (trace/release! partial)
+      (is (not (sp/pending? (:trace/pending partial)))))))
+
+(deftest a-replay-may-name-its-seed
+  (with-session [root session]
+    (let [original (await-cps (trace/run session
+                                         (binding [ec/*execution-context* root] (branching-program))
+                                         trace/payload-policy))
+          flag (first (:trace/order original))
+          replay (fn [opts] (await-cps (trace/replay original flag
+                                                     (trace/keep-policy trace/payload-policy)
+                                                     opts)))
+          a (replay {:seed [:move 1]})
+          b (replay {:seed [:move 1]})
+          c (replay nil)]
+      (is (= [:move 1] (sp/seed (:trace/world a)) (sp/seed (:trace/world b))))
+      (is (not= [:move 1] (sp/seed (:trace/world c))))
+      (doseq [t [a b c]] (trace/release! t original)))))
