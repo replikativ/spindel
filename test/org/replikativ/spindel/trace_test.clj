@@ -195,3 +195,41 @@
                                             (trace/constrained-policy {address 9} trace/payload-policy)))]
       (is (= [7 :done] (:trace/result trace)))
       (is (= [9 :done] (:trace/result replayed))))))
+
+(defn- second-item? [sp]
+  (and (= :item (:savepoint/site sp)) (= 1 (:savepoint/payload sp))))
+
+(deftest a-run-may-stop-at-a-site-and-hand-it-over
+  (with-session [root session]
+    (let [partial (await-cps (trace/run session
+                                        (binding [ec/*execution-context* root] (branching-program))
+                                        trace/payload-policy
+                                        {:until second-item?}))
+          pending (:trace/pending partial)]
+      (testing "the stopping site is decided and recorded, not resumed"
+        (is (= [[:flag true] [:extra 1] [:item 0] [:item 1]] (values-by-site partial)))
+        (is (not (contains? partial :trace/result)))
+        (is (sp/pending? pending))
+        (is (= 1 (:trace/pending-value partial))))
+      (testing "whoever takes it over installs handlers and resumes it"
+        (let [result (promise)
+              world (:savepoint/world pending)]
+          (sp/install-handlers! world {sp/any-site (fn [s] (sp/resume s (:savepoint/payload s)))
+                                       sp/result-site (fn [e] (deliver result (:savepoint/payload e)))})
+          (sp/resume pending (:trace/pending-value partial))
+          (is (= {:extra 1 :items [0 1 2]} (deref result 5000 ::timeout))))))))
+
+(deftest a-replay-may-stop-at-a-site
+  (with-session [root session]
+    (let [original (await-cps (trace/run session
+                                         (binding [ec/*execution-context* root] (branching-program))
+                                         trace/payload-policy))
+          flag (first (:trace/order original))
+          replayed (await-cps (trace/replay original flag
+                                            (trace/constrained-policy
+                                             {flag false} (trace/keep-policy trace/payload-policy))
+                                            {:until second-item?}))]
+      (is (= [[:flag false] [:item 0] [:item 1]] (values-by-site replayed)))
+      (is (sp/pending? (:trace/pending replayed)))
+      (is (= [1 [0 1 2]] ((juxt :extra :items) (:trace/result original))) "the original is a value")
+      (trace/release! replayed original))))

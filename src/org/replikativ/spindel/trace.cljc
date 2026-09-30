@@ -94,13 +94,16 @@
                       :savepoint anchor}))))))
 
 (defn- decide-site!
-  "Decide `sp` with `policy`, record it with `anchor`, resume it."
-  [sp anchor policy old fail!]
+  "Decide `sp` with `policy`, record it with `anchor`, and resume it — or,
+  when `until` holds for it, leave it pending and hand it to `park!`."
+  [sp anchor {:keys [policy old until park! fail!]}]
   (invoke! #(policy sp (get-in old [:trace/entries (:savepoint/address sp)]))
            (fn [decision]
              (try
                (record! (:savepoint/world sp) sp decision anchor)
-               (sp/resume sp (:value decision))
+               (if (and until (until sp))
+                 (park! sp (:value decision))
+                 (sp/resume sp (:value decision)))
                (catch #?(:clj Throwable :cljs :default) error
                  (fail! sp error))))
            #(fail! sp %)))
@@ -108,7 +111,7 @@
 (defn- handlers-of
   "The handlers of one run: decide every site, deliver the end once.
   Returns {:table handler-table :fail! (fn [sp error])}."
-  [{:keys [policy old anchor?] :or {anchor? (constantly true)}} session resolve reject]
+  [{:keys [policy old anchor? until] :or {anchor? (constantly true)}} session resolve reject]
   (let [delivered? (atom false)
         once! (fn [callback value]
                 (when (compare-and-set! delivered? false true)
@@ -120,24 +123,29 @@
                 ;; delivered, so it could win the race and hide the error.
                 (once! reject error)
                 (try (sp/abandon sp) (catch #?(:clj Throwable :cljs :default) _ nil)))
+        trace-of (fn [world]
+                   (assoc (or (rtp/get-state world [:savepoint/trace]) empty-trace)
+                          :trace/world world
+                          :trace/session session))
         finish (fn [k]
                  (fn [event]
-                   (let [world (:savepoint/world event)]
-                     (once! resolve
-                            (assoc (or (rtp/get-state world [:savepoint/trace])
-                                       empty-trace)
-                                   k (:savepoint/payload event)
-                                   :trace/world world
-                                   :trace/session session)))))]
+                   (once! resolve (assoc (trace-of (:savepoint/world event))
+                                         k (:savepoint/payload event)))))
+        park! (fn [sp value]
+                (once! resolve (assoc (trace-of (:savepoint/world sp))
+                                      :trace/pending sp
+                                      :trace/pending-value value)))
+        site-opts {:policy policy :old old :until until :park! park! :fail! fail!}]
     {:fail! fail!
+     :site-opts site-opts
      :table
      {sp/any-site
       (fn [sp]
         (if (anchor? sp)
           (invoke! #(sp/fork sp)
-                   #(decide-site! sp % policy old fail!)
+                   #(decide-site! sp % site-opts)
                    #(fail! sp %))
-          (decide-site! sp nil policy old fail!)))
+          (decide-site! sp nil site-opts)))
       sp/result-site (finish :trace/result)
       sp/error-site (finish :trace/error)
       ;; Abandoned from outside (the session closed, or someone else's
@@ -150,6 +158,13 @@
   Options:
     :anchor? (fn [sp]) whether to keep the state at a site (default: always);
              a site without an anchor cannot be replayed from
+    :until   (fn [sp]) a site at which to stop: it is decided and recorded,
+             but not resumed, and the operation resolves the trace so far
+             with `:trace/pending` (the savepoint, still pending) and
+             `:trace/pending-value` (the decided value). Whoever resumes it
+             installs its own handlers on its world first
+             (`effects.savepoint/install-handlers!`): the run's have
+             delivered.
 
   Returns a CPS operation resolving the trace. A computation that throws
   resolves a trace with `:trace/error`; the operation rejects only when the
@@ -173,7 +188,7 @@
   reused as it was: values, world state, and the entries of the trace. Sites
   downstream reach `policy` with their entry in `trace` when their address
   still exists; entries that are not reached again are absent from the
-  result. `trace` is not changed.
+  result. `trace` is not changed. Options as for `run`.
 
   Returns a CPS operation resolving the new trace."
   ([trace address policy] (replay trace address policy nil))
@@ -184,7 +199,7 @@
        (if-not (and anchor (sp/pending? anchor))
          (reject (ex-info "Trace holds no pending anchor at address"
                           {:type ::no-anchor :address address}))
-         (let [{:keys [table fail!]}
+         (let [{:keys [table fail! site-opts]}
                (handlers-of (assoc opts :policy policy :old trace)
                             (:trace/session trace) resolve reject)]
            (invoke! #(sp/fork anchor {:handlers table})
@@ -195,7 +210,7 @@
                         (rtp/swap-state! (:savepoint/world fork) [:engine/reuse-source]
                                          (constantly source)))
                       ;; The anchor already is the state at this site.
-                      (decide-site! fork anchor policy trace fail!))
+                      (decide-site! fork anchor site-opts))
                     reject)))))))
 
 (defn earliest
@@ -210,7 +225,10 @@
   [trace]
   (into {} (map (fn [[address entry]] [(:path entry) address])) (:trace/entries trace)))
 
-(defn- anchor-id [anchor]
+(defn anchor-id
+  "The identity of an anchor: its world and address. Two traces that share an
+  upstream entry share its anchor."
+  [anchor]
   [(:fork-id (:savepoint/world anchor)) (:savepoint/address anchor)])
 
 (defn release!
