@@ -31,7 +31,7 @@
         generation (scope/begin-activity! world-scope :generation)
         world (binding [ec/*execution-context* root]
                 (fork! world-scope root))
-        handle (first (:handles @world-scope))
+        handle (first (scope/handles @world-scope))
         child (:child-ctx world)
         quiescent (promise)]
     (try
@@ -53,7 +53,7 @@
         (await-cps (scope/discard-when-quiescent! world-scope)))
 
       (is (= :discarded (:status @world-scope)))
-      (is (empty? (:handles @world-scope)))
+      (is (empty? (scope/handles @world-scope)))
       (is (= 1 (count (scope/descriptors world-scope))))
       (is (= :search (:fork/purpose (first (scope/descriptors world-scope)))))
       (is (not (ygg/open-fork? handle)))
@@ -65,7 +65,7 @@
                         :unexpected-success
                         (catch Throwable error error))]
           (is (= ::scope/scope-consumed (:type (ex-data outcome))))
-          (is (empty? (:handles @world-scope)))))
+          (is (empty? (scope/handles @world-scope)))))
       (finally
         (when (ygg/open-fork? handle)
           (binding [ec/*execution-context* root]
@@ -114,7 +114,7 @@
                             (fn [error] (throw error)))))))
       (finally
         ;; The synthetic handle carries no settlement authority.
-        (swap! world-scope assoc :handles [])
+        (swap! world-scope scope/set-handles [])
         (scope/end-activity! world-scope activity)
         (context/stop-context! child)
         (context/stop-context! root)))))
@@ -210,7 +210,7 @@
                  ((scope/discard! world-scope)
                   (fn [_] (swap! callback-counts update idx inc))
                   (fn [_] (swap! callback-counts update idx inc))))]
-    (swap! world-scope assoc :handles [handle])
+    (swap! world-scope scope/set-handles [handle])
     (with-redefs [ygg/discard-fork!
                   (fn [_handle _opts]
                     (fn [resolve reject]
@@ -329,7 +329,7 @@
       (testing "release discards that world only"
         (is (nil? (await-cps (scope/release! world-scope dropped-ctx))))
         (is (= [(:fork-id (:child-ctx kept))]
-               (mapv (comp :fork-id :child-ctx) (:handles @world-scope))))
+               (mapv (comp :fork-id :child-ctx) (scope/handles @world-scope))))
         (is (= 2 (count (scope/descriptors world-scope))) "its descriptor stays"))
       (testing "a world is released once"
         (is (= ::scope/unknown-world
@@ -402,7 +402,7 @@
             (is (= ::insufficient
                    (:type (ex-data (try (fork-with! world-scope root {:grant 4})
                                         (catch Throwable error error))))))
-            (is (= 2 (count (:handles @world-scope))))
+            (is (= 2 (count (scope/handles @world-scope))))
             (is (zero? (:pending-forks @world-scope)))
             (is (= 10 (total))))
           (testing "a fork without a grant has no wallet"
@@ -455,7 +455,7 @@
                                         (catch Throwable error error))))))
             (is (= {root-id {:balance 2} w-id {:balance 8 :from root-id}} @ledger)
                 "the grants made are returned, no copy holds a wallet")
-            (is (= [w-id] (map (comp :fork-id :child-ctx) (:handles @world-scope))))
+            (is (= [w-id] (map (comp :fork-id :child-ctx) (scope/handles @world-scope))))
             (is (zero? (:pending-forks @world-scope))))
           (testing "one grant per copy"
             (is (= ::scope/grant-count
@@ -467,7 +467,7 @@
               (is (= 1 (get-in @ledger [w-id :balance])))
               (is (= 10 (total))))
             (testing "the copied world is no longer the scope's to run"
-              (is (= 3 (count (:handles @world-scope))))
+              (is (= 3 (count (scope/handles @world-scope))))
               (is (= ::scope/unknown-world
                      (:type (ex-data (try (copy-with! world-scope (:child-ctx w) 2 nil)
                                           (catch Throwable error error)))))))
@@ -503,7 +503,7 @@
         lease (scope/begin-activity! world-scope :generation)]
     (binding [ec/*execution-context* root]
       (dotimes [_ 3000] (fork! world-scope root)))
-    (is (= 3000 (count (:handles @world-scope))))
+    (is (= 3000 (count (scope/handles @world-scope))))
     (scope/end-activity! world-scope lease)
     (is (nil? (await-cps (scope/discard! world-scope))))
     (is (= :discarded (:status @world-scope)))))

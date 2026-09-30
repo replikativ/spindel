@@ -213,7 +213,7 @@
                   (is (= ::ygg/fork-world-shape-frozen
                          (:type (ex-data error))))
                   (is (= :discarded (:status @@scope*)))
-                  (is (empty? (:handles @@scope*)))
+                  (is (empty? (world-scope/handles @@scope*)))
                   (done))))))))
 
 (deftest synchronous-spawn-rejection-releases-evaluation-lease
@@ -325,7 +325,7 @@
                 (fn [error]
                   (is (re-find #"initialization failed" (str error)))
                   (is (= :discarded (:status @@scope*)))
-                  (is (empty? (:handles @@scope*)))
+                  (is (empty? (world-scope/handles @@scope*)))
                   (done))))))))
 
 #?(:clj
@@ -361,6 +361,6 @@
                  (is (instance? Throwable result))
                  (is (= spin-core/spin-cancelled (:type (ex-data result))))
                  (is (= :discarded (:status @@scope*)))
-                 (is (empty? (:handles @@scope*)))))))
+                 (is (empty? (world-scope/handles @@scope*)))))))
          (finally
            (context/stop-context! runtime))))))
