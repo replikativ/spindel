@@ -37,7 +37,7 @@
         block-first-failure? (atom true)
         discard-calls (atom 0)
         second-discard-invoked (promise)]
-    (swap! world-scope assoc :handles [handle])
+    (swap! world-scope scope/set-handles [handle])
     (set-validator!
      world-scope
      (fn [state]
@@ -100,4 +100,4 @@
     (scope/request-cancel! world-scope)
     (is (wait-until #(= :discarded (:status @world-scope)) 5000))
     (is (true? (:cancel-requested? @world-scope)))
-    (is (empty? (:handles @world-scope)))))
+    (is (empty? (scope/handles @world-scope)))))

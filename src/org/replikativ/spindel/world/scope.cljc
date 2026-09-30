@@ -68,7 +68,11 @@
          ;; turns this off.
          :retain-released? retain-released?
          :returned #{}
-         :handles []
+         ;; {n handle} in the order the worlds joined, and {fork-id n}: a
+         ;; world is found and removed in O(log n), however many there are
+         :handles (sorted-map)
+         :handle-index {}
+         :next-handle 0
          :pending-forks 0
          :activities {}
          :cancel-requested? false
@@ -76,12 +80,45 @@
          :quiescent? false
          :quiescence-readers []}))
 
+(defn- fork-id-of [handle] (:fork-id (:child-ctx handle)))
+
+(defn- add-handle
+  "`state` owning `handle`, newest; or at position `n` (a world given back to
+  the place it held)."
+  ([state handle] (add-handle state handle (:next-handle state 0)))
+  ([state handle n]
+   (-> state
+       (assoc-in [:handles n] handle)
+       (assoc-in [:handle-index (fork-id-of handle)] n)
+       (update :next-handle (fnil max 0) (inc n)))))
+
+(defn- handle-position [state fork-id] (get (:handle-index state) fork-id))
+
+(defn- handle-of [state fork-id]
+  (some->> (handle-position state fork-id) (get (:handles state))))
+
+(defn- remove-handle [state handle]
+  (let [fork-id (fork-id-of handle)]
+    (-> state
+        (update :handles dissoc (handle-position state fork-id))
+        (update :handle-index dissoc fork-id))))
+
+(defn ^:no-doc set-handles
+  "`state` owning exactly `handles`, in order (tests)."
+  [state handles]
+  (reduce add-handle (assoc state :handles (sorted-map) :handle-index {} :next-handle 0) handles))
+
+(defn handles
+  "The handles of the worlds `state` (a scope's value) owns, oldest first."
+  [state]
+  (vec (vals (:handles state))))
+
 (defn- live-descriptors
   "Descriptors of the scope's copied worlds, then of its worlds."
   [{:keys [copied-worlds handles]}]
   (-> []
       (into (keep (fn [[member fork-id]] (ygg/copied-descriptor member fork-id))) copied-worlds)
-      (into (map ygg/fork-descriptor) handles)))
+      (into (map ygg/fork-descriptor) (vals handles))))
 
 (defn descriptors
   "The portable audit projection: every world the scope forked or copied,
@@ -175,7 +212,7 @@
        (letfn [(admit! [handle]
                  (finish! (fn [state]
                             (-> state
-                                (update :handles conj handle)
+                                (add-handle handle)
                                 (update :pending-forks dec)))
                           resolve {:child-ctx (:child-ctx handle)
                                    :descriptor (ygg/fork-descriptor handle)}))
@@ -289,7 +326,7 @@
          (transition!
           scope
           (fn [state]
-            (let [handle (first (filter #(= fork-id (:fork-id (:child-ctx %))) (:handles state)))]
+            (let [handle (handle-of state fork-id)]
               (cond
                 (::error grants)
                 [state {:error (::error grants)}]
@@ -312,10 +349,10 @@
 
                 :else
                 [(-> state
-                     (update :handles (fn [hs] (vec (remove #(identical? handle %) hs))))
+                     (remove-handle handle)
                      (update :pending-forks inc))
                  {:handle handle
-                  :position (count (take-while #(not (identical? handle %)) (:handles state)))}]))))]
+                  :position (handle-position state fork-id)}]))))]
      (if-let [error (:error claimed)]
        (reject error)
        (let [{:keys [id purpose fork-opts authority]} @scope
@@ -345,15 +382,12 @@
          (swap! scope
                 (fn [state]
                   (-> (if-let [copies (:copies outcome)]
-                        (-> state
-                            (update :handles into copies)
+                        (-> (reduce add-handle state copies)
                             (update :copied (fnil conj []) {:context context :member (first copies)})
                             (update :copied-worlds (fnil conj []) [(first copies) fork-id]))
                         ;; the world stays the scope's, where it was: the
                         ;; scope discards its worlds newest first
-                        (update state :handles
-                                (fn [hs] (let [[before after] (split-at (:position claimed) hs)]
-                                           (vec (concat before [handle] after))))))
+                        (add-handle state handle (:position claimed)))
                       (update :pending-forks dec))))
          (try
            (binding [ec/*execution-context* context]
@@ -393,7 +427,7 @@
                  [(assoc state
                          :status :discarding
                          :discard-readers [reader])
-                  {:handles (reverse (:handles state))}])
+                  {:handles (reverse (vals (:handles state)))}])
 
                :discarding
                [(update state :discard-readers (fnil conj []) reader) {}]
@@ -481,7 +515,8 @@
                             #(-> %
                                  (assoc :status :discarded
                                         :descriptors descriptors
-                                        :handles [])
+                                        :handles (sorted-map)
+                                        :handle-index {})
                                  (dissoc :client :error)))))
                        (fn [error]
                          (complete! :failed error
@@ -503,8 +538,7 @@
           (transition!
            scope
            (fn [state]
-             (let [handle (first (filter #(= fork-id (:fork-id (:child-ctx %)))
-                                         (:handles state)))]
+             (let [handle (handle-of state fork-id)]
                (cond
                  (not= :open (:status state))
                  [state {:error (scope-error scope ::scope-consumed
@@ -520,7 +554,7 @@
 
                  :else
                  [(-> state
-                      (update :handles (fn [handles] (vec (remove #(identical? handle %) handles))))
+                      (remove-handle handle)
                       (update :pending-forks inc))
                   {:handle handle}]))))
           settle! (fn [handle released? callback value]
@@ -533,7 +567,7 @@
                                              (ygg/fork-descriptor handle))
                                      ;; still owned: the scope's discard retries it
                                      (not released?)
-                                     (update :handles conj handle))))
+                                     (add-handle handle))))
                     (try (callback value)
                          (finally (maybe-complete-quiescence! scope))))]
       (if-let [error (:error result)]

@@ -219,9 +219,7 @@
 (defn- release-now! [session-value world]
   ;; the fork indices of its sites are of no use once it is gone
   (let [id (world-id world)]
-    (swap! (:fork-indices session-value)
-           (fn [indices]
-             (reduce dissoc indices (filter #(= id (first %)) (keys indices))))))
+    (swap! (:fork-indices session-value) dissoc id))
   ((world-scope/release! (:scope session-value) world)
    (constantly nil)
    (fn [error]
@@ -622,9 +620,9 @@
          (let [scope (:scope session-value)
                ;; Process-local, so that forking leaves its source untouched.
                index-key [(world-id world) address]
-               index (dec (get (swap! (:fork-indices session-value)
-                                      update index-key (fnil inc 0))
-                               index-key))]
+               index (dec (get-in (swap! (:fork-indices session-value)
+                                         update-in index-key (fnil inc 0))
+                                  index-key))]
            (world-scope/fork!
             scope world {:grant grant}
             (fn [{:keys [child-ctx]}]
@@ -704,9 +702,9 @@
                       (claim! sp :copy)
                       (world-scope/end-activity! scope (world-id world))
                       {:ok (mapv (fn [{:keys [child-ctx]}]
-                                   (let [index (dec (get (swap! (:fork-indices session-value)
-                                                                update index-key (fnil inc 0))
-                                                         index-key))]
+                                   (let [index (dec (get-in (swap! (:fork-indices session-value)
+                                                                   update-in index-key (fnil inc 0))
+                                                            index-key))]
                                      (world-scope/begin-activity! scope :savepoint/world child-ctx
                                                                   (world-id child-ctx))
                                      (rtp/swap-state! child-ctx [:savepoint/seed]
