@@ -108,8 +108,10 @@
                                             ec/*spin-id* nil]
                                     (f))))
          sid (keyword (gensym "blocking-"))
-         ;; the live execution's worker: a superseding execution stops it
-         live (atom nil)]
+         ;; per execution context, the live execution's stop: a superseding
+         ;; execution in the same context stops it; other contexts (forks)
+         ;; run their own
+         live (atom {})]
      (binding [ec/*execution-context* ctx]
        (spin-core/make-spin
         (task
@@ -136,14 +138,20 @@
                                             (deliver! [:ok v]))))
                                (catch #?(:clj Throwable :cljs :default) t
                                  (deliver! [:error t]))))
-               _ (some-> @live cancel!)
+               fork-id (:fork-id here)
+               _ (some-> (get @live fork-id) (apply []))
                handle (try
                         (submit! pool #(settle-with conveyed))
                         (catch #?(:clj Throwable :cljs :default) t
                           ;; the pool refused the work (saturated, shut down)
                           (deliver! [:error t])
                           nil))
-               _ (reset! live handle)]
+               ;; stop this execution: its work, and its deferred settled once
+               ;; (so the engine retires its reader, whichever way it ended)
+               stop! (fn []
+                       (cancel! handle)
+                       (deliver! [:error (ex-info "blocking: cancelled" {:type ::cancelled})]))
+               _ (swap! live assoc fork-id stop!)]
            (try
              (let [[kind v] (await done)]
                (if (= :ok kind) v (throw v)))
@@ -153,7 +161,6 @@
                ;; the worker is interrupted (queued work never starts). The
                ;; abandoned deferred is settled so the engine retires the
                ;; cancelled reader instead of keeping its token.
-               (cancel! handle)
-               (compare-and-set! live handle nil)
-               (deliver! [:error (ex-info "blocking: cancelled" {:type ::cancelled})])))))
+               (stop!)
+               (swap! live (fn [m] (if (identical? stop! (get m fork-id)) (dissoc m fork-id) m)))))))
         sid)))))

@@ -134,19 +134,55 @@
       (is (= 2 @calls)))))
 
 (deftest repeated-queued-cancellation-leaves-no-tokens
+  ;; a fresh busy pool per round: a queue of one is this round's work
   (with-ctx [c]
-    (let [gate (promise)
-          pool (busy-pool gate)
-          tokens #(count (binding [ec/*execution-context* c] (ec/get-state [:engine/cancelled-tokens])))]
+    (let [tokens #(count (binding [ec/*execution-context* c] (ec/get-state [:engine/cancelled-tokens])))]
       (dotimes [_ 20]
-        (let [b (blocking/blocking (fn [] :never) {:pool pool})
+        (let [gate (promise)
+              pool (busy-pool gate)
+              b (blocking/blocking (fn [] :never) {:pool pool})
               s (spin (await b))]
           (future (try @s (catch Throwable _ nil)))
-          (until #(pos? (.size (.getQueue pool))))
-          (spin-core/cancel-spin! b)))
-      (is (until #(zero? (tokens))) "every cancelled reader was retired")
+          (is (until #(= 1 (.size (.getQueue pool)))))
+          (spin-core/cancel-spin! b)
+          (deliver gate :go)
+          (.shutdown pool)))
+      (is (until #(zero? (tokens))) "every cancelled reader was retired"))))
+
+(deftest a-queued-restart-leaves-no-tokens
+  ;; a second awaiter supersedes a still-queued first execution
+  (with-ctx [c]
+    (let [tokens #(count (binding [ec/*execution-context* c] (ec/get-state [:engine/cancelled-tokens])))
+          gate (promise)
+          pool (busy-pool gate)
+          b (blocking/blocking (fn [] :ran) {:pool pool})
+          s1 (spin (await b))
+          s2 (spin (await b))]
+      (future (try @s1 (catch Throwable _ nil)))
+      (is (until #(= 1 (.size (.getQueue pool)))))
+      (future (try @s2 (catch Throwable _ nil)))
+      (Thread/sleep 100)
       (deliver gate :go)
+      (is (= :ran (deref s2 5000 ::timeout)))
+      (is (= :ran (deref s1 5000 ::timeout)))
+      (is (until #(zero? (tokens))) "the superseded execution's reader was retired")
       (.shutdown pool))))
+
+(deftest two-forks-run-it-independently
+  (with-ctx [main]
+    (let [gate-a (promise)
+          calls (atom 0)
+          b (blocking/blocking (fn [] (if (= 1 (swap! calls inc)) (deref gate-a 10000 :never) :b)))
+          fa (ctx/fork-context main)
+          fb (ctx/fork-context main)
+          sa (binding [ec/*execution-context* fa] (spin (await b)))
+          sb (binding [ec/*execution-context* fb] (spin (await b)))]
+      (future (binding [ec/*execution-context* fa] (try @sa (catch Throwable _ nil))))
+      (is (until #(= 1 @calls)) "fork A's work started")
+      (is (= :b (binding [ec/*execution-context* fb] (deref sb 5000 ::timeout))) "fork B ran its own")
+      (deliver gate-a :a)
+      (is (= :a (binding [ec/*execution-context* fa] (deref sa 5000 ::timeout)))
+          "fork A was not cancelled by fork B"))))
 
 (deftest done-it-reads-its-result-again
   (with-ctx [_]
