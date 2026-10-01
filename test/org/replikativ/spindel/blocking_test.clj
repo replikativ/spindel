@@ -106,22 +106,47 @@
       (deliver gate :go)
       (.shutdown pool))))
 
-(deftest a-second-await-while-running-is-refused
-  ;; a blocking Spin is a call: two parents of the same unfinished Spin would
-  ;; run f twice; the second execution is refused instead
+(deftest a-second-await-restarts-the-work
+  ;; the engine re-runs a resource Spin's body for a second awaiter: the
+  ;; first worker is interrupted, f runs again, and the Spin completes once
   (with-ctx [_]
-    (let [started (promise)
-          release (promise)
+    (let [first-started (promise)
+          first-interrupted (promise)
           calls (atom 0)
-          b (blocking/blocking (fn [] (swap! calls inc) (deliver started true) (deref release 10000 :never)))
-          s1 (spin (await b))
-          s2 (spin (try (await b) (catch Exception e (:type (ex-data e)))))]
+          after-await (atom {:a 0 :b 0})
+          b (blocking/blocking
+             (fn []
+               (let [n (swap! calls inc)]
+                 (if (= 1 n)
+                   (do (deliver first-started true)
+                       (try (Thread/sleep 30000) :first
+                            (catch InterruptedException _ (deliver first-interrupted true) :first-interrupted)))
+                   :second))))
+          s1 (spin (let [v (await b)] (swap! after-await update :a inc) v))
+          s2 (spin (let [v (await b)] (swap! after-await update :b inc) v))]
       (future (try @s1 (catch Throwable _ nil)))
-      (is (true? (deref started 5000 false)))
-      (let [r2 (deref (future (try @s2 (catch Throwable e (:type (ex-data e))))) 5000 ::timeout)]
-        (deliver release :v)
-        (is (= ::blocking/awaited-while-running r2)))
-      (is (= 1 @calls) "f ran once"))))
+      (is (true? (deref first-started 5000 false)))
+      (is (= :second (deref s2 5000 ::timeout)))
+      (is (= :second (deref s1 5000 ::timeout)) "both awaiters see the one completion")
+      (is (true? (deref first-interrupted 5000 false)) "the superseded worker was interrupted")
+      (Thread/sleep 200)
+      (is (= {:a 1 :b 1} @after-await) "each parent continued exactly once")
+      (is (= 2 @calls)))))
+
+(deftest repeated-queued-cancellation-leaves-no-tokens
+  (with-ctx [c]
+    (let [gate (promise)
+          pool (busy-pool gate)
+          tokens #(count (binding [ec/*execution-context* c] (ec/get-state [:engine/cancelled-tokens])))]
+      (dotimes [_ 20]
+        (let [b (blocking/blocking (fn [] :never) {:pool pool})
+              s (spin (await b))]
+          (future (try @s (catch Throwable _ nil)))
+          (until #(pos? (.size (.getQueue pool))))
+          (spin-core/cancel-spin! b)))
+      (is (until #(zero? (tokens))) "every cancelled reader was retired")
+      (deliver gate :go)
+      (.shutdown pool))))
 
 (deftest done-it-reads-its-result-again
   (with-ctx [_]

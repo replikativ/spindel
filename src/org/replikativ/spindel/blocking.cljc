@@ -19,12 +19,14 @@
   (`cancel-spin!`, losing a `race`, a `timeout`) interrupts the worker, which
   is not an engine thread and so may be; work still queued never starts.
 
-  Await it from one place. A second execution of the body while the first
-  is unfinished (another parent awaiting the same unfinished Spin) is
-  rejected instead of running `f` again: to share the result, await it once
-  and share the value, or deliver it to a `sync/deferred`. Once the Spin is
-  done, awaiting it again reads its cached result. The body runs in whatever
-  execution context runs it (a fork included), and delivers there.
+  Await it from one place. The engine runs a resource Spin's body again
+  when a second parent awaits it before it is done; that execution
+  supersedes the first, so the first worker is interrupted and `f` runs
+  again (the Spin completes once, with the second run's outcome). To share
+  one run, await it once and share the value, or deliver it to a
+  `sync/deferred`. Once the Spin is done, awaiting it again reads its cached
+  result. The body runs in whatever execution context runs it (a fork
+  included), and delivers there.
 
   On the JVM `f` sees the dynamic bindings in effect where `blocking` is
   called, without the caller's `*spin-id*`. Every call of `blocking` is fresh
@@ -106,21 +108,23 @@
                                             ec/*spin-id* nil]
                                     (f))))
          sid (keyword (gensym "blocking-"))
-         running (atom false)]
+         ;; the live execution's worker: a superseding execution stops it
+         live (atom nil)]
      (binding [ec/*execution-context* ctx]
        (spin-core/make-spin
         (task
-         (when-not (compare-and-set! running false true)
-           (throw (ex-info "blocking: the Spin is already running; await it from one place and share its value"
-                           {:type ::awaited-while-running :spin-id sid})))
          ;; this execution's own context: a fork running the Spin waits and
          ;; is delivered in the fork, not where the Spin was built
          (let [here (ec/current-execution-context)
                done (sync/deferred)
+               delivered (atom false)
+               ;; once per execution: by the worker, or on cancellation by
+               ;; the finally below (which retires the reader's token)
                deliver! (fn [outcome]
-                          (binding [ec/*execution-context* here
-                                    ec/*spin-id* nil]
-                            (sync/deliver! done outcome)))
+                          (when (compare-and-set! delivered false true)
+                            (binding [ec/*execution-context* here
+                                      ec/*spin-id* nil]
+                              (sync/deliver! done outcome))))
                settle-with (fn [thunk]
                              (try
                                (let [v (thunk)]
@@ -132,19 +136,24 @@
                                             (deliver! [:ok v]))))
                                (catch #?(:clj Throwable :cljs :default) t
                                  (deliver! [:error t]))))
+               _ (some-> @live cancel!)
                handle (try
                         (submit! pool #(settle-with conveyed))
                         (catch #?(:clj Throwable :cljs :default) t
                           ;; the pool refused the work (saturated, shut down)
                           (deliver! [:error t])
-                          nil))]
+                          nil))
+               _ (reset! live handle)]
            (try
              (let [[kind v] (await done)]
                (if (= :ok kind) v (throw v)))
              (finally
                ;; completed: a no-op; cancelled while parked on `done`:
                ;; `cancel-spin!` unwinds this await into its reject path and
-               ;; the worker is interrupted (queued work never starts)
+               ;; the worker is interrupted (queued work never starts). The
+               ;; abandoned deferred is settled so the engine retires the
+               ;; cancelled reader instead of keeping its token.
                (cancel! handle)
-               (reset! running false)))))
+               (compare-and-set! live handle nil)
+               (deliver! [:error (ex-info "blocking: cancelled" {:type ::cancelled})])))))
         sid)))))
