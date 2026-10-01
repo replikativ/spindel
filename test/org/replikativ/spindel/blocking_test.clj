@@ -2,6 +2,8 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.blocking :as blocking]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.spin.combinators :as comb]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -40,16 +42,83 @@
 
 (deftest losing-a-timeout-interrupts-the-worker
   (with-ctx [_]
-    (let [interrupted (promise)
+    (let [started (promise)
+          interrupted (promise)
           s (comb/timeout (blocking/blocking
                            (fn []
+                             (deliver started true)
                              (try (Thread/sleep 30000) :slept
                                   (catch InterruptedException _
                                     (deliver interrupted true)
                                     :interrupted))))
-                          100 ::fallback)]
+                          1000 ::fallback)]
+      (future (try @s (catch Throwable _ nil)))
+      (is (true? (deref started 5000 false)) "the worker started before the deadline")
       (is (= ::fallback (deref s 5000 ::timeout)))
       (is (true? (deref interrupted 5000 false)) "the worker was interrupted"))))
+
+(deftest cancelled-before-it-starts-it-never-runs
+  ;; a pool with its one thread busy keeps the work queued
+  (with-ctx [_]
+    (let [pool (java.util.concurrent.Executors/newFixedThreadPool 1)
+          gate (promise)
+          ran (atom false)
+          _ (.submit pool ^Runnable (fn [] @gate))
+          b (blocking/blocking #(reset! ran true) {:pool pool})
+          s (spin (await b))]
+      (future (try @s (catch Throwable _ nil)))
+      (Thread/sleep 200)
+      (spin-core/cancel-spin! b)
+      (Thread/sleep 100)
+      (deliver gate :go)
+      (Thread/sleep 300)
+      (is (false? @ran) "the queued work was cancelled, not run")
+      (.shutdown pool))))
+
+(deftest two-waiters-share-one-run
+  (with-ctx [_]
+    (let [calls (atom 0)
+          release (promise)
+          b (blocking/blocking (fn [] (swap! calls inc) (deref release 10000 :never)))
+          s1 (spin (await b))
+          s2 (spin (await b))]
+      (future (try @s1 (catch Throwable _ nil)))
+      (future (try @s2 (catch Throwable _ nil)))
+      (Thread/sleep 200)
+      (deliver release :v)
+      (is (= [:v :v] [(deref s1 5000 ::timeout) (deref s2 5000 ::timeout)]))
+      (is (= 1 @calls) "f ran once"))))
+
+(deftest cancelling-through-one-awaiter-cancels-the-shared-spin
+  ;; the engine's structured cancellation: a parent that is cancelled cancels
+  ;; the Spin it awaits, for every awaiter of it, and the worker stops
+  (with-ctx [_]
+    (let [interrupted (promise)
+          b (blocking/blocking (fn [] (try (Thread/sleep 30000)
+                                           (catch InterruptedException _ (deliver interrupted true)))))
+          s1 (comb/timeout (spin (await b)) 300 ::gave-up)
+          s2 (spin (try (await b) (catch Exception e (:type (ex-data e)))))]
+      (future (try @s2 (catch Throwable _ nil)))
+      (is (= ::gave-up (deref s1 5000 ::timeout)))
+      (is (true? (deref interrupted 5000 false)))
+      (is (= spin-core/spin-cancelled (deref s2 5000 ::timeout))))))
+
+(deftest built-in-a-parent-run-in-a-fork
+  (with-ctx [main]
+    (let [b (blocking/blocking (fn [] 7))
+          fork (ctx/fork-context main)
+          s (binding [ec/*execution-context* fork] (spin (inc (await b))))]
+      (is (= 8 (binding [ec/*execution-context* fork] (deref s 5000 ::timeout)))
+          "the fork that runs it gets the value"))))
+
+(deftest a-caller-runs-pool-is-refused
+  (let [pool (java.util.concurrent.ThreadPoolExecutor.
+              1 1 0 java.util.concurrent.TimeUnit/SECONDS
+              (java.util.concurrent.SynchronousQueue.)
+              (java.util.concurrent.ThreadPoolExecutor$CallerRunsPolicy.))]
+    (with-ctx [_]
+      (is (thrown? clojure.lang.ExceptionInfo (blocking/blocking (fn [] 1) {:pool pool}))))
+    (.shutdown pool)))
 
 (deftest cancelling-interrupts-the-worker
   (with-ctx [_]
