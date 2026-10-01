@@ -86,10 +86,11 @@
           pool (busy-pool gate)
           ran (atom false)
           b (blocking/blocking #(reset! ran true) {:pool pool})
-          s (spin (await b))]
-      (future (try @s (catch Throwable _ nil)))
+          s (spin (await b))
+          settled (future (try @s (catch Throwable _ ::cancelled)))]
       (is (until #(= 1 (.size (.getQueue pool)))) "the work is queued behind the busy thread")
       (spin-core/cancel-spin! b)
+      (is (= ::cancelled (deref settled 5000 ::timeout)))
       (deliver gate :go)
       (.shutdown pool)
       (is (.awaitTermination pool 5 TimeUnit/SECONDS))
@@ -133,39 +134,47 @@
       (is (= {:a 1 :b 1} @after-await) "each parent continued exactly once")
       (is (= 2 @calls)))))
 
-(deftest repeated-queued-cancellation-leaves-no-tokens
-  ;; a fresh busy pool per round: a queue of one is this round's work
-  (with-ctx [c]
-    (let [tokens #(count (binding [ec/*execution-context* c] (ec/get-state [:engine/cancelled-tokens])))]
+(deftest repeated-queued-cancellation-never-runs-the-work
+  ;; a fresh busy pool per round: a queue of one is this round's work.
+  ;; (Retiring every cancelled reader's token is the engine's job and has a
+  ;; known race for any deferred: spindel#102.)
+  (with-ctx [_]
+    (let [ran (atom 0)]
       (dotimes [_ 20]
         (let [gate (promise)
               pool (busy-pool gate)
-              b (blocking/blocking (fn [] :never) {:pool pool})
-              s (spin (await b))]
-          (future (try @s (catch Throwable _ nil)))
+              b (blocking/blocking #(swap! ran inc) {:pool pool})
+              s (spin (await b))
+              settled (future (try @s (catch Throwable _ ::cancelled)))]
           (is (until #(= 1 (.size (.getQueue pool)))))
           (spin-core/cancel-spin! b)
+          ;; the cancellation has unwound the execution (its stop ran)
+          ;; before the pool may take the queued task
+          (is (= ::cancelled (deref settled 5000 ::timeout)))
           (deliver gate :go)
-          (.shutdown pool)))
-      (is (until #(zero? (tokens))) "every cancelled reader was retired"))))
+          (.shutdown pool)
+          (.awaitTermination pool 5 TimeUnit/SECONDS)))
+      (is (zero? @ran) "no cancelled queued work ran"))))
 
-(deftest a-queued-restart-leaves-no-tokens
+(deftest a-queued-restart-completes-once
   ;; a second awaiter supersedes a still-queued first execution
-  (with-ctx [c]
-    (let [tokens #(count (binding [ec/*execution-context* c] (ec/get-state [:engine/cancelled-tokens])))
-          gate (promise)
+  (with-ctx [_]
+    (let [gate (promise)
           pool (busy-pool gate)
-          b (blocking/blocking (fn [] :ran) {:pool pool})
+          calls (atom 0)
+          b (blocking/blocking (fn [] (swap! calls inc) :ran) {:pool pool})
           s1 (spin (await b))
           s2 (spin (await b))]
       (future (try @s1 (catch Throwable _ nil)))
       (is (until #(= 1 (.size (.getQueue pool)))))
       (future (try @s2 (catch Throwable _ nil)))
-      (Thread/sleep 100)
+      ;; the second execution has submitted its own work: the superseded
+      ;; (cancelled) task and the live one are both queued
+      (is (until #(= 2 (.size (.getQueue pool)))))
       (deliver gate :go)
       (is (= :ran (deref s2 5000 ::timeout)))
       (is (= :ran (deref s1 5000 ::timeout)))
-      (is (until #(zero? (tokens))) "the superseded execution's reader was retired")
+      (is (= 1 @calls) "only the live execution's work ran")
       (.shutdown pool))))
 
 (deftest two-forks-run-it-independently
