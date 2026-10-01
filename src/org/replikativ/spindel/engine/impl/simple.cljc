@@ -548,6 +548,13 @@
   prior invocation's atom — visible whenever the same body is invoked
   twice on one context (notably `set-execution-mode :rebuild`)."
   [context spin-id]
+  ;; The prior execution's external waits (a deferred, a mailbox, …) are
+  ;; cancelled, not just forgotten: removing them with their cancellation
+  ;; token armed keeps a later delivery from resuming the abandoned slice
+  ;; (a superseded execution would otherwise complete a second time) and
+  ;; re-posts a mailbox message its waiter can no longer take.
+  (doseq [cont-id (keys (rtp/get-state context [:await-conts spin-id]))]
+    (remove-continuation! context spin-id cont-id {:cancel? true}))
   (let [conts (rtp/get-state context [:await-conts spin-id])
         track-subs (rtp/get-state context [:track-subscriptions spin-id])]
     (when (or (seq conts) (seq track-subs))
