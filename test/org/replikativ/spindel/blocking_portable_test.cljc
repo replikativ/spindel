@@ -22,3 +22,13 @@
            (run-spin! (spin (await (blocking/blocking (fn [] (throw (ex-info "boom" {:code 7}))))))
                       (fn [_] (is false "should reject") (done))
                       (fn [e] (is (= 7 (:code (ex-data e)))) (done))))))
+
+#?(:cljs
+   (deftest a-returned-promise-is-awaited
+     (async done
+            (with-ctx [_ctx]
+              (run-spin! (spin [(await (blocking/blocking (fn [] (js/Promise.resolve 5))))
+                                (try (await (blocking/blocking (fn [] (js/Promise.reject (ex-info "no" {:code 3})))))
+                                     (catch :default e (:code (ex-data e))))])
+                         (fn [v] (is (= [5 3] v)) (done))
+                         (fn [e] (is false (str "rejected: " (ex-message e))) (done)))))))

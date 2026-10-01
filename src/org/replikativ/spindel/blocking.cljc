@@ -12,16 +12,19 @@
       (let [rows (await (blocking/blocking #(jdbc/query db sql)))]
         (render rows)))
 
-  `f` runs on a worker thread of its own pool (virtual threads on JVM 21+),
-  never on the engine's executor, and at most once per Spin: every execution
-  of the Spin's body (a second parent awaiting it, a fork running it) waits
-  for the same work, each in its own execution context. Its value resolves
-  the Spin, its throw rejects it.
+  A blocking Spin is a call, not a shared future. When its body runs, `f`
+  is submitted to a worker pool of its own (virtual threads on JVM 21+),
+  never to the engine's executor; its value resolves the Spin, its throw (or
+  a pool that refuses the work) rejects it. Cancelling the Spin
+  (`cancel-spin!`, losing a `race`, a `timeout`) interrupts the worker, which
+  is not an engine thread and so may be; work still queued never starts.
 
-  Cancelling the Spin (`cancel-spin!`, losing a `race`, a `timeout`) releases
-  the cancelled waiter; once no waiter is left the worker is interrupted (it
-  is not an engine thread, so it may be), and work that has not started yet
-  never starts.
+  Await it from one place. A second execution of the body while the first
+  is unfinished (another parent awaiting the same unfinished Spin) is
+  rejected instead of running `f` again: to share the result, await it once
+  and share the value, or deliver it to a `sync/deferred`. Once the Spin is
+  done, awaiting it again reads its cached result. The body runs in whatever
+  execution context runs it (a fork included), and delivers there.
 
   On the JVM `f` sees the dynamic bindings in effect where `blocking` is
   called, without the caller's `*spin-id*`. Every call of `blocking` is fresh
@@ -30,8 +33,9 @@
 
   ClojureScript has no threads to block: there `f` runs as a task on the
   event loop with the construction-time `*execution-context*` bound (other
-  dynamic bindings are not conveyed), and a returned promise is awaited;
-  cancellation cannot interrupt it."
+  dynamic bindings are not conveyed), and a returned promise is awaited.
+  Cancelling before the task runs keeps it from running; a running `f`
+  cannot be interrupted."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.core :as ec]
@@ -74,42 +78,11 @@
   "Run `thunk` on the worker pool; returns a handle `cancel!` takes."
   [pool thunk]
   #?(:clj (.submit ^ExecutorService (or pool @default-pool) ^Runnable thunk)
-     :cljs (do (js/setTimeout thunk 0) nil)))
+     :cljs (js/setTimeout thunk 0)))
 
 (defn- cancel! [handle]
   #?(:clj (when handle (.cancel ^Future handle true))
-     :cljs nil))
-
-(defn- settle!
-  "Record `outcome` once and hand it to every waiter."
-  [work outcome]
-  (let [[old _] (swap-vals! work (fn [w] (if (:outcome w) w (assoc w :outcome outcome))))]
-    (when-not (:outcome old)
-      (doseq [{:keys [notify]} (vals (:waiters old))] (notify outcome)))))
-
-(defn- join!
-  "Register waiter `id` of context `fork-id` (`notify` takes the outcome) and
-  start the work if no one has; an outcome already there is handed over at
-  once."
-  [work id fork-id notify start!]
-  (let [[old new] (swap-vals! work (fn [w]
-                                     (cond-> (assoc-in w [:waiters id] {:notify notify :fork-id fork-id})
-                                       (not (:started? w)) (assoc :started? true))))]
-    (cond
-      (:outcome new) (notify (:outcome new))
-      (not (:started? old)) (start!))))
-
-(defn- leave!
-  "Remove waiter `id`, or, when the Spin is cancelled in its context, every
-  waiter of that context (an execution that a later one superseded never
-  reaches its own `finally`); with none left and no outcome, stop the work."
-  [work id fork-id cancelled?]
-  (let [w (swap! work update :waiters
-                 (fn [ws] (if cancelled?
-                            (into {} (remove (fn [[_ v]] (= fork-id (:fork-id v)))) ws)
-                            (dissoc ws id))))]
-    (when (and (empty? (:waiters w)) (not (:outcome w)))
-      (cancel! (:handle w)))))
+     :cljs (when handle (js/clearTimeout handle))))
 
 (defn blocking
   "A Spin of `(f)` run on a worker thread: its value, or its throw.
@@ -117,11 +90,12 @@
   Options:
     :pool  a `java.util.concurrent.ExecutorService` to run on (JVM; default a
            shared virtual-thread-per-task pool). It must not be the engine's
-           executor and must hand work to its own threads (a CallerRunsPolicy
-           pool is refused).
+           executor, and `submit` must hand the work to its own threads
+           without blocking (a CallerRunsPolicy pool is refused; a pool that
+           rejects the work rejects the Spin).
 
-  `f` runs at most once. Cancelling every waiter interrupts the worker (JVM)
-  or keeps queued work from starting."
+  Cancelling the Spin interrupts the worker (JVM) or keeps queued work from
+  starting. Await it from one place (see the namespace doc)."
   ([f] (blocking f nil))
   ([f {:keys [pool]}]
    (let [ctx (ec/current-execution-context)
@@ -131,47 +105,46 @@
                      :cljs (fn [] (binding [ec/*execution-context* ctx
                                             ec/*spin-id* nil]
                                     (f))))
-         work (atom {:waiters {}})
          sid (keyword (gensym "blocking-"))
-         start! (fn []
-                  (let [handle (submit! pool
-                                        (fn []
-                                          (try
-                                            (let [v (conveyed)]
-                                              #?(:clj (settle! work [:ok v])
-                                                 :cljs (if (instance? js/Promise v)
-                                                         (.then v
-                                                                #(settle! work [:ok %])
-                                                                #(settle! work [:error %]))
-                                                         (settle! work [:ok v]))))
-                                            (catch #?(:clj Throwable :cljs :default) t
-                                              (settle! work [:error t])))))]
-                    (swap! work assoc :handle handle)
-                    ;; every waiter left before the handle was known
-                    (when (and (empty? (:waiters @work)) (not (:outcome @work)))
-                      (cancel! handle))))]
+         running (atom false)]
      (binding [ec/*execution-context* ctx]
        (spin-core/make-spin
         (task
-         ;; this execution's own context: a fork running the Spin waits in
-         ;; the fork, not where the Spin was built
+         (when-not (compare-and-set! running false true)
+           (throw (ex-info "blocking: the Spin is already running; await it from one place and share its value"
+                           {:type ::awaited-while-running :spin-id sid})))
+         ;; this execution's own context: a fork running the Spin waits and
+         ;; is delivered in the fork, not where the Spin was built
          (let [here (ec/current-execution-context)
                done (sync/deferred)
-               id (gensym "waiter-")]
-           (join! work id (:fork-id here)
-                  (fn [outcome]
-                    (binding [ec/*execution-context* here
-                              ec/*spin-id* nil]
-                      (sync/deliver! done outcome)))
-                  start!)
+               deliver! (fn [outcome]
+                          (binding [ec/*execution-context* here
+                                    ec/*spin-id* nil]
+                            (sync/deliver! done outcome)))
+               settle-with (fn [thunk]
+                             (try
+                               (let [v (thunk)]
+                                 #?(:clj (deliver! [:ok v])
+                                    :cljs (if (instance? js/Promise v)
+                                            (.then v
+                                                   #(deliver! [:ok %])
+                                                   #(deliver! [:error %]))
+                                            (deliver! [:ok v]))))
+                               (catch #?(:clj Throwable :cljs :default) t
+                                 (deliver! [:error t]))))
+               handle (try
+                        (submit! pool #(settle-with conveyed))
+                        (catch #?(:clj Throwable :cljs :default) t
+                          ;; the pool refused the work (saturated, shut down)
+                          (deliver! [:error t])
+                          nil))]
            (try
              (let [[kind v] (await done)]
                (if (= :ok kind) v (throw v)))
              (finally
-               ;; completed: a no-op for the work; cancelled while parked on
-               ;; `done`: `cancel-spin!` unwinds this await into its reject
-               ;; path, and the last waiter to leave stops the worker
-               (leave! work id (:fork-id here)
-                       (binding [ec/*execution-context* here]
-                         (boolean (ec/spin-is-cancelled? sid))))))))
+               ;; completed: a no-op; cancelled while parked on `done`:
+               ;; `cancel-spin!` unwinds this await into its reject path and
+               ;; the worker is interrupted (queued work never starts)
+               (cancel! handle)
+               (reset! running false)))))
         sid)))))
