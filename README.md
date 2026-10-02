@@ -241,13 +241,13 @@ patterns.
    breaks the continuation chain, and silently produces wrong
    results. Outside spin bodies (REPL, tests), `@` is fine.
 
-2. **Effects don't survive into closures.** `(spin (map #(await
-   (fetch %)) items))` doesn't work — the macro only transforms its
-   *lexical* body, and the function passed to `map` is opaque.
-   Use `loop`/`recur` for sequential work, or nest `(spin …)` per
-   item and use `(apply parallel child-spins)` for concurrent work.
-   See [CLAUDE.md "CPS Transformation Limitations"](CLAUDE.md) for
-   the long version.
+2. **Effects work where the macro can see them.** The macro only
+   transforms its *lexical* body. `map`, `mapv`, `filter`, `remove`,
+   `keep`, `reduce`, `run!`, `doseq` and `for` over a fn literal that
+   awaits (`(spin (mapv #(await (fetch %)) items))`) are rewritten into
+   eager loops; a named function passed to `map` stays opaque. Nest
+   `(spin …)` per item and use `(apply parallel child-spins)` for
+   concurrent work. See [CLAUDE.md, Rule 2](CLAUDE.md) for the details.
 
 ## License
 

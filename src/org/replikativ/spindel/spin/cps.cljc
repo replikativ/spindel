@@ -100,6 +100,104 @@
               (into {} entries)))))
 
 #?(:clj
+   (do
+     (def ^:private hof-names
+       #{"map" "mapv" "filter" "filterv" "remove" "keep" "reduce" "run!" "doseq" "for"})
+
+     (defn- core-name
+       "The clojure.core / cljs.core function name `sym` resolves to, or nil."
+       [env sym]
+       (when (symbol? sym)
+         (let [v (ioc/var-name env sym)]
+           (when (and v (#{"clojure.core" "cljs.core"} (namespace v)))
+             (name v)))))
+
+     (defn- fn-literal
+       "[params body] of a single-arity fn literal, else nil."
+       [form]
+       (when (and (seq? form) (#{'fn 'fn*} (first form)))
+         (let [[_ & more] form
+               more (if (symbol? (first more)) (rest more) more)]
+           (when (vector? (first more))
+             [(first more) (rest more)]))))
+
+     (defn- effectful? [ctx body]
+       (ioc/has-breakpoints? (cons 'do body) ctx))
+
+     (declare rewrite-hofs)
+
+     (defn- seq-loop
+       "A loop over `coll` binding `params` to each element in turn: `step`
+       gets [element-sym out-sym] and returns the next out."
+       [coll params init step]
+       (let [s (gensym "s") out (gensym "out") x (gensym "x")]
+         `(loop [~s (seq ~coll) ~out ~init]
+            (if ~s
+              (let [~x (first ~s)
+                    ~params ~x]
+                (recur (next ~s) ~(step x out)))
+              ~out))))
+
+     (defn- rewrite-hof
+       "The loop for a higher-order call whose fn literal performs effects, or
+       nil when the call is not one of those."
+       [form ctx]
+       (let [[op & args] form
+             hof (core-name (:env ctx) op)]
+         (when (hof-names hof)
+           (case hof
+             ("doseq" "for")
+             (let [[bindings & body] args]
+               (when (and (vector? bindings) (= 2 (count bindings)) (effectful? ctx body))
+                 (let [[params coll] bindings
+                       body (map #(rewrite-hofs % ctx) body)]
+                   (if (= hof "for")
+                     (seq-loop coll params [] (fn [_ out] `(conj ~out (do ~@body))))
+                     (seq-loop coll params nil (fn [_ _] `(do ~@body nil)))))))
+
+             "reduce"
+             (let [[f init coll] args
+                   [params body] (fn-literal f)]
+               (when (and params (= 3 (count args)) (= 2 (count params)) (effectful? ctx body))
+                 (let [[acc-p x-p] params
+                       body (map #(rewrite-hofs % ctx) body)
+                       acc (gensym "acc")]
+                   (seq-loop coll x-p init (fn [_ out] `(let [~acc-p ~out] ~@body))))))
+
+             ;; map mapv filter filterv remove keep run!
+             (let [[f coll & more] args
+                   [params body] (fn-literal f)]
+               (when (and params (empty? more) (= 1 (count params)) (effectful? ctx body))
+                 (let [body (map #(rewrite-hofs % ctx) body)
+                       [p] params]
+                   (case hof
+                     ("map" "mapv") (seq-loop coll p [] (fn [_ out] `(conj ~out (do ~@body))))
+                     ("filter" "filterv") (seq-loop coll p [] (fn [x out] `(if (do ~@body) (conj ~out ~x) ~out)))
+                     "remove" (seq-loop coll p [] (fn [x out] `(if (do ~@body) ~out (conj ~out ~x))))
+                     "keep" (seq-loop coll p [] (fn [_ out] `(let [v# (do ~@body)] (if (nil? v#) ~out (conj ~out v#)))))
+                     "run!" (seq-loop coll p nil (fn [_ _] `(do ~@body nil)))))))))))
+
+     (defn ^:no-doc rewrite-hofs
+       "Rewrite, in a spin body, the higher-order calls (map, mapv, filter,
+       filterv, remove, keep, reduce with an initial value, run!, and doseq
+       and for over one binding) whose fn literal performs an effect (await,
+       track, sample, …) into loops the CPS transformation sees through —
+       eagerly, into vectors. A call whose function performs none keeps its
+       laziness; nested spins, fns and quoted forms are left alone."
+       [form ctx]
+       (cond
+         (seq? form)
+         (let [op (first form)]
+           (cond
+             (#{'quote 'fn 'fn*} op) form
+             (= "spin" (some-> (ioc/var-name (:env ctx) op) name)) form
+             :else (or (rewrite-hof form ctx)
+                       (with-meta (apply list (map #(rewrite-hofs % ctx) form)) (meta form)))))
+         (vector? form) (with-meta (mapv #(rewrite-hofs % ctx) form) (meta form))
+         (map? form) (with-meta (into {} (map (fn [[k v]] [(rewrite-hofs k ctx) (rewrite-hofs v ctx)])) form) (meta form))
+         :else form))))
+
+#?(:clj
    (defn ^:no-doc build-cps-fn
      "Build CPS function from body and breakpoints.
 
@@ -116,7 +214,8 @@
            params {:r r :e e :env env :breakpoints breakpoints}
            ;; ioc/invert handles macro expansion internally via expand-macro
            ;; Don't use macroexpand-all as it introduces CLJ-specific code for CLJS targets
-           expanded (cons 'do body)
+           ;; higher-order calls over effectful fn literals become loops
+           expanded (rewrite-hofs (cons 'do body) {:breakpoints breakpoints :env env})
            ;; Detect target platform at macroexpansion time. A reader
            ;; conditional in the syntax-quoted body wouldn't help: the
            ;; macro's source is read once (in CLJ), so #?(:clj … :cljs …)
