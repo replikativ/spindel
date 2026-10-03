@@ -111,6 +111,28 @@ A `pub` routes items to subscribers based on a topic function. Each topic gets i
 ;;   {:type :system :action "metrics"}
 ```
 
+### What a pub drops
+
+**A pub does not keep items for topics nobody subscribes to.** Once
+routing has started, an item whose topic has no subscription is dropped
+(as in core.async's `pub`), and a subscription made later sees only what
+arrives after it.
+
+Routing starts when a subscriber first asks for an item — not when the
+first subscription is made — so every subscription made before anybody
+consumes sees every item. Over an eager or replaying source (a
+`from-coll`, a generator that runs ahead), subscribe to every topic before
+any subscriber starts consuming, or gate the source until they are in
+place. `pub/start!` starts routing explicitly, for subscriptions that only
+buffer and are read later:
+
+```clojure
+(def p (pub/pub events :type))
+(def users  (pub/sub p :user (buf/fixed-buffer 100)))
+(def system (pub/sub p :system (buf/fixed-buffer 100)))
+(pub/start! p)   ; route now; both buffers fill even if nobody reads yet
+```
+
 ### Per-Topic Buffers
 
 You can configure buffers per topic at pub creation time:
