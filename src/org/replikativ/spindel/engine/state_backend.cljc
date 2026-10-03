@@ -149,6 +149,31 @@
   [value]
   (mark-full-replacement value))
 
+(def ^:private tombstones-key ::tombstones)
+
+(defn- flag-tombstone
+  "`ov` flagged as holding tombstones when `value`, just written into it, is
+  one. Reads of an overlay without the flag skip the tombstone checks, which
+  otherwise walk every map they return: a particle reads its growing trace at
+  every step, so the walk made a run quadratic in its length."
+  [ov value]
+  (if (identical? deleted value)
+    (vary-meta ov assoc tombstones-key true)
+    ov))
+
+(defn- tombstones?
+  "Whether a tombstone was ever written into the overlay map `ov`."
+  [ov]
+  (true? (get (meta ov) tombstones-key)))
+
+(defn- holds-tombstone?
+  "Whether the map `m` holds a tombstone at any depth (a supplied initial
+  overlay, checked once)."
+  [m]
+  (boolean (some (fn [v] (or (identical? deleted v)
+                             (and (map? v) (not (record? v)) (holds-tombstone? v))))
+                 (vals m))))
+
 (defn- deleted-ancestor?
   "True when an overlay path or one of its prefixes is an explicit tombstone."
   [overlay path]
@@ -186,6 +211,12 @@
                (unmark-full-replacement value)
                value)
     value))
+
+(defn- materialize
+  "`value` read from an overlay with or without tombstones (`tomb?`): the
+  walk of `materialize-entity-tombstones` only when there can be any."
+  [tomb? value]
+  (if tomb? (materialize-entity-tombstones value) (unmark-full-replacement value)))
 
 (defn- merge-entity-overlay
   "Apply a sparse entity map to its logical parent collection.
@@ -317,18 +348,20 @@
       ;; Special handling for fork-local state (don't fall back to parent)
       (if (fork-local-path? (first path) local-paths)
         ;; Fork-local: overlay only, no parent fallback
-        (let [overlay @overlay-atom]
-          (when-not (deleted-ancestor? overlay path)
-            (materialize-entity-tombstones (get-in overlay path))))
+        (let [overlay @overlay-atom
+              tomb? (tombstones? overlay)]
+          (when-not (and tomb? (deleted-ancestor? overlay path))
+            (materialize tomb? (get-in overlay path))))
         ;; Shared state: check overlay, fall back to parent
         (let [overlay @overlay-atom
+              tomb? (tombstones? overlay)
               overlay-val (get-in overlay path ::not-found)
               top-overlay (get overlay (first path) ::not-found)]
           (cond
-            (deleted-ancestor? overlay path) nil
+            (and tomb? (deleted-ancestor? overlay path)) nil
             (and (> (count path) 1) (full-replacement-map? top-overlay))
-            (materialize-entity-tombstones
-             (get-in (unmark-full-replacement top-overlay) (rest path)))
+            (materialize tomb?
+                         (get-in (unmark-full-replacement top-overlay) (rest path)))
             (not= overlay-val ::not-found)
             (if (and (= 1 (count path))
                      (map? overlay-val)
@@ -337,7 +370,7 @@
               (merge-entity-overlay
                (when parent-backend (backend-read parent-backend path))
                overlay-val)
-              (materialize-entity-tombstones overlay-val))
+              (materialize tomb? overlay-val))
             parent-backend (backend-read parent-backend path)
             :else nil)))))
 
@@ -365,7 +398,7 @@
                    ;; determines the auxiliary return value.
                    (vreset! committed new-state)
                    (reduce (fn [next-ov [changed-path value]]
-                             (assoc-in next-ov changed-path value))
+                             (flag-tombstone (assoc-in next-ov changed-path value) value))
                            ov
                            changes))))
         @committed)
@@ -393,7 +426,7 @@
                                     entity-in-overlay? (not= ::not-found
                                                              (get-in ov entity-path ::not-found))
                                     tombstoned? (= deleted (get-in ov path))
-                                    has-deleted-ancestor? (deleted-ancestor? ov path)
+                                    has-deleted-ancestor? (and (tombstones? ov) (deleted-ancestor? ov path))
                                     full-top? (full-replacement-map?
                                                (get ov (first path)))
                                 ;; If entity not in overlay, copy from parent first.
@@ -422,7 +455,7 @@
                                   ;; f keeps a tombstoned target absent: keep the
                                   ;; tombstone, so the parent value stays hidden.
                                   (and tombstoned? (nil? new-val))
-                                  (assoc-in ov path deleted)
+                                  (flag-tombstone (assoc-in ov path deleted) deleted)
                                   ;; f keeps an absent target absent: write nothing.
                                   ;; A nil node under `:nodes` has no owner.
                                   (and absent? (nil? new-val))
@@ -526,27 +559,29 @@
                      tombstoned-b? (= deleted (get-in ov path-b))
                      ov (-> ov (seed path-a) (seed path-b))
                      read-local (fn [path]
-                                  (when-not (deleted-ancestor? ov path)
+                                  (when-not (and (tombstones? ov) (deleted-ancestor? ov path))
                                     (get-in ov path)))
-                     [a' b'] (f2 (read-local path-a) (read-local path-b))]
-                 ;; f2 keeps a tombstoned target absent: keep the tombstone.
+                     [a' b'] (f2 (read-local path-a) (read-local path-b))
+                     ;; f2 keeps a tombstoned target absent: keep the tombstone.
+                     va (cond
+                          (and tombstoned-a? (nil? a')) deleted
+                          (and (= 1 (count path-a))
+                               (not (fork-local-path?
+                                     (first path-a) local-paths)))
+                          (mark-full-replacement a')
+                          :else a')
+                     vb (cond
+                          (and tombstoned-b? (nil? b')) deleted
+                          (and (= 1 (count path-b))
+                               (not (fork-local-path?
+                                     (first path-b) local-paths)))
+                          (mark-full-replacement b')
+                          :else b')]
                  (-> ov
-                     (assoc-in path-a
-                               (cond
-                                 (and tombstoned-a? (nil? a')) deleted
-                                 (and (= 1 (count path-a))
-                                      (not (fork-local-path?
-                                            (first path-a) local-paths)))
-                                 (mark-full-replacement a')
-                                 :else a'))
-                     (assoc-in path-b
-                               (cond
-                                 (and tombstoned-b? (nil? b')) deleted
-                                 (and (= 1 (count path-b))
-                                      (not (fork-local-path?
-                                            (first path-b) local-paths)))
-                                 (mark-full-replacement b')
-                                 :else b')))))))
+                     (assoc-in path-a va)
+                     (assoc-in path-b vb)
+                     (flag-tombstone va)
+                     (flag-tombstone vb))))))
     nil)
 
   (backend-deref [_]
@@ -575,7 +610,10 @@
   ([parent-backend initial-overlay]
    (create-overlay-backend parent-backend initial-overlay default-fork-local-paths))
   ([parent-backend initial-overlay local-paths]
-   (->OverlayBackend (atom initial-overlay) parent-backend local-paths)))
+   (->OverlayBackend (atom (if (holds-tombstone? initial-overlay)
+                             (vary-meta initial-overlay assoc tombstones-key true)
+                             initial-overlay))
+                       parent-backend local-paths)))
 
 ;; =============================================================================
 ;; Safe Printing (prevent circular reference overflow)
