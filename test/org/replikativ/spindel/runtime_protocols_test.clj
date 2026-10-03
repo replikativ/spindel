@@ -619,8 +619,9 @@
         (rtp/swap-state! root [:nodes] (constantly {:a 1}))
         (rtp/swap-state! fork [:nodes] #(assoc % :b 2))
         (rtp/swap-state! root [:nodes] #(assoc % :c 3))
-        (is (= {:a 1 :b 2} (rtp/get-state fork [:nodes])))
-        (is (= {:a 1 :b 2} (:nodes (rtp/get-state fork []))))
+        (rtp/swap-state! fork [:nodes] #(assoc % :d 4))
+        (is (= {:a 1 :b 2 :d 4} (rtp/get-state fork [:nodes])))
+        (is (= {:a 1 :b 2 :d 4} (:nodes (rtp/get-state fork []))))
         (is (nil? (rtp/get-state fork [:nodes :c])))
         (finally
           (ctx/close-context! fork)

@@ -246,7 +246,7 @@
 
        (full-replacement-map? overlay-value)
        (assoc state top-key
-              (materialize-entity-tombstones overlay-value))
+              (materialize (tombstones? overlay) overlay-value))
 
        (record? overlay-value)
        (assoc state top-key overlay-value)
@@ -415,8 +415,7 @@
           (and is-shared? (>= path-depth 2))
           ;; Shared path with depth ≥ 2: Copy-on-write at entity level
           ;; e.g., [:nodes spin-1 :dirty?] → copy entire [:nodes spin-1] node
-          (let [entity-path (vec (take 2 path))  ;; Entity = top two levels (e.g., [:nodes spin-1])
-                field-path (vec (drop 2 path))]  ;; Field within entity (e.g., [:dirty?])
+          (let [entity-path (if (= path-depth 2) path (vec (take 2 path)))]
 
             ;; Atomic copy-on-write + update in single swap!
             (let [v (get-in
@@ -491,7 +490,11 @@
            (swap! overlay-atom
                   (fn [ov]
                     (let [overlay-val (get-in ov path ::not-found)
-                          parent-val (backend-read parent-backend path)
+                          parent-val (when (or (= overlay-val ::not-found)
+                                               (and (map? overlay-val)
+                                                    (not (record? overlay-val))
+                                                    (not (full-replacement-map? overlay-val))))
+                                       (backend-read parent-backend path))
                           current (cond
                                     (= overlay-val ::not-found) parent-val
                                     (= overlay-val deleted) nil
@@ -509,7 +512,10 @@
           (get-in
            (swap! overlay-atom
                   (fn [ov]
-                    (update-in (revive-deleted-path ov path) path f)))
+                    (update-in (if (tombstones? ov)
+                                 (revive-deleted-path ov path)
+                                 ov)
+                               path f)))
            path)))))
 
   (backend-write-2! [_ path-a path-b f2]
@@ -613,7 +619,7 @@
    (->OverlayBackend (atom (if (holds-tombstone? initial-overlay)
                              (vary-meta initial-overlay assoc tombstones-key true)
                              initial-overlay))
-                       parent-backend local-paths)))
+                     parent-backend local-paths)))
 
 ;; =============================================================================
 ;; Safe Printing (prevent circular reference overflow)
