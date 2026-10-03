@@ -27,6 +27,7 @@
     (deftest simple-test
       (test-spin (spin (+ 1 2)) 3))"
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [is.simm.partial-cps.async :as pcps-async]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.state-backend :as backend]
@@ -170,12 +171,19 @@
   [t on-success on-error]
   ;; Invoke the spin. On JVM, wrap callbacks to preserve *report-counters*
   ;; so that assertions fired from drain/executor threads are properly counted.
-  #?(:clj
-     (let [counters ct/*report-counters*]
-       (t (fn [v] (binding [ct/*report-counters* counters] (on-success v)))
-          (fn [e] (binding [ct/*report-counters* counters] (on-error e)))))
-     :cljs
-     (t on-success on-error)))
+  ;;
+  ;; Starting a spin from test code is an external entry (CLAUDE.md Rule 4):
+  ;; a fresh trampoline. In CLJS this matters — cljs.test's `done` starts the
+  ;; next test synchronously, from inside the previous test's callback, which
+  ;; may run inside a trampoline; a spin started there would hand its first
+  ;; recur Thunk to this caller, which drops it, and a loop with awaits hangs.
+  (binding [pcps-async/*in-trampoline* false]
+    #?(:clj
+       (let [counters ct/*report-counters*]
+         (t (fn [v] (binding [ct/*report-counters* counters] (on-success v)))
+            (fn [e] (binding [ct/*report-counters* counters] (on-error e)))))
+       :cljs
+       (t on-success on-error))))
 
 #?(:clj
    (defmacro test-spin

@@ -61,27 +61,25 @@ throws.
 (spin (let [iv (track some-signal)] (* 2 (iv/get-new iv))))
 ```
 
-### Rule 2 — Effects don't survive into closures
+### Rule 2 — Effects only work where the macro can see them
 
-The `spin` macro only CPS-transforms code it sees *lexically*.
-Functions passed to `map` / `filter` / `reduce` and lazy-sequence
-generators (`for`, `doseq`) hide their bodies from the macro, so
-effects inside them stay as raw fn calls and blow up at runtime.
+The `spin` macro CPS-transforms code it sees *lexically*. For the common
+higher-order calls it rewrites the call into a loop when the **fn
+literal** passed to it performs an effect (`await`, `track`, `sample`, …):
+`map`, `mapv`, `filter`, `filterv`, `remove`, `keep`, `reduce` with an
+initial value, `run!`, and `doseq` / `for` over a single binding. The
+rewritten call is eager and returns a vector; a call whose fn performs no
+effect is left alone and keeps its laziness.
 
 ```clojure
-;; ❌ closure body invisible to the macro
-(spin (map #(await (fetch %)) items))
-
-;; ❌ lazy-seq hides the awaits
+;; ✅ rewritten into a loop: the fn literal awaits
+(spin (mapv (fn [x] (await (fetch x))) items))
+(spin (reduce (fn [acc x] (+ acc (await (fetch x)))) 0 items))
 (spin (for [x data] (await (fetch-spin x))))
 
-;; ✅ explicit loop/recur — body is lexical
-(spin
-  (loop [remaining items, results []]
-    (if (empty? remaining)
-      results
-      (recur (rest remaining)
-             (conj results (await (fetch (first remaining))))))))
+;; ❌ still invisible: a named function, partial, comp, juxt, several
+;;    collections, for/doseq with :when/:let or several bindings
+(spin (map fetch-and-await items))   ; fetch-and-await's body isn't lexical
 
 ;; ✅ nest a (spin …) per item, splice with `parallel` for concurrency.
 ;;    Each (spin …) is its own CPS scope — the await inside the
@@ -92,11 +90,11 @@ effects inside them stay as raw fn calls and blow up at runtime.
     (await (apply parallel child-spins))))
 ```
 
-Same limitation as core.async's `go`. Three structural workarounds:
-`loop`/`recur` for sequential effects, nested `(spin …)` per item
-for concurrent, or async-sequence primitives in
-`spindel.seq.{core,combinators}` for streaming. **No** automatic
-`map-spins` / `filter-spins` exists — don't invent it.
+The rewrite is sequential, like `loop`/`recur`. For concurrency, nest a
+`(spin …)` per item as above; for streaming, use the async-sequence
+primitives in `spindel.seq.{core,combinators}`. The rewrite lives in
+`spin/cps.cljc` (`rewrite-hofs`); extend it there rather than adding
+`map-spins`-style helpers.
 
 ### Rule 3 — Runtime access via protocols only; never the `:state` field
 
@@ -153,6 +151,7 @@ first:
 | `future` / thread pool | `false` ✅ | Different thread = new dispatch frame |
 | `setTimeout` / timer | `false` ✅ | Event loop re-entry |
 | HTTP / DB / file I/O callback | `false` ✅ | Outside CPS scope |
+| Starting a spin from plain code (tests' `run-spin!`) | `false` ✅ | The caller may itself run inside a callback chain — in CLJS, `cljs.test`'s `done` starts the next test synchronously from the previous test's callback; a spin started inside that trampoline hands its first `recur` Thunk to a caller that drops it |
 | Already inside a spin body | leave default | Outer trampoline pumps Thunks |
 
 For the architectural explanation (Thunk, trampoline loop, the
