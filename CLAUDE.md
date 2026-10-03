@@ -151,6 +151,7 @@ first:
 | `future` / thread pool | `false` ✅ | Different thread = new dispatch frame |
 | `setTimeout` / timer | `false` ✅ | Event loop re-entry |
 | HTTP / DB / file I/O callback | `false` ✅ | Outside CPS scope |
+| Starting a spin from plain code (tests' `run-spin!`) | `false` ✅ | The caller may itself run inside a callback chain — in CLJS, `cljs.test`'s `done` starts the next test synchronously from the previous test's callback; a spin started inside that trampoline hands its first `recur` Thunk to a caller that drops it |
 | Already inside a spin body | leave default | Outer trampoline pumps Thunks |
 
 For the architectural explanation (Thunk, trampoline loop, the
