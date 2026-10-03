@@ -105,20 +105,39 @@
        #{"map" "mapv" "filter" "filterv" "remove" "keep" "reduce" "run!" "doseq" "for"})
 
      (defn- core-name
-       "The clojure.core / cljs.core function name `sym` resolves to, or nil."
-       [env sym]
-       (when (symbol? sym)
-         (let [v (ioc/var-name env sym)]
+       "The clojure.core / cljs.core function name `sym` resolves to, or nil —
+       also when a binding inside the spin body shadows it."
+       [ctx sym]
+       (when (and (symbol? sym) (not (contains? (:locals ctx) sym)))
+         (let [v (ioc/var-name (:env ctx) sym)]
            (when (and v (#{"clojure.core" "cljs.core"} (namespace v)))
              (name v)))))
 
+     (defn- form-name
+       "The name of the special form or clojure.core / cljs.core macro or
+       function `op` stands for, or nil."
+       [ctx op]
+       (if (and (symbol? op) (special-symbol? op)) (name op) (core-name ctx op)))
+
+     (defn- bound-names
+       "The local names a binding form (a symbol or destructuring pattern) binds."
+       [binding]
+       (set (take-nth 2 (destructure [binding nil]))))
+
+     (defn- occurs? [sym body]
+       (some #{sym} (tree-seq coll? seq body)))
+
      (defn- fn-literal
-       "[params body] of a single-arity fn literal, else nil."
+       "[params body] of a single-arity fn literal, else nil — also for a
+       variadic one and for a named one that refers to itself."
        [form]
        (when (and (seq? form) (#{'fn 'fn*} (first form)))
          (let [[_ & more] form
-               more (if (symbol? (first more)) (rest more) more)]
-           (when (vector? (first more))
+               self (when (symbol? (first more)) (first more))
+               more (if self (rest more) more)]
+           (when (and (vector? (first more))
+                      (not (some #{'&} (first more)))
+                      (not (and self (occurs? self (rest more)))))
              [(first more) (rest more)]))))
 
      (defn- effectful? [ctx body]
@@ -126,64 +145,123 @@
 
      (declare rewrite-hofs)
 
+     (defn- inline-call
+       "A fn literal's body applied in place, `bindings` [param arg …] binding
+       its params: a loop when the body recurs, so the recur still targets it."
+       [bindings body]
+       (if (occurs? 'recur body)
+         `(loop ~bindings ~@body)
+         `(let ~bindings ~@body)))
+
      (defn- seq-loop
-       "A loop over `coll` binding `params` to each element in turn: `step`
-       gets [element-sym out-sym] and returns the next out."
-       [coll params init step]
-       (let [s (gensym "s") out (gensym "out") x (gensym "x")]
-         `(loop [~s (seq ~coll) ~out ~init]
-            (if ~s
-              (let [~x (first ~s)
-                    ~params ~x]
-                (recur (next ~s) ~(step x out)))
-              ~out))))
+       "A loop over `coll` from `init`: `step` gets [element-sym out-sym] and
+       returns the next out, evaluated before the walk advances. With
+       `reduced?`, a reduced out ends the loop with its value."
+       ([coll init step] (seq-loop coll init step false))
+       ([coll init step reduced?]
+        (let [s (gensym "s") out (gensym "out") x (gensym "x") v (gensym "v")]
+          `(loop [~out ~init ~s (seq ~coll)]
+             (if ~s
+               (let [~x (first ~s)
+                     ~v ~(step x out)]
+                 ~(if reduced?
+                    `(if (reduced? ~v) (deref ~v) (recur ~v (next ~s)))
+                    `(recur ~v (next ~s))))
+               ~out)))))
+
+     (defn- with-locals [ctx bindings]
+       (update ctx :locals (fnil into #{}) (mapcat bound-names bindings)))
 
      (defn- rewrite-hof
        "The loop for a higher-order call whose fn literal performs effects, or
        nil when the call is not one of those."
        [form ctx]
        (let [[op & args] form
-             hof (core-name (:env ctx) op)]
+             hof (core-name ctx op)]
          (when (hof-names hof)
            (case hof
              ("doseq" "for")
              (let [[bindings & body] args]
                (when (and (vector? bindings) (= 2 (count bindings)) (effectful? ctx body))
                  (let [[params coll] bindings
-                       body (map #(rewrite-hofs % ctx) body)]
+                       body (map #(rewrite-hofs % (with-locals ctx [params])) body)
+                       coll (rewrite-hofs coll ctx)]
                    (if (= hof "for")
-                     (seq-loop coll params [] (fn [_ out] `(conj ~out (do ~@body))))
-                     (seq-loop coll params nil (fn [_ _] `(do ~@body nil)))))))
+                     (seq-loop coll [] (fn [x out] `(conj ~out (let [~params ~x] ~@body))))
+                     (seq-loop coll nil (fn [x _] `(let [~params ~x] ~@body nil)))))))
 
              "reduce"
              (let [[f init coll] args
                    [params body] (fn-literal f)]
                (when (and params (= 3 (count args)) (= 2 (count params)) (effectful? ctx body))
                  (let [[acc-p x-p] params
-                       body (map #(rewrite-hofs % ctx) body)
-                       acc (gensym "acc")]
-                   (seq-loop coll x-p init (fn [_ out] `(let [~acc-p ~out] ~@body))))))
+                       body (map #(rewrite-hofs % (with-locals ctx params)) body)]
+                   (seq-loop (rewrite-hofs coll ctx) (rewrite-hofs init ctx)
+                             (fn [x out] (inline-call [acc-p out x-p x] body))
+                             true))))
 
              ;; map mapv filter filterv remove keep run!
              (let [[f coll & more] args
                    [params body] (fn-literal f)]
                (when (and params (empty? more) (= 1 (count params)) (effectful? ctx body))
-                 (let [body (map #(rewrite-hofs % ctx) body)
-                       [p] params]
+                 (let [body (map #(rewrite-hofs % (with-locals ctx params)) body)
+                       coll (rewrite-hofs coll ctx)
+                       [p] params
+                       call (fn [x] (inline-call [p x] body))]
                    (case hof
-                     ("map" "mapv") (seq-loop coll p [] (fn [_ out] `(conj ~out (do ~@body))))
-                     ("filter" "filterv") (seq-loop coll p [] (fn [x out] `(if (do ~@body) (conj ~out ~x) ~out)))
-                     "remove" (seq-loop coll p [] (fn [x out] `(if (do ~@body) ~out (conj ~out ~x))))
-                     "keep" (seq-loop coll p [] (fn [_ out] `(let [v# (do ~@body)] (if (nil? v#) ~out (conj ~out v#)))))
-                     "run!" (seq-loop coll p nil (fn [_ _] `(do ~@body nil)))))))))))
+                     ("map" "mapv") (seq-loop coll [] (fn [x out] `(conj ~out ~(call x))))
+                     ("filter" "filterv") (seq-loop coll [] (fn [x out] `(if ~(call x) (conj ~out ~x) ~out)))
+                     "remove" (seq-loop coll [] (fn [x out] `(if ~(call x) ~out (conj ~out ~x))))
+                     "keep" (seq-loop coll [] (fn [x out] `(let [v# ~(call x)] (if (nil? v#) ~out (conj ~out v#)))))
+                     "run!" (seq-loop coll nil (fn [x _] `(do ~(call x) nil)))))))))))
+
+     (defn- rewrite-bindings
+       "A let-style binding vector with its inits rewritten in order, each in
+       the scope of the names bound before it, and the scope after the last:
+       [bindings ctx]. With `seq?`, a doseq / for binding vector."
+       [bindings ctx seq?]
+       (reduce (fn [[out ctx] [b init]]
+                 (cond
+                   (and seq? (= :let b)) (let [[bs ctx] (rewrite-bindings init ctx false)]
+                                           [(conj out b bs) ctx])
+                   (and seq? (keyword? b)) [(conj out b (rewrite-hofs init ctx)) ctx]
+                   :else [(conj out b (rewrite-hofs init ctx)) (with-locals ctx [b])]))
+               [[] ctx]
+               (partition 2 bindings)))
+
+     (def ^:private let-forms
+       #{"let" "let*" "loop" "loop*" "when-let" "if-let" "when-some" "if-some"
+         "when-first" "with-open" "dotimes"})
+
+     (defn- rewrite-scoped
+       "A binding form rewritten with its locals in scope, or nil when `form` is
+       not one."
+       [form ctx]
+       (let [[op bindings & body] form
+             op-name (form-name ctx op)
+             scoped (fn [bindings ctx]
+                      (apply list op bindings (map #(rewrite-hofs % ctx) body)))]
+         (cond
+           (= 'catch op)
+           (let [[cls local & body] (rest form)]
+             (apply list op cls local (map #(rewrite-hofs % (with-locals ctx [local])) body)))
+
+           (not (vector? bindings)) nil
+
+           (let-forms op-name) (apply scoped (rewrite-bindings bindings ctx false))
+           (#{"doseq" "for"} op-name) (apply scoped (rewrite-bindings bindings ctx true))
+           (= "letfn" op-name) (scoped bindings (with-locals ctx (map first bindings)))
+           (= "letfn*" op-name) (scoped bindings (with-locals ctx (take-nth 2 bindings))))))
 
      (defn ^:no-doc rewrite-hofs
        "Rewrite, in a spin body, the higher-order calls (map, mapv, filter,
        filterv, remove, keep, reduce with an initial value, run!, and doseq
        and for over one binding) whose fn literal performs an effect (await,
        track, sample, …) into loops the CPS transformation sees through —
-       eagerly, into vectors. A call whose function performs none keeps its
-       laziness; nested spins, fns and quoted forms are left alone."
+       eagerly, into vectors, in the order the call evaluates. A call whose
+       function performs none keeps its laziness; a name bound inside the
+       body is not taken for the core function it shadows; nested spins, fns
+       and quoted forms are left alone."
        [form ctx]
        (cond
          (seq? form)
@@ -191,8 +269,10 @@
            (cond
              (#{'quote 'fn 'fn*} op) form
              (= "spin" (some-> (ioc/var-name (:env ctx) op) name)) form
-             :else (or (rewrite-hof form ctx)
-                       (with-meta (apply list (map #(rewrite-hofs % ctx) form)) (meta form)))))
+             :else (with-meta (or (rewrite-hof form ctx)
+                                  (rewrite-scoped form ctx)
+                                  (apply list (map #(rewrite-hofs % ctx) form)))
+                     (meta form))))
          (vector? form) (with-meta (mapv #(rewrite-hofs % ctx) form) (meta form))
          (map? form) (with-meta (into {} (map (fn [[k v]] [(rewrite-hofs k ctx) (rewrite-hofs v ctx)])) form) (meta form))
          :else form))))
