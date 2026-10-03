@@ -517,6 +517,11 @@
             ;; continuation and reject this slice synchronously; callers must
             ;; then avoid registering a now-orphaned external reader.
              (when (ec/continuation-remove! spin-id cont-id {:cancel? true})
+               ;; Claiming ran the cont's :cancel!, which armed the token;
+               ;; but this reader is never handed to the resource, so no
+               ;; delivery will come to retire it (#102): retire it here.
+               (rtp/swap-state! (ec/current-execution-context) [:engine/cancelled-tokens]
+                                (fn [s] (if s (disj s cancel-token) s)))
                {:result
                 (reject
                  (ex-info "Spin cancelled"
