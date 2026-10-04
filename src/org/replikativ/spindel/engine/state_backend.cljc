@@ -131,12 +131,12 @@
 
 (defn- mark-full-replacement [value]
   (if (map? value)
-    (vary-meta value assoc full-replacement-key true)
+    (with-meta value (assoc (meta value) full-replacement-key true))
     value))
 
 (defn- unmark-full-replacement [value]
   (if (full-replacement-map? value)
-    (vary-meta value dissoc full-replacement-key)
+    (with-meta value (dissoc (meta value) full-replacement-key))
     value))
 
 (defn full-replacement
@@ -158,7 +158,7 @@
   every step, so the walk made a run quadratic in its length."
   [ov value]
   (if (identical? deleted value)
-    (vary-meta ov assoc tombstones-key true)
+    (with-meta ov (assoc (meta ov) tombstones-key true))
     ov))
 
 (defn- tombstones?
@@ -485,10 +485,10 @@
           ;; the path. This matches the depth-≥2 CoW divergence
           ;; semantic and is the property tests like
           ;; `fork-isolated-cancellation` rely on.
-          (get-in
+          (get
            (swap! overlay-atom
                   (fn [ov]
-                    (let [overlay-val (get-in ov path ::not-found)
+                    (let [overlay-val (get ov (first path) ::not-found)
                           parent-val (when (or (= overlay-val ::not-found)
                                                (and (map? overlay-val)
                                                     (not (record? overlay-val))
@@ -502,8 +502,8 @@
                                     (and (map? overlay-val) (not (record? overlay-val)))
                                     (merge-entity-overlay parent-val overlay-val)
                                     :else overlay-val)]
-                      (assoc-in ov path (mark-full-replacement (f current))))))
-           path)
+                      (assoc ov (first path) (mark-full-replacement (f current))))))
+           (first path))
 
           :else
           ;; Fork-local path (no parent fallback by design) or root
@@ -616,7 +616,7 @@
    (create-overlay-backend parent-backend initial-overlay default-fork-local-paths))
   ([parent-backend initial-overlay local-paths]
    (->OverlayBackend (atom (if (holds-tombstone? initial-overlay)
-                             (vary-meta initial-overlay assoc tombstones-key true)
+                             (with-meta initial-overlay (assoc (meta initial-overlay) tombstones-key true))
                              initial-overlay))
                      parent-backend local-paths)))
 
