@@ -415,52 +415,51 @@
           (and is-shared? (>= path-depth 2))
           ;; Shared path with depth ≥ 2: Copy-on-write at entity level
           ;; e.g., [:nodes spin-1 :dirty?] → copy entire [:nodes spin-1] node
-          (let [entity-path (if (= path-depth 2) path (vec (take 2 path)))]
-
-            ;; Atomic copy-on-write + update in single swap!
+          (let [top-key (first path)
+                entity-id (second path)
+                entity-path [top-key entity-id]
+                field-path (vec (drop 2 path))]
             (let [v (get-in
                      (swap! overlay-atom
-                            (fn [ov]
-                              (let [ov0 ov
-                                    entity-in-overlay? (not= ::not-found
-                                                             (get-in ov entity-path ::not-found))
-                                    tombstoned? (= deleted (get-in ov path))
-                                    has-deleted-ancestor? (and (tombstones? ov) (deleted-ancestor? ov path))
-                                    full-top? (full-replacement-map?
-                                               (get ov (first path)))
-                                ;; If entity not in overlay, copy from parent first.
-                                ;; A tombstone revives as backend-read shows it: nil
-                                ;; at the target, an empty map only above a field.
-                                ;; An empty map at the target is a truthy non-record
-                                ;; value, and a node update fn calls a protocol on it.
-                                    ov (cond
-                                         has-deleted-ancestor?
-                                         (revive-deleted-path ov path)
-
-                                         entity-in-overlay?
-                                         ov
-
-                                         :else
-                                         (if-let [parent-entity (when (and parent-backend
-                                                                           (not full-top?))
-                                                                  (backend-read parent-backend entity-path))]
-                                           (assoc-in ov entity-path parent-entity)
-                                           ov))
-                                ;; Now apply f to the current value at path
-                                    current (get-in ov path)
-                                    absent? (= ::not-found (get-in ov path ::not-found))
-                                    new-val (f current)]
+                            (fn [ov0]
+                              (let [tomb? (tombstones? ov0)
+                                    tombstoned? (and tomb? (= deleted (get-in ov0 path)))
+                                    has-deleted-ancestor? (and tomb? (deleted-ancestor? ov0 path))
+                                    ov (if has-deleted-ancestor?
+                                         (revive-deleted-path ov0 path)
+                                         ov0)
+                                    entities (get ov top-key)
+                                    local-entity (get entities entity-id ::not-found)
+                                    entity (if (and (= local-entity ::not-found)
+                                                    parent-backend
+                                                    (not has-deleted-ancestor?)
+                                                    (not (full-replacement-map? entities)))
+                                             (or (backend-read parent-backend entity-path)
+                                                 ::not-found)
+                                             local-entity)
+                                    current (if (= entity ::not-found)
+                                              ::not-found
+                                              (get-in entity field-path ::not-found))
+                                    new-val (f (when-not (= current ::not-found) current))]
                                 (cond
-                                  ;; f keeps a tombstoned target absent: keep the
-                                  ;; tombstone, so the parent value stays hidden.
+                                  ;; Retain a tombstone when f leaves it absent.
                                   (and tombstoned? (nil? new-val))
                                   (flag-tombstone (assoc-in ov path deleted) deleted)
-                                  ;; f keeps an absent target absent: write nothing.
-                                  ;; A nil node under `:nodes` has no owner.
-                                  (and absent? (nil? new-val))
+
+                                  ;; Do not copy an inherited entity for a no-op
+                                  ;; on one of its absent fields.
+                                  (and (= current ::not-found) (nil? new-val))
                                   ov0
+
                                   :else
-                                  (assoc-in ov path new-val)))))
+                                  ;; Update the entity before installing it: one
+                                  ;; rebuild of the overlay, including first CoW.
+                                  (assoc ov top-key
+                                         (assoc entities entity-id
+                                                (if (empty? field-path)
+                                                  new-val
+                                                  (assoc-in (when-not (= entity ::not-found) entity)
+                                                            field-path new-val))))))))
                      path)]
               (when-not (= deleted v) v)))
 
