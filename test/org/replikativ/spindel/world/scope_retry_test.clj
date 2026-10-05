@@ -101,3 +101,16 @@
     (is (wait-until #(= :discarded (:status @world-scope)) 5000))
     (is (true? (:cancel-requested? @world-scope)))
     (is (empty? (scope/handles @world-scope)))))
+
+(deftest a-live-lease-keeps-quiescence-checks-read-only
+  (let [world-scope (scope/create {})
+        lease (scope/begin-activity! world-scope :session)
+        commits (atom 0)
+        end (promise)]
+    ((scope/await-quiescence world-scope) #(deliver end %) #(deliver end %))
+    (add-watch world-scope ::commits (fn [_ _ _ _] (swap! commits inc)))
+    (dotimes [_ 20] (scope/maybe-complete-quiescence! world-scope))
+    (is (zero? @commits) "an open lease needs no speculative CAS")
+    (scope/end-activity! world-scope lease)
+    (is (nil? (deref end 5000 ::timeout)))
+    (is (true? (:quiescent? @world-scope)))))
