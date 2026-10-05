@@ -339,7 +339,20 @@
   ([first-key local-paths]
    (contains? local-paths first-key)))
 
-(defrecord OverlayBackend [overlay-atom parent-backend local-paths]
+(defn- cached-overlay-state [cache parent-state overlay local-paths]
+  ;; Persistent roots are revision tokens. A following parent's materialized
+  ;; root changes when any ancestor writes; a frozen parent's root is stable.
+  ;; Concurrent computations may overwrite the cache in either order: every
+  ;; use validates both inputs, including views computed in a retried CAS.
+  (let [[cached-parent cached-overlay cached-state] @cache]
+    (if (and (identical? parent-state cached-parent)
+             (identical? overlay cached-overlay))
+      cached-state
+      (let [state (merged-overlay-state parent-state overlay local-paths)]
+        (reset! cache [parent-state overlay state])
+        state))))
+
+(defrecord OverlayBackend [overlay-atom parent-backend local-paths view-cache]
   PStateBackend
 
   (backend-read [this path]
@@ -391,7 +404,7 @@
                                       ;; Recursively materialized by the
                                       ;; overlay backend implementation.
                                       (backend-deref parent-backend))
-                       merged (merged-overlay-state parent-state ov local-paths)
+                       merged (cached-overlay-state view-cache parent-state ov local-paths)
                        new-state (f merged)
                        changes (whole-state-changes merged new-state)]
                    ;; Reset on every retry; only the invocation whose CAS commits
@@ -594,7 +607,8 @@
     ;; Materialize recursively so nested overlays include inherited entities
     ;; and every ancestor's tombstones. Diagnostics that need only this sparse
     ;; layer can inspect :overlay-atom directly.
-    (merged-overlay-state
+    (cached-overlay-state
+     view-cache
      (when parent-backend (backend-deref parent-backend))
      @overlay-atom
      local-paths))
@@ -618,7 +632,7 @@
    (->OverlayBackend (atom (if (holds-tombstone? initial-overlay)
                              (with-meta initial-overlay (assoc (meta initial-overlay) tombstones-key true))
                              initial-overlay))
-                     parent-backend local-paths)))
+                     parent-backend local-paths (atom nil))))
 
 ;; =============================================================================
 ;; Safe Printing (prevent circular reference overflow)

@@ -15,6 +15,27 @@
    :atoms {:s1 #{:a} :s2 #{:b}}
    :flag          true})
 
+(deftest materialized-views-follow-both-parent-and-overlay-revisions
+  (let [parent (backend/create-atom-backend parent-state)
+        ov (backend/create-overlay-backend parent)
+        nested (backend/create-overlay-backend ov)]
+    (backend/backend-write! ov [:nodes :a :v] (constantly 10))
+    (let [first-view (backend/backend-deref nested)]
+      (is (identical? first-view (backend/backend-deref nested)))
+      (backend/backend-write! parent [:nodes :b :v] (constantly 20))
+      (is (= {:a {:v 10} :b {:v 20} :c {:v 3}}
+             (:nodes (backend/backend-deref nested)))))
+    (let [frozen (backend/create-overlay-backend
+                  (backend/create-immutable-backend (backend/backend-deref ov)))]
+      (backend/backend-write! ov [] #(update % :nodes dissoc :a))
+      (is (nil? (get-in (backend/backend-deref nested) [:nodes :a])))
+      (is (= 10 (backend/backend-read frozen [:nodes :a :v])))
+      (backend/backend-write-2! ov [:nodes :b :v] [:nodes :c :v]
+                                (fn [b c] [(inc b) (inc c)]))
+      (is (= {:b {:v 21} :c {:v 4}} (:nodes (backend/backend-deref nested))))
+      (backend/backend-write! ov [:nodes :a :v] (constantly 30))
+      (is (= 30 (get-in (backend/backend-deref nested) [:nodes :a :v]))))))
+
 (deftest a-whole-state-transaction-writes-only-the-changes
   (testing "an untouched top-level map stays out of the overlay"
     (let [ov (fork-of parent-state)]
