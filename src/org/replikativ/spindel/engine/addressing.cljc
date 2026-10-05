@@ -162,13 +162,17 @@
     prefix: String prefix for the address (e.g. 'spin', 'rv', 'signal')
     source-loc: Map with :file, :line, :column (or any identifying data)
 
+  The read and the advance are one atomic swap: two threads minting from
+  the same slot at once (spins built off the drain, all on the top-level
+  slot) would otherwise both read the same head and mint the same id, and
+  two Spins sharing an id share one engine slot, so one never sees its
+  own completion. One thread still mints exactly the same sequence.
+
   Returns: Keyword like :spin-550e8400-e29b-41d4-a716-446655440000"
   [ctx prefix source-loc]
-  (let [last-addr (get-chain-head ctx)
-        new-uuid (chain-hash source-loc last-addr)
-        new-addr (keyword (str prefix "-" new-uuid))]
-    (set-chain-head! ctx new-addr)
-    new-addr))
+  (rtp/swap-state! ctx (chain-head-path)
+                   (fn [last-addr]
+                     (keyword (str prefix "-" (chain-hash source-loc last-addr))))))
 
 ;; =============================================================================
 ;; Structural addressing (preferred for spins and elements)
