@@ -4,6 +4,8 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is]]
             [org.replikativ.spindel.effects.await :refer [await]]
+            [org.replikativ.spindel.engine.addressing :as a]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -45,3 +47,25 @@
                                           :on-error #(deliver (ps i) [:error %])}))))))]
       (run! deref ws)
       (is (= (mapv inc (range n)) (mapv #(deref % 5000 ::lost) ps))))))
+
+(deftest a-fork-mints-from-the-cursors-it-inherits
+  ;; the fork copies :chain-heads on its first local seed; cursors the parent
+  ;; seeds afterwards are read through from the parent, and minting must hash
+  ;; from them (not from nil, which gave two spins one id)
+  (let [parent (ctx/create-execution-context)
+        child (ctx/fork-context parent)]
+    (try
+      (a/seed-body-chain-head! child :already-local)
+      (a/seed-body-chain-head! parent :b)
+      (a/seed-body-chain-head! parent :c)
+      (let [mint (fn [sid]
+                   (binding [ec/*spin-id* sid]
+                     (let [head (a/get-chain-head child)]
+                       [(keyword (str "spin-" (a/chain-hash [:same-site] head)))
+                        (a/next-address! child "spin" [:same-site])])))
+            [expected-b b] (mint :b)
+            [expected-c c] (mint :c)]
+        (is (= expected-b b))
+        (is (= expected-c c))
+        (is (not= b c)))
+      (finally (ctx/stop-context! parent)))))

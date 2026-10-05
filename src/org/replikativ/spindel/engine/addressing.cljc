@@ -168,11 +168,18 @@
   two Spins sharing an id share one engine slot, so one never sees its
   own completion. One thread still mints exactly the same sequence.
 
+  In a fork, a per-spin cursor the parent seeded after the fork copied its
+  `:chain-heads` is read through from the parent, while the swap hands `f`
+  nil for it: an absent head is read the way `get-chain-head` reads it (a
+  concurrent local write still retries the swap).
+
   Returns: Keyword like :spin-550e8400-e29b-41d4-a716-446655440000"
   [ctx prefix source-loc]
-  (rtp/swap-state! ctx (chain-head-path)
-                   (fn [last-addr]
-                     (keyword (str prefix "-" (chain-hash source-loc last-addr))))))
+  (let [path (chain-head-path)]
+    (rtp/swap-state! ctx path
+                     (fn [last-addr]
+                       (let [last-addr (if (some? last-addr) last-addr (rtp/get-state ctx path))]
+                         (keyword (str prefix "-" (chain-hash source-loc last-addr))))))))
 
 ;; =============================================================================
 ;; Structural addressing (preferred for spins and elements)
