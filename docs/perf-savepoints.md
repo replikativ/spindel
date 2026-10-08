@@ -1,7 +1,9 @@
 # Structural savepoint performance
 
 This work measures foerster's inference workloads against Spindel's structural
-savepoint branch. The baseline is `b6ba2f3`. All changes apply to arbitrary
+savepoint branch. The measurements below were taken before the branch was
+rebased onto `e3a4f7c` (concurrent spin-id minting): baseline `b6ba2f3`,
+implementation commits as listed at the end. All changes apply to arbitrary
 worlds, including worlds with registered systems and resource authorities.
 Foerster's inference source is unchanged.
 
@@ -224,11 +226,15 @@ Raw logs and recordings from this session are retained under `/tmp`:
 `struct-targeted.log`, `struct-spindel-full.log`, `struct-cljs-build.log`,
 `struct-cljs-tests.log`, and `struct-foerster-full.log`.
 
-Implementation commits:
+Implementation commits as measured (before the rebase):
 
 - `acc0af8`: retire consumed entries and enforce occurrence affinity.
 - `8028d9a`: cache materialized views by persistent state roots.
 - `960550b`: skip quiescence transitions while work remains.
+
+After the rebase onto `e3a4f7c` they are `bced983`, `326ad59` and `0518bd2`;
+the timings were not repeated on the rebased commits. The rebased branch
+passes the full JVM suite (1,172 tests / 4,982 assertions).
 
 ## Remaining options
 
