@@ -412,6 +412,11 @@
         (is (sp/pending? current))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not pending"
                               (sp/resume old 100)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not pending"
+                              (await-cps (sp/fork old)))
+            "nor fork the occurrence that replaced it")
+        (is (not= (sp/spend-key old) (sp/spend-key current))
+            "two occurrences at one address are spent separately")
         (sp/resume current 20)
         (is (= [10 20] (:savepoint/payload (take! events))))
         (is (empty? (rtp/get-state root [:savepoint/pending])))

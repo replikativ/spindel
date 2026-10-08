@@ -193,11 +193,11 @@
 
 (defn spend-key
   "An identity for what is spent while continuing from `sp`: unique per world
-  and site, and a world continues from a site once. A ledger that
-  deduplicates by id needs it, or the second fork of one savepoint looks like
-  a replay of the first and is not charged."
+  and occurrence — an address published again (an explicit :id) is a new
+  occurrence. A ledger that deduplicates by id needs it, or the second fork of
+  one savepoint looks like a replay of the first and is not charged."
   [sp]
-  [(world-id (:savepoint/world sp)) (:savepoint/address sp)])
+  [(world-id (:savepoint/world sp)) (:savepoint/address sp) (:savepoint/seq sp)])
 
 (defn- cancellation-error []
   (ex-info "Savepoint world abandoned" {:type spin-core/spin-cancelled}))
