@@ -707,25 +707,31 @@
           (recur))))))
 
 (defn maybe-complete-quiescence! [scope]
-  (let [readers (transition! scope
-                             (fn [state]
-                               (if (and (empty? (:activities state))
-                                        (zero? (:pending-forks state)))
-                                 [(assoc state :quiescent? true :quiescence-readers [])
-                                  (:quiescence-readers state)]
-                                 [state []])))]
-    (try
-      (let [callback-error (volatile! nil)]
-        (doseq [reader readers]
-          (try
-            (reader nil)
-            (catch #?(:clj Throwable :cljs :default) error
-              (when-not @callback-error
-                (vreset! callback-error error)))))
-        (when-let [error @callback-error]
-          (throw error)))
-      (finally
-        (maybe-clean-cancelled! scope)))))
+  ;; The last lease/fork to end checks again after committing its removal.
+  ;; While work remains there are no readers or cancellation cleanup to
+  ;; publish, so avoid a speculative CAS on every fork and terminal callback.
+  (let [state @scope]
+    (when (and (empty? (:activities state))
+               (zero? (:pending-forks state)))
+      (let [readers (transition! scope
+                                 (fn [state]
+                                   (if (and (empty? (:activities state))
+                                            (zero? (:pending-forks state)))
+                                     [(assoc state :quiescent? true :quiescence-readers [])
+                                      (:quiescence-readers state)]
+                                     [state []])))]
+        (try
+          (let [callback-error (volatile! nil)]
+            (doseq [reader readers]
+              (try
+                (reader nil)
+                (catch #?(:clj Throwable :cljs :default) error
+                  (when-not @callback-error
+                    (vreset! callback-error error)))))
+            (when-let [error @callback-error]
+              (throw error)))
+          (finally
+            (maybe-clean-cancelled! scope)))))))
 
 (defn request-cancel!
   "Request cleanup after client-owned computation cancellation and quiescence."

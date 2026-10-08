@@ -83,8 +83,7 @@
 ;;
 ;; [:savepoint/handlers] {site (fn [sp])}     inherited by forks, replaceable
 ;; [:savepoint/session]  Session               process-local owner
-;; [:savepoint/pending]  {address entry}       continuations, or tombstones of
-;;                                             consumed ones
+;; [:savepoint/pending]  {address entry}       live continuations only
 ;; [:savepoint/seq]      long                  program order
 ;; [:savepoint/seed]     portable              this world's random seed
 ;; [:savepoint/task]     Spin                  the computation `start!` ran
@@ -141,7 +140,6 @@
   "The savepoints pending in `world`, in program order."
   [world]
   (->> (vals (or (rtp/get-state world [:savepoint/pending]) {}))
-       (remove ::claimed)
        (sort-by :savepoint/seq)
        (mapv #(attach world %))))
 
@@ -149,13 +147,18 @@
   "The pending entry of `address` in `world`, or nil when there is none or it
   was consumed."
   [world address]
-  (let [entry (get (rtp/get-state world [:savepoint/pending]) address)]
-    (when (and entry (not (::claimed entry))) entry)))
+  (get (rtp/get-state world [:savepoint/pending]) address))
+
+(defn- same-occurrence? [sp entry]
+  ;; Explicit addresses may be published again after consumption. The old
+  ;; handle must stay consumed; forks share the immutable continuation map.
+  (and entry (identical? (::k sp) (::k entry))))
 
 (defn pending?
   "True while `sp` may still be resumed, forked or abandoned."
   [sp]
-  (some? (live-entry (:savepoint/world sp) (:savepoint/address sp))))
+  (boolean (same-occurrence? sp (live-entry (:savepoint/world sp)
+                                            (:savepoint/address sp)))))
 
 ;; =============================================================================
 ;; Callbacks cross worlds
@@ -190,11 +193,11 @@
 
 (defn spend-key
   "An identity for what is spent while continuing from `sp`: unique per world
-  and site, and a world continues from a site once. A ledger that
-  deduplicates by id needs it, or the second fork of one savepoint looks like
-  a replay of the first and is not charged."
+  and occurrence — an address published again (an explicit :id) is a new
+  occurrence. A ledger that deduplicates by id needs it, or the second fork of
+  one savepoint looks like a replay of the first and is not charged."
   [sp]
-  [(world-id (:savepoint/world sp)) (:savepoint/address sp)])
+  [(world-id (:savepoint/world sp)) (:savepoint/address sp) (:savepoint/seq sp)])
 
 (defn- cancellation-error []
   (ex-info "Savepoint world abandoned" {:type spin-core/spin-cancelled}))
@@ -394,16 +397,17 @@
                         :reject reject
                         :spin-id spin-id
                         :slice-state (simple/capture-slice-state world spin-id)}}]
-        (when (live-entry world address)
-          (throw (ex-info "Duplicate savepoint address"
-                          {:type ::duplicate-address
-                           :savepoint/site site
-                           :savepoint/address address})))
         ;; a replay must reach this site again, so no world may adopt the
         ;; spin that holds it
         (simple/mark-reuse-barrier! world spin-id)
         (rtp/swap-state! world [:savepoint/pending]
-                         (fn [m] (assoc (or m {}) address entry)))
+                         (fn [m]
+                           (when (get m address)
+                             (throw (ex-info "Duplicate savepoint address"
+                                             {:type ::duplicate-address
+                                              :savepoint/site site
+                                              :savepoint/address address})))
+                           (assoc (or m {}) address entry)))
         (log/trace :savepoint/published {:site site :address address :seq seq-no})
         ;; Publish, THEN look at the session: `close!` raises the flag and
         ;; then scans for pending savepoints, so one of the two sees the other.
@@ -444,22 +448,19 @@
 (defn- claim!
   "Atomically consume `sp`; throws if it is not pending. Returns nil.
 
-  One swap replaces the entry by a tombstone, so there is no moment at which a
-  savepoint is neither pending nor consumed. The winner is read off the
-  committed state: `swap-state!` may retry its function, and an overlay world
+  One swap removes the entry. The winning invocation's result is captured on
+  every retry, so no claim history needs to remain in the world. An overlay
   cannot CAS a path it inherited. The continuation itself travels in `sp`."
   [sp operation]
   (let [world (:savepoint/world sp)
         address (:savepoint/address sp)
-        token #?(:clj (Object.) :cljs (js-obj))
-        committed (rtp/swap-state!
-                   world [:savepoint/pending]
-                   (fn [m]
-                     (let [entry (get m address)]
-                       (if (and entry (not (::claimed entry)))
-                         (assoc m address {::claimed token})
-                         m))))]
-    (when-not (identical? token (::claimed (get committed address)))
+        claimed? (volatile! false)]
+    (rtp/swap-state! world [:savepoint/pending]
+                     (fn [m]
+                       (let [mine? (same-occurrence? sp (get m address))]
+                         (vreset! claimed? (boolean mine?))
+                         (if mine? (dissoc m address) m))))
+    (when-not @claimed?
       (throw (ex-info "Savepoint is not pending in its world"
                       {:type ::not-pending
                        :operation operation
@@ -634,20 +635,21 @@
                       ;; it. A resume or abandon that won in between leaves
                       ;; nothing to continue there; that fork never becomes a
                       ;; live world.
-                      (if-let [entry (live-entry child-ctx address)]
-                        (do
-                          (world-scope/begin-activity! scope :savepoint/world child-ctx
-                                                       (world-id child-ctx))
-                          (rtp/swap-state! child-ctx [:savepoint/seed]
-                                           (constantly (or child-seed
-                                                           (derive-seed (seed world) address index))))
-                          (when child-handlers
-                            (install-handlers! child-ctx child-handlers))
-                          {:ok (attach child-ctx entry)})
-                        {:error (ex-info "Cannot fork a savepoint that is not pending"
-                                         {:type ::not-pending
-                                          :operation :fork
-                                          :savepoint/address address})})
+                      (let [entry (live-entry child-ctx address)]
+                        (if (same-occurrence? sp entry)
+                          (do
+                            (world-scope/begin-activity! scope :savepoint/world child-ctx
+                                                         (world-id child-ctx))
+                            (rtp/swap-state! child-ctx [:savepoint/seed]
+                                             (constantly (or child-seed
+                                                             (derive-seed (seed world) address index))))
+                            (when child-handlers
+                              (install-handlers! child-ctx child-handlers))
+                            {:ok (attach child-ctx entry)})
+                          {:error (ex-info "Cannot fork a savepoint that is not pending"
+                                           {:type ::not-pending
+                                            :operation :fork
+                                            :savepoint/address address})}))
                       (catch #?(:clj Throwable :cljs :default) error
                         {:error error}))]
                 (if (contains? outcome :ok)

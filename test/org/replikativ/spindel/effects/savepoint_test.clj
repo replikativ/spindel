@@ -353,6 +353,25 @@
               (is (sp/pending? (second forked))))
           (is (= [:error ::sp/not-pending] forked)))))))
 
+(deftest concurrent-publications-cannot-overwrite-a-live-address
+  (let [root (context/create-execution-context :executor (executor/synchronous-executor))
+        events (java.util.concurrent.LinkedBlockingQueue.)
+        resumed (atom 0)]
+    (try
+      (sp/install-handlers! root {:step #(.put events %)})
+      (doseq [world [root (context/fork-context root :mode :frozen)]]
+        (let [publish #(binding [ec/*execution-context* world]
+                         (sp/publish! world {:site :step :payload 1 :opts {:id :same}}
+                                      (fn [_] (swap! resumed inc)) identity))
+              outcomes (race! [publish publish])]
+          (is (= 1 (count (filter #(= :ok (first %)) outcomes))))
+          (is (= 1 (count (filter #(= [:error ::sp/duplicate-address] %) outcomes))))
+          (is (= 1 (count (sp/pending world))))
+          (sp/resume (take! events) 1)
+          (is (empty? (rtp/get-state world [:savepoint/pending])))))
+      (is (= 2 @resumed))
+      (finally (context/stop-context! root)))))
+
 ;; -----------------------------------------------------------------------------
 ;; A synchronous executor and a handler that resumes inline
 ;; -----------------------------------------------------------------------------
@@ -373,9 +392,38 @@
                              (recur (inc i) (+ sum (savepoint :tick i)))
                              sum)))))
       (is (= (reduce + (range sites)) (deref end 20000 ::timeout)))
+      (is (empty? (rtp/get-state root [:savepoint/pending]))
+          "consumed sites must not retain a token per occurrence")
       (finally
         (await-cps (sp/close! session))
         (context/stop-context! root)))))
+
+(deftest a-retired-savepoint-cannot-consume-a-republished-address
+  (with-session [root session events {}]
+    (sp/start! session
+               (binding [ec/*execution-context* root]
+                 (spin [(savepoint :step 1 {:id :same})
+                        (savepoint :step 2 {:id :same})])))
+    (let [old (take! events)]
+      (sp/resume old 10)
+      (let [current (take! events)
+            branch (await-cps (sp/fork current))]
+        (is (not (sp/pending? old)))
+        (is (sp/pending? current))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not pending"
+                              (sp/resume old 100)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"not pending"
+                              (await-cps (sp/fork old)))
+            "nor fork the occurrence that replaced it")
+        (is (not= (sp/spend-key old) (sp/spend-key current))
+            "two occurrences at one address are spent separately")
+        (sp/resume current 20)
+        (is (= [10 20] (:savepoint/payload (take! events))))
+        (is (empty? (rtp/get-state root [:savepoint/pending])))
+        (is (sp/pending? branch) "retirement is local to the original world")
+        (sp/resume branch 30)
+        (is (= [10 30] (:savepoint/payload (take! events))))
+        (is (empty? (rtp/get-state (:savepoint/world branch) [:savepoint/pending])))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Durable boundary
