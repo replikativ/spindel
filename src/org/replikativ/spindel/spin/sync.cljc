@@ -258,6 +258,8 @@
           msg-to-resolve (atom ::not-found)
           _result (swap! state-atom
                          (fn [state]
+                           ;; swap! may retry: forget an earlier attempt's take.
+                           (reset! msg-to-resolve ::not-found)
                            (if (seq (:queue state))
                            ;; Queue has message - take from front (FIFO)
                              (do
@@ -280,6 +282,52 @@
           (spin-core/resume resolve @msg-to-resolve))
        ;; No message - added to waiters, will be resumed async
         spin-core/incomplete))))
+
+;; ============================================================================
+;; Immediate take (no reader registered)
+;; ============================================================================
+
+(def ^:no-doc nothing
+  "Sentinel returned by `take-now!` when nothing is immediately available.
+  An object, compared with `identical?`: no message value can equal it."
+  #?(:clj (Object.) :cljs (js-obj)))
+
+(defn ^:no-doc take-now!
+  "Atomically take what `x` (a Mailbox or Deferred) can deliver RIGHT NOW,
+  without registering a waiter/reader; `nothing` otherwise.
+
+  Mailbox: pops the queue head iff the queue is non-empty (the mailbox
+  invariant `queue non-empty => no live waiters` means this cannot jump a
+  parked consumer) and `spin-id` is not cancelled — the cancellation probe
+  runs inside the swap fn, like post-inline!'s dead-waiter check, so a
+  cancelled consumer never consumes a message. Deferred: its value iff
+  assigned (immutable once assigned).
+
+  For `await-handler`, which resumes the body with the result and RETURNS
+  the resume's value (the recur Thunk) to the body's own trampoline. The
+  2-arities keep forcing their own trampoline for every other caller."
+  [x spin-id]
+  (cond
+    (instance? Deferred x)
+    (let [s @(.-state-atom ^Deferred x)]
+      (if (:assigned? s) (:value s) nothing))
+
+    (instance? Mailbox x)
+    (let [state-atom (.-state-atom ^Mailbox x)]
+      (if (seq (:queue @state-atom))
+        (let [taken (volatile! nothing)]
+          (swap! state-atom
+                 (fn [state]
+                   (vreset! taken nothing)
+                   (if (and (seq (:queue state))
+                            (not (and spin-id (ec/spin-is-cancelled? spin-id))))
+                     (do (vreset! taken (peek (:queue state)))
+                         (update state :queue pop))
+                     state)))
+          @taken)
+        nothing))
+
+    :else nothing))
 
 (defn create-mailbox
   "Create a mailbox with explicit execution-context.
@@ -328,22 +376,28 @@
     (fn [resolve reject]
       ;; Capture execution context to rebind when mailbox calls continuation
       (let [exec-ctx (try (ec/current-execution-context)
-                          (catch #?(:clj Throwable :cljs :default) _ nil))]
+                          (catch #?(:clj Throwable :cljs :default) _ nil))
+            now (take-now! mbx ec/*spin-id*)]
+        (if-not (identical? nothing now)
+        ;; Immediately available: resolve on this stack and RETURN the
+        ;; resolve's value (cps-fn contract) so a looping consumer's
+        ;; trampoline forces its recur Thunk instead of nesting.
+          (resolve [now mbx])
         ;; Use the mailbox's 2-arity (consumer) to get next message
         ;; Wrap resolve to:
         ;; 1. Rebind execution context (for nested spindel operations)
         ;; 2. Transform msg -> [msg mbx]
-        (mbx
-         (fn [msg]
-           (if exec-ctx
-             (binding [ec/*execution-context* exec-ctx]
-               (resolve [msg mbx]))
-             (resolve [msg mbx])))
-         (fn [error]
-           (if exec-ctx
-             (binding [ec/*execution-context* exec-ctx]
-               (reject error))
-             (reject error))))))))
+          (mbx
+           (fn [msg]
+             (if exec-ctx
+               (binding [ec/*execution-context* exec-ctx]
+                 (resolve [msg mbx]))
+               (resolve [msg mbx])))
+           (fn [error]
+             (if exec-ctx
+               (binding [ec/*execution-context* exec-ctx]
+                 (reject error))
+               (reject error)))))))))
 
 (defn post!
   "Post a message to mailbox from EXTERNAL context (futures, threads, callbacks).

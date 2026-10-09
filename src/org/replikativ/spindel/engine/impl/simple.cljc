@@ -2864,7 +2864,10 @@
   TRANSACTIONAL: All state changes happen atomically in a single swap-state! to
   ensure context consistency for snapshotting. Exactly one concurrent caller
   receives the removed continuation. With `{:cancel? true}`, an external-await
-  cancellation token is armed in the same transaction as removal.
+  cancellation token is armed in the same transaction as removal. With
+  `{:only-token t}`, the continuation is removed only if it carries
+  cancel-token `t` — the check is part of the same transaction, so a newer
+  await registered at the same id is never removed in its place.
 
   Args:
     context - context record (implements PState protocol)
@@ -2874,14 +2877,17 @@
   Returns: the removed continuation, or nil."
   ([context spin-id cont-id]
    (remove-continuation! context spin-id cont-id nil))
-  ([context spin-id cont-id {:keys [cancel?]}]
+  ([context spin-id cont-id {:keys [cancel? only-token]}]
    (let [removed (volatile! nil)]
      (rtp/swap-state! context []
                       (fn [rt-state]
                         ;; swap!/overlay transactions may retry. Clear an earlier
                         ;; failed attempt's capture before inspecting this attempt.
                         (vreset! removed nil)
-                        (if-let [cont (continuation-at rt-state spin-id cont-id)]
+                        (if-let [cont (let [c (continuation-at rt-state spin-id cont-id)]
+                                        (when (or (nil? only-token)
+                                                  (= only-token (:cancel-token c)))
+                                          c))]
                           (do
                             ;; A completion that already linearized on this
                             ;; reactive cont owns its current CPS invocation.
