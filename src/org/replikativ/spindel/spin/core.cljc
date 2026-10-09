@@ -196,7 +196,9 @@
            ;; the original run alive. See simple/enter-body!.
            (simple/enter-body! runtime spin-id {:rebuild? true})
            (binding [ec/*execution-context* runtime
-                     ec/*spin-id* spin-id]
+                     ec/*spin-id* spin-id
+                     ;; Return discarded: a trampoline of its own (see -invoke).
+                     pcps-async/*in-trampoline* false]
              (spin-fn (fn [_] nil) (fn [_] nil)))
            (unwrap cached))
 
@@ -235,6 +237,23 @@
              (log/trace :spin/deref-done {:spin-id spin-id})
              (wait-on-promise result-promise)))))))
 
+(defn- resolved-value
+  "What a cache-hit -invoke returns: the spin's `value`, or the Thunk the
+   resumed callback `ret`urned for the caller's trampoline."
+  [ret value]
+  (if (is.simm.partial-cps.runtime/thunk? ret) ret value))
+
+(defn- rejected-value
+  "What a cached-error -invoke does after resuming `reject`: hand the Thunk
+   it returned to the caller's trampoline (the caller handled the error and
+   continues), else re-throw the error unless it is a cancellation
+   (cancellation errors are handled via callbacks, not exceptions)."
+  [ret error]
+  (cond
+    (is.simm.partial-cps.runtime/thunk? ret) ret
+    (= ::spin-cancelled (:type (ex-data error))) nil
+    :else (throw error)))
+
 (deftype Spin [spin-id spin-fn]
   PSpin
   (spin-id [_] spin-id)
@@ -269,18 +288,18 @@
             ;; body's CPS chain. See simple/enter-body!.
           (simple/enter-body! runtime spin-id {:rebuild? true})
           (binding [ec/*execution-context* runtime
-                    ec/*spin-id* spin-id]
+                    ec/*spin-id* spin-id
+                    ;; The body's return is discarded: it must force its own
+                    ;; Thunks (see Case 2).
+                    pcps-async/*in-trampoline* false]
               ;; Execute with dummy callbacks - we'll use cached value anyway
             (spin-fn (fn [_] nil) (fn [_] nil)))
-            ;; Return cached value
+            ;; Return cached value (or the caller's Thunk, see Case 1b)
           (match local-cached
             (fn [value]
-              (resume resolve value)
-              value)
+              (resolved-value (resume resolve value) value))
             (fn [error]
-              (resume reject error)
-              (when-not (= ::spin-cancelled (:type (ex-data error)))
-                (throw error)))))
+              (rejected-value (resume reject error) error))))
 
           ;; Case 1b: Local cache hit (normal mode) - resolve from local cache.
           ;; SpinNode :result is the single-slot cache for "deps unchanged since last run."
@@ -294,18 +313,15 @@
           (match local-cached
               ;; Success case
             (fn [value]
-                ;; Call resolve via resume to handle Thunk returns
-              (resume resolve value)
-                ;; Return the spin's value (not the callback result)
-              value)
+                ;; Call resolve via resume to handle Thunk returns. Return
+                ;; the spin's value, unless the callback handed back the
+                ;; Thunk of a caller's loop: that goes to the caller's
+                ;; trampoline (resume only returns it when one is running).
+              (resolved-value (resume resolve value) value))
               ;; Error case
             (fn [error]
                 ;; Call reject via resume to handle Thunk returns
-              (resume reject error)
-                ;; Re-throw the error UNLESS it's a cancellation error
-                ;; (cancellation errors are handled via callbacks, not exceptions)
-              (when-not (= ::spin-cancelled (:type (ex-data error)))
-                (throw error)))))
+              (rejected-value (resume reject error) error))))
 
           ;; Case 2: Cache miss - execute spin
         :else
@@ -318,7 +334,50 @@
                                      :egress-policy ec/*callback-egress-policy*
                                      :resolve resolve
                                      :reject reject}])
-              executing? (atom true)]
+              executing? (atom true)
+              ;; A callback resumed while the body runs synchronously, on
+              ;; this thread, runs inside the body's own trampoline: the
+              ;; Thunk it returns (a caller looping over this spin) has
+              ;; nobody to force it there. Keep it for the caller.
+              caller-in-trampoline? (pcps-async/in-trampoline?)
+              sync-thread #?(:clj (Thread/currentThread) :cljs nil)
+              in-body (volatile! true)
+              caller-thunk (volatile! nil)
+              body-fn (fn [r j]
+                        (try (spin-fn r j)
+                             (finally (vreset! in-body false))))
+              ;; Any other resume of a callback (a reactive re-run, a forked
+              ;; world's thread) forces its Thunks in a trampoline of its own:
+              ;; nothing here returns them to anybody.
+              resume-callback! (fn [k x rt]
+                                 (if (and @in-body
+                                          ;; only a caller that is a running
+                                          ;; trampoline takes a Thunk back;
+                                          ;; plain callbacks force their own
+                                          caller-in-trampoline?
+                                          (nil? @caller-thunk)
+                                          ;; this world: a fork completed on
+                                          ;; this stack continues in the fork
+                                          (= (:fork-id rt) (:fork-id runtime))
+                                          #?(:clj (identical? sync-thread (Thread/currentThread))
+                                             :cljs true))
+                                   ;; Resume it as a trampoline activation
+                                   ;; that does not force: whatever body runs
+                                   ;; here (a hand-written one starts no
+                                   ;; trampoline), the callback's Thunk comes
+                                   ;; back instead of running the caller's
+                                   ;; next iteration nested in this one.
+                                   (let [[token previous] (is.simm.partial-cps.runtime/enter-trampoline!)
+                                         ret (try
+                                               (binding [pcps-async/*in-trampoline* token]
+                                                 (resume k x))
+                                               (finally
+                                                 (is.simm.partial-cps.runtime/leave-trampoline! previous)))]
+                                     (when (is.simm.partial-cps.runtime/thunk? ret)
+                                       (vreset! caller-thunk ret))
+                                     ret)
+                                   (binding [pcps-async/*in-trampoline* false]
+                                     (resume k x))))]
 
           (log/debug :spin/start {:spin-id spin-id})
 
@@ -329,9 +388,20 @@
             ;; its docstring for the invariant it maintains.
           (simple/enter-body! runtime spin-id)
           (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
+          ;; The body runs in a trampoline of its own. -invoke is called
+          ;; from inside other bodies (spawn! in a spin, a SynchronousExecutor
+          ;; running a parallel/race/work child inline, the rebuild path of
+          ;; await), i.e. while the caller's trampoline is active, and those
+          ;; callers discard what -invoke returns. Under the caller's token
+          ;; the body would return its `recur` Thunk instead of forcing it,
+          ;; and the child's loop would stop at its first synchronous await.
+          ;; The await slow path binds the same for the same reason. (The
+          ;; body starts the trampoline itself, inside its own try: every
+          ;; iteration's exception reaches its reject.)
           (binding [ec/*execution-context* runtime
-                    ec/*spin-id* spin-id]
-            (let [result (spin-fn
+                    ec/*spin-id* spin-id
+                    pcps-async/*in-trampoline* false]
+            (let [result (body-fn
                             ;; Resolve continuation
                           (fn [value]
                               ;; CRITICAL: Get CURRENT runtime, not captured one!
@@ -357,7 +427,7 @@
                                                current-rt callback-fork-id
                                                egress-policy)]
                                     ;; Call resolve via resume to handle Thunk returns
-                                  (resume resolve value)))
+                                  (resume-callback! resolve value current-rt)))
 
                                 ;; CRITICAL: Also call any pending callbacks from shared state
                                 ;; These are from duplicate :spin-execution events that were skipped
@@ -398,7 +468,7 @@
                                                _current-rt callback-fork-id
                                                egress-policy)]
                                     ;; Call reject via resume to handle Thunk returns
-                                  (resume reject err)))
+                                  (resume-callback! reject err _current-rt)))
 
                                 ;; CRITICAL: Also call any pending callbacks from shared state
                                 ;; These are from duplicate :spin-execution events that were skipped
@@ -419,8 +489,9 @@
                 ;; will be cleared when the body resolves via cache-result!.
                 ;; See `mark-running!` call above for rationale.
 
-                ;; Return result (could be value or ::incomplete from nested await)
-              result))))))
+              ;; Return result (could be value or ::incomplete from nested
+              ;; await), or the kept Thunk, for the caller's trampoline.
+              (or @caller-thunk result)))))))
 
   #?(:clj clojure.lang.IDeref :cljs IDeref)
   (#?(:clj deref :cljs -deref) [this]

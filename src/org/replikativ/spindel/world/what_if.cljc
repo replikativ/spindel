@@ -23,6 +23,7 @@
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [is.simm.partial-cps.async :as pcps-async]
             [replikativ.logging :as log]))
 
 (defrecord WhatIf [id parent overrides state])
@@ -131,8 +132,14 @@
                      (swap! (:state w) assoc-in [:watches watch-id :reads]
                             (read-set world (spin-core/spin-id s)))
                      (listen! w)
-                     (report value)))]
-      (binding [ec/*execution-context* world]
+                     ;; a plain callback: its CPS code runs as a trampoline
+                     ;; of its own
+                     (binding [pcps-async/*in-trampoline* false]
+                       (report value))))]
+      ;; Nothing returns what the watched spin hands back: a trampoline of
+      ;; its own, as for spawn!.
+      (binding [ec/*execution-context* world
+                pcps-async/*in-trampoline* false]
         (let [s (make)]
           (s (fn [value] (finish s on-value value))
              (fn [error] (finish s on-error error))))))))
