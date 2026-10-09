@@ -66,17 +66,24 @@
   Solution: Manually set the var and DON'T restore it here. The value will
   be restored when anext completes (either via yield-handler or termination).
   This is safe because each anext creates a fresh yield-handler for that
-  specific execution context."
+  specific execution context.
+
+  The caller (anext's spin body) discards the return value, so the body runs
+  in a trampoline of its own: under anext's trampoline a `recur` before the
+  first `yield` would come back as a Thunk and be lost, and the step would
+  never deliver. (The resumed continuation, `wrapped-cps-fn`, binds the same.)"
   [cps-fn yield-handler resolve-fn reject-fn]
   #?(:cljs
      ;; CLJS: Set var value directly, don't restore on return
      ;; The yield-handler is specific to this execution context
      (do
        (set! ec/*yield-handler* yield-handler)
-       (cps-fn resolve-fn reject-fn))
+       (binding [async/*in-trampoline* false]
+         (cps-fn resolve-fn reject-fn)))
      :clj
      ;; CLJ: binding works correctly with thread-local semantics
-     (binding [ec/*yield-handler* yield-handler]
+     (binding [ec/*yield-handler* yield-handler
+               async/*in-trampoline* false]
        (cps-fn resolve-fn reject-fn))))
 
 ;; `sink-atom` holds the deferred for the *current* anext step. Each anext

@@ -10,7 +10,8 @@
   observer notification, batch coordination, drain ordering) — lives in the
   engine implementation (`engine.impl.simple`), not in this namespace."
   (:require [org.replikativ.spindel.engine.bindings :as bindings]
-            [org.replikativ.spindel.engine.fault :as fault])
+            [org.replikativ.spindel.engine.fault :as fault]
+            [is.simm.partial-cps.async :as pcps-async])
   #?(:clj (:import [java.util.concurrent Executors ExecutorService ThreadPoolExecutor
                     ScheduledExecutorService ScheduledThreadPoolExecutor ThreadFactory
                     TimeUnit LinkedBlockingQueue Callable ForkJoinPool])))
@@ -344,6 +345,14 @@
 ;; Synchronous Executor (Deterministic Simulation)
 ;; =============================================================================
 
+;; A task is a boundary, like the fresh thread or tick the other executors
+;; give it. Run inline, it would otherwise inherit the caller's trampoline: a
+;; CPS body started by the task (a parallel/race child, a work task) would
+;; return its `recur` Thunk to this executor, which discards it.
+(defn- run-task [spin-fn]
+  (binding [pcps-async/*in-trampoline* false]
+    (spin-fn)))
+
 #?(:clj
    (defrecord SynchronousExecutor []
      PExecutor
@@ -353,7 +362,7 @@
        (let [result (volatile! nil)
              exception (volatile! nil)]
          (try
-           (vreset! result (spin-fn))
+           (vreset! result (run-task spin-fn))
            (catch Throwable e
              (vreset! exception e)))
          ;; Return mock future for API compatibility
@@ -381,7 +390,7 @@
      PExecutor
      (execute! [_ spin-fn]
        ;; Execute immediately for determinism
-       (spin-fn)
+       (run-task spin-fn)
        nil)
 
      (execute-after! [this delay-ms spin-fn]

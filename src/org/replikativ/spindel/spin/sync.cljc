@@ -490,7 +490,11 @@
 
 (defn- invoke-spawn-callback! [callback f value]
   (try
-    (f value)
+    ;; A plain callback, not a continuation: whatever CPS code it starts
+    ;; runs as a trampoline of its own, inside this try, whoever completes
+    ;; the spin.
+    (binding [pcps-async/*in-trampoline* false]
+      (f value))
     (catch #?(:clj Throwable :cljs :default) error
       (report-spawn-callback-error! callback error))))
 
@@ -552,6 +556,10 @@
      (when ctx
        (binding [ec/*execution-context* ctx]
          (ec/swap-state! [:engine/spawned] (fn [m] (assoc m sid s)))))
-     (s (fn [value] (settle! :on-success on-success value))
-        (fn [e] (settle! :on-error on-error e)))
+     ;; Fire-and-forget: nothing returns what the spin (or a callback it
+     ;; resumes) hands back, so it runs as a trampoline of its own, also
+     ;; when spawned from inside a body.
+     (binding [pcps-async/*in-trampoline* false]
+       (s (fn [value] (settle! :on-success on-success value))
+          (fn [e] (settle! :on-error on-error e))))
      nil)))

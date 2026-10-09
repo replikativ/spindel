@@ -17,7 +17,8 @@
             [org.replikativ.spindel.effects.track :as track]
             [org.replikativ.spindel.spin.sync :as sync]
             [replikativ.logging :as log]
-            [is.simm.partial-cps.async :as pcps-async]))
+            [is.simm.partial-cps.async :as pcps-async]
+            [is.simm.partial-cps.runtime :as runtime]))
 
 ;; =============================================================================
 ;; Public API Shim
@@ -557,6 +558,58 @@
                            :spin-id spin-id}))}))]
        [wrapped-resolve wrapped-reject cancel-token cancellation]))))
 
+(defn- invoke-cps-operation
+  "Call the CPS operation `op` with the gated pair `wr`/`wj` and return what
+  it returned, unless it dropped the awaiting body's Thunk.
+
+  An operation that settles during the call, on this stack, resumes the body
+  right there (inside the body's trampoline) and must return what `wr`
+  returned: in a loop, the `recur` Thunk. One that fans out to several
+  readers (a `doseq` over waiters) discards it, and the loop stops. So that
+  Thunk is handed to the operation as a once-only Thunk: if the operation
+  returns no Thunk and has not forced it, it goes to the body's trampoline.
+  An operation returning a Thunk (possibly wrapping ours, as binding
+  restorers do) is trusted with it; the once-only guard keeps a Thunk that
+  is forced both ways from running twice. The continuation still runs where
+  the operation called it: nothing is reordered. A settlement from another
+  thread, or after the call, is untouched."
+  [op wr wj]
+  (let [sync-thread #?(:clj (Thread/currentThread) :cljs nil)
+        world (:fork-id (ec/current-execution-context))
+        in-call (volatile! true)
+        kept (volatile! nil)
+        keep! (fn [k x]
+                (let [ret (k x)]
+                  (cond
+                    (not (and @in-call
+                              (runtime/thunk? ret)
+                              #?(:clj (identical? sync-thread (Thread/currentThread))
+                                 :cljs true)))
+                    ret
+
+                    ;; Settled in another world (the operation bound a fork):
+                    ;; the continuation goes on there, now, not in this one.
+                    (or @kept
+                        (not= world (:fork-id (try (ec/current-execution-context)
+                                                   (catch #?(:clj Throwable :cljs :default) _ nil)))))
+                    (pcps-async/with-trampoline ret)
+
+                    :else
+                    (let [claimed (atom false)
+                          once (runtime/->thunk
+                                (fn []
+                                  (when (compare-and-set! claimed false true)
+                                    (runtime/force-thunk ret))))]
+                      (vreset! kept [once claimed])
+                      once))))
+        result (try (op #(keep! wr %) #(keep! wj %))
+                    (finally (vreset! in-call false)))]
+    (if-let [[once claimed] @kept]
+      (if (or (runtime/thunk? result) @claimed)
+        result
+        once)
+      result)))
+
 (defn await-finalization-handler
   "Direct handler for the cancellation-shielded finalization boundary."
   [awaitable spin-id source-loc resolve reject]
@@ -568,7 +621,7 @@
              [::finalization #?(:clj (System/identityHashCode awaitable)
                                 :cljs (or (.-name awaitable) (str awaitable)))]
              source-loc false)]
-        (awaitable wr wj))
+        (invoke-cps-operation awaitable wr wj))
       (reject (eff/type-error 'await-finalization "async thunk" awaitable)))
     (catch #?(:clj Throwable :cljs :default) error
       (reject error))))
@@ -679,11 +732,11 @@
       ;; cancellation gate for the same orphaned-callback reason as Deferred.
       ;;
       ;; The thunk's return value is propagated up the CPS chain (matching
-      ;; pre-stage-4 behavior). Synchronously-resolving thunks call wr
-      ;; before returning; their return value is whatever spin-core/resume
-      ;; produced (typically `incomplete` when the resolve was itself an
-      ;; engine-level suspend, or the value otherwise). Forcing `incomplete`
-      ;; here would short-circuit sync-resolving partial-cps async blocks.
+      ;; pre-stage-4 behavior): a Thunk it returns (a partial-cps async
+      ;; block's own recur) goes to the body's trampoline, and so does the
+      ;; body's own Thunk when a thunk settling during the call dropped it
+      ;; (see invoke-cps-operation). Forcing `incomplete` here would
+      ;; short-circuit sync-resolving async blocks.
       ;;
       ;; The cancel-token is bound around the invocation, exactly as in the
       ;; Mailbox branch above. A thunk is opaque: it may itself hand our
@@ -706,8 +759,11 @@
              source-loc)]
         (if cancellation
           (:result cancellation)
-          (binding [ec/*external-await-cancel-token* cancel-token]
-            (awaitable wr wj))))
+          (invoke-cps-operation
+           (fn [r j]
+             (binding [ec/*external-await-cancel-token* cancel-token]
+               (awaitable r j)))
+           wr wj)))
 
       :else
       (reject (eff/type-error 'await "Spin, Deferred, or async thunk" awaitable)))
