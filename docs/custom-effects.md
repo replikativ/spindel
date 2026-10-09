@@ -168,7 +168,11 @@ spin hangs. This was the source of the original
 models — fixed by having `engine.effects/async-effect`'s
 `handle-effect` propagate `(effect-fn …)` instead of `nil`. The
 rule generalises to any custom effect handler: **return the
-continuation's value, not a sentinel**.
+continuation's value, not a sentinel**.  The built-in `await` follows it
+for what is already there: a queued mailbox message or an assigned
+deferred is taken at once (`sync/take-now!`) and the continuation's value
+returned, so a loop over a backlog runs flat instead of nesting one
+trampoline per message.
 
 ```clojure
 ;; CORRECT — propagates Thunks from recur-after-effect

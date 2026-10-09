@@ -15,6 +15,7 @@
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.effects.track :as track]
+            [org.replikativ.spindel.spin.sync :as sync]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]))
 
@@ -464,12 +465,39 @@
                (rtp/swap-state! ctx [:engine/cancelled-tokens]
                                 (fn [s] (if s (disj s cancel-token) s))))
              (and cancellable? in-set?)))
+         ;; The cont lives exactly as long as the await is PARKED. A
+         ;; delivery that is not cancelled retires it (token-matched, so a
+         ;; later await's cont at the same id is untouched) BEFORE the gate
+         ;; check: a concurrent cancel-spin! either claimed it first (and
+         ;; armed the token atomically — the gate then no-ops) or finds
+         ;; nothing to reject. The token check and the removal are ONE
+         ;; transaction (`:only-token`): a re-run that registered a newer
+         ;; await at the same id keeps it. Without this, a synchronous delivery (or any
+         ;; delivery not routed through :cont-resume, which claims it
+         ;; itself) left the cont behind: cancel-spin! later re-rejected a
+         ;; slice the body had already left, and re-awaits leaked tokens.
+         retire-own-cont!
+         (fn []
+           (when (try (ec/current-execution-context)
+                      (catch #?(:clj Throwable :cljs :default) _ nil))
+             (ec/continuation-remove! spin-id cont-id {:only-token cancel-token})))
+         ;; Resume the awaiting body as ITS spin. A delivery from another
+         ;; spin's stack (spawn! callbacks, plain-fn thunks) must not let
+         ;; the body's next awaits register under the deliverer's id.
+         in-owner (fn [k x]
+                    (if (= ec/*spin-id* spin-id)
+                      (k x)
+                      (binding [ec/*spin-id* spin-id
+                                pcps-async/*in-trampoline* false]
+                        (k x))))
          wrapped-resolve (fn [v]
+                           (retire-own-cont!)
                            (when-not (check-and-clean!)
-                             (resolve v)))
+                             (in-owner resolve v)))
          wrapped-reject  (fn [e]
+                           (retire-own-cont!)
                            (when-not (check-and-clean!)
-                             (reject e)))
+                             (in-owner reject e)))
          cont {:id cont-id
               ;; Event-key is informational — no handler reads
               ;; `[:external-await …]`. Keeping a key makes the cont
@@ -600,7 +628,12 @@
            (= "org.replikativ.spindel.spin.sync.Deferred"
               #?(:clj (.getName (class awaitable))
                  :cljs (.-name (type awaitable)))))
-      (await-deferred awaitable spin-id source-loc resolve reject)
+      (let [v (sync/take-now! awaitable spin-id)]
+        (if (identical? sync/nothing v)
+          (await-deferred awaitable spin-id source-loc resolve reject)
+          ;; Assigned: resume on this stack and RETURN (the recur Thunk
+          ;; goes to the body's trampoline). No cont, no token, no reader.
+          (spin-core/resume resolve v)))
 
       ;; Check Mailbox by class name (avoids circular dependency).
       ;;
@@ -616,18 +649,25 @@
            (= "org.replikativ.spindel.spin.sync.Mailbox"
               #?(:clj (.getName (class awaitable))
                  :cljs (.-name (type awaitable)))))
-      (let [[wr wj cancel-token cancellation]
-            (cancellable-external-pair
-             spin-id resolve reject
-             [::mailbox #?(:clj (System/identityHashCode awaitable)
-                           :cljs (.-id awaitable))]
-             source-loc)]
-        (if cancellation
-          (:result cancellation)
-          (do
-            (binding [ec/*external-await-cancel-token* cancel-token]
-              (awaitable wr wj))
-            spin-core/incomplete)))
+      (let [v (sync/take-now! awaitable spin-id)]
+        (if-not (identical? sync/nothing v)
+          ;; Queued message taken atomically: resume on this stack and
+          ;; RETURN the Thunk (see take-now!). Nothing registered.
+          (spin-core/resume resolve v)
+          (let [[wr wj cancel-token cancellation]
+                (cancellable-external-pair
+                 spin-id resolve reject
+                 [::mailbox #?(:clj (System/identityHashCode awaitable)
+                               :cljs (.-id awaitable))]
+                 source-loc)]
+            (if cancellation
+              (:result cancellation)
+              (do
+                ;; A message that raced in after take-now! is still taken
+                ;; inline by the 2-arity (one nested trampoline, bounded).
+                (binding [ec/*external-await-cancel-token* cancel-token]
+                  (awaitable wr wj))
+                spin-core/incomplete)))))
 
       ;; SignalRef is an error
       (track/signal-ref? awaitable)

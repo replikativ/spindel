@@ -19,6 +19,7 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.pubsub.buffer :as buffer]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -50,11 +51,31 @@
        (when-not (= event-stream-closed event)
          [event this])))))
 
+(defn- runner-failure
+  "The value `done` carries when the controller's runner failed: the error
+  and the state it left."
+  [error state]
+  {::runner-error error ::state state})
+
+(defn- runner-failure? [x]
+  (and (map? x) (contains? x ::runner-error)))
+
+(defn- cancellation? [error]
+  (= spin-core/spin-cancelled (:type (ex-data error))))
+
 (deftype Completion [owner-fork-id deferred]
   #?(:clj clojure.lang.IFn :cljs IFn)
   (#?(:clj invoke :cljs -invoke) [_ resolve reject]
     (if (= owner-fork-id (:fork-id (ec/current-execution-context)))
-      (deferred resolve reject)
+      ;; A failed runner rejects its awaiters: the controller never drained.
+      (deferred (fn [v]
+                  (if (runner-failure? v)
+                    (reject (ex-info "work controller failed"
+                                     {:work/reason :controller-failed
+                                      :work/state (::state v)}
+                                     (::runner-error v)))
+                    (resolve v)))
+                reject)
       (reject (ex-info "work completion awaited outside its owning execution context"
                        {:work/reason :foreign-context
                         :work/owner-fork-id owner-fork-id
@@ -583,6 +604,7 @@
                             :pending-latest nil})
          runner-ref (clojure.core/atom nil)
          done (sync/deferred)
+         failure (volatile! nil)
          runner (spin
                  (try
                    (loop []
@@ -629,14 +651,36 @@
                                (done result)
                                result))
                          (recur))))
+                   (catch #?(:clj Throwable :cljs :default) error
+                     ;; Tagged: on CLJS a thrown value can be nil or false.
+                     (when-not (cancellation? error)
+                       (vreset! failure [error]))
+                     (throw error))
                    (finally
-                     (abort-controller! @runner-ref state handles event-stream)
-                     (done (public-state @state)))))
+                     ;; `done` is delivered whatever happens here: an awaiter
+                     ;; of `completion` must never wait for a dead runner.
+                     (try
+                       (abort-controller! @runner-ref state handles event-stream)
+                       (catch #?(:clj Throwable :cljs :default) error
+                         (fault/report-fault! ::controller-fault
+                                              {:strategy strategy
+                                               :phase :abort
+                                               :error error})
+                         (swap! state assoc :accepting? false :terminal? true)))
+                     (done (if-let [[error] @failure]
+                             (runner-failure error (public-state @state))
+                             (public-state @state))))))
          admission (->WorkAdmission strategy owner-context inbox event-stream
                                     event-bus event-anchor state handles runner
                                     done)]
      (reset! runner-ref runner)
-     (sync/spawn! runner)
+     (sync/spawn! runner
+                  {:on-error (fn [error]
+                               (when-not (cancellation? error)
+                                 (fault/report-fault! ::controller-fault
+                                                      {:strategy strategy
+                                                       :phase :runner
+                                                       :error error})))})
      admission)))
 
 (defn latest
