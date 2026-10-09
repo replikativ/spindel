@@ -852,7 +852,7 @@
     (def live (restore-snapshot restored))
     (binding [ec/*execution-context* live]
       (swap! signal inc)  ; Modify state
-      @spin)              ; Re-execute
+      (deref spin))              ; Re-execute
 
   Args:
     ctx - ExecutionContext to snapshot

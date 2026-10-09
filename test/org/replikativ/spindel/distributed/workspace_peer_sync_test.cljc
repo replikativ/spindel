@@ -31,59 +31,70 @@
 
 ;; merge-fork-remote! returns a CHANNEL now (async-uniform); `<!` it. Cross-platform
 ;; via the `async`/`done` harness (JVM blocks on a promise; cljs uses cljs.test/async).
+(defn- merge-cases
+  "The merge-fork-remote! cases: [description fork-desc opts check]; `check`
+  gets the result and the case's call log."
+  []
+  [["success: each system's fork BRANCH KEYWORD merges into the parent"
+    {:branch :fork-1 :owner :peer-a
+     :fork-of {:branch :main :heads {"kb" "c1" "msgs" "c2"}}
+     :systems {"kb"   {:branch :fork-1 :head "c1"}
+               "msgs" {:branch :fork-1 :head "c2"}}}
+    (fn [calls] [:merge-fn (fn [psys src _opts]
+                             (swap! calls conj [(:sid psys) (:branch psys) src])
+                             (assoc psys :merged-from src))
+                 :conflicts-fn (fn [_psys _pa _fb] nil)])
+    (fn [res calls]
+      (is (= #{["kb" :main :fork-1] ["msgs" :main :fork-1]} (set calls)))
+      (is (= {:sid "kb" :branch :main :merged-from :fork-1} (get-in res [:merged "kb"])))
+      (is (empty? (:conflicts res))))]
+   ["FAIL-SAFE: a conflicting system aborts the WHOLE merge (nothing merged)"
+    {:branch :fork-1 :fork-of {:branch :main :heads {"kb" "c1"}}
+     :systems {"kb" {:branch :fork-1 :head "c1"}}}
+    (fn [calls] [:merge-fn (fn [& _] (swap! calls conj :merged) :merged)
+                 :conflicts-fn (fn [_psys _pa _fb] [{:attr :title}])])
+    (fn [res calls]
+      (is (= {} (:merged res)) "no system merged")
+      (is (= {"kb" [{:attr :title}]} (:conflicts res)))
+      (is (empty? calls) "merge-fn never called — aborted before merging"))]
+   ["a THROWING conflict detector counts as indeterminate (fail-safe abort)"
+    {:branch :fork-1 :fork-of {:branch :main}
+     :systems {"kb" {:branch :fork-1 :head "c1"}}}
+    (fn [_] [:merge-fn (fn [& _] :merged)
+             :conflicts-fn (fn [_psys _pa _fb] (throw (ex-info "boom" {})))])
+    (fn [res _]
+      (is (empty? (:merged res)))
+      (is (true? (get-in res [:conflicts "kb" 0 :indeterminate?]))))]
+   [":force skips the conflict pre-check and merges anyway"
+    {:branch :fork-1 :fork-of {:branch :main}
+     :systems {"kb" {:branch :fork-1 :head "c1"}}}
+    (fn [_] [:merge-fn (fn [psys src _] (assoc psys :forced src))
+             :conflicts-fn (fn [_psys _pa _fb] (throw (ex-info "would-conflict" {})))
+             :opts {:force true}])
+    (fn [res _]
+      (is (= {:sid "kb" :branch :main :forced :fork-1} (get-in res [:merged "kb"])))
+      (is (empty? (:conflicts res))))]])
+
+(defn- check-merge-case [[description _ _ check] res calls]
+  (testing description (check res calls)))
+
 (deftest test-merge-fork-remote-folds-fork-into-parent
+  ;; The go block only collects results; the assertions (and `testing`, a
+  ;; try/finally) run outside it, where core.async does not compile them into
+  ;; code Closure reports as unreachable.
   (async done
          (go
-           (testing "success: each system's fork BRANCH KEYWORD merges into the parent"
-             (let [fork-desc {:branch :fork-1 :owner :peer-a
-                              :fork-of {:branch :main :heads {"kb" "c1" "msgs" "c2"}}
-                              :systems {"kb"   {:branch :fork-1 :head "c1"}
-                                        "msgs" {:branch :fork-1 :head "c2"}}}
-                   merged-calls (atom [])
-                   res (<! (sync/merge-fork-remote!
-                            fork-desc (fn [sid] {:sid sid})
-                            :checkout-fn mock-checkout :snapshot-id-fn mock-snap-id
-                            :merge-fn (fn [psys src _opts]
-                                        (swap! merged-calls conj [(:sid psys) (:branch psys) src])
-                                        (assoc psys :merged-from src))
-                            :conflicts-fn (fn [_psys _pa _fb] nil)))]
-               (is (= #{["kb" :main :fork-1] ["msgs" :main :fork-1]} (set @merged-calls)))
-               (is (= {:sid "kb" :branch :main :merged-from :fork-1} (get-in res [:merged "kb"])))
-               (is (empty? (:conflicts res)))))
-           (testing "FAIL-SAFE: a conflicting system aborts the WHOLE merge (nothing merged)"
-             (let [fork-desc {:branch :fork-1 :fork-of {:branch :main :heads {"kb" "c1"}}
-                              :systems {"kb" {:branch :fork-1 :head "c1"}}}
-                   merge-called (atom false)
-                   res (<! (sync/merge-fork-remote!
-                            fork-desc (fn [sid] {:sid sid})
-                            :checkout-fn mock-checkout :snapshot-id-fn mock-snap-id
-                            :merge-fn (fn [& _] (reset! merge-called true) :merged)
-                            :conflicts-fn (fn [_psys _pa _fb] [{:attr :title}])))]
-               (is (= {} (:merged res)) "no system merged")
-               (is (= {"kb" [{:attr :title}]} (:conflicts res)))
-               (is (false? @merge-called) "merge-fn never called — aborted before merging")))
-           (testing "a THROWING conflict detector counts as indeterminate (fail-safe abort)"
-             (let [fork-desc {:branch :fork-1 :fork-of {:branch :main}
-                              :systems {"kb" {:branch :fork-1 :head "c1"}}}
-                   res (<! (sync/merge-fork-remote!
-                            fork-desc (fn [sid] {:sid sid})
-                            :checkout-fn mock-checkout :snapshot-id-fn mock-snap-id
-                            :merge-fn (fn [& _] :merged)
-                            :conflicts-fn (fn [_psys _pa _fb] (throw (ex-info "boom" {})))))]
-               (is (empty? (:merged res)))
-               (is (true? (get-in res [:conflicts "kb" 0 :indeterminate?])))))
-           (testing ":force skips the conflict pre-check and merges anyway"
-             (let [fork-desc {:branch :fork-1 :fork-of {:branch :main}
-                              :systems {"kb" {:branch :fork-1 :head "c1"}}}
-                   res (<! (sync/merge-fork-remote!
-                            fork-desc (fn [sid] {:sid sid})
-                            :checkout-fn mock-checkout :snapshot-id-fn mock-snap-id
-                            :merge-fn (fn [psys src _] (assoc psys :forced src))
-                            :conflicts-fn (fn [_psys _pa _fb] (throw (ex-info "would-conflict" {})))
-                            :opts {:force true}))]
-               (is (= {:sid "kb" :branch :main :forced :fork-1} (get-in res [:merged "kb"])))
-               (is (empty? (:conflicts res)))))
-           (done))))
+           (loop [[case & more] (merge-cases)]
+             (if-not case
+               (done)
+               (let [[_ fork-desc opts-of _] case
+                     calls (atom [])
+                     res (<! (apply sync/merge-fork-remote!
+                                    fork-desc (fn [sid] {:sid sid})
+                                    :checkout-fn mock-checkout :snapshot-id-fn mock-snap-id
+                                    (opts-of calls)))]
+                 (check-merge-case case res @calls)
+                 (recur more)))))))
 
 #?(:clj
    (do

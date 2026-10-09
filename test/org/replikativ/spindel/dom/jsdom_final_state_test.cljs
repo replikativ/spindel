@@ -236,8 +236,8 @@
 ;; and the element construction. Node identity is checked directly: a property
 ;; stamped on the mounted node survives iff the node was reconciled in place.
 
-(defn- stamp! [el] (set! (.-__spindelMark el) "kept") el)
-(defn- kept? [el] (= "kept" (.-__spindelMark el)))
+(defn- stamp! [^js el] (set! (.-__spindelMark el) "kept") el)
+(defn- kept? [^js el] (= "kept" (.-__spindelMark el)))
 
 (deftest-async element-identity-survives-rerender-without-await
   (testing "track -> element, no await between"

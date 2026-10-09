@@ -240,6 +240,16 @@
       ;; return the error as a VALUE (an exception inside a go won't surface on <!)
       (catch #?(:clj Throwable :cljs :default) e e))))
 
+(defn- seat-async!
+  "Seat workspace `ws` for `descriptor` (the async reseat's last step). Kept out
+  of the `go` block: a `binding` there is a try/finally in its state machine,
+  which core.async compiles to code Closure reports as unreachable."
+  [peer ctx on-reseat descriptor ws]
+  (binding [ec/*execution-context* ctx]
+    (ec/swap-state! [workspace-key] (constantly ws)))
+  (swap! peer assoc :seated descriptor :last-reseat-error nil)
+  (when on-reseat (on-reseat ws descriptor)))
+
 (defn- do-reseat-async!
   "Async serial reseat (`:sync? false` peers — async storage on cljs). Re-reads peer
    state, gate-checks, resolves the systems, and seats — but ONLY if, AFTER the async
@@ -261,11 +271,7 @@
 
             (let [{d :descriptor hs :head-state} @peer]
               (and (= descriptor d) (:ready? (gate descriptor hs))))
-            (let [ws (compose-fn result)]
-              (binding [ec/*execution-context* ctx]
-                (ec/swap-state! [workspace-key] (constantly ws)))
-              (swap! peer assoc :seated descriptor :last-reseat-error nil)
-              (when on-reseat (on-reseat ws descriptor)))))))
+            (seat-async! peer ctx on-reseat descriptor (compose-fn result))))))
     nil))
 
 (defn- start-reseat-loop!

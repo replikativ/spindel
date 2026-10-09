@@ -142,7 +142,7 @@
         (.replaceChild parent new-child old-child)
         (.appendChild parent new-child))))
 
-  (move-child! [_ parent from-idx to-idx]
+  (move-child! [_ ^js parent from-idx to-idx]
     ;; `moveBefore` MOVES a node; removeChild+insertBefore DESTROYS AND RECREATES
     ;; it. For most elements the difference is invisible. For anything holding
     ;; state OUTSIDE the element — an <iframe>'s browsing context, a <video>'s

@@ -218,7 +218,7 @@
 
    Example:
      (def delayed (sleep 1000 :done))
-     @delayed  ; => :done (after 1000ms)
+     (deref delayed)  ; => :done (after 1000ms)
 
    With immediate-executor (testing):
    - Executes immediately without delay (deterministic)
@@ -258,7 +258,7 @@
      (def fast (spin (do (Thread/sleep 10) :fast)))
      (def slow (spin (do (Thread/sleep 100) :slow)))
 
-     @(race fast slow)  ; => :fast
+     (deref (race fast slow))  ; => :fast
 
    Can be awaited in another spin:
      (spin

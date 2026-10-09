@@ -492,7 +492,7 @@
    Usage:
      (binding [ec/*execution-context* my-runtime]
        (def my-reactive (make-spin my-spin-fn :my-spin))
-       @my-reactive)  ; Runs spin, caches result
+       (deref my-reactive))  ; Runs spin, caches result
 
    The spin-id is used to track dependencies in the runtime's graph."
   ([spin-fn]

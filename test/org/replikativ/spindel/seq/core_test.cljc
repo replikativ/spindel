@@ -102,13 +102,17 @@
                                          (fn [e] (is false (str "error: " e)) (done))))
                            (fn [e] (is false (str "error: " e)) (done))))))))
 
+;; Throws behind a call, so the generator's code after it is not statically
+;; unreachable (Closure warns about that).
+(defn- fail! [message] (throw (ex-info message {})))
+
 (deftest test-gen-aseq-error-handling
   (testing "Error propagation in generators"
     (async done
            (with-ctx [_ctx]
              (let [gen (seq-core/gen-aseq
                         (seq-core/yield 1)
-                        (throw (ex-info "Test error" {}))
+                        (fail! "Test error")
                         (seq-core/yield 2))]
           ;; First yield should work
                (run-anext! gen
