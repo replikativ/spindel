@@ -505,7 +505,8 @@ Three consequences:
   `await-drain-complete!` wait inside it, and code that blocks inside
   engine work should do the same. The handed-over work then runs
   concurrently with the rest of the blocking task, as executor tasks
-  would.
+  would. Inside a drain (a spin body, a continuation) both throw
+  instead: the drain they would wait for is the caller's own.
 - **Faults stay per task.** A queued task that throws is reported
   through the fault hook (`engine/fault.cljc`) like an executor task,
   and the tasks behind it still run.

@@ -1531,8 +1531,14 @@
     timeout-ms - Max time to wait (default 5000ms; unused on CLJS)
 
   Returns: true if drain completed, false if timeout (or false on CLJS
-           when not yet complete)"
+           when not yet complete)
+
+  Throws when called inside a drain (a spin body, a continuation): the
+  drain it would wait for is the caller's own."
   [context & {:keys [timeout-ms] :or {timeout-ms 5000}}]
+  (when *in-drain?*
+    (throw (ex-info "Cannot await-drain-complete! from inside a drain (it would wait for itself until its timeout). Await the spins instead."
+                    {:timeout-ms timeout-ms})))
   ;; Unframed: drains this waits for may be queued on this thread.
   (executor/call-unframed
    (fn []

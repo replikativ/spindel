@@ -7,6 +7,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.fault :as fault]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -282,3 +283,15 @@
                                 (step 0))))
     (is (= (inc n) (count @depths)))
     (is (< (- (apply max @depths) (apply min @depths)) 50))))
+
+(deftest awaiting-the-drain-from-inside-it-throws-instead-of-timing-out
+  (let [c (ctx/create-execution-context)
+        r (binding [ec/*execution-context* c]
+            (deref (spin (let [t0 (System/currentTimeMillis)]
+                           [(try (simple/await-drain-complete! c :timeout-ms 2000) :returned
+                                 (catch clojure.lang.ExceptionInfo _ :threw))
+                            (- (System/currentTimeMillis) t0)]))
+                   5000 :timeout))]
+    (is (= :threw (first r)))
+    (is (< (second r) 1000))
+    (is (true? (simple/await-drain-complete! c :timeout-ms 2000)))))
