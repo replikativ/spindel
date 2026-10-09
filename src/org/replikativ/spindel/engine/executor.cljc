@@ -409,3 +409,105 @@
     ;; Time is controlled explicitly via advance-time!"
   []
   (->SynchronousExecutor))
+
+;; =============================================================================
+;; Inline dispatch
+;; =============================================================================
+;;
+;; Engine work that becomes ready while a thread is already running work of
+;; the same executor (a drain session, a savepoint continuation) does not need
+;; another thread: it is queued on this thread and runs when the current task
+;; returns. Handing it to the executor instead costs a thread hop per engine
+;; step (on a loaded JVM ~100 µs on virtual threads), which is most of the
+;; latency of a short computation.
+;;
+;; The queue is a trampoline, so inline work never nests on the stack. After
+;; `frame-batch` tasks the rest is handed back to the executor, so one chain of
+;; work does not keep a pool thread (or the JS event loop) to itself.
+;;
+;; Work that arrives on a thread not running this executor's work (an embedder
+;; thread, a timer, an IO callback) still goes to the executor, so embedder
+;; threads never run engine work. Parallelism is explicit: `parallel` / `race`
+;; children, parallel observer dispatch and delayed spins use `execute!`.
+;;
+;; A task running in a frame must not block on work it queued, since that work
+;; runs only after it returns: blocking waits run `unframed`.
+
+(def ^:private frame
+  "Per thread: nil, or {:executor e :queue (volatile! PersistentQueue)}."
+  #?(:clj (ThreadLocal.) :cljs (volatile! nil)))
+
+(defn- current-frame []
+  #?(:clj (.get ^ThreadLocal frame) :cljs @frame))
+
+(defn- install-frame! [value]
+  #?(:clj (if (nil? value)
+            (.remove ^ThreadLocal frame)
+            (.set ^ThreadLocal frame value))
+     :cljs (vreset! frame value)))
+
+(def ^:private frame-batch
+  "How many queued tasks one frame runs before handing the rest back to the
+  executor."
+  256)
+
+(defn- bound-task
+  "`task` under the dynamic bindings an executor task would capture now."
+  [task]
+  #?(:clj (let [b (capture-targeted-bindings)]
+            (if (empty? b) task (fn [] (with-bindings b (task)))))
+     :cljs (let [b (bindings/capture-bindings)]
+             (fn [] (bindings/restore-bindings b task)))))
+
+(defn run-framed!
+  "Run `task` as work of `executor` on this thread, then the tasks it (and
+  they) dispatched. A task that throws does not take the queued ones with it:
+  they still run, and the first error is rethrown at the end."
+  [executor task]
+  (let [outer (current-frame)
+        queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
+                            :cljs cljs.core/PersistentQueue.EMPTY))
+        failure (volatile! nil)
+        guarded (fn [f]
+                  (try (f)
+                       (catch #?(:clj Throwable :cljs :default) error
+                         (when-not @failure (vreset! failure error)))))]
+    (install-frame! {:executor executor :queue queue})
+    (try
+      (guarded task)
+      (loop [ran 0]
+        (when-let [next-task (peek @queue)]
+          (if (< ran frame-batch)
+            (do (vswap! queue pop)
+                (guarded next-task)
+                (recur (inc ran)))
+            ;; hand the tail back, in order
+            (let [tail @queue]
+              (vreset! queue (empty tail))
+              (execute! executor
+                        (fn [] (run-framed!
+                                executor
+                                ;; re-queue, so each one is guarded by itself
+                                (fn [] (vswap! (:queue (current-frame)) into tail)))))))))
+      (finally (install-frame! outer)))
+    (when-let [error @failure]
+      (throw error))))
+
+(defn dispatch!
+  "Run `task` on `executor`: behind the current task when this thread is
+  already running that executor's work, as a new executor task otherwise."
+  [executor task]
+  (let [f (current-frame)]
+    (if (and f (identical? executor (:executor f)))
+      (do (vswap! (:queue f) conj (bound-task task)) nil)
+      (execute! executor (fn [] (run-framed! executor task))))))
+
+(defn call-unframed
+  "Call `f` with no frame on this thread, so the work it dispatches goes to
+  the executor. For code that blocks until that work is done."
+  [f]
+  (let [outer (current-frame)]
+    (if (nil? outer)
+      (f)
+      (do (install-frame! nil)
+          (try (f) (finally (install-frame! outer)))))))

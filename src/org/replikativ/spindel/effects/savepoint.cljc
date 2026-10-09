@@ -39,8 +39,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.engine.addressing :as addressing]
-            [org.replikativ.spindel.engine.executor :as executor
-             :refer [execute!]]
+            [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.world.scope :as world-scope]
@@ -470,73 +469,10 @@
 
 ;; A handler may resume inline, and the continuation then runs inside the
 ;; handler, inside the effect, to the next site, whose handler resumes inline
-;; again: one stack frame set per site. So continuations are trampolined: the
-;; outermost one on a thread drains the ones made beneath it.
-;;
-;; The same queue saves the executor hop. A resume made from a thread that is
-;; already running this executor's savepoint work is queued on that thread and
-;; runs when the current continuation returns. A driver that decides site
-;; after site (a chain, a search) then runs on one thread instead of handing
-;; every site to another one, which is most of its latency on a busy machine.
-(def ^:private draining
-  "Per thread: nil, or {:executor e :queue (volatile! PersistentQueue)}."
-  #?(:clj (ThreadLocal.) :cljs (volatile! nil)))
-
-(defn- current-drain []
-  #?(:clj (.get ^ThreadLocal draining) :cljs @draining))
-
-(def ^:private drain-batch
-  "How many queued continuations one task runs before handing the rest back to
-  the executor, so a long chain does not keep a pool thread to itself."
-  256)
-
-(defn- trampolined!
-  "Run `thunk` as savepoint work of `executor` on this thread, then whatever it
-  queued. A continuation that throws does not take the queued ones with it:
-  they still run, and the first error is rethrown at the end."
-  [executor thunk]
-  (let [install! (fn [value]
-                   #?(:clj (if (nil? value)
-                             (.remove ^ThreadLocal draining)
-                             (.set ^ThreadLocal draining value))
-                      :cljs (vreset! draining value)))
-        outer (current-drain)
-        queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
-                            :cljs cljs.core/PersistentQueue.EMPTY))
-        failure (volatile! nil)
-        guarded (fn [f]
-                  (try (f)
-                       (catch #?(:clj Throwable :cljs :default) error
-                         (when-not @failure (vreset! failure error)))))]
-    (install! {:executor executor :queue queue})
-    (try
-      (guarded thunk)
-      (loop [ran 0]
-        (when-let [next-thunk (peek @queue)]
-          (if (< ran drain-batch)
-            (do (vswap! queue pop)
-                (guarded next-thunk)
-                (recur (inc ran)))
-            ;; hand the tail back, in order
-            (let [tail @queue]
-              (vreset! queue (empty tail))
-              (execute! executor
-                        (fn [] (trampolined!
-                                executor
-                                ;; re-queue, so each one is guarded by itself
-                                (fn [] (vswap! (:queue (current-drain)) into tail)))))))))
-      (finally (install! outer)))
-    (when-let [error @failure]
-      (throw error))))
-
-(defn- schedule!
-  "Run `thunk` on `executor`: behind the current continuation when this thread
-  is already doing that executor's savepoint work, as a new task otherwise."
-  [executor thunk]
-  (let [drain (current-drain)]
-    (if (and drain (identical? executor (:executor drain)))
-      (vswap! (:queue drain) conj thunk)
-      (execute! executor (fn [] (trampolined! executor thunk))))))
+;; again: one stack frame set per site. So continuations are dispatched with
+;; `executor/dispatch!`: a resume made on a thread already running the world's
+;; executor's work (a drain, another continuation) is queued on that thread and
+;; runs when the current task returns, without stack growth or a thread hop.
 
 (defn ^:no-doc continue-in-slice!
   "Invoke a continuation in the environment it suspended in (bindings,
@@ -563,8 +499,8 @@
                       {:type ::session-closing
                        :savepoint/address (:savepoint/address sp)})))
     (claim! sp :resume)
-    (schedule! (:executor world)
-               #(continue-in-slice! world k (:resolve k) value))
+    (executor/dispatch! (:executor world)
+                        #(continue-in-slice! world k (:resolve k) value))
     nil))
 
 (defn abandon
@@ -576,12 +512,12 @@
         _ (claim! sp :abandon)
         reject! (fn [w] (continue-in-slice! w k (:reject k) (cancellation-error)))]
     (try
-      (schedule! (:executor world) #(reject! world))
+      (executor/dispatch! (:executor world) #(reject! world))
       (catch #?(:clj Throwable :cljs :default) scheduling-error
         (log/warn :savepoint/abandon-schedule-failed
                   {:fork-id (:fork-id world) :error scheduling-error})
         (let [inline (executor/synchronous-executor)]
-          (trampolined! inline #(reject! (assoc world :executor inline))))))
+          (executor/run-framed! inline #(reject! (assoc world :executor inline))))))
     nil))
 
 (defn ^:no-doc derive-seed [parent-seed address index]

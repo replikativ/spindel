@@ -10,6 +10,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.bindings :as bindings]
+            [org.replikativ.spindel.engine.executor :as executor]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
@@ -426,13 +427,14 @@
   (#?(:clj deref :cljs -deref) [this]
     ;; Blocks until spin completes, then returns cached value.
     ;; Requires *execution-context* to be bound by the caller.
-    #?(:clj (deref-spin this spin-id spin-fn 0 nil)
+    ;; Unframed: the work this waits for must not queue behind it.
+    #?(:clj (executor/call-unframed #(deref-spin this spin-id spin-fn 0 nil))
        :cljs (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 
   #?@(:clj
       [clojure.lang.IBlockingDeref
        (deref [this timeout-ms timeout-val]
-              (deref-spin this spin-id spin-fn timeout-ms timeout-val))])
+              (executor/call-unframed #(deref-spin this spin-id spin-fn timeout-ms timeout-val)))])
 
   Object
   (toString [_this]

@@ -1584,8 +1584,9 @@
 (defn ^:no-doc trigger-drain!
   "Trigger async draining of the event queue.
 
-  Schedules drain-events! to run on the executor. Does not wait for
-  completion.
+  Schedules drain-events! on the executor (`executor/dispatch!`: behind the
+  current task when this thread already runs the executor's work). Does not
+  wait for completion.
 
   This is called after external changes to ensure events are processed
   eventually. If draining is already in progress, the new events will
@@ -1605,9 +1606,11 @@
   [context executor]
   (if executor
     (do
-      (executor/execute! executor
-                         (executor/alive-fn context
-                                            #(drain-events! context executor)))
+      ;; dispatch!: a drain triggered on a thread already running this
+      ;; executor's work runs on that thread after its current task.
+      (executor/dispatch! executor
+                          (executor/alive-fn context
+                                             #(drain-events! context executor)))
       (log/trace :engine/trigger-drain)
       true)
     (do
