@@ -179,7 +179,7 @@
         seen (atom {})
         latch (java.util.concurrent.CountDownLatch. n)]
     (ex/spread! e n (fn [i]
-                      ;; long enough that the shares overlap
+                      ;; long enough that the workers overlap
                       (Thread/sleep 5)
                       (swap! seen update i (fnil conj []) (Thread/currentThread))
                       (.countDown latch))
@@ -187,7 +187,32 @@
     (is (.await latch 10 java.util.concurrent.TimeUnit/SECONDS))
     (is (= (set (range n)) (set (keys @seen))))
     (is (every? #(= 1 (count %)) (vals @seen)))
-    (is (= 4 (count (into #{} (mapcat val) @seen))) "one thread per share")))
+    (is (= 4 (count (into #{} (mapcat val) @seen))) "one thread per worker")))
+
+(deftest spread-a-stalled-worker-holds-no-unclaimed-indices
+  ;; index 0 stalls until every other index is done: the other worker must
+  ;; take them all, which contiguous shares (0-4 | 5-9) would not
+  (let [e (ex/default-executor)
+        n 10
+        others (java.util.concurrent.CountDownLatch. (dec n))
+        done (promise)]
+    (ex/spread! e n (fn [i]
+                      (if (zero? i)
+                        (deliver done (.await others 5 java.util.concurrent.TimeUnit/SECONDS))
+                        (.countDown others)))
+                2)
+    (is (true? (deref done 10000 ::timeout)))))
+
+(deftest spread-runs-an-index's-dispatched-work-before-the-next-claim
+  (let [e (ex/default-executor)
+        log (atom [])
+        latch (java.util.concurrent.CountDownLatch. 3)]
+    (ex/spread! e 3 (fn [i]
+                      (swap! log conj [:task i])
+                      (ex/dispatch! e (fn [] (swap! log conj [:cont i]) (.countDown latch))))
+                1)
+    (is (.await latch 5 java.util.concurrent.TimeUnit/SECONDS))
+    (is (= [[:task 0] [:cont 0] [:task 1] [:cont 1] [:task 2] [:cont 2]] @log))))
 
 (deftest spread-isolates-a-failing-index
   (let [e (ex/default-executor)

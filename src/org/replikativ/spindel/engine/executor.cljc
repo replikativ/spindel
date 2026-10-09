@@ -560,27 +560,33 @@
   #?(:clj (.availableProcessors (Runtime/getRuntime)) :cljs 1))
 
 (defn spread!
-  "Explicit parallel fan-out: run `(task i)` for every i < n, split into about
-  `parallelism` executor tasks (default: the processor count) of contiguous
-  shares. Each share runs on one thread together with the work it dispatches;
-  the first share stays on this thread when it already runs the executor's
-  work (`dispatch!`). A `(task i)` that throws is reported (`guard-task`); the
-  other indices still run. Returns nil. Code that then blocks until the tasks
-  are done waits `call-unframed`, since the first share may be queued here.
+  "Explicit parallel fan-out: run `(task i)` for every i < n on about
+  `parallelism` workers (default: the processor count), each an executor
+  task. A worker claims the next unclaimed index and runs it to completion,
+  together with the work it dispatches, before claiming another, so a worker
+  whose thread is slowed (other load on its core) claims fewer and the rest
+  take up the slack. The first worker stays on this thread when it already
+  runs the executor's work (`dispatch!`). A `(task i)` that throws is
+  reported (`guard-task`); the other indices still run. Returns nil. Code
+  that then blocks until the tasks are done waits `call-unframed`, since the
+  first worker may be queued here.
 
   Inline dispatch keeps a computation on its thread, so fan-out that should
   use several cores says so here, at the grain it chooses."
   ([executor n task] (spread! executor n task default-parallelism))
   ([executor n task parallelism]
-   (let [shares (max 1 (min n parallelism))
-         size (quot (+ n shares -1) shares)]
-     (dotimes [c shares]
-       (let [lo (* c size) hi (min n (+ lo size))]
-         (when (< lo hi)
-           ;; each index on its own: one that throws is reported and the
-           ;; rest of its share still runs
-           (let [run-share (fn [] (loop [i lo] (when (< i hi) ((guard-task #(task i))) (recur (inc i)))))]
-             (if (zero? c)
-               (dispatch! executor run-share)
-               (execute! executor (fn [] (run-framed! executor run-share))))))))
+   (let [workers (max 1 (min n parallelism))
+         claimed (atom 0)
+         ;; each index in a frame of its own: its continuations run before
+         ;; the next claim, not after the worker has claimed everything
+         work (fn []
+                (loop []
+                  (let [i (dec (swap! claimed inc))]
+                    (when (< i n)
+                      (run-framed! executor #(task i))
+                      (recur)))))]
+     (dotimes [w workers]
+       (if (zero? w)
+         (dispatch! executor work)
+         (execute! executor (fn [] (run-framed! executor work)))))
      nil)))
