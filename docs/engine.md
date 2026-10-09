@@ -162,10 +162,9 @@ non-state fields:
 | `:fork-id` | Identifies this context. Roots are gensyms; forks include their parent's id. |
 | `:executor` | `PExecutor` (virtual-thread pool / ForkJoinPool / EventLoopExecutor / SynchronousExecutor). Shared between root and forks. |
 | `:running` | `atom` flag; set to `false` by `stop-context!`. Shared. |
-| `:drain-thread` | JVM daemon thread that drains events. Shared with forks. |
-| `:drain-signal` | `LinkedBlockingQueue` wake-up channel. Shared with forks. |
+| `:drain-active` | `atom` count of drains past their entry guard; `stop-context!` waits for it to reach 0. Shared. |
 
-The thread-sharing details are in [§4](#4-executors-and-the-drain-loop);
+How drains are scheduled is in [§4](#4-executors-and-the-drain-loop);
 [`forking.md`](forking.md) has the complete fork-resource table.
 
 ## 2. Deterministic Addressing
@@ -413,8 +412,8 @@ swap! signal       deliver! deferred    post! mailbox    @spin
         process-event! per event (per-event try/catch)
 ```
 
-On the JVM a background daemon thread runs the drain loop; on
-ClojureScript the JS event loop fills the same role.
+There is no standing drain thread: drains run as executor work,
+scheduled by `trigger-drain!` (see [Scheduling drains](#scheduling-drains)).
 
 ### Executors
 
@@ -454,40 +453,52 @@ owning executor's `execute!` to run the spin-fn on the regular work
 pool. CLJS uses `js/setTimeout` directly. `comb/sleep`, `comb/timeout`,
 `comb/debounce`, and `comb/throttle` all route through `execute-after!`.
 
-### The drain thread
+### Scheduling drains
 
-On the JVM, each root execution context owns a **background daemon
-drain thread**. It wakes instantly when new work arrives and returns
-to a zero-CPU wait when idle:
+Anything that enqueues an event calls `trigger-drain!`, which
+dispatches a `drain-events!` task with `executor/dispatch!` (below).
+The drain's CAS lock lets one of any concurrent drains through; the
+others find the lock taken and return.
 
-```
-while @running:
-    drain-signal.poll(1s)     ; blocks until signaled or 1s safety timeout
-    if ctx still alive:
-        drain-events!(ctx)
-```
+Forks share the parent's `executor`, `running` and `drain-active`
+(copied at fork construction in `engine/context.cljc`). The fork-local
+pieces are only `:engine/pending` and `:engine/draining?`, which live
+in the fork's overlay so the fork's events don't intermix with the
+parent's: a fork's drain processes the fork's queue under the fork's
+lock. See [`forking.md`](forking.md) for the full fork-resource table.
 
-Wakeup is via a `LinkedBlockingQueue` (`drain-signal`). Anything that
-enqueues an event calls `trigger-drain!`, which does `.offer(:drain)`
-on the signal **and** also submits a `drain-events!` task to the
-executor — so the wake can race a pool worker. The 1-second poll is a
-safety net only; in practice the thread is woken immediately.
+### Inline dispatch
 
-The drain thread holds a `WeakReference` to the context so that an
-abandoned context becomes GC-eligible and the registered `Cleaner`
-can stop the thread.
+Engine work that becomes ready on a thread already running work of
+the same executor does not take another thread. `executor/dispatch!`
+queues it on that thread, to run when the current task returns;
+called from any other thread it submits a new executor task, which
+runs inside `executor/run-framed!`. The queue is a trampoline, so
+inline work never nests on the stack, and after 256 tasks the rest is
+handed back to the executor so one chain does not keep a pool thread
+(or the JS event loop) to itself.
 
-Forked contexts do not start their own drain threads. They share the
-parent's `drain-thread`, `drain-signal`, `drain-active`, `running`,
-and `executor` (all copied at fork construction in
-`engine/context.cljc`). The fork-local pieces are only
-`:engine/pending` and `:engine/draining?`, which live in the fork's
-overlay so the fork's events don't intermix with the parent's. A
-fork's `trigger-drain!` therefore both wakes the parent's drain-signal
-*and* submits a fork-tagged `drain-events!` to the executor — whichever
-entry point runs first claims the fork's draining lock and processes
-the fork's queue. The two never block each other's queue progress.
-See [`forking.md`](forking.md) for the full fork-resource table.
+Drains (`trigger-drain!`) and savepoint `resume` / `abandon` dispatch
+this way. A computation that resumes site after site, a drain whose
+events complete spins, or a savepoint run from start to completion
+therefore stays on one thread, where each step used to cost a thread
+hop (most of a short computation's latency on a loaded JVM).
+
+Three consequences:
+
+- **Embedder threads never run engine work.** Work dispatched from a
+  thread that is not running the executor's work (your thread, a timer,
+  an IO callback) is submitted to the executor as before.
+- **Parallelism is explicit.** `parallel` / `race` children, parallel
+  observer dispatch and delayed spins still `execute!` on their own
+  tasks. Fan-out that should use several cores calls
+  `executor/spread!`, which runs `n` tasks as about one executor task
+  per processor, each running its share inline.
+- **Do not block on work you dispatched.** A task in a frame that
+  blocks until work it dispatched is done waits forever: that work runs
+  after it returns. Blocking `@spin` runs `executor/call-unframed`, so
+  the work it waits on goes to the executor; code that blocks inside
+  engine work should do the same.
 
 ### The drain lock
 
@@ -747,10 +758,11 @@ What happens, in order:
    collected `:deltas`, bumps `:generation`.
 2. **Event enqueue.** `(ec/enqueue-event! {:type :signal-change :id
    <counter-id>})` lands on `:engine/pending` (fork-local FIFO).
-3. **Drain wake.** `trigger-drain!` does `.offer drain-signal :drain`
-   AND submits a `drain-events!` task to the executor — race for
-   whoever grabs the lock first ([§4](#4-executors-and-the-drain-loop)).
-4. **Drain begins.** A drain thread / pool worker enters
+3. **Drain scheduled.** `trigger-drain!` dispatches a `drain-events!`
+   task (`executor/dispatch!`: on this thread after its current task
+   when it already runs the executor's work, else on a new executor
+   task) ([§4](#4-executors-and-the-drain-loop)).
+4. **Drain begins.** An executor thread enters
    `drain-events!`, CASes `:engine/draining? false → true`, dequeues
    the `:signal-change` event.
 5. **Batch starts.** `process-event!` creates `:engine/current-batch`
@@ -843,7 +855,7 @@ not cached — so it always reflects the current dependency structure.
 When you deref a spin:
 
 ```
-1. Inside a drain thread? → throw ex-info ("would deadlock").
+1. Inside a drain? → throw ex-info ("would deadlock").
                             Use `spawn!` (fire-and-forget) or `await`
                             (spin-to-spin) instead.
 
@@ -948,8 +960,8 @@ parent's drain sees parent's. See the long comment above
 `snapshot-context` is similar in spirit but uses `ImmutableBackend`:
 the entire backend is a frozen value, no overlay, no parent pointer,
 no pending queue (snapshots don't drain). `restore-snapshot`
-constructs a new `AtomBackend` from a snapshot's state, starting a
-fresh drain thread. Use snapshot when you need full isolation;
+constructs a new `AtomBackend` from a snapshot's state, a live
+context that drains like any other. Use snapshot when you need full isolation;
 fork when you want cheap divergence with shared graph state.
 
 ## 9. Memory Invariants & GC

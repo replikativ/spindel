@@ -126,8 +126,9 @@
 ;; Executor Implementations
 ;; =============================================================================
 
-;; ImmediateExecutor removed - all execution now happens asynchronously via ThreadPoolExecutor
-;; This ensures event processing never blocks the calling thread, preventing deadlocks
+;; An embedder thread never runs engine work: what it triggers goes to the
+;; executor. Engine work triggered on a thread already running the executor's
+;; work stays there (see Inline dispatch below).
 
 #?(:clj
    (do

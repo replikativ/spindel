@@ -164,9 +164,11 @@ before the publishing slice has returned. It may `resume`, `fork` or `abandon`
 right there, or hand the savepoint to someone else (a mailbox, a queue) and
 return. A handler that throws before it consumed the savepoint fails the
 computation with that error, once; the savepoint is consumed, so nothing can
-re-enter the failed computation. `resume` and `abandon` hop through the
-world's executor and are trampolined, so a handler that resumes inline on a
-synchronous executor does not grow the stack with the number of sites.
+re-enter the failed computation. `resume` and `abandon` dispatch the
+continuation with `executor/dispatch!`: on a thread already running the
+world's executor's work it is queued behind the current task (no thread hop),
+and the queue is a trampoline, so a handler that resumes inline does not grow
+the stack with the number of sites.
 
 **With no handler installed, `savepoint` continues immediately with
 `payload`.** A program may therefore declare safe points unconditionally; they
@@ -430,8 +432,8 @@ Tier 1 is the existing inference mechanism made public and generalized.
   dependency tracking. Restoring the address frame on resume is what makes
   every downstream site mint the address it had before, so a resumed
   computation is addressable the same way in every fork.
-- **Cost.** A site with a handler costs one map, one state write and one
-  executor hop on resume. A site without one costs a lookup (law 1). An anchor
+- **Cost.** A site with a handler costs one map and one state write; its
+  resume is queued on the resuming thread (`executor/dispatch!`). A site without one costs a lookup (law 1). An anchor
   costs a frozen fork.
 - **Safe point.** A fork copies state, not in-flight coordination (see
   above), and host work (a blocking call, a future) belongs to no world at
