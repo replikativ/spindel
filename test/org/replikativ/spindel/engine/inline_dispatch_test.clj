@@ -238,3 +238,47 @@
       (let [closed (promise)]
         ((sp/close! s) #(deliver closed %) #(deliver closed %))
         (deref closed 5000 ::timeout)))))
+
+(deftest a-refused-blocking-handoff-runs-the-queued-work-here-first
+  (let [refusing (reify ex/PExecutor
+                   (execute! [_ _] (throw (java.util.concurrent.RejectedExecutionException. "full")))
+                   (execute-after! [_ _ _] nil))
+        result (atom nil)]
+    (with-faults
+      (fn []
+        (ex/run-framed! refusing (fn []
+                                   (let [p (promise)]
+                                     (ex/dispatch! refusing #(deliver p :done))
+                                     (reset! result (ex/call-unframed #(deref p 1000 ::timeout))))))))
+    (is (= :done @result))))
+
+(deftest a-deref-that-does-not-wait-hands-nothing-over
+  (let [hops (atom 0)
+        e (counting (ex/default-executor) hops)
+        world (ctx/create-execution-context :executor e)
+        s (binding [ec/*execution-context* world] (spin (+ 1 2)))
+        _ (binding [ec/*execution-context* world] (deref s 5000 ::timeout))
+        result (on-executor e (fn []
+                                (let [before @hops]
+                                  (ex/dispatch! e (fn []))
+                                  (binding [ec/*execution-context* world]
+                                    [@s (- @hops before)]))))]
+    (is (= [3 0] result) "a cached deref leaves the queued task where it is")))
+
+(deftest a-wrapper-declaring-inline-execution-pumps-locally
+  (let [base (ex/synchronous-executor)
+        wrapper (reify
+                  ex/PExecutor
+                  (execute! [_ f] (ex/execute! base f))
+                  (execute-after! [_ d f] (ex/execute-after! base d f))
+                  ex/PRunsInline
+                  (runs-inline? [_] true))
+        n 2000
+        depths (atom [])]
+    (ex/run-framed! wrapper (fn []
+                              (letfn [(step [i]
+                                        (swap! depths conj (count (.getStackTrace (Thread/currentThread))))
+                                        (when (< i n) (ex/dispatch! wrapper #(step (inc i)))))]
+                                (step 0))))
+    (is (= (inc n) (count @depths)))
+    (is (< (- (apply max @depths) (apply min @depths)) 50))))

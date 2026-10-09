@@ -393,6 +393,18 @@
        ;; Execute immediately - time is virtual
        (execute! this spin-fn))))
 
+(defprotocol PRunsInline
+  "Optional executor capability: `execute!` runs the task on the calling
+  thread before it returns (SynchronousExecutor, and wrappers of it)."
+  (runs-inline? [this]))
+
+(extend-protocol PRunsInline
+  SynchronousExecutor
+  (runs-inline? [_] true))
+
+(defn- inline-executor? [executor]
+  (and (satisfies? PRunsInline executor) (runs-inline? executor)))
+
 (defn synchronous-executor
   "Create synchronous executor for deterministic simulation testing.
 
@@ -493,7 +505,7 @@
   (let [outer (current-frame)
         queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
                             :cljs cljs.core/PersistentQueue.EMPTY))
-        local? (instance? SynchronousExecutor executor)]
+        local? (inline-executor? executor)]
     (install-frame! {:executor executor :queue queue})
     (try
       ((guard-task task))
@@ -524,8 +536,11 @@
 (defn call-unframed
   "Call `f` with no frame on this thread, so the work it dispatches goes to
   the executor, after handing the work already queued in this thread's frame
-  to the executor. For code that blocks until engine work is done: that work
-  may already be queued here. Refused work stays queued."
+  to the executor (or, if it refuses, running it here first). For code that
+  blocks until engine work is done: that work may already be queued here.
+  The handed-over work runs concurrently with the rest of the current task,
+  as an executor task would. Call it around the wait itself, so a call that
+  does not wait hands nothing over."
   [f]
   (let [outer (current-frame)]
     (if (nil? outer)
@@ -535,7 +550,9 @@
         (when (seq queued)
           (vreset! queue (empty queued))
           (when-not (hand-over! (:executor outer) queued)
-            (vswap! queue #(into queued %))))
+            ;; refused: run it here before waiting on it
+            (run-framed! (:executor outer)
+                         (fn [] (vswap! (:queue (current-frame)) into queued)))))
         (install-frame! nil)
         (try (f) (finally (install-frame! outer)))))))
 

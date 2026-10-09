@@ -471,7 +471,8 @@ lock. See [`forking.md`](forking.md) for the full fork-resource table.
 
 Engine work that becomes ready on a thread already running work of
 the same executor does not take another thread. `executor/dispatch!`
-queues it on that thread, to run when the current task returns;
+queues it on that thread, to run when the current task returns (unless
+the task blocks: see below);
 called from any other thread it submits a new executor task, which
 runs inside `executor/run-framed!`. The queue is a trampoline, so
 inline work never nests on the stack, and after 256 tasks the rest is
@@ -499,9 +500,12 @@ Three consequences:
 - **Do not block on work queued behind you.** A task in a frame that
   blocks until work queued in its frame is done waits forever: that
   work runs after it returns. `executor/call-unframed` first hands the
-  queued work to the executor and sends new dispatches there too;
-  blocking `@spin` and `await-drain-complete!` wait inside it, and code
-  that blocks inside engine work should do the same.
+  queued work to the executor (running it here if the executor refuses)
+  and sends new dispatches there too; blocking `@spin` and
+  `await-drain-complete!` wait inside it, and code that blocks inside
+  engine work should do the same. The handed-over work then runs
+  concurrently with the rest of the blocking task, as executor tasks
+  would.
 - **Faults stay per task.** A queued task that throws is reported
   through the fault hook (`engine/fault.cljc`) like an executor task,
   and the tasks behind it still run.

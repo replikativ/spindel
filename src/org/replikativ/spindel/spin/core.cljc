@@ -178,13 +178,16 @@
            runtime (ec/current-execution-context)
            rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
                               (ctx/rebuild-mode? runtime))
+           ;; Unframed: the work this waits for may be queued on this thread
+           ;; (a continuation resumed here, the drain the enqueue triggered).
            wait-on-promise (fn [result-promise]
-                             (if (pos? timeout-ms)
-                               (let [res (deref result-promise timeout-ms ::timeout)]
-                                 (if (= res ::timeout)
-                                   timeout-val
-                                   (unwrap res)))
-                               (unwrap @result-promise)))]
+                             (executor/call-unframed
+                              #(if (pos? timeout-ms)
+                                 (let [res (deref result-promise timeout-ms ::timeout)]
+                                   (if (= res ::timeout)
+                                     timeout-val
+                                     (unwrap res)))
+                                 (unwrap @result-promise))))]
        (cond
          ;; Rebuild mode with cache hit - execute body but return cached value
          (and cached (ec/spin-result-clean? spin-id) rebuild-mode?)
@@ -427,14 +430,13 @@
   (#?(:clj deref :cljs -deref) [this]
     ;; Blocks until spin completes, then returns cached value.
     ;; Requires *execution-context* to be bound by the caller.
-    ;; Unframed: the work this waits for must not queue behind it.
-    #?(:clj (executor/call-unframed #(deref-spin this spin-id spin-fn 0 nil))
+    #?(:clj (deref-spin this spin-id spin-fn 0 nil)
        :cljs (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 
   #?@(:clj
       [clojure.lang.IBlockingDeref
        (deref [this timeout-ms timeout-val]
-              (executor/call-unframed #(deref-spin this spin-id spin-fn timeout-ms timeout-val)))])
+              (deref-spin this spin-id spin-fn timeout-ms timeout-val))])
 
   Object
   (toString [_this]
