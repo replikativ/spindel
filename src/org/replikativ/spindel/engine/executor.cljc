@@ -562,14 +562,17 @@
 (defn spread!
   "Explicit parallel fan-out: run `(task i)` for every i < n on about
   `parallelism` workers (default: the processor count), each an executor
-  task. A worker claims the next unclaimed index and runs it to completion,
-  together with the work it dispatches, before claiming another, so a worker
-  whose thread is slowed (other load on its core) claims fewer and the rest
-  take up the slack. The first worker stays on this thread when it already
-  runs the executor's work (`dispatch!`). A `(task i)` that throws is
-  reported (`guard-task`); the other indices still run. Returns nil. Code
-  that then blocks until the tasks are done waits `call-unframed`, since the
-  first worker may be queued here.
+  task. A worker claims the next unclaimed index, runs `(task i)`, and queues
+  its next claim behind the work that dispatched, so it claims again only
+  once that work has run; a worker whose thread is slowed (other load on its
+  core) claims fewer and the rest take up the slack. The claims are queued,
+  not nested, so work that spreads again from inside a task (the next
+  generation of a population) does not deepen the stack. The first worker
+  stays on this thread when it already runs the executor's work
+  (`dispatch!`). A `(task i)` that throws is reported (`guard-task`); the
+  other indices still run. Returns nil. Code that then blocks until the
+  tasks are done waits `call-unframed`, since the first worker may be queued
+  here.
 
   Inline dispatch keeps a computation on its thread, so fan-out that should
   use several cores says so here, at the grain it chooses."
@@ -577,16 +580,13 @@
   ([executor n task parallelism]
    (let [workers (max 1 (min n parallelism))
          claimed (atom 0)
-         ;; each index in a frame of its own: its continuations run before
-         ;; the next claim, not after the worker has claimed everything
-         work (fn []
-                (loop []
-                  (let [i (dec (swap! claimed inc))]
-                    (when (< i n)
-                      (run-framed! executor #(task i))
-                      (recur)))))]
+         claim (fn claim []
+                 (let [i (dec (swap! claimed inc))]
+                   (when (< i n)
+                     ((guard-task #(task i)))
+                     (dispatch! executor claim))))]
      (dotimes [w workers]
        (if (zero? w)
-         (dispatch! executor work)
-         (execute! executor (fn [] (run-framed! executor work)))))
+         (dispatch! executor claim)
+         (execute! executor (fn [] (run-framed! executor claim)))))
      nil)))

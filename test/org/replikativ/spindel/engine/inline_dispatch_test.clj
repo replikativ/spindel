@@ -67,13 +67,15 @@
       (is (< 1 @hops (inc (quot n 200)))))))
 
 (defn- with-faults
-  "Call `f` with engine faults collected; returns [result faults]."
-  [f]
-  (let [faults (atom [])
-        before (fault/current-fault-reporter)]
-    (fault/set-fault-reporter! (fn [event data] (swap! faults conj [event data])))
-    (try [(f) faults]
-         (finally (fault/set-fault-reporter! before)))))
+  "Call `f` with engine faults collected (calling `on-fault` after each);
+  returns [result faults]."
+  ([f] (with-faults f (fn [])))
+  ([f on-fault]
+   (let [faults (atom [])
+         before (fault/current-fault-reporter)]
+     (fault/set-fault-reporter! (fn [event data] (swap! faults conj [event data]) (on-fault)))
+     (try [(f) faults]
+          (finally (fault/set-fault-reporter! before))))))
 
 (deftest every-failing-task-is-reported-and-the-queue-still-runs
   (let [e (ex/default-executor)
@@ -214,10 +216,30 @@
     (is (.await latch 5 java.util.concurrent.TimeUnit/SECONDS))
     (is (= [[:task 0] [:cont 0] [:task 1] [:cont 1] [:task 2] [:cont 2]] @log))))
 
+(deftest spread-from-inside-a-spread-task-keeps-the-stack-flat
+  ;; a population whose last arrival spreads the next generation: 2000
+  ;; generations on one thread must not nest a frame per generation
+  (let [e (ex/default-executor)
+        depth (atom 0)
+        done (promise)
+        generation (fn generation [g]
+                     (if (= g 2000)
+                       (deliver done (alength (.getStackTrace (Thread/currentThread))))
+                       (let [arrived (atom 0)]
+                         (ex/spread! e 4 (fn [_]
+                                           (when (= 4 (swap! arrived inc))
+                                             (generation (inc g))))
+                                     1))))]
+    (ex/dispatch! e #(generation 0))
+    (let [d (deref done 20000 ::timeout)]
+      (is (number? d))
+      (is (< d 300) (str "stack depth " d)))))
+
 (deftest spread-isolates-a-failing-index
   (let [e (ex/default-executor)
         seen (atom #{})
         latch (java.util.concurrent.CountDownLatch. 3)
+        reported (java.util.concurrent.CountDownLatch. 1)
         [_ faults] (with-faults
                      (fn []
                        (ex/spread! e 4 (fn [i]
@@ -225,7 +247,10 @@
                                          (swap! seen conj i)
                                          (.countDown latch))
                                    2)
-                       (.await latch 5 java.util.concurrent.TimeUnit/SECONDS)))]
+                       (.await latch 5 java.util.concurrent.TimeUnit/SECONDS)
+                       ;; index 0's worker may report after the others finish
+                       (.await reported 5 java.util.concurrent.TimeUnit/SECONDS))
+                     (fn [] (.countDown reported)))]
     (is (= #{1 2 3} @seen))
     (is (= ["index 0"] (map (comp ex-message :error second) @faults)))))
 
