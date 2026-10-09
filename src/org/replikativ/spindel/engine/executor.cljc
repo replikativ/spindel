@@ -145,6 +145,8 @@
      ;; This replaces blanket get-thread-bindings (~30+ vars) with exactly
      ;; the 5 vars that matter. *execution-context* is resolved at runtime
      ;; to avoid circular dependency with runtime.core.
+     (def ^:private execution-context-var (volatile! nil))
+
      (defn- capture-targeted-bindings
        "Capture only the dynamic vars that matter for worker threads.
        Returns a bindings map suitable for with-bindings."
@@ -152,7 +154,9 @@
        (let [;; bindings/capture-bindings captures the 4 vars from bindings.cljc
              base (bindings/capture-bindings)
              ;; Also capture *execution-context* (resolved to avoid circular dep)
-             exec-ctx-var (resolve 'org.replikativ.spindel.engine.core/*execution-context*)]
+             exec-ctx-var (or @execution-context-var
+                              (vreset! execution-context-var
+                                       (resolve 'org.replikativ.spindel.engine.core/*execution-context*)))]
          (if (and exec-ctx-var (.isBound ^clojure.lang.Var exec-ctx-var))
            (assoc base exec-ctx-var (.get ^clojure.lang.Var exec-ctx-var))
            base)))
@@ -511,3 +515,28 @@
       (f)
       (do (install-frame! nil)
           (try (f) (finally (install-frame! outer)))))))
+
+(def ^:private default-parallelism
+  #?(:clj (.availableProcessors (Runtime/getRuntime)) :cljs 1))
+
+(defn spread!
+  "Explicit parallel fan-out: run `(task i)` for every i < n, split into about
+  `parallelism` executor tasks (default: the processor count) of contiguous
+  shares. Each share runs on one thread together with the work it dispatches;
+  the first share stays on this thread when it already runs the executor's
+  work (`dispatch!`). Returns nil.
+
+  Inline dispatch keeps a computation on its thread, so fan-out that should
+  use several cores says so here, at the grain it chooses."
+  ([executor n task] (spread! executor n task default-parallelism))
+  ([executor n task parallelism]
+   (let [shares (max 1 (min n parallelism))
+         size (quot (+ n shares -1) shares)]
+     (dotimes [c shares]
+       (let [lo (* c size) hi (min n (+ lo size))]
+         (when (< lo hi)
+           (let [run-share (fn [] (loop [i lo] (when (< i hi) (task i) (recur (inc i)))))]
+             (if (zero? c)
+               (dispatch! executor run-share)
+               (execute! executor (fn [] (run-framed! executor run-share))))))))
+     nil)))
