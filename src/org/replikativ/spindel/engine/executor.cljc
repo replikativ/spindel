@@ -428,15 +428,20 @@
 ;;
 ;; The queue is a trampoline, so inline work never nests on the stack. After
 ;; `frame-batch` tasks the rest is handed back to the executor, so one chain of
-;; work does not keep a pool thread (or the JS event loop) to itself.
+;; work does not keep a pool thread (or the JS event loop) to itself; a
+;; synchronous executor has no other thread to hand to, so its frames keep
+;; pumping instead. Each task's escaping error is reported on its own (as an
+;; executor task's is) and does not stop the tasks queued behind it.
 ;;
 ;; Work that arrives on a thread not running this executor's work (an embedder
 ;; thread, a timer, an IO callback) still goes to the executor, so embedder
-;; threads never run engine work. Parallelism is explicit: `parallel` / `race`
-;; children, parallel observer dispatch and delayed spins use `execute!`.
+;; threads never run engine work (with a synchronous executor every thread
+;; runs it). Parallelism is explicit: `parallel` / `race` children, parallel
+;; observer dispatch and delayed spins use `execute!`; `spread!` fans out.
 ;;
-;; A task running in a frame must not block on work it queued, since that work
-;; runs only after it returns: blocking waits run `unframed`.
+;; A task running in a frame must not block on work queued in its frame, since
+;; that work runs only after it returns: blocking waits run `call-unframed`,
+;; which first hands the queued work to the executor.
 
 (def ^:private frame
   "Per thread: nil, or {:executor e :queue (volatile! PersistentQueue)}."
@@ -464,39 +469,48 @@
      :cljs (let [b (bindings/capture-bindings)]
              (fn [] (bindings/restore-bindings b task)))))
 
+(declare run-framed!)
+
+(defn- hand-over!
+  "Submit `tasks` (a queue) to `executor` as one framed task, in order. Returns
+  false when the executor refuses them."
+  [executor tasks]
+  (try
+    (execute! executor (fn [] (run-framed!
+                               executor
+                               ;; re-queue, so each one runs on its own
+                               (fn [] (vswap! (:queue (current-frame)) into tasks)))))
+    true
+    (catch #?(:clj Throwable :cljs :default) error
+      (fault/report-fault! ::fault/executor-task-fault {:error error :handoff-rejected? true})
+      false)))
+
 (defn run-framed!
   "Run `task` as work of `executor` on this thread, then the tasks it (and
-  they) dispatched. A task that throws does not take the queued ones with it:
-  they still run, and the first error is rethrown at the end."
+  they) dispatched. A task that throws is reported (`guard-task`) and does not
+  take the queued ones with it. Returns nil."
   [executor task]
   (let [outer (current-frame)
         queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
                             :cljs cljs.core/PersistentQueue.EMPTY))
-        failure (volatile! nil)
-        guarded (fn [f]
-                  (try (f)
-                       (catch #?(:clj Throwable :cljs :default) error
-                         (when-not @failure (vreset! failure error)))))]
+        local? (instance? SynchronousExecutor executor)]
     (install-frame! {:executor executor :queue queue})
     (try
-      (guarded task)
+      ((guard-task task))
       (loop [ran 0]
         (when-let [next-task (peek @queue)]
-          (if (< ran frame-batch)
+          (if (or local? (< ran frame-batch))
             (do (vswap! queue pop)
-                (guarded next-task)
+                ((guard-task next-task))
                 (recur (inc ran)))
-            ;; hand the tail back, in order
+            ;; hand the tail back, in order; keep it here if refused
             (let [tail @queue]
               (vreset! queue (empty tail))
-              (execute! executor
-                        (fn [] (run-framed!
-                                executor
-                                ;; re-queue, so each one is guarded by itself
-                                (fn [] (vswap! (:queue (current-frame)) into tail)))))))))
+              (when-not (hand-over! executor tail)
+                (vreset! queue tail)
+                (recur 0))))))
       (finally (install-frame! outer)))
-    (when-let [error @failure]
-      (throw error))))
+    nil))
 
 (defn dispatch!
   "Run `task` on `executor`: behind the current task when this thread is
@@ -509,13 +523,21 @@
 
 (defn call-unframed
   "Call `f` with no frame on this thread, so the work it dispatches goes to
-  the executor. For code that blocks until that work is done."
+  the executor, after handing the work already queued in this thread's frame
+  to the executor. For code that blocks until engine work is done: that work
+  may already be queued here. Refused work stays queued."
   [f]
   (let [outer (current-frame)]
     (if (nil? outer)
       (f)
-      (do (install-frame! nil)
-          (try (f) (finally (install-frame! outer)))))))
+      (let [queue (:queue outer)
+            queued @queue]
+        (when (seq queued)
+          (vreset! queue (empty queued))
+          (when-not (hand-over! (:executor outer) queued)
+            (vswap! queue #(into queued %))))
+        (install-frame! nil)
+        (try (f) (finally (install-frame! outer)))))))
 
 (def ^:private default-parallelism
   #?(:clj (.availableProcessors (Runtime/getRuntime)) :cljs 1))
@@ -525,7 +547,9 @@
   `parallelism` executor tasks (default: the processor count) of contiguous
   shares. Each share runs on one thread together with the work it dispatches;
   the first share stays on this thread when it already runs the executor's
-  work (`dispatch!`). Returns nil.
+  work (`dispatch!`). A `(task i)` that throws is reported (`guard-task`); the
+  other indices still run. Returns nil. Code that then blocks until the tasks
+  are done waits `call-unframed`, since the first share may be queued here.
 
   Inline dispatch keeps a computation on its thread, so fan-out that should
   use several cores says so here, at the grain it chooses."
@@ -536,7 +560,9 @@
      (dotimes [c shares]
        (let [lo (* c size) hi (min n (+ lo size))]
          (when (< lo hi)
-           (let [run-share (fn [] (loop [i lo] (when (< i hi) (task i) (recur (inc i)))))]
+           ;; each index on its own: one that throws is reported and the
+           ;; rest of its share still runs
+           (let [run-share (fn [] (loop [i lo] (when (< i hi) ((guard-task #(task i))) (recur (inc i)))))]
              (if (zero? c)
                (dispatch! executor run-share)
                (execute! executor (fn [] (run-framed! executor run-share))))))))

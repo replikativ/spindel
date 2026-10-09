@@ -479,6 +479,6 @@ forward.*
 - [Effects](effects.md) — `await`, `track`, `yield` in detail
 - [Forking](forking.md) — copy-on-write execution contexts
 - [Engine](engine.md) — the implementation: state shape, addressing,
-  drain thread, CPS / trampoline, overlay backend, GC
+  drains, CPS / trampoline, overlay backend, GC
 - [Engine Formalism](engine-formalism.md) — the algebra, flow diagrams,
   and correctness laws

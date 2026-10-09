@@ -433,7 +433,9 @@ Tier 1 is the existing inference mechanism made public and generalized.
   every downstream site mint the address it had before, so a resumed
   computation is addressable the same way in every fork.
 - **Cost.** A site with a handler costs one map and one state write; its
-  resume is queued on the resuming thread (`executor/dispatch!`). A site without one costs a lookup (law 1). An anchor
+  resume is queued on the resuming thread when that thread already runs
+  the world's executor's work, else submitted to the executor
+  (`executor/dispatch!`). A site without one costs a lookup (law 1). An anchor
   costs a frozen fork.
 - **Safe point.** A fork copies state, not in-flight coordination (see
   above), and host work (a blocking call, a future) belongs to no world at

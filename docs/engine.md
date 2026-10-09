@@ -488,17 +488,23 @@ Three consequences:
 
 - **Embedder threads never run engine work.** Work dispatched from a
   thread that is not running the executor's work (your thread, a timer,
-  an IO callback) is submitted to the executor as before.
+  an IO callback) is submitted to the executor as before. (A
+  `SynchronousExecutor` runs every task on the calling thread, by
+  design; its frames keep pumping instead of handing work back.)
 - **Parallelism is explicit.** `parallel` / `race` children, parallel
   observer dispatch and delayed spins still `execute!` on their own
   tasks. Fan-out that should use several cores calls
   `executor/spread!`, which runs `n` tasks as about one executor task
   per processor, each running its share inline.
-- **Do not block on work you dispatched.** A task in a frame that
-  blocks until work it dispatched is done waits forever: that work runs
-  after it returns. Blocking `@spin` runs `executor/call-unframed`, so
-  the work it waits on goes to the executor; code that blocks inside
-  engine work should do the same.
+- **Do not block on work queued behind you.** A task in a frame that
+  blocks until work queued in its frame is done waits forever: that
+  work runs after it returns. `executor/call-unframed` first hands the
+  queued work to the executor and sends new dispatches there too;
+  blocking `@spin` and `await-drain-complete!` wait inside it, and code
+  that blocks inside engine work should do the same.
+- **Faults stay per task.** A queued task that throws is reported
+  through the fault hook (`engine/fault.cljc`) like an executor task,
+  and the tasks behind it still run.
 
 ### The drain lock
 
@@ -1039,44 +1045,35 @@ strong reference.
 
 ### Context lifecycle
 
-`create-execution-context` starts the drain thread immediately. The
-thread is a daemon, so it does not prevent JVM exit if the context is
-abandoned.
+A context owns no thread: its drains run as executor work (see
+[Scheduling drains](#scheduling-drains)), so an abandoned context is
+simply garbage.
 
-`stop-context!` shuts down cleanly in four steps:
+`stop-context!` quiesces a root context in three steps (on a fork it is
+a no-op; forks share the root's flags):
 
-1. `(reset! running false)` — signals the entry guard and all future
-   drain calls to exit.
-2. `.offer(:stop)` on `drain-signal` — wakes the drain thread
-   immediately.
+1. `(reset! running false)` — the entry guard of every later drain
+   returns without touching state, and `alive-fn` drops stale CLJS
+   callbacks.
+2. Cancels pending delayed-spin timers.
 3. Polls `drain-active` down to 0 with `LockSupport/parkNanos 100000`
    (100µs intervals), bounded by a **5-second outer deadline** — a
    safety valve for a deadlocked spin body. Reaching it means a real
    bug worth investigating; the shutdown returns anyway so the caller
    doesn't hang.
-4. `.join(drain-thread 200ms)` — waits for the daemon thread loop to
-   actually terminate.
+
+It quiesces drains, not work outside them: a savepoint continuation
+already dispatched (`resume` / `abandon`) still runs. Close the
+savepoint sessions of a context before stopping it.
 
 `close-context!` calls `stop-context!` and additionally shuts down the
 executor.
-
-**GC-based cleanup.** If a context is abandoned without calling
-`stop-context!` (common in tests), the drain thread itself is
-registered with the JVM `Cleaner` / CLJS `FinalizationRegistry`
-against the `ExecutionContext` object. The Cleaner fires once the
-context has no more strong references — calling `(reset! running
-false)` and offering `:stop` to `drain-signal`, so the daemon thread
-exits. Both `create-execution-context` and `deserialize-context`
-register this Cleaner (an earlier `deserialize-context` did not,
-leaking one daemon thread per call). This is a safety net only —
-explicit `stop-context!` / `close-context!` in your lifecycle code is
-the right way.
 
 ## Platform Differences (JVM vs ClojureScript)
 
 | Aspect | JVM | ClojureScript |
 |--------|-----|---------------|
-| Drain thread | Daemon thread, blocks on `LinkedBlockingQueue` | No drain thread; JS event loop |
+| Drains | Executor tasks (`executor/dispatch!`) | Executor tasks on the JS event loop |
 | Executor | ForkJoinPool / virtual threads | `setTimeout 0` |
 | Parallel observers | `CountDownLatch` + `managedBlock` | Always sequential (single-threaded) |
 | `await-drain-complete!` | Blocks with `ForkJoinPool.managedBlock` + 100µs `parkNanos` | Returns current idle state, non-blocking |

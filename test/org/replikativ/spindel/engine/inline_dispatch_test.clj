@@ -6,6 +6,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.trace :as trace]
             [org.replikativ.spindel.spin.cps :refer [spin]]))
@@ -64,13 +65,64 @@
     (testing "the chain is handed back to the executor every 256 tasks"
       (is (< 1 @hops (inc (quot n 200)))))))
 
-(deftest a-failing-task-does-not-drop-the-queued-ones
+(defn- with-faults
+  "Call `f` with engine faults collected; returns [result faults]."
+  [f]
+  (let [faults (atom [])
+        before (fault/current-fault-reporter)]
+    (fault/set-fault-reporter! (fn [event data] (swap! faults conj [event data])))
+    (try [(f) faults]
+         (finally (fault/set-fault-reporter! before)))))
+
+(deftest every-failing-task-is-reported-and-the-queue-still-runs
   (let [e (ex/default-executor)
-        p (promise)]
-    (ex/dispatch! e (fn []
-                      (ex/dispatch! e #(deliver p :ran))
-                      (throw (ex-info "boom" {}))))
-    (is (= :ran (deref p 5000 ::timeout)))))
+        p (promise)
+        [ran faults] (with-faults
+                       (fn []
+                         (ex/dispatch! e (fn []
+                                           (ex/dispatch! e #(throw (ex-info "second" {})))
+                                           (ex/dispatch! e #(deliver p :ran))
+                                           (throw (ex-info "first" {}))))
+                         (deref p 5000 ::timeout)))]
+    (is (= :ran ran))
+    (Thread/sleep 50)
+    (is (= #{"first" "second"} (set (map (comp ex-message :error second) @faults))))))
+
+(deftest an-interrupt-in-a-queued-task-is-reported-and-restored
+  (let [e (ex/synchronous-executor)
+        flags (atom [])
+        [_ faults] (with-faults
+                     (fn []
+                       (ex/run-framed! e (fn []
+                                           (ex/dispatch! e #(throw (InterruptedException. "x")))
+                                           (ex/dispatch! e #(swap! flags conj (Thread/interrupted)))))))]
+    (is (= [true] @flags) "the flag survives into the next task")
+    (is (= [true] (map (comp :interrupted? second) @faults)))))
+
+(deftest a-synchronous-executor-pumps-long-chains-without-nesting
+  (let [e (ex/synchronous-executor)
+        n 5000
+        depths (atom [])]
+    (ex/run-framed! e (fn []
+                        (letfn [(step [i]
+                                  (swap! depths conj (count (.getStackTrace (Thread/currentThread))))
+                                  (when (< i n) (ex/dispatch! e #(step (inc i)))))]
+                          (step 0))))
+    (is (= (inc n) (count @depths)))
+    (is (< (- (apply max @depths) (apply min @depths)) 50))))
+
+(deftest a-refused-handoff-keeps-the-tail-here
+  (let [refusing (reify ex/PExecutor
+                   (execute! [_ _] (throw (java.util.concurrent.RejectedExecutionException. "full")))
+                   (execute-after! [_ _ _] nil))
+        ran (atom 0)
+        [_ faults] (with-faults
+                     (fn []
+                       (ex/run-framed! refusing (fn []
+                                                  (dotimes [_ 600]
+                                                    (ex/dispatch! refusing #(swap! ran inc)))))))]
+    (is (= 600 @ran))
+    (is (seq (filter (comp :handoff-rejected? second) @faults)))))
 
 (deftest another-executor-is-not-run-inline
   (let [hops (atom 0)
@@ -80,6 +132,33 @@
     (ex/dispatch! a (fn [] (ex/dispatch! b #(deliver p (Thread/currentThread)))))
     (is (instance? Thread (deref p 5000 ::timeout)))
     (is (= 1 @hops))))
+
+(deftest call-unframed-hands-queued-work-to-the-executor
+  (testing "a blocking wait on work already queued in this frame"
+    (let [e (ex/default-executor)
+          result (on-executor e (fn []
+                                  (let [p (promise)]
+                                    (ex/dispatch! e #(deliver p :done))
+                                    (ex/call-unframed #(deref p 5000 ::timeout)))))]
+      (is (= :done result)))))
+
+(deftest a-deref-of-a-running-spin-whose-continuation-is-queued-here
+  (testing "resume queues the continuation in this frame; @ then waits for it"
+    (let [e (ex/default-executor)
+          world (ctx/create-execution-context :executor e)
+          parked (promise)
+          _ (sp/open! world {:purpose :test :seed 1 :fork-opts {:systems :none}
+                             :handlers {:x #(deliver parked %)}})
+          s (binding [ec/*execution-context* world]
+              (spin (+ 1 (sp/savepoint :x 0))))
+          started (future (binding [ec/*execution-context* world] (deref s 5000 ::timeout)))
+          p (deref parked 5000 ::timeout)]
+      (is (not= ::timeout p))
+      (is (= 42 (on-executor e (fn []
+                                 (sp/resume p 41)
+                                 (binding [ec/*execution-context* world]
+                                   (deref s 5000 ::timeout))))))
+      (is (= 42 (deref started 5000 ::timeout))))))
 
 (deftest call-unframed-sends-dispatches-to-the-executor
   (let [hops (atom 0)
@@ -108,6 +187,21 @@
     (is (= (set (range n)) (set (keys @seen))))
     (is (every? #(= 1 (count %)) (vals @seen)))
     (is (= 4 (count (into #{} (mapcat val) @seen))) "one thread per share")))
+
+(deftest spread-isolates-a-failing-index
+  (let [e (ex/default-executor)
+        seen (atom #{})
+        latch (java.util.concurrent.CountDownLatch. 3)
+        [_ faults] (with-faults
+                     (fn []
+                       (ex/spread! e 4 (fn [i]
+                                         (when (zero? i) (throw (ex-info "index 0" {})))
+                                         (swap! seen conj i)
+                                         (.countDown latch))
+                                   2)
+                       (.await latch 5 java.util.concurrent.TimeUnit/SECONDS)))]
+    (is (= #{1 2 3} @seen))
+    (is (= ["index 0"] (map (comp ex-message :error second) @faults)))))
 
 (deftest spread-with-fewer-tasks-than-shares
   (let [e (ex/default-executor)

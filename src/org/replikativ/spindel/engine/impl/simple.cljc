@@ -1533,53 +1533,56 @@
   Returns: true if drain completed, false if timeout (or false on CLJS
            when not yet complete)"
   [context & {:keys [timeout-ms] :or {timeout-ms 5000}}]
-  ;; The three "is the engine idle?" predicates must be evaluated against a
-  ;; single consistent snapshot of the state. Reading them with three
-  ;; separate (rtp/get-state) calls is racy: a drain can start between the
-  ;; :engine/draining? read and the :engine/pending read, leaving us to
-  ;; conclude "idle" while a drain is genuinely in flight. Read the whole
-  ;; backend once and inspect the resulting map.
-  ;;
-  ;; Also include drain-active in the predicate. drain-events! increments
-  ;; that counter the moment it passes the function-entry guard — which is
-  ;; before it CAS's :engine/draining?. There's a small window where a
-  ;; drain has been entered but not yet acquired the lock, and it would be
-  ;; invisible to a check that only looked at :engine/draining?. Counting
-  ;; the entry catches it.
-  (let [idle? (fn []
-                (let [state (backend/backend-deref (:backend context))]
-                  (and (settled-state? context state)
-                       (not (some (fn [[_id n]] (:running? n)) (get state :nodes))))))]
-    #?(:clj
-       (let [start (System/currentTimeMillis)
-             deadline (+ start timeout-ms)]
-         (if (idle?)
-           true
-           (let [result (volatile! false)]
-             (ForkJoinPool/managedBlock
-              (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
-                (block [_]
-                  (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
-                  (let [d (idle?)]
-                    (when d (vreset! result true))
-                    (or d (>= (System/currentTimeMillis) deadline))))
-                (isReleasable [_]
-                  (cond
-                    (idle?)
-                    (do (vreset! result true) true)
-                    (>= (System/currentTimeMillis) deadline)
-                    true ; timeout - result stays false
-                    :else false))))
-             @result)))
-       :cljs
-       ;; CLJS cannot truly await: a synchronous loop on the JS thread cannot
-       ;; observe setTimeout-driven workers complete, so a busy-wait would burn
-       ;; CPU until the deadline and never see progress. Instead we report the
-       ;; current drain status and let the caller use async/await patterns
-       ;; (run-spin! callbacks, async done) to observe completion. timeout-ms
-       ;; is accepted for cross-platform call-site compatibility but unused.
-       (let [_ timeout-ms]
-         (idle?)))))
+  ;; Unframed: drains this waits for may be queued on this thread.
+  (executor/call-unframed
+   (fn []
+    ;; The three "is the engine idle?" predicates must be evaluated against a
+    ;; single consistent snapshot of the state. Reading them with three
+    ;; separate (rtp/get-state) calls is racy: a drain can start between the
+    ;; :engine/draining? read and the :engine/pending read, leaving us to
+    ;; conclude "idle" while a drain is genuinely in flight. Read the whole
+    ;; backend once and inspect the resulting map.
+    ;;
+    ;; Also include drain-active in the predicate. drain-events! increments
+    ;; that counter the moment it passes the function-entry guard — which is
+    ;; before it CAS's :engine/draining?. There's a small window where a
+    ;; drain has been entered but not yet acquired the lock, and it would be
+    ;; invisible to a check that only looked at :engine/draining?. Counting
+    ;; the entry catches it.
+    (let [idle? (fn []
+                  (let [state (backend/backend-deref (:backend context))]
+                    (and (settled-state? context state)
+                         (not (some (fn [[_id n]] (:running? n)) (get state :nodes))))))]
+      #?(:clj
+         (let [start (System/currentTimeMillis)
+               deadline (+ start timeout-ms)]
+           (if (idle?)
+             true
+             (let [result (volatile! false)]
+               (ForkJoinPool/managedBlock
+                (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
+                  (block [_]
+                    (LockSupport/parkNanos (* 100 1000)) ; 100 microseconds
+                    (let [d (idle?)]
+                      (when d (vreset! result true))
+                      (or d (>= (System/currentTimeMillis) deadline))))
+                  (isReleasable [_]
+                    (cond
+                      (idle?)
+                      (do (vreset! result true) true)
+                      (>= (System/currentTimeMillis) deadline)
+                      true ; timeout - result stays false
+                      :else false))))
+               @result)))
+         :cljs
+         ;; CLJS cannot truly await: a synchronous loop on the JS thread cannot
+         ;; observe setTimeout-driven workers complete, so a busy-wait would burn
+         ;; CPU until the deadline and never see progress. Instead we report the
+         ;; current drain status and let the caller use async/await patterns
+         ;; (run-spin! callbacks, async done) to observe completion. timeout-ms
+         ;; is accepted for cross-platform call-site compatibility but unused.
+         (let [_ timeout-ms]
+           (idle?)))))))
 
 (defn ^:no-doc trigger-drain!
   "Trigger async draining of the event queue.
