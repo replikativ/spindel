@@ -25,7 +25,11 @@
   {:target :node-test
    :output-to "out/ci-tests.js"
    :ns-regexp "-test$"
-   :compiler-options {:elide-asserts false}}
+   ;; `:useless-code` off: Closure reports the state machines core.async's `go`
+   ;; generates (spindel's own, konserve's, kabel's) as unreachable code. konserve's
+   ;; builds turn it off for the same reason.
+   :compiler-options {:elide-asserts false
+                      :closure-warnings {:useless-code :off}}}
 
   :lib
   {:target :node-library

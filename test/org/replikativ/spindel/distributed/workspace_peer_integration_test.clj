@@ -22,10 +22,9 @@
             [datahike.versioning :refer [branch!]]
             [datahike.kabel.connector]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
-            [kabel.middleware.fressian :refer [fressian]]
             [konserve.core :as k]
             [konserve-sync.core :as sync]
             [is.simm.distributed-scope :as ds]
@@ -48,16 +47,13 @@
   (let [d (io/file path)]
     (when (.exists d) (doseq [f (reverse (file-seq d))] (.delete f)))))
 
-(defn- datahike-fressian-middleware [peer-config]
-  (fressian (atom fh/read-handlers) (atom fh/write-handlers) peer-config))
-
 (def schema [{:db/ident :item/name :db/valueType :db.type/string
               :db/cardinality :db.cardinality/one}])
 
 ;; Head token: the stored-db's :max-tx — a small, stable, identical-after-sync
 ;; value, computed the same way on both sides (server descriptor + client
 ;; head-update). Content-addressed equality of the whole stored-db would also
-;; work but is brittle across the fressian round-trip.
+;; work but is brittle across the wire round-trip.
 (defn- head-token [stored-db] (:max-tx stored-db))
 
 (defn- branch-token
@@ -109,7 +105,7 @@
                 handler (create-http-kit-handler! S url server-id)
                 server-peer (peer/server-peer S handler server-id
                                               (comp (sync/server-middleware) ds/remote-middleware)
-                                              datahike-fressian-middleware)
+                                              datahike-cbor-middleware)
                 _ (<?? S (peer/start server-peer))
                 _ (ds/invoke-on-peer server-peer)
                 _ (handlers/register-global-handlers! server-peer)
@@ -120,7 +116,7 @@
                 ;; ---- CLIENT: peer + KabelWriter conns (real konserve-sync) ----
                 client-peer (peer/client-peer S client-id
                                               (comp (sync/client-middleware) ds/remote-middleware)
-                                              datahike-fressian-middleware)
+                                              datahike-cbor-middleware)
                 _ (ds/invoke-on-peer client-peer)
                 _ (<?? S (peer/connect S client-peer url))
                 c-kb-cfg (assoc base :store {:backend :file :path c-kb-path :id kb-id}

@@ -1,5 +1,6 @@
 (ns org.replikativ.spindel.distributed.bridge-test
   "Unit tests for spindel/core.async bridge functions."
+  (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [org.replikativ.spindel.distributed.core :as dist]

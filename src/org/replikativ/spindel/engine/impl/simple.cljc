@@ -499,7 +499,19 @@
                        (if (seq queue)
                          (do
                            (reset! event-atom (first queue))
-                           (vec (rest queue)))
+                           ;; Copying the rest on every pop made draining a
+                           ;; backlog of n events O(n^2). A subvec pops in O(1)
+                           ;; but keeps its backing vector, dequeued events
+                           ;; included, and conj extends it. So count pops in
+                           ;; the vector's metadata (conj keeps it) and copy the
+                           ;; live part once they reach its size: retention stays
+                           ;; proportional to the queue, pops amortized O(1).
+                           (let [pops (inc (:pending-pops (meta queue) 0))
+                                 remaining (subvec queue 1)]
+                             (cond
+                               (empty? remaining) []
+                               (>= pops (max 64 (count remaining))) (into [] remaining)
+                               :else (with-meta remaining {:pending-pops pops}))))
                          queue)))
     @event-atom))
 
@@ -1465,7 +1477,11 @@
                                         (catch #?(:clj Throwable :cljs :default) _))))
 
                                   nil)))
-                            (sweep-retired-continuations! context)
+                            ;; The sweep scans the pending queue: only when there
+                            ;; is anything retired to sweep, or a backlog drains
+                            ;; in O(n^2).
+                            (when (seq (rtp/get-state context [:engine/retired-conts]))
+                              (sweep-retired-continuations! context))
                             (swap! event-count inc)
                             (recur))
                           ;; Queue empty — drain complete.

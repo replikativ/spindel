@@ -209,7 +209,7 @@
   Example:
     (def cache (create-atom runtime []))
     (swap! cache conj item)
-    @cache  ; => [item]"
+    (deref cache)  ; => [item]"
   [initial-value & {:keys [meta]}]
   (let [runtime (ec/current-execution-context)
         atom-id (keyword (gensym "atom-"))
@@ -262,7 +262,7 @@
   Usage:
     (let [cache (atom [])]
       (swap! cache conj item)
-      @cache)
+      (deref cache))
 
   Options:
     :meta - Metadata map
@@ -271,6 +271,6 @@
     (spin runtime
       (let [cache (atom [] :meta {:doc \"My cache\"})]
         (swap! cache conj 1)
-        @cache))  ; => [1]"
+        (deref cache)))  ; => [1]"
   [initial-value & {:keys [meta]}]
   (create-atom  initial-value :meta meta))
