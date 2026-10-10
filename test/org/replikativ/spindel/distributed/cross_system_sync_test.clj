@@ -2,7 +2,7 @@
   "DECISIVE proof that datahike + yggdrasil replicate over ONE kabel wire through
    ONE serializer — the canonical PSS codec shared by both systems.
 
-   A single peer pair carries datahike's fressian middleware (canonical PSS
+   A single peer pair carries datahike's CBOR middleware (canonical PSS
    node/root handlers + Datom/DB). That SAME serializer ships, over the SAME
    socket (one message order = causal ordering across systems):
 
@@ -27,10 +27,9 @@
             [datahike.connector :refer [release]]
             [datahike.kabel.connector]
             [datahike.kabel.handlers :as handlers]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
-            [kabel.middleware.fressian :refer [fressian]]
             [konserve.core :as k]
             [konserve-sync.core :as sync]
             [konserve-sync.walkers.pss :as ks-pss]
@@ -53,9 +52,6 @@
 (defn- rm-rf [path]
   (let [d (io/file path)]
     (when (.exists d) (doseq [f (reverse (file-seq d))] (.delete f)))))
-
-(defn- datahike-fressian-middleware [peer-config]
-  (fressian (atom fh/read-handlers) (atom fh/write-handlers) peer-config))
 
 (def schema [{:db/ident :item/name :db/valueType :db.type/string
               :db/cardinality :db.cardinality/one}])
@@ -112,7 +108,7 @@
                 handler (create-http-kit-handler! S url server-id)
                 server-peer (peer/server-peer S handler server-id
                                               (comp (sync/server-middleware) ds/remote-middleware)
-                                              datahike-fressian-middleware)
+                                              datahike-cbor-middleware)
                 _ (<?? S (peer/start server-peer))
                 _ (ds/invoke-on-peer server-peer)
                 _ (handlers/register-global-handlers! server-peer)
@@ -124,7 +120,7 @@
                 ;; ---- CLIENT: peer + datahike KabelWriter conn (real konserve-sync) ----
                 client-peer (peer/client-peer S client-id
                                               (comp (sync/client-middleware) ds/remote-middleware)
-                                              datahike-fressian-middleware)
+                                              datahike-cbor-middleware)
                 _ (ds/invoke-on-peer client-peer)
                 _ (<?? S (peer/connect S client-peer url))
                 c-dh-cfg (assoc base :store {:backend :file :path c-dh-path :id dh-id}

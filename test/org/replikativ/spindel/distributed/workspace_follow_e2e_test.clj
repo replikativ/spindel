@@ -18,8 +18,7 @@
             [clojure.core.async :refer [<!!]]
             [kabel.peer :as peer]
             [kabel.http-kit :refer [create-http-kit-handler!]]
-            [kabel.middleware.fressian :refer [fressian]]
-            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.cbor-handlers :refer [datahike-cbor-middleware]]
             [konserve.core :as k]
             [konserve-sync.core :as sync]
             [konserve-sync.walkers.pss :as ks-pss]
@@ -49,9 +48,6 @@
       (cond (pred) true
             (> (System/currentTimeMillis) deadline) false
             :else (do (Thread/sleep 100) (recur))))))
-
-(defn- datahike-fressian-middleware [peer-config]
-  (fressian (atom fh/read-handlers) (atom fh/write-handlers) peer-config))
 
 (def ^:private ygg-sync-opts
   (ks-pss/make-pss-sync-opts :crdt/branches ks-pss/default-head-key true
@@ -84,13 +80,13 @@
               handler      (create-http-kit-handler! S url server-id)
               server-peer  (peer/server-peer S handler server-id
                                              (comp (sync/server-middleware) ds/remote-middleware)
-                                             datahike-fressian-middleware)
+                                             datahike-cbor-middleware)
               _            (<?? S (peer/start server-peer))
               _            (ds/invoke-on-peer server-peer)
               _            (sync/register-store! server-peer ygg-topic s-store ygg-sync-opts)
               client-peer  (peer/client-peer S client-id
                                              (comp (sync/client-middleware) ds/remote-middleware)
-                                             datahike-fressian-middleware)
+                                             datahike-cbor-middleware)
               _            (ds/invoke-on-peer client-peer)
               _            (<?? S (peer/connect S client-peer url))
               c-store      (:kv-store (durable/open c-cfg {} {:sync? true}))
