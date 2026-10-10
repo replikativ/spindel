@@ -80,6 +80,11 @@
      (when v
        (swap! registered-vars conj v))))
 
+#?(:clj
+   (def ^:private resolved-capture-vars
+     "The vars `get-vars-to-capture` resolved, once all of them resolve."
+     (volatile! nil)))
+
 (defn- get-vars-to-capture
   "Get the list of dynamic vars to capture.
 
@@ -94,11 +99,14 @@
   (runtime → continuation → bindings → runtime) and cause StackOverflow."
   []
   #?(:clj
-     ;; CLJ: Use resolve at runtime (works in CLJ)
+     ;; CLJ: Use resolve at runtime (works in CLJ), once engine.core is loaded
      ;; NOTE: *execution-context* deliberately NOT included - bound by event handlers
-     [(resolve 'org.replikativ.spindel.engine.core/*spin-id*)
-      (resolve 'org.replikativ.spindel.engine.core/*yield-handler*)
-      (resolve 'org.replikativ.spindel.engine.core/*external-await-cancel-token*)]
+     (or @resolved-capture-vars
+         (let [vs [(resolve 'org.replikativ.spindel.engine.core/*spin-id*)
+                   (resolve 'org.replikativ.spindel.engine.core/*yield-handler*)
+                   (resolve 'org.replikativ.spindel.engine.core/*external-await-cancel-token*)]]
+           (when (every? some? vs) (vreset! resolved-capture-vars vs))
+           vs))
      :cljs
      ;; CLJS: Use pre-registered vars
      @registered-vars))

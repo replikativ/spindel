@@ -550,12 +550,12 @@ Track fork lineage for distributed systems testing:
 ;; Create root context
 (def ctx (ctx/create-execution-context))
 
-;; Fork (shares drain thread with parent)
+;; Fork (shares the executor and running flag with its parent)
 (def fork (ctx/fork-context ctx))
 
-;; Stop root context (stops background drain thread)
+;; Stop root context (no drain mutates state after it returns)
 (ctx/stop-context! ctx)
-;; Safe no-op on forks — they share the parent's drain thread
+;; Safe no-op on forks — they share the parent's running flag
 
 ;; Full shutdown (stops drain + closes executor)
 (ctx/close-context! ctx)
@@ -566,5 +566,5 @@ Track fork lineage for distributed systems testing:
 
 - [Getting Started](getting-started.md) — Basic tutorial
 - [Concepts](concepts.md) — Execution context explained
-- [Engine](engine.md) — Overlay-backend mechanics, fork-local vs shared paths, drain-thread sharing across forks, the full architectural picture
+- [Engine](engine.md) — Overlay-backend mechanics, fork-local vs shared paths, drain scheduling across forks, the full architectural picture
 - [SCI Integration](sci-integration.md) — Agent isolation with forked contexts

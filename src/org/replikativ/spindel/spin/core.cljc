@@ -10,6 +10,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.bindings :as bindings]
+            [org.replikativ.spindel.engine.executor :as executor]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]
             [is.simm.partial-cps.runtime])
@@ -177,13 +178,16 @@
            runtime (ec/current-execution-context)
            rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
                               (ctx/rebuild-mode? runtime))
+           ;; Unframed: the work this waits for may be queued on this thread
+           ;; (a continuation resumed here, the drain the enqueue triggered).
            wait-on-promise (fn [result-promise]
-                             (if (pos? timeout-ms)
-                               (let [res (deref result-promise timeout-ms ::timeout)]
-                                 (if (= res ::timeout)
-                                   timeout-val
-                                   (unwrap res)))
-                               (unwrap @result-promise)))]
+                             (executor/call-unframed
+                              #(if (pos? timeout-ms)
+                                 (let [res (deref result-promise timeout-ms ::timeout)]
+                                   (if (= res ::timeout)
+                                     timeout-val
+                                     (unwrap res)))
+                                 (unwrap @result-promise))))]
        (cond
          ;; Rebuild mode with cache hit - execute body but return cached value
          (and cached (ec/spin-result-clean? spin-id) rebuild-mode?)

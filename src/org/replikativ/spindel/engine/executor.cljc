@@ -127,8 +127,9 @@
 ;; Executor Implementations
 ;; =============================================================================
 
-;; ImmediateExecutor removed - all execution now happens asynchronously via ThreadPoolExecutor
-;; This ensures event processing never blocks the calling thread, preventing deadlocks
+;; An embedder thread never runs engine work: what it triggers goes to the
+;; executor. Engine work triggered on a thread already running the executor's
+;; work stays there (see Inline dispatch below).
 
 #?(:clj
    (do
@@ -146,6 +147,8 @@
      ;; This replaces blanket get-thread-bindings (~30+ vars) with exactly
      ;; the 5 vars that matter. *execution-context* is resolved at runtime
      ;; to avoid circular dependency with runtime.core.
+     (def ^:private execution-context-var (volatile! nil))
+
      (defn- capture-targeted-bindings
        "Capture only the dynamic vars that matter for worker threads.
        Returns a bindings map suitable for with-bindings."
@@ -153,7 +156,9 @@
        (let [;; bindings/capture-bindings captures the 4 vars from bindings.cljc
              base (bindings/capture-bindings)
              ;; Also capture *execution-context* (resolved to avoid circular dep)
-             exec-ctx-var (resolve 'org.replikativ.spindel.engine.core/*execution-context*)]
+             exec-ctx-var (or @execution-context-var
+                              (vreset! execution-context-var
+                                       (resolve 'org.replikativ.spindel.engine.core/*execution-context*)))]
          (if (and exec-ctx-var (.isBound ^clojure.lang.Var exec-ctx-var))
            (assoc base exec-ctx-var (.get ^clojure.lang.Var exec-ctx-var))
            base)))
@@ -397,6 +402,18 @@
        ;; Execute immediately - time is virtual
        (execute! this spin-fn))))
 
+(defprotocol PRunsInline
+  "Optional executor capability: `execute!` runs the task on the calling
+  thread before it returns (SynchronousExecutor, and wrappers of it)."
+  (runs-inline? [this]))
+
+(extend-protocol PRunsInline
+  SynchronousExecutor
+  (runs-inline? [_] true))
+
+(defn- inline-executor? [executor]
+  (and (satisfies? PRunsInline executor) (runs-inline? executor)))
+
 (defn synchronous-executor
   "Create synchronous executor for deterministic simulation testing.
 
@@ -418,3 +435,167 @@
     ;; Time is controlled explicitly via advance-time!"
   []
   (->SynchronousExecutor))
+
+;; =============================================================================
+;; Inline dispatch
+;; =============================================================================
+;;
+;; Engine work that becomes ready while a thread is already running work of
+;; the same executor (a drain session, a savepoint continuation) does not need
+;; another thread: it is queued on this thread and runs when the current task
+;; returns. Handing it to the executor instead costs a thread hop per engine
+;; step (on a loaded JVM ~100 µs on virtual threads), which is most of the
+;; latency of a short computation.
+;;
+;; The queue is a trampoline, so inline work never nests on the stack. After
+;; `frame-batch` tasks the rest is handed back to the executor, so one chain of
+;; work does not keep a pool thread (or the JS event loop) to itself; a
+;; synchronous executor has no other thread to hand to, so its frames keep
+;; pumping instead. Each task's escaping error is reported on its own (as an
+;; executor task's is) and does not stop the tasks queued behind it.
+;;
+;; Work that arrives on a thread not running this executor's work (an embedder
+;; thread, a timer, an IO callback) still goes to the executor, so embedder
+;; threads never run engine work (with a synchronous executor every thread
+;; runs it). Parallelism is explicit: `parallel` / `race` children, parallel
+;; observer dispatch and delayed spins use `execute!`; `spread!` fans out.
+;;
+;; A task running in a frame must not block on work queued in its frame, since
+;; that work runs only after it returns: blocking waits run `call-unframed`,
+;; which first hands the queued work to the executor.
+
+(def ^:private frame
+  "Per thread: nil, or {:executor e :queue (volatile! PersistentQueue)}."
+  #?(:clj (ThreadLocal.) :cljs (volatile! nil)))
+
+(defn- current-frame []
+  #?(:clj (.get ^ThreadLocal frame) :cljs @frame))
+
+(defn- install-frame! [value]
+  #?(:clj (if (nil? value)
+            (.remove ^ThreadLocal frame)
+            (.set ^ThreadLocal frame value))
+     :cljs (vreset! frame value)))
+
+(def ^:private frame-batch
+  "How many queued tasks one frame runs before handing the rest back to the
+  executor."
+  256)
+
+(defn- bound-task
+  "`task` under the dynamic bindings an executor task would capture now."
+  [task]
+  #?(:clj (let [b (capture-targeted-bindings)]
+            (if (empty? b) task (fn [] (with-bindings b (task)))))
+     :cljs (let [b (bindings/capture-bindings)]
+             (fn [] (bindings/restore-bindings b task)))))
+
+(declare run-framed!)
+
+(defn- hand-over!
+  "Submit `tasks` (a queue) to `executor` as one framed task, in order. Returns
+  false when the executor refuses them."
+  [executor tasks]
+  (try
+    (execute! executor (fn [] (run-framed!
+                               executor
+                               ;; re-queue, so each one runs on its own
+                               (fn [] (vswap! (:queue (current-frame)) into tasks)))))
+    true
+    (catch #?(:clj Throwable :cljs :default) error
+      (fault/report-fault! ::fault/executor-task-fault {:error error :handoff-rejected? true})
+      false)))
+
+(defn run-framed!
+  "Run `task` as work of `executor` on this thread, then the tasks it (and
+  they) dispatched. A task that throws is reported (`guard-task`) and does not
+  take the queued ones with it. Returns nil."
+  [executor task]
+  (let [outer (current-frame)
+        queue (volatile! #?(:clj clojure.lang.PersistentQueue/EMPTY
+                            :cljs cljs.core/PersistentQueue.EMPTY))
+        local? (inline-executor? executor)]
+    (install-frame! {:executor executor :queue queue})
+    (try
+      ((guard-task task))
+      (loop [ran 0]
+        (when-let [next-task (peek @queue)]
+          (if (or local? (< ran frame-batch))
+            (do (vswap! queue pop)
+                ((guard-task next-task))
+                (recur (inc ran)))
+            ;; hand the tail back, in order; keep it here if refused
+            (let [tail @queue]
+              (vreset! queue (empty tail))
+              (when-not (hand-over! executor tail)
+                (vreset! queue tail)
+                (recur 0))))))
+      (finally (install-frame! outer)))
+    nil))
+
+(defn dispatch!
+  "Run `task` on `executor`: behind the current task when this thread is
+  already running that executor's work, as a new executor task otherwise."
+  [executor task]
+  (let [f (current-frame)]
+    (if (and f (identical? executor (:executor f)))
+      (do (vswap! (:queue f) conj (bound-task task)) nil)
+      (execute! executor (fn [] (run-framed! executor task))))))
+
+(defn call-unframed
+  "Call `f` with no frame on this thread, so the work it dispatches goes to
+  the executor, after handing the work already queued in this thread's frame
+  to the executor (or, if it refuses, running it here first). For code that
+  blocks until engine work is done: that work may already be queued here.
+  The handed-over work runs concurrently with the rest of the current task,
+  as an executor task would. Call it around the wait itself, so a call that
+  does not wait hands nothing over."
+  [f]
+  (let [outer (current-frame)]
+    (if (nil? outer)
+      (f)
+      (let [queue (:queue outer)
+            queued @queue]
+        (when (seq queued)
+          (vreset! queue (empty queued))
+          (when-not (hand-over! (:executor outer) queued)
+            ;; refused: run it here before waiting on it
+            (run-framed! (:executor outer)
+                         (fn [] (vswap! (:queue (current-frame)) into queued)))))
+        (install-frame! nil)
+        (try (f) (finally (install-frame! outer)))))))
+
+(def ^:private default-parallelism
+  #?(:clj (.availableProcessors (Runtime/getRuntime)) :cljs 1))
+
+(defn spread!
+  "Explicit parallel fan-out: run `(task i)` for every i < n on about
+  `parallelism` workers (default: the processor count), each an executor
+  task. A worker claims the next unclaimed index, runs `(task i)`, and queues
+  its next claim behind the work that dispatched, so it claims again only
+  once that work has run; a worker whose thread is slowed (other load on its
+  core) claims fewer and the rest take up the slack. The claims are queued,
+  not nested, so work that spreads again from inside a task (the next
+  generation of a population) does not deepen the stack. The first worker
+  stays on this thread when it already runs the executor's work
+  (`dispatch!`). A `(task i)` that throws is reported (`guard-task`); the
+  other indices still run. Returns nil. Code that then blocks until the
+  tasks are done waits `call-unframed`, since the first worker may be queued
+  here.
+
+  Inline dispatch keeps a computation on its thread, so fan-out that should
+  use several cores says so here, at the grain it chooses."
+  ([executor n task] (spread! executor n task default-parallelism))
+  ([executor n task parallelism]
+   (let [workers (max 1 (min n parallelism))
+         claimed (atom 0)
+         claim (fn claim []
+                 (let [i (dec (swap! claimed inc))]
+                   (when (< i n)
+                     ((guard-task #(task i)))
+                     (dispatch! executor claim))))]
+     (dotimes [w workers]
+       (if (zero? w)
+         (dispatch! executor claim)
+         (execute! executor (fn [] (run-framed! executor claim)))))
+     nil)))

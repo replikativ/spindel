@@ -309,7 +309,9 @@
        by a single event's processing time, with a 5s safety valve for
        a deadlocked spin body.
 
-  After this returns no further mutation can happen on this context.
+  After this returns no drain mutates this context. Work outside drains
+  that is already dispatched (savepoint continuations) still runs: close the
+  context's savepoint sessions before stopping it.
 
   Note: Does NOT close the executor — in-flight async callbacks (e.g.
   futures returning to deliver! Deferreds) may still need it. Use
@@ -347,7 +349,8 @@
   nil)
 
 (defn close-context!
-  "Fully shut down an execution context: stop drain thread and close executor.
+  "Fully shut down an execution context: stop it (`stop-context!`) and close
+  its executor.
 
   Calls stop-context! then closes the executor if it implements Closeable.
   Use this only when you are certain no in-flight async work remains.

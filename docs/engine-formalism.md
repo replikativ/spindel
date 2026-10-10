@@ -353,7 +353,7 @@ itself.
 ```mermaid
 flowchart TD
     A[external change: swap! / completion / delivery] --> B[enqueue-event! → :engine/pending]
-    B --> C[trigger-drain! schedules drain-events! on executor]
+    B --> C[trigger-drain! dispatches drain-events! on the executor]
     C --> D{CAS :engine/draining? false→true}
     D -- lost --> E[another drainer owns lock; return 0]
     D -- won --> F[loop: dequeue-event!]
