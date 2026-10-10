@@ -499,12 +499,19 @@
                        (if (seq queue)
                          (do
                            (reset! event-atom (first queue))
-                           ;; O(1): copying the rest made draining a backlog of
-                           ;; n events O(n^2). A subvec keeps its backing vector,
-                           ;; so start a fresh one whenever the queue empties.
-                           (if (= 1 (count queue))
-                             []
-                             (subvec queue 1)))
+                           ;; Copying the rest on every pop made draining a
+                           ;; backlog of n events O(n^2). A subvec pops in O(1)
+                           ;; but keeps its backing vector, dequeued events
+                           ;; included, and conj extends it. So count pops in
+                           ;; the vector's metadata (conj keeps it) and copy the
+                           ;; live part once they reach its size: retention stays
+                           ;; proportional to the queue, pops amortized O(1).
+                           (let [pops (inc (:pending-pops (meta queue) 0))
+                                 remaining (subvec queue 1)]
+                             (cond
+                               (empty? remaining) []
+                               (>= pops (max 64 (count remaining))) (into [] remaining)
+                               :else (with-meta remaining {:pending-pops pops}))))
                          queue)))
     @event-atom))
 
