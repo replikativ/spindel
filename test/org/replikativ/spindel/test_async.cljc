@@ -9,6 +9,7 @@
   konserve IO). Wrap ONLY genuinely-async ops in `<?` (on cljs `await` on a
   non-CPS value errors); thread `sync?` into the durable factory's `:sync?`."
   (:require [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.test-helpers]
             #?(:clj  [clojure.test]
                :cljs [cljs.test])
             [is.simm.partial-cps.async])
@@ -70,12 +71,12 @@
      "Like `clojure.test/deftest`, but the body may use `<?` to resolve async
       durable (partial-cps) ops uniformly. On the JVM the body runs synchronously in
       a plain `deftest` (`<?` is identity). On cljs the body is driven as ONE
-      partial-cps `async` block under `cljs.test/async`, so each `<?` suspends on
+      partial-cps `async` block under `test-helpers/js-async`, so each `<?` suspends on
       konserve IO and the test completes via `done`."
      [tname & body]
      (if (cljs-env? &env)
        `(cljs.test/deftest ~tname
-          (cljs.test/async done#
+          (org.replikativ.spindel.test-helpers/js-async done#
                            ;; Reset `*in-trampoline*` at this foreign-driver boundary so the
                            ;; next cljs.test block self-trampolines (see yggdrasil.test-async).
                            (let [done!# (fn []

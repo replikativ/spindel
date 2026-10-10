@@ -55,7 +55,7 @@
 
   Example:
     (def sem (create-semaphore (ec/current-execution-context) 5))
-    @sem  ; => 5 (current permits available)"
+    (deref sem)  ; => 5 (current permits available)"
   [execution-context max-permits]
   {:pre [(pos? max-permits)]}
   (let [sem-id (keyword (gensym "sem-"))
@@ -81,7 +81,7 @@
 
   Example:
     (def sem (semaphore 10))  ; 10 concurrent permits
-    @sem  ; => 10"
+    (deref sem)  ; => 10"
   [max-permits]
   {:pre [(pos? max-permits)]}
   (try

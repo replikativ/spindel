@@ -365,7 +365,7 @@
 
    Example:
      (def ygit (register! (git/create \".\")))
-     @ygit  ; => the git system"
+     (deref ygit)  ; => the git system"
   ([sys] (register! sys nil))
   ([sys {:keys [grade compensate realize intents stamp footprint parent-footprint]}]
    (when (and intents (not stamp))

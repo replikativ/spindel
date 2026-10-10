@@ -49,6 +49,20 @@
 ;; =============================================================================
 
 #?(:clj
+   (defmacro js-async
+     "cljs.test/async as it was before ClojureScript 1.12: the body runs directly in
+     the test's `-invoke`. 1.12 wraps it in `(^:async fn [] …)`, and inside an async
+     fn the compiler emits expression wrappers as `await (async function(){…})()`.
+     Those awaits are real microtask boundaries, and a `binding` (a global swapped in
+     try/finally) does not survive them: a spin built in the body then runs without
+     its `*execution-context*`."
+     [done & body]
+     `(reify
+        cljs.test/IAsyncTest
+        cljs.core/IFn
+        (~'-invoke [_# ~done] ~@body))))
+
+#?(:clj
    (defmacro async
      "Cross-platform async test block.
 
@@ -57,7 +71,7 @@
 
      Platform behavior:
      - CLJ: Creates a promise, executes body, blocks until done is called (10s timeout)
-     - CLJS: Delegates to cljs.test/async
+     - CLJS: Delegates to `js-async` (cljs.test/async without 1.12's async fn)
 
      Usage:
        (deftest my-test
@@ -68,11 +82,11 @@
                (done)))))"
      [done-sym & body]
      (if (:js-globals &env)
-       ;; CLJS - use cljs.test/async, with cleanup atom so nested with-ctx
+       ;; CLJS - use js-async, with cleanup atom so nested with-ctx
        ;; can defer stop-context! until after `done` fires.
        `(let [cleanups# (atom [])
               done?# (atom false)]
-          (cljs.test/async raw-done#
+          (js-async raw-done#
                            (binding [*async-cleanups* cleanups#]
                              (let [~done-sym (fn []
                                                ;; Idempotent: `done` MUST run exactly once, but

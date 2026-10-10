@@ -1,5 +1,6 @@
 (ns org.replikativ.spindel.signal
   "Signal creation and manipulation"
+  (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.nodes :as nodes]
             ;; The `signal` macro's EXPANSION emits `addressing/next-address!`,
