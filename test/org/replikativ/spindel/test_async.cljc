@@ -79,19 +79,19 @@
           (org.replikativ.spindel.test-helpers/js-async done#
                            ;; Reset `*in-trampoline*` at this foreign-driver boundary so the
                            ;; next cljs.test block self-trampolines (see yggdrasil.test-async).
-                           (let [done!# (fn []
-                                          (binding [is.simm.partial-cps.async/*in-trampoline* false]
-                                            (done#)))]
-                             ((is.simm.partial-cps.async/async
-                               (try ~@body
-                                    (catch :default e#
-                                      (cljs.test/is false (str "deftest-async threw: "
-                                                               (or (.-message e#) e#) "\n"
-                                                               (.-stack e#))))))
-                              (fn [_#] (done!#))
-                              (fn [e#]
-                                (cljs.test/is false (str "deftest-async rejected: "
-                                                         (or (.-message e#) e#) "\n"
-                                                         (when (and e# (.-stack e#)) (.-stack e#))))
-                                (done!#))))))
+                                                        (let [done!# (fn []
+                                                                       (binding [is.simm.partial-cps.async/*in-trampoline* false]
+                                                                         (done#)))]
+                                                          ((is.simm.partial-cps.async/async
+                                                            (try ~@body
+                                                                 (catch :default e#
+                                                                   (cljs.test/is false (str "deftest-async threw: "
+                                                                                            (or (.-message e#) e#) "\n"
+                                                                                            (.-stack e#))))))
+                                                           (fn [_#] (done!#))
+                                                           (fn [e#]
+                                                             (cljs.test/is false (str "deftest-async rejected: "
+                                                                                      (or (.-message e#) e#) "\n"
+                                                                                      (when (and e# (.-stack e#)) (.-stack e#))))
+                                                             (done!#))))))
        `(clojure.test/deftest ~tname ~@body))))
