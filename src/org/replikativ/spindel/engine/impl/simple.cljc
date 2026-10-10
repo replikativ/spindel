@@ -499,7 +499,12 @@
                        (if (seq queue)
                          (do
                            (reset! event-atom (first queue))
-                           (vec (rest queue)))
+                           ;; O(1): copying the rest made draining a backlog of
+                           ;; n events O(n^2). A subvec keeps its backing vector,
+                           ;; so start a fresh one whenever the queue empties.
+                           (if (= 1 (count queue))
+                             []
+                             (subvec queue 1)))
                          queue)))
     @event-atom))
 
@@ -1465,7 +1470,11 @@
                                         (catch #?(:clj Throwable :cljs :default) _))))
 
                                   nil)))
-                            (sweep-retired-continuations! context)
+                            ;; The sweep scans the pending queue: only when there
+                            ;; is anything retired to sweep, or a backlog drains
+                            ;; in O(n^2).
+                            (when (seq (rtp/get-state context [:engine/retired-conts]))
+                              (sweep-retired-continuations! context))
                             (swap! event-count inc)
                             (recur))
                           ;; Queue empty — drain complete.
