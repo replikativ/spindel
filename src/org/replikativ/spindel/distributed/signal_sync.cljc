@@ -152,23 +152,21 @@
 ;; integrates it via `apply-delta-fn` — exactly the replikativ metadata-catch-up.
 ;; Without it, the handshake ships the raw value (`{:value}`) — fine for ordinary
 ;; serializable LWW signals.
+(declare handshake-snapshot)
+
 (defrecord SignalSyncStrategy [signal-atom on-update-fn merge-fn apply-delta-fn sync? state-fn]
   proto/PSyncStrategy
 
-  (-init-client-state [_]
+  (-init-client-state [this]
     ;; The connecting peer ships its PROJECTION (a joinable δ for a convergent value,
     ;; else the raw value), not just a hash — so the owner can INTEGRATE it during the
     ;; handshake. That makes the connect catch-up BIDIRECTIONAL (replikativ-style): two
     ;; peers each holding prior writes converge to the union, not only owner→joiner. The
     ;; `:hash` still lets the owner skip a no-op reply. (Convergent join is idempotent/
     ;; commutative, so the owner integrating + the joiner re-receiving is safe.)
-    (let [ch (chan 1)
-          current @signal-atom
-          snap (when (some? current) (if state-fn (state-fn current) current))]
-      (when (some? snap)
-        (put! ch (cond-> {:hash (hash snap)}
-                   state-fn       (assoc :delta snap)      ; convergent → joinable δ
-                   (not state-fn) (assoc :value current)))) ; serializable / LWW value
+    (let [ch (chan 1)]
+      (when-let [snap (handshake-snapshot this @signal-atom)]
+        (put! ch (assoc snap :hash (hash snap))))
       (close! ch)
       ch))
 
@@ -183,13 +181,10 @@
     ;; is symmetric — each side joins the other's own state. Integrating a remote value
     ;; carries no local δ ⇒ no echo on our watch.
     (let [out     (chan 1)
-          current @signal-atom
-          snap    (if state-fn (state-fn current) current)
+          snap    (handshake-snapshot this @signal-atom)
           reply!  (fn []
-                    (when (and (some? snap) (not= (hash snap) (:hash client-state)))
-                      (put! out (if state-fn
-                                  {:type :snapshot :delta snap}
-                                  {:type :snapshot :value current})))
+                    (when (and snap (not= (hash snap) (:hash client-state)))
+                      (put! out (assoc snap :type :snapshot)))
                     (close! out))]
       (if (or (contains? client-state :delta) (contains? client-state :value))
         ;; integrate the joiner's state, THEN reply our pre-captured snapshot
@@ -206,6 +201,19 @@
   (-apply-publish [this msg]
     ;; A live update: {:delta δ} (OP-path) or {:value v} (STATE-path).
     (apply-incoming! this msg)))
+
+;; What a peer ships of its own state in the connect handshake: `{:delta (state-fn v)}`
+;; with a state-fn, else `{:value v}` — except for an OP-only convergent strategy
+;; (apply-delta-fn, no merge-fn): its raw value is a CRDT record that no receiver can
+;; join (a convergent one ignores it, an LWW one would be reset to it), and that may not
+;; even decode there (a durable value resolves its storage on read). It ships nothing;
+;; its catch-up rides the δs.
+(defn- handshake-snapshot [{:keys [merge-fn apply-delta-fn state-fn]} current]
+  (when (some? current)
+    (cond
+      state-fn                            (when-some [d (state-fn current)] {:delta d})
+      (and apply-delta-fn (not merge-fn)) nil
+      :else                               {:value current})))
 
 ;; =============================================================================
 ;; Server-Side API
