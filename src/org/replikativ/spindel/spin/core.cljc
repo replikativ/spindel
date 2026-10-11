@@ -790,8 +790,7 @@
                       :cancelled-at #?(:clj (java.util.Date.)
                                        :cljs (js/Date.))})
         ;; Requires *execution-context* to be bound by caller
-        ctx   (ec/current-execution-context)
-        conts (ec/get-state [:await-conts sid])]
+        ctx   (ec/current-execution-context)]
     ;; (1) Cache the cancel result + dirty observers. Makes `spin-is-cancelled?`
     ;; true, so a RUNNING spin rejects at its next await (cooperative), and any
     ;; awaiting parents are re-notified.
@@ -801,7 +800,14 @@
     ;; runs (and the parked continuation + external reader leak). Actively unwind it
     ;; by delivering the cancellation into its parked await continuation — the
     ;; structured-concurrency contract (`finally`/`ensure` runs on cancel).
-    (doseq [cont-id (keys conts)]
+    ;; The parked continuations are read only now, AFTER (1) is visible. An
+    ;; await on another thread registers its continuation and then re-checks
+    ;; `spin-is-cancelled?` (`cancellable-external-pair`); in this order one of
+    ;; the two always sees the other. Read before (1), a continuation added
+    ;; between the read and the cache write was missed here while the await's
+    ;; re-check missed the cancellation: the spin stayed parked, every later
+    ;; delivery was dropped as cancelled, and a deref of it never returned.
+    (doseq [cont-id (keys (ec/get-state [:await-conts sid]))]
       ;; Atomically claim the parked continuation, remove its reverse
       ;; subscription, and arm an external cancellation token before resuming
       ;; user cleanup or cancelling children. Only the winning concurrent
