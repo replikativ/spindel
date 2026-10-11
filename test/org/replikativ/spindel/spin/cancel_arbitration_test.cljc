@@ -153,6 +153,72 @@
        (is (= [[:resolved :a]] @calls) "a completed spin's callbacks do not fire again")
        (is (= 1 @finals))))))
 
+#?(:clj
+   (deftest a-queued-completion-and-the-inline-path-deliver-one-result-once
+     (testing "the child's pending completion is processed after the parent registered"
+       (in-context
+        (fn [context]
+          (let [child (spin :v)
+                _ (child identity identity)
+                cid (spin-core/spin-id child)
+                finals (atom 0)
+                parent (spin (try (await child) (finally (swap! finals inc))))
+                {:keys [calls resolve reject]} (recorder)
+                fired (atom false)
+                add! ec/continuation-add!]
+            (with-redefs [ec/continuation-add!
+                          (fn [sid cont]
+                            (let [ret (add! sid cont)]
+                              (when (and (= sid (spin-core/spin-id parent))
+                                         (compare-and-set! fired false true))
+                                ;; the drain processes the child's completion now
+                                (simple/process-event! context {:type :spin-completion :id cid}))
+                              ret))]
+              (parent resolve reject))
+            (is @fired)
+            (is (= [[:resolved :v]] @calls) "one completion, one resume")
+            (is (= 1 @finals))))))))
+
+#?(:clj
+   (deftest an-inline-delivery-is-not-repeated-by-the-queued-completion
+     (testing "the queued completion of the same result is skipped, a re-completion is not"
+       (in-context
+        (fn [context]
+          (let [child (spin :v)
+                _ (child identity identity)
+                cid (spin-core/spin-id child)
+                finals (atom 0)
+                parent (spin (try (await child) (finally (swap! finals inc))))
+                {:keys [calls resolve reject]} (recorder)]
+            (parent resolve reject)
+            (is (= [[:resolved :v]] @calls))
+            (simple/process-event! context {:type :spin-completion :id cid})
+            (is (= [[:resolved :v]] @calls) "the same completion reaches the await once")
+            (is (= 1 @finals))
+            (is (seq (parked parent)) "the reactive edge survives")
+            (ec/spin-cache-result! cid (spin-core/ok :w))
+            (simple/process-event! context {:type :spin-completion :id cid})
+            (is (= [[:resolved :v] [:resolved :w]] @calls) "a re-completion still re-fires")
+            (is (= 2 @finals))))))))
+
+#?(:clj
+   (deftest a-fork-does-not-inherit-the-parents-in-flight-claim
+     (in-context
+      (fn [context]
+        (let [d (sync/create-deferred context)
+              child (spin (await d))
+              parent (spin (await child))
+              pid (spin-core/spin-id parent)
+              _ (parent identity identity)
+              [cont-id] (keys (parked parent))
+              held (simple/claim-continuation-for-resume! context pid cont-id {:result :r1})
+              fork (ctx/fork-context context)]
+          (is held "claimed in the parent world")
+          (is (nil? (simple/claim-continuation-for-resume! context pid cont-id {:result :r2}))
+              "busy in the parent world")
+          (is (some? (simple/claim-continuation-for-resume! fork pid cont-id {:result :r2}))
+              "the fork's copy is claimable in the fork"))))))
+
 ;; -----------------------------------------------------------------------------
 ;; 3. Direct cancellation of an in-flight race
 ;; -----------------------------------------------------------------------------
@@ -175,6 +241,27 @@
        (is (spin-core/spin-cancelled? b))
        (spin-core/cancel-spin! r)
        (is (= [cancelled] @calls) "a second cancellation settles nothing")))))
+
+#?(:clj
+   (deftest a-race-cancelled-before-its-fan-out-is-registered-is-rejected
+     (in-context
+      (fn [context]
+        (let [d1 (sync/create-deferred context)
+              d2 (sync/create-deferred context)
+              r (comb/race (spin (await d1)) (spin (await d2)))
+              {:keys [calls resolve reject]} (recorder)
+              fired (atom false)
+              add! ec/continuation-add!]
+          (with-redefs [ec/continuation-add!
+                        (fn [sid cont]
+                          (when (and (= sid (spin-core/spin-id r))
+                                     (compare-and-set! fired false true))
+                            (spin-core/cancel-spin! r))
+                          (add! sid cont))]
+            (r resolve reject))
+          (is @fired)
+          (is (= [cancelled] @calls))
+          (is (empty? (parked r))))))))
 
 #?(:clj
    (defn- settled-calls

@@ -1131,15 +1131,20 @@
                   ;; retain their graph edge with an in-flight marker.
                   cont (when-not already-resumed?
                          (claim-continuation-for-resume!
-                          context parent-id cont-id))]
+                          context parent-id cont-id
+                          {:result (rtp/current-result context tid)}))]
               ;; A missing cont is benign only with exact retirement evidence
               ;; for this [parent cont-id] and event edge. This distinguishes a
               ;; body that legitimately advanced/cancelled from a multi-await
               ;; parent whose one missing branch can still strand the join.
               ;; Always prune the stale reverse edge so repeated completion
               ;; events cannot amplify it indefinitely.
+              ;; A cont that is still registered but not claimable (in
+              ;; flight, or this completion already delivered) is live:
+              ;; its edge is not stale.
               (when (and (nil? cont)
                          (not already-resumed?)
+                         (nil? (rtp/get-state context [:await-conts parent-id cont-id]))
                          (contains? (or (rtp/get-state
                                          context
                                          [:subscriptions [:spin/complete tid]
@@ -2844,43 +2849,72 @@
                  (fn [tokens]
                    (conj (or tokens #{}) (:cancel-token cont)))))))
 
+(defn- claim-held?
+  "Whether `cont` carries an in-flight completion claim taken in `context`'s
+  world. A fork copies continuations with whatever claim the parent held at
+  that instant; nobody in the fork releases it, so an inherited claim does
+  not block the fork's own completions (it still marks the slice as one the
+  body left, for cancellation)."
+  [context cont]
+  (when-let [claim (resume-claimed-key cont)]
+    (= (:fork-id context) (:world claim))))
+
 (defn claim-continuation-for-resume!
   "Atomically arbitrate completion against cancellation.
 
   Every resume of a parked await continuation goes through this claim: the
   queued `:spin-completion` handler and the await handler's inline paths (a
   cached child, a child that completed synchronously). Cancellation claims
-  through `remove-continuation!`; exactly one of the two wins.
+  through `remove-continuation!`; exactly one of them wins.
 
   One-shot/external awaits are detached and returned to exactly one caller.
-  Reactive awaits remain registered but are marked in-flight so cancellation
-  can remove the future graph edge without invoking the same CPS slice. The
-  returned cont carries the claim; pass it to `release-reactive-resume!`."
-  [context spin-id cont-id]
-  (let [claimed (volatile! nil)
-        claim (random-uuid)]
-    (rtp/swap-state! context []
-                     (fn [rt-state]
-                       (vreset! claimed nil)
-                       (if-let [cont (continuation-at rt-state spin-id cont-id)]
-                         (cond
-                           (and (= :await-reactive (:kind cont))
-                                (not (resume-claimed-key cont)))
-                           (do
-                             (vreset! claimed (assoc cont resume-claimed-key claim))
-                             (assoc-in rt-state
-                                       [:await-conts spin-id cont-id resume-claimed-key]
-                                       claim))
+  Reactive awaits remain registered. Options:
 
-                           (= :await-reactive (:kind cont))
-                           rt-state
+  - `:result` — the child `Result` this resume delivers. A reactive cont
+    records it (`::delivered`), and a second claim for the identical Result
+    fails: the same completion reaches a parked await at most once, whether
+    inline or through its queued `:spin-completion`. A re-completion caches a
+    new Result and is delivered again (reactive re-fire).
+  - `:registration` — the `:registration` token of the cont the caller
+    registered; the claim fails when the id now holds another registration.
+  - `:inline?` — the slice resumes on the caller's stack, past this call:
+    the cont is marked resumed at once instead of in flight (no claim to
+    release, so nothing is ever busy for a queued completion to trip on).
 
-                           :else
-                           (do
-                             (vreset! claimed cont)
-                             (detach-continuation rt-state spin-id cont-id cont false)))
-                         rt-state)))
-    @claimed))
+  Otherwise a reactive claim marks the cont in flight, so cancellation can
+  remove the future graph edge without invoking the same CPS slice; the
+  returned cont carries the claim for `release-reactive-resume!`."
+  ([context spin-id cont-id]
+   (claim-continuation-for-resume! context spin-id cont-id nil))
+  ([context spin-id cont-id {:keys [result registration inline?]}]
+   (let [claimed (volatile! nil)
+         claim {:world (:fork-id context) :id (random-uuid)}]
+     (rtp/swap-state! context []
+                      (fn [rt-state]
+                        (vreset! claimed nil)
+                        (if-let [cont (continuation-at rt-state spin-id cont-id)]
+                          (cond
+                            (and registration (not= registration (:registration cont)))
+                            rt-state
+
+                            (not= :await-reactive (:kind cont))
+                            (do
+                              (vreset! claimed cont)
+                              (detach-continuation rt-state spin-id cont-id cont false))
+
+                            (or (claim-held? context cont)
+                                (and (some? result) (identical? result (::delivered cont))))
+                            rt-state
+
+                            :else
+                            (let [cont' (cond-> (assoc cont ::delivered result)
+                                          inline? (dissoc resume-claimed-key)
+                                          (and inline? (:body-slice? cont)) (assoc ::resumed? true)
+                                          (not inline?) (assoc resume-claimed-key claim))]
+                              (vreset! claimed cont')
+                              (assoc-in rt-state [:await-conts spin-id cont-id] cont')))
+                          rt-state)))
+     @claimed)))
 
 (defn release-reactive-resume!
   "Release a reactive continuation's in-flight completion claim, taking the

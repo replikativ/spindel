@@ -637,10 +637,14 @@ claims the continuation in engine state before resuming it, and only the
 winner resumes: completions with `claim-continuation-for-resume!`,
 cancellation with `remove-continuation! {:cancel? true}`, a race settle by
 removing its fan-out continuation. A one-shot claim detaches the
-continuation; a reactive claim marks it in flight, and its release marks a
-body slice's continuation *resumed*: the body has moved past that await,
-so a later cancellation removes the edge but rejects the body only where it
-is parked now. An await re-checks cancellation after registering its
+continuation; a reactive claim marks it in flight (an inline one marks it
+resumed at once), and its release marks a body slice's continuation
+*resumed*: the body has moved past that await, so a later cancellation
+removes the edge but rejects the body only where it is parked now. A
+reactive claim records the child `Result` it delivers, so one completion
+reaches an await once whether inline or queued, while a re-completion (a new
+`Result`) re-fires it; a claim belongs to the world that took it, so a fork
+never inherits a busy continuation. An await re-checks cancellation after registering its
 continuation, so it and a concurrent `cancel-spin!` (which caches the
 cancellation before reading the parked continuations) always see each other.
 

@@ -865,6 +865,29 @@
       (when (and child (nil? (ec/spin-current-result (spin-id child))))
         (cancel-spin! child)))))
 
+(defn ^:no-doc cancelled-after-registration
+  "Re-check cancellation once a parked continuation `cont-id` of `sid` is
+  registered, and claim it if so.
+
+  cancel-spin! caches the cancellation and then reads the parked
+  continuations; a registration that passed its entry check before the cache
+  write and became visible after the read is seen by neither, and parks
+  forever. Re-checked after registration, one of the two always sees the
+  other. Returns nil when `sid` is not cancelled, else `{:result r}`: `r` is
+  what `reject` returned for the claimed slice, or `incomplete` when
+  cancel-spin! (or a completion) claimed it first and owns it."
+  [sid cont-id reject]
+  (when (ec/spin-is-cancelled? sid)
+    {:result
+     (let [cont (ec/continuation-remove! sid cont-id {:cancel? true})]
+       (if (and cont (not (::simple/resume-in-flight? cont)))
+         (resume reject
+                 (or (:payload (ec/spin-current-result sid))
+                     (ex-info "Spin cancelled"
+                              {:type spin-cancelled
+                               :spin-id sid})))
+         incomplete))}))
+
 (defn cleanup-spin!
   "Manually clean up a spin, removing it from the runtime.
 

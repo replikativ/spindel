@@ -3,7 +3,6 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
-            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -299,10 +298,11 @@
                ;; on-err, or cancel-spin! of the race (which rejects through
                ;; :reject-fn and then cancels the owned children). Exactly one
                ;; of them claims it and settles the race.
-               (let [body-ctx (ec/current-execution-context)
-                     settle-id (keyword (str "race-settle-" (gensym)))
+               (let [settle-id (keyword (str "race-settle-" (gensym)))
+                     ;; Claim in the world the settling child completes in: a
+                     ;; fork holds its own copy of the fan-out continuation.
                      settle! (fn []
-                               (some? (rtp/remove-continuation! body-ctx race-spin-id settle-id)))]
+                               (some? (ec/continuation-remove! race-spin-id settle-id)))]
                  (ec/continuation-add! race-spin-id
                                        {:id settle-id
                                         :event-key [:race/settle race-spin-id]
@@ -310,39 +310,45 @@
                                         :resolve-fn resolve
                                         :reject-fn reject
                                         :on-resume (fn [_] nil)})
-                 (doseq [[idx t] (map-indexed vector spin-vec)]
-                   (let [on-ok (fn [v]
-                                 (when (settle!)
+                 (if-let [cancellation (spin-core/cancelled-after-registration
+                                        race-spin-id settle-id reject)]
+                   ;; Cancelled before cancel-spin! could see the fan-out: it
+                   ;; already cancelled the owned children; do not start them.
+                   (:result cancellation)
+                   (do
+                     (doseq [[idx t] (map-indexed vector spin-vec)]
+                       (let [on-ok (fn [v]
+                                     (when (settle!)
                              ;; Race is terminal once won — release the ownership edge.
-                                   (spin-core/set-owned-spins! race-spin-id nil)
+                                       (spin-core/set-owned-spins! race-spin-id nil)
                              ;; Cancel losing spins cooperatively
                              ;; Wrap in try-catch to handle any synchronous exceptions
                              ;; from the cancellation machinery
-                                   (doseq [[j other-t] (map-indexed vector spin-vec)]
-                                     (when (not= idx j)
-                                       (try
-                                         (spin-core/cancel-spin! other-t)
-                                         (catch #?(:clj Throwable :cljs :default) _
+                                       (doseq [[j other-t] (map-indexed vector spin-vec)]
+                                         (when (not= idx j)
+                                           (try
+                                             (spin-core/cancel-spin! other-t)
+                                             (catch #?(:clj Throwable :cljs :default) _
                                      ;; Ignore cancellation errors - already handled
                                      ;; by the on-err callback's ex-data check
-                                           nil))))
-                                   (spin-core/resume resolve v)))
-                         on-err (fn [e]
+                                               nil))))
+                                       (spin-core/resume resolve v)))
+                             on-err (fn [e]
                             ;; Ignore cancellation errors from losing spins
                             ;; (they're expected when a winner cancels them, and
                             ;; a cancellation of the race itself settles it
                             ;; through its parked continuation)
-                                  (when-not (= spin-core/spin-cancelled (:type (ex-data e)))
-                                    (when (settle!)
-                                      (spin-core/set-owned-spins! race-spin-id nil)
-                                      (spin-core/resume reject e))))]
+                                      (when-not (= spin-core/spin-cancelled (:type (ex-data e)))
+                                        (when (settle!)
+                                          (spin-core/set-owned-spins! race-spin-id nil)
+                                          (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
-                     (executor/execute! (:executor execution-context)
-                                        (executor/alive-fn execution-context
-                                                           (fn []
-                                                             (binding [ec/*execution-context* execution-context]
-                                                               (t on-ok on-err)))))))
-                 spin-core/incomplete))
+                         (executor/execute! (:executor execution-context)
+                                            (executor/alive-fn execution-context
+                                                               (fn []
+                                                                 (binding [ec/*execution-context* execution-context]
+                                                                   (t on-ok on-err)))))))
+                     spin-core/incomplete))))
              race-spin-id)]
         ;; Ownership edge for external cancel during the in-flight race window.
         (spin-core/set-owned-spins! race-spin-id spin-vec)
