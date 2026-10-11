@@ -2870,9 +2870,9 @@
   One-shot/external awaits are detached and returned to exactly one caller.
   Reactive awaits remain registered. Options:
 
-  - `:result` — the child `Result` this resume delivers. A reactive cont
-    records it (`::delivered`), and a second claim for the identical Result
-    fails: the same completion reaches a parked await at most once, whether
+  - `:result` — the child `Result` this resume delivers (the returned cont's
+    `:on-resume` yields exactly it). A reactive cont records it
+    (`::delivered`), and a second claim for the identical Result fails: the same completion reaches a parked await at most once, whether
     inline or through its queued `:spin-completion`. A re-completion caches a
     new Result and is delivered again (reactive re-fire).
   - `:registration` — the `:registration` token of the cont the caller
@@ -2903,7 +2903,12 @@
                               (detach-continuation rt-state spin-id cont-id cont false))
 
                             (or (claim-held? context cont)
-                                (and (some? result) (identical? result (::delivered cont))))
+                                (and (some? result)
+                                     ;; An inherited claim (another world's, copied
+                                     ;; by a fork) was never delivered in this
+                                     ;; world: its ::delivered does not count here.
+                                     (not (resume-claimed-key cont))
+                                     (identical? result (::delivered cont))))
                             rt-state
 
                             :else
@@ -2911,7 +2916,12 @@
                                           inline? (dissoc resume-claimed-key)
                                           (and inline? (:body-slice? cont)) (assoc ::resumed? true)
                                           (not inline?) (assoc resume-claimed-key claim))]
-                              (vreset! claimed cont')
+                              (vreset! claimed
+                                       (cond-> cont'
+                                         ;; Deliver exactly the claimed Result: a
+                                         ;; re-read could see a newer one, whose own
+                                         ;; completion would then deliver it again.
+                                         (some? result) (assoc :on-resume (fn [_] result))))
                               (assoc-in rt-state [:await-conts spin-id cont-id] cont')))
                           rt-state)))
      @claimed)))
@@ -2946,7 +2956,8 @@
   ensure context consistency for snapshotting. Exactly one concurrent caller
   receives the removed continuation. With `{:cancel? true}`, an external-await
   cancellation token is armed in the same transaction as removal. With
-  `{:only-token t}`, the continuation is removed only if it carries
+  `{:only-registration r}` removes it only if it is registration `r` (its
+  `:registration`). With `{:only-token t}`, the continuation is removed only if it carries
   cancel-token `t` — the check is part of the same transaction, so a newer
   await registered at the same id is never removed in its place.
 
@@ -2958,7 +2969,7 @@
   Returns: the removed continuation, or nil."
   ([context spin-id cont-id]
    (remove-continuation! context spin-id cont-id nil))
-  ([context spin-id cont-id {:keys [cancel? only-token]}]
+  ([context spin-id cont-id {:keys [cancel? only-token only-registration]}]
    (let [removed (volatile! nil)]
      (rtp/swap-state! context []
                       (fn [rt-state]
@@ -2966,8 +2977,10 @@
                         ;; failed attempt's capture before inspecting this attempt.
                         (vreset! removed nil)
                         (if-let [cont (let [c (continuation-at rt-state spin-id cont-id)]
-                                        (when (or (nil? only-token)
-                                                  (= only-token (:cancel-token c)))
+                                        (when (and (or (nil? only-token)
+                                                       (= only-token (:cancel-token c)))
+                                                   (or (nil? only-registration)
+                                                       (= only-registration (:registration c))))
                                           c))]
                           (do
                             ;; A completion that already linearized on this
@@ -2979,7 +2992,7 @@
                             ;; the body is no longer parked there.
                             (vreset! removed
                                      (cond-> cont
-                                       (or (resume-claimed-key cont) (::resumed? cont))
+                                       (or (claim-held? context cont) (::resumed? cont))
                                        (assoc ::resume-in-flight? true)))
                             (detach-continuation rt-state spin-id cont-id cont cancel?))
                           rt-state)))

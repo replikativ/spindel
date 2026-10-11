@@ -207,17 +207,72 @@
       (fn [context]
         (let [d (sync/create-deferred context)
               child (spin (await d))
-              parent (spin (await child))
+              finals (atom 0)
+              parent (spin (try (await child) (finally (swap! finals inc))))
               pid (spin-core/spin-id parent)
               _ (parent identity identity)
               [cont-id] (keys (parked parent))
-              held (simple/claim-continuation-for-resume! context pid cont-id {:result :r1})
+              result (spin-core/ok :x)
+              ;; a queued completion claimed it in the parent world and has
+              ;; not resumed the slice yet when the fork is taken
+              held (simple/claim-continuation-for-resume! context pid cont-id {:result result})
               fork (ctx/fork-context context)]
           (is held "claimed in the parent world")
-          (is (nil? (simple/claim-continuation-for-resume! context pid cont-id {:result :r2}))
+          (is (nil? (simple/claim-continuation-for-resume! context pid cont-id {:result (spin-core/ok :y)}))
               "busy in the parent world")
-          (is (some? (simple/claim-continuation-for-resume! fork pid cont-id {:result :r2}))
-              "the fork's copy is claimable in the fork"))))))
+          (binding [ec/*execution-context* fork]
+            (spin-core/cancel-spin! parent))
+          (is (= 1 @finals) "cancelling in the fork rejects the slice the fork never resumed")
+          (let [fork2 (ctx/fork-context context)]
+            (is (some? (simple/claim-continuation-for-resume! fork2 pid cont-id {:result result}))
+                "the same completion is still deliverable in a fork")))))))
+
+#?(:clj
+   (deftest a-queued-resume-delivers-the-result-it-claimed
+     (testing "the child re-completes between the claim and the resume"
+       (in-context
+        (fn [context]
+          (let [d (sync/create-deferred context)
+                child (spin (await d))
+                cid (spin-core/spin-id child)
+                parent (spin (await child))
+                {:keys [calls resolve reject]} (recorder)
+                claim! simple/claim-continuation-for-resume!
+                fired (atom false)]
+            (parent resolve reject)
+            (ec/spin-cache-result! cid (spin-core/ok :a))
+            (with-redefs [simple/claim-continuation-for-resume!
+                          (fn [& args]
+                            (let [ret (apply claim! args)]
+                              (when (compare-and-set! fired false true)
+                                (ec/spin-cache-result! cid (spin-core/ok :b)))
+                              ret))]
+              (simple/process-event! context {:type :spin-completion :id cid}))
+            (simple/process-event! context {:type :spin-completion :id cid})
+            (is (= [[:resolved :a] [:resolved :b]] @calls)
+                "each completion is delivered once, with its own result")))))))
+
+#?(:clj
+   (deftest a-stale-cancellation-re-check-leaves-a-newer-registration-alone
+     (in-context
+      (fn [_]
+        (let [d (sync/create-deferred ec/*execution-context*)
+              s (spin (await d))
+              sid (spin-core/spin-id s)
+              rejected (atom 0)
+              reg (fn [r] {:id ::slot :registration r :kind :await-once
+                           :event-key [:test/slot sid] :on-resume (fn [_] nil)})
+              a (reg :a)
+              b (reg :b)]
+          (s identity identity)
+          (ec/continuation-add! sid a)
+          ;; a resumed A, its slice registered B at the same id
+          (ec/continuation-add! sid b)
+          (spin-core/abort-spin-chain! sid (ex-info "cancelled" {:type spin-core/spin-cancelled}))
+          (is (= {:result spin-core/incomplete}
+                 (spin-core/cancelled-after-registration sid a (fn [_] (swap! rejected inc)))))
+          (is (zero? @rejected) "A's reject is not run for B")
+          (is (= :b (:registration (get (parked s) ::slot))) "B stays registered"))))))
 
 ;; -----------------------------------------------------------------------------
 ;; 3. Direct cancellation of an in-flight race

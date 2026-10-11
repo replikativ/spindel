@@ -866,7 +866,8 @@
         (cancel-spin! child)))))
 
 (defn ^:no-doc cancelled-after-registration
-  "Re-check cancellation once a parked continuation `cont-id` of `sid` is
+  "Re-check cancellation once the continuation `registered` (the map passed
+  to `continuation-add!`, with its `:id` and `:registration`) of `sid` is
   registered, and claim it if so.
 
   cancel-spin! caches the cancellation and then reads the parked
@@ -876,10 +877,14 @@
   other. Returns nil when `sid` is not cancelled, else `{:result r}`: `r` is
   what `reject` returned for the claimed slice, or `incomplete` when
   cancel-spin! (or a completion) claimed it first and owns it."
-  [sid cont-id reject]
+  [sid registered reject]
   (when (ec/spin-is-cancelled? sid)
     {:result
-     (let [cont (ec/continuation-remove! sid cont-id {:cancel? true})]
+     (let [cont (ec/continuation-remove! sid (:id registered)
+                                         {:cancel? true
+                                          ;; this registration only, never a newer
+                                          ;; one at the same deterministic id
+                                          :only-registration (:registration registered)})]
        (if (and cont (not (::simple/resume-in-flight? cont)))
          (resume reject
                  (or (:payload (ec/spin-current-result sid))

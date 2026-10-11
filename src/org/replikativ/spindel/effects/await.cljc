@@ -229,7 +229,7 @@
             (when is-reactive-spin
               (ec/continuation-add! spin-id cont))
             (if-let [cancellation (when is-reactive-spin
-                                    (spin-core/cancelled-after-registration spin-id (:id cont) reject))]
+                                    (spin-core/cancelled-after-registration spin-id cont reject))]
               (:result cancellation)
               ;; The registered cont is now visible to cancel-spin! and to a
               ;; queued completion of the child: resume only if the claim wins.
@@ -342,7 +342,7 @@
               ;; Pre-register so any async completion has a subscriber.
               _ (ec/continuation-add! spin-id cont-map)
               _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
-              cancellation (spin-core/cancelled-after-registration spin-id (:id cont-map) reject)]
+              cancellation (spin-core/cancelled-after-registration spin-id cont-map reject)]
           (if cancellation
             ;; Cancelled before cancel-spin! could see this await: the slice is
             ;; rejected (or owned by whoever claimed it); the child is not started.
