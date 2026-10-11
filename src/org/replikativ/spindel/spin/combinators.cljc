@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -292,10 +293,26 @@
       (let [race-spin
             (spin-core/make-spin
              (fn [resolve reject]
-               (let [done? (atom false)]
+               ;; The race's own fan-out is a parked continuation in the
+               ;; race's await-conts, so every settlement arbitrates through
+               ;; one engine claim: the winner's on-ok, the first error's
+               ;; on-err, or cancel-spin! of the race (which rejects through
+               ;; :reject-fn and then cancels the owned children). Exactly one
+               ;; of them claims it and settles the race.
+               (let [body-ctx (ec/current-execution-context)
+                     settle-id (keyword (str "race-settle-" (gensym)))
+                     settle! (fn []
+                               (some? (rtp/remove-continuation! body-ctx race-spin-id settle-id)))]
+                 (ec/continuation-add! race-spin-id
+                                       {:id settle-id
+                                        :event-key [:race/settle race-spin-id]
+                                        :kind :await-once
+                                        :resolve-fn resolve
+                                        :reject-fn reject
+                                        :on-resume (fn [_] nil)})
                  (doseq [[idx t] (map-indexed vector spin-vec)]
                    (let [on-ok (fn [v]
-                                 (when (compare-and-set! done? false true)
+                                 (when (settle!)
                              ;; Race is terminal once won — release the ownership edge.
                                    (spin-core/set-owned-spins! race-spin-id nil)
                              ;; Cancel losing spins cooperatively
@@ -312,9 +329,11 @@
                                    (spin-core/resume resolve v)))
                          on-err (fn [e]
                             ;; Ignore cancellation errors from losing spins
-                            ;; (they're expected when a winner cancels them)
+                            ;; (they're expected when a winner cancels them, and
+                            ;; a cancellation of the race itself settles it
+                            ;; through its parked continuation)
                                   (when-not (= spin-core/spin-cancelled (:type (ex-data e)))
-                                    (when (compare-and-set! done? false true)
+                                    (when (settle!)
                                       (spin-core/set-owned-spins! race-spin-id nil)
                                       (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution

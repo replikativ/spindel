@@ -1185,7 +1185,7 @@
                 (try
                   (resume-body! context parent-id cont :await)
                   (when (= :await-reactive (:kind cont))
-                    (release-reactive-resume! context parent-id cont-id))
+                    (release-reactive-resume! context parent-id cont))
                   (catch #?(:clj Throwable :cljs :default) e
                     #?(:clj (when (instance? InterruptedException e)
                               (.interrupt (Thread/currentThread))))
@@ -2847,11 +2847,18 @@
 (defn claim-continuation-for-resume!
   "Atomically arbitrate completion against cancellation.
 
+  Every resume of a parked await continuation goes through this claim: the
+  queued `:spin-completion` handler and the await handler's inline paths (a
+  cached child, a child that completed synchronously). Cancellation claims
+  through `remove-continuation!`; exactly one of the two wins.
+
   One-shot/external awaits are detached and returned to exactly one caller.
   Reactive awaits remain registered but are marked in-flight so cancellation
-  can remove the future graph edge without invoking the same CPS slice."
+  can remove the future graph edge without invoking the same CPS slice. The
+  returned cont carries the claim; pass it to `release-reactive-resume!`."
   [context spin-id cont-id]
-  (let [claimed (volatile! nil)]
+  (let [claimed (volatile! nil)
+        claim (random-uuid)]
     (rtp/swap-state! context []
                      (fn [rt-state]
                        (vreset! claimed nil)
@@ -2860,10 +2867,10 @@
                            (and (= :await-reactive (:kind cont))
                                 (not (resume-claimed-key cont)))
                            (do
-                             (vreset! claimed cont)
+                             (vreset! claimed (assoc cont resume-claimed-key claim))
                              (assoc-in rt-state
                                        [:await-conts spin-id cont-id resume-claimed-key]
-                                       true))
+                                       claim))
 
                            (= :await-reactive (:kind cont))
                            rt-state
@@ -2876,14 +2883,26 @@
     @claimed))
 
 (defn release-reactive-resume!
-  "Release a reactive continuation's in-flight completion claim when it still
-  exists. Cancellation may have removed it while the resumed slice ran."
-  [context spin-id cont-id]
-  (rtp/swap-state! context [:await-conts spin-id]
-                   (fn [conts]
-                     (if (contains? conts cont-id)
-                       (update conts cont-id dissoc resume-claimed-key)
-                       conts)))
+  "Release a reactive continuation's in-flight completion claim, taking the
+  cont `claim-continuation-for-resume!` returned. Only that claim is released:
+  the resumed slice may have re-registered a fresh cont at the same id, and
+  cancellation may have removed it while the slice ran.
+
+  A body slice's cont (`:body-slice?`) is left marked `::resumed?`: the body
+  has moved on from that await, so cancellation must not reject the body
+  through it again (it rejects the slice where the body is parked now). A
+  later completion of the child still claims it, as a reactive re-fire."
+  [context spin-id claimed]
+  (let [cont-id (:id claimed)
+        claim (resume-claimed-key claimed)]
+    (rtp/swap-state! context [:await-conts spin-id]
+                     (fn [conts]
+                       (let [cont (get conts cont-id)]
+                         (if (and cont (= claim (resume-claimed-key cont)))
+                           (assoc conts cont-id
+                                  (cond-> (dissoc cont resume-claimed-key)
+                                    (:body-slice? cont) (assoc ::resumed? true)))
+                           conts)))))
   nil)
 
 (defn remove-continuation!
@@ -2921,10 +2940,12 @@
                             ;; reactive cont owns its current CPS invocation.
                             ;; Cancellation removes future reactivity but marks
                             ;; the descriptor so the canceller does not reject
-                            ;; the same slice concurrently.
+                            ;; the same slice concurrently. A body slice already
+                            ;; resumed from this cont is marked the same way:
+                            ;; the body is no longer parked there.
                             (vreset! removed
                                      (cond-> cont
-                                       (resume-claimed-key cont)
+                                       (or (resume-claimed-key cont) (::resumed? cont))
                                        (assoc ::resume-in-flight? true)))
                             (detach-continuation rt-state spin-id cont-id cont cancel?))
                           rt-state)))

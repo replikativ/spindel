@@ -814,8 +814,9 @@
       ;; canceller receives `cont`; all others skip it.
       (when-let [cont (ec/continuation-remove! sid cont-id {:cancel? true})]
         (if (::simple/resume-in-flight? cont)
-          ;; Completion linearized first and owns this reactive CPS slice.
-          ;; Remove its future graph edge, but do not reject the same slice.
+          ;; Completion linearized first and owns this reactive CPS slice, or
+          ;; already resumed it (the body has moved past this await). Remove
+          ;; its future graph edge, but do not reject the same slice.
           ;; Cooperative cancellation is already cached on the parent and will
           ;; be observed at its next await point.
           (when-let [child (:awaited-spin cont)]

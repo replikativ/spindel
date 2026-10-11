@@ -628,6 +628,22 @@ completions enqueue two resumes of the same un-advanced cont
 isolation + owning-spin rejection instead (see the `:spin-completion`
 handler).
 
+**Resume arbitration.** A parked await continuation can be resumed from
+several places: the queued `:spin-completion`, an inline completion in the
+await handler (a cached child, or a child that completed synchronously),
+`cancel-spin!`, and — for a `race`, whose fan-out is parked as a
+continuation of the race itself — the winner or the first error. Each
+claims the continuation in engine state before resuming it, and only the
+winner resumes: completions with `claim-continuation-for-resume!`,
+cancellation with `remove-continuation! {:cancel? true}`, a race settle by
+removing its fan-out continuation. A one-shot claim detaches the
+continuation; a reactive claim marks it in flight, and its release marks a
+body slice's continuation *resumed*: the body has moved past that await,
+so a later cancellation removes the edge but rejects the body only where it
+is parked now. An await re-checks cancellation after registering its
+continuation, so it and a concurrent `cancel-spin!` (which caches the
+cancellation before reading the parked continuations) always see each other.
+
 ## 5. Glitch-Free Signal Propagation
 
 Spindel prevents **glitches** — the situation where a spin observes a
