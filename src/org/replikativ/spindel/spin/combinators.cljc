@@ -306,7 +306,10 @@
                  (let [fan-out {:id settle-id
                                 :registration settle-id
                                 :event-key [:race/settle race-spin-id]
-                                :kind :await-once
+                                ;; Reactive, so the generation sweep never reaps it
+                                ;; (a race cancel-spin! just cached is completed and
+                                ;; not running); only a settle or a cancel removes it.
+                                :kind :await-reactive
                                 :resolve-fn resolve
                                 :reject-fn reject
                                 :on-resume (fn [_] nil)}]

@@ -2880,6 +2880,8 @@
   - `:inline?` — the slice resumes on the caller's stack, past this call:
     the cont is marked resumed at once instead of in flight (no claim to
     release, so nothing is ever busy for a queued completion to trip on).
+    An inline claim is its registration's first delivery, so it fails once
+    any completion reached the cont.
 
   Otherwise a reactive claim marks the cont in flight, so cancellation can
   remove the future graph edge without invoking the same CPS slice; the
@@ -2903,12 +2905,18 @@
                               (detach-continuation rt-state spin-id cont-id cont false))
 
                             (or (claim-held? context cont)
-                                (and (some? result)
-                                     ;; An inherited claim (another world's, copied
-                                     ;; by a fork) was never delivered in this
-                                     ;; world: its ::delivered does not count here.
-                                     (not (resume-claimed-key cont))
-                                     (identical? result (::delivered cont))))
+                                ;; An inherited claim (another world's, copied
+                                ;; by a fork) was never delivered in this
+                                ;; world: its ::delivered does not count here.
+                                (and (not (resume-claimed-key cont))
+                                     (contains? cont ::delivered)
+                                     (or
+                                      ;; An inline claim is the registration's
+                                      ;; first delivery: any completion that
+                                      ;; reached it already resumed the slice.
+                                      inline?
+                                      (and (some? result)
+                                           (identical? result (::delivered cont))))))
                             rt-state
 
                             :else
