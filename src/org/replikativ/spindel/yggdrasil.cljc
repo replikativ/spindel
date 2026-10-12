@@ -1700,6 +1700,12 @@
           (assoc :members (into {} (map (fn [[id n]] [id (select-keys n [:via :settled])]))
                                 (:nodes f)))))))
 
+(defn copy-member-settlement
+  "How member `fork-id` of `fork-handle`'s copy family settled (`:discarded`
+  …), or nil. `copy-family` without building the family's view."
+  [fork-handle fork-id]
+  (some-> (:family fork-handle) deref (get-in [:nodes fork-id :settled])))
+
 (defn copied-descriptor
   "The descriptor of the world `fork-id` that `member`'s family copied (see
   `fork-descriptor`), as it is now, or nil."

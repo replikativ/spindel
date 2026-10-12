@@ -254,13 +254,13 @@
   (if (:family handle) {} {:sync? false}))
 
 (defn- copied-world-discarded? [{:keys [context member]}]
-  (= :discarded (get-in (ygg/copy-family member) [:members (:fork-id context) :settled])))
+  (= :discarded (ygg/copy-member-settlement member (:fork-id context))))
 
 (defn- return-copied!
   "Give back what the copied worlds whose last copy is gone have left, newest
    first: their copies returned into them before."
   [scope done fail]
-  (if-let [entry (last (filter copied-world-discarded? (:copied @scope)))]
+  (if-let [entry (some #(when (copied-world-discarded? %) %) (some-> (:copied @scope) rseq))]
     (returning! scope (:context entry)
                 (fn []
                   (swap! scope (fn [state]
