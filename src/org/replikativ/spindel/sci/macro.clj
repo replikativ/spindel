@@ -44,6 +44,27 @@
       (= (:fork-id ctx) (:fork-id captured)) true
       :else (recur (:parent-ctx ctx)))))
 
+(deftype CurrentWorld []
+  Object
+  (toString [_] "#<current world>"))
+
+(def current-world
+  "What SCI code holds for an execution context: the world the host binds
+  around it (`ec/*execution-context*`), by name only. The context record would
+  hand code the engine's atoms (`:running`, the state backend) and, through
+  `:parent-ctx`, its parent worlds; this carries nothing, so it also means the
+  same in every fork of the interpreter. The natives that take a context
+  resolve it when they are called (`resolve-world`)."
+  (CurrentWorld.))
+
+(defn- resolve-world
+  "The host-bound execution context `world` names; SCI code holds no other."
+  [world]
+  (if (identical? world current-world)
+    (ec/current-execution-context)
+    (throw (ex-info "SCI code addresses only the current world"
+                    {:type ::foreign-world}))))
+
 (defn create-spin-macro-context
   "Create SCI context with full spin/await/track syntax support.
 
@@ -58,7 +79,8 @@
   This gives agents vanilla spindel code without callbacks or internals.
 
   Options:
-    :runtime - Execution context (required)
+    :runtime - Ignored. Code acts in the world bound around each evaluation
+               (`ec/*execution-context*`), which it sees only as `current-world`.
     :native-spins - Map of native spins to expose (will be wrapped via boundary)
     :expose-track? - Include track effect (default true)
     :interrupt-fn - SCI :interrupt-fn callback fired at each user-fn-body entry.
@@ -98,11 +120,11 @@
                   x (await a)
                   y (await b)]
               (+ x y)))\"))  ; => 30"
-  [{:keys [runtime native-spins expose-track? interrupt-fn sci-opts resolve-sci-context]
+  [{:keys [native-spins expose-track? interrupt-fn sci-opts resolve-sci-context]
     :or {native-spins {}
          expose-track? true
          sci-opts      {}}}]
-  (let [sci-execution-context (sci/new-dynamic-var '*execution-context* runtime)
+  (let [sci-execution-context (sci/new-dynamic-var '*execution-context* current-world)
         sci-spin-id (sci/new-dynamic-var '*spin-id* nil)
         sci-in-trampoline (sci/new-dynamic-var '*in-trampoline* false)
         ;; Native capabilities follow the caller's selected world. Explicit
@@ -127,13 +149,19 @@
                      'org.replikativ.spindel.engine.core
                      {'*execution-context* sci-execution-context
                       '*spin-id* sci-spin-id
-                      'current-execution-context ec/current-execution-context
+                      ;; the world by name; throws, as the host fn does, when
+                      ;; none is bound
+                      'current-execution-context (fn []
+                                                   (ec/current-execution-context)
+                                                   current-world)
                       'with-context (var ec/with-context)
                       'spin-current-result ec/spin-current-result
                       'deps-track-spin! ec/deps-track-spin!}
 
                      'org.replikativ.spindel.engine.addressing
-                     {'next-address! addressing/next-address!}
+                     {'next-address! (fn [world prefix source-loc]
+                                       (addressing/next-address! (resolve-world world)
+                                                                 prefix source-loc))}
 
                      'is.simm.partial-cps.async
                      {'invoke-continuation async/invoke-continuation
@@ -219,7 +247,7 @@
                                      ;; never re-parent the consumer's next await.
                                      ec/*spin-id* captured-spin-id]
                              (sci/with-bindings
-                               {sci-execution-context current-ctx
+                               {sci-execution-context current-world
                                 sci-spin-id captured-spin-id
                                 sci-in-trampoline captured-trampoline}
                                (async/invoke-continuation continuation
