@@ -69,7 +69,7 @@
   (let [parent (context/create-execution-context)
         interpreter (world/create! parent {})
         _ (binding [ec/*execution-context* parent]
-            (world/eval-string* interpreter (str prelude "(def f (is.simm.partial-cps.runtime/bound-fn (fn [] (spin 1))))")))
+            (world/eval-string* interpreter (str prelude "(def x 0) (def f (is.simm.partial-cps.runtime/bound-fn (fn [] (spin 1)))) (def read-x (is.simm.partial-cps.runtime/bound-fn (fn [] x)))")))
         child (context/fork-context parent :mode :frozen)
         unrelated (context/create-execution-context)]
     (try
@@ -77,6 +77,9 @@
             id (spin-core/spin-id s)]
         (is (some? (binding [ec/*execution-context* child] (ec/get-state [:nodes id]))))
         (is (nil? (binding [ec/*execution-context* parent] (ec/get-state [:nodes id])))))
+      (testing "and on the fork's interpreter: its vars, not the parent's"
+        (is (= 1 (binding [ec/*execution-context* child] (world/eval-string* interpreter "(def x 1) (read-x)"))))
+        (is (= 0 (binding [ec/*execution-context* parent] (world/eval-string* interpreter "(read-x)")))))
       (testing "called from an unrelated world, it keeps its own"
         (let [g (binding [ec/*execution-context* parent] (world/eval-string* interpreter "f"))
               id (spin-core/spin-id (binding [ec/*execution-context* unrelated] (g)))]

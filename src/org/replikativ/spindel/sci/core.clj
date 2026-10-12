@@ -7,6 +7,7 @@
 
   This is the single source of truth for SCI context setup."
   (:require [sci.core :as sci]
+            [sci.ctx-store :as ctx-store]
             [org.replikativ.spindel.engine.core :as ec]))
 
 (defn ^:no-doc same-world-or-descendant?
@@ -23,22 +24,24 @@
       :else (recur (:parent-ctx ctx)))))
 
 (defn- world-bound-fn
-  "partial-cps's `bound-fn` for SCI code: conveys the caller's bindings as
+  "partial-cps's `bound-fn` for SCI code: conveys the creator's bindings as
   `bound-fn*` does, but not its world over a fork's. Called in the captured
-  world or a COW descendant, `f` runs in that world (an interpreter forked
-  after wrapping it acts in the fork); called elsewhere, in the captured one —
-  the continuation rule of `macro/invoke-sci-awaitable`."
+  world or a COW descendant, `f` runs in the calling world and interpreter (an
+  interpreter forked after wrapping it acts in the fork, on the fork's vars);
+  called elsewhere, in the captured ones — the continuation rule of
+  `macro/invoke-sci-awaitable`."
   [f]
   (let [captured (when (ec/execution-context-bound?) (ec/current-execution-context))
-        g (bound-fn* (fn [world args]
-                       (if world
-                         (binding [ec/*execution-context* world] (apply f args))
-                         (apply f args))))]
+        g (bound-fn* (fn [overrides args]
+                       (with-bindings overrides (apply f args))))]
     (fn [& args]
-      (let [ambient (when (ec/execution-context-bound?) (ec/current-execution-context))]
-        (g (cond (nil? captured) ambient
-                 (same-world-or-descendant? ambient captured) ambient
-                 :else captured)
+      (let [ambient (when (ec/execution-context-bound?) (ec/current-execution-context))
+            here? (and ambient (or (nil? captured)
+                                   (same-world-or-descendant? ambient captured)))
+            interpreter ctx-store/*ctx*]
+        (g (cond-> {}
+             here? (assoc #'ec/*execution-context* ambient)
+             (and here? interpreter) (assoc #'ctx-store/*ctx* interpreter))
            args)))))
 
 ;; =============================================================================
