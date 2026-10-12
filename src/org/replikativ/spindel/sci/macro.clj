@@ -31,19 +31,6 @@
             [is.simm.partial-cps.async :as async]
             [org.replikativ.spindel.sci.core :as sci-core]))
 
-(defn- same-world-or-descendant?
-  "True when `candidate` is the captured world or one of its COW descendants.
-
-  Continuation slice restoration may construct another ExecutionContext record
-  for the same branch, so stable fork identity—not object identity—is the base
-  case."
-  [candidate captured]
-  (loop [ctx candidate]
-    (cond
-      (nil? ctx) false
-      (= (:fork-id ctx) (:fork-id captured)) true
-      :else (recur (:parent-ctx ctx)))))
-
 (deftype CurrentWorld []
   Object
   (toString [_] "#<current world>"))
@@ -219,7 +206,7 @@
                 (fn [value]
                   (let [ambient-ctx (try (ec/current-execution-context)
                                          (catch Throwable _ nil))
-                        current-ctx (if (same-world-or-descendant?
+                        current-ctx (if (sci-core/same-world-or-descendant?
                                          ambient-ctx captured-ctx)
                                       ambient-ctx
                                       captured-ctx)

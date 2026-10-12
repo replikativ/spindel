@@ -51,3 +51,38 @@
       (finally
         (context/close-context! child)
         (context/close-context! parent)))))
+
+(deftest host-vars-are-out-of-reach
+  (let [rt (context/create-execution-context)
+        sci-ctx (macro/create-spin-macro-context {})]
+    (try
+      (binding [ec/*execution-context* rt]
+        (testing "Var and Namespace are names, not interop surfaces"
+          (doseq [code ["(@(clojure.lang.Var/find 'clojure.core/eval) '(+ 1 2))"
+                        "(clojure.lang.Var/getThreadBindings)"
+                        "(clojure.lang.Namespace/find 'clojure.core)"]]
+            (is (thrown? Exception (sci/eval-string* sci-ctx code)) code)))
+        (is (false? (sci/eval-string* sci-ctx "(instance? clojure.lang.Var 1)")) "the name still resolves"))
+      (finally (context/close-context! rt)))))
+
+(deftest bound-fns-run-in-the-fork-they-are-called-in
+  (let [parent (context/create-execution-context)
+        interpreter (world/create! parent {})
+        _ (binding [ec/*execution-context* parent]
+            (world/eval-string* interpreter (str prelude "(def f (is.simm.partial-cps.runtime/bound-fn (fn [] (spin 1))))")))
+        child (context/fork-context parent :mode :frozen)
+        unrelated (context/create-execution-context)]
+    (try
+      (let [s (binding [ec/*execution-context* child] (world/eval-string* interpreter "(f)"))
+            id (spin-core/spin-id s)]
+        (is (some? (binding [ec/*execution-context* child] (ec/get-state [:nodes id]))))
+        (is (nil? (binding [ec/*execution-context* parent] (ec/get-state [:nodes id])))))
+      (testing "called from an unrelated world, it keeps its own"
+        (let [g (binding [ec/*execution-context* parent] (world/eval-string* interpreter "f"))
+              id (spin-core/spin-id (binding [ec/*execution-context* unrelated] (g)))]
+          (is (some? (binding [ec/*execution-context* parent] (ec/get-state [:nodes id]))))
+          (is (nil? (binding [ec/*execution-context* unrelated] (ec/get-state [:nodes id]))))))
+      (finally
+        (context/close-context! unrelated)
+        (context/close-context! child)
+        (context/close-context! parent)))))
