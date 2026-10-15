@@ -601,11 +601,15 @@ handlers as `:on-click` / `:on-input` / …, and:
 - `:key` — stable identity within an `ifor-each` fragment.
 - `:ref` — `(fn [el-or-nil] …)` called on mount with the live DOM
   element and on unmount with `nil`. Not re-fired on reconcile (the
-  element identity survives). Mount calls fire after the commit that
-  created the element has attached it — `.isConnected` (when the render
-  root is), `.closest`, `.parentNode` and layout reads all work inside
-  the callback, no `requestAnimationFrame` deferral needed — children
-  before parents, siblings left to right. Unmount calls fire while the
+  element identity survives). Mount calls fire once per created element,
+  after the commit that created it has finished its DOM writes, so the
+  element is attached — `.isConnected` (when the render root is),
+  `.closest`, `.parentNode` and layout reads all work inside the
+  callback, no `requestAnimationFrame` deferral needed — children before
+  parents, siblings left to right. A commit that throws still fires the
+  refs of the elements it had attached, and none for elements it built
+  but never attached. A ref that throws is logged and does not stop
+  the others. Unmount calls fire while the
   element is still attached, just before removal. See engine-formalism
   §3.9 R5. See `examples/block_editor_demo` and
   `examples/README.md` for the canonical usage pattern.

@@ -81,7 +81,8 @@
                         (disch/render-initial! discharge vdom))]
           ;; Append to container
           (when (and container root-el)
-            (.appendChild container root-el)))
+            (.appendChild container root-el)
+            (disch/subtree-attached!)))
         ;; The whole tree just reached the DOM: SEED the caches from the tree
         ;; itself. This replaces promoting the build's staging — staging is
         ;; last-write-wins per address, so when several builds raced before
@@ -129,7 +130,9 @@
               (let [root-el (disch/render-initial! discharge new-vdom)]
                 (when container
                   (set! (.-innerHTML container) "")
-                  (when root-el (.appendChild container root-el))))
+                  (when root-el
+                    (.appendChild container root-el)
+                    (disch/subtree-attached!))))
               ;; The new tree is in the DOM: seed its caches from the tree, then
               ;; retire everything the old tree held that the new one does not —
               ;; the mounted model is the difference between the two committed

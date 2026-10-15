@@ -240,7 +240,8 @@
       (fn []
         (when-let [root-el (binding [disch/*rendered-addrs* (atom {})]
                              (disch/render-initial! discharge vdom))]
-          (.appendChild container root-el))
+          (.appendChild container root-el)
+          (disch/subtree-attached!))
         ;; seed the per-address caches from the mounted tree so a later
         ;; `refresh!` (commit-time reconciliation) diffs against reality
         (commit/seed-subtree-caches! vdom)))

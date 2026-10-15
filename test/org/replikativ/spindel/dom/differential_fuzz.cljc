@@ -390,7 +390,10 @@
                            :title (when (get-in env [:vals s :b]) "on"))
       (= kind :item) (assoc :data-v (str (get-in env [:item :v])))
       (:item-root? node) (assoc :data-fk (fk (:for-id env) (:kpath env)))
-      (and (:item-root? node) (:key? node)) (assoc :key (get-in env [:item :id])))))
+      (and (:item-root? node) (:key? node)) (assoc :key (get-in env [:item :id]))
+      ;; the harness's mount-ref probe, ONE fn for every element so the vnode
+      ;; stays equal across renders; not printed by `->code`
+      (:ref env) (assoc :ref (:ref env)))))
 
 (declare render)
 
@@ -457,7 +460,8 @@
 (defn render
   "Render a normalized program node under `env`
    (`{:sigs [SignalRef] :dfrs [Deferred] :vals {s v} :dvals {d v}
-      :item item :kpath [k ...] :for-id id}`). Returns a vnode, a text
+      :item item :kpath [k ...] :for-id id :ref ref-fn}`; `:ref`, optional,
+   becomes every element's `:ref`). Returns a vnode, a text
    string, nil, a KeyedFragment, or a spin resolving to one of those."
   [node env]
   (case (:op node)
@@ -479,7 +483,7 @@
     :spin (spin-node node env)
     :for (let [xs (get-in env [:vals (:sig node) :xs])
                tpl (:item node)
-               base (select-keys env [:sigs :dfrs])
+               base (select-keys env [:sigs :dfrs :ref])
                kpath (:kpath env [])]
            (foreach/for-each* (loc (:id node)) :id
                               ;; ONLY the item (plus the static key path, a

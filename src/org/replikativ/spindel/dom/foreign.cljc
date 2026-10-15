@@ -111,16 +111,16 @@
                      (when on-mount
                        (try
                          (on-mount el)
-                         (catch #?(:clj Exception :cljs :default) e
-                           (log/error ::foreign-node-mount-error {:addr my-addr :error (str e)})))))
+                         (catch #?(:clj Throwable :cljs :default) e
+                           (log/error ::foreign-node-mount-error {:addr my-addr :error e})))))
                    ;; Unmount
                    (do
                      (log/debug ::foreign-node-unmount {:addr my-addr :tag tag})
                      (when on-unmount
                        (try
                          (on-unmount nil)
-                         (catch #?(:clj Exception :cljs :default) e
-                           (log/error ::foreign-node-unmount-error {:addr my-addr :error (str e)})))))))
+                         (catch #?(:clj Throwable :cljs :default) e
+                           (log/error ::foreign-node-unmount-error {:addr my-addr :error e})))))))
 
         ;; Merge ref into attrs
         attrs-with-ref (assoc attrs :ref ref-fn)]

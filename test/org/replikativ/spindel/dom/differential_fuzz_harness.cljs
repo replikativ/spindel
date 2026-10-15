@@ -139,6 +139,50 @@
                               :data (:data (force lazy_))})))))
 
 ;; =============================================================================
+;; Mount refs (engine-formalism §3.9 R5)
+;; =============================================================================
+;;
+;; Every element of every mount carries `ref-probe` as its `:ref`. A mount call
+;; must find its element attached (`.isConnected` — every container is in the
+;; document) and must be the element's first; at each observation point every
+;; element in the container must have had exactly one. Unmount calls (nil) are
+;; not checked here.
+
+(def ^:private ref-counts
+  "element → mount calls received. Weak: elements die with their trial."
+  (js/WeakMap.))
+
+(def ^:private ref-violations
+  "Fire-time violations since the last `drain-ref-failures!`."
+  (atom []))
+
+(defn- describe-el [^js el]
+  {:class (.getAttribute el "class") :data-fk (.getAttribute el "data-fk")})
+
+(defn ref-probe [^js el]
+  (when el
+    (count! :refs-fired 1)
+    (let [n (inc (or (.get ref-counts el) 0))]
+      (.set ref-counts el n)
+      (when-not (.-isConnected el)
+        (swap! ref-violations conj (assoc (describe-el el) :problem :detached-at-fire)))
+      (when (= n 2)
+        (swap! ref-violations conj (assoc (describe-el el) :problem :fired-twice))))))
+
+(defn- drain-ref-failures!
+  "Fire-time violations so far, plus every element under `body` that never
+   received a mount call. Nil when there are none."
+  [^js body]
+  (let [[fired _] (reset-vals! ref-violations [])
+        unfired (for [^js el (array-seq (.querySelectorAll body "*"))
+                      :when (not (.hasAttribute el "data-spindel-render-error"))
+                      :when (zero? (or (.get ref-counts el) 0))]
+                  (assoc (describe-el el) :problem :never-fired))
+        all (into (vec fired) unfired)]
+    (when (seq all)
+      [{:check :mount-refs :violations all}])))
+
+;; =============================================================================
 ;; One trial
 ;; =============================================================================
 
@@ -155,7 +199,8 @@
         _ (doseq [[d v] delivered :when (nth dfrs d)] (sync/deliver! (nth dfrs d) v))
         body (fresh-body)
         handle (render/render-spin! body
-                                    (fz/render program {:sigs sigs :dfrs dfrs :vals {} :dvals {}})
+                                    (fz/render program {:sigs sigs :dfrs dfrs :vals {} :dvals {}
+                                                        :ref ref-probe})
                                     (browser/make-dom-discharge (.-ownerDocument body)))]
     {:body body :sigs sigs :dfrs dfrs :stop! (:stop! handle)}))
 
@@ -169,7 +214,8 @@
         (.then (fn [_]
                  (let [r {:dom (when-let [root (.-firstElementChild body)] (canonical root))
                           :html (.-innerHTML body)
-                          :violations (disch/drain-violations!)}]
+                          :violations (disch/drain-violations!)
+                          :ref-failures (drain-ref-failures! body)}]
                    (ctx/stop-context! c)
                    r))))))
 
@@ -210,6 +256,7 @@
         base (concat
               (when (seq violations) [{:check :integrity :violations violations}])
               (when (seq errors) [{:check :errors-logged :entries (vec errors)}])
+              (drain-ref-failures! body)
               (when (.querySelector body "[data-spindel-render-error]")
                 [{:check :render-rejected
                   :text (.-textContent (.querySelector body "[data-spindel-render-error]"))}])
@@ -223,7 +270,7 @@
             inc-dom (when-let [root (.-firstElementChild body)] (canonical root))
             inc-html (.-innerHTML body)]
         (-> (fresh-canonical program state)
-            (.then (fn [{:keys [dom html violations]}]
+            (.then (fn [{:keys [dom html violations ref-failures]}]
                      (set! ec/*execution-context* mounted-ctx)
                      {:fks now-fks
                       :failures (vec (concat
@@ -233,7 +280,8 @@
                                           :incremental inc-html
                                           :fresh html}])
                                       (when (seq violations)
-                                        [{:check :integrity-fresh-mount :violations violations}])))})))))))
+                                        [{:check :integrity-fresh-mount :violations violations}])
+                                      (map #(assoc % :check :mount-refs-fresh-mount) ref-failures)))})))))))
 
 (defn- run-steps
   "Apply `steps` from index `i` on, observing at every `[:settle]`. Resolves
@@ -280,6 +328,7 @@
                  r)]
     (capture-logs! logs)
     (disch/collect-violations!)
+    (reset! ref-violations [])
     (-> (js/Promise.resolve nil)
         (.then (fn [_]
                  (let [mounted (mount! c program state0)]

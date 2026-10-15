@@ -61,7 +61,7 @@
           "post-order: descendants before ancestor, siblings left to right")
       (is (= :append-child (:op (last @log)))
           "the attaching write happened before any ref")))
-  (testing "a commit that throws fires none of its mount refs"
+  (testing "a commit that throws before attaching fires none of its mount refs"
     (let [calls (atom [])
           {:keys [discharge]} (disch/make-mock-discharge)
           app (dom/make-vnode :div {:ref (fn [el] (swap! calls conj el))})]
@@ -71,6 +71,37 @@
                        (disch/render-initial! discharge app)
                        (throw (ex-info "commit failed" {}))))))
       (is (= [] @calls)))))
+
+(deftest test-throwing-commit-fires-refs-of-attached-subtrees
+  (testing "a commit that throws partway fires the mount refs of the subtrees
+            it attached, and none of the subtree it never attached (R5)"
+    (let [calls (atom [])
+          {:keys [discharge log]} (disch/make-mock-discharge)
+          ;; the mock records every write by swapping `log`: a validator that
+          ;; rejects one attribute write makes the discharge throw right there
+          _ (set-validator! log (fn [entries]
+                                  (not= :data-boom (:attr (peek entries)))))
+          rec (fn [label] (fn [el] (when el (swap! calls conj label))))
+          item-1 (dom/make-vnode :li {:ref (rec :item-1)}
+                                 [(dom/make-vnode :i {:ref (rec :item-1-leaf)})])
+          ;; item 2 throws while it is being built, after its first child
+          ;; completed: that child's ref is queued but its subtree never attached
+          item-2 (dom/make-vnode :li {:ref (rec :item-2)}
+                                 [(dom/make-vnode :i {:ref (rec :item-2-leaf)})
+                                  (dom/make-vnode :b {:ref (rec :item-2-boom)
+                                                      :data-boom "x"})])]
+      (is (thrown? #?(:clj Exception :cljs :default)
+                   (disch/with-mount-effects
+                     (fn []
+                       (disch/apply-child-delta! discharge :list
+                                                 {:delta :add-fragment
+                                                  :path [0]
+                                                  :value [item-1 item-2]})))))
+      (is (= [:item-1-leaf :item-1] @calls)
+          "item 1 was inserted before the throw: its refs fire, post-order;
+           item 2 was never inserted: none of its refs fire")
+      (is (= 1 (count (filter #(= :insert-child (:op %)) @log)))
+          "exactly one subtree reached the parent"))))
 
 (deftest test-ref-callback-on-remove
   (testing "Ref callback is called with nil on remove"

@@ -130,6 +130,7 @@
 (declare render-initial!)
 (declare call-ref!)
 (declare call-refs-on-unmount!)
+(declare subtree-attached!)
 
 ;; Track addresses claimed during the current render pass. If two different
 ;; vnodes try to claim the same :addr we have an addressing collision —
@@ -470,6 +471,7 @@
             (let [new-el (render-initial! discharge new-vnode)]
               (when new-el
                 (insert-child! discharge parent-el new-el (+ offset k))
+                (subtree-attached!)
                 (shift-positions-on-insert! tracker k))))
 
           ;; Prev source, survives.
@@ -490,7 +492,8 @@
                 (do
                   (call-refs-on-unmount! old-vnode)
                   (when-let [new-el (render-initial! discharge new-vnode)]
-                    (replace-child! discharge parent-el new-el (+ offset k)))))))
+                    (replace-child! discharge parent-el new-el (+ offset k))
+                    (subtree-attached!))))))
 
           ;; Source is doomed — this position must be a grown slot or
           ;; the diff is malformed. Skip silently; producer error
@@ -527,7 +530,8 @@
           index (first path)
           child-el (render-initial! discharge value)]
       (when child-el
-        (insert-child! discharge el child-el index)))
+        (insert-child! discharge el child-el index)
+        (subtree-attached!)))
 
     ;; Simple remove
     :remove
@@ -558,7 +562,8 @@
           (call-refs-on-unmount! old-value)
           (let [child-el (render-initial! discharge value)]
             (when child-el
-              (replace-child! discharge el child-el index))))))
+              (replace-child! discharge el child-el index)
+              (subtree-attached!))))))
 
     ;; Fragment becoming visible: render and insert all items
     :add-fragment
@@ -570,7 +575,8 @@
       (doseq [[offset item] (map-indexed vector items)]
         (let [child-el (render-initial! discharge item)]
           (when child-el
-            (insert-child! discharge el child-el (+ start-idx offset))))))
+            (insert-child! discharge el child-el (+ start-idx offset))
+            (subtree-attached!)))))
 
     ;; Fragment becoming nil: remove all items
     :remove-fragment
@@ -602,7 +608,8 @@
       (doseq [[offset item] (map-indexed vector items)]
         (let [child-el (render-initial! discharge item)]
           (when child-el
-            (insert-child! discharge el child-el (+ index offset))))))
+            (insert-child! discharge el child-el (+ index offset))
+            (subtree-attached!)))))
 
     ;; Fragment → Single: remove all items, insert single
     :replace-fragment-with-single
@@ -621,7 +628,8 @@
       ;; Insert the single element
       (let [child-el (render-initial! discharge value)]
         (when child-el
-          (insert-child! discharge el child-el index))))
+          (insert-child! discharge el child-el index)
+          (subtree-attached!))))
 
     ;; Fragment internal update: apply adjusted deltas
     :fragment-update
@@ -647,7 +655,8 @@
       (doseq [[offset item] (map-indexed vector items)]
         (let [child-el (render-initial! discharge item)]
           (when child-el
-            (insert-child! discharge el child-el (+ start-idx offset))))))
+            (insert-child! discharge el child-el (+ start-idx offset))
+            (subtree-attached!)))))
 
     ;; Move child within collection (reordering)
     :move
@@ -684,10 +693,10 @@
   (when-let [ref-fn (:ref vnode)]
     (try
       (ref-fn el)
-      (catch #?(:clj Exception :cljs :default) e
+      (catch #?(:clj Throwable :cljs :default) e
         (log/error ::ref-callback-error {:tag (:tag vnode)
                                          :el el
-                                         :error (str e)})))))
+                                         :error e})))))
 
 ;; Mount refs are a COMMIT-TIME effect (engine-formalism §3.9 R5). Inside a
 ;; commit, `render-initial!` creates a subtree DETACHED — its parent's
@@ -703,31 +712,64 @@
 ;; finishes elements in); subtrees contribute in the order the commit created
 ;; them. Unmount refs (nil) are NOT queued: they fire during the walk, while
 ;; the departing element is still attached, which is what a cleanup wants.
+;;
+;; Attachment is tracked, so a commit that throws partway still fires the refs
+;; of the subtrees it DID attach (their elements are in the tree, and a ref is
+;; often what pairs with a later `(ref nil)`), and none of the subtree that was
+;; built but never attached. A commit attaches subtrees one at a time — build
+;; one with `render-initial!`, attach it, build the next — so the queue is two
+;; vectors: `:pending` (the subtree under construction, not yet in the tree)
+;; and `:attached`. Every commit-time attach of a `render-initial!` result
+;; calls `subtree-attached!`, which moves `:pending` over.
 (def ^:dynamic *mount-effects*
-  "A volatile vector of [vnode el] mount refs pending for the current commit,
-   or nil outside a commit (then `render-initial!` fires refs inline — the
-   standalone contract, where the caller owns attachment)."
+  "A volatile of `{:attached [[vnode el] ...] :pending [[vnode el] ...]}` —
+   the mount refs pending for the current commit — or nil outside a commit
+   (then `render-initial!` fires refs inline — the standalone contract, where
+   the caller owns attachment)."
   nil)
 
 (defn- mount-ref!
   [vnode el]
   (when (:ref vnode)
     (if-let [q *mount-effects*]
-      (vswap! q conj [vnode el])
+      (vswap! q update :pending conj [vnode el])
       (call-ref! vnode el))))
+
+(defn subtree-attached!
+  "Record that the subtree(s) `render-initial!` just built have been attached
+   to the committed tree (or the render container). Their queued mount refs
+   now fire even if the rest of the commit throws. Call it right after the
+   `insert-child!` / `replace-child!` / `appendChild` that attaches a
+   `render-initial!` result; a no-op outside `with-mount-effects`."
+  []
+  (when-let [q *mount-effects*]
+    (vswap! q (fn [{:keys [attached pending]}]
+                {:attached (into attached pending) :pending []}))))
 
 (defn with-mount-effects
   "Run `(f)` as one commit step: every mount ref `render-initial!` produces
    inside it is deferred until `f` returns, then fired in queue order (see
-   `*mount-effects*`). Returns `f`'s value. If `f` throws, the queue is
-   dropped: refs never fire for a commit that did not complete.
+   `*mount-effects*`). Returns `f`'s value.
+
+   If `f` throws, the refs of the subtrees it had already attached
+   (`subtree-attached!`) fire, in queue order, and the exception is rethrown;
+   refs of a subtree built but never attached are dropped.
 
    Nested calls get their own queue — a commit triggered synchronously from
    inside another commit's ref flushes on its own completion."
   [f]
-  (let [q (volatile! [])
-        result (binding [*mount-effects* q] (f))]
-    (doseq [[vnode el] @q]
+  (let [q (volatile! {:attached [] :pending []})
+        result (try
+                 (binding [*mount-effects* q] (f))
+                 (catch #?(:clj Throwable :cljs :default) e
+                   (doseq [[vnode el] (:attached @q)]
+                     (call-ref! vnode el))
+                   (throw e)))
+        {:keys [attached pending]} @q]
+    ;; on completion everything queued is in the tree: a `render-initial!`
+    ;; result the commit attaches without calling `subtree-attached!` is
+    ;; still `:pending` here, and it fires in creation order all the same
+    (doseq [[vnode el] (into attached pending)]
       (call-ref! vnode el))
     result))
 

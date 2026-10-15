@@ -898,28 +898,50 @@ no parent: `.isConnected` false, `.closest` nil, zero layout; every consumer
 needing an ancestor or a measurement deferred with `requestAnimationFrame`.
 Every commit point (`initial-mount!`, the R2 root re-mount, `commit-update!` /
 `commit-reconcile!`, `browser/mount!`) now runs inside
-`disch/with-mount-effects`: `render-initial!` QUEUES mount refs, and the queue
-is flushed once the commit step has finished — all DOM writes landed, caches
-seeded/advanced, dead addresses retired. Contract:
+`disch/with-mount-effects`: `render-initial!` QUEUES mount refs instead of
+firing them, and each commit-time attach of a built subtree (the
+`insert-child!` / `replace-child!` / `appendChild` that places a
+`render-initial!` result) marks that subtree's queued refs attached
+(`disch/subtree-attached!`). When the commit step returns — all DOM writes
+landed, caches seeded/advanced, dead addresses retired — the queue fires.
+Contract:
 
-- *Attached.* A mount ref receives an element that is in the committed tree,
-  hence document-connected whenever the render container is.
+- *Attached when it fires.* A mount ref fires after the write that attached its
+  element to the committed tree (or to the render container), hence on an
+  element that is document-connected whenever the container is. What is
+  guaranteed is the tree as the commit left it: refs fire one after another,
+  synchronously, so a ref that itself moves or removes DOM nodes changes what
+  the refs after it see.
+- *Exactly once per created element.* Every element `render-initial!` creates
+  inside a commit gets one mount call, and a reconciled element (whose identity
+  survives) gets none.
 - *Order.* Each created subtree contributes its refs in post-order —
   descendants before their ancestor, siblings left to right (the order
   `render-initial!` completes elements in); subtrees contribute in the order
   the commit walk created them.
 - *Committed builds only.* Builds are pure values (R3), so a build abandoned or
-  superseded before commit never reaches `render-initial!` and fires nothing;
-  a commit that throws drops its queue.
+  superseded before commit never reaches `render-initial!` and fires nothing.
+- *A commit that throws* fires the refs of the subtrees it had already attached
+  (in the order above), then rethrows; the refs of a subtree built but not
+  attached when the exception hit — including the completed descendants of an
+  element whose construction threw — never fire. Those attached elements stay
+  in the DOM, and a later unmount must find the ref they were given.
 - *Unmounts are not deferred.* `call-refs-on-unmount!` fires `(ref nil)` during
   the walk, while the departing element is still attached.
+
+A ref that throws is caught (`Throwable` on the JVM) and logged as
+`::ref-callback-error` with the exception under `:error`; it neither stops the
+remaining refs nor fails the commit.
 
 Outside `with-mount-effects` (direct `render-initial!` calls in tests and
 tooling) refs fire inline on the detached subtree — the caller owns attachment
 there. (Regression: `dom/ref_linkage_test.cljs` — initial mount, `ifor-each`
 insert, conditional flip, root re-mount, superseded build — asserting
 `.isConnected` and `.closest` from inside the callback; `dom/ref_test.cljc`
-`test-mount-refs-are-a-commit-effect` for the queue itself.)
+`test-mount-refs-are-a-commit-effect` for the queue itself and
+`test-throwing-commit-fires-refs-of-attached-subtrees` for the throw case; the
+differential fuzzer checks once-only and `.isConnected` at fire time on every
+trial.)
 
 ### Invariant summary table
 

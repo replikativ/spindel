@@ -26,6 +26,10 @@
          enclosing item's key) was deleted.
      (c) INTEGRITY — no `::addr-collision` / `::commit-unbound-addr` was
          recorded, no render spin rejected, nothing logged at :error.
+     (d) MOUNT REFS (R5) — every element carries a probe `:ref`. Each mount
+         call finds its element `.isConnected` and is that element's first;
+         every element in the container (incremental and fresh mount) has
+         had one.
 
    Quiescence is coordination, not a delay: `settle!` yields one event-loop
    task at a time (the EventLoopExecutor's own unit of work) until the
