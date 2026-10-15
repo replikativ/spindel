@@ -163,6 +163,31 @@
            :ops [[:ins 0 1 0 0]]}
           done)))
 
+;; The superseded slice need not be the tracking spin itself. Here the item's
+;; element is built in a spin (an await sits in a sibling slot): slot 0
+;; embeds a nested spin that tracks A, slot 1 awaits the deferred. A flip of
+;; A plus a move suspends the re-run behind the earlier item; the element's
+;; old slice — holding slot 0's PRE-flip vnode — completes on delivery and
+;; is served from cache (`title` stays at the old value for item 0 only).
+
+(deftest defect-1-fuzzer-case-stale-sibling-slot
+  (async done
+         (known-defect-case
+          {:program {:op :spin :tracks [0] :dfr nil
+                     :body {:op :for :sig 0 :key? false
+                            :item {:op :el :tag :div :attr nil
+                                   :children [{:op :el :tag :div :attr nil
+                                               :children [{:op :spin :tracks [0] :dfr nil
+                                                           :body {:op :el :tag :div :attr [:sig 0] :children []}}
+                                                          {:op :spin :tracks [] :dfr 0
+                                                           :body {:op :text :kind :lit :ref 0}}]}
+                                              {:op :text :kind :lit :ref 0}]}}}
+           :init [{:b false :n 0 :xs [{:id 0 :v 0} {:id 1 :v 0}]}
+                  {:b false :n 0 :xs []}
+                  {:b false :n 0 :xs []}]
+           :ops [[:flip 0] [:move 0 0 3]]}
+          done)))
+
 ;; =============================================================================
 ;; Defect 2 — ifor-each items without :key: updates silently corrupt the list
 ;; =============================================================================
@@ -221,7 +246,7 @@
                   {:b false :n 0 :xs []}
                   {:b false :n 0 :xs []}]
            :ops [[:ins 0 1 0 0]]
-           :loose #{:unkeyed}}
+           :profile #{:unkeyed}}
           done)))
 
 ;; =============================================================================
@@ -279,7 +304,7 @@
                   {:b false :n 0 :xs []}
                   {:b false :n 0 :xs []}]
            :ops [[:ins 0 0 0 0]]
-           :loose #{:siblings}}
+           :profile #{:siblings}}
           done)))
 
 ;; =============================================================================

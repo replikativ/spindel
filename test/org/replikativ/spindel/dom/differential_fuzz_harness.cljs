@@ -148,8 +148,11 @@
   [c program {:keys [vals delivered]}]
   (set! ec/*execution-context* c)
   (let [sigs (mapv (fn [v] (sig/signal c v)) vals)
-        dfrs (mapv (fn [_] (sync/create-deferred c)) (range fz/n-deferreds))
-        _ (doseq [[d v] delivered] (sync/deliver! (nth dfrs d) v))
+        ;; only the deferreds the program awaits: a context that holds a
+        ;; Deferred is never collected (regressions ns, defect 4)
+        used (fz/deferreds-used program)
+        dfrs (mapv (fn [d] (when (used d) (sync/create-deferred c))) (range fz/n-deferreds))
+        _ (doseq [[d v] delivered :when (nth dfrs d)] (sync/deliver! (nth dfrs d) v))
         body (fresh-body)
         handle (render/render-spin! body
                                     (fz/render program {:sigs sigs :dfrs dfrs :vals {} :dvals {}})
@@ -176,7 +179,7 @@
   [{:keys [sigs dfrs]} state state' [kind s]]
   (case kind
     (:flip :set-n :ins :del :move :upd) (reset! (nth sigs s) (get-in state' [:vals s]))
-    :deliver (when-not (contains? (:delivered state) s)
+    :deliver (when (and (nth dfrs s) (not (contains? (:delivered state) s)))
                (sync/deliver! (nth dfrs s) (get-in state' [:delivered s])))
     nil))
 
@@ -190,8 +193,8 @@
           :let [{:keys [for-id kpath]} (fz/parse-fk fk)
                 {:keys [ifs fors sig]} (get guards for-id)
                 memberships (map vector (conj fors sig) kpath)]
-          :when (and (not-any? flipped ifs)
-                     (not-any? removed memberships))]
+          :when (and (not-any? #(contains? flipped %) ifs)
+                     (not-any? #(contains? removed %) memberships))]
       {:check :key-identity :data-fk fk
        :note "item key persisted, no ancestor flipped, yet the DOM node was re-created"})))
 
@@ -259,8 +262,8 @@
   "Run one fuzz case `{:program raw :init vals :ops [...]}` end to end.
    Resolves to {:pass? bool :failures [...] :at <op index, :mount or
    :final>}; the first observation point with failures ends the trial."
-  [{:keys [program init ops loose]}]
-  (let [program (fz/normalize program loose)
+  [{:keys [program init ops profile]}]
+  (let [program (fz/normalize program profile)
         ;; every deferred still undelivered at the end is delivered (in index
         ;; order) before the final observation, so the final state is total
         tail (concat (map (fn [d] [:deliver d d]) (range fz/n-deferreds)) [[:settle]])
@@ -292,6 +295,7 @@
                (fn [e] (finish {:pass? false :at :exception
                                 :failures [{:check :exception
                                             :message (or (.-message e) (str e))
+                                            :stack (some-> (.-stack e) (str/split #"\n") (->> (take 12) vec))
                                             :data (ex-data e)}]}))))))
 
 ;; =============================================================================
@@ -327,13 +331,13 @@
 (defn quick-check-async
   "Resolve to {:pass? true :trials n} or a failure report with the shrunk
    case."
-  [{:keys [trials seed max-size max-shrinks loose]}]
+  [{:keys [trials seed max-size max-shrinks profile]}]
   (js/Promise.
    (fn [resolve _]
      ((fn trial [i rnd]
         (if (= i trials)
           (resolve {:pass? true :trials trials :seed seed})
-          (let [with-opts #(cond-> % (seq loose) (assoc :loose loose))
+          (let [with-opts #(cond-> % (seq profile) (assoc :profile profile))
                 [r1 r2] (random/split rnd)
                 size (min max-size (+ 2 i))
                 tree (gen/call-gen fz/gen-case r1 size)]
@@ -352,8 +356,8 @@
   "A failure as text: the minimal program as code, the ops, the evidence,
    and the EDN to pin."
   [{:keys [seed trial shrinks result] :as r}]
-  (let [{:keys [program init ops loose]} (:case r)
-        norm (fz/normalize program loose)]
+  (let [{:keys [program init ops profile]} (:case r)
+        norm (fz/normalize program profile)]
     (str "\n==== differential DOM fuzz failure (seed " seed ", trial " trial
          ", " shrinks " shrink steps) ====\n"
          "-- program (as spindel code):\n"

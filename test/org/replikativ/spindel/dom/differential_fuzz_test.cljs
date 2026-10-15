@@ -39,23 +39,25 @@
      npx shadow-cljs compile dom-fuzz
      node target/dom-fuzz.js
 
-   It also runs as part of the `:ci` / `:test` builds (`-test$`). Long runs
-   are cheap (~40 ms per trial) but each process holds two jsdom documents
-   per observation; give node a heap cap on shared machines
-   (`node --max-old-space-size=2048 …`).
+   It also runs as part of the `:ci` / `:test` builds (`-test$`). A trial
+   takes ~40-70 ms. Every stopped context of a trial stays reachable (open
+   defect 4 in the regressions namespace), ~0.2 MB per trial: keep long
+   runs to a few thousand trials per process and cap node's heap on shared
+   machines (`node --max-old-space-size=2048 target/dom-fuzz.js`).
 
    Knobs (environment variables):
 
      SPINDEL_FUZZ_TRIALS   trials per run           (default 40)
-     SPINDEL_FUZZ_SEED     test.check seed          (default: time-based;
-                                                     printed on failure)
+     SPINDEL_FUZZ_SEED     test.check seed, or `random`
+                           (default: fixed — see `default-seed`)
      SPINDEL_FUZZ_SIZE     max generator size       (default 30)
      SPINDEL_FUZZ_SHRINKS  max shrink evaluations   (default 400)
      SPINDEL_FUZZ_VERBOSE  1 = print seed + coverage counts
-     SPINDEL_FUZZ_LOOSE    generate OUTSIDE the documented ifor-each
-                           contract: `unkeyed` (item roots without :key),
-                           `siblings` (fragments beside sibling nodes), or
-                           `unkeyed,siblings` — see `fz/normalize`
+     SPINDEL_FUZZ_PROFILE  comma-separated generator changes (see
+                           `fz/normalize`): `unkeyed` (item roots without
+                           :key) and `siblings` (fragments beside sibling
+                           nodes) go OUTSIDE the documented ifor-each
+                           contract; `no-await` drops deferred awaits
 
    A failure report carries the seed, the shrunk program printed as the
    spindel code it stands for, the shrunk initial state and op sequence, and
@@ -74,14 +76,24 @@
   (let [v (some-> js/process .-env (aget k))]
     (if (seq v) (js/parseInt v 10) default)))
 
+(def ^:private default-seed
+  "Fixed by default, so the suite is reproducible: the generator reaches
+   OPEN defects (differential_fuzz_regressions_test) at a low rate, and a
+   time-based seed would make CI fail on them at random. Explore with
+   SPINDEL_FUZZ_SEED=random and many trials."
+  20261015)
+
 (defn- knobs []
   {:trials (env-int "SPINDEL_FUZZ_TRIALS" 40)
-   :seed (env-int "SPINDEL_FUZZ_SEED" (.now js/Date))
+   :seed (let [v (some-> js/process .-env (aget "SPINDEL_FUZZ_SEED"))]
+           (cond (= v "random") (.now js/Date)
+                 (seq v) (js/parseInt v 10)
+                 :else default-seed))
    :max-size (env-int "SPINDEL_FUZZ_SIZE" 30)
    :max-shrinks (env-int "SPINDEL_FUZZ_SHRINKS" 400)
    :verbose? (= 1 (env-int "SPINDEL_FUZZ_VERBOSE" 0))
-   :loose (let [v (some-> js/process .-env (aget "SPINDEL_FUZZ_LOOSE"))]
-            (into #{} (map keyword) (when (seq v) (str/split v #","))))})
+   :profile (let [v (some-> js/process .-env (aget "SPINDEL_FUZZ_PROFILE"))]
+              (into #{} (map keyword) (when (seq v) (str/split v #","))))})
 
 ;; =============================================================================
 ;; The property

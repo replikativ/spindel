@@ -81,13 +81,15 @@
 
 (defn- gen-container [inner]
   (gen/frequency
-   [[4 (gen/fmap (fn [[tag attr children]]
+   [[6 (gen/fmap (fn [[tag attr children]]
                    {:op :el :tag tag :attr attr :children children})
                  (gen/tuple (gen/elements tags)
                             (gen/one-of [(gen/return nil)
                                          (gen/fmap (fn [s] [:sig s]) gen-sig)
                                          (gen/return [:item])])
-                            (gen/vector inner 0 3)))]
+                            (gen/bind (gen/frequency [[1 (gen/return 0)] [2 (gen/return 1)]
+                                                      [3 (gen/return 2)] [3 (gen/return 3)]])
+                                      #(gen/vector inner %))))]
     [2 (gen/fmap (fn [[s then else]] {:op :if :sig s :then then :else else})
                  (gen/tuple gen-sig inner (gen/one-of [(gen/return nil) inner])))]
     [3 (gen/fmap (fn [[tracks dfr body]] {:op :spin :tracks tracks :dfr dfr :body body})
@@ -97,20 +99,35 @@
     [3 (gen/fmap (fn [[s key? item]] {:op :for :sig s :key? key? :item item})
                  (gen/tuple gen-sig gen/boolean inner))]]))
 
-(def max-program-size
-  "Generator size cap for program trees, whatever size the driver asks for:
-   `recursive-gen` trees grow fast with size, and every node is a mounted
+(def max-depth
+  "Depth cap of generated program trees. With at most 3 children per
+   element a tree stays under a few hundred nodes; every node is a mounted
    subtree in two contexts per observation."
-  30)
+  5)
+
+(defn- gen-node
+  "A raw tree of at most `depth` levels; containers get likelier the more
+   depth is left. (`gen/recursive-gen` spends its size budget across
+   levels and mostly yields leaves — measured ~2 elements per compared
+   DOM.)"
+  [depth]
+  (if (zero? depth)
+    gen-leaf
+    (gen/frequency [[1 gen-leaf]
+                    [(* 2 depth) (gen-container (gen-node (dec depth)))]])))
 
 (def gen-raw-program
-  "A raw root: always a spin (render-spin! mounts a spin). Shrinks toward a
-   spin with no tracks around a leaf."
-  (gen/fmap (fn [[tracks dfr body]] {:op :spin :tracks tracks :dfr dfr :body body})
-            (gen/tuple (gen/vector gen-sig 0 2)
-                       (gen/one-of [(gen/return nil) gen-dfr])
-                       (gen/scale #(min % max-program-size)
-                                  (gen/recursive-gen gen-container gen-leaf)))))
+  "A raw root: always a spin (render-spin! mounts a spin). Depth grows with
+   the generator size up to `max-depth`; shrinks toward a spin around a
+   leaf."
+  (gen/sized
+   (fn [size]
+     (gen/fmap (fn [[tracks dfr body]] {:op :spin :tracks tracks :dfr dfr :body body})
+               ;; the root tracks at least one signal: with nothing in
+               ;; scope every :if/:for below it would collapse
+               (gen/tuple (gen/vector gen-sig 1 2)
+                          (gen/frequency [[3 (gen/return nil)] [1 gen-dfr]])
+                          (gen-node (min max-depth (inc (quot size 5)))))))))
 
 (def ^:private gen-items
   "A keyed list: distinct ids from a small pool, so inserts collide with
@@ -208,7 +225,7 @@
 
       :spin
       (let [tracks (vec (distinct (:tracks raw)))
-            dfr (:dfr raw)]
+            dfr (when-not (contains? (:profile scope) :no-await) (:dfr raw))]
         {:op :spin :id id :tracks tracks :dfr dfr
          :body (norm (:body raw)
                      (cond-> (update scope :avail into tracks)
@@ -217,7 +234,7 @@
 
       :for
       (if-let [s (pick (:sig raw) avail)]
-        (let [key? (or (not (contains? (:loose scope) :unkeyed)) (boolean (:key? raw)))
+        (let [key? (or (not (contains? (:profile scope) :unkeyed)) (boolean (:key? raw)))
               tpl (ensure-el (norm (:item raw)
                                    (assoc scope :avail #{} :davail #{} :item? true)
                                    next-id!)
@@ -229,27 +246,29 @@
                      {:op :el :id (next-id!) :tag :div :attr nil :children [tpl]
                       :item-root? true :key? key?})
               for-node {:op :for :id id :sig s :item item}]
-          (if (contains? (:loose scope) :siblings)
+          (if (contains? (:profile scope) :siblings)
             for-node
             ;; contract: the fragment is the SOLE child of its own element
             {:op :el :id (next-id!) :tag :ul :attr nil :children [for-node]}))
-        {:op :text :id id :src [:lit]}))))
+        ;; no list in scope: keep the subtree, rendered once, unkeyed
+        (norm (:item raw) scope next-id!)))))
 
 (defn normalize
   "Raw generated tree → valid program with unique node ids (preorder).
 
    By default the program honours the documented ifor-each contract
    (docs/api-reference.md): every item root carries `:key`, and every
-   fragment is the sole child of its own element. `loose` (a set) relaxes
-   them to probe what happens OUTSIDE the contract: `:unkeyed` lets the
-   generator decide whether an item root has `:key`, `:siblings` lets a
-   fragment sit among sibling nodes."
+   fragment is the sole child of its own element. `profile` (a set) changes
+   that: `:unkeyed` lets the generator decide whether an item root has
+   `:key` and `:siblings` lets a fragment sit among sibling nodes (both
+   OUTSIDE the contract); `:no-await` drops every deferred await, to fuzz
+   past a known await-related defect."
   ([raw] (normalize raw #{}))
-  ([raw loose]
+  ([raw profile]
    (let [counter (volatile! 0)
          next-id! #(vswap! counter inc)
          root (norm (if (= :spin (:op raw)) raw {:op :spin :tracks [] :body raw})
-                    {:avail #{} :davail #{} :item? false :loose (set loose)}
+                    {:avail #{} :davail #{} :item? false :profile (set profile)}
                     next-id!)]
      (update root :body ensure-el next-id!))))
 
