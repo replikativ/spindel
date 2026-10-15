@@ -614,10 +614,10 @@
                 (ygg/discard-fork! handle (discard-opts handle))
                 (fn [_]
                   (return-copied-by! scope handle
-                                  #(settle! handle true resolve nil)
+                                     #(settle! handle true resolve nil)
                                   ;; the world is gone; a copied world not
                                   ;; returned yet is retried by `discard!`
-                                  #(settle! handle true reject %)))
+                                     #(settle! handle true reject %)))
                 (fn [error] (settle! handle false reject error)))))
            (fn [error] (settle! handle false reject error))))))))
 
