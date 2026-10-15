@@ -64,7 +64,10 @@ registered by another world. Savepoint sessions and inference deliberately attac
 engine-only `:causal-follow` authority to callback edges that must survive
 particle resampling. The authority belongs to the edge rather than mutable world
 bindings, so interpreted code cannot promote its own egress. Engine listeners
-and duplicate pending callbacks are always fork-local.
+and duplicate pending callbacks are always fork-local, and so is the record of
+a run's caller callbacks that a fresh run takes over when it supersedes the
+run (`:run-callbacks`): a caller callback is served at most once per world, and
+a `:causal-follow` one once in each world that completes the run.
 
 ## Isolation
 

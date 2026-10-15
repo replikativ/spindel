@@ -927,12 +927,18 @@
   R re-evaluates the child's (spin …) form only if R PRECEDES the child's
   registration: R's `:order` is within the creator's continuation count
   recorded on the child (`:creator-cont-mark`, `register-spin!`; O(1) per
-  registration). `:order` is count-based (`add-continuation!`), so it is a
-  watermark, not an identity: a cont removed between R and the
-  registration makes the test answer \"not delegated\" (an extra,
-  independent resume — not a stale result); conts removed between the
-  registration and R can make a later R look earlier (the child is then
-  filtered as before). A creator that is itself a
+  registration). `:order` is count-based (`add-continuation!`), so this is
+  a watermark, not an identity. It relies on one invariant: the
+  continuations counted in the mark outlive the registration until R is
+  added (a later R then gets an `:order` above the mark). Where it is
+  violated the error goes one of two ways: a cont removed between R and
+  the registration makes the test answer \"not delegated\" (an extra,
+  independent resume — not a stale result); a cont removed between the
+  registration and R can make a later R look earlier, so the child is
+  wrongly delegated — invalidated and left `:dirty` instead of eagerly
+  re-run (it re-runs when next reached; no stale result is served, but a
+  parent that never reaches it again keeps its old value). No violation
+  has been constructed. A creator that is itself a
   delegated descendant re-runs from scratch, so its children are delegated
   too. Any other descendant (created before the creator's resume point,
   e.g. `(let [c (spin (track a) …) x (await c) v (track a)] …)`) is NOT
@@ -2380,8 +2386,10 @@
     (let [;; Watermark of the creator's continuations at this registration:
           ;; a cont's `:order` is `1 + count` of the spin's conts when it was
           ;; added, so a resume point with `:order` <= the count NOW was
-          ;; already in place and re-evaluates this (spin …) form (see
-          ;; `delegated-descendants`). O(1): counting persistent maps.
+          ;; already in place and re-evaluates this (spin …) form — given
+          ;; that the conts counted here outlive the registration (see
+          ;; `delegated-descendants` for what a violation costs). O(1):
+          ;; counting persistent maps.
           creator-mark (when (and creator-id (not= creator-id spin-id))
                          (+ (count (rtp/get-state context [:track-subscriptions creator-id]))
                             (count (rtp/get-state context [:await-conts creator-id]))))]
@@ -2839,24 +2847,25 @@
   run through `:pending-callbacks` — otherwise cancelling the old run would
   strand its invoker (a `deref` promise, a savepoint's terminal callback).
   `cache-result!` drops the record when the run completes (same
-  transaction). Each callback carries a `:delivery` atom shared by every
-  world the run is copied into: its first delivery decides, once, whether
-  the run itself serves it (`:local`) or the run it was handed to
-  (`:handoff`) — see `spin.core/local-delivery!`, `serve-pending-callback?`."
+  transaction), and the hand-off happens in the fresh entry's transaction,
+  so within a world a callback is served at most once: by its run, or by
+  the run it was handed to. The record is fork-local state: each world
+  decides for itself, and a `:causal-follow` callback is served once per
+  world that completes the run (the engine's existing cross-world fan-out)."
   [context spin-id run callbacks]
   (rtp/swap-state! context [:run-callbacks spin-id]
                    (constantly {:run run :callbacks callbacks}))
   nil)
 
 (defn- hand-off-run-callbacks
-  "Pure: move a superseded run's never-served invoker callbacks (`:delivery`
-  still nil) from `:run-callbacks` into `:pending-callbacks`."
+  "Pure: move a superseded run's invoker callbacks — never served in THIS
+  world, or the record would be gone (`cache-result!`) — from
+  `:run-callbacks` into `:pending-callbacks`."
   [state spin-id]
   (if-let [{:keys [callbacks]} (get-in state [:run-callbacks spin-id])]
-    (let [unserved (filterv #(nil? (some-> (:delivery %) deref)) callbacks)]
-      (cond-> (update state :run-callbacks dissoc spin-id)
-        (seq unserved) (update-in [:pending-callbacks spin-id]
-                                  (fn [cbs] (into (or cbs []) unserved)))))
+    (cond-> (update state :run-callbacks dissoc spin-id)
+      (seq callbacks) (update-in [:pending-callbacks spin-id]
+                                 (fn [cbs] (into (or cbs []) callbacks))))
     state))
 
 (defn ^:no-doc enter-body!

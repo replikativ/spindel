@@ -318,39 +318,83 @@
            (finally (ctx/close-context! c)))))))
 
 #?(:clj
-   (deftest an-invoker-callback-fires-once-across-worlds
-     (testing "a run completes in a FORK (causal-follow egress) and serves its
-               invoker there; a later fresh run in the parent must not hand
-               the same callback over and serve it again"
-       (let [c (ctx/create-execution-context)]
-         (try
-           (let [d (sync/create-deferred c)
-                 n (atom 0)
-                 got (atom [])
-                 s (binding [ec/*execution-context* c]
-                     (spin (if (= 1 (swap! n inc)) (await d) :fresh)))
-                 sid (spin-core/spin-id s)]
-             (binding [ec/*execution-context* c
-                       ec/*callback-egress-policy* :causal-follow]
-               (s (fn [v] (swap! got conj [:cb v]))
-                  (fn [e] (swap! got conj [:err (ex-message e)]))))
-             (settle! c)
-             (let [f (ctx/fork-context c)]
-               (binding [ec/*execution-context* f]
-                 (sync/deliver! d :in-fork))
-               (settle! f)
-               (settle! c)
-               (is (= [[:cb :in-fork]] @got) "served once, from the fork"))
-             (binding [ec/*execution-context* c]
-               (simple/mark-dirty! c sid)
-               (let [rb (atom nil)
-                     b (spin (await s))]
-                 (b #(reset! rb %) #(reset! rb [:error %]))
-                 (settle! c)
-                 (is (= :fresh @rb) "the parent's fresh run completes")
-                 (is (= [[:cb :in-fork]] @got)
-                     "…without serving the already-served invoker again"))))
-           (finally (ctx/close-context! c)))))))
+   (defn- causal-follow-scenario
+     "World A invokes S (its first run awaits a deferred) with a
+     :causal-follow callback, and forks B and C. `steps` run in order; each
+     is a fn of `{:a :b :c :s :sid :d}`. Returns the deliveries as
+     `[world-id value]`, and the world ids."
+     [steps]
+     (let [a (ctx/create-execution-context)]
+       (try
+         (let [d (sync/create-deferred a)
+               n (atom 0)
+               got (atom [])
+               s (binding [ec/*execution-context* a]
+                   (spin (if (= 1 (swap! n inc)) (await d) :fresh)))
+               sid (spin-core/spin-id s)]
+           (binding [ec/*execution-context* a
+                     ec/*callback-egress-policy* :causal-follow]
+             (s (fn [v] (swap! got conj [(:fork-id (ec/current-execution-context)) v]))
+                (fn [e] (swap! got conj [:error (ex-message e)]))))
+           (settle! a)
+           (let [env {:a a :b (ctx/fork-context a) :c (ctx/fork-context a)
+                      :s s :sid sid :d d}]
+             (doseq [step steps] (step env))
+             {:got @got
+              :ids (into {} (map (fn [k] [k (:fork-id (env k))])) [:a :b :c])}))
+         (finally (ctx/close-context! a))))))
+
+#?(:clj
+   (do
+     (defn- complete-in! [w]
+       (fn [{:keys [d] :as env}]
+         (binding [ec/*execution-context* (env w)]
+           (sync/deliver! d [:in w]))
+         (settle! (env w))))
+
+     (defn- supersede-in! [w]
+       (fn [{:keys [s sid] :as env}]
+         (let [ctx (env w)]
+           (binding [ec/*execution-context* ctx]
+             (simple/mark-dirty! ctx sid)
+             (let [r (atom nil)
+                   b (spin (await s))]
+               (b #(reset! r %) #(reset! r [:error %]))
+               (settle! ctx)
+               (is (= :fresh @r) "the superseding await gets the fresh run"))))))
+
+     (defn- once-per-world? [got]
+       (= (count got) (count (distinct (map first got)))))))
+
+#?(:clj
+   (deftest an-invoker-callback-is-served-once-per-world
+     (testing "the run completes in fork C (causal-follow fan-out); A's
+               later fresh run serves A's own delivery — once per world"
+       (let [{:keys [got ids]} (causal-follow-scenario
+                                [(complete-in! :c) (supersede-in! :a)])]
+         (is (once-per-world? got))
+         (is (= #{[(:c ids) [:in :c]] [(:a ids) :fresh]} (set got)))))))
+
+#?(:clj
+   (deftest a-fork-completion-does-not-cancel-the-parents-hand-off
+     (testing "C completes the copied run FIRST, then A's run is superseded:
+               A must still get its delivery (from the fresh run) — a fork's
+               completion is not the parent's"
+       (let [{:keys [got ids]} (causal-follow-scenario
+                                [(complete-in! :c) (supersede-in! :a) (complete-in! :b)])]
+         (is (once-per-world? got))
+         (is (some #{[(:a ids) :fresh]} got) "A is served by its fresh run")
+         (is (some #{[(:c ids) [:in :c]]} got))))))
+
+#?(:clj
+   (deftest a-supersession-in-a-fork-leaves-the-parents-run-alone
+     (testing "B supersedes the run in its own world; A then completes the
+               ORIGINAL run in A — A's caller is served by A's run"
+       (let [{:keys [got ids]} (causal-follow-scenario
+                                [(supersede-in! :b) (complete-in! :c) (complete-in! :a)])]
+         (is (once-per-world? got))
+         (is (some #{[(:a ids) [:in :a]]} got) "A served by its own run")
+         (is (some #{[(:c ids) [:in :c]]} got))))))
 
 #?(:clj
    (deftest an-inline-superseding-run-does-not-strand-a-sibling-awaiter

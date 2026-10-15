@@ -175,8 +175,12 @@ law is **scoped to the synchronous sub-graph** — see the async caveat.
   really re-creates — the creator's resume cont must PRECEDE the child's
   registration — its `:order` is within the creator's continuation count
   at the registration (`:creator-cont-mark`, an O(1) watermark recorded
-  by `register-spin!`; `:order` is count-based, so the test is
-  conservative where conts were removed in between) — or
+  by `register-spin!`). `:order` is count-based, so this relies on the
+  continuations counted in the mark outliving the registration; where a
+  cont is removed in between, the test errs either way — an extra
+  independent resume, or a wrongly delegated child left `:dirty` (re-run
+  when next reached) instead of eagerly re-run; no violation has been
+  constructed — or
   the creator must itself be a delegated descendant (it re-runs from
   scratch). Those are filtered and *invalidated* in the same step
   (`invalidate-node`), so deferring the re-run to the parent never leaves
@@ -630,10 +634,14 @@ It is enforced with *run generations* (`engine/impl/simple.cljc`):
   transaction as the generation stamp) hands the superseded run's
   never-served invoker callbacks to the new run (`:run-callbacks` →
   `:pending-callbacks`); `cache-result!` drops the record in the same
-  transaction as the run's completing write. Each callback's first
-  delivery is decided once, across worlds, by a `:delivery` atom the
-  run's copies share (`:local` vs `:handoff`), so a callback a fork
-  already served is not served again by the parent's fresh run;
+  transaction as the run's completing write. The contract is **at most
+  once per world**: within a world a caller callback is served by its run
+  or by the run it was handed to, never both. The record is fork-local, so
+  each world decides for itself; a `:causal-follow` callback is served
+  once per world that completes the run — the engine's existing
+  cross-world fan-out (forking.md), which a savepoint's terminal site
+  dedups per world. Nothing is shared between worlds to arbitrate it
+  (that would leak a fork's completion into its parent's decisions);
 * a superseding run that completes *inline* (the await slow path) still
   enqueues `:spin-completion` when other awaiters are subscribed to the
   child — the superseded run's completion is ignored as outdated, so the

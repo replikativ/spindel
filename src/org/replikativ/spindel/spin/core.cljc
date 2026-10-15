@@ -262,30 +262,17 @@
     (= ::spin-cancelled (:type (ex-data error))) nil
     :else (throw error)))
 
-(defn ^:no-doc local-delivery!
-  "A run is about to serve its own invoker callback `cb`. Serve it unless
-  the callback was already handed to a newer run and served there. The
-  `:delivery` atom is shared by every world the run was copied into, so this
-  decides across worlds: the first delivery marks it `:local` (and the run
-  keeps serving it on re-completions), or `:handoff`."
-  [cb]
-  (if-let [d (:delivery cb)]
-    (not= :handoff (swap! d #(if (= % :handoff) % :local)))
-    true))
-
 (defn ^:no-doc serve-pending-callback?
   "Whether pending callback `cb` fires in `current-rt`. Plain pending
   callbacks (`add-pending-callback!`) always fire. Callbacks a superseded run
   handed over (`simple/mark-running!`) carry their invoking world and egress
-  policy and are filtered like a run's own, and fire at most once: only if
-  no world served them yet (`:delivery` nil → `:handoff`)."
+  policy and are filtered like a run's own. Pending callbacks are taken
+  once per world (`take-pending-callbacks!`), so each fires at most once
+  in a world; across worlds a `:causal-follow` callback fans out like the
+  run's own (one delivery per world that completes it)."
   [current-rt cb]
-  (if-not (contains? cb :fork-id)
-    true
-    (and (callback-visible-in-world? current-rt (:fork-id cb) (:egress-policy cb))
-         (if-let [d (:delivery cb)]
-           (compare-and-set! d nil :handoff)
-           true))))
+  (or (not (contains? cb :fork-id))
+      (callback-visible-in-world? current-rt (:fork-id cb) (:egress-policy cb))))
 
 (deftype Spin [spin-id spin-fn]
   PSpin
@@ -364,9 +351,6 @@
               ;; this Spin; completing the copied child must cache its child
               ;; result without firing the parent's callback.
               callbacks-atom (atom [{:fork-id (:fork-id runtime)
-                                     ;; first delivery, decided once across
-                                     ;; worlds (local-delivery! / hand-off)
-                                     :delivery (atom nil)
                                      :egress-policy ec/*callback-egress-policy*
                                      :resolve resolve
                                      :reject reject}])
@@ -470,10 +454,9 @@
                                   (let [callbacks @callbacks-atom]
                                     (doseq [{callback-fork-id :fork-id
                                              :keys [resolve egress-policy] :as cb} callbacks
-                                            :when (and (callback-visible-in-world?
-                                                        current-rt callback-fork-id
-                                                        egress-policy)
-                                                       (local-delivery! cb))]
+                                            :when (callback-visible-in-world?
+                                                   current-rt callback-fork-id
+                                                   egress-policy)]
                                     ;; Call resolve via resume to handle Thunk returns
                                       (resume-callback! resolve value current-rt)))
 
@@ -517,10 +500,9 @@
                                   (let [callbacks @callbacks-atom]
                                     (doseq [{callback-fork-id :fork-id
                                              :keys [reject egress-policy] :as cb} callbacks
-                                            :when (and (callback-visible-in-world?
-                                                        _current-rt callback-fork-id
-                                                        egress-policy)
-                                                       (local-delivery! cb))]
+                                            :when (callback-visible-in-world?
+                                                   _current-rt callback-fork-id
+                                                   egress-policy)]
                                     ;; Call reject via resume to handle Thunk returns
                                       (resume-callback! reject err _current-rt)))
 
