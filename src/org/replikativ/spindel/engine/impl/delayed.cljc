@@ -199,13 +199,15 @@
     ;; Remove from event queue
     (rtp/swap-state! context [:engine/delayed-spins]
                      (fn [queue]
+                       ;; A bucket left empty is dropped: a cancelled sleep per
+                       ;; `timeout` otherwise leaves one empty bucket each.
                        (into (sorted-map)
                              (for [[fire-time spins] queue
-                                   :let [filtered (vec (remove #(= (:id %) spin-id) spins))]]
-                               (do
-                                 (when (not= (count filtered) (count spins))
-                                   (reset! cancelled? true))
-                                 [fire-time filtered])))))
+                                   :let [filtered (vec (remove #(= (:id %) spin-id) spins))
+                                         _ (when (not= (count filtered) (count spins))
+                                             (reset! cancelled? true))]
+                                   :when (seq filtered)]
+                               [fire-time filtered]))))
 
     ;; Detach and cancel the executor timer handle so a cancelled sleep
     ;; does not leave a pending setTimeout / ScheduledFuture behind.
