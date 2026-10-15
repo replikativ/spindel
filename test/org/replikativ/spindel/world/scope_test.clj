@@ -493,6 +493,41 @@
       (finally
         (context/stop-context! root)))))
 
+(deftest releasing-the-last-copies-returns-the-worlds-they-were-copied-from
+  ;; a release looks only at the worlds its copy was copied from
+  (let [root (context/create-execution-context)
+        root-id (:fork-id root)
+        ledger (atom {root-id {:balance 10}})
+        world-scope (scope/create {:purpose :search
+                                   :fork-opts {:systems :none}
+                                   :authority (toy-authority ledger)})
+        session (scope/begin-activity! world-scope :session)
+        balance #(get-in @ledger [(:fork-id (:child-ctx %)) :balance])]
+    (try
+      (binding [ec/*execution-context* root]
+        (let [w (fork-with! world-scope root {:grant 8})
+              other (fork-with! world-scope root {:grant 1})
+              [o] (copy-with! world-scope (:child-ctx other) 1 {:grant 1})
+              [a b] (copy-with! world-scope (:child-ctx w) 2 {:grants [4 4]})
+              [a1 a2] (copy-with! world-scope (:child-ctx a) 2 {:grants [2 2]})]
+          (await-cps (scope/release! world-scope (:child-ctx a1)))
+          (is (= 2 (balance a)) "a keeps a copy: a1 returns into it, a stays")
+          (is (= 3 (count (:copied @world-scope))))
+          (await-cps (scope/release! world-scope (:child-ctx a2)))
+          (is (= 4 (get-in @ledger [(:fork-id (:child-ctx w)) :balance])) "a's last copy: a returns into w")
+          (is (= 2 (count (:copied @world-scope))))
+          (await-cps (scope/release! world-scope (:child-ctx b)))
+          (is (= 9 (get-in @ledger [root-id :balance])) "w's last copy: w returns into root")
+          (is (= 1 (balance o)) "another family is untouched")
+          (is (= [(:fork-id (:child-ctx other))]
+                 (keys (:copied-index @world-scope))))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (is (= {root-id {:balance 10}} @ledger))
+      (is (empty? (:copied @world-scope)))
+      (finally
+        (context/stop-context! root)))))
+
 (deftest discarding-thousands-of-worlds-does-not-grow-the-stack
   ;; Discards complete inline; chained through their callbacks the walk grew
   ;; ~20 frames per world, and a scope of ~650 worlds overflowed the stack

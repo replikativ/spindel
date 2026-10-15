@@ -1706,6 +1706,12 @@
   [fork-handle fork-id]
   (some-> (:family fork-handle) deref (get-in [:nodes fork-id :settled])))
 
+(defn copied-from
+  "The member of `fork-handle`'s copy family that member `fork-id` was copied
+  from, or nil."
+  [fork-handle fork-id]
+  (some-> (:family fork-handle) deref (get-in [:nodes fork-id :via])))
+
 (defn copied-descriptor
   "The descriptor of the world `fork-id` that `member`'s family copied (see
   `fork-descriptor`), as it is now, or nil."

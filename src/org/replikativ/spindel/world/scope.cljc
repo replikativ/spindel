@@ -73,6 +73,11 @@
          :handles (sorted-map)
          :handle-index {}
          :next-handle 0
+         ;; the copied worlds, as {n {:context :member}} in the order they
+         ;; were copied, and {fork-id n}
+         :copied (sorted-map)
+         :copied-index {}
+         :next-copied 0
          :pending-forks 0
          :activities {}
          :cancel-requested? false
@@ -256,20 +261,45 @@
 (defn- copied-world-discarded? [{:keys [context member]}]
   (= :discarded (ygg/copy-member-settlement member (:fork-id context))))
 
-(defn- return-copied!
-  "Give back what the copied worlds whose last copy is gone have left, newest
-   first: their copies returned into them before."
-  [scope done fail]
-  (if-let [entry (some #(when (copied-world-discarded? %) %) (some-> (:copied @scope) rseq))]
+(defn- return-copied-entries!
+  "Give back what the copied worlds `entries` have left, in order."
+  [scope entries done fail]
+  (if-let [entry (first entries)]
     (returning! scope (:context entry)
                 (fn []
                   (swap! scope (fn [state]
-                                 (-> state
-                                     (update :copied (fn [cs] (vec (remove #(identical? entry %) cs))))
-                                     (update :returned disj (:fork-id (:context entry))))))
-                  (return-copied! scope done fail))
+                                 (let [fork-id (:fork-id (:context entry))]
+                                   (-> state
+                                       (update :copied dissoc (get-in state [:copied-index fork-id]))
+                                       (update :copied-index dissoc fork-id)
+                                       (update :returned disj fork-id)))))
+                  (return-copied-entries! scope (next entries) done fail))
                 fail)
     (done)))
+
+(defn- return-copied!
+  "Give back what the copied worlds whose last copy is gone have left, newest
+   first: their copies returned into them before. Discarding a world settles
+   no copied world, so one pass finds them all."
+  [scope done fail]
+  (return-copied-entries! scope
+                          (filterv copied-world-discarded? (map val (rseq (:copied @scope))))
+                          done fail))
+
+(defn- return-copied-by!
+  "`return-copied!` after `handle`, a copy, was discarded: only the worlds it
+   was copied from, newest first, can have lost their last copy."
+  [scope handle done fail]
+  (let [{:keys [copied copied-index]} @scope
+        entries (loop [fork-id (ygg/copied-from handle (:fork-id handle))
+                       entries []]
+                  (if (and fork-id (= :discarded (ygg/copy-member-settlement handle fork-id)))
+                    (recur (ygg/copied-from handle fork-id)
+                           (if-let [n (get copied-index fork-id)]
+                             (conj entries (get copied n))
+                             entries))
+                    entries))]
+    (return-copied-entries! scope entries done fail)))
 
 (defn- settle-now
   "The value of an authority operation that settles before it returns, as a
@@ -383,7 +413,9 @@
                 (fn [state]
                   (-> (if-let [copies (:copies outcome)]
                         (-> (reduce add-handle state copies)
-                            (update :copied (fnil conj []) {:context context :member (first copies)})
+                            (update :copied assoc (:next-copied state) {:context context :member (first copies)})
+                            (update :copied-index assoc fork-id (:next-copied state))
+                            (update :next-copied inc)
                             (update :copied-worlds (fnil conj []) [(first copies) fork-id]))
                         ;; the world stays the scope's, where it was: the
                         ;; scope discards its worlds newest first
@@ -581,7 +613,7 @@
                (invoke-once!
                 (ygg/discard-fork! handle (discard-opts handle))
                 (fn [_]
-                  (return-copied! scope
+                  (return-copied-by! scope handle
                                   #(settle! handle true resolve nil)
                                   ;; the world is gone; a copied world not
                                   ;; returned yet is retried by `discard!`
