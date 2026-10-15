@@ -298,11 +298,11 @@
               ;; uninvalidated, run certifies its result (formalism §3.4).
               child-run (volatile! nil)
               ;; Callbacks a superseded run of the child handed to this one
-              ;; (simple/hand-off-run-callbacks!) — served on completion.
+              ;; (simple/mark-running!) — served on completion.
               serve-pending! (fn [k x]
                                (let [rt (ec/current-execution-context)]
                                  (doseq [cb (simple/take-pending-callbacks! rt awaited-spin-id)
-                                         :when (spin-core/pending-callback-visible? rt cb)]
+                                         :when (spin-core/serve-pending-callback? rt cb)]
                                    (try ((k cb) x)
                                         (catch #?(:clj Throwable :cljs :default) e
                                           (log/warn :await/pending-callback-failed
@@ -316,6 +316,21 @@
               ;; world, where the parent's continuation waits too. (The
               ;; context bound at completion cannot tell them apart: callbacks
               ;; commonly run under a binding of some other world.)
+              ;; An inline completion resumes THIS await directly and skips
+              ;; the completion event. Other awaiters parked on the child —
+              ;; on a run this one superseded (its completion is now ignored
+              ;; as outdated) or reactively on earlier runs — still need the
+              ;; event, or they are stranded. This await's own cont is
+              ;; claimed inline, so the event cannot resume it twice.
+              this-cont-id (await-spin-cont-id spin-id awaited-spin-id source-loc)
+              notify-others! (fn []
+                               (let [rt (completing-world ctx)
+                                     subs (rtp/get-state rt [:subscriptions [:spin/complete awaited-spin-id]])]
+                                 (when (some (fn [[parent cont-ids]]
+                                               (or (not= parent spin-id)
+                                                   (some #(not= this-cont-id %) cont-ids)))
+                                             subs)
+                                   (simple/enqueue-completion-event! rt awaited-spin-id))))
               sync-thread #?(:clj (Thread/currentThread) :cljs nil)
               inline? (fn []
                         (and @in-sync-phase
@@ -333,7 +348,8 @@
                                     (vreset! child-completed? true))
                                   ;; Commit deps so child registers as signal observer
                                   (ec/graph-commit-deps! awaited-spin-id)
-                                  (when-not inline
+                                  (if inline
+                                    (notify-others!)
                                     ;; Async completion: fire event so parent continuation resumes
                                     (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
                                   (serve-pending! :resolve v)))
@@ -347,7 +363,8 @@
                                    (vreset! child-result result)
                                    (vreset! child-completed? true))
                                  (ec/graph-commit-deps! awaited-spin-id)
-                                 (when-not inline
+                                 (if inline
+                                   (notify-others!)
                                    (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
                                  (serve-pending! :reject e)))
                              nil)

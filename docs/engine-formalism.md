@@ -173,7 +173,10 @@ law is **scoped to the synchronous sub-graph** — see the async caveat.
   (`engine/impl/simple.cljc`) finds observers created by another
   observer; `delegated-descendants` keeps those the creator's resume
   really re-creates — the creator's resume cont must PRECEDE the child's
-  registration (`:creator-track-conts`, recorded by `register-spin!`), or
+  registration — its `:order` is within the creator's continuation count
+  at the registration (`:creator-cont-mark`, an O(1) watermark recorded
+  by `register-spin!`; `:order` is count-based, so the test is
+  conservative where conts were removed in between) — or
   the creator must itself be a delegated descendant (it re-runs from
   scratch). Those are filtered and *invalidated* in the same step
   (`invalidate-node`), so deferring the re-run to the parent never leaves
@@ -618,13 +621,24 @@ It is enforced with *run generations* (`engine/impl/simple.cljc`):
   mark could not tell the two runs apart); for the current generation it
   stores the result but certifies it `:clean` only if that generation was
   not invalidated. The mark is not consumed, so a second write of the
-  same run (a reject path re-caching through `abort-spin-chain!`) cannot
-  certify it either; nor can a later track resume of the same run;
+  same run (a reject path re-caching through `abort-spin-chain!`, which
+  passes the same generation) cannot certify it either; nor can a later
+  track resume of the same run. A node that never entered a run has no
+  generation and is only marked `:dirty`;
 * a stale run is never joined: `try-claim-execution!` and `deref` start a
-  fresh run instead, and the fresh entry hands the superseded run's
-  never-served invoker callbacks over to the new run
-  (`hand-off-run-callbacks!` → `:pending-callbacks`), so cancelling the
-  stale run strands no caller.
+  fresh run instead. The fresh entry (`mark-running!`, in the same
+  transaction as the generation stamp) hands the superseded run's
+  never-served invoker callbacks to the new run (`:run-callbacks` →
+  `:pending-callbacks`); `cache-result!` drops the record in the same
+  transaction as the run's completing write. Each callback's first
+  delivery is decided once, across worlds, by a `:delivery` atom the
+  run's copies share (`:local` vs `:handoff`), so a callback a fork
+  already served is not served again by the parent's fresh run;
+* a superseding run that completes *inline* (the await slow path) still
+  enqueues `:spin-completion` when other awaiters are subscribed to the
+  child — the superseded run's completion is ignored as outdated, so the
+  event is their only wakeup. The inline awaiter's own cont is claimed
+  inline, so it is not resumed twice.
 
 So whoever *reaches* the node next — inside the batch or in a later
 drain — re-runs it against the current values. Nothing schedules that

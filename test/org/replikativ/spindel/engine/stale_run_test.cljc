@@ -316,3 +316,66 @@
                    "the first claimer is handed to the fresh run, not stranded")
                (is (= :clean (:status (node id))))))
            (finally (ctx/close-context! c)))))))
+
+#?(:clj
+   (deftest an-invoker-callback-fires-once-across-worlds
+     (testing "a run completes in a FORK (causal-follow egress) and serves its
+               invoker there; a later fresh run in the parent must not hand
+               the same callback over and serve it again"
+       (let [c (ctx/create-execution-context)]
+         (try
+           (let [d (sync/create-deferred c)
+                 n (atom 0)
+                 got (atom [])
+                 s (binding [ec/*execution-context* c]
+                     (spin (if (= 1 (swap! n inc)) (await d) :fresh)))
+                 sid (spin-core/spin-id s)]
+             (binding [ec/*execution-context* c
+                       ec/*callback-egress-policy* :causal-follow]
+               (s (fn [v] (swap! got conj [:cb v]))
+                  (fn [e] (swap! got conj [:err (ex-message e)]))))
+             (settle! c)
+             (let [f (ctx/fork-context c)]
+               (binding [ec/*execution-context* f]
+                 (sync/deliver! d :in-fork))
+               (settle! f)
+               (settle! c)
+               (is (= [[:cb :in-fork]] @got) "served once, from the fork"))
+             (binding [ec/*execution-context* c]
+               (simple/mark-dirty! c sid)
+               (let [rb (atom nil)
+                     b (spin (await s))]
+                 (b #(reset! rb %) #(reset! rb [:error %]))
+                 (settle! c)
+                 (is (= :fresh @rb) "the parent's fresh run completes")
+                 (is (= [[:cb :in-fork]] @got)
+                     "…without serving the already-served invoker again"))))
+           (finally (ctx/close-context! c)))))))
+
+#?(:clj
+   (deftest an-inline-superseding-run-does-not-strand-a-sibling-awaiter
+     (testing "A awaits C (its run suspends); B's await supersedes C with a
+               run that completes INLINE — A must still be resumed"
+       (let [c (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* c]
+             (let [d (sync/create-deferred c)
+                   n (atom 0)
+                   ch (spin (if (= 1 (swap! n inc)) (await d) :fast))
+                   ra (atom ::none)
+                   rb (atom ::none)
+                   a (spin (await ch))
+                   b (spin (await ch))]
+               (a #(reset! ra %) #(reset! ra [:error %]))
+               (settle! c)
+               (is (= ::none @ra) "A parked on C's first run")
+               (b #(reset! rb %) #(reset! rb [:error %]))
+               (settle! c)
+               (is (= :fast @rb) "B got the superseding run's value inline")
+               (is (= :fast @ra) "…and so did A, through the completion event")
+               ;; the superseded run's late completion changes nothing
+               (sync/deliver! d :slow)
+               (settle! c)
+               (is (= [:fast :fast] [@ra @rb]))
+               (is (= :fast (:payload (:result (node (spin-core/spin-id ch))))))))
+           (finally (ctx/close-context! c)))))))

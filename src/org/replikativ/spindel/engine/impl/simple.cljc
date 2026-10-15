@@ -561,7 +561,8 @@
   "Whether `node`'s current run generation was invalidated
   (`invalidate-node`) — its result, in flight or cached, is not current."
   [node]
-  (= (get node :invalid-gen ::none) (:run-gen node)))
+  (let [gen (:run-gen node)]
+    (and (some? gen) (= gen (:invalid-gen node)))))
 
 (defn ^:no-doc stale-run?
   "Whether `node` has a run IN FLIGHT that was invalidated: its result will
@@ -587,9 +588,10 @@
   current — that is `:status`. Pure — returns the new node (nil for nil)."
   [node]
   (when node
-    (-> node
-        (assoc :invalid-gen (:run-gen node))
-        (nodes/mark-dirty))))
+    ;; A node that never entered a run has no generation to invalidate:
+    ;; `:dirty` alone makes the next access run it.
+    (cond-> (nodes/mark-dirty node)
+      (some? (:run-gen node)) (assoc :invalid-gen (:run-gen node)))))
 
 (defn ^:no-doc clear-created-spins!
   "Reset a spin's `:created-spins` set at the start of a (re-)run of its
@@ -923,8 +925,14 @@
   "The descendant observers (`compute-descendant-observers`) whose re-run
   their creator's resume really performs. A creator resumed from track cont
   R re-evaluates the child's (spin …) form only if R PRECEDES the child's
-  registration — R is among the creator's track conts recorded on the child
-  (`:creator-track-conts`, `register-spin!`). A creator that is itself a
+  registration: R's `:order` is within the creator's continuation count
+  recorded on the child (`:creator-cont-mark`, `register-spin!`; O(1) per
+  registration). `:order` is count-based (`add-continuation!`), so it is a
+  watermark, not an identity: a cont removed between R and the
+  registration makes the test answer \"not delegated\" (an extra,
+  independent resume — not a stale result); conts removed between the
+  registration and R can make a later R look earlier (the child is then
+  filtered as before). A creator that is itself a
   delegated descendant re-runs from scratch, so its children are delegated
   too. Any other descendant (created before the creator's resume point,
   e.g. `(let [c (spin (track a) …) x (await c) v (track a)] …)`) is NOT
@@ -932,7 +940,14 @@
   it left it stale (and, once invalidated, :dirty for good)."
   [context observers-with-conts candidates]
   (let [cont-of (into {} observers-with-conts)
-        memo (volatile! {})]
+        memo (volatile! {})
+        ;; The resume cont was in place when the child was registered.
+        ;; A node without a mark (none recorded) keeps the old behaviour:
+        ;; filtered.
+        precedes? (fn [cont node]
+                    (if-let [mark (:creator-cont-mark node)]
+                      (<= (:order cont) mark)
+                      true))]
     (letfn [(delegated? [d]
               (let [known (get @memo d ::unknown)]
                 (if (not= ::unknown known)
@@ -944,8 +959,7 @@
                           v (boolean
                              (and c (contains? cont-of c)
                                   (or (and (contains? candidates c) (delegated? c))
-                                      (contains? (:creator-track-conts node)
-                                                 (:id (cont-of c))))))]
+                                      (precedes? (cont-of c) node))))]
                       (vswap! memo assoc d v)
                       v)))))]
       (into #{} (filter delegated?) candidates))))
@@ -2363,17 +2377,20 @@
     (rtp/swap-state! context [:spins-meta spin-id] (constantly spin-meta))
 
     ;; Create or update SpinNode in :nodes
-    (let [;; The creator's track points that precede this registration: a
-          ;; resume from one of them re-evaluates this (spin …) form (see
-          ;; `delegated-descendants`).
-          creator-conts (when (and creator-id (not= creator-id spin-id))
-                          (set (keys (rtp/get-state context [:track-subscriptions creator-id]))))]
+    (let [;; Watermark of the creator's continuations at this registration:
+          ;; a cont's `:order` is `1 + count` of the spin's conts when it was
+          ;; added, so a resume point with `:order` <= the count NOW was
+          ;; already in place and re-evaluates this (spin …) form (see
+          ;; `delegated-descendants`). O(1): counting persistent maps.
+          creator-mark (when (and creator-id (not= creator-id spin-id))
+                         (+ (count (rtp/get-state context [:track-subscriptions creator-id]))
+                            (count (rtp/get-state context [:await-conts creator-id]))))]
       (rtp/swap-state! context [:nodes spin-id]
                        (fn [existing-node]
                          (let [new-caps (:captured-locals spin-meta)
                                kind     (:kind spin-meta)
                                existing-node (some-> existing-node
-                                                     (assoc :creator-track-conts creator-conts))]
+                                                     (assoc :creator-cont-mark creator-mark))]
                            (if existing-node
           ;; Re-registration: the (spin …) form was re-evaluated by a
           ;; re-running enclosing scope → a fresh closure. Mark the node
@@ -2399,7 +2416,7 @@
           ;; First registration: new node, record the captured environment.
                              (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
                                     :captured-locals new-caps
-                                    :creator-track-conts creator-conts
+                                    :creator-cont-mark creator-mark
                                     :kind kind))))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
@@ -2671,6 +2688,11 @@
             (let [observers (if spin-node (nodes/get-observers spin-node) #{})
                   completion-event-key [:spin/complete spin-id]]
               (-> rt-state
+                  ;; The run completed: its invoker callbacks are being
+                  ;; served, so a later fresh entry must not hand them over
+                  ;; (same transaction as the write — nothing in between).
+                  (cond-> (and run (= run (get-in rt-state [:run-callbacks spin-id :run])))
+                    (update :run-callbacks dissoc spin-id))
                   (update-in [:nodes spin-id]
                              (fn [node]
                                ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
@@ -2772,6 +2794,8 @@
     (:running? node)
     false))
 
+(declare hand-off-run-callbacks)
+
 (defn ^:no-doc mark-running!
   "Mark a spin as currently executing.
 
@@ -2786,53 +2810,54 @@
   `invalidate-node`): whatever run was in flight is the prior one, and the
   prologue cancels it.
 
+  A run superseded before any of its invoker callbacks was served hands
+  them to the new run in the SAME transaction as the stamp
+  (`hand-off-run-callbacks`), so no completion can slip between the two.
+
   Returns: the new run generation"
   [context spin-id]
-  (let [gen (next-run-gen)]
-    (rtp/swap-state! context [:nodes spin-id]
-                     (fn [node]
-                       (-> (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
-                           (assoc :running? true :run-gen gen))))
+  (let [gen (next-run-gen)
+        stamp (fn [node]
+                (-> (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
+                    (assoc :running? true :run-gen gen)
+                    (dissoc :invalid-gen)))]
+    ;; The whole-state transaction only when there is something to hand off:
+    ;; under an overlay backend it re-merges the state, a path swap does not.
+    (if (rtp/get-state context [:run-callbacks spin-id])
+      (rtp/swap-state! context []
+                       (fn [state]
+                         (-> state
+                             (update-in [:nodes spin-id] stamp)
+                             (hand-off-run-callbacks spin-id))))
+      (rtp/swap-state! context [:nodes spin-id] stamp))
     gen))
 
 (defn ^:no-doc register-run-callbacks!
   "Record the invoker callbacks of run `run` of `spin-id` (`-invoke` Case 2
   keeps them in a closure-local list). If a fresh body entry supersedes the
-  run before it ever completed, `enter-body!` hands them to the new run
-  through `:pending-callbacks` — otherwise cancelling the old run would
-  strand its invoker (a `deref` promise, a savepoint's terminal callback)."
+  run before a callback was ever served, `mark-running!` hands it to the new
+  run through `:pending-callbacks` — otherwise cancelling the old run would
+  strand its invoker (a `deref` promise, a savepoint's terminal callback).
+  `cache-result!` drops the record when the run completes (same
+  transaction). Each callback carries a `:delivery` atom shared by every
+  world the run is copied into: its first delivery decides, once, whether
+  the run itself serves it (`:local`) or the run it was handed to
+  (`:handoff`) — see `spin.core/local-delivery!`, `serve-pending-callback?`."
   [context spin-id run callbacks]
   (rtp/swap-state! context [:run-callbacks spin-id]
                    (constantly {:run run :callbacks callbacks}))
   nil)
 
-(defn ^:no-doc release-run-callbacks!
-  "Run `run` of `spin-id` completed: its invoker callbacks were served, so a
-  later fresh entry must not hand them over again."
-  [context spin-id run]
-  (when (rtp/get-state context [:run-callbacks spin-id])
-    (rtp/swap-state! context [:run-callbacks spin-id]
-                     (fn [rc] (when (and rc (not= run (:run rc))) rc))))
-  nil)
-
-(defn- hand-off-run-callbacks!
-  "At a fresh body entry: move the superseded, never-completed run's invoker
-  callbacks into `:pending-callbacks`, which the new run serves."
-  [context spin-id]
-  (let [taken (volatile! nil)]
-    (rtp/swap-state! context []
-                     (fn [state]
-                       (vreset! taken nil)
-                       (if-let [{:keys [callbacks]} (get-in state [:run-callbacks spin-id])]
-                         (do (vreset! taken callbacks)
-                             (-> state
-                                 (update :run-callbacks dissoc spin-id)
-                                 (update-in [:pending-callbacks spin-id]
-                                            (fn [cbs] (into (or cbs []) callbacks)))))
-                         state)))
-    (when (seq @taken)
-      (log/debug :engine/run-callbacks-handed-off {:spin-id spin-id :count (count @taken)}))
-    nil))
+(defn- hand-off-run-callbacks
+  "Pure: move a superseded run's never-served invoker callbacks (`:delivery`
+  still nil) from `:run-callbacks` into `:pending-callbacks`."
+  [state spin-id]
+  (if-let [{:keys [callbacks]} (get-in state [:run-callbacks spin-id])]
+    (let [unserved (filterv #(nil? (some-> (:delivery %) deref)) callbacks)]
+      (cond-> (update state :run-callbacks dissoc spin-id)
+        (seq unserved) (update-in [:pending-callbacks spin-id]
+                                  (fn [cbs] (into (or cbs []) unserved)))))
+    state))
 
 (defn ^:no-doc enter-body!
   "THE body (re-)entry prologue. Every path that invokes a spin's cps-fn
@@ -2858,11 +2883,10 @@
   Returns the new run generation (nil for `:rebuild? true`): the run hands
   it to `cache-result!` on completion, so only an uninvalidated, current run
   certifies its result (formalism §3.4). A run superseded before it ever
-  completed hands its invoker callbacks to this one (`hand-off-run-callbacks!`)."
+  completed hands its invoker callbacks to this one (`mark-running!`)."
   ([context spin-id] (enter-body! context spin-id nil))
   ([context spin-id {:keys [rebuild?]}]
    (let [gen (when-not rebuild?
-               (hand-off-run-callbacks! context spin-id)
                (let [g (mark-running! context spin-id)]
                  (clear-created-spins! context spin-id)
                  g))]
@@ -2907,7 +2931,7 @@
               ;; joining it would hand this caller an invalid value — start
               ;; a fresh run instead. Its prologue cancels the stale run and
               ;; hands that run's invoker callbacks to the new one
-              ;; (`hand-off-run-callbacks!`), so no caller is stranded.
+              ;; (`mark-running!`), so no caller is stranded.
                              (and (:running? node) (not (stale-run? node)))
                              (do (reset! claimed? false)
                                  (log/trace :claim/failed-already-running {:spin-id spin-id})
@@ -2954,12 +2978,16 @@
 
   Returns: Vector of callback maps"
   [context spin-id]
-  (let [result (atom nil)]
-    (rtp/swap-state! context [:pending-callbacks spin-id]
-                     (fn [callbacks]
-                       (reset! result callbacks)
-                       nil))  ; Clear after taking
-    (or @result [])))
+  ;; Most completions have none: read first, write only to take some. The
+  ;; entry is dissoc'ed, not set to nil, so no `{spin-id nil}` is left behind.
+  (if (some? (rtp/get-state context [:pending-callbacks spin-id]))
+    (let [result (volatile! nil)]
+      (rtp/swap-state! context [:pending-callbacks]
+                       (fn [m]
+                         (vreset! result (get m spin-id))
+                         (dissoc m spin-id)))
+      (or @result []))
+    []))
 
 ;; =============================================================================
 ;; Continuation Management (shared across all context implementations)

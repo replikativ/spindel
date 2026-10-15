@@ -148,7 +148,7 @@
 ;;   result lives on the SpinNode in :nodes[spin-id]:result.)
 
 ;; Forward declaration for error handling
-(declare abort-spin-chain!)
+(declare abort-spin-chain! abort-spin-chain*)
 
 (defn- callback-visible-in-world?
   "Whether a callback edge explicitly permits completion from another world."
@@ -262,14 +262,30 @@
     (= ::spin-cancelled (:type (ex-data error))) nil
     :else (throw error)))
 
-(defn ^:no-doc pending-callback-visible?
-  "Whether pending callback `cb` may fire in `current-rt`. Callbacks a
-  superseded run handed over (`simple/hand-off-run-callbacks!`) carry their
-  invoking world and egress policy and are filtered like a run's own; plain
-  pending callbacks (`add-pending-callback!`) always fire."
+(defn ^:no-doc local-delivery!
+  "A run is about to serve its own invoker callback `cb`. Serve it unless
+  the callback was already handed to a newer run and served there. The
+  `:delivery` atom is shared by every world the run was copied into, so this
+  decides across worlds: the first delivery marks it `:local` (and the run
+  keeps serving it on re-completions), or `:handoff`."
+  [cb]
+  (if-let [d (:delivery cb)]
+    (not= :handoff (swap! d #(if (= % :handoff) % :local)))
+    true))
+
+(defn ^:no-doc serve-pending-callback?
+  "Whether pending callback `cb` fires in `current-rt`. Plain pending
+  callbacks (`add-pending-callback!`) always fire. Callbacks a superseded run
+  handed over (`simple/mark-running!`) carry their invoking world and egress
+  policy and are filtered like a run's own, and fire at most once: only if
+  no world served them yet (`:delivery` nil → `:handoff`)."
   [current-rt cb]
-  (or (not (contains? cb :fork-id))
-      (callback-visible-in-world? current-rt (:fork-id cb) (:egress-policy cb))))
+  (if-not (contains? cb :fork-id)
+    true
+    (and (callback-visible-in-world? current-rt (:fork-id cb) (:egress-policy cb))
+         (if-let [d (:delivery cb)]
+           (compare-and-set! d nil :handoff)
+           true))))
 
 (deftype Spin [spin-id spin-fn]
   PSpin
@@ -348,6 +364,9 @@
               ;; this Spin; completing the copied child must cache its child
               ;; result without firing the parent's callback.
               callbacks-atom (atom [{:fork-id (:fork-id runtime)
+                                     ;; first delivery, decided once across
+                                     ;; worlds (local-delivery! / hand-off)
+                                     :delivery (atom nil)
                                      :egress-policy ec/*callback-egress-policy*
                                      :resolve resolve
                                      :reject reject}])
@@ -439,7 +458,6 @@
                               (if-not (ec/spin-cache-result! spin-id (ok value) @run-gen)
                                 (do (reset! executing? false) value)
                                 (do
-                                  (simple/release-run-callbacks! current-rt spin-id @run-gen)
                                 ;; Record dependencies on the SpinNode
                                   (ec/graph-commit-deps! spin-id)
 
@@ -451,10 +469,11 @@
                                 ;; Call all pending callbacks from local state
                                   (let [callbacks @callbacks-atom]
                                     (doseq [{callback-fork-id :fork-id
-                                             :keys [resolve egress-policy]} callbacks
-                                            :when (callback-visible-in-world?
-                                                   current-rt callback-fork-id
-                                                   egress-policy)]
+                                             :keys [resolve egress-policy] :as cb} callbacks
+                                            :when (and (callback-visible-in-world?
+                                                        current-rt callback-fork-id
+                                                        egress-policy)
+                                                       (local-delivery! cb))]
                                     ;; Call resolve via resume to handle Thunk returns
                                       (resume-callback! resolve value current-rt)))
 
@@ -464,7 +483,7 @@
                                     (when (seq pending)
                                       (log/trace :spin/pending-callbacks {:spin-id spin-id :count (count pending)})
                                       (doseq [{:keys [resolve] :as cb} pending
-                                              :when (pending-callback-visible? current-rt cb)]
+                                              :when (serve-pending-callback? current-rt cb)]
                                         (resolve value))))  ; Direct call, not resume
 
                                   (reset! executing? false)
@@ -481,7 +500,6 @@
                               (if-not (ec/spin-cache-result! spin-id (error err) @run-gen)
                                 (do (reset! executing? false) nil)
                                 (do
-                                  (simple/release-run-callbacks! _current-rt spin-id @run-gen)
                                 ;; Record dependencies even on error
                                   (ec/graph-commit-deps! spin-id)
 
@@ -491,15 +509,18 @@
                                   (log/debug :spin/errored {:spin-id spin-id :enqueued :spin-completion})
 
                                 ;; Abort downstream spins
-                                  (abort-spin-chain! spin-id err)
+                                  ;; (the private arity body directly: the
+                                  ;; public var is cancel-spin!'s hook)
+                                  (abort-spin-chain* spin-id err @run-gen)
 
                                 ;; Call all pending callbacks from local state
                                   (let [callbacks @callbacks-atom]
                                     (doseq [{callback-fork-id :fork-id
-                                             :keys [reject egress-policy]} callbacks
-                                            :when (callback-visible-in-world?
-                                                   _current-rt callback-fork-id
-                                                   egress-policy)]
+                                             :keys [reject egress-policy] :as cb} callbacks
+                                            :when (and (callback-visible-in-world?
+                                                        _current-rt callback-fork-id
+                                                        egress-policy)
+                                                       (local-delivery! cb))]
                                     ;; Call reject via resume to handle Thunk returns
                                       (resume-callback! reject err _current-rt)))
 
@@ -510,7 +531,7 @@
                                     (when (seq pending)
                                       (log/trace :spin/pending-callbacks-error {:spin-id spin-id :count (count pending)})
                                       (doseq [{:keys [reject] :as cb} pending
-                                              :when (pending-callback-visible? current-rt cb)]
+                                              :when (serve-pending-callback? current-rt cb)]
                                         (reject err))))  ; Direct call, not resume
 
                                   (reset! executing? false)
@@ -724,15 +745,21 @@
 
    Parameters:
      spin-id - ID of the spin to abort
-     err - The error/exception that caused the abortion"
-  [spin-id err]
+     err - The error/exception that caused the abortion
+     run - the run generation the error comes from (a reject continuation
+           passes its own); omitted for a cancellation"
+  ([spin-id err] (abort-spin-chain* spin-id err nil))
+  ([spin-id err run] (abort-spin-chain* spin-id err run)))
+
+(defn- abort-spin-chain*
+  [spin-id err run]
   ;; Cache the error on the spin itself. This is `cancel-spin!`'s cache write
   ;; (its race tests pin where it happens); on a reject continuation's path
-  ;; it repeats the write the continuation made under its run generation.
-  ;; Without a generation it cannot certify a run that was invalidated
-  ;; (`simple/invalidate-node` marks stay until a fresh run), so the repeat
-  ;; is harmless — it used to re-certify a superseded run's error.
-  (ec/spin-cache-result! spin-id (error err))
+  ;; it repeats the write the continuation made — under the SAME run
+  ;; generation, so a fresh run that entered in between is left alone
+  ;; (`cache-result!` ignores an outdated run) and an invalidated run is not
+  ;; certified.
+  (ec/spin-cache-result! spin-id (error err) run)
   ;; Propagate error to track observers: mark them dirty so they re-execute
   ;; and discover the error via their track continuation. The spin's own
   ;; completion event is the caller's (reject continuation or cancel-spin!).
