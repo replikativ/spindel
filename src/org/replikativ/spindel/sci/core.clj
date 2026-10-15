@@ -78,9 +78,15 @@
   ;; A hand-picked subset silently breaks whenever partial-cps adds a runtime helper the
   ;; macros emit (this bit the SCI spin/gen-aseq path via `runtime/thunk?`). All runtime
   ;; publics are plain native fns / the ONE compiled Thunk ctor, so this stays canonical.
+  ;; Not `enter-trampoline!`/`leave-trampoline!`: code could leave an
+  ;; activation unbalanced, read the token of the one running (the host's), or
+  ;; set a stale one, so that another computation's continuation that carries
+  ;; it returns its Thunk to no trampoline. The interpreted `with-trampoline`
+  ;; only needs `call-in-trampoline`, which is balanced.
   (sci/add-namespace! sci-ctx 'is.simm.partial-cps.runtime
-                      (assoc (update-vals (ns-publics 'is.simm.partial-cps.runtime) deref)
-                             'bound-fn world-bound-fn))
+                      (-> (update-vals (ns-publics 'is.simm.partial-cps.runtime) deref)
+                          (dissoc 'enter-trampoline! 'leave-trampoline!)
+                          (assoc 'bound-fn world-bound-fn)))
   (let [ioc-src (slurp (clojure.java.io/resource "is/simm/partial_cps/ioc.clj"))
         async-src (slurp (clojure.java.io/resource "is/simm/partial_cps/async.cljc"))]
     (sci/eval-string* sci-ctx ioc-src)

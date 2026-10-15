@@ -371,12 +371,10 @@
                                    ;; trampoline), the callback's Thunk comes
                                    ;; back instead of running the caller's
                                    ;; next iteration nested in this one.
-                                   (let [[token previous] (is.simm.partial-cps.runtime/enter-trampoline!)
-                                         ret (try
-                                               (binding [pcps-async/*in-trampoline* token]
-                                                 (resume k x))
-                                               (finally
-                                                 (is.simm.partial-cps.runtime/leave-trampoline! previous)))]
+                                   (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
+                                              (fn [token]
+                                                (binding [pcps-async/*in-trampoline* token]
+                                                  (resume k x))))]
                                      (when (is.simm.partial-cps.runtime/thunk? ret)
                                        (vreset! caller-thunk ret))
                                      ret)
