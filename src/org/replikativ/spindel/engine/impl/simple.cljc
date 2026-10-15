@@ -2271,6 +2271,29 @@
         (:running? cnode)
         (contains? (live-children cnode) child))))
 
+(defn- signal-dependent?
+  "Pure: whether spin `id` could have gone stale — it tracked a signal
+  (track continuations, or signal deps committed or in flight), or awaited
+  a spin that is itself signal-dependent. An await alone does not count:
+  awaiting a spin leaves a persistent `:await-reactive` continuation even
+  when the awaited spin never changes (`(spin :g)`)."
+  [state id]
+  (loop [todo [id] seen #{}]
+    (if-let [x (peek todo)]
+      (let [todo (pop todo)]
+        (if (contains? seen x)
+          (recur todo seen)
+          (let [n (get-in state [:nodes x])
+                deps (when n (nodes/get-deps n))
+                tracking (get-in state [:spin-tracking x])]
+            (if (or (seq (get-in state [:track-subscriptions x]))
+                    (seq (:signals deps))
+                    (seq (:signals tracking)))
+              true
+              (recur (-> todo (into (:spins deps)) (into (:spins tracking)))
+                     (conj seen x))))))
+      false)))
+
 (defn- detach-superseded
   "Pure `state → [state' detached-ids]`: detach the children `spin-id`'s
   completed run dropped (its `:dropped-children` minus its
@@ -2292,9 +2315,9 @@
 
   Detaching drops its continuations and subscriptions, prunes it from the
   observers of what it tracked or awaited (only nodes this world owns),
-  empties its deps and sets `:detached?`. Only a REACTIVE node — one that
-  had track or await continuations, so could have gone stale — is marked
-  dirty: a later access re-runs it. A node with neither keeps its clean
+  empties its deps and sets `:detached?`. Only a node that could have gone
+  stale — `signal-dependent?`: it tracked a signal, directly or through a
+  spin it awaited — is marked dirty: a later access re-runs it. A node with neither keeps its clean
   result; a holder of its Spin awaiting it later gets the cached value,
   with no second run of its side effects. A detached orphan (its Spin
   already collected) is removed outright.
@@ -2303,8 +2326,14 @@
   the whole set, so dropping N children costs O(N + |subscriptions|), not
   O(N × |subscriptions|)."
   [state spin-id self? local?]
-  (let [node (get-in state [:nodes spin-id])
-        own-ok? (and node (:completed? node) (not (:running? node)))
+  (let [state0 state
+        node (get-in state [:nodes spin-id])
+        ;; The creator's :dropped-children are its own world's decision:
+        ;; in a fork, a creator read through from the parent is the
+        ;; parent's, and even dissoc'ing the list would copy it into the
+        ;; overlay (the fork would stop following it).
+        own-ok? (and node (:completed? node) (not (:running? node))
+                     (local? :nodes spin-id))
         live (when node (live-children node))
         own (when own-ok?
               (into [] (comp (remove live) (map (fn [d] [d spin-id])))
@@ -2332,8 +2361,7 @@
                    (empty? (get-in state [:pending-callbacks d]))
                    (empty? (get-in state [:run-callbacks d]))
                    (local? :nodes d))
-            (let [reactive? (or (seq (get-in state [:track-subscriptions d]))
-                                (seq (get-in state [:await-conts d])))
+            (let [reactive? (signal-dependent? state0 d)
                   deps (nodes/get-deps dnode)
                   tracking (get-in state [:spin-tracking d])
                   dep-ids (-> #{}
@@ -2406,15 +2434,21 @@
   holds it. The candidates stay recorded (`:dropped-children`, on the
   creator) and the generation sweep retries."
   [context spin-id]
-  (when-let [node (rtp/get-state context [:nodes spin-id])]
-    (let [self? (and (:completed? node) (not (:running? node))
-                     (superseded-child? context spin-id node))]
-      (when (or (seq (:dropped-children node)) self?)
-        (if (ec/following-forks? context)
-          (when self?
-            (rtp/swap-state! context [:nodes (:created-by node)]
-                             #(when % (update % :dropped-children (fnil conj #{}) spin-id))))
-          (let [local? (backend/entity-locality (:backend context))]
+  (let [local? (backend/entity-locality (:backend context))
+        node (rtp/get-state context [:nodes spin-id])]
+    ;; Only a node this world owns: in a fork, a node read through from the
+    ;; parent (and its :dropped-children) is the parent's to release — any
+    ;; write here would copy it into the overlay and the fork would stop
+    ;; following it (`backend/entity-locality`).
+    (when (and node (local? :nodes spin-id))
+      (let [self? (and (:completed? node) (not (:running? node))
+                       (superseded-child? context spin-id node))
+            creator (:created-by node)]
+        (when (or (seq (:dropped-children node)) self?)
+          (if (ec/following-forks? context)
+            (when (and self? (local? :nodes creator))
+              (rtp/swap-state! context [:nodes creator]
+                               #(when % (update % :dropped-children (fnil conj #{}) spin-id))))
             (rtp/swap-state! context []
                              (fn [state]
                                (first (detach-superseded state spin-id self? local?))))))))))
@@ -2839,7 +2873,7 @@
                   (full-cleanup-spin! context spin-id local?))))
             ;; Retry a superseded-children release that a following fork
             ;; deferred (`release-superseded-children!`).
-            (when (:dropped-children node)
+            (when (and (:dropped-children node) (local? :nodes spin-id))
               (release-superseded-children! context spin-id))))))
 
     ;; Spin observers (parent set) live on `:nodes[child-id]:observers`;

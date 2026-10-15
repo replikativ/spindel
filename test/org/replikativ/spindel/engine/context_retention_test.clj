@@ -304,29 +304,77 @@
               (is (= 5 @par) "the child still re-runs in the fork"))))
         (finally (ctx/stop-context! p))))))
 
+(defn- dropped-child-effects
+  "A creator, while `on`, makes a child with an effect (built by
+   `make-child`), stores it in a user atom and awaits it; then `on` flips
+   off and the holder awaits the child again. Returns how often the child's
+   body ran."
+  [make-child]
+  (let [c (ctx/create-execution-context)
+        effects (atom 0)
+        holder (atom nil)]
+    (try
+      (binding [ec/*execution-context* c]
+        (let [on (sig/signal true)
+              par (spin (let [{v :new} (track on)]
+                          (if v
+                            (let [child (make-child effects)]
+                              (reset! holder child)
+                              (await child))
+                            :off)))]
+          (is (= :sent @par))
+          (simple/await-drain-complete! c)
+          (reset! on false)
+          (simple/await-drain-complete! c)
+          (is (= :off @par))
+          (is (= :sent @(spin (await @holder))))
+          @effects))
+      (finally (ctx/stop-context! c)))))
+
 (deftest a-dropped-child-without-reactivity-is-not-re-run
-  (testing "a completed child with no track or await conts keeps its clean
-            result: a holder awaiting it later does not re-run its effects"
-    (let [c (ctx/create-execution-context)
-          effects (atom 0)
-          holder (atom nil)]
+  (testing "a completed child that tracks nothing keeps its clean result: a
+            holder awaiting it later does not re-run its effects"
+    (is (= 1 (dropped-child-effects
+              (fn [effects] (spin (swap! effects inc) :sent))))))
+  (testing "also when it awaited a spin that tracks nothing (an await leaves a
+            persistent :await-reactive cont; that alone is no reactivity)"
+    (is (= 1 (dropped-child-effects
+              (fn [effects] (spin (swap! effects inc)
+                                  (await (spin :g))
+                                  :sent)))))))
+
+(deftest a-fork-sweep-does-not-copy-the-parents-creator
+  (testing "while a following fork defers the parent's detach, the fork's own
+            generation sweep must not act on (and so copy) the parent's creator"
+    (let [p (ctx/create-execution-context)]
       (try
-        (binding [ec/*execution-context* c]
-          (let [on (sig/signal true)
-                par (spin (let [{v :new} (track on)]
-                            (if v
-                              (let [child (spin (swap! effects inc) :sent)]
-                                (reset! holder child)
-                                (await child))
-                              :off)))]
-            (is (= :sent @par))
-            (simple/await-drain-complete! c)
-            (reset! on false)
-            (simple/await-drain-complete! c)
-            (is (= :off @par))
-            (is (= :sent @(spin (await @holder))))
-            (is (= 1 @effects) "the child's body ran once")))
-        (finally (ctx/stop-context! c))))))
+        (let [[items par] (binding [ec/*execution-context* p]
+                            (let [items (sig/signal [0 1 2])
+                                  par (spin (let [{xs :new} (track items)]
+                                              (mapv (fn [i] (await (spin (let [{v :new} (track items)]
+                                                                           [i (count v)]))))
+                                                    xs)))]
+                              @par
+                              (simple/await-drain-complete! p)
+                              [items par]))
+              pid (spin-core/spin-id par)
+              f (ctx/fork-context p)
+              local? #((backend/entity-locality (:backend f)) :nodes %)]
+          (binding [ec/*execution-context* p]
+            (reset! items [0 1])                 ; deferred: f follows p
+            (simple/await-drain-complete! p))
+          (binding [ec/*execution-context* f]
+            (let [other (sig/signal 0)]          ; an unrelated change in the fork
+              (reset! other 1)
+              (simple/await-drain-complete! f)))
+          (is (not (local? pid)) "the fork still reads the parent's creator through")
+          (binding [ec/*execution-context* p]
+            (reset! items [0 1 7])
+            (simple/await-drain-complete! p)
+            (is (= [[0 3] [1 3] [7 3]] @par)))
+          (is (= [[0 3] [1 3] [7 3]] (binding [ec/*execution-context* f] @par))
+              "the fork follows the parent's recomputed creator"))
+        (finally (ctx/stop-context! p))))))
 
 (deftest gc-cleanup-in-a-fork-never-copies-a-parent-node
   (testing "a fork's Spin object with the structural id of a PARENT node dies:

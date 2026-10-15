@@ -692,17 +692,25 @@ it as an independent observer. The rule now:
   transitively, what each detached child held. Detaching drops its conts
   and subscriptions (one pass over `:subscriptions` for the whole set),
   prunes its observer edges and empties its deps, and sets `:detached?`.
-  Only a *reactive* child (it had track or await conts, so it could have
-  gone stale) is marked dirty; a child with neither keeps its clean
-  result, so a holder of its Spin awaiting it later does not re-run its
-  effects. A child whose run was in flight is checked when that run
+  Only a child that could have gone stale (`signal-dependent?`: it
+  tracked a signal, directly or through a spin it awaited — an await
+  alone leaves a persistent `:await-reactive` cont and does not count) is
+  marked dirty; any other keeps its clean result, so a holder of its Spin
+  awaiting it later does not re-run its effects. A child whose run was in flight is checked when that run
   completes (error completions too).
 - Not while the context has a reachable **following** fork
   (`ec/following-forks?`): a following fork reads every node it has not
   written through from this world, so a detach decided by this world's
   creator would also detach the child in a fork whose own creator still
   holds it. The candidates stay recorded and the generation sweep retries
-  once the fork is gone.
+  once the fork is gone. The release, the sweep's retry and the deferral
+  record only touch nodes the running world owns: a fork's sweep never
+  acts on a creator it reads through from its parent (writing even its
+  `:dropped-children` would copy it into the overlay and stop the fork
+  following it). On a JS runtime without `WeakRef` a fork cannot be
+  tracked without pinning it, so the registry records an unreferenced
+  marker that never expires: such a context defers detaching for good once
+  it has had a following fork.
 - A detached node is quiescent even if it was invalidated and never
   re-ran (`gc-quiescent?` accepts `:detached?` for `:completed?`): it is
   reaped once its Spin is collected, or in the same transaction if it

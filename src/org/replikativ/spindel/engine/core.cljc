@@ -189,9 +189,18 @@
 ;; therefore keeps weak references to its following forks: a fork counts
 ;; while it is reachable, and stops counting once it is garbage.
 
+;; On a JS runtime without WeakRef (pre-ES2021) a fork cannot be tracked
+;; without pinning it for good. The registry then records a fork that holds
+;; no reference at all and counts as reachable forever: once such a context
+;; has had a following fork, superseded children are never detached there
+;; (the pre-fix behaviour), but no fork is retained by the registry. Those
+;; runtimes have no FinalizationRegistry either, so no spin is ever reaped
+;; by GC on them anyway.
 (defn- weak-ref [x]
   #?(:clj (java.lang.ref.WeakReference. x)
-     :cljs (if (exists? js/WeakRef) (js/WeakRef. x) #js {:deref (constantly x)})))
+     :cljs (if (exists? js/WeakRef)
+             (js/WeakRef. x)
+             #js {:deref (constantly true)})))
 
 (defn- weak-get [r]
   #?(:clj (.get ^java.lang.ref.WeakReference r)
