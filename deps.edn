@@ -10,8 +10,13 @@
         ;; :form (site addresses), `with-trampoline`, and the lost-continuation fixes.
         ;; 0.1.65: binding restorers (engine.core/restore-scope, #64); 0.1.66: restored
         ;; bindings hold for the Thunks a continuation returns (scopes in loops).
-        is.simm/partial-cps {:mvn/version "0.1.66"}
-        org.replikativ/yggdrasil {:mvn/version "0.3.46"}
+        ;; 0.1.68: call-in-trampoline (a balanced activation); published as
+        ;; org.replikativ/partial-cps since it moved to replikativ.
+        org.replikativ/partial-cps {:mvn/version "0.1.68"}
+        ;; is.simm/partial-cps is the same library under its old coordinates: two
+        ;; jars with one set of namespaces, whichever comes first on the classpath
+        ;; winning. Excluded until the libraries that pull it move over.
+        org.replikativ/yggdrasil {:mvn/version "0.3.46" :exclusions [is.simm/partial-cps]}
         org.replikativ/hasch {:mvn/version "0.4.104"}
         org.clojure/core.async {:mvn/version "1.9.865"}
         org.replikativ/kabel {:mvn/version "0.3.139"}}
@@ -28,7 +33,7 @@
                       ;; this is a plain :mvn dep — no sibling checkout / CI clone. The
                       ;; handlers' deps are satisfied by kabel (a main dep) + distributed-scope
                       ;; + konserve-sync (below). :test only; runtime stays datahike-free.
-                      org.replikativ/datahike {:mvn/version "0.8.1903"}
+                      org.replikativ/datahike {:mvn/version "0.8.1903" :exclusions [is.simm/partial-cps]}
                       ;; Released Clojars artifact (group is.simm, not
                       ;; org.replikativ — distributed-scope is published from
                       ;; the simm-is org). Pulls kabel + missionary as
@@ -41,7 +46,7 @@
                       org.replikativ/konserve-sync {:mvn/version "0.1.41"}
                       ;; PSS pinned to match what yggdrasil 0.3.46 and datahike pin (canonical
                       ;; handlers + MST + the cljs MST oversized-node iterator fix).
-                      org.replikativ/persistent-sorted-set {:mvn/version "0.5.144"}
+                      org.replikativ/persistent-sorted-set {:mvn/version "0.5.144" :exclusions [is.simm/partial-cps]}
                       ;; SCI on the :test classpath so the sci-integration
                       ;; namespaces (sci.core/macro/boundary) are exercised —
                       ;; notably sci/lock_test, which pins that `common-classes`
@@ -91,8 +96,8 @@
                       ;; datahike on the cljs classpath: the cross-runtime FORK client creates
                       ;; a REAL datahike (memory) system on node. datahike is :test-only on the
                       ;; JVM, so the shadow build needs it pulled in here too.
-                      org.replikativ/datahike {:mvn/version "0.8.1903"}
-                      org.replikativ/persistent-sorted-set {:mvn/version "0.5.144"}
+                      org.replikativ/datahike {:mvn/version "0.8.1903" :exclusions [is.simm/partial-cps]}
+                      org.replikativ/persistent-sorted-set {:mvn/version "0.5.144" :exclusions [is.simm/partial-cps]}
                       ;; the DURABLE cross-runtime client (cross-runtime-durable-client)
                       ;; syncs a node-filestore-backed G-Set's NODES over konserve-sync;
                       ;; on the JVM konserve-sync is :test-only, so the shadow build needs it here.
