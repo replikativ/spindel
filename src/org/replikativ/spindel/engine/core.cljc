@@ -168,13 +168,48 @@
 ;; cell, so the home record stays reachable exactly as long as some record
 ;; of the context is — the right lifetime for a weak reference.
 
+(declare home-context)
+
 (defn ^:no-doc with-home
-  "Stamp `ctx` with a fresh :home cell that holds the stamped record."
+  "Stamp `ctx` with a fresh :home cell that holds the stamped record, and a
+  fresh registry of its following forks (`register-following-fork!`)."
   [ctx]
   (let [cell (volatile! nil)
-        ctx (assoc ctx :home cell)]
+        ctx (assoc ctx
+                   :home cell
+                   :following-forks (atom []))]
     (vreset! cell ctx)
     ctx))
+
+;; A FOLLOWING fork reads every path it has not written through from its
+;; parent's live state, so a write in the parent is a write in the fork.
+;; Engine decisions that are one world's to make — "the creator no longer
+;; holds this child, detach it" — must not be written into state a
+;; following fork still reads (`release-superseded-children!`). The parent
+;; therefore keeps weak references to its following forks: a fork counts
+;; while it is reachable, and stops counting once it is garbage.
+
+(defn- weak-ref [x]
+  #?(:clj (java.lang.ref.WeakReference. x)
+     :cljs (if (exists? js/WeakRef) (js/WeakRef. x) #js {:deref (constantly x)})))
+
+(defn- weak-get [r]
+  #?(:clj (.get ^java.lang.ref.WeakReference r)
+     :cljs (.deref ^js r)))
+
+(defn ^:no-doc register-following-fork!
+  "Record `fork` (weakly) as a following fork of `parent`."
+  [parent fork]
+  (when-let [reg (:following-forks parent)]
+    (let [r (weak-ref (home-context fork))]
+      (swap! reg (fn [rs] (conj (filterv weak-get rs) r)))))
+  fork)
+
+(defn ^:no-doc following-forks?
+  "Whether `ctx` has a following fork that is still reachable."
+  [ctx]
+  (boolean (when-let [reg (:following-forks ctx)]
+             (some weak-get @reg))))
 
 (defn ^:no-doc home-context
   "The home record of `ctx` (see `with-home`): stable for as long as the

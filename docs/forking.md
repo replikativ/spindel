@@ -572,7 +572,11 @@ The GC cleanup of runtime atoms and spins holds only ids and weak
 references. Each root, fork, materialized fork and restored snapshot is
 stamped with a `:home` cell (`ec/with-home`) that records derived by
 `assoc` share; weak references point at that home record, which lives as
-long as any record of the context does. `stop-context!` has nothing to
+long as any record of the context does. A parent also keeps weak references to its
+**following** forks (`ec/register-following-fork!`): engine decisions that
+belong to one world — detaching a child the parent's creator dropped — are
+deferred while a following fork that reads through to the parent's state is
+reachable. `stop-context!` has nothing to
 unregister for this: a stopped context can be revived (e.g. by
 `restore-snapshot`), and the registrations it leaves are released when
 their targets are collected.

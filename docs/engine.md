@@ -1077,15 +1077,15 @@ what keeps `(let [s (spin (track sig))] (s identity identity))`-style
 let-bound reactive code alive even when the user has no remaining
 strong reference.
 
-Two refinements keep this from leaking:
+Three refinements keep this from leaking:
 
 - **Superseded children.** A child its creator's latest completed run no
-  longer holds (a removed `ifor-each` item) is detached from the graph when
-  that run completes (`release-superseded-children!`: conts, subscriptions
-  and observer registrations dropped, node marked dirty), and an orphan
-  whose creator no longer holds it is reapable despite remaining track
-  conts (`superseded-child?`). See engine-formalism §3.4, "Superseded
-  children".
+  longer holds (a removed `ifor-each` item) is detached from the graph
+  when that run completes (`release-superseded-children!`, one
+  transaction): conts, subscriptions and observer edges dropped, and — if
+  it was reactive — the node marked dirty. It is then reaped once its Spin
+  is collected. Deferred while the context has a reachable following fork.
+  See engine-formalism §3.4, "Superseded children".
 - **What the cleanup holds.** The registration holds the spin id and a
   weak reference to the context's **home** record (`ec/home-context`,
   stamped by `ec/with-home` on every root, fork and restored context), not
@@ -1095,6 +1095,13 @@ Two refinements keep this from leaking:
   nothing — 774 of 779 spin cleanups in the jsdom fuzz suite. Every derived
   record shares the home cell, so the home record lives exactly as long as
   the context is in use.
+- **What the cleanup writes.** In a fork, GC cleanup (and the sweep's
+  orphan reap) only writes entities the fork already owns
+  (`backend/entity-locality`). A node read through from the parent is the
+  parent's: a fork-side Spin object with the same structural id dying says
+  nothing about it, and a write — even the `:orphaned?` mark, or pruning an
+  observer edge on a dependency — would copy the node into the overlay and
+  stop the fork following the parent there.
 
 ### Context lifecycle
 

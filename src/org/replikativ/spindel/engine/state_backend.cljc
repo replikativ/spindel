@@ -616,6 +616,26 @@
   (backend-type [_]
     :overlay))
 
+(defn entity-locality
+  "A predicate `(local? top-key entity-id)`: whether a write to that entity
+  in `backend` changes only state this world already owns. True for every
+  entity of a non-overlay backend. For an OverlayBackend: true for a
+  fork-local top key (its entities never fall through), or when the
+  overlay already holds its own copy (or tombstone) of the entity; false
+  when the entity is read through from the parent — a write would copy it
+  into the overlay and the fork would stop following the parent there.
+
+  Read once from the overlay as it is now; a copy only ever becomes local,
+  so a predicate taken before a transaction errs on the side of `false`."
+  [backend]
+  (if (instance? OverlayBackend backend)
+    (let [ov @(:overlay-atom backend)
+          local-paths (:local-paths backend)]
+      (fn [top-key entity-id]
+        (or (fork-local-path? top-key local-paths)
+            (contains? (get ov top-key) entity-id))))
+    (constantly true)))
+
 (defn create-overlay-backend
   "Create OverlayBackend with empty overlay over parent backend.
 

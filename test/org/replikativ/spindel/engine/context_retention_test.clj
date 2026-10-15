@@ -31,6 +31,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.nodes :as nodes]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -272,3 +273,86 @@
               (simple/await-drain-complete! c)
               (is (= 2 @runs) "still reacts to its own signal"))))
         (finally (ctx/stop-context! c))))))
+
+(deftest a-following-fork-keeps-a-child-its-own-creator-still-holds
+  (testing "the parent's creator drops the child, the fork's still holds it:
+            the detach must not reach the fork through read-through state"
+    (let [p (ctx/create-execution-context)]
+      (try
+        (let [[s t par] (binding [ec/*execution-context* p]
+                          (let [s (sig/signal {:on true})
+                                t (sig/signal 0)
+                                par (spin (let [{v :new} (track s)]
+                                            (if (:on v)
+                                              (await (spin (let [{x :new} (track t)] x)))
+                                              0)))]
+                            [s t par]))]
+          (binding [ec/*execution-context* p]
+            (is (= 0 @par))
+            (simple/await-drain-complete! p))
+          (let [f (ctx/fork-context p)]
+            (binding [ec/*execution-context* f]
+              (reset! s {:on true :n 1})          ; the fork's creator re-runs, holds the child
+              (simple/await-drain-complete! f))
+            (binding [ec/*execution-context* p]
+              (reset! s {:on false})              ; the parent's creator drops it
+              (simple/await-drain-complete! p)
+              (is (= 0 @par)))
+            (binding [ec/*execution-context* f]
+              (reset! t 5)
+              (simple/await-drain-complete! f)
+              (is (= 5 @par) "the child still re-runs in the fork"))))
+        (finally (ctx/stop-context! p))))))
+
+(deftest a-dropped-child-without-reactivity-is-not-re-run
+  (testing "a completed child with no track or await conts keeps its clean
+            result: a holder awaiting it later does not re-run its effects"
+    (let [c (ctx/create-execution-context)
+          effects (atom 0)
+          holder (atom nil)]
+      (try
+        (binding [ec/*execution-context* c]
+          (let [on (sig/signal true)
+                par (spin (let [{v :new} (track on)]
+                            (if v
+                              (let [child (spin (swap! effects inc) :sent)]
+                                (reset! holder child)
+                                (await child))
+                              :off)))]
+            (is (= :sent @par))
+            (simple/await-drain-complete! c)
+            (reset! on false)
+            (simple/await-drain-complete! c)
+            (is (= :off @par))
+            (is (= :sent @(spin (await @holder))))
+            (is (= 1 @effects) "the child's body ran once")))
+        (finally (ctx/stop-context! c))))))
+
+(deftest gc-cleanup-in-a-fork-never-copies-a-parent-node
+  (testing "a fork's Spin object with the structural id of a PARENT node dies:
+            the cleanup must not write that node (or its deps) into the
+            fork's overlay, or the fork stops following the parent there"
+    (let [p (ctx/create-execution-context)]
+      (try
+        (let [[a e] (binding [ec/*execution-context* p]
+                      (let [a (sig/signal 1)
+                            e (spin (* 10 (:new (track a))))]
+                        @e
+                        (simple/await-drain-complete! p)
+                        [a e]))
+              eid (spin-core/spin-id e)
+              f (ctx/fork-context p)
+              local? #((backend/entity-locality (:backend f)) :nodes %)]
+          (is (not (local? eid)) "precondition: the fork reads e through")
+          ;; what the Cleaner does when a fork-side Spin object with e's id dies
+          (simple/try-gc-cleanup-spin! f eid)
+          (simple/await-drain-complete! f)
+          (is (not (local? eid)) "e was not copied into the fork")
+          (is (not (local? (:id a))) "nor was the signal it tracks")
+          (binding [ec/*execution-context* p]
+            (reset! a 2)
+            (simple/await-drain-complete! p)
+            (is (= 20 @e)))
+          (is (= 20 (binding [ec/*execution-context* f] @(spin (await e))))
+              "the fork still follows the parent's recomputed e"))
+        (finally (ctx/stop-context! p))))))

@@ -661,7 +661,11 @@
                           (merge (or (:base-bindings parent-ctx)
                                      (:bindings parent-ctx))
                                  bindings))
-                   (ec/with-home))]
+                   (ec/with-home))
+          ;; A following fork reads through to this parent's live state:
+          ;; the parent must know (weakly) that it exists.
+          _ (when-not (= :frozen mode)
+              (ec/register-following-fork! parent-ctx fork))]
       ;; Undo the parent's in-flight mailbox CLAIMS in the fork's world:
       ;; each pending :cont-resume popped its waiter from the (CoW-shared)
       ;; mailbox state before the fork — re-register the waiter into the

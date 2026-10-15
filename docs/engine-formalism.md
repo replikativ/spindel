@@ -676,23 +676,43 @@ continuation → the resolve its awaiter passed in → the awaiter's loop
 state, e.g. an `ifor-each` holding all its item spins), so the Spin is
 never collected and the Cleaner never runs. `gc-quiescent?` would refuse
 it anyway (track subscription), and the next change of the signal resumed
-it as an independent observer. The rule now: a run of a creator holds a
-set of children — `live-children`, the children it (re-)registered
-(`:created-spins`) plus, after a track resume, those created *before* the
-resume point (`:kept-children`, snapshotted on the track cont as
-`:slice-state :live-children`), which the resumed slice does not
-re-evaluate. When the creator's run completes (`record-deps!` →
-`release-superseded-children!`), every child the previous run held and
-this one does not (`:dropped-children`) that no other spin observes and
-that has no run in flight is **detached**: its conts, subscriptions and
-observer registrations go (`clear-deps!`) and it is marked dirty, so any
-later access re-runs it fresh; its own children go with it. A child whose
-run was in flight is checked when that run completes. Detached, the node
-is quiescent; it is reaped as soon as its Spin is collected (or at once,
-if it already was). `superseded-child?` makes `gc-quiescent?` accept an
-orphan whose creator no longer holds it (or is gone) despite remaining
-track conts. Regression: `engine/context_retention_test.clj`, and the
-jsdom differential `removed-item-is-reaped-after-same-change-removal`.
+it as an independent observer. The rule now:
+
+- A run of a creator holds a set of children, `live-children`: those it
+  (re-)registered (`:created-spins`) plus, after a track resume, those
+  created *before* the resume point (`:kept-children`, snapshotted on the
+  track cont as `:slice-state :live-children`), which the resumed slice
+  does not re-evaluate. Each new run records what it starts out not
+  holding (`:dropped-children`).
+- When the creator's run completes (`record-deps!` →
+  `release-superseded-children!`), ONE transaction (`detach-superseded`)
+  re-checks and detaches every dropped child that still names that
+  creator, is not held by it, is observed by no other spin, has no run in
+  flight and no caller waiting on one, and is owned by this world — then,
+  transitively, what each detached child held. Detaching drops its conts
+  and subscriptions (one pass over `:subscriptions` for the whole set),
+  prunes its observer edges and empties its deps, and sets `:detached?`.
+  Only a *reactive* child (it had track or await conts, so it could have
+  gone stale) is marked dirty; a child with neither keeps its clean
+  result, so a holder of its Spin awaiting it later does not re-run its
+  effects. A child whose run was in flight is checked when that run
+  completes (error completions too).
+- Not while the context has a reachable **following** fork
+  (`ec/following-forks?`): a following fork reads every node it has not
+  written through from this world, so a detach decided by this world's
+  creator would also detach the child in a fork whose own creator still
+  holds it. The candidates stay recorded and the generation sweep retries
+  once the fork is gone.
+- A detached node is quiescent even if it was invalidated and never
+  re-ran (`gc-quiescent?` accepts `:detached?` for `:completed?`): it is
+  reaped once its Spin is collected, or in the same transaction if it
+  already was. `superseded-child?` makes `gc-quiescent?` accept an orphan
+  whose creator exists, is complete and no longer holds it, despite
+  remaining track conts; a creator absent from the world proves nothing
+  (`*spin-id*` can name a spin of another context).
+
+Regressions: `engine/context_retention_test.clj`, and the jsdom
+differential `removed-item-is-reaped-after-same-change-removal`.
 
 **Open subtlety.** Conts with `:order` *less* than the resumed one are
 *kept* and their signal deps re-tracked (`engine/impl/simple.cljc:357-361`)
