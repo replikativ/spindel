@@ -2,8 +2,10 @@
   "SCI/Native boundary for spindel integration.
 
   Enables transparent interop between native spindel spins and SCI-evaluated code:
-  - BoundaryTask wrapper propagates *execution-context* bindings across boundary
-  - make-spin-for-sci creates spins inside SCI contexts
+  - native capabilities run in the caller's world (wrap-capability-for-sci);
+    an explicit task handle runs in its host world (wrap-spin-for-sci)
+  - SCI's make-spin creates spins in the world the host selected for the
+    evaluation; make-spin-for-sci, a host fn, in a world it names
   - Full bidirectional communication: Native ↔ SCI
 
   Based on zeitlauf SCI integration findings (see SCI_RUNTIME_BOUNDARY_DESIGN.md)."
@@ -48,7 +50,9 @@
   "Wrap a native spin for use in SCI contexts.
 
   Returns a BoundaryTask that executes in the task runtime and re-enters the
-  caller runtime for resolve/reject.
+  caller runtime for resolve/reject. It holds that runtime: SCI code cannot
+  read it under the default class allowlist (`sci.core/common-classes`), but
+  a trusted context that opts into `:allow :all` can.
 
   Example:
     (def native-spin (spin (+ 1 2)))
@@ -96,21 +100,19 @@
 ;; =============================================================================
 
 (defn make-spin-for-sci
-  "Create a spin from SCI context with proper bindings.
+  "Create a spin in the world `runtime`, for a host that names it.
 
-  Wraps spin-core/make-spin to establish native bindings during creation.
+  Wraps spin-core/make-spin with `runtime` bound during creation. SCI code
+  does not reach this: its `spindel.spin/make-spin` creates spins in the
+  world the host selected for the evaluation.
 
   Parameters:
     spin-fn - CPS function (fn [resolve reject] ...)
     spin-id - Keyword identifier for the spin
     runtime - Native execution context
 
-  Example in SCI:
-    (require '[spindel.spin :as spin])
-    (spin/make-spin
-      (fn [resolve reject]
-        (resolve (+ 1 2)))
-      :my-spin)"
+  Example:
+    (make-spin-for-sci (fn [resolve reject] (resolve (+ 1 2))) :my-spin rt)"
   [spin-fn spin-id runtime]
   (binding [ec/*execution-context* runtime
             ec/*spin-id* spin-id]
@@ -128,8 +130,10 @@
   - Full partial-cps loaded for CPS transformation
   - Access to runtime state (optional)
 
+  The interpreter holds no world: code runs in the world the host binds
+  (`*execution-context*`) for each evaluation, and its spins register there.
+
   Options:
-    :runtime - Execution context (required)
     :expose-runtime-state? - If true, expose get-state/swap-state! (default false)
     :native-spins - Map of native spins to expose (will be wrapped automatically)
 
@@ -137,8 +141,9 @@
     (def rt (ctx/create-execution-context))
     (def sci-ctx
       (create-spindel-sci-context
-        {:runtime rt
-         :native-spins {'my-native-spin some-native-spin}}))
+        {:native-spins {'my-native-spin some-native-spin}}))
+
+    ;; evaluate with the world bound: (binding [ec/*execution-context* rt] …)
 
     ;; In SCI:
     (require '[spindel.spin :as spin])
@@ -149,7 +154,7 @@
             (fn [v] (resolve (* v 2)))
             reject))
         :my-sci-spin))"
-  [{:keys [runtime expose-runtime-state? native-spins]
+  [{:keys [expose-runtime-state? native-spins]
     :or {expose-runtime-state? false
          native-spins {}}}]
   (let [;; Wrap all native spins for SCI
@@ -163,9 +168,9 @@
                   :features #{:clj}
                   :bindings wrapped-natives
                   :namespaces (merge
-                               {'spindel.spin
-                                {'make-spin (fn [spin-fn spin-id]
-                                              (make-spin-for-sci spin-fn spin-id runtime))}}
+                               ;; in the caller's world, the caller's spin
+                               ;; its creator, as macro contexts do
+                               {'spindel.spin {'make-spin spin-core/make-spin}}
                                (when expose-runtime-state?
                                  {'spindel.engine
                                   {'get-state (fn [path] (ec/get-state path))
@@ -194,8 +199,7 @@
   ;; Create SCI context with native spin exposed
   (def sci-ctx
     (create-spindel-sci-context
-     {:runtime rt
-      :native-spins {'native-spin native-spin}}))
+     {:native-spins {'native-spin native-spin}}))
 
   ;; SCI code that uses native spin
   (def sci-code
@@ -207,7 +211,8 @@
            reject))
        :sci-spin)")
 
-  (def sci-spin (sci/eval-string* sci-ctx sci-code))
+  (def sci-spin (binding [ec/*execution-context* rt]
+                  (sci/eval-string* sci-ctx sci-code)))
 
   ;; Execute from native
   (binding [ec/*execution-context* rt]
@@ -219,8 +224,7 @@
 
   (def sci-ctx-chain
     (create-spindel-sci-context
-     {:runtime rt
-      :native-spins {'n1 native-spin
+     {:native-spins {'n1 native-spin
                      'n2 native-2}}))
 
   (def chain-code
@@ -236,7 +240,8 @@
            reject))
        :chain-spin)")
 
-  (def chained (sci/eval-string* sci-ctx-chain chain-code))
+  (def chained (binding [ec/*execution-context* rt]
+                 (sci/eval-string* sci-ctx-chain chain-code)))
 
   (binding [ec/*execution-context* rt]
     @chained)  ; => 21 (15 + 6)

@@ -72,10 +72,10 @@ managed continuation world.
 ;; Create execution context
 (def rt (ctx/create-execution-context))
 
-;; Create SCI context with spindel support
+;; Create SCI context with spindel support. It holds no world: code runs,
+;; and its spins register, in the world bound for each evaluation.
 (def sci-ctx
-  (boundary/create-spindel-sci-context
-    {:runtime rt}))
+  (boundary/create-spindel-sci-context {}))
 
 ;; Evaluate spindel code in SCI
 (binding [ec/*execution-context* rt]
@@ -260,8 +260,7 @@ By default, SCI contexts cannot access runtime state directly. Enable with the `
 ```clojure
 (def sci-ctx
   (boundary/create-spindel-sci-context
-    {:runtime rt
-     :expose-runtime-state? true}))
+    {:expose-runtime-state? true}))
 
 ;; SCI code can now access:
 ;; (require '[spindel.engine :as engine])
@@ -344,14 +343,13 @@ debugging a "loop with effect hangs in SCI but works natively" bug.
 #### `create-spindel-sci-context`
 
 ```clojure
-(create-spindel-sci-context {:keys [runtime expose-runtime-state? native-spins]})
+(create-spindel-sci-context {:keys [expose-runtime-state? native-spins]})
 ```
 
-Create SCI context with spindel support (functional API).
+Create SCI context with spindel support (functional API). It holds no world: SCI's `make-spin` creates spins in the world bound (`*execution-context*`) for the evaluation, with the calling spin as their creator.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `:runtime` | ExecutionContext | (required) | Execution context |
 | `:expose-runtime-state?` | boolean | `false` | Expose `get-state`/`swap-state!` |
 | `:native-spins` | map | `{}` | `{symbol → spin}` — auto-wrapped |
 
@@ -361,7 +359,7 @@ Create SCI context with spindel support (functional API).
 (wrap-spin-for-sci task runtime)
 ```
 
-Wrap a native spin for use in SCI. Returns a `BoundaryTask` implementing `IFn` and `IDeref`.
+Wrap a native spin for use in SCI. Returns a `BoundaryTask` implementing `IFn` and `IDeref`. It holds `runtime`; SCI code cannot read it under the default class allowlist, but a trusted context with `:allow :all` can.
 
 #### `make-spin-for-sci`
 
@@ -369,7 +367,7 @@ Wrap a native spin for use in SCI. Returns a `BoundaryTask` implementing `IFn` a
 (make-spin-for-sci spin-fn spin-id runtime)
 ```
 
-Create a spin from SCI context with proper bindings. Used internally by the SCI namespace binding for `make-spin`.
+Create a spin in the world `runtime`, for a host that names it. SCI code does not reach it: its `make-spin` creates spins in the world bound for the evaluation.
 
 ### `spindel.sci.macro`
 
