@@ -2,8 +2,8 @@
   "Minimal cases found by the differential DOM fuzzer
    (`differential_fuzz_test.cljs`), pinned on a real jsdom tree.
 
-   Defect 1 is FIXED; its tests assert the correct behaviour. Each other
-   defect below is OPEN. Its test is a strict expected-failure: it
+   Defects 1 and 4 are FIXED; their tests assert the correct behaviour.
+   Defects 2 and 3 are OPEN. Each such test is a strict expected-failure: it
    asserts the defect still reproduces, so the suite stays green while it is
    open AND turns red the moment a change fixes it — at which point the
    assertion is flipped to the correct-behaviour one (already written next
@@ -13,7 +13,10 @@
 
    Every defect is stated twice: as hand-written spindel code (the readable
    repro) and as the fuzzer's minimal case replayed through the same
-   oracle (`run-case`)."
+   oracle (`run-case`).
+
+   The defect-4 test and the removed-item reap test after it need
+   `node --expose-gc`; without `gc` they are skipped."
   (:refer-clojure :exclude [await])
   (:require [cljs.test :refer-macros [deftest is async]]
             [org.replikativ.spindel.dom.browser :as browser]
@@ -24,6 +27,8 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.nodes :as nodes]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer-macros [spin]]
             [org.replikativ.spindel.spin.sync :as sync])
@@ -373,7 +378,7 @@
           done)))
 
 ;; =============================================================================
-;; Defect 4 — a context that awaited a Deferred is never garbage-collected
+;; Defect 4 (FIXED) — a context that awaited a Deferred was never collected
 ;; =============================================================================
 ;;
 ;; Found while bounding the fuzzer's memory: every trial's contexts stayed
@@ -385,40 +390,45 @@
 ;;   <- backend state-atom <- held value {:atom-id :runtime} of
 ;;   `atom-finalization-registry` (org.replikativ.spindel.atom) <- global
 ;;
-;; `create-atom` registers each RuntimeAtom with a FinalizationRegistry
+;; `create-atom` registered each RuntimeAtom with a FinalizationRegistry
 ;; (CLJS) / Cleaner (JVM) whose HELD VALUE / cleaning action strongly
-;; references the creating `runtime`. Both APIs require the opposite: the
+;; referenced the creating `runtime`. Both APIs require the opposite: the
 ;; registry keeps the held value alive until the target is collected, so if
-;; the target is reachable from the held value, it never is. Here the
-;; context's state reaches the RuntimeAtom (a Deferred's state atom, captured
-;; by the spin that awaits it), so the atom, the whole context, and
-;; everything its continuations close over (DOM containers, discharges) are
-;; pinned for the life of the process. The cleanup action needs a weak path
-;; to the runtime's state (and must survive the context RECORD being
-;; re-created by `assoc` while its backend lives).
+;; the target is reachable from the held value, it never is. The context's
+;; state reaches the RuntimeAtom (a Deferred's state atom, captured by the
+;; spin that awaits it), so the atom, the whole context, and everything its
+;; continuations close over (DOM containers, discharges) were pinned for the
+;; life of the process. The held value is now the atom id and a WeakRef to
+;; the state backend (`register-atom-cleanup!`).
 ;;
 ;; Runs only when node exposes `gc` (`node --expose-gc target/dom-fuzz.js`);
 ;; otherwise it is skipped (no assertion). The control (a context with no
-;; runtime atom) must be collected, or the measurement is inconclusive.
+;; runtime atom) must be collected, or the measurement is inconclusive. The
+;; JVM half is engine/context_retention_test.clj.
+
+(defn- gc-turns!
+  "Two GC passes, each followed by an event-loop turn (WeakRefs clear and
+   FinalizationRegistry callbacks run only between turns)."
+  []
+  (let [turn #(js/Promise. (fn [r _] (js/setTimeout r 0)))]
+    (-> (turn)
+        (.then (fn [_] (js/gc) (turn)))
+        (.then (fn [_] (js/gc) (turn))))))
 
 (defn- collected?
   "Resolve to whether the context made by `setup!` is collected after
-   `stop-context!` and two GC passes separated by event-loop turns (WeakRefs
-   clear only between turns)."
+   `stop-context!` and two GC passes separated by event-loop turns."
   [setup!]
   (let [ref (let [c (ctx/create-execution-context)]
               (set! ec/*execution-context* c)
               (setup! c)
               (ctx/stop-context! c)
               (set! ec/*execution-context* nil)
-              (js/WeakRef. (:backend c)))
-        turn #(js/Promise. (fn [r _] (js/setTimeout r 0)))]
-    (-> (turn)
-        (.then (fn [_] (js/gc) (turn)))
-        (.then (fn [_] (js/gc) (turn)))
+              (js/WeakRef. (:backend c)))]
+    (-> (gc-turns!)
         (.then (fn [_] (nil? (.deref ref)))))))
 
-(deftest defect-4-context-pinned-by-atom-finalization-registry
+(deftest defect-4-stopped-context-that-awaited-a-deferred-is-collected
   (async done
          (if-not (exists? js/gc)
            (done)
@@ -431,6 +441,86 @@
                                           ((spin (await d)) identity identity))))))
                  (.then (fn [awaited]
                           (restore-logs!)
-                          (known-defect awaited true
-                                        "a stopped context must be collectable once unreferenced")
+                          (is awaited "a stopped context must be collectable once unreferenced")
                           (done))))))))
+
+;; =============================================================================
+;; A removed ifor-each item is reaped (found while reviewing #127)
+;; =============================================================================
+;;
+;; An item removed by a change of the signal it tracks is not re-created by
+;; its creator, but it kept its own track continuation. `gc-quiescent?`
+;; refused to reap any spin with a track subscription, so when the item's
+;; Spin object was collected the node was only marked `:orphaned?`: it
+;; stayed in state, stayed an observer of the signal, and each later change
+;; re-ran it as an independent observer. Now a child its creator has stopped
+;; holding (`superseded-child?`, engine/impl/simple.cljc) is reapable.
+;;
+;; Differential: after the removal and GC, the engine holds what a fresh
+;; mount of the final state holds. Needs `node --expose-gc`.
+
+(defn- removal-root [a]
+  (spin (let [{v :new} (track a)]
+          (el/ul (await (ifor-each :id (:xs v)
+                                   (fn [item]
+                                     (spin (let [{s :new} (track a)]
+                                             (el/li {:key (:id item)}
+                                                    (str (:id item) ":" (count (:xs s)))))))))))))
+
+(defn- engine-footprint
+  "Spin nodes, track-subscribed spins and observers of `a` in `c`."
+  [c a]
+  {:spins (count (filter (fn [[_ n]] (contains? n :created-spins))
+                         (rtp/get-state c [:nodes])))
+   :track-subscribed (count (rtp/get-state c [:track-subscriptions]))
+   :observers-of-a (count (nodes/get-observers (rtp/get-state c [:nodes (.-id a)])))})
+
+(defn- collect-and-settle!
+  "`rounds` × (two GC passes, then settle): a FinalizationRegistry callback
+   runs some turns after the GC that found its target, and the cleanup it
+   enqueues needs a drain. A bounded measurement, not a wait for a state."
+  [c rounds]
+  (if (pos? rounds)
+    (-> (gc-turns!)
+        (.then (fn [_] (h/settle! c)))
+        (.then (fn [_] (collect-and-settle! c (dec rounds)))))
+    (js/Promise.resolve nil)))
+
+(defn- mount-footprint
+  "Mount `removal-root` over `xs0`, apply `xs1` (if any), collect, settle,
+   and resolve to [innerHTML footprint]."
+  [xs0 xs1]
+  (let [restore-logs! (h/quiet-logs!)
+        c (ctx/create-execution-context)
+        _ (set! ec/*execution-context* c)
+        body (h/fresh-body)
+        a (sig/signal {:xs (mapv (fn [i] {:id i}) xs0)})]
+    (render/render-spin! body (removal-root a)
+                         (browser/make-dom-discharge (.-ownerDocument body)))
+    (-> (h/settle! c)
+        (.then (fn [_]
+                 (when xs1 (reset! a {:xs (mapv (fn [i] {:id i}) xs1)}))
+                 (h/settle! c)))
+        (.then (fn [_] (collect-and-settle! c 4)))
+        (.then (fn [_]
+                 (let [r [(.-innerHTML body) (engine-footprint c a)]]
+                   (ctx/stop-context! c)
+                   (h/release-containers!)
+                   (set! ec/*execution-context* nil)
+                   (restore-logs!)
+                   r))))))
+
+(deftest removed-item-is-reaped-after-same-change-removal
+  (async done
+         (if-not (exists? js/gc)
+           (done)
+           (-> (mount-footprint [0 1 2] [0 1])
+               (.then (fn [removed]
+                        (.then (mount-footprint [0 1] nil)
+                               (fn [fresh] [removed fresh]))))
+               (.then (fn [[[html fp] [fresh-html fresh-fp]]]
+                        (is (= fresh-html html))
+                        (is (= fresh-fp fp)
+                            "the removed item's node, track cont and observer registration are gone")
+                        (done)))))))
+

@@ -149,6 +149,44 @@
 ;; Accessors
 ;; ----------------------------------------------------------------------------
 
+;; -----------------------------------------------------------------------------
+;; Home context: a stable record for weak references
+;; -----------------------------------------------------------------------------
+;;
+;; Context records are values: every binding change (`assoc` of :bindings,
+;; the per-body scope of every spin run, the drain's normalization) makes a
+;; new, short-lived record over the same backend. A GC callback that must
+;; reach a context (spin cleanup) can hold it only weakly — a strong
+;; reference from a cleaner registry, a GC root, pins it — but a weak
+;; reference to whatever record happened to be bound clears as soon as that
+;; record is garbage, long before the context is. The callback then finds
+;; nothing and silently does no cleanup (measured: 774 of 779 spin cleanups
+;; in the jsdom fuzz suite were dropped this way).
+;;
+;; So each context (root, fork, restored snapshot) carries a :home cell
+;; holding its creation record. Every record derived by `assoc` shares the
+;; cell, so the home record stays reachable exactly as long as some record
+;; of the context is — the right lifetime for a weak reference.
+
+(defn ^:no-doc with-home
+  "Stamp `ctx` with a fresh :home cell that holds the stamped record."
+  [ctx]
+  (let [cell (volatile! nil)
+        ctx (assoc ctx :home cell)]
+    (vreset! cell ctx)
+    ctx))
+
+(defn ^:no-doc home-context
+  "The home record of `ctx` (see `with-home`): stable for as long as the
+  context is in use, so it is what a weak reference should point at. Falls
+  back to `ctx` itself when it has no home or its home is over a different
+  backend (a record re-pointed at a new backend without re-stamping)."
+  [ctx]
+  (let [h (some-> (:home ctx) deref)]
+    (if (and h (identical? (:backend h) (:backend ctx)))
+      h
+      ctx)))
+
 (defn current-execution-context
   "Return dynamically bound execution context.
 

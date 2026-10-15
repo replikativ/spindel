@@ -1077,11 +1077,34 @@ what keeps `(let [s (spin (track sig))] (s identity identity))`-style
 let-bound reactive code alive even when the user has no remaining
 strong reference.
 
+Two refinements keep this from leaking:
+
+- **Superseded children.** A child its creator's latest completed run no
+  longer holds (a removed `ifor-each` item) is detached from the graph when
+  that run completes (`release-superseded-children!`: conts, subscriptions
+  and observer registrations dropped, node marked dirty), and an orphan
+  whose creator no longer holds it is reapable despite remaining track
+  conts (`superseded-child?`). See engine-formalism §3.4, "Superseded
+  children".
+- **What the cleanup holds.** The registration holds the spin id and a
+  weak reference to the context's **home** record (`ec/home-context`,
+  stamped by `ec/with-home` on every root, fork and restored context), not
+  to the record bound at construction. Bound records are short-lived
+  derivatives (every binding scope `assoc`s a new one); a weak reference to
+  one cleared long before the context died, and the cleanup silently did
+  nothing — 774 of 779 spin cleanups in the jsdom fuzz suite. Every derived
+  record shares the home cell, so the home record lives exactly as long as
+  the context is in use.
+
 ### Context lifecycle
 
 A context owns no thread: its drains run as executor work (see
 [Scheduling drains](#scheduling-drains)), so an abandoned context is
-simply garbage.
+simply garbage. Nothing global may reach it: the GC cleanup registries
+(Cleaner / FinalizationRegistry) are GC roots, so the atom and spin
+registrations hold only ids and weak references (a stopped context that
+awaited a Deferred used to stay reachable from the atom Cleaner forever —
+`engine/context_retention_test.clj`).
 
 `stop-context!` quiesces a root context in three steps (on a fork it is
 a no-op; forks share the root's flags):

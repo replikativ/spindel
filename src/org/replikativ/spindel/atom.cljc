@@ -1,7 +1,9 @@
 (ns org.replikativ.spindel.atom
   (:refer-clojure :exclude [atom])
   (:require [org.replikativ.spindel.engine.core :as ec]
-            [replikativ.logging :as log]))
+            [org.replikativ.spindel.engine.state-backend :as backend]
+            [replikativ.logging :as log])
+  #?(:clj (:import [java.lang.ref WeakReference])))
 
 ;; Fork-safe atoms that store state inside the runtime.
 ;; API is 100% compatible with clojure.core/atom for easy migration.
@@ -10,6 +12,32 @@
 ;; - Supports runtime forking (state is copied with runtime)
 ;; - Auto-cleanup when GC'd (like Spin)
 ;; - Created within spin context (uses *execution-context*)
+
+;; GC cleanup of an atom's state entry
+;; -----------------------------------------------------------------------------
+;;
+;; A Cleaner / FinalizationRegistry keeps its cleaning action (JVM) or held
+;; value (CLJS) STRONGLY reachable from a GC root until the target is
+;; collected. If that action reaches the target, the target is never
+;; collected — and here it always would: the action needs the creating
+;; context's state, and that state reaches the RuntimeAtom (a Deferred's
+;; state atom is captured by the continuation of every spin awaiting it,
+;; and continuations live in the state). Capturing the context there
+;; pinned the context, its continuations and everything they close over
+;; (DOM containers, discharges) for the life of the process, even after
+;; `stop-context!` (differential DOM fuzzer, defect 4).
+;;
+;; So the action holds only the atom id and a WEAK reference to the state
+;; BACKEND. The backend, not the context record: records are re-created by
+;; `assoc` (every binding change) while the backend lives on, so a weak
+;; reference to a record could clear while the state still exists and leave
+;; the entry behind. If the backend itself is gone there is nothing to clean.
+
+(defn- reap-atom-state!
+  "Remove atom `atom-id`'s value and listeners from `state-backend`."
+  [state-backend atom-id]
+  (backend/backend-write! state-backend [:atoms] (fn [atoms] (dissoc atoms atom-id)))
+  (backend/backend-write! state-backend [:listeners] (fn [ls] (dissoc ls atom-id))))
 
 #?(:clj
    (def ^:private atom-cleaner
@@ -20,16 +48,40 @@
 #?(:cljs
    (def ^:private atom-finalization-registry
      "Global FinalizationRegistry for automatic atom cleanup when GC'd.
-     Available in modern browsers and Node 14.6+. Held value is the
-     {:atom-id :runtime} pair so the cleanup callback can dissoc the
-     entry from the originating runtime's :atoms map."
+     Available in modern browsers and Node 14.6+. The held value is
+     `#js {:atom_id :weak_backend}` — a WeakRef, never the context or the
+     backend itself (see above)."
      (when (exists? js/FinalizationRegistry)
        (js/FinalizationRegistry.
         (fn [held-value]
-          (let [{:keys [atom-id runtime]} held-value]
-            (binding [ec/*execution-context* runtime]
-              (ec/swap-state! [:atoms]     (fn [atoms] (dissoc atoms atom-id)))
-              (ec/swap-state! [:listeners] (fn [ls] (dissoc ls atom-id))))))))))
+          (when-let [b (.deref (.-weak_backend ^js held-value))]
+            (try
+              (reap-atom-state! b (.-atom_id ^js held-value))
+              (catch :default _ nil))))))))
+
+(defn- register-atom-cleanup!
+  "Reclaim `atom-id`'s state entry in `state-backend` once `atom-obj` is
+  collected, without making the backend reachable from the cleanup registry."
+  [atom-obj state-backend atom-id]
+  #?(:clj
+     (let [weak-backend (WeakReference. state-backend)]
+       (.register ^java.lang.ref.Cleaner @atom-cleaner
+                  atom-obj
+                  (reify Runnable
+                    (run [_]
+                      (when-let [b (.get weak-backend)]
+                        (try
+                          (reap-atom-state! b atom-id)
+                          ;; e.g. an ImmutableBackend (a frozen snapshot)
+                          (catch Exception _ nil)))))))
+     :cljs
+     ;; On runtimes without FinalizationRegistry (older browsers) this is a
+     ;; no-op and the entry persists for the lifetime of the context.
+     (when atom-finalization-registry
+       (.register atom-finalization-registry
+                  atom-obj
+                  #js {:atom_id atom-id
+                       :weak_backend (js/WeakRef. state-backend)}))))
 
 ;; =============================================================================
 ;; Missing state: the bound world never had this atom
@@ -222,30 +274,12 @@
                       (fn [_] {:value initial-value
                                :meta meta})))
 
-    ;; Register for GC cleanup (remove from runtime when atom is GC'd)
-    ;; NOTE: The cleanup function DOES capture runtime - this is intentional!
-    ;; We want to clean up from the ORIGINAL runtime that created the atom.
-    ;; When you fork a runtime, you get a new copy of the :atoms map, so
-    ;; the atom-id exists in both runtimes independently.
-    #?(:clj
-       (.register @atom-cleaner
-                  runtime-atom-obj
-                  (reify Runnable
-                    (run [_]
-                      ;; Remove from runtime when GC'd (value + any listeners)
-                      (binding [ec/*execution-context* runtime]
-                        (ec/swap-state! [:atoms]     (fn [atoms] (dissoc atoms atom-id)))
-                        (ec/swap-state! [:listeners] (fn [ls] (dissoc ls atom-id)))))))
-       :cljs
-       ;; Register with FinalizationRegistry when available so the
-       ;; runtime's :atoms entry is reclaimed once nothing references the
-       ;; RuntimeAtom anymore. On runtimes without FinalizationRegistry
-       ;; (older browsers) this is a no-op and the entry persists for the
-       ;; lifetime of the context.
-       (when atom-finalization-registry
-         (.register atom-finalization-registry
-                    runtime-atom-obj
-                    {:atom-id atom-id :runtime runtime})))
+    ;; Register for GC cleanup: remove the entry from the CREATING context's
+    ;; state once the atom is collected. A fork copies the :atoms map, so the
+    ;; atom-id exists in each fork independently; a fork's copy goes with the
+    ;; fork. The cleanup must not reach the context (see
+    ;; `register-atom-cleanup!`).
+    (register-atom-cleanup! runtime-atom-obj (:backend runtime) atom-id)
 
     runtime-atom-obj))
 

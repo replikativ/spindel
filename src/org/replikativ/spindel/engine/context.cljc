@@ -15,6 +15,7 @@
   - Shared parent state via OverlayBackend (memory efficient)
   - Fork-local effect handlers (can override behavior per branch)"
   (:require [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.engine.impl.graph :as graph]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -292,7 +293,9 @@
         ;; (assoc on a record preserves extra keys), so any smuggled
         ;; context still knows its pristine base.
         ;; See .internal/slice-environment-integrity.md.
-        (assoc :base-bindings bindings))))
+        (assoc :base-bindings bindings)
+        ;; A stable record for weak references (GC cleanup) — ec/with-home.
+        (ec/with-home))))
 
 (defn stop-context!
   "Quiesce an execution context.
@@ -657,7 +660,8 @@
                    (assoc :base-bindings
                           (merge (or (:base-bindings parent-ctx)
                                      (:bindings parent-ctx))
-                                 bindings)))]
+                                 bindings))
+                   (ec/with-home))]
       ;; Undo the parent's in-flight mailbox CLAIMS in the fork's world:
       ;; each pending :cont-resume popped its waiter from the (CoW-shared)
       ;; mailbox state before the fork — re-register the waiter into the
@@ -944,7 +948,9 @@
           (assoc :backend (backend/create-atom-backend materialized-state))
           (update :metadata assoc
                   :materialized-fork? true
-                  :source-fork-id (:fork-id source-ctx))))))
+                  :source-fork-id (:fork-id source-ctx))
+          ;; New backend: re-stamp, the fork's home is over the old one.
+          (ec/with-home)))))
 
 (defn restore-snapshot
   "Restore a snapshot to a live execution context.
@@ -965,7 +971,7 @@
 
   ;; Thaw backend (immutable → atom)
   (let [atom-backend (backend/thaw-backend (:backend snapshot-ctx))
-        restored-ctx (assoc snapshot-ctx :backend atom-backend)]
+        restored-ctx (ec/with-home (assoc snapshot-ctx :backend atom-backend))]
 
     ;; Optionally drain pending events
     (when drain-events?
@@ -1015,9 +1021,10 @@
         backend-type (backend/backend-type backend-obj)
         mutable? (or (= backend-type :atom) (= backend-type :overlay))]
     (if mutable?
-      (->ExecutionContext fork-id backend-obj nil executor bindings metadata
-                          (atom true)   ; running
-                          (atom 0))     ; drain-active
+      (ec/with-home
+        (->ExecutionContext fork-id backend-obj nil executor bindings metadata
+                            (atom true)   ; running
+                            (atom 0)))    ; drain-active
       (->ExecutionContext fork-id backend-obj nil executor bindings metadata
                           nil nil))))
 

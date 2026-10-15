@@ -86,6 +86,17 @@ In CLJS environments without `FinalizationRegistry` (very old browsers),
 the entry persists for the lifetime of the context. Drop the context to
 reclaim.
 
+The finalizer's action holds only the atom id and a **weak** reference to
+the context's state backend — never the context. A Cleaner /
+FinalizationRegistry keeps its action (held value) strongly reachable until
+the target is collected, and the context's state usually reaches the atom
+(a Deferred's state atom is captured by every spin awaiting it): an action
+that held the context pinned the atom, the context and everything its
+continuations close over for the life of the process, even after
+`stop-context!`. With the weak reference a stopped, unreferenced context is
+collected with its atoms; if the backend is already gone there is nothing to
+clean.
+
 ## Watches and forks
 
 A watcher is **side-effecting egress** (notify/publish), so it is stored at the

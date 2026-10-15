@@ -593,6 +593,19 @@
     (cond-> (nodes/mark-dirty node)
       (some? (:run-gen node)) (assoc :invalid-gen (:run-gen node)))))
 
+(declare live-children)
+
+(defn- note-dropped
+  "Record on `node` the children its previous run held (`held`) that the
+  new run does not start out holding (`kept`): the candidates for
+  `release-superseded-children!` when this run completes. Accumulates — a
+  run can be resumed several times before it completes."
+  [node held kept]
+  (let [dropped (reduce disj held kept)]
+    (if (seq dropped)
+      (update node :dropped-children (fnil into #{}) dropped)
+      node)))
+
 (defn ^:no-doc clear-created-spins!
   "Reset a spin's `:created-spins` set at the start of a (re-)run of its
   body. Children are re-registered as the body re-runs; whether a child
@@ -603,7 +616,38 @@
   the normal `record-deps!` reconciliation at body completion."
   [context spin-id]
   (rtp/swap-state! context [:nodes spin-id]
-                   (fn [node] (when node (assoc node :created-spins #{})))))
+                   (fn [node] (when node (-> node
+                                             (assoc :created-spins #{})
+                                             (note-dropped (live-children node) #{})
+                                             (dissoc :kept-children))))))
+
+(defn ^:no-doc live-children
+  "The children a spin's CURRENT run stands behind: those its body has
+  (re-)registered in this run (`:created-spins`) plus, after a track
+  resume, those created before the resume point (`:kept-children`) — the
+  resumed slice does not re-evaluate their `(spin …)` forms, but the run
+  still holds them. Any other child the spin once created was dropped by a
+  run that re-evaluated its creation site; see `superseded-child?`."
+  [node]
+  (into (or (:created-spins node) #{}) (:kept-children node)))
+
+(defn- clear-created-spins-to-resume-point!
+  "`clear-created-spins!` for a track resume from `cont`: the children
+  created before the resume point stay held as `:kept-children` (the
+  snapshot the track effect took, `:live-children` in its `:slice-state`).
+  A cont without that snapshot keeps every child the node held —
+  conservative: a kept child is never reaped as superseded."
+  [context spin-id cont]
+  (let [snap (get-in cont [:slice-state :live-children] ::none)]
+    (rtp/swap-state! context [:nodes spin-id]
+                     (fn [node]
+                       (when node
+                         (let [held (live-children node)
+                               kept (if (= ::none snap) held snap)]
+                           (-> node
+                               (note-dropped held kept)
+                               (assoc :created-spins #{}
+                                      :kept-children kept))))))))
 
 (defn ^:no-doc clear-prior-body-conts!
   "Drop a spin's await and track continuations at the start of a (re-)run
@@ -889,8 +933,10 @@
   ;; 4. Reset :created-spins for this body slice; children are re-registered
   ;; as the body re-runs, and register-spin! re-runs any whose captured
   ;; environment changed (B) — no blanket invalidation needed.
+  ;; The children created BEFORE the resume point are not re-created by
+  ;; the resumed slice; they stay held (`clear-created-spins-to-resume-point!`).
   (case mode
-    :track (clear-created-spins! context spin-id)
+    :track (clear-created-spins-to-resume-point! context spin-id cont)
     :await nil)
 
   ;; 5. + 6. Restore the cont's per-slice snapshot — deps tracking,
@@ -1865,6 +1911,8 @@
       ;; Same for spins it stopped awaiting.
       true (as-> s (reduce prune-observer s removed-spins)))))
 
+(declare release-superseded-children!)
+
 (defn record-deps!
   "Commit a body's tracked dependencies to the spin's permanent deps and
   prune any observer registrations from signals/spins that were tracked
@@ -1915,6 +1963,8 @@
                                                 :create)
                 ;; Clear transient tracking.
                                (update :spin-tracking dissoc spin-id)))))))
+  ;; The run's set of children is final: let go of the ones it dropped.
+  (release-superseded-children! context spin-id)
   true)
 
 (defn clear-deps!
@@ -2061,6 +2111,36 @@
                            ))))
   true)
 
+(defn- superseded-child?
+  "True when `spin-id` was created by another spin's body and that creator
+  has since finished a run that no longer holds it: the creator is complete
+  and not running, and the child is not among its `live-children`.
+
+  Such a child — a removed `ifor-each` item, a branch the creator stopped
+  taking — still holds its own track continuations. Without this rule
+  `gc-quiescent?` treats those as reactive infrastructure: the node is
+  never reaped, stays an observer of its signals, and each later change of
+  them re-runs it as an independent observer whose result nobody receives.
+
+  Consulted by `gc-quiescent?` (an orphan: its Spin object was collected)
+  and by `release-superseded-children!` for a child whose own run completed
+  after its creator dropped it. Either way the node can still be reached
+  again — the creator re-creating it, a holder of the Spin awaiting it —
+  and is then run afresh (a reaped node is re-registered; a detached one is
+  dirty)."
+  [context spin-id node]
+  (let [creator (:created-by node)]
+    (and (some? creator)
+         (not= creator spin-id)
+         ;; A creator absent from this world proves nothing: `*spin-id*`
+         ;; can name a spin of another context (a CLJS binding outliving
+         ;; its body), and then the child was never in its created set.
+         (let [cnode (rtp/get-state context [:nodes creator])]
+           (and (some? cnode)
+                (:completed? cnode)
+                (not (:running? cnode))
+                (not (contains? (live-children cnode) spin-id)))))))
+
 (defn- gc-quiescent?
   "True when `spin-id` is PROVABLY inert — the only state in which the
   Cleaner path may destroy its engine node. GC timing must never decide
@@ -2081,7 +2161,10 @@
     control flake — pump spins reaped between loop iterations).
   - no observers — no other spin depends on it.
   - no track subscriptions — a signal cont can always re-fire; such a
-    spin is reactive infrastructure.
+    spin is reactive infrastructure — UNLESS it is a `superseded-child?`:
+    its creator re-ran past its creation site without re-creating it, so
+    nothing can reach it again and its track conts would only re-run a
+    body whose result nobody receives.
   - no `:external-await` conts — an external resource (Deferred /
     Mailbox / plain-fn) holds only the wrapped closure, not the Spin;
     conservatively treat any such cont as a pending delivery.
@@ -2101,7 +2184,8 @@
   (and (:completed? node)
        (not (:running? node))
        (empty? (nodes/get-observers node))
-       (empty? (rtp/get-state context [:track-subscriptions spin-id]))
+       (or (empty? (rtp/get-state context [:track-subscriptions spin-id]))
+           (superseded-child? context spin-id node))
        (not-any? (fn [[_k v]] (= :external-await (:kind v)))
                  (rtp/get-state context [:await-conts spin-id]))))
 
@@ -2154,6 +2238,76 @@
         ;; made hangs flaky (reap races body execution / event dispatch).
         (rtp/swap-state! context [:nodes spin-id]
                          #(when % (assoc % :orphaned? true)))))))
+
+(defn- detach-superseded!
+  "Detach a superseded child `id` (see `superseded-child?`) from the
+  reactive graph: drop its continuations and subscriptions, unregister it
+  from the observers of everything it tracked or awaited (`clear-deps!`),
+  and mark it dirty. A later access — its creator re-creating it, a holder
+  of the Spin object awaiting it — re-runs it from scratch, so nothing
+  stale is served; until then it does no work.
+
+  This, not GC, is what lets go of it: its own track continuation reaches
+  its Spin object (body continuation → the resolve its awaiter passed in →
+  the awaiter's loop state, e.g. an `ifor-each` holding all its item
+  spins), so while that continuation is in state the Spin is never
+  collected and the Cleaner never runs. Once detached it is completed, not
+  running and unobserved — `gc-quiescent?` — and is reaped here if its
+  Spin object is already gone (`:orphaned?`), otherwise when the Cleaner
+  runs."
+  [context id]
+  (clear-deps! context id)
+  (rtp/swap-state! context [:nodes id] #(when % (nodes/mark-dirty %)))
+  (let [node (rtp/get-state context [:nodes id])]
+    (when (and (:orphaned? node) (gc-quiescent? context id node))
+      (full-cleanup-spin! context id))))
+
+(defn- detachable?
+  "A superseded child that may be detached now: it exists, no other spin
+  observes (awaits) it, and no run of it is in flight — an in-flight run is
+  left alone and checked again when it completes (`record-deps!`)."
+  [node]
+  (and node
+       (empty? (nodes/get-observers node))
+       (not (:running? node))))
+
+(defn ^:no-doc release-superseded-children!
+  "Called when a run of `spin-id` completes (`record-deps!`): its set of
+  live children is final. Detach (`detach-superseded!`) every child the run
+  dropped — created by an earlier run, not re-created by this one — and,
+  transitively, the children those held. Also detach `spin-id` itself when
+  it completed after its creator had already dropped it.
+
+  Without this a removed `ifor-each` item kept its track continuation: it
+  stayed in state for the life of the context, stayed an observer of its
+  signals, and each later change re-ran it as an independent observer
+  whose result nobody receives."
+  [context spin-id]
+  (when-let [node (rtp/get-state context [:nodes spin-id])]
+    (let [dropped (:dropped-children node)
+          _ (when dropped
+              (rtp/swap-state! context [:nodes spin-id]
+                               #(when % (dissoc % :dropped-children))))
+          live (live-children node)
+          ;; [child creator] pairs; a child counts only while the creator
+          ;; it was dropped by is still its creator (not re-parented).
+          own (into [] (comp (remove live) (map (fn [d] [d spin-id]))) dropped)
+          self (when (and (:completed? node)
+                          (superseded-child? context spin-id node))
+                 [[spin-id (:created-by node)]])]
+      (loop [todo (into own self)
+             seen #{}]
+        (when-let [[d creator] (peek todo)]
+          (let [todo (pop todo)
+                dnode (rtp/get-state context [:nodes d])]
+            (if (and (not (contains? seen d))
+                     (= creator (:created-by dnode))
+                     (detachable? dnode))
+              (do (detach-superseded! context d)
+                  ;; What a detached node held is superseded with it.
+                  (recur (into todo (map (fn [c] [c d])) (live-children dnode))
+                         (conj seen d)))
+              (recur todo (conj seen d)))))))))
 
 (defn track-signal-dep!
   "Track that a spin depends on a signal — eagerly registers the spin

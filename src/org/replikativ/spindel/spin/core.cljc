@@ -658,7 +658,11 @@
      ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
      ;; can find the context even when *execution-context* is not bound.
      #?(:clj
-        (let [ctx (ec/current-execution-context)
+        (let [;; The context's HOME record, not the bound one: a bound
+              ;; record is usually a short-lived derivative (binding
+              ;; scope), and a weak reference to it clears long before the
+              ;; context dies — the cleanup then never runs (ec/with-home).
+              ctx (ec/home-context (ec/current-execution-context))
               weak-ctx (WeakReference. ctx)
               sid spin-id]
           (.register ^java.lang.ref.Cleaner @spin-cleaner
@@ -679,7 +683,8 @@
                              nil))))))
         :cljs
         (when spin-registry
-          (let [ctx (ec/current-execution-context)]
+          (let [;; The HOME record — see the JVM branch above.
+                ctx (ec/home-context (ec/current-execution-context))]
             (.register spin-registry
                        reactive-spin
                        #js {:spin_id spin-id

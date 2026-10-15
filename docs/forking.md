@@ -565,6 +565,18 @@ Track fork lineage for distributed systems testing:
 ;; Only use when certain no async work remains
 ```
 
+A context holds no global registration: once you drop every reference to a
+stopped context (and its forks), it is garbage — with its state, its
+continuations and whatever they close over (DOM containers, discharges).
+The GC cleanup of runtime atoms and spins holds only ids and weak
+references. Each root, fork, materialized fork and restored snapshot is
+stamped with a `:home` cell (`ec/with-home`) that records derived by
+`assoc` share; weak references point at that home record, which lives as
+long as any record of the context does. `stop-context!` has nothing to
+unregister for this: a stopped context can be revived (e.g. by
+`restore-snapshot`), and the registrations it leaves are released when
+their targets are collected.
+
 ## See Also
 
 - [Getting Started](getting-started.md) — Basic tutorial

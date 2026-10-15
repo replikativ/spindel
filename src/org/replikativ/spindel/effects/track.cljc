@@ -19,6 +19,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.engine.effects :as eff]
@@ -163,6 +164,14 @@
             ;; spins running during the suspend interval — so this snapshot
             ;; is safe to restore and cannot collide across distinct spins.
             chain-head-snap (addressing/get-chain-head ctx)
+            ;; The children this run holds at the suspend point. A resume
+            ;; from here does not re-evaluate their (spin …) forms, so they
+            ;; stay held (`:kept-children`); a child created AFTER this
+            ;; point that the resumed slice does not re-create is dropped —
+            ;; reapable once orphaned (`superseded-child?`).
+            live-children-snap (when ctx
+                                 (simple/live-children
+                                  (rtp/get-state ctx [:nodes spin-id])))
             cont {:event-key [:signal signal-id]
                   :kind :track
                   :resolve-fn resolve
@@ -176,7 +185,8 @@
                   ;; each piece back before the body slice resumes.
                   :slice-state {:bindings captured-ctx-bindings
                                 :chain-head chain-head-snap
-                                :tracking tracking-snap}
+                                :tracking tracking-snap
+                                :live-children live-children-snap}
                   ;; Capture generation at continuation creation time
                   ;; On resume, we only return deltas if signal generation > this value
                   :consumed-generation current-generation

@@ -669,13 +669,30 @@ differential DOM fuzzer's defect 1 in
 `events-settled?`'s promise ("what is clean is current") true for
 descendant observers.
 
-**Open subtlety (GC of a removed descendant).** An item removed by the
-same change that invalidated it is never re-created, but it keeps its
-track continuation on the signal; `gc-quiescent?` refuses to reap a spin
-with a track subscription, so the Cleaner only marks it `:orphaned?`, and
-the next change of the signal resumes it as an independent observer.
-This predates the generation rule (the descendant was already left with
-its cont) and is not changed by it.
+**Superseded children (GC of a removed descendant).** An item removed by
+a change is never re-created, but it keeps its own track continuation on
+the signal — and that continuation reaches the item's Spin object (body
+continuation → the resolve its awaiter passed in → the awaiter's loop
+state, e.g. an `ifor-each` holding all its item spins), so the Spin is
+never collected and the Cleaner never runs. `gc-quiescent?` would refuse
+it anyway (track subscription), and the next change of the signal resumed
+it as an independent observer. The rule now: a run of a creator holds a
+set of children — `live-children`, the children it (re-)registered
+(`:created-spins`) plus, after a track resume, those created *before* the
+resume point (`:kept-children`, snapshotted on the track cont as
+`:slice-state :live-children`), which the resumed slice does not
+re-evaluate. When the creator's run completes (`record-deps!` →
+`release-superseded-children!`), every child the previous run held and
+this one does not (`:dropped-children`) that no other spin observes and
+that has no run in flight is **detached**: its conts, subscriptions and
+observer registrations go (`clear-deps!`) and it is marked dirty, so any
+later access re-runs it fresh; its own children go with it. A child whose
+run was in flight is checked when that run completes. Detached, the node
+is quiescent; it is reaped as soon as its Spin is collected (or at once,
+if it already was). `superseded-child?` makes `gc-quiescent?` accept an
+orphan whose creator no longer holds it (or is gone) despite remaining
+track conts. Regression: `engine/context_retention_test.clj`, and the
+jsdom differential `removed-item-is-reaped-after-same-change-removal`.
 
 **Open subtlety.** Conts with `:order` *less* than the resumed one are
 *kept* and their signal deps re-tracked (`engine/impl/simple.cljc:357-361`)
