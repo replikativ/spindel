@@ -47,8 +47,11 @@
     "Register a Spin instance's metadata in runtime.")
   (mark-dirty! [ctx spin-id]
     "Mark spin as dirty so it recomputes on next opportunity.")
-  (cache-result! [ctx spin-id result]
-    "Cache spin result (Result record) and mark status as clean.")
+  (cache-result! [ctx spin-id result] [ctx spin-id result run]
+    "Cache spin result (Result record) and mark status as clean. With `run`
+    (the run generation `enter-body!` returned), certify it clean only if
+    that run was not invalidated; returns false for a superseded run's
+    completion, which changes nothing.")
   (current-result [ctx spin-id]
     "Return Result record or nil if not cached.")
   (clean? [ctx spin-id]

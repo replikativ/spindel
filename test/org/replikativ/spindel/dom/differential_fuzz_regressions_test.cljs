@@ -158,6 +158,76 @@
            :ops [[:ins 0 1 0 0]]}
           done)))
 
+;; Nested: the same shape one level down, with a prepend at BOTH levels in
+;; one change. Groups are spins that track A and render an inner ifor-each
+;; of items that track A and await the deferred.
+
+(defn- defect-1-nested-root [a d]
+  (spin (let [{v :new} (track a)]
+          (el/div {:class "root"}
+                  (await (ifor-each :id (:groups v)
+                                    (fn [g]
+                                      (spin (let [{_ :new} (track a)]
+                                              (el/section {:key (:id g)}
+                                                          (await (ifor-each :id (:items g)
+                                                                            (fn [item]
+                                                                              (spin (let [{s :new} (track a)
+                                                                                          _ (await d)]
+                                                                                      (el/i {:key (:id item)}
+                                                                                            (str (:id g) "." (:id item) ":"
+                                                                                                 (count (:groups s)))))))))))))))))))
+
+(deftest defect-1-nested-prepend-at-both-levels
+  (async done
+         (let [a (atom nil) d (atom nil)]
+           (-> (scenario (fn [c]
+                           (reset! a (sig/signal c {:groups [{:id 0 :items [{:id 0}]}]}))
+                           (reset! d (sync/create-deferred c))
+                           (defect-1-nested-root @a @d))
+                         [#(swap! @a (fn [m]
+                                       {:groups [{:id 1 :items [{:id 0}]}
+                                                 {:id 0 :items [{:id 1} {:id 0}]}]}))
+                          #(sync/deliver! @d :go)])
+               (.then (fn [html]
+                        (is (= (str "<div class=\"root\">"
+                                    "<section><i>1.0:2</i></section>"
+                                    "<section><i>0.1:2</i><i>0.0:2</i></section>"
+                                    "</div>")
+                               html)
+                            "every item renders the A current at quiescence")
+                        (done)))))))
+
+;; Removal in the same change, then re-adding the removed item: a removed
+;; descendant is invalidated and never re-created; re-adding it must re-run
+;; it rather than serve its pre-removal result.
+
+(defn- removal-scenario [steps]
+  (let [a (atom nil) d (atom nil)]
+    (scenario (fn [c]
+                (reset! a (sig/signal c {:xs [{:id 0} {:id 1}]}))
+                (reset! d (sync/create-deferred c))
+                (defect-1-root @a @d))
+              (mapv (fn [step] #(step @a @d)) steps))))
+
+(deftest defect-1-removal-in-the-change
+  (async done
+         (-> (removal-scenario [(fn [a _] (swap! a assoc :xs [{:id 1}]))
+                                (fn [_ d] (sync/deliver! d :go))])
+             (.then (fn [html]
+                      (is (= "<ul class=\"root\"><li>1:1</li></ul>" html)
+                          "the removed item is gone, the kept one is current")
+                      (done))))))
+
+(deftest defect-1-removal-then-re-add
+  (async done
+         (-> (removal-scenario [(fn [a _] (swap! a assoc :xs [{:id 1}]))
+                                (fn [_ d] (sync/deliver! d :go))
+                                (fn [a _] (swap! a assoc :xs [{:id 0} {:id 1}]))])
+             (.then (fn [html]
+                      (is (= "<ul class=\"root\"><li>0:2</li><li>1:2</li></ul>" html)
+                          "the re-added item re-runs against the current A")
+                      (done))))))
+
 ;; The superseded slice need not be the tracking spin itself. Here the item's
 ;; element is built in a spin (an await sits in a sibling slot): slot 0
 ;; embeds a nested spin that tracks A, slot 1 awaits the deferred. A flip of

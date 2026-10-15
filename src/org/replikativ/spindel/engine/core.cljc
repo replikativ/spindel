@@ -219,9 +219,13 @@
   (let [ctx (current-execution-context)]
     (rtp/mark-dirty! ctx spin-id)))
 
-(defn ^:no-doc spin-cache-result! [spin-id result]
-  (let [ctx (current-execution-context)]
-    (rtp/cache-result! ctx spin-id result)))
+(defn ^:no-doc spin-cache-result!
+  ([spin-id result]
+   (let [ctx (current-execution-context)]
+     (rtp/cache-result! ctx spin-id result)))
+  ([spin-id result run]
+   (let [ctx (current-execution-context)]
+     (rtp/cache-result! ctx spin-id result run))))
 
 (defn ^:no-doc spin-current-result [spin-id]
   (let [ctx (current-execution-context)]

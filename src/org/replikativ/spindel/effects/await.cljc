@@ -294,6 +294,19 @@
               child-completed? (volatile! false)
               child-result (volatile! nil)
               in-sync-phase (volatile! true)
+              ;; The child run's generation (enter-body! below): only this,
+              ;; uninvalidated, run certifies its result (formalism §3.4).
+              child-run (volatile! nil)
+              ;; Callbacks a superseded run of the child handed to this one
+              ;; (simple/hand-off-run-callbacks!) — served on completion.
+              serve-pending! (fn [k x]
+                               (let [rt (ec/current-execution-context)]
+                                 (doseq [cb (simple/take-pending-callbacks! rt awaited-spin-id)
+                                         :when (spin-core/pending-callback-visible? rt cb)]
+                                   (try ((k cb) x)
+                                        (catch #?(:clj Throwable :cljs :default) e
+                                          (log/warn :await/pending-callback-failed
+                                                    {:spin-id awaited-spin-id :error e}))))))
               ;; Only the invocation below may complete the child inline: on
               ;; this thread, during the sync phase. The child's continuation
               ;; may also be forked into other worlds (a savepoint forked while
@@ -311,28 +324,32 @@
               child-resolve (fn [v]
                               (let [inline (inline?)
                                     result (spin-core/ok v)]
-                                (when inline
-                                  (vreset! child-value v)
-                                  (vreset! child-result result)
-                                  (vreset! child-completed? true))
-                                (ec/spin-cache-result! awaited-spin-id result)
-                                ;; Commit deps so child registers as signal observer
-                                (ec/graph-commit-deps! awaited-spin-id)
-                                (when-not inline
-                                  ;; Async completion: fire event so parent continuation resumes
-                                  (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id)))
+                                ;; false: a newer run of the child superseded
+                                ;; this one — not published, not delivered.
+                                (when (ec/spin-cache-result! awaited-spin-id result @child-run)
+                                  (when inline
+                                    (vreset! child-value v)
+                                    (vreset! child-result result)
+                                    (vreset! child-completed? true))
+                                  ;; Commit deps so child registers as signal observer
+                                  (ec/graph-commit-deps! awaited-spin-id)
+                                  (when-not inline
+                                    ;; Async completion: fire event so parent continuation resumes
+                                    (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
+                                  (serve-pending! :resolve v)))
                               v)
               child-reject (fn [e]
                              (let [inline (inline?)
                                    result (spin-core/error e)]
-                               (when inline
-                                 (vreset! child-error e)
-                                 (vreset! child-result result)
-                                 (vreset! child-completed? true))
-                               (ec/spin-cache-result! awaited-spin-id result)
-                               (ec/graph-commit-deps! awaited-spin-id)
-                               (when-not inline
-                                 (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id)))
+                               (when (ec/spin-cache-result! awaited-spin-id result @child-run)
+                                 (when inline
+                                   (vreset! child-error e)
+                                   (vreset! child-result result)
+                                   (vreset! child-completed? true))
+                                 (ec/graph-commit-deps! awaited-spin-id)
+                                 (when-not inline
+                                   (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
+                                 (serve-pending! :reject e)))
                              nil)
               is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
               cont-map (spin-await-cont-map spin-id spin-ref awaited-spin-id
@@ -371,7 +388,7 @@
                   ;; slow-path re-runs — earliest(-stale) cont won dispatch and
                   ;; repainted frozen state (zombie bug, fixed 71d5801). See
                   ;; enter-body!'s docstring for the invariant.
-                  _ (simple/enter-body! ctx awaited-spin-id)
+                  _ (vreset! child-run (simple/enter-body! ctx awaited-spin-id))
                   _raw-result (binding [ec/*execution-context* child-ctx
                                         ec/*spin-id* awaited-spin-id
                                         pcps-async/*in-trampoline* false]

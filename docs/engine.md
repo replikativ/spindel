@@ -686,12 +686,16 @@ When a `:signal-change` event is processed, the engine:
 3. Filters out observers that are *descendants* of other observers in
    this batch (a descendant will be naturally re-resumed by its
    ancestor's completion event, so dispatching it directly here would
-   cause duplicate work). A filtered descendant is not resumed, but it
-   IS invalidated (`invalidate-node`: `:dirty`, and a run of it in
-   flight is marked `:stale-run?`). Its freshness must not depend on
-   the ancestor's re-run reaching it within this batch: the ancestor can
-   suspend first (an `ifor-each` awaiting a newly prepended item) and
-   reach it in a later drain, where a `:clean` cache is served as is.
+   cause duplicate work). Only descendants the ancestor's resume really
+   re-creates are filtered — the ancestor's resume point must precede
+   the child's creation (`delegated-descendants`); others are resumed
+   like independent observers. A filtered descendant is not resumed, but
+   it IS invalidated (`invalidate-node` records its run generation as
+   invalidated, so no run of it in flight can certify its result). Its
+   freshness must not depend on the ancestor's re-run reaching it within
+   this batch: the ancestor can suspend first (an `ifor-each` awaiting a
+   newly prepended item) and reach it in a later drain, where a `:clean`
+   cache is served as is.
 4. Escalates each remaining observer to its root await-ancestor
    (`find-root-await-ancestor`) — the spin that actually needs to
    resume in this batch. Suspended descendants on `await` chains

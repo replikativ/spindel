@@ -23,8 +23,10 @@
   by the B-gate (changed captures) and its old run completed first.
 
   The rule (formalism §3.4): a run may cache its result as clean only if
-  nothing invalidated the node since the run began. `invalidate-node` marks an
-  in-flight run `:stale-run?`; `cache-result!` then keeps the node :dirty."
+  nothing invalidated the node since the run began. Every fresh body entry
+  starts a new run generation; `invalidate-node` records the generation it
+  invalidates; `cache-result!` certifies a completion only for the node's
+  current, uninvalidated generation, and ignores an older run's completion."
   (:refer-clojure :exclude [await])
   (:require #?(:clj [clojure.test :refer [deftest is testing]])
             [org.replikativ.spindel.engine.core :as ec]
@@ -121,7 +123,7 @@
                (let [n (node (@ids 0))]
                  (is (= :dirty (:status n))
                      "the filtered descendant is invalidated at the change")
-                 (is (:stale-run? n) "its in-flight run is marked stale"))
+                 (is (simple/stale-run? n) "its in-flight run is marked stale"))
 
                ;; The stale run completes first — the parent is still parked
                ;; on the prepended child.
@@ -132,7 +134,9 @@
                      "the stale run read A before the change")
                  (is (= :dirty (:status n))
                      "…and its completion does NOT certify the result")
-                 (is (not (:stale-run? n)) "the mark is consumed"))
+                 (is (simple/run-invalidated? n)
+                     "the mark stays until a fresh run, so no second write of
+                      this run can certify it"))
 
                (sync/deliver! d1 :go)
                (settle! c)
@@ -159,8 +163,10 @@
                (settle! c)
                (is (= :dirty (:status (node (@ids 0))))
                    "a completed descendant is invalidated too")
-               (is (not (:stale-run? (node (@ids 0))))
-                   "no run in flight, nothing to mark stale")
+               (is (not (simple/stale-run? (node (@ids 0))))
+                   "no run in flight")
+               (is (simple/run-invalidated? (node (@ids 0)))
+                   "but its (completed) generation is invalidated")
                (sync/deliver! d1 :go)
                (settle! c)
                (is (= [[1 2] [0 2]] @out))))
@@ -196,7 +202,7 @@
                (settle! c)
                (swap! a (fn [m] (-> m (assoc :tag :new) (update :xs #(into [{:id 1}] %)))))
                (settle! c)
-               (is (:stale-run? (node (@ids 0)))
+               (is (simple/stale-run? (node (@ids 0)))
                    "changed captures on a running node mark its run stale")
                (sync/deliver! d0 :go)
                (settle! c)
@@ -206,4 +212,107 @@
                (settle! c)
                (is (= [[1 :new] [0 :new]] @out)
                    "the parent re-runs the child with its current captures")))
+           (finally (ctx/close-context! c)))))))
+
+#?(:clj
+   (deftest stale-run-that-rejects-is-not-certified
+     (testing "the superseded run REJECTS: the error path writes the cache
+               (and used to write it twice) — neither write may certify it"
+       (let [c (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* c]
+             (let [a (sig/signal {:xs [{:id 0}]})
+                   d0 (sync/create-deferred c)
+                   d1 (sync/create-deferred c)
+                   ids (atom {})
+                   gate {0 d0 1 d1}
+                   ;; a child that throws when it read the OLD A
+                   make-child (fn [id]
+                                (let [s (keyed id (fn []
+                                                    (spin (let [{s :new} (track a)
+                                                                _ (await (gate id))]
+                                                            (if (= 1 (count (:xs s)))
+                                                              (throw (ex-info "stale read" {:id id}))
+                                                              [id (count (:xs s))])))))]
+                                  (swap! ids assoc id (spin-core/spin-id s))
+                                  s))
+                   out (run-parent! a make-child)]
+               (settle! c)
+               (swap! a update :xs #(into [{:id 1}] %))
+               (settle! c)
+               (sync/deliver! d0 :go)
+               (settle! c)
+               (let [n (node (@ids 0))]
+                 (is (= :error (:variant (:result n))) "the stale run rejected")
+                 (is (= :dirty (:status n)) "…and its error is NOT certified"))
+               (sync/deliver! d1 :go)
+               (settle! c)
+               (is (= [[1 2] [0 2]] @out)
+                   "the parent re-runs the child; the stale error never surfaces")
+               (is (= :clean (:status (node (@ids 0)))))))
+           (finally (ctx/close-context! c)))))))
+
+#?(:clj
+   (deftest child-created-before-the-resume-point-is-resumed-not-filtered
+     (testing "a descendant created BEFORE its creator's track point is not
+               re-created by the creator's resume: it must be resumed itself"
+       (let [c (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* c]
+             (let [a (sig/signal 1)
+                   out (atom nil)
+                   cid (atom nil)
+                   p (spin (let [ch (spin (let [{v :new} (track a)] v))
+                                 _ (reset! cid (spin-core/spin-id ch))
+                                 x (await ch)
+                                 {v :new} (track a)]
+                             [x v]))]
+               (p (fn [v] (reset! out v)) (fn [e] (reset! out [:error e])))
+               (settle! c)
+               (is (= [1 1] @out))
+               (reset! a 2)
+               (settle! c)
+               (is (= [2 2] @out) "no glitch: the child sees the change too")
+               (is (= :clean (:status (node @cid)))
+                   "and it is not left :dirty for good")))
+           (finally (ctx/close-context! c)))))))
+
+#?(:clj
+   (deftest spin-execution-over-a-stale-run-strands-no-caller
+     (testing "a :spin-execution that finds a STALE run starts a fresh one;
+               the stale run's invoker (claimed first) still gets the value"
+       (let [c (ctx/create-execution-context)]
+         (try
+           (binding [ec/*execution-context* c]
+             (let [d (sync/create-deferred c)
+                   input (atom 1)          ; read BEFORE the await
+                   runs (atom 0)
+                   s (spin (let [v @input
+                                 _ (swap! runs inc)
+                                 _ (await d)]
+                             v))
+                   id (spin-core/spin-id s)
+                   first-cb (promise)
+                   second-cb (promise)]
+               (ec/enqueue-event! {:type :spin-execution :id id :spin s
+                                   :resolve-fn #(deliver first-cb [:ok %])
+                                   :reject-fn #(deliver first-cb [:error %])})
+               (settle! c)
+               (is (:running? (node id)) "first run suspended on d")
+               ;; invalidate the run in flight (what a filtered descendant /
+               ;; a changed-captures re-registration does)
+               (reset! input 2)
+               (ec/swap-state! [:nodes id] simple/invalidate-node)
+               (is (simple/stale-run? (node id)))
+               (ec/enqueue-event! {:type :spin-execution :id id :spin s
+                                   :resolve-fn #(deliver second-cb [:ok %])
+                                   :reject-fn #(deliver second-cb [:error %])})
+               (settle! c)
+               (is (= 2 @runs) "the stale run is not joined: a fresh run started")
+               (sync/deliver! d :go)
+               (settle! c)
+               (is (= [:ok 2] (deref second-cb 2000 ::timeout)))
+               (is (= [:ok 2] (deref first-cb 2000 ::timeout))
+                   "the first claimer is handed to the fresh run, not stranded")
+               (is (= :clean (:status (node id))))))
            (finally (ctx/close-context! c)))))))

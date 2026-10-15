@@ -108,6 +108,8 @@
     (simple/mark-dirty! this spin-id))
   (cache-result! [this spin-id result]
     (simple/cache-result! this spin-id result))
+  (cache-result! [this spin-id result run]
+    (simple/cache-result! this spin-id result run))
   (current-result [this spin-id]
     (simple/current-result this spin-id))
   (clean? [this spin-id]
@@ -936,7 +938,8 @@
                      :engine/timer-handles {}
                      :engine/retired-conts {}
                      :listeners {}
-                     :pending-callbacks {}))]
+                     :pending-callbacks {}
+                     :run-callbacks {}))]
       (-> child
           (assoc :backend (backend/create-atom-backend materialized-state))
           (update :metadata assoc

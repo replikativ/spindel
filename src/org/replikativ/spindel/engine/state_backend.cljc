@@ -120,7 +120,7 @@
     :world/components :world/forkable-components
     :engine/pending :engine/draining?
     :engine/delayed-spins :engine/timer-handles :listeners
-    :pending-callbacks})
+    :pending-callbacks :run-callbacks})
 
 (def ^:private deleted ::deleted)
 (def ^:private full-replacement-key ::full-replacement)

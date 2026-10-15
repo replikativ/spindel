@@ -533,26 +533,63 @@
 (declare propagate-await-dirty!)
 (declare try-gc-cleanup-spin!)
 
+;; -----------------------------------------------------------------------------
+;; Run generations — "a run may certify its result only if nothing
+;; invalidated the node since the run began" (formalism §3.4)
+;; -----------------------------------------------------------------------------
+;;
+;; Every fresh body entry (`mark-running!`, via `enter-body!`) stamps the node
+;; with a NEW `:run-gen`, and the entry returns it: the run's completion
+;; callbacks hand it back to `cache-result!`. Invalidating the node
+;; (`invalidate-node`) records the generation it invalidates as
+;; `:invalid-gen`. `cache-result!` then
+;;   - ignores a completion whose generation is no longer the node's
+;;     (an OLDER run finishing while — or after — a newer one entered), and
+;;   - stores the current run's result but certifies it `:clean` only if
+;;     that generation was not invalidated.
+;; Generations are unique process-wide, not per node, so a node that is
+;; reaped and re-created can never mistake an old run for its current one.
+
+(defonce ^:private run-gen-counter
+  #?(:clj (java.util.concurrent.atomic.AtomicLong.) :cljs (volatile! 0)))
+
+(defn- next-run-gen []
+  #?(:clj (.incrementAndGet ^java.util.concurrent.atomic.AtomicLong run-gen-counter)
+     :cljs (vswap! run-gen-counter inc)))
+
+(defn ^:no-doc run-invalidated?
+  "Whether `node`'s current run generation was invalidated
+  (`invalidate-node`) — its result, in flight or cached, is not current."
+  [node]
+  (= (get node :invalid-gen ::none) (:run-gen node)))
+
+(defn ^:no-doc stale-run?
+  "Whether `node` has a run IN FLIGHT that was invalidated: its result will
+  not be certified, so a caller must not join it as if it were current."
+  [node]
+  (boolean (and (:running? node) (run-invalidated? node))))
+
 (defn ^:no-doc invalidate-node
-  "Mark a SpinNode's cached result invalid: `:dirty`, not `:completed?`.
+  "Mark a SpinNode's cached result invalid (`:dirty`) and record its
+  current run generation as invalidated (`:invalid-gen`).
 
-  If a run of the body is IN FLIGHT (`:running?` — suspended on an await,
-  or between slices) that run is invalid too: it read a dependency or a
-  capture that has changed since. Such a run is not cancelled here — an
-  awaiter outside the re-running subtree may still be parked on it, and
-  cancelling would strand that awaiter — but it is marked `:stale-run?`,
-  so that when it completes `cache-result!` keeps the node `:dirty`. The
-  next await / invoke then re-runs the body (its prologue cancels whatever
-  is left of the stale run) instead of serving the stale result as clean.
-  A fresh body entry (`mark-running!`) clears the mark.
+  A run of the body still IN FLIGHT (suspended on an await, or between
+  slices) read a dependency or a capture that has changed since. It is not
+  cancelled here — an awaiter outside the re-running subtree may be parked
+  on it — but `cache-result!` will not certify its result: the node stays
+  `:dirty`, and the next await/invoke re-runs the body (whose prologue
+  cancels what is left of the stale run). The same holds for a completed
+  node later re-completed by a track resume of the SAME run: only a fresh
+  body entry (a new generation) can certify a result again.
 
-  This is the generation rule of formalism §3.4: a run may cache its
-  result as clean only if nothing invalidated the node since the run
-  began. Pure — returns the new node (nil for nil)."
+  `:completed?` is left as is: it says whether the body finished, which the
+  GC reap predicate (`gc-quiescent?`) needs, not whether the result is
+  current — that is `:status`. Pure — returns the new node (nil for nil)."
   [node]
   (when node
-    (cond-> (-> node (assoc :completed? false) (nodes/mark-dirty))
-      (:running? node) (assoc :stale-run? true))))
+    (-> node
+        (assoc :invalid-gen (:run-gen node))
+        (nodes/mark-dirty))))
 
 (defn ^:no-doc clear-created-spins!
   "Reset a spin's `:created-spins` set at the start of a (re-)run of its
@@ -882,6 +919,37 @@
             new-desc (set/difference children descendants)]
         (recur new-desc (into descendants children))))))
 
+(defn- delegated-descendants
+  "The descendant observers (`compute-descendant-observers`) whose re-run
+  their creator's resume really performs. A creator resumed from track cont
+  R re-evaluates the child's (spin …) form only if R PRECEDES the child's
+  registration — R is among the creator's track conts recorded on the child
+  (`:creator-track-conts`, `register-spin!`). A creator that is itself a
+  delegated descendant re-runs from scratch, so its children are delegated
+  too. Any other descendant (created before the creator's resume point,
+  e.g. `(let [c (spin (track a) …) x (await c) v (track a)] …)`) is NOT
+  re-created and must be resumed like an independent observer — filtering
+  it left it stale (and, once invalidated, :dirty for good)."
+  [context observers-with-conts candidates]
+  (let [cont-of (into {} observers-with-conts)
+        memo (volatile! {})]
+    (letfn [(delegated? [d]
+              (let [known (get @memo d ::unknown)]
+                (if (not= ::unknown known)
+                  known
+                  (do
+                    (vswap! memo assoc d false)          ; cycle guard
+                    (let [node (rtp/get-state context [:nodes d])
+                          c (:created-by node)
+                          v (boolean
+                             (and c (contains? cont-of c)
+                                  (or (and (contains? candidates c) (delegated? c))
+                                      (contains? (:creator-track-conts node)
+                                                 (:id (cont-of c))))))]
+                      (vswap! memo assoc d v)
+                      v)))))]
+      (into #{} (filter delegated?) candidates))))
+
 (defn- find-root-await-ancestor
   "Walk await-dependents upward from spin-id to find the topmost ancestor.
 
@@ -1038,7 +1106,9 @@
             ;; Filter out descendant observers — they'll be re-created by
             ;; their parent and shouldn't fire independently.
             observer-id-set (set (map first observers-with-conts))
-            descendant-set (compute-descendant-observers context observer-id-set)
+            descendant-set (delegated-descendants
+                            context observers-with-conts
+                            (compute-descendant-observers context observer-id-set))
             independent-observers (vec (remove (fn [[sid _]] (descendant-set sid))
                                                observers-with-conts))
 
@@ -1096,15 +1166,16 @@
                       :independent (map first independent-observers)})
           ;; A filtered descendant read the signal's OLD value and is not
           ;; resumed: its re-run is delegated to the ancestor that re-creates
-          ;; it. Invalidate it NOW, before any observer resumes. Its freshness
-          ;; must not depend on the ancestor's re-run reaching it inside this
-          ;; batch (where the await fast path is off): the ancestor may
-          ;; suspend first — an ifor-each awaiting a newly prepended item —
-          ;; and reach this child only after the batch ended, when a :clean
-          ;; cache is served as is. An in-flight run of the child is marked
-          ;; stale so that its later completion cannot clean the node either
-          ;; (`invalidate-node`). Node-local on purpose: the child's
-          ;; observers are the ancestor's subtree, which is re-running.
+          ;; it (`delegated-descendants` keeps only those whose creator's
+          ;; resume really re-evaluates them). Invalidate it NOW, before any
+          ;; observer resumes. Its freshness must not depend on the ancestor's
+          ;; re-run reaching it inside this batch (where the await fast path
+          ;; is off): the ancestor may suspend first — an ifor-each awaiting a
+          ;; newly prepended item — and reach this child only after the batch
+          ;; ended, when a :clean cache is served as is. A run of the child
+          ;; still in flight then completes uncertified (`invalidate-node`).
+          ;; Node-local on purpose: the child's observers are the ancestor's
+          ;; subtree, which is re-running.
           (rtp/swap-state! context [:nodes]
                            (fn [nodes]
                              (reduce (fn [ns id]
@@ -1305,14 +1376,20 @@
           resolve-fn (:resolve-fn event)
           reject-fn (:reject-fn event)
           callback-egress-policy (or (:callback-egress-policy event) :isolated)
-          execution-context (:execution-context event)]  ; May be nil for normal spins
+          execution-context (:execution-context event)  ; May be nil for normal spins
+          ;; Claim in the world the body will RUN in: its run state
+          ;; (:running?, run generation, invalidation) is that world's. A
+          ;; claim against the draining context while the body runs in
+          ;; another world would leave the claim's flag behind in one world
+          ;; and the run's in the other.
+          run-ctx (or execution-context context)]
       (log/trace :engine/spin-execution {:spin-id tid})
       ;; Try to atomically claim execution
       ;; This checks cache AND running? atomically to prevent duplicate execution
-      (if-not (try-claim-execution! context tid)
+      (if-not (try-claim-execution! run-ctx tid)
         ;; Failed to claim - either cached or already running
         ;; Check which case to handle appropriately
-        (let [node (rtp/get-state context [:nodes tid])
+        (let [node (rtp/get-state run-ctx [:nodes tid])
               cached (when node (nodes/get-value node))
               is-clean? (when node (not (nodes/dirty? node)))]
           (if (and cached is-clean?)
@@ -1325,7 +1402,7 @@
             ;; Not cached - must be running, add callbacks to pending
             (do
               (log/trace :engine/spin-execution-skip-running {:spin-id tid})
-              (add-pending-callback! context tid {:resolve resolve-fn :reject reject-fn}))))
+              (add-pending-callback! run-ctx tid {:resolve resolve-fn :reject reject-fn}))))
         ;; Successfully claimed - proceed with execution
         ;; Execute spin on executor thread with provided callbacks
         ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
@@ -1946,6 +2023,7 @@
                                            retired)))
             ;; 6. Remove pending callbacks
                            (update :pending-callbacks dissoc spin-id)
+                           (update :run-callbacks dissoc spin-id)
             ;; 7. Remove tracking data
                            (update :spin-tracking dissoc spin-id)
             ;; 9. Clean subscriptions (remove spin-id from all event keys)
@@ -2285,11 +2363,18 @@
     (rtp/swap-state! context [:spins-meta spin-id] (constantly spin-meta))
 
     ;; Create or update SpinNode in :nodes
-    (rtp/swap-state! context [:nodes spin-id]
-                     (fn [existing-node]
-                       (let [new-caps (:captured-locals spin-meta)
-                             kind     (:kind spin-meta)]
-                         (if existing-node
+    (let [;; The creator's track points that precede this registration: a
+          ;; resume from one of them re-evaluates this (spin …) form (see
+          ;; `delegated-descendants`).
+          creator-conts (when (and creator-id (not= creator-id spin-id))
+                          (set (keys (rtp/get-state context [:track-subscriptions creator-id]))))]
+      (rtp/swap-state! context [:nodes spin-id]
+                       (fn [existing-node]
+                         (let [new-caps (:captured-locals spin-meta)
+                               kind     (:kind spin-meta)
+                               existing-node (some-> existing-node
+                                                     (assoc :creator-track-conts creator-conts))]
+                           (if existing-node
           ;; Re-registration: the (spin …) form was re-evaluated by a
           ;; re-running enclosing scope → a fresh closure. Mark the node
           ;; dirty so the fresh cps-fn runs instead of await/deref serving
@@ -2298,22 +2383,24 @@
           ;; :computation spin only when its captured environment actually
           ;; changed (identical?-compared). :result is kept as the previous
           ;; value (for value-change diffing).
-                           (let [base (assoc existing-node
-                                             :created-by creator-id
-                                             :captured-locals new-caps
-                                             :kind kind)]
-                             ;; A run still in flight under the OLD captures is
-                             ;; stale: `invalidate-node` keeps its completion
-                             ;; from caching clean.
-                             (if (or (= kind :resource)
-                                     (captures-changed? (:captured-locals existing-node)
-                                                        new-caps))
-                               (invalidate-node base)
-                               base))
+                             (let [base (assoc existing-node
+                                               :created-by creator-id
+                                               :captured-locals new-caps
+                                               :kind kind)]
+                             ;; Any run of the OLD closure — in flight, or
+                             ;; re-completed later by a track resume — is
+                             ;; stale: `invalidate-node` keeps it from
+                             ;; certifying its result.
+                               (if (or (= kind :resource)
+                                       (captures-changed? (:captured-locals existing-node)
+                                                          new-caps))
+                                 (-> base (assoc :completed? false) (invalidate-node))
+                                 base))
           ;; First registration: new node, record the captured environment.
-                           (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
-                                  :captured-locals new-caps
-                                  :kind kind)))))
+                             (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
+                                    :captured-locals new-caps
+                                    :creator-track-conts creator-conts
+                                    :kind kind))))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
     ;; created-spins set. Self-add could occur on CLJS if a stale async
@@ -2546,8 +2633,17 @@
 (defn cache-result!
   "Cache a spin's result value and mark observers dirty.
 
-  Marks spin as completed and stores the Result record with :clean status.
-  Also marks all observer spins dirty (spins that depend on this one).
+  Marks spin as completed and stores the Result record. Also marks all
+  observer spins dirty (spins that depend on this one).
+
+  `run` is the run generation the result comes from — what `enter-body!`
+  returned when the run began; nil for a result that is not a body run's
+  (a cancellation, a combinator's re-cache). The result is certified
+  `:clean` only if nothing invalidated that generation (`invalidate-node`);
+  otherwise it is stored and delivered, but the node stays `:dirty`. A
+  completion of a run that is no longer the node's current one (a newer
+  run entered since) changes nothing and returns false: the caller must not
+  publish it (no deps commit, completion event or callbacks).
 
   TRANSACTIONAL: All state changes happen atomically in a single swap-state! to
   ensure context consistency for snapshotting.
@@ -2556,62 +2652,67 @@
     context - context record (implements PState protocol)
     spin-id - ID of spin whose result to cache
     result - Result record (from org.replikativ.spindel.spin.core)
+    run - run generation, or nil
 
-  Returns: true"
-  [context spin-id result]
-  ;; Update :nodes using SpinNode (Phase 1B) AND mark observers dirty
-  (rtp/swap-state! context []
-                   (fn [rt-state]
-      ;; First, get observers of this spin before updating it
-                     (let [spin-node (get-in rt-state [:nodes spin-id])
-                           observers (if spin-node (nodes/get-observers spin-node) #{})
-            ;; Build the completion event key for this spin
-                           completion-event-key [:spin/complete spin-id]]
-                       (-> rt-state
-            ;; Mark spin completed with result
-                           (update-in [:nodes spin-id]
-                                      (fn [node]
-                ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                                        (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                                          (-> node
-                                              (assoc :result result)
-                                              (assoc :completed? true)
-                                              (assoc :running? false)
-                                              ;; A run invalidated while in
-                                              ;; flight (`invalidate-node`)
-                                              ;; still delivers its result,
-                                              ;; but must not certify it: the
-                                              ;; node stays :dirty, so the
-                                              ;; next await/invoke re-runs.
-                                              (as-> n (if (:stale-run? n)
-                                                        (-> n (dissoc :stale-run?) (nodes/mark-dirty))
-                                                        (nodes/mark-clean n)))))))
-            ;; Mark all observers dirty (they need to re-execute)
-            ;; BUT skip observers that:
-            ;; 1. Are currently running (have :running? true)
-            ;; 2. Have a continuation for this spin's completion event
-            ;; Both cases mean the observer will be notified via continuation, not dirty flag
-                           (as-> state
-                                 (reduce (fn [s observer-id]
-                                           (let [has-completion-cont? (seq (get-in s [:subscriptions completion-event-key observer-id]))]
-                                             (update-in s [:nodes observer-id]
-                                                        (fn [node]
-                                                          (if (and node
-                                                                   (not (:running? node))
-                                                                   (not has-completion-cont?))
-                                                            (-> node
-                                                                (assoc :completed? false)
-                                                                (nodes/mark-dirty))
-                                ;; Skipped — return the node unchanged. (Previously
-                                ;; used `when`, which returned nil and `update-in`
-                                ;; then erased the observer's node entirely — a
-                                ;; latent bug only visible once node-resident fields
-                                ;; beyond :result/:observers are read across this
-                                ;; transition.)
-                                                            node)))))
-                                         state
-                                         observers))))))
-  true)
+  Returns: true, or false for a superseded run's completion"
+  ([context spin-id result] (cache-result! context spin-id result nil))
+  ([context spin-id result run]
+   (let [written? (volatile! true)]
+     (rtp/swap-state!
+      context []
+      (fn [rt-state]
+        (vreset! written? true)
+        (let [spin-node (get-in rt-state [:nodes spin-id])]
+          (if (and run spin-node (not= run (:run-gen spin-node)))
+            ;; An older run — a newer one has entered since (its prologue
+            ;; cancelled this one's waits; this completion slipped past them).
+            ;; Its result is not the node's to keep.
+            (do (vreset! written? false) rt-state)
+            (let [observers (if spin-node (nodes/get-observers spin-node) #{})
+                  completion-event-key [:spin/complete spin-id]]
+              (-> rt-state
+                  (update-in [:nodes spin-id]
+                             (fn [node]
+                               ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
+                               (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
+                                 (-> node
+                                     (assoc :result result)
+                                     (assoc :completed? true)
+                                     (assoc :running? false)
+                                     ;; Certify only an uninvalidated run.
+                                     ;; The mark stays until a fresh run, so
+                                     ;; a second write for the same run (a
+                                     ;; reject path re-caching) cannot
+                                     ;; certify it either.
+                                     (as-> n (if (run-invalidated? n)
+                                               (nodes/mark-dirty n)
+                                               (nodes/mark-clean n)))))))
+                  ;; Mark all observers dirty (they need to re-execute)
+                  ;; BUT skip observers that:
+                  ;; 1. Are currently running (have :running? true)
+                  ;; 2. Have a continuation for this spin's completion event
+                  ;; Both cases mean the observer will be notified via continuation, not dirty flag
+                  (as-> state
+                        (reduce (fn [s observer-id]
+                                  (let [has-completion-cont? (seq (get-in s [:subscriptions completion-event-key observer-id]))]
+                                    (update-in s [:nodes observer-id]
+                                               (fn [node]
+                                                 (if (and node
+                                                          (not (:running? node))
+                                                          (not has-completion-cont?))
+                                                   (-> node
+                                                       (assoc :completed? false)
+                                                       (nodes/mark-dirty))
+                                                   ;; Skipped — return the node unchanged. (Previously
+                                                   ;; used `when`, which returned nil and `update-in`
+                                                   ;; then erased the observer's node entirely — a
+                                                   ;; latent bug only visible once node-resident fields
+                                                   ;; beyond :result/:observers are read across this
+                                                   ;; transition.)
+                                                   node)))))
+                                state
+                                observers))))))))
+     @written?)))
 
 (defn current-result
   "Get the current cached result of a spin.
@@ -2681,16 +2782,57 @@
     context - context record (implements PState protocol)
     spin-id - ID of spin to mark as running
 
-  Returns: true"
+  A fresh body entry starts a NEW run generation (`:run-gen`, see
+  `invalidate-node`): whatever run was in flight is the prior one, and the
+  prologue cancels it.
+
+  Returns: the new run generation"
   [context spin-id]
-  ;; A fresh body entry starts a current run: whatever run was marked stale
-  ;; (`invalidate-node`) is the prior one, and the prologue cancels it.
-  (rtp/swap-state! context [:nodes spin-id]
-                   (fn [node]
-                     (if node
-                       (-> node (assoc :running? true) (dissoc :stale-run?))
-                       (nodes/->spin-node nil :clean false true #{} {} nil #{}))))
-  true)
+  (let [gen (next-run-gen)]
+    (rtp/swap-state! context [:nodes spin-id]
+                     (fn [node]
+                       (-> (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
+                           (assoc :running? true :run-gen gen))))
+    gen))
+
+(defn ^:no-doc register-run-callbacks!
+  "Record the invoker callbacks of run `run` of `spin-id` (`-invoke` Case 2
+  keeps them in a closure-local list). If a fresh body entry supersedes the
+  run before it ever completed, `enter-body!` hands them to the new run
+  through `:pending-callbacks` — otherwise cancelling the old run would
+  strand its invoker (a `deref` promise, a savepoint's terminal callback)."
+  [context spin-id run callbacks]
+  (rtp/swap-state! context [:run-callbacks spin-id]
+                   (constantly {:run run :callbacks callbacks}))
+  nil)
+
+(defn ^:no-doc release-run-callbacks!
+  "Run `run` of `spin-id` completed: its invoker callbacks were served, so a
+  later fresh entry must not hand them over again."
+  [context spin-id run]
+  (when (rtp/get-state context [:run-callbacks spin-id])
+    (rtp/swap-state! context [:run-callbacks spin-id]
+                     (fn [rc] (when (and rc (not= run (:run rc))) rc))))
+  nil)
+
+(defn- hand-off-run-callbacks!
+  "At a fresh body entry: move the superseded, never-completed run's invoker
+  callbacks into `:pending-callbacks`, which the new run serves."
+  [context spin-id]
+  (let [taken (volatile! nil)]
+    (rtp/swap-state! context []
+                     (fn [state]
+                       (vreset! taken nil)
+                       (if-let [{:keys [callbacks]} (get-in state [:run-callbacks spin-id])]
+                         (do (vreset! taken callbacks)
+                             (-> state
+                                 (update :run-callbacks dissoc spin-id)
+                                 (update-in [:pending-callbacks spin-id]
+                                            (fn [cbs] (into (or cbs []) callbacks)))))
+                         state)))
+    (when (seq @taken)
+      (log/debug :engine/run-callbacks-handed-off {:spin-id spin-id :count (count @taken)}))
+    nil))
 
 (defn ^:no-doc enter-body!
   "THE body (re-)entry prologue. Every path that invokes a spin's cps-fn
@@ -2711,15 +2853,22 @@
   `:rebuild? true` skips mark-running!/clear-created-spins!: rebuild
   re-executes the body for side effects only (nested spin re-minting,
   cont re-registration) and reuses the cached result, so node run-state
-  must not be touched."
+  must not be touched.
+
+  Returns the new run generation (nil for `:rebuild? true`): the run hands
+  it to `cache-result!` on completion, so only an uninvalidated, current run
+  certifies its result (formalism §3.4). A run superseded before it ever
+  completed hands its invoker callbacks to this one (`hand-off-run-callbacks!`)."
   ([context spin-id] (enter-body! context spin-id nil))
   ([context spin-id {:keys [rebuild?]}]
-   (when-not rebuild?
-     (mark-running! context spin-id)
-     (clear-created-spins! context spin-id))
-   (clear-prior-body-conts! context spin-id)
-   (addressing/seed-body-chain-head! context spin-id)
-   true))
+   (let [gen (when-not rebuild?
+               (hand-off-run-callbacks! context spin-id)
+               (let [g (mark-running! context spin-id)]
+                 (clear-created-spins! context spin-id)
+                 g))]
+     (clear-prior-body-conts! context spin-id)
+     (addressing/seed-body-chain-head! context spin-id)
+     gen)))
 
 (defn ^:no-doc try-claim-execution!
   "Atomically try to claim execution of a spin.
@@ -2756,8 +2905,10 @@
               ;; Already running - don't claim. Unless that run is stale
               ;; (`invalidate-node`): its result will not be certified, so
               ;; joining it would hand this caller an invalid value — start
-              ;; a fresh run instead (the body prologue cancels the stale one).
-                             (and (:running? node) (not (:stale-run? node)))
+              ;; a fresh run instead. Its prologue cancels the stale run and
+              ;; hands that run's invoker callbacks to the new one
+              ;; (`hand-off-run-callbacks!`), so no caller is stranded.
+                             (and (:running? node) (not (stale-run? node)))
                              (do (reset! claimed? false)
                                  (log/trace :claim/failed-already-running {:spin-id spin-id})
                                  node)
