@@ -31,6 +31,17 @@
    :compiler-options {:elide-asserts false
                       :closure-warnings {:useless-code :off}}}
 
+  ;; The differential DOM fuzzer and its pinned regressions alone
+  ;; (dom/differential_fuzz*_test.cljs), without the rest of the suite:
+  ;; `npx shadow-cljs compile dom-fuzz && node target/dom-fuzz.js`.
+  ;; Knobs (SPINDEL_FUZZ_TRIALS, _SEED, …) are environment variables read
+  ;; at run time — see the test namespace's docstring.
+  :dom-fuzz
+  {:target :node-test
+   :output-to "target/dom-fuzz.js"
+   :ns-regexp "differential-fuzz.*-test$"
+   :compiler-options {:optimizations :none}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"
