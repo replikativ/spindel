@@ -404,3 +404,34 @@
           (is (= 20 (binding [ec/*execution-context* f] @(spin (await e))))
               "the fork still follows the parent's recomputed e"))
         (finally (ctx/stop-context! p))))))
+
+(deftest dependence-is-decided-per-child-over-a-shared-chain
+  (testing "dropped children awaiting one shared constant chain: only the one
+            that also tracks a signal is dirtied (the pass memoizes the chain)"
+    (let [c (ctx/create-execution-context)
+          runs (atom {})
+          held (atom {})]
+      (try
+        (binding [ec/*execution-context* c]
+          (let [on (sig/signal true)
+                s (sig/signal 1)
+                chain (reduce (fn [prev _] (if prev (spin (inc (await prev))) (spin 0)))
+                              nil (range 20))
+                par (spin (let [{v :new} (track on)]
+                            (if v
+                              (let [a (spin (swap! runs update :a (fnil inc 0))
+                                            (+ (await chain) (:new (track s))))
+                                    b (spin (swap! runs update :b (fnil inc 0))
+                                            (await chain))]
+                                (reset! held {:a a :b b})
+                                [(await a) (await b)])
+                              :off)))]
+            (is (= [20 19] @par))
+            (simple/await-drain-complete! c)
+            (reset! on false)
+            (simple/await-drain-complete! c)
+            (is (= 20 @(spin (await (:a @held)))))
+            (is (= 19 @(spin (await (:b @held)))))
+            (is (= {:a 2 :b 1} @runs)
+                "the signal-dependent child re-runs, the constant one does not")))
+        (finally (ctx/stop-context! c))))))

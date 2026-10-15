@@ -2276,23 +2276,35 @@
   (track continuations, or signal deps committed or in flight), or awaited
   a spin that is itself signal-dependent. An await alone does not count:
   awaiting a spin leaves a persistent `:await-reactive` continuation even
-  when the awaited spin never changes (`(spin :g)`)."
-  [state id]
-  (loop [todo [id] seen #{}]
-    (if-let [x (peek todo)]
-      (let [todo (pop todo)]
-        (if (contains? seen x)
-          (recur todo seen)
-          (let [n (get-in state [:nodes x])
-                deps (when n (nodes/get-deps n))
-                tracking (get-in state [:spin-tracking x])]
-            (if (or (seq (get-in state [:track-subscriptions x]))
-                    (seq (:signals deps))
-                    (seq (:signals tracking)))
-              true
-              (recur (-> todo (into (:spins deps)) (into (:spins tracking)))
-                     (conj seen x))))))
-      false)))
+  when the awaited spin never changes (`(spin :g)`).
+
+  `memo` (a volatile `{id bool}`) is shared across one detach pass, so N
+  dropped children awaiting a shared chain of M spins cost O(N + M), not
+  O(N × M): a search that finds no signal proves every spin it visited
+  independent; one that finds a signal proves `id` dependent."
+  [state id memo]
+  (let [known @memo]
+    (if (contains? known id)
+      (get known id)
+      (loop [todo [id] seen #{}]
+        (if-let [x (peek todo)]
+          (let [todo (pop todo)
+                k (get @memo x ::unknown)]
+            (cond
+              (true? k) (do (vswap! memo assoc id true) true)
+              (or (false? k) (contains? seen x)) (recur todo seen)
+              :else
+              (let [n (get-in state [:nodes x])
+                    deps (when n (nodes/get-deps n))
+                    tracking (get-in state [:spin-tracking x])]
+                (if (or (seq (get-in state [:track-subscriptions x]))
+                        (seq (:signals deps))
+                        (seq (:signals tracking)))
+                  (do (vswap! memo assoc x true id true) true)
+                  (recur (-> todo (into (:spins deps)) (into (:spins tracking)))
+                         (conj seen x))))))
+          (do (vswap! memo into (map (fn [x] [x false])) seen)
+              false))))))
 
 (defn- detach-superseded
   "Pure `state → [state' detached-ids]`: detach the children `spin-id`'s
@@ -2327,6 +2339,7 @@
   O(N × |subscriptions|)."
   [state spin-id self? local?]
   (let [state0 state
+        dependent-memo (volatile! {})
         node (get-in state [:nodes spin-id])
         ;; The creator's :dropped-children are its own world's decision:
         ;; in a fork, a creator read through from the parent is the
@@ -2361,7 +2374,7 @@
                    (empty? (get-in state [:pending-callbacks d]))
                    (empty? (get-in state [:run-callbacks d]))
                    (local? :nodes d))
-            (let [reactive? (signal-dependent? state0 d)
+            (let [reactive? (signal-dependent? state0 d dependent-memo)
                   deps (nodes/get-deps dnode)
                   tracking (get-in state [:spin-tracking d])
                   dep-ids (-> #{}
