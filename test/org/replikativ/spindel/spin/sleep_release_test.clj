@@ -60,15 +60,44 @@
                (is (= :woke @(comb/sleep 30 :woke)))
                (is (settle #(and (zero? (delayed-entries c)) (zero? (timer-handles c)))))))
 
-(deftest cancelling-a-sleep-releases-its-entry
+(deftest cancelling-a-sleep-releases-its-entry-and-settles-its-awaiter
   (in-real-ctx [c]
                (let [s (comb/sleep long-ms :never)
-                     watcher (sp/spin (try (sp/await s) (catch Exception _ :cancelled)))]
-                 (future @watcher)
+                     watcher (sp/spin (try (sp/await s) (catch Exception _ :cancelled)))
+                     result (future @watcher)]
                  (is (settle #(= 1 (delayed-entries c))) "the sleep is scheduled")
                  (spin-core/cancel-spin! s)
+                 (is (= :cancelled (deref result 5000 :still-waiting))
+                     "the awaiter of a cancelled sleep finishes with the cancellation")
                  (is (settle #(and (zero? (delayed-entries c)) (zero? (timer-handles c))))
                      "the cancelled sleep released its entry and timer"))))
+
+(deftest cancelling-an-inherited-sleep-in-a-fork-leaves-the-parent-running
+  (in-real-ctx [c]
+               (let [s (comb/sleep 200 :woke)
+                     result (future @s)]
+                 (is (settle #(= 1 (delayed-entries c))) "the parent's sleep is scheduled")
+                 (let [f (ctx/fork-context c)]
+                   (try
+                     (binding [ec/*execution-context* f] (spin-core/cancel-spin! s))
+                     (finally (ctx/stop-context! f))))
+                 (is (= :woke (deref result 5000 :stranded))
+                     "the parent's sleep still wakes after a fork cancelled its copy"))))
+
+(deftest immediate-cancels-leave-nothing-behind
+  (in-real-ctx [c]
+               (let [watchers (doall
+                               (for [_ (range 200)]
+                                 (let [s (comb/sleep long-ms :never)
+                                       w (sp/spin (try (sp/await s) (catch Exception _ :cancelled)))
+                                       r (future @w)]
+                                   (spin-core/cancel-spin! s)
+                                   r)))]
+                 (is (every? #(= :cancelled (deref % 5000 :still-waiting)) watchers)
+                     "every awaiter of an immediately cancelled sleep finishes")
+                 (is (settle #(and (zero? (delayed-entries c)) (zero? (timer-handles c))))
+                     (str "no entry or timer is left; left: " (delayed-entries c) " entries, "
+                          (timer-handles c) " timers")))))
 
 (deftest the-losing-sleep-of-a-race-is-released
   (in-real-ctx [c]

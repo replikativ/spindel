@@ -247,16 +247,24 @@
           ;; Run of the last timeout period. The release is a parked
           ;; continuation on the sleep's own id, which `cancel-spin!` claims
           ;; and rejects; the wake-up claims it instead when the delay ends.
+          ;; Reactive, like the race's fan-out, so the generation sweep never
+          ;; removes it between a cancel's two steps; only the wake-up or a
+          ;; cancel does.
           (let [cont-id (keyword (str "sleep-release-" (gensym)))
                 delayed-id (volatile! nil)
                 release {:id cont-id
                          :registration cont-id
                          :event-key [:sleep/release sleep-id]
-                         :kind :external-await
-                         :reject-fn (fn [_]
+                         :kind :await-reactive
+                         ;; The claiming cancel settles the sleep (its awaiters
+                         ;; see the cancellation) and releases the entry in the
+                         ;; world it runs in: a fork holds its own copy of the
+                         ;; continuation but no entry, so cancelling the sleep
+                         ;; there leaves the parent's sleep running.
+                         :reject-fn (fn [err]
                                       (when-let [d @delayed-id]
-                                        (delayed/cancel-delayed-spin! execution-context d))
-                                      nil)
+                                        (delayed/cancel-delayed-spin! (ec/current-execution-context) d))
+                                      (spin-core/resume reject err))
                          :on-resume (fn [_] nil)}]
             (ec/continuation-add! sleep-id release)
             (if-let [cancellation (spin-core/cancelled-after-registration sleep-id release reject)]
