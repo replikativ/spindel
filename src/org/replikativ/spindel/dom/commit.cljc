@@ -270,10 +270,16 @@
    against the committed caches (`commit-reconcile!`), then retire the
    addresses the previous committed tree held that this one does not
    (`retire-dead!`). `prev-vdom` is the tree the LAST commit installed —
-   the render effect's `:current-vdom`."
+   the render effect's `:current-vdom`.
+
+   Mount refs of subtrees the walk creates fire after BOTH steps, on
+   attached elements (R5, `disch/with-mount-effects`)."
   [discharge prev-vdom new-vdom]
-  (commit-reconcile! discharge new-vdom)
-  (retire-dead! discharge prev-vdom new-vdom))
+  (disch/with-mount-effects
+    (fn []
+      (binding [disch/*rendered-addrs* (atom {})]
+        (commit-reconcile* discharge new-vdom))
+      (retire-dead! discharge prev-vdom new-vdom))))
 
 (defn commit-reconcile!
   "Diff `vnode` against the committed per-address caches, apply the
@@ -285,9 +291,12 @@
    older than the committed baseline diffs to its residual against the
    CURRENT state, which is exactly what should be applied.
 
+   One commit step: mount refs of created subtrees fire after the walk,
+   on attached elements (R5, `disch/with-mount-effects`).
+
    Returns nil."
   [discharge vnode]
-  (commit-reconcile* discharge vnode))
+  (disch/with-mount-effects #(commit-reconcile* discharge vnode)))
 
 (defn- commit-reconcile*
   [discharge vnode]

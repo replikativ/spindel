@@ -39,6 +39,39 @@
       (is (= 1 (count @outer-calls)))
       (is (= 1 (count @inner-calls))))))
 
+(deftest test-mount-refs-are-a-commit-effect
+  (testing "inside with-mount-effects, mount refs wait for the commit to
+            finish and then fire in post-order (R5)"
+    (let [calls (atom [])
+          {:keys [discharge log]} (disch/make-mock-discharge)
+          rec (fn [label] (fn [el] (when el (swap! calls conj label))))
+          app (dom/make-vnode :div {:ref (rec :root)}
+                              [(dom/make-vnode :section {:ref (rec :section)}
+                                               [(dom/make-vnode :i {:ref (rec :leaf-1)})
+                                                (dom/make-vnode :b {:ref (rec :leaf-2)})])
+                               (dom/make-vnode :p {:ref (rec :tail)})])
+          seen-inside (atom nil)]
+      (disch/with-mount-effects
+        (fn []
+          (let [el (disch/render-initial! discharge app)]
+            (disch/append-child! discharge :container el))
+          (reset! seen-inside @calls)))
+      (is (= [] @seen-inside) "no ref fired while the commit was still writing")
+      (is (= [:leaf-1 :leaf-2 :section :tail :root] @calls)
+          "post-order: descendants before ancestor, siblings left to right")
+      (is (= :append-child (:op (last @log)))
+          "the attaching write happened before any ref")))
+  (testing "a commit that throws fires none of its mount refs"
+    (let [calls (atom [])
+          {:keys [discharge]} (disch/make-mock-discharge)
+          app (dom/make-vnode :div {:ref (fn [el] (swap! calls conj el))})]
+      (is (thrown? #?(:clj Exception :cljs :default)
+                   (disch/with-mount-effects
+                     (fn []
+                       (disch/render-initial! discharge app)
+                       (throw (ex-info "commit failed" {}))))))
+      (is (= [] @calls)))))
+
 (deftest test-ref-callback-on-remove
   (testing "Ref callback is called with nil on remove"
     (let [ref-calls (atom [])

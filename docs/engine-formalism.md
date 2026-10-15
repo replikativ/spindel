@@ -741,6 +741,37 @@ broken nondeterministically, the subtree re-minted every render.
 `fragment-parent-keeps-its-identity-across-rerender`; full derivation in
 `.internal/slice-environment-integrity.md`.)
 
+**R5 — Mount refs are a commit-time effect.** `render-initial!` builds a
+subtree DETACHED; the parent's `append-child!` / `insert-child!` /
+`replace-child!` (or the container's `appendChild`) attaches it only after it
+returns. A `:ref` fired from inside it — where it used to fire — saw a node with
+no parent: `.isConnected` false, `.closest` nil, zero layout; every consumer
+needing an ancestor or a measurement deferred with `requestAnimationFrame`.
+Every commit point (`initial-mount!`, the R2 root re-mount, `commit-update!` /
+`commit-reconcile!`, `browser/mount!`) now runs inside
+`disch/with-mount-effects`: `render-initial!` QUEUES mount refs, and the queue
+is flushed once the commit step has finished — all DOM writes landed, caches
+seeded/advanced, dead addresses retired. Contract:
+
+- *Attached.* A mount ref receives an element that is in the committed tree,
+  hence document-connected whenever the render container is.
+- *Order.* Each created subtree contributes its refs in post-order —
+  descendants before their ancestor, siblings left to right (the order
+  `render-initial!` completes elements in); subtrees contribute in the order
+  the commit walk created them.
+- *Committed builds only.* Builds are pure values (R3), so a build abandoned or
+  superseded before commit never reaches `render-initial!` and fires nothing;
+  a commit that throws drops its queue.
+- *Unmounts are not deferred.* `call-refs-on-unmount!` fires `(ref nil)` during
+  the walk, while the departing element is still attached.
+
+Outside `with-mount-effects` (direct `render-initial!` calls in tests and
+tooling) refs fire inline on the detached subtree — the caller owns attachment
+there. (Regression: `dom/ref_linkage_test.cljs` — initial mount, `ifor-each`
+insert, conditional flip, root re-mount, superseded build — asserting
+`.isConnected` and `.closest` from inside the callback; `dom/ref_test.cljc`
+`test-mount-refs-are-a-commit-effect` for the queue itself.)
+
 ### Invariant summary table
 
 | composition          | glitch-free | no double-exec | no stale-cache | no orphan cont | deterministic id |

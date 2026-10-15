@@ -234,14 +234,16 @@
   Returns the discharge for later updates."
   [container vdom]
   (let [doc (.-ownerDocument container)
-        discharge (make-dom-discharge doc)
-        root-el (binding [disch/*rendered-addrs* (atom {})]
-                  (disch/render-initial! discharge vdom))]
-    (when root-el
-      (.appendChild container root-el))
-    ;; seed the per-address caches from the mounted tree so a later
-    ;; `refresh!` (commit-time reconciliation) diffs against reality
-    (commit/seed-subtree-caches! vdom)
+        discharge (make-dom-discharge doc)]
+    ;; mount refs fire once the root is attached and the caches seeded (R5)
+    (disch/with-mount-effects
+      (fn []
+        (when-let [root-el (binding [disch/*rendered-addrs* (atom {})]
+                             (disch/render-initial! discharge vdom))]
+          (.appendChild container root-el))
+        ;; seed the per-address caches from the mounted tree so a later
+        ;; `refresh!` (commit-time reconciliation) diffs against reality
+        (commit/seed-subtree-caches! vdom)))
     discharge))
 
 (defn refresh!

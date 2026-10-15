@@ -53,6 +53,9 @@
   - The container's children are NOT managed by spindel
   - Never pass children to foreign-node - they will be ignored
   - The mount/unmount callbacks are synchronous
+  - :on-mount runs after the commit has attached the container (connected
+    when the render root is), so the library may measure it or walk to its
+    ancestors immediately; :on-unmount runs before it is removed
   - Multiple mounts/unmounts may occur if the element is conditionally rendered"
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.dom.elements :as el]

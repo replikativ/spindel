@@ -689,6 +689,48 @@
                                          :el el
                                          :error (str e)})))))
 
+;; Mount refs are a COMMIT-TIME effect (engine-formalism §3.9 R5). Inside a
+;; commit, `render-initial!` creates a subtree DETACHED — its parent's
+;; `append-child!` / `insert-child!` / `replace-child!` runs only after it
+;; returns — so a ref fired from inside it saw a node with no parent: no
+;; `.closest`, no `.isConnected`, no layout. Every consumer had to defer with
+;; requestAnimationFrame. Instead, while a commit is in progress mount refs are
+;; QUEUED here, and `with-mount-effects` fires them once every DOM write of the
+;; commit has landed (and the caches have advanced).
+;;
+;; Order: each created subtree contributes its refs in POST-ORDER (descendants
+;; before their ancestor, siblings left to right — the order `render-initial!`
+;; finishes elements in); subtrees contribute in the order the commit created
+;; them. Unmount refs (nil) are NOT queued: they fire during the walk, while
+;; the departing element is still attached, which is what a cleanup wants.
+(def ^:dynamic *mount-effects*
+  "A volatile vector of [vnode el] mount refs pending for the current commit,
+   or nil outside a commit (then `render-initial!` fires refs inline — the
+   standalone contract, where the caller owns attachment)."
+  nil)
+
+(defn- mount-ref!
+  [vnode el]
+  (when (:ref vnode)
+    (if-let [q *mount-effects*]
+      (vswap! q conj [vnode el])
+      (call-ref! vnode el))))
+
+(defn with-mount-effects
+  "Run `(f)` as one commit step: every mount ref `render-initial!` produces
+   inside it is deferred until `f` returns, then fired in queue order (see
+   `*mount-effects*`). Returns `f`'s value. If `f` throws, the queue is
+   dropped: refs never fire for a commit that did not complete.
+
+   Nested calls get their own queue — a commit triggered synchronously from
+   inside another commit's ref flushes on its own completion."
+  [f]
+  (let [q (volatile! [])
+        result (binding [*mount-effects* q] (f))]
+    (doseq [[vnode el] @q]
+      (call-ref! vnode el))
+    result))
+
 (defn ^:no-doc call-refs-on-unmount!
   "Recursively call ref callbacks with nil for a vnode and its descendants.
   REFS ONLY — state retirement (caches, element registry) is derived once,
@@ -721,7 +763,11 @@
 (defn render-initial!
   "Render entire vdom tree to target for initial mount.
 
-  Creates all elements and stores references."
+  Creates all elements and stores references. Returns the subtree's root
+  element DETACHED — attaching it is the caller's job. Inside
+  `with-mount-effects` (every commit point does this) `:ref` callbacks are
+  queued and fire after the commit's DOM writes; outside one they fire
+  inline, post-order, on the still-detached subtree."
   [discharge vnode]
   (cond
     (nil? vnode)
@@ -775,8 +821,9 @@
         (when deferred-value
           (set-attribute! discharge el :value deferred-value)))
 
-      ;; Call ref callback with element after fully rendered
-      (call-ref! vnode el)
+      ;; Ref callback for the fully rendered element — queued until the
+      ;; commit's DOM writes have landed when inside `with-mount-effects`
+      (mount-ref! vnode el)
 
       el)
 

@@ -66,28 +66,31 @@
          (not= (:tag current-vdom) (:tag new-vdom)))))))
 
 (defn initial-mount!
-  "Perform initial mount of vdom to container."
+  "Perform initial mount of vdom to container.
+
+  Mount refs fire after the root is appended to `container` and the caches
+  are seeded (R5, `disch/with-mount-effects`)."
   [render-state vdom]
-  (let [{:keys [container discharge]} render-state
+  (let [{:keys [container discharge]} render-state]
+    (disch/with-mount-effects
+      (fn []
         ;; Clear any existing content
-        _ (when container
-            (set! (.-innerHTML container) ""))
-        ;; Render initial vdom
-        root-el (binding [disch/*rendered-addrs* (atom {})]
-                  (disch/render-initial! discharge vdom))]
-    ;; Append to container
-    (when (and container root-el)
-      (.appendChild container root-el))
-    ;; The whole tree just reached the DOM: SEED the caches from the tree
-    ;; itself. This replaces promoting the build's staging — staging is
-    ;; last-write-wins per address, so when several builds raced before this
-    ;; mount, the staged value could describe a build the DOM never received.
-    ;; The tree the DOM holds is the only sound source. (Commit point
-    ;; ordering unchanged; this is still the commit point that matters most —
-    ;; a spin with no tracks runs its body exactly once, here.)
-    (commit/seed-subtree-caches! vdom)
-    ;; No transfer needed — address-based refs work with cleared vdom
-    ;; (clear-deltas-deep preserves :addr fields)
+        (when container
+          (set! (.-innerHTML container) ""))
+        (let [root-el (binding [disch/*rendered-addrs* (atom {})]
+                        (disch/render-initial! discharge vdom))]
+          ;; Append to container
+          (when (and container root-el)
+            (.appendChild container root-el)))
+        ;; The whole tree just reached the DOM: SEED the caches from the tree
+        ;; itself. This replaces promoting the build's staging — staging is
+        ;; last-write-wins per address, so when several builds raced before
+        ;; this mount, the staged value could describe a build the DOM never
+        ;; received. The tree the DOM holds is the only sound source. (Commit
+        ;; point ordering unchanged; this is still the commit point that
+        ;; matters most — a spin with no tracks runs its body exactly once,
+        ;; here.)
+        (commit/seed-subtree-caches! vdom)))
     ;; builds are pure values — nothing to clear
     (assoc render-state
            :current-vdom vdom
@@ -114,39 +117,41 @@
       (do
         (log/debug :render/root-replace {:old (:addr current-vdom)
                                          :new (:addr new-vdom)})
-        (binding [disch/*rendered-addrs* (atom {})]
-          ;; Refs cycle for the WHOLE old tree — every element is physically
-          ;; destroyed by the innerHTML wipe, so even an address the new tree
-          ;; re-claims gets nil then its fresh element (render-initial! calls
-          ;; the ref again). Foreign nodes (TipTap et al.) rely on this to
-          ;; release resources.
-          (disch/call-refs-on-unmount! current-vdom)
-          (let [root-el (disch/render-initial! discharge new-vdom)]
-            (when container
-              (set! (.-innerHTML container) "")
-              (when root-el (.appendChild container root-el))))
-          ;; The new tree is in the DOM: seed its caches from the tree, then
-          ;; retire everything the old tree held that the new one does not —
-          ;; the mounted model is the difference between the two committed
-          ;; trees, nothing else. Seed BEFORE retire so a re-claimed address's
-          ;; fresh cache is never touched (it is in the new tree, hence never
-          ;; in the dead set).
-          (commit/seed-subtree-caches! new-vdom)
-          (commit/retire-dead! discharge current-vdom new-vdom))
+        (disch/with-mount-effects
+          (fn []
+            (binding [disch/*rendered-addrs* (atom {})]
+              ;; Refs cycle for the WHOLE old tree — every element is physically
+              ;; destroyed by the innerHTML wipe, so even an address the new tree
+              ;; re-claims gets nil then its fresh element (render-initial! calls
+              ;; the ref again). Foreign nodes (TipTap et al.) rely on this to
+              ;; release resources.
+              (disch/call-refs-on-unmount! current-vdom)
+              (let [root-el (disch/render-initial! discharge new-vdom)]
+                (when container
+                  (set! (.-innerHTML container) "")
+                  (when root-el (.appendChild container root-el))))
+              ;; The new tree is in the DOM: seed its caches from the tree, then
+              ;; retire everything the old tree held that the new one does not —
+              ;; the mounted model is the difference between the two committed
+              ;; trees, nothing else. Seed BEFORE retire so a re-claimed address's
+              ;; fresh cache is never touched (it is in the new tree, hence never
+              ;; in the dead set).
+              (commit/seed-subtree-caches! new-vdom)
+              (commit/retire-dead! discharge current-vdom new-vdom))))
         (assoc render-state :current-vdom new-vdom))
 
       :else
       (do
         ;; Discharge deltas directly - no diffing needed
         ;; DOM refs found by address, no transfer needed
-        (binding [disch/*rendered-addrs* (atom {})]
-          ;; COMMIT-TIME RECONCILIATION (dom/commit): diff the arrived tree
-          ;; against the committed caches, apply, advance the caches in the
-          ;; same step — then retire the addresses the PREVIOUS committed
-          ;; tree held that this one does not (caches + element registry,
-          ;; one derivation). Unmount REFS fire from the walk's own removal
-          ;; paths, at the moment the element leaves the DOM.
-          (commit/commit-update! discharge current-vdom new-vdom))
+        ;; COMMIT-TIME RECONCILIATION (dom/commit): diff the arrived tree
+        ;; against the committed caches, apply, advance the caches in the
+        ;; same step — then retire the addresses the PREVIOUS committed
+        ;; tree held that this one does not (caches + element registry,
+        ;; one derivation). Unmount REFS fire from the walk's own removal
+        ;; paths, at the moment the element leaves the DOM; mount refs of
+        ;; created subtrees fire once the whole walk has landed (R5).
+        (commit/commit-update! discharge current-vdom new-vdom)
         (assoc render-state :current-vdom new-vdom)))))
 
 ;; =============================================================================

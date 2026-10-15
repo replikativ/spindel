@@ -85,7 +85,9 @@ Reach for `:ref` when you need a stable handle to a real DOM element
 that survives reconciliation (focus, IME state, third-party JS owning
 the subtree). `:ref` fires once on mount with the element and once on
 unmount with `nil`; it does NOT re-fire when the vnode's attributes
-change (in-place reconciliation reuses the element).
+change (in-place reconciliation reuses the element). The mount call
+comes after the element is attached to the tree, so `.closest`,
+parent traversal and measurements work directly inside it.
 
 `block_editor` uses `:ref` to populate a `block-id → el` registry that
 its focus-spin reads. `tiptap_demo` uses `foreign-node`, which sets
