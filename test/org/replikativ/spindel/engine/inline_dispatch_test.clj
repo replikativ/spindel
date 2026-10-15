@@ -235,6 +235,24 @@
       (is (number? d))
       (is (< d 300) (str "stack depth " d)))))
 
+(deftest spread-on-a-synchronous-executor-keeps-the-stack-flat
+  ;; with the default parallelism: the extra workers of an inline executor
+  ;; ran inline, each in a frame of its own, so every generation nested one
+  ;; (foerster's SMC overflowed the stack at ~100 barriers and hung)
+  (let [e (ex/synchronous-executor)
+        done (promise)
+        generation (fn generation [g]
+                     (if (= g 2000)
+                       (deliver done (alength (.getStackTrace (Thread/currentThread))))
+                       (let [arrived (atom 0)]
+                         (ex/spread! e 4 (fn [_]
+                                           (when (= 4 (swap! arrived inc))
+                                             (generation (inc g))))))))]
+    (ex/run-framed! e #(generation 0))
+    (let [d (deref done 20000 ::timeout)]
+      (is (number? d))
+      (is (< d 300) (str "stack depth " d)))))
+
 (deftest spread-isolates-a-failing-index
   (let [e (ex/default-executor)
         seen (atom #{})

@@ -584,10 +584,14 @@
   here.
 
   Inline dispatch keeps a computation on its thread, so fan-out that should
-  use several cores says so here, at the grain it chooses."
+  use several cores says so here, at the grain it chooses. An executor that
+  runs tasks inline (`synchronous-executor`) gets one worker."
   ([executor n task] (spread! executor n task default-parallelism))
   ([executor n task parallelism]
-   (let [workers (max 1 (min n parallelism))
+   (let [;; an executor that runs tasks inline has no other thread to spread
+         ;; to: its extra workers would only nest a frame per call, a frame per
+         ;; generation when the last arrival spreads the next one
+         workers (if (inline-executor? executor) 1 (max 1 (min n parallelism)))
          claimed (atom 0)
          claim (fn claim []
                  (let [i (dec (swap! claimed inc))]
