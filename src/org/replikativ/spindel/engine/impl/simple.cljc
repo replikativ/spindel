@@ -39,6 +39,20 @@
    Used by deref-spin to detect re-entrant @(spin ...) which would deadlock."
   false)
 
+#?(:clj
+   (def ^:private ^ThreadLocal drain-thread
+     "Set on the thread running a drain, for that drain: unlike `*in-drain?*`,
+      `future` and `bound-fn` do not carry it to another thread."
+     (ThreadLocal/withInitial (reify java.util.function.Supplier (get [_] false)))))
+
+(defn on-drain-thread?
+  "Whether the calling thread is running a drain: a spin body or a
+   continuation. Work it hands to another thread (a `future`, a `bound-fn`
+   run elsewhere) is not; a `bound-fn` run on a drain is."
+  []
+  #?(:clj (boolean (.get drain-thread))
+     :cljs *in-drain?*))
+
 ;; =============================================================================
 ;; Forward declarations
 ;; =============================================================================
@@ -1418,7 +1432,9 @@
         ;; atom; we just skip the bookkeeping for them.
         (when drain-active (swap! drain-active inc))
         (try
-          (let [cas-result (rtp/cas-state! context [:engine/draining?] false true)]
+          (let [cas-result (rtp/cas-state! context [:engine/draining?] false true)
+                ;; a drain of another context, nested on this thread
+                outer-drain? #?(:clj (.get drain-thread) :cljs false)]
             (if-not cas-result
               ;; Another drain holds the lock. We bumped the counter, so
               ;; the finally below decrements it. No work to do here.
@@ -1429,6 +1445,7 @@
               (try
                 (log/trace :engine/drain-start)
                 (binding [*in-drain?* true]
+                  #?(:clj (.set drain-thread true))
                   (let [event-count (atom 0)]
                     ;; Drain loop with intra-loop running check. If
                     ;; stop-context! flips :running=false while we're
@@ -1496,6 +1513,7 @@
                                              (constantly {}))
                             @event-count))))))
                 (finally
+                  #?(:clj (.set drain-thread outer-drain?))
                   ;; Always release draining lock.
                   (rtp/swap-state! context [:engine/draining?] (constantly false))
 
