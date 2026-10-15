@@ -2,7 +2,8 @@
   "Minimal cases found by the differential DOM fuzzer
    (`differential_fuzz_test.cljs`), pinned on a real jsdom tree.
 
-   Each defect below is OPEN. Its test is a strict expected-failure: it
+   Defect 1 is FIXED; its tests assert the correct behaviour. Each other
+   defect below is OPEN. Its test is a strict expected-failure: it
    asserts the defect still reproduces, so the suite stays green while it is
    open AND turns red the moment a change fixes it — at which point the
    assertion is flipped to the correct-behaviour one (already written next
@@ -57,6 +58,16 @@
                    "KNOWN DEFECT no longer reproduces through the oracle — flip this test"))
              (done)))))
 
+(defn- fixed-case
+  "A fuzzer minimal case of a FIXED defect through the oracle: must pass."
+  [fuzz-case done]
+  (let [saved ec/*execution-context*]
+    (.then (h/run-case fuzz-case)
+           (fn [r]
+             (set! ec/*execution-context* saved)
+             (is (:pass? r) (pr-str (:failures r)))
+             (done)))))
+
 (defn- scenario
   "Mount `(make-root ctx)` on a fresh jsdom body; run each step of `steps`
    (fns of no args) to quiescence. Resolves to the body's innerHTML."
@@ -79,7 +90,7 @@
                    html))))))
 
 ;; =============================================================================
-;; Defect 1 — a superseded slice completes CLEAN and its stale result is served
+;; Defect 1 (FIXED) — a superseded slice completed CLEAN and was served
 ;; =============================================================================
 ;;
 ;; Shape: a parent tracks signal A and renders an async ifor-each whose items
@@ -88,40 +99,25 @@
 ;; suspended on the deferred, then deliver it.
 ;;
 ;;   expected  <li>1:2</li><li>0:2</li>      (both items see 2 entries)
-;;   actual    <li>1:2</li><li>0:1</li>      (item 0 rendered from the OLD A)
+;;   was       <li>1:2</li><li>0:1</li>      (item 0 rendered from the OLD A)
 ;;
-;; and it stays stale: further changes made while still suspended (a second
-;; swap before the delivery) do not repair it. Appending instead of
-;; prepending renders correctly; so does delivering before the swap.
+;; Mechanism (engine-state probes): `:signal-change` filtered item 0 out as
+;; a DESCENDANT observer (its parent re-creates it) and did nothing else to
+;; it — it stayed :clean with its await on the deferred intact. Its
+;; freshness relied on the parent's re-run reaching it inside the batch,
+;; where the await fast path is off; but the parent's for-each awaited the
+;; new item 1 first and suspended. The delivery then completed item 0's
+;; superseded run, `cache-result!` certified it :clean, and the parent's
+;; later re-registration (same id, identical captures — a B-gate no-op)
+;; served it. The second case below is the B-gate variant: an element
+;; spin re-registered with CHANGED captures while running, whose old run
+;; completed first and cleaned the node the B-gate had dirtied.
 ;;
-;; Mechanism, traced with engine-state probes (`[:nodes id]`,
-;; `[:await-conts id]`, `[:track-subscriptions id]` around each step):
-;;
-;; 1. The A change reaches item 0 as an observer, but `:signal-change`
-;;    filters it out as a DESCENDANT observer ("re-created by their parent",
-;;    simple.cljc `compute-descendant-observers`). Item 0 is marked :dirty,
-;;    yet its track cont is NOT resumed and its `:external-await` cont on the
-;;    deferred survives the change — same cont ids before and after.
-;; 2. The parent re-runs. The async for-each awaits its items IN ORDER, and
-;;    the new item 1 comes first and is itself suspended on the deferred, so
-;;    item 0 is not re-invoked yet.
-;; 3. The delivery resumes item 0's surviving, superseded slice. It completes
-;;    with the A value it read before the change; `spin-cache-result!` +
-;;    `graph-commit-deps!` leave the node :clean, :completed?.
-;; 4. The for-each loop finally invokes the re-created item-0 spin — same
-;;    structural id, captures `identical?` (B-gate, formalism §1.6) — and
-;;    Spin `-invoke` Case 1b serves the clean cached result. The stale vnode
-;;    is committed and nothing marks it dirty again.
-;;
-;; Formalism §3.4 states the invariant this breaks ("if A changes while
-;; suspended on X, the body re-runs from the track A point and the stale
-;; await X cont must be cancelled"): when the re-run is DEFERRED to a parent
-;; that re-creates the child, nothing cancels the child's external await in
-;; the meantime, and the completion of a slice from a superseded generation
-;; is allowed to mark the node clean. Either the filtered descendant's
-;; external-await conts must be truncated with its track cont, or a
-;; completion must not clean a node that was dirtied after the slice's track
-;; point.
+;; Fix (formalism §3.4, "no stale certification"): a filtered descendant is
+;; invalidated at the change, and a run invalidated while in flight is
+;; marked `:stale-run?`, so its completion leaves the node :dirty
+;; (`simple/invalidate-node`, `cache-result!`). Engine-level regression:
+;; `engine/stale_run_test.cljc`.
 
 (defn- defect-1-root [a d]
   (spin (let [{v :new} (track a)]
@@ -133,7 +129,7 @@
                                              (el/li {:key (:id item)}
                                                     (str (:id item) ":" (count (:xs s)))))))))))))
 
-(deftest defect-1-superseded-slice-served-from-cache
+(deftest defect-1-superseded-slice-not-served-from-cache
   (async done
          (let [a (atom nil) d (atom nil)]
            (-> (scenario (fn [c]
@@ -143,14 +139,13 @@
                          [#(swap! @a update :xs (fn [xs] (into [{:id 1}] xs)))
                           #(sync/deliver! @d :go)])
                (.then (fn [html]
-                        (known-defect html
-                                      "<ul class=\"root\"><li>1:2</li><li>0:2</li></ul>"
-                                      "item 0 must render the A value current at quiescence")
+                        (is (= "<ul class=\"root\"><li>1:2</li><li>0:2</li></ul>" html)
+                            "item 0 must render the A value current at quiescence")
                         (done)))))))
 
 (deftest defect-1-fuzzer-minimal-case
   (async done
-         (known-defect-case
+         (fixed-case
           {:program {:op :spin :tracks [0] :dfr nil
                      :body {:op :for :sig 0 :key? false
                             :item {:op :el :tag :div :attr nil
@@ -172,7 +167,7 @@
 
 (deftest defect-1-fuzzer-case-stale-sibling-slot
   (async done
-         (known-defect-case
+         (fixed-case
           {:program {:op :spin :tracks [0] :dfr nil
                      :body {:op :for :sig 0 :key? false
                             :item {:op :el :tag :div :attr nil
