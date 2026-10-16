@@ -519,53 +519,55 @@
                            :current-signal (:id current-ref)})))
         (set-node-value! parent-ctx expected-ref value)))))
 
-(defn- seat-if-unchanged!
-  "Like `ensure-parent-signal-and-seat!`, but only while the parent still holds
-   `current`: false (nothing seated) when another merge seated a value since."
-  [parent-ctx sid expected-ref current value]
-  (with-registry-authority-lock
-    (fn []
-      (let [current-ref (get (registry parent-ctx) sid)]
-        (when-not (= (:id expected-ref) (:id current-ref))
-          (throw (ex-info "Fork settlement system shape changed during merge"
-                          {:type ::fork-system-shape-changed
-                           :system sid
-                           :expected-signal (:id expected-ref)
-                           :current-signal (:id current-ref)})))
-        (if (identical? current (node-value parent-ctx expected-ref))
-          (do (set-node-value! parent-ctx expected-ref value) true)
-          false)))))
+(defn- join-into-overlay!
+  "Make `value` the writable system of `overlay`, in place (the same overlay and
+   atom: every holder sees it): joined with the writable system it holds now
+   when both are convergent (a write or a merge that landed meanwhile stays),
+   else `value` (a durable branch handle, whose branch already holds them). A
+   compare-and-set against the value read, retried when another writer (an
+   in-place write, another merge, an advance) changed it in between."
+  [overlay value opts]
+  (async+sync
+   (:sync? (merge yc/default-opts opts))
+   (async
+    (let [cell (:local-writes overlay)]
+      (loop []
+        (let [cur @cell
+              w (if (and (satisfies? yc/PConvergent cur) (satisfies? yc/PConvergent value))
+                  (let [j (yc/-join cur value (merge yc/default-opts opts))]
+                    (if (fn? j) (await j) j))
+                  value)]
+          (if (compare-and-set! cell cur w)
+            overlay
+            (recur))))))))
 
 (defn- seat-merged!
   "Seat `value`, a child world merged into system `sid` of `parent-ctx`.
 
-   When the parent is itself a fork holding an overlay (a fork of a fork:
-   the child forked the overlay's writable system), `value` is the parent's
-   new writable system, not a replacement for its overlay: seat a new overlay
-   whose writable system is `value`, joined with the overlay's current
-   writable system when both are convergent (a sibling merged meanwhile
-   stays). The overlay seated before is not mutated, and the seat happens only
-   while the parent still holds it (else it is recomputed). Seating `value`
-   itself would leave the parent with a plain system, and its own merge would
-   then land nothing."
+   When the parent is itself a fork holding an overlay (a fork of a fork: the
+   child forked the overlay's writable system), `value` is the parent's new
+   writable system, not a replacement for its overlay: it goes into that
+   overlay (`join-into-overlay!`), which stays seated. Seating `value` itself
+   would leave the parent with a plain system, and its own merge would then
+   land nothing. The registry reference is validated first, under its lock."
   [parent-ctx sid expected-ref value opts]
   (async+sync
    (:sync? (merge yc/default-opts opts))
    (async
-    (loop []
-      (let [current (node-value parent-ctx expected-ref)]
-        (if (and (ovl/overlay? current) (not (ovl/overlay? value)))
-          (let [cur (ovl/overlay-system current)
-                w (if (and (satisfies? yc/PConvergent cur) (satisfies? yc/PConvergent value))
-                    (let [j (yc/-join cur value (merge yc/default-opts opts))]
-                      (if (fn? j) (await j) j))
-                    value)
-                seated (assoc current :local-writes (atom w))]
-            (if (seat-if-unchanged! parent-ctx sid expected-ref current seated)
-              seated
-              (recur)))
-          (do (ensure-parent-signal-and-seat! parent-ctx sid expected-ref value)
-              value)))))))
+    (let [current (with-registry-authority-lock
+                    (fn []
+                      (let [current-ref (get (registry parent-ctx) sid)]
+                        (when-not (= (:id expected-ref) (:id current-ref))
+                          (throw (ex-info "Fork settlement system shape changed during merge"
+                                          {:type ::fork-system-shape-changed
+                                           :system sid
+                                           :expected-signal (:id expected-ref)
+                                           :current-signal (:id current-ref)})))
+                        (node-value parent-ctx expected-ref))))]
+      (if (and (ovl/overlay? current) (not (ovl/overlay? value)))
+        (await (join-into-overlay! current value opts))
+        (do (ensure-parent-signal-and-seat! parent-ctx sid expected-ref value)
+            value))))))
 
 (defn- ensure-registry-mutable! [ctx]
   (with-registry-authority-lock #(ensure-world-shape-mutable! ctx)))
@@ -2255,7 +2257,9 @@
                             co (await (ygg/checkout fsys cbranch mopts))
                             m (await (ygg/merge! co pbranch mopts))]
                         (if (ovl/overlay? cval)
-                          (ovl/reseat-overlay! cval m)
+                          ;; in place and joined: a nested fork that merged into
+                          ;; this one meanwhile is not overwritten
+                          (await (join-into-overlay! cval m mopts))
                           (set-node-value! child-ctx sig-ref m)))))
                   (recur (next ps))))))
           (complete-advance! fork-handle)

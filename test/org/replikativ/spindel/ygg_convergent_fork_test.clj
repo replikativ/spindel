@@ -126,3 +126,27 @@
             (is (ovl/overlay? @(ygg/system-signal "kb")) "the outer fork keeps its overlay"))
           (ygg/merge-fork! outer)
           (is (= #{:shared :outer :inner} (g/elements @kref))))))))
+
+(defrecord ^:private JoinSet [xs on-join]
+  yggdrasil.convergent/PConvergent
+  (-join [this other] (yggdrasil.convergent/-join this other {}))
+  (-join [_ other _opts]
+    (when on-join (on-join))
+    (->JoinSet (into xs (:xs other)) nil)))
+
+(defrecord ^:private TestOverlay [parent local-writes mode])
+
+(deftest a-write-during-a-nested-merge-is-kept
+  (testing "an in-place write to the parent overlay while a merge joins into it is not lost"
+    (let [cell (atom nil)
+          ov (->TestOverlay nil cell :frozen)
+          fired (atom false)]
+      ;; the join of the value read lets another writer land first
+      (reset! cell (->JoinSet #{:outer}
+                              #(when (compare-and-set! fired false true)
+                                 (swap! cell (fn [c] (->JoinSet (conj (:xs c) :concurrent) nil))))))
+      (is (ovl/overlay? ov))
+      (#'ygg/join-into-overlay! ov (->JoinSet #{:outer :inner} nil) {:sync? true})
+      (is @fired "the interleaving happened")
+      (is (= #{:outer :inner :concurrent} (:xs @cell)) "retried against the new value: nothing lost")
+      (is (identical? cell (:local-writes ov)) "in place: the same overlay and cell"))))
