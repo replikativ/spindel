@@ -150,3 +150,21 @@
       (is @fired "the interleaving happened")
       (is (= #{:outer :inner :concurrent} (:xs @cell)) "retried against the new value: nothing lost")
       (is (identical? cell (:local-writes ov)) "in place: the same overlay and cell"))))
+
+(deftest a-merge-into-a-re-registered-system-is-refused
+  (testing "the parent's registration changes while the join is pending: no seat, it throws"
+    (let [ctx (sp/create-execution-context)]
+      (sp/with-context ctx
+        (ygg/register! (mem-gset "kb"))
+        (let [reg #(org.replikativ.spindel.engine.protocols/get-state ctx [ygg/registry-key])
+              ref (get (reg) "kb")
+              ;; the join of the value read lets the registration change first
+              cell (atom nil)
+              _ (reset! cell (->JoinSet #{:outer}
+                                        #(org.replikativ.spindel.engine.protocols/swap-state!
+                                          ctx [ygg/registry-key] (fn [m] (assoc m "kb" (assoc ref :id (random-uuid)))))))
+              ov (->TestOverlay nil cell :frozen)]
+          (#'ygg/set-node-value! ctx ref ov)
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"shape changed"
+                                (#'ygg/seat-merged! ctx "kb" ref (->JoinSet #{:outer :inner} nil) {:sync? true})))
+          (is (= #{:outer} (:xs @cell)) "nothing seated into the detached overlay"))))))
