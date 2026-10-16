@@ -636,6 +636,22 @@
             (contains? (get ov top-key) entity-id))))
     (constantly true)))
 
+(defn unchanged-write?
+  "A predicate `(unchanged? top-key entity-id current new)`: whether writing
+  `new` over `current` at that entity of `backend` would change nothing a
+  reader can tell, so the write may be skipped. `new` must be `identical?`
+  to `current`, and the entity must not be one the write would copy out of
+  a parent that can still change: it is this world's own (`entity-locality`),
+  or the parent is immutable (a frozen fork's), so following it is the same
+  as owning a copy."
+  [backend]
+  (let [local? (entity-locality backend)
+        frozen-parent? (and (instance? OverlayBackend backend)
+                            (some-> (:parent-backend backend) backend-type (= :immutable)))]
+    (fn [top-key entity-id current new]
+      (and (identical? current new)
+           (or frozen-parent? (local? top-key entity-id))))))
+
 (defn create-overlay-backend
   "Create OverlayBackend with empty overlay over parent backend.
 

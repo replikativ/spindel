@@ -55,3 +55,23 @@
     (doseq [writer writers] @writer)
     (is (= 1000 (backend/backend-read overlay [:nodes :a :value])))
     (is (= 0 (backend/backend-read parent [:nodes :a :value])))))
+
+(deftest an-unchanged-write-is-skipped-only-where-nothing-can-tell
+  (let [v {:k 1}
+        state {:spin-tracking {:s v}}]
+    (testing "over a parent that can still change, an inherited entity must be copied to stop following"
+      (let [overlay (backend/create-overlay-backend (backend/create-atom-backend state))
+            unchanged? (backend/unchanged-write? overlay)]
+        (is (not (unchanged? :spin-tracking :s (backend/backend-read overlay [:spin-tracking :s]) v)))))
+    (testing "over a frozen (immutable) parent, following it is owning it"
+      (let [overlay (backend/create-overlay-backend (backend/create-immutable-backend state))
+            unchanged? (backend/unchanged-write? overlay)]
+        (is (unchanged? :spin-tracking :s (backend/backend-read overlay [:spin-tracking :s]) v))
+        (is (not (unchanged? :spin-tracking :s v {:k 1})) "equal is not identical")))
+    (testing "an entity the overlay already holds"
+      (let [overlay (backend/create-overlay-backend (backend/create-atom-backend {}))
+            _ (backend/backend-write! overlay [:spin-tracking :s] (constantly v))
+            unchanged? (backend/unchanged-write? overlay)]
+        (is (unchanged? :spin-tracking :s (backend/backend-read overlay [:spin-tracking :s]) v))))
+    (testing "a plain atom backend"
+      (is ((backend/unchanged-write? (backend/create-atom-backend state)) :spin-tracking :s v v)))))

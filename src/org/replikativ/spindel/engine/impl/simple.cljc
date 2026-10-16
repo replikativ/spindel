@@ -765,13 +765,19 @@
 
   Returns the context with `:slice-state`'s `:bindings` swapped in."
   [context spin-id cont]
-  (let [{:keys [bindings chain-head occurrences tracking]} (:slice-state cont)]
-    (when tracking
+  (let [{:keys [bindings chain-head occurrences tracking]} (:slice-state cont)
+        chain-head (or chain-head (addressing/body-start-chain-head spin-id))
+        ;; a slice resumed right after it suspended finds its own snapshot
+        ;; still in place: writing it again would change nothing
+        unchanged? (backend/unchanged-write? (:backend context))
+        skip? (fn [top-key entity-id path new]
+                (unchanged? top-key entity-id (rtp/get-state context path) new))]
+    (when (and tracking (not (skip? :spin-tracking spin-id [:spin-tracking spin-id] tracking)))
       (rtp/swap-state! context [:spin-tracking spin-id] (constantly tracking)))
-    (addressing/seed-occurrences! context spin-id occurrences)
-    (addressing/seed-chain-head! context spin-id
-                                 (or chain-head
-                                     (addressing/body-start-chain-head spin-id)))
+    (when-not (skip? :addressing :occurrences [:addressing :occurrences spin-id] occurrences)
+      (addressing/seed-occurrences! context spin-id occurrences))
+    (when-not (skip? :addressing :chain-heads [:addressing :chain-heads spin-id] chain-head)
+      (addressing/seed-chain-head! context spin-id chain-head))
     (cond-> context
       bindings (assoc :bindings bindings))))
 
@@ -2605,7 +2611,8 @@
   it: it reached a site that has to be seen (a savepoint, whose decision a
   trace records)."
   [context spin-id]
-  (when spin-id
+  ;; once per spin: its later sites find it marked
+  (when (and spin-id (not (contains? (rtp/get-state context [:engine/reuse-barriers]) spin-id)))
     (rtp/swap-state! context [:engine/reuse-barriers] #(conj (or % #{}) spin-id))))
 
 (defn- adoptable-subtree
