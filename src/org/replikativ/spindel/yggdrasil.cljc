@@ -519,6 +519,54 @@
                            :current-signal (:id current-ref)})))
         (set-node-value! parent-ctx expected-ref value)))))
 
+(defn- seat-if-unchanged!
+  "Like `ensure-parent-signal-and-seat!`, but only while the parent still holds
+   `current`: false (nothing seated) when another merge seated a value since."
+  [parent-ctx sid expected-ref current value]
+  (with-registry-authority-lock
+    (fn []
+      (let [current-ref (get (registry parent-ctx) sid)]
+        (when-not (= (:id expected-ref) (:id current-ref))
+          (throw (ex-info "Fork settlement system shape changed during merge"
+                          {:type ::fork-system-shape-changed
+                           :system sid
+                           :expected-signal (:id expected-ref)
+                           :current-signal (:id current-ref)})))
+        (if (identical? current (node-value parent-ctx expected-ref))
+          (do (set-node-value! parent-ctx expected-ref value) true)
+          false)))))
+
+(defn- seat-merged!
+  "Seat `value`, a child world merged into system `sid` of `parent-ctx`.
+
+   When the parent is itself a fork holding an overlay (a fork of a fork:
+   the child forked the overlay's writable system), `value` is the parent's
+   new writable system, not a replacement for its overlay: seat a new overlay
+   whose writable system is `value`, joined with the overlay's current
+   writable system when both are convergent (a sibling merged meanwhile
+   stays). The overlay seated before is not mutated, and the seat happens only
+   while the parent still holds it (else it is recomputed). Seating `value`
+   itself would leave the parent with a plain system, and its own merge would
+   then land nothing."
+  [parent-ctx sid expected-ref value opts]
+  (async+sync
+   (:sync? (merge yc/default-opts opts))
+   (async
+    (loop []
+      (let [current (node-value parent-ctx expected-ref)]
+        (if (and (ovl/overlay? current) (not (ovl/overlay? value)))
+          (let [cur (ovl/overlay-system current)
+                w (if (and (satisfies? yc/PConvergent cur) (satisfies? yc/PConvergent value))
+                    (let [j (yc/-join cur value (merge yc/default-opts opts))]
+                      (if (fn? j) (await j) j))
+                    value)
+                seated (assoc current :local-writes (atom w))]
+            (if (seat-if-unchanged! parent-ctx sid expected-ref current seated)
+              seated
+              (recur)))
+          (do (ensure-parent-signal-and-seat! parent-ctx sid expected-ref value)
+              value)))))))
+
 (defn- ensure-registry-mutable! [ctx]
   (with-registry-authority-lock #(ensure-world-shape-mutable! ctx)))
 
@@ -1470,20 +1518,8 @@
                                   acc* (cond
                                        ;; OVERLAY fork (convergent :overlay opt + datahike/git): join back.
                                          (ovl/overlay? cval)
-                                         (let [m (await (ygg/merge-down! cval opts))
-                                               ;; a fork of a fork: the parent is itself an
-                                               ;; overlay, and `m` is its new writable system
-                                               ;; (the nested fork forked `overlay-system`).
-                                               ;; Re-seat it, as `merge-fork-context-from-parent!`
-                                               ;; does: seating `m` itself would replace the
-                                               ;; parent's overlay with a plain system, and the
-                                               ;; parent's own merge would then land nothing.
-                                               pval (node-value parent-ctx sig-ref)
-                                               seated (if (ovl/overlay? pval)
-                                                        (ovl/reseat-overlay! pval m)
-                                                        m)]
-                                           (ensure-parent-signal-and-seat!
-                                            parent-ctx sid sig-ref seated)
+                                         (let [m (await (ygg/merge-down! cval opts))]
+                                           (await (seat-merged! parent-ctx sid sig-ref m opts))
                                            (ygg/discard! cval)
                                            (conj acc sid))
 
@@ -1500,11 +1536,9 @@
                                                pbranch (ygg/current-branch psys)
                                                co      (await (ygg/checkout cval pbranch mopts))
                                                mg      (await (ygg/merge! co fbranch mopts))]
-                                           (ensure-parent-signal-and-seat!
-                                            parent-ctx sid sig-ref mg)
+                                           (await (seat-merged! parent-ctx sid sig-ref mg mopts))
                                            (let [m (await (ygg/delete-branch! mg fbranch mopts))]
-                                             (ensure-parent-signal-and-seat!
-                                              parent-ctx sid sig-ref m))
+                                             (await (seat-merged! parent-ctx sid sig-ref m mopts)))
                                            (conj acc sid))
 
                                          ;; the fork was minted as an overlay but no

@@ -92,3 +92,37 @@
           (ygg/merge-fork! outer)
           (is (= #{:shared :outer :inner} (g/elements @kref))
               "the outer merge lands its own write and the inner one"))))))
+
+(deftest sibling-nested-forks-both-land
+  (testing "two overlay forks of an overlay fork: merging both keeps both, and the outer merge lands all"
+    (let [ctx (sp/create-execution-context)]
+      (sp/with-context ctx
+        (let [kref (ygg/register! (-> (mem-gset "kb") (g/conj :shared)))
+              outer (ygg/fork! {:convergent-fork :overlay})]
+          (ygg/with-fork outer
+            (ovl/overlay-swap! @(ygg/system-signal "kb") (fn [s] (g/conj s :outer)))
+            (let [a (ygg/fork! {:convergent-fork :overlay})
+                  b (ygg/fork! {:convergent-fork :overlay})]
+              (ygg/with-fork a (ovl/overlay-swap! @(ygg/system-signal "kb") (fn [s] (g/conj s :a))))
+              (ygg/with-fork b (ovl/overlay-swap! @(ygg/system-signal "kb") (fn [s] (g/conj s :b))))
+              (ygg/merge-fork! a)
+              (ygg/merge-fork! b)))
+          (ygg/merge-fork! outer)
+          (is (= #{:shared :outer :a :b} (g/elements @kref))
+              "the second sibling's merge did not drop the first's"))))))
+
+(deftest a-branch-fork-of-an-overlay-fork-merges-everything
+  (testing "outer overlay fork, inner default (branch) fork of it: both land"
+    (let [ctx (sp/create-execution-context)]
+      (sp/with-context ctx
+        (let [kref (ygg/register! (-> (mem-gset "kb") (g/conj :shared)))
+              outer (ygg/fork! {:convergent-fork :overlay})]
+          (ygg/with-fork outer
+            (ovl/overlay-swap! @(ygg/system-signal "kb") (fn [s] (g/conj s :outer)))
+            (let [inner (ygg/fork!)]
+              (ygg/with-fork inner
+                (swap! (ygg/system-signal "kb") (fn [s] (g/conj s :inner))))
+              (ygg/merge-fork! inner))
+            (is (ovl/overlay? @(ygg/system-signal "kb")) "the outer fork keeps its overlay"))
+          (ygg/merge-fork! outer)
+          (is (= #{:shared :outer :inner} (g/elements @kref))))))))
