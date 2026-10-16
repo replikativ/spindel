@@ -69,39 +69,19 @@
     ;; Return as Interval for unified incremental programming model
     (iv/->Interval old-snapshot snapshot deltas)))
 
-(defn- get-track-value-if-newer
-  "Get track value, but only include deltas if signal generation is newer.
-
-  This prevents stale deltas from being re-processed when a spin re-executes
-  without the signal actually changing. Each observer tracks its own
-  'consumed generation' to ensure deltas are delivered exactly once per observer.
-
-  Args:
-    signal-ref - The SignalRef to read
-    consumed-generation - The generation this observer last consumed
-
-  Returns:
-    Interval with deltas if generation > consumed-generation,
-    Interval without deltas (nil) if generation <= consumed-generation (stale)"
+(defn- interval-since
+  "[interval generation]: the signal's Interval as `get-track-value-if-newer`
+  for `consumed-generation`: with the node's deltas if it changed since, without
+  them otherwise, and the generation it was read at — one
+  read of the node, so the generation recorded as handed out is the one whose
+  deltas were."
   [signal-ref consumed-generation]
   (let [node (sig/get-signal-state signal-ref)
-        current-generation (or (:generation node) 0)
-        old-snapshot (:old-snapshot node)
-        snapshot (:snapshot node)
-        deltas (:deltas node)]
-    (if (> current-generation consumed-generation)
-      ;; Signal has new changes since we last consumed - return with deltas
-      (do
-        (log/trace :track/returning-fresh-deltas {:current-gen current-generation
-                                                  :consumed-gen consumed-generation
-                                                  :delta-count (count deltas)})
-        (iv/->Interval old-snapshot snapshot deltas))
-      ;; Stale - signal hasn't changed since our last consume
-      ;; Return current value but WITHOUT deltas to prevent re-processing
-      (do
-        (log/trace :track/skipping-stale-deltas {:current-gen current-generation
-                                                 :consumed-gen consumed-generation})
-        (iv/->Interval snapshot snapshot nil)))))
+        generation (or (:generation node) 0)]
+    [(if (> generation consumed-generation)
+       (iv/->Interval (:old-snapshot node) (:snapshot node) (:deltas node))
+       (iv/->Interval (:snapshot node) (:snapshot node) nil))
+     generation]))
 
 (defn- track-signal
   "Direct track handler for SignalRef.
@@ -172,7 +152,10 @@
             live-children-snap (when ctx
                                  (simple/live-children
                                   (rtp/get-state ctx [:nodes spin-id])))
-            cont {:event-key [:signal signal-id]
+            ;; Named here so :on-resume can find this continuation in state
+            cont-id (keyword (str "cont-" (random-uuid)))
+            cont {:id cont-id
+                  :event-key [:signal signal-id]
                   :kind :track
                   :resolve-fn resolve
                   :reject-fn reject
@@ -190,10 +173,24 @@
                   ;; Capture generation at continuation creation time
                   ;; On resume, we only return deltas if signal generation > this value
                   :consumed-generation current-generation
-                  ;; :on-resume fetches fresh signal value when resuming
-                  ;; Uses captured generation to detect stale deltas
-                  :on-resume (fn [_]
-                               (get-track-value-if-newer signal-ref current-generation))}]
+                  ;; :on-resume fetches the signal's value when resuming, with
+                  ;; deltas only if it changed since this site last handed
+                  ;; them out. The continuation outlives its resumptions (an
+                  ;; escalation can resume it again though its signal did not
+                  ;; change), so the generation it handed out is recorded on
+                  ;; the stored continuation, not kept in this closure.
+                  :on-resume (fn [rctx]
+                               (let [path [:track-subscriptions spin-id cont-id]
+                                     consumed (or (:consumed-generation (rtp/get-state rctx path))
+                                                  current-generation)
+                                     [interval generation] (interval-since signal-ref consumed)]
+                                 (when (> generation consumed)
+                                   (rtp/swap-state! rctx [:track-subscriptions spin-id]
+                                                    (fn [conts]
+                                                      (if (contains? conts cont-id)
+                                                        (assoc-in conts [cont-id :consumed-generation] generation)
+                                                        conts))))
+                                 interval))}]
         (ec/continuation-add! spin-id cont)
         (ec/deps-track-signal! spin-id signal-id)
         (log/debug :track/registered {:spin-id spin-id
