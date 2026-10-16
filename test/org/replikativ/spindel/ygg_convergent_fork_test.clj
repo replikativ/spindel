@@ -70,3 +70,25 @@
         (ygg/register! (cdvcs/cdvcs "cd" {:store-config {:backend :memory :id (random-uuid)}} {:sync? true}))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"neither :branchable"
                               (ygg/fork!)))))))
+
+(deftest a-fork-that-merged-a-nested-fork-merges-everything
+  (testing "outer overlay fork, inner fork of it: inner merges into outer, outer into root, both land"
+    (let [ctx (sp/create-execution-context)]
+      (sp/with-context ctx
+        (let [kref (ygg/register! (-> (mem-gset "kb") (g/conj :shared)))
+              outer (ygg/fork! {:convergent-fork :overlay})]
+          (ygg/with-fork outer
+            (ovl/overlay-swap! @(ygg/system-signal "kb") (fn [s] (g/conj s :outer)))
+            (let [inner (ygg/fork! {:convergent-fork :overlay})]
+              (ygg/with-fork inner
+                (ovl/overlay-swap! @(ygg/system-signal "kb") (fn [s] (g/conj s :inner))))
+              (ygg/merge-fork! inner))
+            (is (ovl/overlay? @(ygg/system-signal "kb"))
+                "the outer fork still holds its overlay after absorbing the inner one")
+            ;; a :following overlay's writable system holds the fork's own writes
+            (is (= #{:outer :inner} (g/elements (ovl/overlay-system @(ygg/system-signal "kb"))))
+                "the inner write joined the outer fork's own writes"))
+          (is (= #{:shared} (g/elements @kref)) "the root is untouched until the outer merge")
+          (ygg/merge-fork! outer)
+          (is (= #{:shared :outer :inner} (g/elements @kref))
+              "the outer merge lands its own write and the inner one"))))))

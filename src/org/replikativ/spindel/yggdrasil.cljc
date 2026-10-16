@@ -1470,9 +1470,20 @@
                                   acc* (cond
                                        ;; OVERLAY fork (convergent :overlay opt + datahike/git): join back.
                                          (ovl/overlay? cval)
-                                         (let [m (await (ygg/merge-down! cval opts))]
+                                         (let [m (await (ygg/merge-down! cval opts))
+                                               ;; a fork of a fork: the parent is itself an
+                                               ;; overlay, and `m` is its new writable system
+                                               ;; (the nested fork forked `overlay-system`).
+                                               ;; Re-seat it, as `merge-fork-context-from-parent!`
+                                               ;; does: seating `m` itself would replace the
+                                               ;; parent's overlay with a plain system, and the
+                                               ;; parent's own merge would then land nothing.
+                                               pval (node-value parent-ctx sig-ref)
+                                               seated (if (ovl/overlay? pval)
+                                                        (ovl/reseat-overlay! pval m)
+                                                        m)]
                                            (ensure-parent-signal-and-seat!
-                                            parent-ctx sid sig-ref m)
+                                            parent-ctx sid sig-ref seated)
                                            (ygg/discard! cval)
                                            (conj acc sid))
 
@@ -1495,6 +1506,14 @@
                                              (ensure-parent-signal-and-seat!
                                               parent-ctx sid sig-ref m))
                                            (conj acc sid))
+
+                                         ;; the fork was minted as an overlay but no
+                                         ;; longer holds one: merging nothing would
+                                         ;; report success and lose its changes
+                                         (= :overlay (get-in (:descriptor fork-handle) [:fork/systems sid :kind]))
+                                         (throw (ex-info "Fork system is no longer an overlay; refusing to merge nothing"
+                                                         {:type ::overlay-lost :system sid
+                                                          :fork-id (:fork-id fork-handle)}))
 
                                          :else acc)]
                               (recur (next ps) acc*))
