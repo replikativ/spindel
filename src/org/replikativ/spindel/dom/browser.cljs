@@ -47,12 +47,17 @@
   (create-text! [_ text-content]
     (.createTextNode document text-content))
 
-  (set-attribute! [_ el attr-name attr-value]
+  (set-attribute! [this el attr-name attr-value]
     (let [attr-str (name attr-name)
           value-str (if (string? attr-value)
                       attr-value
                       (str attr-value))]
       (cond
+        ;; Nil denotes absence, just as in SSR. In particular, disabled=""
+        ;; is still true in HTML; setting an empty string is not removal.
+        (nil? attr-value)
+        (disch/remove-attribute! this el attr-name)
+
         ;; Handle event handlers (on-click, on-change, etc. with hyphen)
         (and (keyword? attr-name)
              (str/starts-with? attr-str "on-"))
@@ -109,11 +114,29 @@
         (and (keyword? attr-name)
              (str/starts-with? attr-str "on-"))
         (let [event-name (subs attr-str 3)]
-          (aset el (str "on" event-name) nil))
+          (aset el (str "on" event-name) nil)
+          (.removeAttribute el (str "on" event-name)))
+
+        ;; The setter also accepts non-hyphenated handler names.
+        (and (keyword? attr-name)
+             (str/starts-with? attr-str "on")
+             (fn? (aget el attr-str)))
+        (do (aset el attr-str nil)
+            (.removeAttribute el attr-str))
 
         ;; innerHTML removal
         (= attr-name :innerHTML)
         (set! (.-innerHTML el) "")
+
+        ;; Removing an HTML attribute alone does not clear current input
+        ;; state after the user or renderer has changed these properties.
+        (= attr-name :value)
+        (do (set! (.-value el) "")
+            (.removeAttribute el attr-str))
+
+        (= attr-name :checked)
+        (do (set! (.-checked el) false)
+            (.removeAttribute el attr-str))
 
         ;; Standard attribute removal
         :else

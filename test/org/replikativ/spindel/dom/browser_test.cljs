@@ -127,6 +127,59 @@
             input (.-firstChild body)]
         (is (not (.hasAttribute input "disabled")))))))
 
+(deftest test-nil-attributes-are-absent-on-mount-and-update
+  (let [doc (make-test-document)
+        body (get-body doc)
+        initial (el/input {:disabled nil :title nil :class nil})
+        discharge (browser/mount! body initial)
+        input (.-firstChild body)]
+    (doseq [attr ["disabled" "title" "class"]]
+      (is (not (.hasAttribute input attr))))
+    (is (false? (.-disabled input)))
+    (let [enabled (assoc initial :attrs {:disabled true :title "present" :class "present"})]
+      (commit/commit-reconcile! discharge enabled)
+      (is (true? (.-disabled input)))
+      (commit/commit-reconcile! discharge initial)
+      (is (identical? input (.-firstChild body)))
+      (doseq [attr ["disabled" "title" "class"]]
+        (is (not (.hasAttribute input attr))))
+      (is (false? (.-disabled input))))))
+
+(deftest test-nil-and-removal-clear-managed-dom-state
+  (let [doc (make-test-document)
+        discharge (browser/make-dom-discharge doc)]
+    (doseq [remove! [(fn [node attr] (disch/set-attribute! discharge node attr nil))
+                     (fn [node attr] (disch/remove-attribute! discharge node attr))]]
+      (let [input (.createElement doc "input")]
+        ;; Attribute removal must clear dirty current properties as well as
+        ;; their initial HTML attributes (e.g. server-rendered form defaults).
+        (.setAttribute input "value" "default")
+        (.setAttribute input "checked" "")
+        (disch/set-attribute! discharge input :value "edited")
+        (disch/set-attribute! discharge input :checked true)
+        (remove! input :value)
+        (remove! input :checked)
+        (is (= "" (.-value input)))
+        (is (false? (.-checked input)))
+        (is (not (.hasAttribute input "value")))
+        (is (not (.hasAttribute input "checked"))))
+      (let [node (.createElement doc "div")]
+        (disch/set-attribute! discharge node :innerHTML "<b>content</b>")
+        (remove! node :innerHTML)
+        (is (= "" (.-innerHTML node))))
+      (doseq [attr [:on-click :onclick]]
+        (let [node (.createElement doc "button")
+              clicks (atom 0)]
+          (.setAttribute node "onclick" "void 0")
+          (disch/set-attribute! discharge node attr #(swap! clicks inc))
+          (.click node)
+          (is (= 1 @clicks))
+          (remove! node attr)
+          (.click node)
+          (is (= 1 @clicks))
+          (is (not (.hasAttribute node "onclick")))
+          (is (nil? (.-onclick node))))))))
+
 ;; =============================================================================
 ;; Text Node Tests
 ;; =============================================================================

@@ -87,7 +87,9 @@
 
 (deftest test-nil-attr-skipped
   (is (= "<div></div>"
-         (ssr/render-to-string (el/div {:class nil})))))
+         (ssr/render-to-string (el/div {:class nil}))))
+  (is (= "<input />"
+         (ssr/render-to-string (el/input {:disabled nil :checked nil :value nil})))))
 
 (deftest test-event-handler-skipped
   (is (= "<button>Go</button>"
