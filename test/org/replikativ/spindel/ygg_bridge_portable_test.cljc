@@ -70,6 +70,77 @@
           "a later idempotent call preserves the asynchronous return shape")
       (is (= :discarded (:status (ygg/fork-disposition fork)))))))
 
+(deftest-async singleton-partition-seals-authority
+  (th/with-ctx [ctx]
+    (ygg/register! (->TinySys "kb"))
+    (let [whole (<? (ygg/fork! {:sync? sync? :owner :run}))
+          original-descriptor (ygg/fork-descriptor whole)
+          original-id (or (:fork/settlement-id original-descriptor)
+                          (:fork/id original-descriptor))
+          empty-error (try
+                        (ygg/partition-fork! whole [])
+                        nil
+                        (catch #?(:clj Throwable :cljs :default) error error))
+          _ (is (= ::ygg/invalid-fork-partition (:type (ex-data empty-error))))
+          _ (is (ygg/open-fork? whole))
+          [sealed] (ygg/partition-fork!
+                    whole [{:systems #{"kb"} :owner :review}])
+          descriptor (ygg/fork-descriptor sealed)
+          adopted (ygg/transfer-fork! sealed :governance)
+          callbacks (atom 0)]
+      (is (identical? (:child-ctx whole) (:child-ctx sealed)))
+      (is (= (:fork-id whole) (:fork-id sealed)))
+      (is (= original-id (:fork/partition-of descriptor)))
+      (is (not= original-id (:fork/settlement-id descriptor)))
+      (is (not= (:token whole) (:token sealed)))
+      (is (not (ygg/open-fork? whole)))
+      (is (not (ygg/open-fork? sealed)))
+      (is (ygg/open-fork? adopted))
+      (let [stale-error (try
+                          (ygg/transfer-fork! whole :other)
+                          nil
+                          (catch #?(:clj Throwable :cljs :default) error error))]
+        (is (= ::ygg/fork-not-open (:type (ex-data stale-error)))))
+      (binding [ec/*execution-context* (:child-ctx adopted)]
+        (doseq [operation [(fn [] (ygg/register! (->TinySys "late")))
+                           (fn [] (ygg/unregister! "kb"))]]
+          (let [error (try (operation) nil
+                           (catch #?(:clj Throwable :cljs :default) error error))]
+            (is (= ::ygg/fork-world-shape-frozen (:type (ex-data error)))))))
+      (<? (ygg/merge-fork! adopted {:sync? sync?
+                                    :on-merge (fn [_] (swap! callbacks inc))}))
+      (<? (ygg/merge-fork! adopted {:sync? sync?
+                                    :on-merge (fn [_] (swap! callbacks inc))}))
+      (is (= 1 @callbacks))
+      (is (= :merged (:status (ygg/fork-disposition adopted)))))))
+
+(deftest-async singleton-partition-can-be-discarded-exactly-once
+  (th/with-ctx [ctx]
+    (ygg/register! (->TinySys "kb"))
+    (let [whole (<? (ygg/fork! {:sync? sync?}))
+          [sealed] (ygg/partition-fork! whole [{:systems #{"kb"} :owner :review}])
+          callbacks (atom 0)]
+      (<? (ygg/discard-fork! sealed {:sync? sync?
+                                     :on-discard (fn [_] (swap! callbacks inc))}))
+      (<? (ygg/discard-fork! sealed {:sync? sync?
+                                     :on-discard (fn [_] (swap! callbacks inc))}))
+      (is (= 1 @callbacks))
+      (is (= :discarded (:status (ygg/fork-disposition sealed)))))))
+
+(deftest-async singleton-partition-rejects-changed-world-shape
+  (th/with-ctx [ctx]
+    (ygg/register! (->TinySys "kb"))
+    (let [whole (<? (ygg/fork! {:sync? sync?}))]
+      (binding [ec/*execution-context* (:child-ctx whole)]
+        (ygg/register! (->TinySys "late")))
+      (let [error (try
+                    (ygg/partition-fork! whole [{:systems #{"kb"} :owner :review}])
+                    nil
+                    (catch #?(:clj Throwable :cljs :default) error error))]
+        (is (= ::ygg/fork-system-shape-changed (:type (ex-data error))))
+        (is (ygg/open-fork? whole)))
+      (<? (ygg/discard-fork! whole {:sync? sync?})))))
+
 (deftest-async settlement-authority-partition-is-portable
   (th/with-ctx [ctx]
     (ygg/register! (->TinySys "kb"))

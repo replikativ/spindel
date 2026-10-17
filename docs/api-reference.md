@@ -884,7 +884,7 @@ context. See [Forking](forking.md#fork-registered-systems-and-settle-them-affine
 | `(fork! opts)` | Fork the reactive context and selected registered systems; returns the sole open `ForkHandle`. |
 | `(fork-descriptor handle)` | Portable world/system basis plus current owner and settlement status; excludes live authority. |
 | `(transfer-fork! handle owner)` | Atomically consume the caller's authority and return the new owner's handle. |
-| `(partition-fork! handle parts)` | Consume a whole/scope handle into two or more disjoint, exhaustive per-system settlement handles. |
+| `(partition-fork! handle parts)` | Consume a whole/scope handle into one or more disjoint, exhaustive per-system settlement handles; a singleton seals the scope. |
 | `(fork-diff handle)` / `(fork-conflicts handle)` | Diff or conflict projection restricted to the handle's settlement scope. |
 | `(merge-fork! handle opts)` / `(discard-fork! handle opts)` | Settle only the handle's scope exactly once; same-operation replay is idempotent. |
 | `(merge-fork-from-parent! handle opts)` | Advance only the open handle's systems from its immediate parent under an exclusive `:advancing` authority lease. |
