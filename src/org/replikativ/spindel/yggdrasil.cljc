@@ -747,8 +747,8 @@
         covered (set (keys frequencies))
         unknown (set (remove described covered))
         omitted (set (remove covered described))]
-    (when (< (count parts) 2)
-      (throw (ex-info "Fork partition requires at least two parts"
+    (when (empty? parts)
+      (throw (ex-info "Fork partition requires at least one part"
                       {:type ::invalid-fork-partition
                        :partition-count (count parts)})))
     (when-let [idx (first (keep-indexed (fn [idx part]
@@ -830,7 +830,7 @@
   "Consume one OPEN fork settlement capability and return disjoint capabilities
    over the same execution world.
 
-   `partitions` is a vector of at least two maps:
+   `partitions` is a vector of one or more maps:
 
      [{:systems #{system-id ...} :owner owner-id :purpose optional-tag} ...]
 
@@ -838,6 +838,8 @@
    unknown systems, nil owners, and worlds whose registered system shape changed
    after fork creation are rejected without consuming the original handle. Each
    returned handle may then be transferred, merged, or discarded independently.
+   A single exhaustive partition seals the scope without splitting the world;
+   it still consumes the original handle and issues fresh settlement authority.
 
    This partitions substrate *settlement authority*, not runtime access. The
    handles intentionally retain the same child execution context and must remain
