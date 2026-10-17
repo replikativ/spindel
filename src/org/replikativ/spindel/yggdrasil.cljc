@@ -61,6 +61,7 @@
             [yggdrasil.protocols :as ygg]
             [yggdrasil.types :as ygt]
             [yggdrasil.convergent :as yc]
+            [yggdrasil.convergent.dag :as dag]
             [yggdrasil.convergent.overlay :as ovl]
             [is.simm.partial-cps.async :as pcps]
             #?(:clj  [is.simm.partial-cps.async :refer [async await]]
@@ -1286,6 +1287,44 @@
 ;; Diff / Conflicts (per-system merge-base)
 ;; =============================================================================
 
+(defn- catalog-merge-base
+  "Find a merge base without assuming either isolated catalog knows the
+   other's current tip. Each side is traversed through its own immutable
+   Graphable catalog; no commit is imported or published by inspection."
+  [fsys fsnap psys psnap]
+  (async+sync
+   (:sync? yc/default-opts)
+   (async
+    (when (and (satisfies? ygg/Graphable fsys) (satisfies? ygg/Graphable psys))
+      (let [fgraph (let [v (ygg/commit-graph fsys)] (if (fn? v) (await v) v))
+            pgraph (let [v (ygg/commit-graph psys)] (if (fn? v) (await v) v))
+            fnodes (:nodes fgraph)
+            pnodes (:nodes pgraph)]
+        (when (and (contains? fnodes fsnap) (contains? pnodes psnap))
+          (let [child-parents (fn [id] (async (when-let [node (get fnodes id)]
+                                                (vec (:parent-ids node)))))
+                result (await
+                        (dag/lowest-common-ancestors
+                         child-parents
+                         #{fsnap}
+                         (fn [id] (async (when-let [node (get pnodes id)]
+                                           (vec (:parent-ids node)))))
+                         #{psnap}
+                         yc/default-opts))
+                candidates (:lcas result)
+              ;; The shared BFS returns an intersection frontier, which can
+              ;; include an older ancestor alongside a newer common commit
+              ;; (e.g. redundant merge parents). Never choose that older base
+              ;; merely because its id sorts first.
+                ancestors (if (> (count candidates) 1)
+                            (loop [remaining (seq candidates) acc #{}]
+                              (if-let [id (first remaining)]
+                                (let [history (await (dag/commit-history child-parents id yc/default-opts))]
+                                  (recur (next remaining) (into acc (remove #{id} history))))
+                                acc))
+                            #{})]
+            (first (sort-by str (remove ancestors candidates))))))))))
+
 (defn- system-merge-base-diff
   "The fork's OWN changes in one system. Diff the MERGE-BASE (common ancestor of
    parent + fork) → fork, so a live parent's concurrent advance is excluded.
@@ -1310,7 +1349,9 @@
                   (if (fn? d) (await d) d))))
             (catch #?(:clj Throwable :cljs :default) _ nil))
           (try
-            (let [d (ygg/diff fsys psnap fsnap)]
+            (let [v (catalog-merge-base fsys fsnap psys psnap)
+                  base (if (fn? v) (await v) v)
+                  d (ygg/diff fsys (or base psnap) fsnap)]
               (if (fn? d) (await d) d))
             (catch #?(:clj Throwable :cljs :default) t
               (ygt/diff-error psnap fsnap (ex-message t)))))))))
