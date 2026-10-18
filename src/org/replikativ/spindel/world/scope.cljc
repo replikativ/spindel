@@ -25,7 +25,8 @@
   (grant! [authority source-context child-context grant]
     "Move `grant` from the source world's wallet into a new wallet of the
      child. Reject when the source cannot afford it; the fork then fails and
-     the child is discarded.")
+     the child is discarded. Called for every child, including nil grants:
+     nil must explicitly initialize an unfunded child, masking copied authority.")
   (return! [authority context]
     "Move what is left in the world's wallet back to where it was granted
      from. Called once, before the world is discarded. A world without a
@@ -222,7 +223,7 @@
                           resolve {:child-ctx (:child-ctx handle)
                                    :descriptor (ygg/fork-descriptor handle)}))
                (succeed! [handle]
-                 (if (and authority (some? grant))
+                 (if authority
                   ;; The fork is not a world of this scope until it is funded.
                    (invoke-once!
                     (try (grant! authority source-context (:child-ctx handle) grant)
@@ -390,7 +391,7 @@
              fund! (fn [copies]
                      (let [funded (volatile! [])]
                        (try
-                         (doseq [[c g] (map vector copies grants)]
+                         (doseq [[c g] (map vector copies (or grants (repeat nil)))]
                            (settle-now (authority-op #(grant! authority context (:child-ctx c) g)))
                            (vswap! funded conj c))
                          (catch #?(:clj Throwable :cljs :default) error
@@ -406,7 +407,7 @@
                          handle k
                          (cond-> (-> (merge fork-opts extra-fork-opts)
                                      (assoc :mode :frozen :purpose purpose :owner id :sync? true))
-                           (and authority grants) (assoc :admit fund!)))}
+                           authority (assoc :admit fund!)))}
                (catch #?(:clj Throwable :cljs :default) error
                  {:error error}))]
          (swap! scope

@@ -346,24 +346,47 @@
 ;; Resources: a fork moves authority, it does not copy it
 ;; -----------------------------------------------------------------------------
 
+(deftest every-child-is-initialized-even-without-a-grant
+  (let [root (context/create-execution-context)
+        admissions (atom [])
+        authority (reify scope/PResourceAuthority
+                    (grant! [_ _ child grant]
+                      (swap! admissions conj [(:fork-id child) grant])))
+        world-scope (scope/create {:authority authority :fork-opts {:systems :none}})
+        lease (scope/begin-activity! world-scope :test)]
+    (try
+      (let [child (:child-ctx (fork! world-scope root))
+            copies (await-cps #(scope/copy! world-scope child 2 {:split? false} %1 %2))]
+        (is (= (set (cons (:fork-id child) (map (comp :fork-id :child-ctx) copies)))
+               (set (map first @admissions))))
+        (is (= 3 (count @admissions)))
+        (is (every? nil? (map second @admissions))))
+      (finally
+        (scope/end-activity! world-scope lease)
+        ;; This spy only tests admission; cleanup has no ledger to return.
+        (swap! world-scope assoc :authority nil)
+        (await-cps (scope/discard! world-scope))
+        (context/stop-context! root)))))
+
 (defn- toy-authority
   "A ledger outside every world: {world-id {:balance n :from parent-id}}."
   [ledger]
   (reify scope/PResourceAuthority
     (grant! [_ source child amount]
-      (let [source-id (:fork-id source)
-            child-id (:fork-id child)
-            [before _] (swap-vals!
-                        ledger
-                        (fn [book]
-                          (if (>= (get-in book [source-id :balance] 0) amount)
-                            (-> book
-                                (update-in [source-id :balance] - amount)
-                                (assoc child-id {:balance amount :from source-id}))
-                            book)))]
-        (when (< (get-in before [source-id :balance] 0) amount)
-          (throw (ex-info "Insufficient funds" {:type ::insufficient})))
-        nil))
+      (when (some? amount)
+        (let [source-id (:fork-id source)
+              child-id (:fork-id child)
+              [before _] (swap-vals!
+                          ledger
+                          (fn [book]
+                            (if (>= (get-in book [source-id :balance] 0) amount)
+                              (-> book
+                                  (update-in [source-id :balance] - amount)
+                                  (assoc child-id {:balance amount :from source-id}))
+                              book)))]
+          (when (< (get-in before [source-id :balance] 0) amount)
+            (throw (ex-info "Insufficient funds" {:type ::insufficient})))
+          nil)))
     (return! [_ context]
       (swap! ledger
              (fn [book]
