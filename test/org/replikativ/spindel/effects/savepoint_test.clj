@@ -460,18 +460,19 @@
 (defn- toy-authority [ledger]
   (reify org.replikativ.spindel.world.scope/PResourceAuthority
     (grant! [_ source child amount]
-      (let [source-id (:fork-id source)
-            [before _] (swap-vals!
-                        ledger
-                        (fn [book]
-                          (if (>= (get-in book [source-id :balance] 0) amount)
-                            (-> book
-                                (update-in [source-id :balance] - amount)
-                                (assoc (:fork-id child) {:balance amount :from source-id}))
-                            book)))]
-        (when (< (get-in before [source-id :balance] 0) amount)
-          (throw (ex-info "Insufficient funds" {:type ::insufficient})))
-        nil))
+      (when (some? amount)
+        (let [source-id (:fork-id source)
+              [before _] (swap-vals!
+                          ledger
+                          (fn [book]
+                            (if (>= (get-in book [source-id :balance] 0) amount)
+                              (-> book
+                                  (update-in [source-id :balance] - amount)
+                                  (assoc (:fork-id child) {:balance amount :from source-id}))
+                              book)))]
+          (when (< (get-in before [source-id :balance] 0) amount)
+            (throw (ex-info "Insufficient funds" {:type ::insufficient})))
+          nil)))
     (return! [_ context]
       (swap! ledger (fn [book]
                       (if-let [{:keys [balance from]} (get book (:fork-id context))]

@@ -351,7 +351,8 @@
         admissions (atom [])
         authority (reify scope/PResourceAuthority
                     (grant! [_ _ child grant]
-                      (swap! admissions conj [(:fork-id child) grant])))
+                      (swap! admissions conj [(:fork-id child) grant]))
+                    (return! [_ _] nil))
         world-scope (scope/create {:authority authority :fork-opts {:systems :none}})
         lease (scope/begin-activity! world-scope :test)]
     (try
@@ -363,8 +364,25 @@
         (is (every? nil? (map second @admissions))))
       (finally
         (scope/end-activity! world-scope lease)
-        ;; This spy only tests admission; cleanup has no ledger to return.
-        (swap! world-scope assoc :authority nil)
+        (await-cps (scope/discard! world-scope))
+        (context/stop-context! root)))))
+
+(deftest refusing-an-unfunded-child-leaves-no-exposed-world
+  (let [root (context/create-execution-context)
+        authority (reify scope/PResourceAuthority
+                    (grant! [_ _ _ grant]
+                      (assert (nil? grant))
+                      (throw (ex-info "unfunded child refused" {})))
+                    (return! [_ _] nil))
+        world-scope (scope/create {:authority authority :fork-opts {:systems :none}})
+        lease (scope/begin-activity! world-scope :test)]
+    (try
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unfunded child refused"
+                            (fork! world-scope root)))
+      (is (empty? (scope/handles @world-scope)))
+      (is (zero? (:pending-forks @world-scope)))
+      (finally
+        (scope/end-activity! world-scope lease)
         (await-cps (scope/discard! world-scope))
         (context/stop-context! root)))))
 
