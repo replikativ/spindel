@@ -54,8 +54,8 @@
   `spin/core`'s :external-await reject path, `truncate-stale-conts!`, or
   `add-continuation!` displacing a cont at the same deterministic cont-id."
   [context spin-id]
-  (doseq [[_id c] (external-await-conts context spin-id)]
-    ((:cancel! c) context)))
+  (doseq [[id _c] (external-await-conts context spin-id)]
+    (simple/remove-continuation! context spin-id id {:cancel? true})))
 
 (defn- post-synchronously!
   "Post + drain on the calling thread. `sync/post!` enqueues and fires an

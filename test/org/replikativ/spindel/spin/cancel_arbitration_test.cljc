@@ -240,6 +240,7 @@
               _ (parent identity identity)
               [cont-id] (keys (parked parent))
               result (spin-core/ok :x)
+              _ (ec/spin-cache-result! (spin-core/spin-id child) result)
               ;; a queued completion claimed it in the parent world and has
               ;; not resumed the slice yet when the fork is taken
               held (simple/claim-continuation-for-resume! context pid cont-id {:result result})

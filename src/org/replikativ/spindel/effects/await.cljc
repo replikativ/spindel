@@ -515,9 +515,9 @@
   ([spin-id resolve reject ext-tag source-loc cancellable?]
    (let [;; The cancel-token is a fresh UUID per call. Repeated awaits at
         ;; the same source-loc on the same resource get DIFFERENT
-        ;; tokens, but the cont-id is deterministic — `add-continuation!`
-        ;; calls the displaced cont's `:cancel!` before overwriting
-        ;; (closes the orphaned-by-re-await loop).
+        ;; tokens, but the cont-id is deterministic. `add-continuation!`
+        ;; atomically arms the displaced cont's token when replacing it,
+        ;; closing the orphaned-by-re-await loop.
          cancel-token (keyword "external-await-cancel" (str (random-uuid)))
          cont-id (keyword (str "external-await-"
                                (h/content-hash [spin-id ext-tag source-loc])))
@@ -600,15 +600,9 @@
               ;; closure, i.e. sometimes accidentally right, never
               ;; guaranteed. See .internal/slice-environment-integrity.md.
                :slice-state (capture-slice-state (ec/current-execution-context) spin-id)
-              ;; `:cancel!` takes the engine context to record the
-              ;; cancellation in. Engine truncation sites pass the
-              ;; context they're operating on, which is what makes
-              ;; this fork-safe: fork's truncation records into
-              ;; fork's overlay, parent's into parent's.
-               :cancel! (when cancellable?
-                          (fn [ctx]
-                            (rtp/swap-state! ctx [:engine/cancelled-tokens]
-                                             (fn [s] (conj (or s #{}) cancel-token)))))
+              ;; The engine arms the token atomically when it detaches this
+              ;; continuation. A post-commit hook must not re-arm a token an
+              ;; external one-shot delivery has already consumed.
                :resolve-fn wrapped-resolve
               ;; Engine cancellation first arms cancel-token and then resumes
               ;; the body through this raw reject continuation so finally/catch
@@ -626,7 +620,7 @@
             ;; continuation and reject this slice synchronously; callers must
             ;; then avoid registering a now-orphaned external reader.
              (when (ec/continuation-remove! spin-id cont-id {:cancel? true})
-               ;; Claiming ran the cont's :cancel!, which armed the token;
+               ;; Claiming armed the token atomically;
                ;; but this reader is never handed to the resource, so no
                ;; delivery will come to retire it (#102): retire it here.
                (rtp/swap-state! (ec/current-execution-context) [:engine/cancelled-tokens]
