@@ -37,6 +37,7 @@
   not be forked while that spin is in flight."
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.effects :as eff]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.executor :as executor]
@@ -187,6 +188,25 @@
 (defn session [world]
   (rtp/get-state world [:savepoint/session]))
 
+(defn independent-fork-state
+  "Initial `:state-updates` for a fork starting an independent computation.
+   Pass these to `ygg/fork!` or `context/fork-context`, then `open!` a session
+   in that child with the same seed. Never apply to an existing live world.
+   Ordinary savepoint forks/copies must keep their inherited session instead.
+
+   This masks inherited process-local savepoint ownership, continuations and
+   handlers without touching application state or the source session."
+  [seed]
+  {:savepoint/session nil
+   :savepoint/pending (backend/full-replacement {})
+   :savepoint/handlers (backend/full-replacement {})
+   :savepoint/task nil
+   :savepoint/ended nil
+   :savepoint/trace nil
+   :savepoint/escrowed nil
+   :savepoint/seq 0
+   :savepoint/seed seed})
+
 (defn- world-id [world]
   (or (:fork-id world) ::root))
 
@@ -317,11 +337,29 @@
                                        :retain-released? retain-released?}))
         lease (world-scope/begin-activity! scope :savepoint/session)
         value (->Session (random-uuid) scope lease world
-                         (atom false) (atom false) (atom {}) (atom #{}))]
-    (rtp/swap-state! world [:savepoint/session] (constantly value))
-    (rtp/swap-state! world [:savepoint/seed] (constantly (or seed (random-uuid))))
-    (install-handlers! world (or handlers {}))
-    value))
+                         (atom false) (atom false) (atom {}) (atom #{}))
+        seed (or seed (random-uuid))]
+    (try
+      (rtp/swap-state!
+       world []
+       (fn [state]
+         (when (:savepoint/session state)
+           (throw (ex-info "World already belongs to a savepoint session"
+                           {:type ::session-exists})))
+         (-> state
+             (assoc :savepoint/session value :savepoint/seed seed)
+             (update :savepoint/handlers
+                     (fn [current]
+                       (reduce-kv (fn [m site f] (if f (assoc m site f) (dissoc m site)))
+                                  (or current {}) (or handlers {})))))))
+      value
+      (catch #?(:clj Throwable :cljs :default) error
+        ;; Pure-updater failures leave no installed Session. If a backend
+        ;; committed but lost the acknowledgement, retain its published lease:
+        ;; the caller can discover the Session and close it before disposal.
+        (when-not (= (:id value) (:id (session world)))
+          (world-scope/end-activity! scope lease))
+        (throw error)))))
 
 (defn ^:no-doc start-in!
   "Run `task` in `world`, a world of the session, under a lease of its own.
