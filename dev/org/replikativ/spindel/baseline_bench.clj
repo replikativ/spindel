@@ -27,6 +27,8 @@
     :B1 (mapv (fn [_] (spin (iv/get-new (track a)))) (range 100))
     :B2 (let [head (spin (iv/get-new (track a)))]
           [(reduce (fn [prev _] (spin (inc (await prev)))) head (range 50))])
+    :B4 (let [children (mapv (fn [_] (spin (iv/get-new (track a)))) (range 50))]
+          [(spin (reduce + (mapv (fn [child] (await child)) children)))])
     :B3 (let [b (spin (* 2 (iv/get-new (track a))))
               c (spin (* 3 (iv/get-new (track a))))
               d (spin (+ (await b) (await c)))
@@ -63,6 +65,7 @@
                   expected (case kind
                              :B1 (vec (repeat 100 (+ n warmup)))
                              :B2 [(+ n warmup 50)]
+                             :B4 [(* 50 (+ n warmup))]
                              :B3 [(* 5 (+ n warmup)) (* 25 (+ n warmup))])]
               {:consistent? (= expected values)
                :observed values :expected expected
@@ -101,7 +104,7 @@
                   :counter-scope :backend-api-calls-excluding-context-cas}
         results (mapv (fn [kind]
                         (let [r (benchmark kind n warmup)]
-                          (prn r) (flush) r)) [:B1 :B2 :B3])
+                          (prn r) (flush) r)) [:B1 :B2 :B3 :B4])
         report (assoc metadata :results results)]
     (io/make-parents output)
     (spit output (str (pr-str report) "\n"))

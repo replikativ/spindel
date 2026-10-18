@@ -157,6 +157,7 @@
 (declare restore-slice-state!)
 (declare claim-continuation-for-resume!)
 (declare release-reactive-resume!)
+(declare cancelled-result?)
 (declare remove-continuation!)
 
 (defn- cont-by-cancel-token
@@ -825,46 +826,29 @@
 (declare detach-continuation)
 
 (defn- truncate-stale-conts!
-  "Drop a spin's continuations whose `:order` is strictly greater than the
-  resumed continuation's, then re-track the signal deps of the conts whose
-  `:order` is strictly less (they belong to the pre-resume body slice that
-  stays in effect).
-
-  Before dissociating each removed cont, call its `:cancel!` hook if any.
-  External-await wrappers (Deferred / Mailbox / plain-fn) install a
-  cancellation gate so that when the resource later fires, the orphaned
-  resolve closure is a no-op. Without this, both the OLD (orphaned) and
-  NEW (registered by the parent re-run) body slices would advance to
-  outer-resolve, causing double cache-result, double record-deps, and
-  double side effects. See `effects/await.cljc::cancellable-external-pair`."
+  "Retire the suffix on re-entry and preserve the captured prefix.
+  Detach and arm external cancellation gates together; fire displaced hooks
+  after the transaction commits, never from a retried swap function."
   [context spin-id cont]
-  (let [cont-order (:order cont)
-        ;; :order spans both structures, so truncation reads the merged
-        ;; track + await view. Track conts (the only conts with a
-        ;; :signal-id) before cont-order belong to the still-in-effect
-        ;; pre-resume slice; await conts after it are stale.
-        all-conts (spin-continuations (rtp/get-state context []) spin-id)
-        skipped-signal-ids (->> (vals all-conts)
-                                (filter #(< (:order %) cont-order))
-                                (keep :signal-id))
-        cancelled-conts (filter #(> (:order %) cont-order) (vals all-conts))]
-    ;; Fire cancellation hooks BEFORE state mutation so orphaned closures
-    ;; observe cancellation the moment the external resource calls them.
-    ;; Pass the current context — under Option A (state-backed cancel
-    ;; tokens), each context's cancellation set is fork-isolated, so the
-    ;; cancellation only affects this context (parent / sibling forks
-    ;; see their own state).
-    (doseq [c cancelled-conts]
+  (let [view (vals (spin-continuations (rtp/get-state context []) spin-id))
+        suffix? (some #(> (:order %) (:order cont)) view)
+        stale (volatile! nil)
+        prefix-signals (volatile! (keep :signal-id (filter #(< (:order %) (:order cont)) view)))]
+    (when suffix?
+      (rtp/swap-state! context []
+                       (fn [state]
+                         (let [view (vals (spin-continuations state spin-id))
+                               removed (filterv #(> (:order %) (:order cont)) view)]
+                           (vreset! stale removed)
+                           (vreset! prefix-signals
+                                    (keep :signal-id (filter #(< (:order %) (:order cont)) view)))
+                           (reduce (fn [s c]
+                                     (detach-continuation s spin-id (:id c) c true))
+                                   state removed)))))
+    (doseq [c @stale]
       (when-let [cancel! (:cancel! c)] (cancel! context)))
-    (rtp/swap-state! context []
-                     (fn [state]
-                       (reduce (fn [next-state stale]
-                                 (detach-continuation
-                                  next-state spin-id (:id stale) stale false))
-                               state
-                               cancelled-conts)))
-    (doseq [skipped-sid skipped-signal-ids]
-      (track-signal-dep! context spin-id skipped-sid))))
+    (doseq [sid @prefix-signals]
+      (track-signal-dep! context spin-id sid))))
 
 (defn- resume-body!
   "Resume a suspended spin body slice from one of its continuations.
@@ -902,7 +886,7 @@
      `:resolve-fn` with the resumed value.
 
   `:await` mode (monadic bind — advance a still-suspended body slice):
-  1. NO truncation — the body has not re-run, later conts are not stale;
+  1. retire continuations after this body site, including unreached suffixes;
   2. NO signal re-track — an await cont has no signal dep;
   3. NO dirty/running re-mark — a still-suspended body resuming on an
      await must not be re-marked as a fresh re-run;
@@ -917,7 +901,8 @@
   ;; 1. Remove stale continuations (order > resumed continuation's order).
   (case mode
     :track (truncate-stale-conts! context spin-id cont)
-    :await nil)
+    :await (when (and (:body-slice? cont) (::suffix? cont))
+             (truncate-stale-conts! context spin-id cont)))
 
   ;; 2. Re-track the resumed signal dependency (track resumes only — the
   ;; signal the track cont resumed on is the cont's own :signal-id).
@@ -932,9 +917,16 @@
                               (when node
                                 (-> node
                                     (assoc :completed? false)
-                                    (assoc :running? true)
+                                    (assoc :running? true :run-world (:fork-id context))
                                     (nodes/mark-dirty)))))
-    :await nil)
+    :await (when (and (:body-slice? cont)
+                      (not= (:fork-id context) (::resumed? cont))
+                      (not= (:fork-id context)
+                            (rtp/get-state context [:nodes spin-id :run-world])))
+             ;; A copied slice now runs here. A later dirty-child handoff
+             ;; may join it in this world instead of superseding it again.
+             (rtp/swap-state! context [:nodes spin-id]
+                              (fn [node] (when node (assoc node :run-world (:fork-id context)))))))
 
   ;; 4. Reset :created-spins for this body slice; children are re-registered
   ;; as the body re-runs, and register-spin! re-runs any whose captured
@@ -1170,7 +1162,18 @@
       ;; old await conts don't fire during this resume cycle.
       (clear-all-await-continuations! context)
 
-      (let [;; Collect observers that have a live continuation for this signal.
+      (let [;; Invalidate the closure before any sibling runs. A fork taken
+            ;; by the first sibling must not inherit clean caches for siblings
+            ;; still awaiting dispatch. Adopted observers may have no cont at all.
+            _ (when (seq observers)
+                (rtp/swap-state! context [:nodes]
+                                 (fn [ns]
+                                   (reduce (fn [ns id]
+                                             (if-let [node (get ns id)]
+                                               (assoc ns id (nodes/mark-dirty node))
+                                               ns))
+                                           ns observers))))
+            ;; Collect observers that have a live continuation for this signal.
             observers-with-conts (vec (keep (fn [spin-id]
                                               (when-let [cont (rtp/earliest-continuation context spin-id sid)]
                                                 [spin-id cont]))
@@ -1326,10 +1329,12 @@
                   ;; Completion and external cancellation arbitrate through one
                   ;; state claim. One-shot awaits are consumed; reactive awaits
                   ;; retain their graph edge with an in-flight marker.
-                  cont (when-not already-resumed?
-                         (claim-continuation-for-resume!
-                          context parent-id cont-id
-                          {:result (rtp/current-result context tid)}))]
+                  ;; Body awaits must validate freshness even if this batch
+                  ;; already resumed the requested child.
+                  cont (claim-continuation-for-resume!
+                        context parent-id cont-id
+                        {:result (rtp/current-result context tid)
+                         :batch-resumed? already-resumed?})]
               ;; A missing cont is benign only with exact retirement evidence
               ;; for this [parent cont-id] and event edge. This distinguishes a
               ;; body that legitimately advanced/cancelled from a multi-await
@@ -1361,14 +1366,13 @@
               (when cont
                 ;; Mark [parent child generation] as resumed
                 (when (and generation batch)
-                  (swap! (:resumed-conts batch) conj dedup-key))
+                  (swap! (:resumed-conts batch) conj
+                         [parent-id (second (:event-key cont)) generation]))
                 (log/debug :engine/resuming-await-continuation {:parent-id parent-id :cont-id cont-id :child-id tid
                                                                 :generation generation})
                 ;; Route through the unified resume-body! in :await mode.
-                ;; An await resume advances a still-SUSPENDED body slice
-                ;; (not a re-run of a completed one), so it does NOT
-                ;; truncate stale conts, re-mark the node dirty/running,
-                ;; or wipe :created-spins (which would drop the awaited
+                ;; Retire the stale suffix on body re-entry.
+                ;; Preserve run state and :created-spins (which holds the awaited
                 ;; child and any other spins the pre-suspend slice
                 ;; created). The cont's own :resume-fn carries the
                 ;; monadic resolve/reject routing on the child's Result
@@ -1402,7 +1406,7 @@
                                 pcps-async/*in-trampoline* false]
                         (when-let [rj (:reject-fn cont)] (rj e)))
                       (catch #?(:clj Throwable :cljs :default) _ nil))
-                    (remove-continuation! context parent-id cont-id))))))))
+                    (remove-continuation! context parent-id (:id cont)))))))))
 
 ;; Propagate dirty flag through await dependency graph
       (propagate-await-dirty! context tid)
@@ -1448,56 +1452,53 @@
           resolve-fn (:resolve-fn event)
           reject-fn (:reject-fn event)
           callback-egress-policy (or (:callback-egress-policy event) :isolated)
-          execution-context (:execution-context event)  ; May be nil for normal spins
-          ;; Claim in the world the body will RUN in: its run state
-          ;; (:running?, run generation, invalidation) is that world's. A
-          ;; claim against the draining context while the body runs in
-          ;; another world would leave the claim's flag behind in one world
-          ;; and the run's in the other.
-          run-ctx (or execution-context context)]
-      (log/trace :engine/spin-execution {:spin-id tid})
-      ;; Try to atomically claim execution
-      ;; This checks cache AND running? atomically to prevent duplicate execution
-      (if-not (try-claim-execution! run-ctx tid)
-        ;; Failed to claim - either cached or already running
-        ;; Check which case to handle appropriately
-        (let [node (rtp/get-state run-ctx [:nodes tid])
-              cached (when node (nodes/get-value node))
-              is-clean? (when node (not (nodes/dirty? node)))]
-          (if (and cached is-clean?)
-            ;; Already cached - deliver result via callbacks without re-executing
-            (do
-              (log/trace :engine/spin-execution-cached {:spin-id tid})
-              (if (= (:variant cached) :ok)
-                (resolve-fn (:payload cached))
-                (reject-fn (:payload cached))))
-            ;; Not cached - must be running, add callbacks to pending
-            (do
-              (log/trace :engine/spin-execution-skip-running {:spin-id tid})
-              (add-pending-callback! run-ctx tid {:resolve resolve-fn :reject reject-fn}))))
-        ;; Successfully claimed - proceed with execution
-        ;; Execute spin on executor thread with provided callbacks
-        ;; CRITICAL: Bind *in-trampoline* to false when re-entering from event handler
-        ;; This ensures invoke-continuation establishes a new trampoline loop
-        ;; If execution-context is provided (e.g., from SMC), bind it; otherwise use context
-        ;; Apply this spin's captured scope (see make-spin in spin/core.cljc)
-        ;; on top of the chosen context's bindings, so the body's initial
-        ;; synchronous code (before any track/await) sees the spin's lexical
-        ;; construction scope. Without this, only continuation resumes restore
-        ;; scope — elements built before the first effect would use runtime
-        ;; bindings.
-        (let [base-ctx (or execution-context context)
-              spin-scope (rtp/get-state context [:nodes tid :spin-scope])
-              effective-ctx (if (seq spin-scope)
-                              (update base-ctx :bindings merge spin-scope)
-                              base-ctx)]
-          (binding [ec/*execution-context* effective-ctx
-                    ec/*spin-id* tid
-                    ec/*callback-egress-policy* callback-egress-policy
-                    pcps-async/*in-trampoline* false]
-            ;; Invoke spin (Spin implements IFn)
-            (let [result (spin resolve-fn reject-fn)]
-              nil)))))
+          ;; Claim and acknowledge in the world the body runs in, including
+          ;; cache hits, terminal cancellation, and joining an existing run.
+          run-ctx (or (:execution-context event) context)
+          refresh (:await-refresh event)]
+      (binding [ec/*execution-context* run-ctx
+                pcps-async/*in-trampoline* false]
+        (when (or (nil? refresh)
+                  (let [{:keys [parent-id cont-id registration refresh-id]} refresh
+                        cont (rtp/get-state run-ctx [:await-conts parent-id cont-id])]
+                    (and (= registration (:registration cont))
+                         (= refresh-id (:id (::refresh? cont))))))
+          (log/trace :engine/spin-execution {:spin-id tid})
+          (let [cancelled (when refresh
+                            (let [result (rtp/current-result run-ctx tid)]
+                              (when (cancelled-result? result) result)))]
+            (cond
+              ;; A queued handoff must not restart a cancelled child.
+              cancelled
+              (reject-fn (:payload cancelled))
+
+              ;; The claim atomically checks both cache and running state.
+              (try-claim-execution! run-ctx tid)
+              (let [spin-scope (rtp/get-state context [:nodes tid :spin-scope])
+                    effective-ctx (if (seq spin-scope)
+                                    (update run-ctx :bindings merge spin-scope)
+                                    run-ctx)]
+                ;; Initial body code sees the spin's captured construction scope.
+                (binding [ec/*execution-context* effective-ctx
+                          ec/*spin-id* tid
+                          ec/*callback-egress-policy* callback-egress-policy]
+                  (spin resolve-fn reject-fn)
+                  nil))
+
+              :else
+              (let [node (rtp/get-state run-ctx [:nodes tid])
+                    cached (when node (nodes/get-value node))]
+                (if (and cached (not (nodes/dirty? node)))
+                  (do
+                    (log/trace :engine/spin-execution-cached {:spin-id tid})
+                    (if (= (:variant cached) :ok)
+                      (resolve-fn (:payload cached))
+                      (reject-fn (:payload cached))))
+                  (do
+                    (log/trace :engine/spin-execution-skip-running {:spin-id tid})
+                    (add-pending-callback! run-ctx tid
+                                           (cond-> {:resolve resolve-fn :reject reject-fn}
+                                             refresh (assoc :await-refresh? true)))))))))))
 
     ;; Resume-as-event handoff for one-shot waiters (#27 Phase B) — see
     ;; enqueue-cont-resume! for the design boundary. The waiter was
@@ -1673,8 +1674,11 @@
                                 (case (:type event)
                                   :spin-execution
                                   (when-let [reject-fn (:reject-fn event)]
-                                    (try (reject-fn e)
-                                         (catch #?(:clj Throwable :cljs :default) _)))
+                                    (try
+                                      (binding [ec/*execution-context* (or (:execution-context event) context)
+                                                pcps-async/*in-trampoline* false]
+                                        (reject-fn e))
+                                      (catch #?(:clj Throwable :cljs :default) _)))
 
                                   :spin-completion
                                   (let [parent-ids (keys (rtp/get-state context
@@ -1988,18 +1992,8 @@
 
   Returns: true"
   [context spin-id]
-  ;; NOTE: we intentionally do NOT fire `:cancel!` on the cleared conts.
-  ;; The orphaned-callback double-execution risk only exists at TRUNCATION
-  ;; sites (where the spin stays alive and re-runs, generating a NEW cont
-  ;; at the same source-loc that races with the OLD external closure).
-  ;; clear-deps! is a teardown path — the spin is going away — so no NEW
-  ;; cont will compete. A late-firing external resolve will harmlessly
-  ;; advance the (already-cleared) body slice toward cache-result, which
-  ;; is idempotent. Calling `:cancel!` here would silently no-op
-  ;; LEGITIMATE in-flight resolves when the JVM Cleaner GCs a spin whose
-  ;; body is still suspended on an external await — observed as test
-  ;; flakes in tests where the user drops their Spin ref before the
-  ;; deferred delivers (Cleaner-1 thread → full-cleanup-spin! → :cancel!).
+  ;; Teardown leaves external delivery gates unarmed: a suspended body
+  ;; may still receive its resource's completion after losing its Spin ref.
   (rtp/swap-state! context []
                    (fn [rt-state]
       ;; To safely clear observers, take the UNION of `spin.deps` (the
@@ -2067,11 +2061,7 @@
   ([context spin-id]
    (full-cleanup-spin! context spin-id (constantly true)))
   ([context spin-id local?]
-  ;; NOTE: we intentionally do NOT fire `:cancel!` here. Same rationale as
-  ;; `clear-deps!` — this is a teardown path, no new cont will compete with
-  ;; an orphaned closure. Firing `:cancel!` would silently no-op legitimate
-  ;; in-flight resolves when the JVM Cleaner GCs a spin whose body is still
-  ;; suspended on an external await.
+  ;; As in clear-deps!, teardown leaves external delivery gates unarmed.
   ;;
   ;; `local?` (`backend/entity-locality`) limits the observer pruning to
   ;; dependency nodes this world owns: in a fork, a parent node read
@@ -2848,12 +2838,8 @@
               (swap! result update :spins-affected inc)
               (swap! result update :continuations-cleared + (count await-conts))
 
-              ;; NOTE: we intentionally do NOT fire `:cancel!` here. This is
-              ;; a generation-boundary cleanup of completed-not-running spins
-              ;; — no new cont will be registered for these spins in this
-              ;; generation. The orphaned-callback double-execution risk only
-              ;; exists at TRUNCATION sites where the spin stays alive and
-              ;; re-runs.
+              ;; Generation-boundary cleanup leaves external delivery gates
+              ;; unarmed; it does not displace a live body's current slice.
 
               ;; Remove await continuations and their subscriptions atomically.
               ;; The event-key shape depends on cont type:
@@ -3151,7 +3137,7 @@
   (let [gen (next-run-gen)
         stamp (fn [node]
                 (-> (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
-                    (assoc :running? true :run-gen gen)
+                    (assoc :running? true :run-gen gen :run-world (:fork-id context))
                     (dissoc :invalid-gen)))]
     ;; The whole-state transaction only when there is something to hand off:
     ;; under an overlay backend it re-merges the state, a path swap does not.
@@ -3295,9 +3281,21 @@
 
   Returns: true"
   [context spin-id callback]
-  (rtp/swap-state! context [:pending-callbacks spin-id]
-                   (fn [callbacks]
-                     (conj (or callbacks []) callback)))
+  (if (:await-refresh? callback)
+    (let [finished? (volatile! false)]
+      (rtp/swap-state! context []
+                       (fn [state]
+                         (let [running? (get-in state [:nodes spin-id :running?])]
+                           (vreset! finished? (not running?))
+                           (if running?
+                             (update-in state [:pending-callbacks spin-id]
+                                        (fn [callbacks] (conj (or callbacks []) callback)))
+                             state))))
+      ;; cache-result! clears running? before serving callbacks. Either the
+      ;; completing run takes this callback, or we acknowledge here, once.
+      (when @finished? ((:resolve callback) nil)))
+    (rtp/swap-state! context [:pending-callbacks spin-id]
+                     (fn [callbacks] (conj (or callbacks []) callback))))
   true)
 
 (defn ^:no-doc take-pending-callbacks!
@@ -3342,33 +3340,9 @@
   ;; cont-id is stateless — generate it ONCE up front so a swap-fn retry
   ;; doesn't waste a fresh random-uuid per iteration.
   (let [cont-id (or (:id cont) (keyword (str "cont-" (random-uuid))))
-        ;; The one piece of in-swap state we have to capture out-of-band:
-        ;; the :cancel! hook of any cont being DISPLACED at cont-id (i.e.
-        ;; a re-await of the same external resource at the same source-loc).
-        ;; The OLD cont's `:cancel!` must fire, otherwise its wrapped
-        ;; resolve/reject closures stay ungated in the external resource's
-        ;; pending list and re-introduce the orphaned-callback double-
-        ;; execution bug Stage 4 closes.
-        ;;
-        ;; Why the side-effect-in-swap-fn pattern is correct:
-        ;;
-        ;; - Retry-safe: each retry reads the latest continuation tables
-        ;;   and captures whichever :cancel! it sees. The LAST retry — the one
-        ;;   whose state actually CAS'd — captures the cont truly being
-        ;;   displaced. Earlier retries' captures are harmlessly
-        ;;   overwritten. We read the atom EXACTLY ONCE after the swap
-        ;;   returns, so only the last winner fires.
-        ;;
-        ;; - Can't move :cancel! inside the swap-fn: :cancel! itself does
-        ;;   a swap-state! on a different path (:engine/cancelled-tokens).
-        ;;   A nested swap on the same backend tangles with retry semantics
-        ;;   — at best wasted work, at worst inconsistent intermediate state.
-        ;;
-        ;; - Can't pre-fetch :cancel! before the swap: between the read and
-        ;;   the swap, another swap could install a NEW cont at the same id;
-        ;;   we'd then cancel the wrong (already-replaced) cont and leave
-        ;;   the actually-displaced one ungated. Capture must happen INSIDE
-        ;;   the swap-fn so it observes the same state the CAS commits.
+        ;; Capture the displaced hook in the successful transaction, resetting
+        ;; on retries. Token arming is part of detachment; custom hooks run
+        ;; once afterwards, since they may themselves mutate runtime state.
         displaced-cancel (atom nil)
         ;; Route by kind: a :track cont lands in :track-subscriptions, an
         ;; await cont in :await-conts. :order is a single monotone
@@ -3384,7 +3358,15 @@
                                                          (get await-conts cont-id))
                                            _     (when-let [c! (:cancel! displaced)]
                                                    (reset! displaced-cancel c!))
-                                           cont' (-> cont (assoc :id cont-id :order order))
+                                           cont' (cond-> (assoc cont :id cont-id :order order)
+                                                   (:body-slice? cont)
+                                                   (assoc ::earlier-await?
+                                                          (boolean
+                                                           (some (fn [[id c]]
+                                                                   (and (not= id cont-id)
+                                                                        (:body-slice? c)
+                                                                        (= :await-reactive (:kind c))))
+                                                                 await-conts))))
                                            event-key (:event-key cont')
                                            ;; A deterministic source-location ID may be
                                            ;; reused when a body advances to a different
@@ -3392,7 +3374,7 @@
                                            ;; edge before attaching the replacement.
                                            state (if displaced
                                                    (detach-continuation
-                                                    rt-state spin-id cont-id displaced false)
+                                                    rt-state spin-id cont-id displaced true)
                                                    rt-state)]
                                        (-> state
                                            (update :engine/retired-conts
@@ -3400,9 +3382,7 @@
                                            (assoc-in [store-key spin-id cont-id] cont')
                                            (update-in [:subscriptions event-key spin-id]
                                                       (fn [s] (conj (or s #{}) cont-id)))))))]
-    ;; Fire the displaced cont's cancel hook AFTER the swap commits,
-    ;; passing the engine context so the cancellation is recorded
-    ;; fork-locally (Option A — state-backed cancel tokens).
+    ;; Custom cancellation hooks run in the world that retired the cont.
     (when-let [c! @displaced-cancel] (c! context))
     (get-in new-state [store-key spin-id cont-id])))
 
@@ -3430,7 +3410,7 @@
                                    (assoc subs event-key event-subs)
                                    (dissoc subs event-key)))))))]
     (cond-> state'
-      (and cancel? (:cancel-token cont))
+      (and cancel? (:cancel-token cont) (not (:cancellation-shielded? cont)))
       (update-in [:engine/cancelled-tokens]
                  (fn [tokens]
                    (conj (or tokens #{}) (:cancel-token cont)))))))
@@ -3445,6 +3425,53 @@
   (when-let [claim (resume-claimed-key cont)]
     (= (:fork-id context) (:world claim))))
 
+(defn- cancelled-result? [result]
+  (and (= :error (:variant result))
+       (= :org.replikativ.spindel.spin.core/spin-cancelled
+          (:type (ex-data (:payload result))))))
+
+(defn- await-result-ready?
+  "Cancellation is terminal even if the cancelled run was invalidated."
+  [child result]
+  (and (some? result)
+       (or (not (nodes/dirty? child)) (cancelled-result? result))))
+
+(defn- earliest-affected-await
+  "Choose the first invalid prefix of a body slice, in this world's view.
+  An inherited in-flight claim has not delivered its captured suffix here."
+  [context rt-state spin-id cont]
+  (when (and (:body-slice? cont) (::earlier-await? cont))
+    (reduce-kv (fn [first-affected _ earlier]
+                 (if (and (:body-slice? earlier)
+                          (= :await-reactive (:kind earlier))
+                          (< (:order earlier) (:order cont))
+                          (or (nil? first-affected)
+                              (< (:order earlier) (:order first-affected)))
+                          (let [child (get-in rt-state [:nodes (second (:event-key earlier))])]
+                            (or (not (await-result-ready? child (:result child)))
+                                (::refresh? earlier)
+                                (and (resume-claimed-key earlier)
+                                     (not (claim-held? context earlier)))
+                                (not (identical? (:result child) (::delivered earlier))))))
+                   earlier
+                   first-affected))
+               nil
+               (get-in rt-state [:await-conts spin-id]))))
+
+(defn- complete-await-refresh!
+  "Acknowledge a scheduled/joined child attempt and retry its delivery.
+  If that run finished dirty, the retry can schedule a fresh run; retain
+  the delivery debt so exact Result-wrapper reuse also advances the suffix."
+  [context spin-id cont-id refresh-id child-id]
+  (let [world (or ec/*execution-context* context)]
+    (rtp/swap-state! world [:await-conts spin-id]
+                     (fn [conts]
+                       (let [current (get conts cont-id)]
+                         (if (= refresh-id (:id (::refresh? current)))
+                           (assoc-in conts [cont-id ::refresh? :scheduled?] false)
+                           conts))))
+    (enqueue-completion-event! world child-id)))
+
 (defn claim-continuation-for-resume!
   "Atomically arbitrate completion against cancellation.
 
@@ -3458,7 +3485,8 @@
 
   - `:result` — the child `Result` this resume delivers (the returned cont's
     `:on-resume` yields exactly it). A reactive cont records it
-    (`::delivered`), and a second claim for the identical Result fails: the same completion reaches a parked await at most once, whether
+    (`::delivered`). Queued body awaits read the selected child's Result in
+    the claim transaction. A second claim for the identical Result fails: the same completion reaches a parked await at most once, whether
     inline or through its queued `:spin-completion`. A re-completion caches a
     new Result and is delivered again (reactive re-fire).
   - `:registration` — the `:registration` token of the cont the caller
@@ -3471,53 +3499,134 @@
 
   Otherwise a reactive claim marks the cont in flight, so cancellation can
   remove the future graph edge without invoking the same CPS slice; the
-  returned cont carries the claim for `release-reactive-resume!`."
+  returned cont carries the claim for `release-reactive-resume!`.
+
+  A queued body completion first selects the earliest affected await in its
+  captured prefix. A ready result claims that site instead; a dirty child
+  gets an execution event while the earlier registration stays subscribed.
+  `::refresh?` records that handoff until delivery, even for exact-wrapper
+  reuse. Batch deduplication applies only to combinator deliveries; body
+  awaits still validate freshness. The scan is O(k), skipped for inline and
+  combinator deliveries."
   ([context spin-id cont-id]
    (claim-continuation-for-resume! context spin-id cont-id nil))
-  ([context spin-id cont-id {:keys [result registration inline?]}]
+  ([context spin-id cont-id {:keys [result registration inline? batch-resumed?]}]
    (let [claimed (volatile! nil)
-         claim {:world (:fork-id context) :id (random-uuid)}]
+         scheduled? (volatile! false)]
      (rtp/swap-state! context []
                       (fn [rt-state]
                         (vreset! claimed nil)
-                        (if-let [cont (continuation-at rt-state spin-id cont-id)]
-                          (cond
-                            (and registration (not= registration (:registration cont)))
+                        (vreset! scheduled? false)
+                        (if-let [requested (continuation-at rt-state spin-id cont-id)]
+                          (if (and registration (not= registration (:registration requested)))
                             rt-state
+                            (let [earlier (when-not inline?
+                                            (earliest-affected-await context rt-state spin-id requested))
+                                  cont (or earlier requested)
+                                  id (:id cont)
+                                  child-id (second (:event-key cont))
+                                  child (when (:body-slice? cont) (get-in rt-state [:nodes child-id]))
+                                  ;; Dispatch may have sampled an older wrapper.
+                                  ;; Select queued body results in the same world
+                                  ;; snapshot as prefix and readiness validation.
+                                  result (if (and (:body-slice? cont) (not inline?))
+                                           (:result child)
+                                           result)]
+                              (cond
+                                ;; A duplicate later completion may be the only
+                                ;; wakeup for an affected prefix in a frozen fork.
+                                ;; Reject it only after proving the prefix and
+                                ;; requested child are fresh in this world.
+                                (and (nil? earlier)
+                                     (or (not (:body-slice? requested))
+                                         (await-result-ready? child result))
+                                     (= :await-reactive (:kind requested))
+                                     (not (::refresh? requested))
+                                     (not (::retry? requested))
+                                     (not (resume-claimed-key requested))
+                                     (contains? requested ::delivered)
+                                     (or inline?
+                                         (and (some? result)
+                                              (identical? result (::delivered requested)))))
+                                rt-state
 
-                            (not= :await-reactive (:kind cont))
-                            (do
-                              (vreset! claimed cont)
-                              (detach-continuation rt-state spin-id cont-id cont false))
+                                ;; The selected registration is the wakeup. Also
+                                ;; arrange execution here: a fork/adoption need
+                                ;; not have inherited any dispatch for its child.
+                                ;; Keep refresh evidence until delivery, including
+                                ;; when recomputation reuses the exact Result.
+                                (and (:body-slice? cont) (not (await-result-ready? child result)))
+                                (if (and (= (:fork-id context) (:world (::refresh? cont)))
+                                         (:scheduled? (::refresh? cont)))
+                                  rt-state
+                                  (let [refresh {:world (:fork-id context) :id (random-uuid) :scheduled? true}
+                                        notify (fn [_]
+                                                 (complete-await-refresh!
+                                                  context spin-id id (:id refresh) child-id))]
+                                    (vreset! scheduled? true)
+                                    (-> rt-state
+                                        ;; A copied in-flight run belongs to its
+                                        ;; source world. Its fork-local execution
+                                        ;; must not merely join that absent run.
+                                        (cond-> (and (:running? child)
+                                                     (not= (:fork-id context) (:run-world child)))
+                                          (update-in [:nodes child-id] invalidate-node))
+                                        (assoc-in [:await-conts spin-id id ::refresh?] refresh)
+                                        (update :engine/pending conj
+                                                {:type :spin-execution :id child-id
+                                                 :await-refresh {:parent-id spin-id :cont-id id
+                                                                 :registration (:registration cont)
+                                                                 :refresh-id (:id refresh)}
+                                                 :spin (:awaited-spin cont)
+                                                 :resolve-fn notify :reject-fn notify}))))
 
-                            (or (claim-held? context cont)
-                                ;; An inherited claim (another world's, copied
-                                ;; by a fork) was never delivered in this
-                                ;; world: its ::delivered does not count here.
-                                (and (not (resume-claimed-key cont))
-                                     (contains? cont ::delivered)
-                                     (or
-                                      ;; An inline claim is the registration's
-                                      ;; first delivery: any completion that
-                                      ;; reached it already resumed the slice.
-                                      inline?
-                                      (and (some? result)
-                                           (identical? result (::delivered cont))))))
-                            rt-state
+                                (and batch-resumed? (not (:body-slice? cont)))
+                                rt-state
 
-                            :else
-                            (let [cont' (cond-> (assoc cont ::delivered result)
-                                          inline? (dissoc resume-claimed-key)
-                                          (and inline? (:body-slice? cont)) (assoc ::resumed? true)
-                                          (not inline?) (assoc resume-claimed-key claim))]
-                              (vreset! claimed
-                                       (cond-> cont'
-                                         ;; Deliver exactly the claimed Result: a
-                                         ;; re-read could see a newer one, whose own
-                                         ;; completion would then deliver it again.
-                                         (some? result) (assoc :on-resume (fn [_] result))))
-                              (assoc-in rt-state [:await-conts spin-id cont-id] cont')))
+                                (not= :await-reactive (:kind cont))
+                                (do
+                                  (vreset! claimed cont)
+                                  (detach-continuation rt-state spin-id id cont false))
+
+                                (claim-held? context cont)
+                                ;; The in-flight owner will retry after releasing
+                                ;; if a newer completion or acknowledged refresh
+                                ;; arrived while it ran, even with the same wrapper.
+                                (if (and (not inline?)
+                                         (or (::refresh? cont)
+                                             (not (identical? result (::delivered cont)))))
+                                  (assoc-in rt-state [:await-conts spin-id id ::retry?] true)
+                                  rt-state)
+
+                                :else
+                                (let [claim (when-not inline?
+                                              {:world (:fork-id context) :id (random-uuid)})
+                                      cont' (cond-> (-> cont
+                                                        (assoc ::delivered result)
+                                                        (dissoc ::refresh? ::retry?))
+                                              inline? (dissoc resume-claimed-key)
+                                              (and inline? (:body-slice? cont)) (assoc ::resumed? (:fork-id context))
+                                              (not inline?) (assoc resume-claimed-key claim))]
+                                  (vreset! claimed
+                                           (cond-> cont'
+                                             ;; This claim already owns the continuation
+                                             ;; view. No second read on a suffix-free
+                                             ;; await resume (notably single-await chains).
+                                             (and (not inline?) (:body-slice? cont)
+                                                  (let [awaits (get-in rt-state [:await-conts spin-id])
+                                                        tracks (get-in rt-state [:track-subscriptions spin-id])]
+                                                    (when (> (+ (count awaits) (count tracks)) 1)
+                                                      (let [later? #(> (:order %) (:order cont))]
+                                                        (or (some later? (vals awaits))
+                                                            (some later? (vals tracks)))))))
+                                             (assoc ::suffix? true)
+                                             ;; Deliver the claimed wrapper even
+                                             ;; if the child completes again.
+                                             (some? result) (assoc :on-resume (fn [_] result))))
+                                  (assoc-in rt-state [:await-conts spin-id id] cont')))))
                           rt-state)))
+     ;; Inline awaits can reach this path outside a drain too.
+     (when @scheduled? (trigger-drain! context (:executor context)))
      @claimed)))
 
 (defn release-reactive-resume!
@@ -3526,21 +3635,27 @@
   the resumed slice may have re-registered a fresh cont at the same id, and
   cancellation may have removed it while the slice ran.
 
-  A body slice's cont (`:body-slice?`) is left marked `::resumed?`: the body
-  has moved on from that await, so cancellation must not reject the body
+  A body slice's cont (`:body-slice?`) records its last resumed world in
+  `::resumed?`: the body has moved on, so cancellation must not reject it
   through it again (it rejects the slice where the body is parked now). A
   later completion of the child still claims it, as a reactive re-fire."
   [context spin-id claimed]
   (let [cont-id (:id claimed)
-        claim (resume-claimed-key claimed)]
+        claim (resume-claimed-key claimed)
+        retry? (volatile! false)]
     (rtp/swap-state! context [:await-conts spin-id]
                      (fn [conts]
+                       (vreset! retry? false)
                        (let [cont (get conts cont-id)]
                          (if (and cont (= claim (resume-claimed-key cont)))
-                           (assoc conts cont-id
-                                  (cond-> (dissoc cont resume-claimed-key)
-                                    (:body-slice? cont) (assoc ::resumed? true)))
-                           conts)))))
+                           (do
+                             (vreset! retry? (::retry? cont))
+                             (assoc conts cont-id
+                                    (cond-> (dissoc cont resume-claimed-key ::retry?)
+                                      (:body-slice? cont) (assoc ::resumed? (:fork-id context)))))
+                           conts))))
+    (when @retry?
+      (enqueue-completion-event! context (second (:event-key claimed)))))
   nil)
 
 (defn remove-continuation!

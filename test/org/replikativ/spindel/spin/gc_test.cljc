@@ -464,9 +464,14 @@
              ;; s is now out of scope - verify state exists
              (is (some? (rtp/get-state ctx [:nodes @spin-id-holder])) "State should exist before GC"))
            ;; Force GC (outside binding scope to ensure cleanup uses WeakRef)
-           (System/gc)
-           (Thread/sleep 500)
-           ;; Verify state is cleaned up
+           (loop [attempts 100]
+             (when (and (pos? attempts)
+                        (or (some? (rtp/get-state ctx [:nodes @spin-id-holder]))
+                            (some? (rtp/get-state ctx [:spins-meta @spin-id-holder]))))
+               (System/gc)
+               (Thread/sleep 20)
+               (recur (dec attempts))))
+           ;; Verify both cleanup locations after bounded polling (up to 2 s).
            (is (nil? (rtp/get-state ctx [:nodes @spin-id-holder])) "Node should be cleaned after GC")
            (is (nil? (rtp/get-state ctx [:spins-meta @spin-id-holder])) "Meta should be cleaned after GC")
            (finally
