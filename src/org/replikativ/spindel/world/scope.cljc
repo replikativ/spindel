@@ -14,7 +14,7 @@
             [org.replikativ.spindel.yggdrasil :as ygg]
             [replikativ.logging :as log]))
 
-(declare maybe-complete-quiescence!)
+(declare maybe-complete-quiescence! recover!)
 
 (defprotocol PResourceAuthority
   "What a scope asks when its worlds may spend something that must not be
@@ -74,6 +74,9 @@
          :handles (sorted-map)
          :handle-index {}
          :next-handle 0
+         ;; Failed construction never exposes these handles as admitted worlds.
+         ;; They remain live until authority return AND substrate discard succeed.
+         :recovery (sorted-map)
          ;; the copied worlds, as {n {:context :member}} in the order they
          ;; were copied, and {fork-id n}
          :copied (sorted-map)
@@ -119,10 +122,22 @@
   [state]
   (vec (vals (:handles state))))
 
+(defn- add-recovery [state handle refund?]
+  (let [n (:next-handle state)]
+    (-> state
+        (assoc-in [:recovery n] {:handle handle :refund? refund?})
+        (update :next-handle inc))))
+
+(defn- recovery-entry [state fork-id]
+  (some (fn [[n {:keys [handle] :as entry}]]
+          (when (= fork-id (fork-id-of handle)) (assoc entry :index n)))
+        (:recovery state)))
+
 (defn- live-descriptors
   "Descriptors of the scope's copied worlds, then of its worlds."
-  [{:keys [copied-worlds handles]}]
+  [{:keys [copied-worlds handles recovery]}]
   (-> []
+      (into (map (comp ygg/fork-descriptor :handle val)) recovery)
       (into (keep (fn [[member fork-id]] (ygg/copied-descriptor member fork-id))) copied-worlds)
       (into (map ygg/fork-descriptor) (vals handles))))
 
@@ -152,6 +167,9 @@
         (scope-error scope ::scope-cancelled
                      "Cannot fork through a cancelled world scope")
 
+        (or (:recovering? state) (seq (:recovery state)))
+        (scope-error scope ::recovery-required "World funding cleanup must finish before new work")
+
         (compare-and-set! scope state (update state :pending-forks inc))
         nil
 
@@ -171,6 +189,13 @@
         ;; claimed continuation belong to its executor/error boundary.
         (if @delivered? (throw error) (deliver! reject error))))))
 
+(defn- recovery-error [scope original cleanup]
+  (ex-info "World construction failed and its funding still requires cleanup"
+           {:type ::recovery-required :scope/id (:id @scope)
+            :construction-error {:message (ex-message original) :type (:type (ex-data original))}
+            :cleanup-error {:message (ex-message cleanup) :type (:type (ex-data cleanup))}}
+           original))
+
 (defn- returning!
   "Run `operation` after the scope's authority took back what is left in
    `context`'s wallet, once per world: a discard that fails is retried, the
@@ -178,7 +203,9 @@
   [scope context operation reject]
   (let [{:keys [authority returned]} @scope
         fork-id (:fork-id context)]
-    (if (and authority (not (contains? returned fork-id)))
+    (if (and authority
+             (not= false (:refund? (recovery-entry @scope fork-id)))
+             (not (contains? returned fork-id)))
       (invoke-once! (try (return! authority context)
                          (catch #?(:clj Throwable :cljs :default) error
                            (fn [_ reject-return] (reject-return error))))
@@ -231,14 +258,12 @@
                            (fn [_ reject-grant] (reject-grant error))))
                     (fn [_] (admit! handle))
                     (fn [grant-error]
-                      (binding [ec/*execution-context* (:parent-ctx handle)
-                                pcps-async/*in-trampoline* false]
-                        (invoke-once! (ygg/discard-fork! handle {:sync? false})
-                                      (fn [_] (fail! grant-error))
-                                      (fn [discard-error]
-                                        (log/error :world-scope/unfunded-fork-leaked
-                                                   {:scope/id id :error discard-error})
-                                        (fail! grant-error))))))
+                      (finish! #(-> % (add-recovery handle true) (update :pending-forks dec))
+                               (fn [_]
+                                 (invoke-once! (recover! scope)
+                                               (fn [_] (reject grant-error))
+                                               (fn [error] (reject (recovery-error scope grant-error error)))))
+                               nil)))
                    (admit! handle)))
                (fail! [error]
                  (finish! #(update % :pending-forks dec) reject error))]
@@ -319,6 +344,91 @@
        (catch #?(:clj Throwable :cljs :default) error
          (fn [_ reject] (reject error)))))
 
+(def ^:private hop-depth
+  "World cleanups walked on one stack before continuing on a fresh one."
+  200)
+
+(defn recover!
+  "Retry cleanup of privately owned failed constructions, preserving admitted
+   source worlds. Refund each attempted grant before discarding its context.
+   Failure retains the live ownership obligation; concurrent callers join the
+   same cleanup. Recovery is not an activity and does not prevent quiescence."
+  [scope]
+  (fn [resolve reject]
+    (let [reader {:resolve resolve :reject reject}
+          claim (transition!
+                 scope
+                 (fn [state]
+                   (cond
+                     (:recovering? state)
+                     [(update state :recovery-readers conj reader) {}]
+
+                     (not= :open (:status state))
+                     [state {:error (scope-error scope ::scope-consumed "Cannot recover a consumed scope")}]
+
+                     (pos? (:pending-forks state))
+                     [state {:error (scope-error scope ::scope-busy "Cannot recover while construction is in flight")}]
+
+                     (empty? (:recovery state))
+                     [state {:done? true}]
+
+                     :else
+                     [(-> state (assoc :recovering? true :recovery-readers [reader])
+                          (update :pending-forks inc))
+                      {:entries (vec (rseq (:recovery state)))}])))
+          finish! (fn [error]
+                    (let [readers (transition!
+                                   scope
+                                   (fn [state]
+                                     [(-> state (dissoc :recovering? :recovery-readers)
+                                          (update :pending-forks dec))
+                                      (:recovery-readers state)]))
+                          callback-error (volatile! nil)]
+                      (try
+                        (doseq [reader readers]
+                          (try ((if error (:reject reader) (:resolve reader)) error)
+                               (catch #?(:clj Throwable :cljs :default) e
+                                 (when-not @callback-error (vreset! callback-error e)))))
+                        (when-let [e @callback-error] (throw e))
+                        (finally (maybe-complete-quiescence! scope)))))
+          retired! (fn [n handle]
+                     (swap! scope
+                            (fn [state]
+                              (cond-> (-> state (update :recovery dissoc n)
+                                          (update :returned disj (fork-id-of handle)))
+                                (:retain-released? state)
+                                (update :released (fnil conj []) (ygg/fork-descriptor handle))))))]
+      (cond
+        (:error claim) (reject (:error claim))
+        (:done? claim) (resolve nil)
+        (:entries claim)
+        (letfn [(step [entries depth]
+                  (if-let [[n {:keys [handle refund?]}] (first entries)]
+                    (let [next! (fn []
+                                  (retired! n handle)
+                                  (if (< depth hop-depth)
+                                    (step (next entries) (inc depth))
+                                    (let [continue! #(step (next entries) 0)]
+                                      (try (executor/execute! (:executor (:parent-ctx handle)) continue!)
+                                           (catch #?(:clj Throwable :cljs :default) _ (continue!))))))]
+                      (if (ygg/open-fork? handle)
+                        (returning!
+                         scope (:child-ctx handle)
+                         (fn []
+                           (binding [ec/*execution-context* (:parent-ctx handle)
+                                     pcps-async/*in-trampoline* false]
+                             (invoke-once! (authority-op #(ygg/discard-fork! handle (discard-opts handle)))
+                                           (fn [_] (next!)) finish!)))
+                         finish!)
+                        (if (and (= :discarded (:status (ygg/fork-disposition handle)))
+                                 (or (not refund?)
+                                     (contains? (:returned @scope) (fork-id-of handle))))
+                          (next!)
+                          (finish! (scope-error scope ::recovery-required
+                                                "Recovery child requires substrate settlement repair")))))
+                    (finish! nil)))]
+          (step (:entries claim) 0))))))
+
 (defn- share
   "One of `k` even shares of `resources`: integer amounts rounded down."
   [resources k]
@@ -370,6 +480,9 @@
                 [state {:error (scope-error scope ::scope-cancelled
                                             "Cannot copy in a cancelled world scope")}]
 
+                (or (:recovering? state) (seq (:recovery state)))
+                [state {:error (scope-error scope ::recovery-required "Funding cleanup must finish before copying")}]
+
                 (nil? handle)
                 [state {:error (scope-error scope ::unknown-world
                                             "World is not owned by this scope")}]
@@ -388,25 +501,25 @@
        (reject error)
        (let [{:keys [id purpose fork-opts authority]} @scope
              handle (:handle claimed)
+             attempted (volatile! #{})
              fund! (fn [copies]
-                     (let [funded (volatile! [])]
-                       (try
-                         (doseq [[c g] (map vector copies (or grants (repeat nil)))]
-                           (settle-now (authority-op #(grant! authority context (:child-ctx c) g)))
-                           (vswap! funded conj c))
-                         (catch #?(:clj Throwable :cljs :default) error
-                           (doseq [c (rseq @funded)]
-                             (try (settle-now (authority-op #(return! authority (:child-ctx c))))
-                                  (catch #?(:clj Throwable :cljs :default) return-error
-                                    (log/error :world-scope/unreturned-copy-grant
-                                               {:scope/id id :error return-error}))))
-                           (throw error)))))
+                     (doseq [[c g] (map vector copies (or grants (repeat nil)))]
+                       (vswap! attempted conj (fork-id-of c))
+                       (settle-now (authority-op #(grant! authority context (:child-ctx c) g)))))
+             own-failure! (fn [{:keys [copies]}]
+                            (swap! scope
+                                   (fn [state]
+                                     (reduce (fn [state c]
+                                               (add-recovery state c (contains? @attempted (fork-id-of c))))
+                                             state copies)))
+                            true)
              outcome
              (try
                {:copies (ygg/copy-fork!
                          handle k
                          (cond-> (-> (merge fork-opts extra-fork-opts)
-                                     (assoc :mode :frozen :purpose purpose :owner id :sync? true))
+                                     (assoc :mode :frozen :purpose purpose :owner id :sync? true
+                                            :on-copy-failure own-failure!))
                            authority (assoc :admit fund!)))}
                (catch #?(:clj Throwable :cljs :default) error
                  {:error error}))]
@@ -420,7 +533,9 @@
                             (update :copied-worlds (fnil conj []) [(first copies) fork-id]))
                         ;; the world stays the scope's, where it was: the
                         ;; scope discards its worlds newest first
-                        (add-handle state handle (:position claimed)))
+                        (if (ygg/open-fork? handle)
+                          (add-handle state handle (:position claimed))
+                          state))
                       (update :pending-forks dec))))
          (try
            (binding [ec/*execution-context* context]
@@ -428,14 +543,12 @@
                (resolve (mapv (fn [c] {:child-ctx (:child-ctx c)
                                        :descriptor (ygg/fork-descriptor c)})
                               copies))
-               (reject (:error outcome))))
+               (invoke-once! (recover! scope)
+                             (fn [_] (reject (:error outcome)))
+                             (fn [error] (reject (recovery-error scope (:error outcome) error))))))
            (finally (maybe-complete-quiescence! scope))))))))
 
-(def ^:private hop-depth
-  "Worlds `discard!` walks on one stack before continuing on a fresh one."
-  200)
-
-(defn discard!
+(defn- discard-owned!
   "Discard all owned worlds newest first. Returns a shared CPS operation."
   [scope]
   (fn [resolve reject]
@@ -446,7 +559,8 @@
            (fn [state]
              (case (:status state)
                :open
-               (if (or (pos? (:pending-forks state))
+               (if (or (:recovering? state) (seq (:recovery state))
+                       (pos? (:pending-forks state))
                        (seq (:activities state)))
                  [state
                   {:immediate
@@ -549,12 +663,27 @@
                                  (assoc :status :discarded
                                         :descriptors descriptors
                                         :handles (sorted-map)
-                                        :handle-index {})
+                                        :handle-index {}
+                                        :recovery (sorted-map))
                                  (dissoc :client :error)))))
                        (fn [error]
                          (complete! :failed error
                                     #(assoc % :status :open :error error)))))))]
           (step handles 0))))))
+
+(defn discard!
+  "Discard all owned worlds after recovering failed constructions first.
+   Source worlds remain intact if their recovery children cannot be settled."
+  [scope]
+  (fn [resolve reject]
+    (let [state @scope]
+      (if (and (or (:recovering? state) (seq (:recovery state)))
+               (= :open (:status state))
+               (or (:recovering? state)
+                   (and (zero? (:pending-forks state)) (empty? (:activities state)))))
+        (invoke-once! (recover! scope)
+                      (fn [_] (invoke-once! (discard-owned! scope) resolve reject)) reject)
+        (invoke-once! (discard-owned! scope) resolve reject)))))
 
 (defn release!
   "Discard ONE owned world before the scope ends, so a long search need not
@@ -580,6 +709,9 @@
                  (nil? handle)
                  [state {:error (scope-error scope ::unknown-world
                                              "World is not owned by this scope")}]
+
+                 (or (:recovering? state) (seq (:recovery state)))
+                 [state {:error (scope-error scope ::recovery-required "Funding cleanup must finish before release")}]
 
                  (contains? (:activities state) fork-id)
                  [state {:error (scope-error scope ::world-busy
@@ -660,6 +792,9 @@
                                 [state (scope-error scope ::scope-consumed
                                                     "Cannot enter a consumed world scope")]
 
+                                (or (:recovering? state) (seq (:recovery state)))
+                                [state (scope-error scope ::recovery-required "Funding cleanup must finish before new activity")]
+
                                 (or (:cancel-requested? state) (:quiescent? state))
                                 [state (scope-error scope ::scope-cancelled
                                                     "Cannot enter a closed world scope")]
@@ -703,7 +838,9 @@
 
                                   :else
                                   (let [admit? (or (empty? specs)
-                                                   (not (:cancel-requested? state)))
+                                                   (and (not (:cancel-requested? state))
+                                                        (not (:recovering? state))
+                                                        (empty? (:recovery state))))
                                         replacements
                                         (if admit?
                                           (into {}
