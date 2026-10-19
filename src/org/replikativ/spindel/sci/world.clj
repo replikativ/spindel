@@ -24,6 +24,36 @@
   [ref]
   (:context (component/resolve ref)))
 
+(defn replace-context!
+  "Atomically replace this world's interpreter under its existing stable ref.
+
+   `expected` must be identical to the currently selected SCI context. Callers
+   may prepare `(sci/fork expected)` away from the reactive engine, then publish
+   that context without changing the ref captured by SCI's runtime resolvers.
+   Missing, foreign-type and stale realizations refuse without mutation.
+
+   This only publishes a process-local heap. The caller owns admission,
+   quiescence and cleanup of interpreter-specific native resources; neither
+   the previous nor the replacement context is implicitly released."
+  [runtime ref expected replacement]
+  (when-not (and (component/component-ref? ref)
+                 (map? replacement)
+                 (instance? clojure.lang.IAtom (:env replacement)))
+    (throw (ex-info "Expected a component ref and an SCI context"
+                    {:type ::invalid-replacement})))
+  (binding [ec/*execution-context* runtime]
+    (ec/swap-state!
+     [:world/components (:id ref)]
+     (fn [selected]
+       (when-not (instance? InterpreterWorld selected)
+         (throw (ex-info "Component is not an SCI interpreter in this world"
+                         {:type ::not-interpreter :component/id (:id ref)})))
+       (when-not (identical? expected (:context selected))
+         (throw (ex-info "SCI interpreter changed during preparation"
+                         {:type ::stale-context :component/id (:id ref)})))
+       (->InterpreterWorld replacement))))
+  replacement)
+
 (defn create!
   "Create and register a forkable SCI interpreter in `runtime`.
 
