@@ -132,8 +132,10 @@
 (defn- escrow-authority [ledger]
   (reify world-scope/PResourceAuthority
     (grant! [_ source child amount]
-      (swap! ledger #(-> % (update-in [:wallets (:fork-id source)] - amount)
-                         (assoc-in [:wallets (:fork-id child)] amount)))
+      (if (some? amount)
+        (swap! ledger #(-> % (update-in [:wallets (:fork-id source)] - amount)
+                           (assoc-in [:wallets (:fork-id child)] amount)))
+        (swap! ledger assoc-in [:wallets (:fork-id child)] 0))
       nil)
     (return! [_ _context] nil)
     (escrow! [_ context key]
