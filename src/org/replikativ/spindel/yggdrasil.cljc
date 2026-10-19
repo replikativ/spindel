@@ -1773,9 +1773,16 @@
 
    `:admit` (fn [copies]), when given, runs once the copies exist and before
    the family takes the world: a throw discards the copies and leaves
-   `fork-handle` open and its world untouched. JVM / synchronous only."
+   `fork-handle` open and its world untouched. JVM / synchronous only.
+
+   An optional synchronous `:on-copy-failure` receives {:copies raw-handles
+   :phase :construction|:admission|:source-transfer :error error}. Returning
+   true claims cleanup ownership of ALL supplied handles, suppressing automatic
+   discard. The callback must atomically claim ownership without throwing; no
+   copy is returned as a successful result. Source transfer has not succeeded
+   at these failure boundaries."
   ([fork-handle k] (copy-fork! fork-handle k {}))
-  ([fork-handle k {:keys [admit] :as opts}]
+  ([fork-handle k {:keys [admit on-copy-failure] :as opts}]
    (ensure-sync! opts :copy)
    (when-not (pos-int? k)
      (throw (ex-info "copy-fork! needs a positive number of copies"
@@ -1791,16 +1798,31 @@
                     (atom {:id (random-uuid) :status :open :nodes {}}))
          fid (:fork-id fork-handle)
          owner (:owner @(:authority fork-handle))
-         copies (binding [ec/*execution-context* (:child-ctx fork-handle)]
-                  (vec (repeatedly k #(fork! (merge {:mode :frozen :owner owner :purpose :copy}
-                                                    (dissoc opts :admit))))))
+         made (volatile! [])
+         fail! (fn [phase error]
+                 (let [copies @made
+                       claimed? (and on-copy-failure
+                                     (true? (on-copy-failure {:copies copies :phase phase :error error})))]
+                   (when-not claimed?
+                     (doseq [c (rseq copies)] (discard-fork* c {})))
+                   (throw error)))
+         copies (try
+                  (binding [ec/*execution-context* (:child-ctx fork-handle)]
+                    (dotimes [_ k]
+                      (vswap! made conj
+                              (fork! (merge {:mode :frozen :owner owner :purpose :copy}
+                                            (dissoc opts :admit :on-copy-failure))))))
+                  @made
+                  (catch #?(:clj Throwable :cljs :default) error
+                    (fail! :construction error)))
+         phase (volatile! :admission)
          internal (try
                     (when admit (admit copies))
+                    (vreset! phase :source-transfer)
                     ;; refused when the handle was settled meanwhile
                     (transfer-fork! fork-handle [::copy-family (:id @family)])
                     (catch #?(:clj Throwable :cljs :default) error
-                      (doseq [c (rseq copies)] (discard-fork* c {}))
-                      (throw error)))]
+                      (fail! @phase error)))]
      (swap! family
             (fn [f]
               (reduce (fn [f c] (assoc-in f [:nodes (:fork-id c)] {:via fid :children #{}}))

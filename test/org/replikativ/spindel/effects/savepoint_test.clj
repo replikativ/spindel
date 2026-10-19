@@ -7,6 +7,7 @@
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.world.scope :as scope]
             [org.replikativ.spindel.yggdrasil :as ygg]))
 
 (defn- await-cps [operation]
@@ -68,6 +69,91 @@
     (let [end (take! events)]
       (is (= sp/result-site (:savepoint/site end)))
       (is (= [10 20 30] (:savepoint/payload end))))))
+
+(deftest independent-session-is-prepared-at-fork-creation
+  (with-session [root session events {:parent-only (fn [_] nil)}]
+    (sp/start! session (binding [ec/*execution-context* root] (program)))
+    (let [parent-point (take! events)
+          child-seed (sp/derive-seed (sp/seed root) :independent :child)
+          _ (doseq [key [:savepoint/trace :savepoint/escrowed]]
+              (rtp/swap-state! root [key] (constantly #{:parent-only})))
+          handle (binding [ec/*execution-context* root]
+                   (ygg/fork! {:systems :none
+                               :state-updates (sp/independent-fork-state child-seed)}))
+          child (:child-ctx handle)
+          child-events (java.util.concurrent.LinkedBlockingQueue.)
+          child-session (sp/open! child {:seed child-seed
+                                         :handlers {sp/any-site #(.put child-events %)}})]
+      (try
+        (is (not= (:id session) (:id child-session)))
+        (is (identical? session (sp/session root)))
+        (is (empty? (sp/pending child)))
+        (is (nil? (rtp/get-state child [:savepoint/pending (:savepoint/address parent-point)])))
+        (is (nil? (rtp/get-state child [:savepoint/handlers :parent-only])))
+        (doseq [key [:savepoint/task :savepoint/ended :savepoint/trace :savepoint/escrowed]]
+          (is (nil? (rtp/get-state child [key])) (str key)))
+        (is (= child-seed (sp/seed child)))
+        (is (not= (sp/seed root) (sp/seed child)))
+        (sp/start! child-session (binding [ec/*execution-context* child] (program)))
+        (is (= 0 (:savepoint/seq (take! child-events))))
+        (await-cps (sp/close! child-session))
+        (is (sp/pending? parent-point) "closing the child cannot abandon the parent's continuation")
+        (binding [ec/*execution-context* root] (ygg/merge-fork! handle))
+        (is (identical? session (sp/session root)) "merging systems does not merge session ownership")
+        (is (= #{:parent-only} (rtp/get-state root [:savepoint/escrowed])))
+        (sp/resume parent-point 10)
+        (sp/resume (take! events) 20)
+        (is (= [10 20 30] (:savepoint/payload (take! events))))
+        (finally
+          (await-cps (sp/close! child-session))
+          (when (ygg/open-fork? handle)
+            (binding [ec/*execution-context* root] (ygg/discard-fork! handle))))))))
+
+(deftest failed-session-installation-releases-only-its-own-lease
+  (let [root (context/create-execution-context)
+        scope (scope/create {})
+        existing-lease (scope/begin-activity! scope :test)]
+    (try
+      (is (thrown? Exception (sp/open! root {:scope scope :handlers (Object.)})))
+      (is (nil? (sp/session root)))
+      (is (nil? (sp/seed root)))
+      (is (= #{existing-lease} (set (keys (:activities @scope)))))
+      (finally
+        (scope/end-activity! scope existing-lease)
+        (await-cps (scope/discard! scope))
+        (context/stop-context! root)))))
+
+(deftest published-overlay-session-retains-its-lease-after-lost-acknowledgement
+  (let [root (context/create-execution-context)
+        handle (binding [ec/*execution-context* root] (ygg/fork! {:systems :none}))
+        child (:child-ctx handle)
+        installed (atom nil)
+        ;; A protocol implementation, not a Var redefinition: compiled
+        ;; protocol calls dispatch directly through their interface.
+        faulty-world
+        (reify rtp/PState
+          (get-state [_ path] (rtp/get-state child path))
+          (swap-state! [_ path f]
+            (let [result (rtp/swap-state! child path
+                                          (fn [state]
+                                            (let [next (f state)]
+                                              (reset! installed (:savepoint/session next))
+                                              next)))]
+              (if (empty? path)
+                (throw (ex-info "session commit acknowledgement lost" {}))
+                result))))]
+    (try
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"acknowledgement lost"
+                            (sp/open! faulty-world {:seed 8})))
+      (let [published (sp/session child)]
+        (is (= (:id @installed) (:id published)))
+        (is (not (identical? @installed published)) "the overlay can copy a Session record's metadata")
+        (is (contains? (:activities @(:scope published)) (:lease published)))
+        (await-cps (sp/close! published))
+        (is (empty? (:activities @(:scope published)))))
+      (finally
+        (binding [ec/*execution-context* root] (ygg/discard-fork! handle))
+        (context/stop-context! root)))))
 
 (deftest a-fork-starts-from-the-state-at-its-site
   (with-session [root session events {}]
