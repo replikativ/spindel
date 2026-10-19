@@ -2,10 +2,100 @@
   (:require [clojure.test :refer [deftest is testing]]
             [sci.core :as sci]
             [org.replikativ.spindel.engine.context :as context]
+            [org.replikativ.spindel.engine.component :as component]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.sci.world :as world]
             [org.replikativ.spindel.spin.core :as spin-core]))
+
+(deftest staged-interpreter-replacement-preserves-state-and-stable-resolvers
+  (let [parent (context/create-execution-context)]
+    (try
+      (let [ref (world/create! parent)
+            original (world/context-in parent ref)
+            _ (sci/eval-string* original "(def state (atom [:original])) (defn saved [] @state)")
+            before (context/fork-context parent :mode :frozen)
+            staged (sci/fork original)]
+        (try
+          (sci/eval-string* staged "(swap! state conj :staged)")
+          (is (= [:original] (sci/eval-string* original "(saved)")))
+          (is (identical? staged (world/replace-context! parent ref original staged)))
+          (is (identical? staged (world/context-in parent ref)))
+          (is (= [:original :staged]
+                 (binding [ec/*execution-context* parent]
+                   (world/eval-string* ref "(saved)"))))
+          (let [task (binding [ec/*execution-context* parent]
+                       (world/eval-string*
+                        ref
+                        "(require '[org.replikativ.spindel.spin.cps :refer [spin]])
+                         (spin (saved))"))]
+            (is (= [:original :staged] (binding [ec/*execution-context* parent] @task)))
+            (is (= [:original] (sci/eval-string* (world/context-in before ref) "(saved)"))))
+          (let [after (context/fork-context parent :mode :frozen)]
+            (try
+              (is (= [:original :staged]
+                     (sci/eval-string* (world/context-in after ref) "(saved)")))
+              (is (= ::world/stale-context
+                     (try (world/replace-context! after ref staged (sci/fork staged)) nil
+                          (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+              (let [child-context (world/context-in after ref)
+                    child-stage (sci/fork child-context)]
+                (sci/eval-string* child-stage "(swap! state conj :child)")
+                (world/replace-context! after ref child-context child-stage)
+                (is (= [:original :staged :child]
+                       (sci/eval-string* (world/context-in after ref) "(saved)")))
+                (is (= [:original :staged] (sci/eval-string* (world/context-in parent ref) "(saved)"))))
+              (finally (context/close-context! after))))
+          (is (= ::world/stale-context
+                 (try (world/replace-context! parent ref original (sci/fork original)) nil
+                      (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+          (is (identical? staged (world/context-in parent ref)))
+          (finally (context/close-context! before))))
+      (finally (context/close-context! parent)))))
+
+(deftest interpreter-replacement-refuses-missing-and-noninterpreter-components
+  (let [runtime (context/create-execution-context)]
+    (try
+      (let [ref (world/create! runtime)
+            original (world/context-in runtime ref)
+            replacement (sci/fork original)
+            other (binding [ec/*execution-context* runtime]
+                    (component/register! (component/shared :not-an-interpreter)))]
+        (is (= ::world/not-interpreter
+               (try (world/replace-context! runtime other original replacement) nil
+                    (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+        (is (= :not-an-interpreter (component/resolve-in runtime other)))
+        (is (= ::world/invalid-replacement
+               (try (world/replace-context! runtime ref original {}) nil
+                    (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+        (is (identical? original (world/context-in runtime ref)))
+        (binding [ec/*execution-context* runtime] (component/unregister! ref))
+        (is (= ::world/not-interpreter
+               (try (world/replace-context! runtime ref original replacement) nil
+                    (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+        (is (not (contains? (binding [ec/*execution-context* runtime] (component/registered)) (:id ref)))))
+      (finally (context/close-context! runtime)))))
+
+(deftest competing-interpreter-publications-have-one-identity-fenced-winner
+  (let [runtime (context/create-execution-context)
+        gate (promise)]
+    (try
+      (let [ref (world/create! runtime)
+            original (world/context-in runtime ref)
+            alternatives [(sci/fork original) (sci/fork original)]
+            contenders (mapv (fn [replacement]
+                               (future
+                                 @gate
+                                 (try (world/replace-context! runtime ref original replacement)
+                                      :published
+                                      (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+                             alternatives)]
+        (deliver gate true)
+        (is (= {:published 1 ::world/stale-context 1} (frequencies (mapv deref contenders))))
+        (is (some #(identical? % (world/context-in runtime ref)) alternatives)))
+      (finally
+        (deliver gate true)
+        (context/close-context! runtime)))))
 
 (deftest inherited-native-capabilities-follow-the-selected-world
   (let [parent (context/create-execution-context)]
