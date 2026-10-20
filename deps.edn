@@ -16,7 +16,10 @@
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.
-        org.replikativ/yggdrasil {:mvn/version "0.3.49" :exclusions [is.simm/partial-cps]}
+        ;; Exact public historical-overlay contract, pending its Maven release.
+        org.replikativ/yggdrasil {:git/url "https://github.com/replikativ/yggdrasil"
+                                  :git/sha "57a4a64ea1e0b8fe71719db314f051fc87672905"
+                                  :exclusions [is.simm/partial-cps]}
         org.replikativ/hasch {:mvn/version "0.4.104"}
         org.clojure/core.async {:mvn/version "1.9.865"}
         org.replikativ/kabel {:mvn/version "0.3.139"}}
@@ -33,10 +36,10 @@
                       ;; this is a plain :mvn dep — no sibling checkout / CI clone. The
                       ;; handlers' deps are satisfied by kabel (a main dep) + distributed-scope
                       ;; + konserve-sync (below). :test only; runtime stays datahike-free.
-                      org.replikativ/datahike {:mvn/version "0.8.1903" :exclusions [is.simm/partial-cps]}
+                      org.replikativ/datahike {:mvn/version "0.8.1910" :exclusions [is.simm/partial-cps]}
                       ;; Isolated logical commit catalogs exercise cross-system
                       ;; merge-base inspection; not a runtime dependency.
-                      org.replikativ/geschichte {:mvn/version "0.1.19" :exclusions [is.simm/partial-cps]}
+                      org.replikativ/geschichte {:mvn/version "0.1.22" :exclusions [is.simm/partial-cps]}
                       ;; Released Clojars artifact (group is.simm, not
                       ;; org.replikativ — distributed-scope is published from
                       ;; the simm-is org). Pulls kabel + missionary as
@@ -99,7 +102,7 @@
                       ;; datahike on the cljs classpath: the cross-runtime FORK client creates
                       ;; a REAL datahike (memory) system on node. datahike is :test-only on the
                       ;; JVM, so the shadow build needs it pulled in here too.
-                      org.replikativ/datahike {:mvn/version "0.8.1903" :exclusions [is.simm/partial-cps]}
+                      org.replikativ/datahike {:mvn/version "0.8.1910" :exclusions [is.simm/partial-cps]}
                       org.replikativ/persistent-sorted-set {:mvn/version "0.5.145" :exclusions [is.simm/partial-cps]}
                       ;; the DURABLE cross-runtime client (cross-runtime-durable-client)
                       ;; syncs a node-filestore-backed G-Set's NODES over konserve-sync;
