@@ -153,20 +153,23 @@
   (ygg/overlay sys {:mode (or (:mode directive) :following)}))
 
 (defn- snapshot-fork
-  "SNAPSHOT fork: pin a FIXED `snap-id` (a content-addressed snapshot-id — git
-   sha / datahike commit) and branch an isolated writable head off it. The
-   'fix a value, run it again in isolation' primitive. Versioned systems do this
-   natively; a convergent system without a branch map falls back to the system
-   unchanged (snapshot fork targets versioned systems for now).
+  "Pin a historical snapshot through an explicitly supported OWNED overlay.
+   Branchable alone does not promise a private workspace: logical checkout
+   may mutate the parent's connection, or the protocol may be a no-op facade.
+   The overlay owns its actual physical resource and immutable historical base.
 
-   Returns a plain branched SYSTEM (not an Overlay) — pinned at a PAST value.
-   Its `snap-<fork>` branch is managed by the same ForkHandle lifecycle as a
-   regular branch fork: merge explicitly to adopt it, or discard to clean it up."
-  [sys fork-id snap-id]
-  (if (satisfies? ygg/Branchable sys)
-    (let [new-branch (keyword (str "snap-" (name fork-id)))]
-      (-> sys (ygg/branch! new-branch snap-id) (ygg/checkout new-branch)))
-    sys))
+   This synchronous fork-value hook remains JVM-first. Refuse on CLJS before
+   allocating anything; an async operation must never be stored as a system."
+  [sys _fork-id snap-id]
+  #?(:clj
+     (let [result (ygg/overlay-at sys snap-id {:sync? true})]
+       (when (fn? result)
+         (throw (ex-info "Historical workspace requires asynchronous construction"
+                         {:type ::async-snapshot-fork})))
+       result)
+     :cljs
+     (throw (ex-info "Historical workspace forks require an asynchronous fork hook"
+                     {:type ::async-snapshot-fork}))))
 
 (defn- caps [sys]
   (when (satisfies? ygg/SystemIdentity sys) (ygg/capabilities sys)))
@@ -203,10 +206,9 @@
       (ovl/overlay? this)
       (rtp/fork-value (ovl/overlay-system this) fork-id directive)
 
-      ;; SNAPSHOT fork (pin a fixed value) — any Snapshotable, versioned or convergent.
-      ;; JVM-FIRST: `snapshot-fork` calls durable `branch!`/`checkout` synchronously, which
-      ;; only yields a value on the JVM (cljs returns a CPS). Snapshot forks stay JVM-first;
-      ;; the async lift (Design B) covers the DEFAULT branch-fork path, not snapshot forks.
+      ;; SNAPSHOT fork: only positively advertised isolated historical workspaces.
+      ;; The async lift below covers DEFAULT branch forks, not this synchronous
+      ;; historical hook; snapshot-fork refuses CLJS rather than storing a CPS.
       (and (= :snapshot (:fork directive)) (satisfies? ygg/Snapshotable this))
       (snapshot-fork this fork-id (:snapshot directive))
 
@@ -1168,6 +1170,19 @@
                                   (throw (ex-info "Snapshot policy names systems excluded from the fork"
                                                   {:type ::excluded-snapshot-systems
                                                    :systems (vec excluded)})))
+            ;; Refuse deterministic unsupported historical policies BEFORE any
+            ;; system is forked. A later refusal must not strand earlier native
+            ;; workspaces merely because registry iteration order differed.
+            _supported-snapshots
+            (doseq [[sid snapshot] (:snapshots opts)]
+              (when-not (and (or (uuid? snapshot)
+                                 (and (string? snapshot) (seq snapshot)))
+                             (ygg/supports-snapshot-overlay? (resolve-system sid)))
+                (throw (ex-info "System cannot create the requested historical workspace"
+                                {:type ::unsupported-snapshot-fork :system sid})))
+              #?(:cljs
+                 (throw (ex-info "Historical workspace forks require an asynchronous fork hook"
+                                 {:type ::async-snapshot-fork :system sid}))))
             selected-reg (select-keys parent-reg selected-ids)
             selected-signal-ids (into #{} (map (comp :id val)) selected-reg)
             excluded-signal-ids (into #{}
@@ -1245,8 +1260,8 @@
                                    (= fork-id branch) :branch
                                    (= cval psys) :shared
                                    :else :forked)
-                        entry {:base-snapshot (cond snapshot? (get-in opts [:snapshots sid])
-                                                    (ovl/overlay? cval) (ygg/base-ref cval)
+                        entry {:base-snapshot (cond (ovl/overlay? cval) (ygg/base-ref cval)
+                                                    snapshot? (get-in opts [:snapshots sid])
                                                     :else parent-head)
                                :head child-head
                                :branch branch
@@ -1573,7 +1588,9 @@
              (when ps
                (let [[sid _ cval _] (first ps)]
                  (cond
-                   (ovl/overlay? cval) (ygg/discard! cval)
+                   (ovl/overlay? cval)
+                   (let [result (ygg/discard! cval opts)]
+                     (if (fn? result) (await result) result))
                    (and (satisfies? ygg/Branchable cval)
                         (managed-branch? fork-handle sid cval))
                    (await (ygg/delete-branch! cval (ygg/current-branch cval) (merge yc/default-opts opts)))))
@@ -1586,7 +1603,8 @@
                                          (ovl/overlay? cval)
                                          (let [m (await (ygg/merge-down! cval opts))]
                                            (await (seat-merged! parent-ctx sid sig-ref m opts))
-                                           (ygg/discard! cval)
+                                           (let [result (ygg/discard! cval opts)]
+                                             (if (fn? result) (await result) result))
                                            (conj acc sid))
 
                                        ;; Managed BRANCH fork: `cval` is a real system on a private
@@ -1643,13 +1661,16 @@
                co (handle-child-only fork-handle)]
            (when (seq pairs)
              (mark-settlement-mutating! fork-handle :discard))
-       ;; `discard!` on an overlay is a synchronous no-op (returns nil); `delete-branch!`
-       ;; is async — await it. Loop (not doseq) so the await threads on cljs.
+       ;; Native overlay discard can own asynchronous store/workspace cleanup.
+       ;; Join its actual completion, as for branch deletion. Loop (not doseq)
+       ;; so the await threads on cljs.
            (loop [ps (seq pairs)]
              (when ps
                (let [[sid _ cval _] (first ps)]
                  (cond
-                   (ovl/overlay? cval) (ygg/discard! cval)
+                   (ovl/overlay? cval)
+                   (let [result (ygg/discard! cval opts)]
+                     (if (fn? result) (await result) result))
                ;; Managed branch fork: drop the private branch (its nodes GC later).
                    (and (satisfies? ygg/Branchable cval)
                         (managed-branch? fork-handle sid cval))

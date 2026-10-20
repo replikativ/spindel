@@ -1,5 +1,9 @@
 # Savepoints: published checkpoints
 
+For the current historical workspace isolation and disposal boundary, see
+[Historical worlds](historical-workspaces.md). Historical isolation does not
+by itself prove complete dirty-workspace portable capture.
+
 Status: **design proposal**. Nothing in this document is implemented unless a
 section says "exists today".
 

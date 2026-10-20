@@ -8,6 +8,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.test-helpers :as th]
             [yggdrasil.adapters.git :as git-adapter]
+            [yggdrasil.convergent.cdvcs :as cdvcs]
             [yggdrasil.protocols :as ygg-proto]
             [clojure.java.io :as io]
             [clojure.java.shell :refer [sh]]))
@@ -305,7 +306,8 @@
           (sh "git" "add" "v2.txt" :dir repo)
           (sh "git" "commit" "-m" "v2" :dir repo)
           ;; snapshot-fork pinned at state-1
-          (let [fork-handle (ygg/fork! {:snapshots {sid snap1}})
+          (let [parent-head (ygg-proto/snapshot-id @yref)
+                fork-handle (ygg/fork! {:snapshots {sid snap1}})
                 branch-name (atom nil)]
             (is (= snap1 (get-in (ygg/fork-descriptor fork-handle)
                                  [:fork/systems sid :base-snapshot]))
@@ -314,15 +316,40 @@
               (let [branch (name (ygg-proto/current-branch @yref))
                     wt     (str (:worktrees-dir @yref) "/" branch)]
                 (reset! branch-name branch)
-                (is (clojure.string/starts-with? branch "snap-")
-                    "snapshot fork is on a snap-<fork> branch")
+                (is (not= (name (ygg-proto/current-branch *test-git-system*)) branch)
+                    "historical fork owns a private workspace, not the parent's branch")
                 (is (.exists (io/file (str wt "/v1.txt")))
                     "the pinned state-1 file is present in the fork")
                 (is (not (.exists (io/file (str wt "/v2.txt"))))
                     "the parent's later state-2 is NOT present (frozen at the snapshot)")))
+            (is (= parent-head (ygg-proto/snapshot-id @yref))
+                "historical creation does not rewind the parent")
             (ygg/discard-fork! fork-handle)
+            (is (= parent-head (ygg-proto/snapshot-id @yref))
+                "historical disposal does not change the parent")
             (is (not (contains? (ygg-proto/branches @yref) (keyword @branch-name)))
                 "discard cleans up the managed snapshot branch")))))))
+
+(deftest unsupported-historical-system-refuses-before-any-workspace-allocation
+  (th/with-ctx [ctx]
+    (let [git-ref (ygg/register! *test-git-system*)
+          system (cdvcs/cdvcs "no-op-branch-facade"
+                              {:store-config {:backend :memory :id (random-uuid)}}
+                              {:sync? true})
+          ref (ygg/register! system)
+          branches (ygg-proto/branches @git-ref)
+          called (atom 0)]
+      (is (satisfies? ygg-proto/Branchable system))
+      (is (false? (:branchable (ygg-proto/capabilities system))))
+      (with-redefs [ygg-proto/overlay-at
+                    (fn [& _] (swap! called inc)
+                      (throw (AssertionError. "Unsupported policy must refuse before allocation")))]
+        (is (thrown? clojure.lang.ExceptionInfo
+                     (ygg/fork! {:snapshots {(ygg-proto/system-id system) "past"}}))))
+      (is (zero? @called))
+      (is (identical? system @ref))
+      (is (= branches (ygg-proto/branches @git-ref))
+          "even another selected supported system acquired no workspace"))))
 
 (deftest test-snapshot-fork-can-be-adopted
   (testing "an explicitly merged snapshot experiment joins into the live parent"
