@@ -391,7 +391,12 @@
 
   Options:
     :state-updates - Map of initial overlay state (optional)
-                     These values will be written to the overlay immediately
+                     These values will be written to the overlay immediately.
+                     An entity under a shared key (`{:nodes {id node}}`) is a
+                     whole entity: it replaces the parent's, it is not merged
+                     field by field. (A following fork happens to read a
+                     field the entity lacks through from the parent; a
+                     frozen fork, once it owns the map, does not.)
     :bindings - Fork-local configuration (merged with parent bindings)
                 Map of keys to values that spins can read via (:bindings *execution-context*)
     :metadata - Fork metadata (default: parent metadata with updated process-id/depth)
@@ -404,9 +409,9 @@
   Returns: New ExecutionContext with overlay backend
 
   Example:
-    ;; Fork with initial state modifications
+    ;; Fork with initial state modifications (a whole node, see above)
     (def fork-1 (fork-context parent-ctx
-                  :state-updates {:nodes {sig-1 {:snapshot 99}}}
+                  :state-updates {:nodes {sig-1 (assoc sig-1-node :snapshot 99)}}
                   :bindings {:http-client mock-client
                              :random-seed 12345}
                   :metadata {:particle-id 1}))
