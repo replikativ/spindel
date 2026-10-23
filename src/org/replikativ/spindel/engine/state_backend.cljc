@@ -190,12 +190,16 @@
   "Replace tombstoned prefixes so a nested update can safely descend.
 
   Strict ancestors become maps; a tombstone at the target becomes nil so the
-  caller's update function observes the same value as backend-read."
+  caller's update function observes the same value as backend-read. A
+  revived top-level map is a full replacement: the tombstone hid the
+  parent's whole map, and a sparse map would let its entities show through
+  again."
   [overlay path]
   (reduce (fn [state depth]
             (let [prefix (subvec (vec path) 0 depth)]
               (if (= deleted (get-in state prefix))
-                (assoc-in state prefix (when (< depth (count path)) {}))
+                (assoc-in state prefix (when (< depth (count path))
+                                         (if (= 1 depth) (mark-full-replacement {}) {})))
                 state)))
           overlay
           (range 1 (inc (count path)))))
@@ -376,13 +380,20 @@
   at each of its own n writes."
   [parent-backend local-paths ov top-key deleted-ancestor?]
   (let [entities (get ov top-key)]
-    (if (or (nil? parent-backend)
-            (full-replacement-map? entities)
-            deleted-ancestor?
-            (identical? deleted entities)
-            (record? entities)
-            (not ((replaced-top-key? parent-backend local-paths) top-key)))
+    (cond
+      ;; the overlay holds nil for the whole value: it hid the parent's map,
+      ;; so the entities written into it must not show the parent's again
+      (and (nil? entities) (contains? ov top-key))
+      (mark-full-replacement {})
+
+      (or (nil? parent-backend)
+          (full-replacement-map? entities)
+          deleted-ancestor?
+          (not (or (nil? entities) (and (map? entities) (not (record? entities)))))
+          (not ((replaced-top-key? parent-backend local-paths) top-key)))
       entities
+
+      :else
       (let [inherited (when parent-backend (backend-read parent-backend [top-key]))]
         (cond
           (nil? inherited) (mark-full-replacement (or entities {}))
@@ -423,6 +434,9 @@
               top-overlay (get overlay (first path) ::not-found)]
           (cond
             (and tomb? (deleted-ancestor? overlay path)) nil
+            ;; this world wrote the whole value nil: nothing of the
+            ;; parent's shows beneath it
+            (and (> (count path) 1) (nil? top-overlay)) nil
             (and (> (count path) 1) (full-replacement-map? top-overlay))
             (materialize tomb?
                          (get-in (unmark-full-replacement top-overlay) (rest path)))
@@ -551,25 +565,26 @@
           ;; the path. This matches the depth-≥2 CoW divergence
           ;; semantic and is the property tests like
           ;; `fork-isolated-cancellation` rely on.
-          (get
-           (swap! overlay-atom
-                  (fn [ov]
-                    (let [overlay-val (get ov (first path) ::not-found)
-                          parent-val (when (or (= overlay-val ::not-found)
-                                               (and (map? overlay-val)
-                                                    (not (record? overlay-val))
-                                                    (not (full-replacement-map? overlay-val))))
-                                       (backend-read parent-backend path))
-                          current (cond
-                                    (= overlay-val ::not-found) parent-val
-                                    (= overlay-val deleted) nil
-                                    (full-replacement-map? overlay-val)
-                                    (unmark-full-replacement overlay-val)
-                                    (and (map? overlay-val) (not (record? overlay-val)))
-                                    (merge-entity-overlay parent-val overlay-val)
-                                    :else overlay-val)]
-                      (assoc ov (first path) (mark-full-replacement (f current))))))
-           (first path))
+          (unmark-full-replacement
+           (get
+            (swap! overlay-atom
+                   (fn [ov]
+                     (let [overlay-val (get ov (first path) ::not-found)
+                           parent-val (when (or (= overlay-val ::not-found)
+                                                (and (map? overlay-val)
+                                                     (not (record? overlay-val))
+                                                     (not (full-replacement-map? overlay-val))))
+                                        (backend-read parent-backend path))
+                           current (cond
+                                     (= overlay-val ::not-found) parent-val
+                                     (= overlay-val deleted) nil
+                                     (full-replacement-map? overlay-val)
+                                     (unmark-full-replacement overlay-val)
+                                     (and (map? overlay-val) (not (record? overlay-val)))
+                                     (merge-entity-overlay parent-val overlay-val)
+                                     :else overlay-val)]
+                       (assoc ov (first path) (mark-full-replacement (f current))))))
+            (first path)))
 
           :else
           ;; Fork-local path (no parent fallback by design) or root
@@ -610,6 +625,12 @@
                 (or (fork-local-path? (first path) local-paths)
                     (nil? parent-backend))
                 ov
+
+                ;; nil held for the whole value hid the parent's map
+                (and (>= (count path) 2)
+                     (contains? ov (first path))
+                     (nil? (get ov (first path))))
+                (assoc ov (first path) (mark-full-replacement {}))
 
                 :else
                 (let [depth (count path)
@@ -690,15 +711,30 @@
   when the entity is read through from the parent — a write would copy it
   into the overlay and the fork would stop following the parent there.
 
+  Over an immutable parent the overlay may hold a whole map it took from
+  the parent (`owned-entities`); an entry of it that is still the parent's
+  object is inherited, not this world's own, as it was before the map was
+  taken.
+
   Read once from the overlay as it is now; a copy only ever becomes local,
   so a predicate taken before a transaction errs on the side of `false`."
   [backend]
   (if (instance? OverlayBackend backend)
     (let [ov @(:overlay-atom backend)
-          local-paths (:local-paths backend)]
+          local-paths (:local-paths backend)
+          parent (:parent-backend backend)
+          frozen-parent? (some-> parent backend-type (= :immutable))]
       (fn [top-key entity-id]
         (or (fork-local-path? top-key local-paths)
-            (contains? (get ov top-key) entity-id))))
+            (let [entities (get ov top-key)]
+              (cond
+                (identical? deleted entities) true
+                (not (and (map? entities) (not (record? entities)))) false
+                (not (contains? entities entity-id)) false
+                (and frozen-parent? (full-replacement-map? entities))
+                (not (identical? (get entities entity-id)
+                                 (backend-read parent [top-key entity-id])))
+                :else true)))))
     (constantly true)))
 
 (defn unchanged-write?
