@@ -136,7 +136,7 @@
 
 (defn- unmark-full-replacement [value]
   (if (full-replacement-map? value)
-    (with-meta value (dissoc (meta value) full-replacement-key))
+    (with-meta value (not-empty (dissoc (meta value) full-replacement-key)))
     value))
 
 (defn full-replacement
@@ -168,10 +168,15 @@
 
 (defn- holds-tombstone?
   "Whether the map `m` holds a tombstone at any depth (a supplied initial
-  overlay, checked once)."
+  overlay, checked once). A full replacement is a complete logical value, not
+  a sparse delta, so the walk does not descend into one: a fork's copied
+  continuation tables are full replacements, and walking them made every fork
+  cost the size of its parent's tables."
   [m]
   (boolean (some (fn [v] (or (identical? deleted v)
-                             (and (map? v) (not (record? v)) (holds-tombstone? v))))
+                             (and (map? v) (not (record? v))
+                                  (not (full-replacement-map? v))
+                                  (holds-tombstone? v))))
                  (vals m))))
 
 (defn- deleted-ancestor?
@@ -302,14 +307,23 @@
   dependency. The earlier diff built key sets of every top-level map, also of
   maps the update fn did not touch. In a fork of a large parent that cost
   milliseconds per transaction. This diff skips an identical top-level value
-  at once and walks the entries of a changed map without building sets."
-  [merged new-state]
+  at once and walks the entries of a changed map without building sets.
+
+  A changed map whose top key satisfies `replace?` is written whole, as a full
+  replacement, instead of entity by entity: valid where no entity of it may
+  fall through to the parent (see `replaced-top-key?`). Neither the write nor
+  a later materialization then walks its entities, so a transaction costs the
+  number of top-level keys, not the size of the world."
+  [merged new-state replace?]
   (let [acc (reduce-kv
              (fn [acc top-key new-value]
                (let [old-value (get merged top-key)]
                  (cond
                    (identical? old-value new-value)
                    acc
+
+                   (and (map? new-value) (not (record? new-value)) (replace? top-key))
+                   (conj! acc [[top-key] (mark-full-replacement new-value)])
 
                    (and (map? old-value) (not (record? old-value))
                         (map? new-value) (not (record? new-value)))
@@ -338,6 +352,43 @@
    (fork-local-path? first-key default-fork-local-paths))
   ([first-key local-paths]
    (contains? local-paths first-key)))
+
+(defn- replaced-top-key?
+  "A predicate over top-level keys: whether a whole-state transaction may
+  write that key's map whole into the overlay. True for a fork-local key,
+  whose entities never fall through, and for every key over an immutable
+  parent (a frozen fork's), which cannot change underneath: following it is
+  the same as owning a copy. A fork following a live parent keeps the entity
+  granularity for shared keys, so that it goes on seeing what the parent
+  writes to entities it has not touched."
+  [parent-backend local-paths]
+  (if (or (nil? parent-backend) (= :immutable (backend-type parent-backend)))
+    (constantly true)
+    #(fork-local-path? % local-paths)))
+
+(defn- owned-entities
+  "The entity map of `top-key` in the overlay `ov`, for an entity write into
+  it. Where the whole map may be owned (`replaced-top-key?`), the first such
+  write takes the parent's map as its base and holds the result as a full
+  replacement: over an immutable parent that is a shared reference, not a
+  copy, and it spares every later materialization a rebuild per entity. A
+  fork of a world that recorded n spins otherwise rebuilt its n-entity maps
+  at each of its own n writes."
+  [parent-backend local-paths ov top-key deleted-ancestor?]
+  (let [entities (get ov top-key)]
+    (if (or (nil? parent-backend)
+            (full-replacement-map? entities)
+            deleted-ancestor?
+            (identical? deleted entities)
+            (record? entities)
+            (not ((replaced-top-key? parent-backend local-paths) top-key)))
+      entities
+      (let [inherited (when parent-backend (backend-read parent-backend [top-key]))]
+        (cond
+          (nil? inherited) (mark-full-replacement (or entities {}))
+          (and (map? inherited) (not (record? inherited)))
+          (mark-full-replacement (merge-entity-overlay inherited (or entities {})))
+          :else entities)))))
 
 (defn- cached-overlay-state [cache parent-state overlay local-paths]
   ;; Persistent roots are revision tokens. A following parent's materialized
@@ -406,7 +457,8 @@
                                       (backend-deref parent-backend))
                        merged (cached-overlay-state view-cache parent-state ov local-paths)
                        new-state (f merged)
-                       changes (whole-state-changes merged new-state)]
+                       changes (whole-state-changes merged new-state
+                                                    (replaced-top-key? parent-backend local-paths))]
                    ;; Reset on every retry; only the invocation whose CAS commits
                    ;; determines the auxiliary return value.
                    (vreset! committed new-state)
@@ -441,7 +493,8 @@
                                     ov (if has-deleted-ancestor?
                                          (revive-deleted-path ov0 path)
                                          ov0)
-                                    entities (get ov top-key)
+                                    entities (owned-entities parent-backend local-paths ov top-key
+                                                             has-deleted-ancestor?)
                                     local-entity (get entities entity-id ::not-found)
                                     entity (if (and (= local-entity ::not-found)
                                                     parent-backend
@@ -520,15 +573,27 @@
 
           :else
           ;; Fork-local path (no parent fallback by design) or root
-          ;; backend (no parent): direct write.
-          (get-in
-           (swap! overlay-atom
-                  (fn [ov]
-                    (update-in (if (tombstones? ov)
-                                 (revive-deleted-path ov path)
-                                 ov)
-                               path f)))
-           path)))))
+          ;; backend (no parent): direct write. A whole map written here is
+          ;; authoritative, so it is held as a full replacement; `f` and the
+          ;; caller see it without the marker.
+          (unmark-full-replacement
+           (get-in
+            (swap! overlay-atom
+                   (fn [ov]
+                     (let [ov (if (tombstones? ov)
+                                (revive-deleted-path ov path)
+                                ov)]
+                       (if (= 1 (count path))
+                         (assoc ov (first path)
+                                (mark-full-replacement
+                                 (f (unmark-full-replacement (get ov (first path))))))
+                         (let [ov (update-in ov path f)
+                               top (get ov (first path))]
+                           (if (and (map? top) (not (record? top))
+                                    (not (full-replacement-map? top)))
+                             (assoc ov (first path) (mark-full-replacement top))
+                             ov))))))
+            path))))))
 
   (backend-write-2! [_ path-a path-b f2]
     ;; Both paths committed in ONE swap on the overlay atom — atomic
@@ -578,21 +643,21 @@
                      ov (-> ov (seed path-a) (seed path-b))
                      read-local (fn [path]
                                   (when-not (and (tombstones? ov) (deleted-ancestor? ov path))
-                                    (get-in ov path)))
+                                    (unmark-full-replacement (get-in ov path))))
                      [a' b'] (f2 (read-local path-a) (read-local path-b))
                      ;; f2 keeps a tombstoned target absent: keep the tombstone.
                      va (cond
                           (and tombstoned-a? (nil? a')) deleted
-                          (and (= 1 (count path-a))
-                               (not (fork-local-path?
-                                     (first path-a) local-paths)))
+                          ;; a whole map, shared or fork-local, is held as
+                          ;; a full replacement (read back unmarked above)
+                          (= 1 (count path-a))
                           (mark-full-replacement a')
                           :else a')
                      vb (cond
                           (and tombstoned-b? (nil? b')) deleted
-                          (and (= 1 (count path-b))
-                               (not (fork-local-path?
-                                     (first path-b) local-paths)))
+                          ;; a whole map, shared or fork-local, is held as
+                          ;; a full replacement (read back unmarked above)
+                          (= 1 (count path-b))
                           (mark-full-replacement b')
                           :else b')]
                  (-> ov
@@ -665,10 +730,21 @@
   ([parent-backend initial-overlay]
    (create-overlay-backend parent-backend initial-overlay default-fork-local-paths))
   ([parent-backend initial-overlay local-paths]
-   (->OverlayBackend (atom (if (holds-tombstone? initial-overlay)
-                             (with-meta initial-overlay (assoc (meta initial-overlay) tombstones-key true))
-                             initial-overlay))
-                     parent-backend local-paths (atom nil))))
+   ;; A fork-local map is authoritative in this layer: held as a full
+   ;; replacement, materializing it is O(1) instead of a rebuild per entity.
+   ;; It is a logical value (`fork-context` copies it through reads, which
+   ;; never return tombstones), so it is not walked for any.
+   (let [initial-overlay (reduce-kv (fn [ov k v]
+                                      (if (and (fork-local-path? k local-paths)
+                                               (map? v) (not (record? v)))
+                                        (assoc ov k (mark-full-replacement v))
+                                        ov))
+                                    initial-overlay
+                                    initial-overlay)]
+     (->OverlayBackend (atom (if (holds-tombstone? initial-overlay)
+                               (with-meta initial-overlay (assoc (meta initial-overlay) tombstones-key true))
+                               initial-overlay))
+                       parent-backend local-paths (atom nil)))))
 
 ;; =============================================================================
 ;; Safe Printing (prevent circular reference overflow)
