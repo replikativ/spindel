@@ -128,21 +128,41 @@
                                                       ;; child that returns to an earlier value
                                                       ;; (1 → 2 → 1) must still be delivered.
                                                       ;; `initial-results` is the fallback if the node
-                                                      ;; result isn't a vector yet. Reactive
+                                                      ;; has no result yet. Reactive
                                                       ;; re-completions are processed serially in the
                                                       ;; drain loop, so this read-modify-write needs no
                                                       ;; extra atomicity.
                                                             (let [cached (ec/spin-current-result parallel-spin-id)
-                                                                  base (let [p (when cached (:payload cached))]
-                                                                         (if (vector? p) p initial-results))]
-                                                              (when (not= new-val (get base j))
-                                                          ;; Re-cache parallel's result to notify our awaiters
-                                                                (ec/spin-cache-result!
-                                                                 parallel-spin-id
-                                                                 (spin-core/ok (assoc base j new-val)))
-                                                          ;; Fire completion event to resume awaiting spins
-                                                                (ec/enqueue-event!
-                                                                 {:type :spin-completion :id parallel-spin-id}))))
+                                                                  payload (when cached (:payload cached))
+                                                                  deliver! (fn [v]
+                                                                             ;; Re-cache parallel's result to notify our awaiters
+                                                                             (ec/spin-cache-result! parallel-spin-id (spin-core/ok v))
+                                                                             ;; Fire completion event to resume awaiting spins
+                                                                             (ec/enqueue-event!
+                                                                              {:type :spin-completion :id parallel-spin-id}))]
+                                                              (cond
+                                                                (nil? cached)
+                                                                (when (not= new-val (get initial-results j))
+                                                                  (deliver! (assoc initial-results j new-val)))
+
+                                                                (and (= :ok (:variant cached)) (vector? payload))
+                                                                (when (not= new-val (get payload j))
+                                                                  (deliver! (assoc payload j new-val)))
+
+                                                                ;; parallel holds a child's error: it recovers
+                                                                ;; once no child fails any more, with every
+                                                                ;; slot rebuilt from its child's current result
+                                                                ;; (not from the first values)
+                                                                :else
+                                                                (let [current (mapv (fn [k t]
+                                                                                      (cond
+                                                                                        (= k j) (spin-core/ok new-val)
+                                                                                        (satisfies? spin-core/PSpin t)
+                                                                                        (ec/spin-current-result (spin-core/spin-id t))
+                                                                                        :else (spin-core/ok (get initial-results k))))
+                                                                                    (range) spin-vec)]
+                                                                  (when (every? #(= :ok (:variant %)) current)
+                                                                    (deliver! (mapv :payload current)))))))
                                                reject-fn (fn [e]
                                                      ;; Child re-completed :error — propagate the
                                                      ;; failure. parallel re-completes :error,

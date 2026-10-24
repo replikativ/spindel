@@ -354,3 +354,27 @@
           (await-drain ctx)
           (is (= [1 :other] @outer) "back at the first value")))
       (finally (ctx/stop-context! ctx)))))
+
+(deftest parallel-recovers-from-a-child-error-with-current-values
+  ;; After a child fails, parallel holds the error; when the child recovers
+  ;; (even to its first value) parallel recovers with every slot's CURRENT
+  ;; value, not the first ones.
+  (let [ctx (ctx/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [a (sig/signal 1)
+              b (sig/signal :x)
+              p (parallel (spin (:new (track a)))
+                          (spin (let [v (:new (track b))]
+                                  (if (= v :boom) (throw (ex-info "boom" {})) v))))
+              outer (spin (try (await p) (catch Exception _ :failed)))]
+          (is (= [1 :x] @outer))
+          (reset! a 2) (await-drain ctx)
+          (is (= [2 :x] @outer))
+          (reset! b :boom) (await-drain ctx)
+          (is (= :failed @outer))
+          (reset! b :x) (await-drain ctx)
+          (is (= [2 :x] @outer) "recovered to its first value; a keeps its current one")
+          (reset! b :y) (await-drain ctx)
+          (is (= [2 :y] @outer))))
+      (finally (ctx/stop-context! ctx)))))
