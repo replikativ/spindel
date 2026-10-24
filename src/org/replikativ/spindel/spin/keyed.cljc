@@ -5,8 +5,9 @@
 
   Each child is created under `(with-key k)`, so its spin id is a function
   of the key (stable across re-runs of the enclosing body and across
-  worlds), and under `(with-scope [name k])`, so a savepoint site named
-  `:o` inside it is addressed `[name k :o]`.
+  worlds). A child runs later than it is created (`parallel` starts it), so
+  a scope around its creation would not reach its sites: name them with the
+  key, `(sample d :id [name k :o])`.
 
   Incrementally it behaves as `parallel` does: when one child re-completes
   (its tracked signals changed, or it was re-run in a fork of its world),
@@ -22,6 +23,7 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -36,20 +38,25 @@
   [keyed-id]
   (ec/get-state (children-path keyed-id)))
 
+(defn spin-of
+  "The child spin with id `spin-id` of any keyed spin in `world`, or nil."
+  [world spin-id]
+  (rtp/get-state world [:keyed/spins spin-id]))
+
 (defn keyed
   "A spin resolving to `[(f k) …]` for the keys `ks`, in their order. `name`
-  tells keyed spins of one body apart and heads their sites' scope. `f`
-  returns a spin (or any value `await` accepts) for a key."
+  tells keyed spins of one body apart. `f` returns a spin (or any value
+  `await` accepts) for a key."
   [name ks f]
   (addressing/with-key [::keyed name]
     (spin
      (let [ks (vec ks)
            kids (mapv (fn [k]
-                        (addressing/with-key k
-                          (addressing/with-scope [name k]
-                            (f k))))
+                        (addressing/with-key k (f k)))
                       ks)]
        (ec/swap-state! (children-path ec/*spin-id*) (constantly (zipmap ks kids)))
+       (ec/swap-state! [:keyed/spins]
+                       (fn [m] (into (or m {}) (map (fn [kid] [(spin-core/spin-id kid) kid])) kids)))
        (if (seq kids)
          (await (apply parallel kids))
          [])))))
