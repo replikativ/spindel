@@ -140,8 +140,12 @@
                                    (newThread [^Runnable r]
                                      (doto (Thread. r "laufzeit-delay")
                                        (.setDaemon true))))]
-           ;; Single-threaded scheduled executor with daemon thread
-           (ScheduledThreadPoolExecutor. 1 tf))))
+           ;; Single-threaded scheduled executor with daemon thread. A cancelled
+           ;; timer leaves the queue at once: by default it stays until its delay
+           ;; elapses, and its task closes over the context that scheduled it, so a
+           ;; cancelled long timeout kept a stopped or discarded context reachable.
+           (doto (ScheduledThreadPoolExecutor. 1 tf)
+             (.setRemoveOnCancelPolicy true)))))
 
      ;; Targeted binding capture: only the 4 bindings vars + *execution-context*
      ;; This replaces blanket get-thread-bindings (~30+ vars) with exactly
