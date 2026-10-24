@@ -125,7 +125,7 @@
      (testing "cancelling a timer releases its task (and the context it closes over) at once"
        (let [ec (ctx/create-execution-context)
              queue (.getQueue ^java.util.concurrent.ScheduledThreadPoolExecutor
-                              @@#'org.replikativ.spindel.engine.executor/delay-executor)]
+                    @@#'org.replikativ.spindel.engine.executor/delay-executor)]
          (try
            (delayed/set-time-mode! ec :real)
            (let [spin-id (delayed/schedule-delayed! ec long-delay-ms (fn [] nil))
