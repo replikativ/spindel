@@ -119,3 +119,20 @@
                  "the fired entry's ScheduledFuture is released")))
         (finally
           (ctx/stop-context! ec))))))
+
+#?(:clj
+   (deftest a-cancelled-timer-leaves-the-executor-queue
+     (testing "cancelling a timer releases its task (and the context it closes over) at once"
+       (let [ec (ctx/create-execution-context)
+             queue (.getQueue ^java.util.concurrent.ScheduledThreadPoolExecutor
+                              @@#'org.replikativ.spindel.engine.executor/delay-executor)]
+         (try
+           (delayed/set-time-mode! ec :real)
+           (let [spin-id (delayed/schedule-delayed! ec long-delay-ms (fn [] nil))
+                 handle  (timer-handle ec spin-id)]
+             (is (.contains queue handle) "armed: queued")
+             (delayed/cancel-delayed-spin! ec spin-id)
+             (is (not (.contains queue handle))
+                 "cancelled: no longer queued until its delay would have elapsed"))
+           (finally
+             (ctx/stop-context! ec)))))))
