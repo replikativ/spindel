@@ -28,6 +28,7 @@
   (:refer-clojure :exclude [update])
   (:require [org.replikativ.spindel.effects.savepoint :as sp]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -122,8 +123,12 @@
   or, when `until` holds for it, leave it pending and hand it to `park!`.
   `done!` (optional) is called once the site is resumed, parked or failed —
   an update counts a site in flight while its policy decides."
-  [sp anchor {:keys [live until park! fail! update done!] :or {done! (fn [])}}]
-  (let [{:keys [policy old]} @live]
+  [sp anchor {:keys [live until park! fail! update done!]}]
+  (let [{:keys [policy old]} @live
+        ;; once, whatever the policy does (resolve then throw, call twice)
+        done! (if done!
+                (let [once (atom false)] #(when (compare-and-set! once false true) (done!)))
+                (fn []))]
     (if-not policy
       (try (fail! sp (ex-info "The run has delivered" {:type ::delivered}))
            (finally (done!)))
@@ -259,14 +264,14 @@
                     reject)))))))
 
 (defn- subtree
-  "The spin ids of `ids` and every spin they created, transitively, in
-  `world`."
+  "The spin ids of `ids` and every spin they hold, transitively, in `world`
+  (`live-children`: also those created before a resume point)."
   [world ids]
   (loop [todo (vec ids) seen #{}]
     (if-let [id (peek todo)]
       (if (contains? seen id)
         (recur (pop todo) seen)
-        (recur (into (pop todo) (rtp/get-state world [:nodes id :created-spins]))
+        (recur (into (pop todo) (some-> (rtp/get-state world [:nodes id]) simple/live-children))
                (conj seen id)))
       seen)))
 
@@ -325,8 +330,10 @@
   `trace`; a site reached again replaces its entry in place, a site reached
   for the first time is added, and the entries the update no longer reaches
   are removed (under the re-run spins: of spins that are gone, and of spins
-  that ran again without reaching them). Sites take no anchors (an update
-  needs none), and entries after the first rewritten one lose theirs.
+  that ran again without reaching them). A spin that resumes mid-body (on a
+  track or an await) is not checked for sites after its resume point that it
+  no longer reaches. Sites take no anchors (an update needs none), and
+  entries after the first rewritten one lose theirs.
 
   The update is done when the fork is quiescent (`engine.quiescence`), a
   site counted in flight while its policy decides: the consequences of a
@@ -334,9 +341,10 @@
   computation that throws resolves a trace with `:trace/error`, as `run`
   does; the operation rejects when the policy or the machinery fails, or
   the session closes while the update runs. Options: `:seed`, the fork's
-  random seed (default: derived from `trace`'s world and the fork, so every
-  update draws afresh); `:spin-of` (fn [world spin-id]) finds a spin to
-  re-run (default `keyed/spin-of`).
+  random seed (default: derived from `trace`'s world, the spins and how
+  often that world was updated, so every update of it draws afresh);
+  `:spin-of` (fn [world spin-id]) finds a spin to re-run (default
+  `keyed/spin-of`).
 
   Returns a CPS operation resolving the updated trace (`:trace/updated`, the
   addresses the update decided). `trace` is not changed."
@@ -361,13 +369,17 @@
                   give-back! (fn []
                                (when (compare-and-set! active? true false)
                                  (world-scope/end-activity! scope (:fork-id world))))
+                  release! (let [once (atom false)]
+                             (fn []
+                               (when (compare-and-set! once false true)
+                                 (give-back!)
+                                 (sp/release-world! session world))))
+                  ;; reject now; release once nothing of the fork runs any more
                   failed! (fn [error]
-                            (give-back!)
-                            (sp/release-world! session world)
-                            (deliver! reject error))]
+                            (deliver! reject error)
+                            (quiescence/on-quiescent world release!))]
               (try
                 (let [recorded (atom #{})
-                      abandoned (atom nil)
                       live (volatile! {:policy policy :old trace})
                       fail! (fn [sp-or-nil error]
                               (failed! error)
@@ -382,9 +394,16 @@
                                   spin-ids)]
                   (world-scope/begin-activity! scope :savepoint/world world (:fork-id world))
                   (reset! active? true)
-                  (rtp/swap-state! world [:savepoint/seed]
-                                   (constantly (or seed (sp/derive-seed (sp/seed source)
-                                                                        [::update (:fork-id world)] 0))))
+                  (rtp/swap-state!
+                   world [:savepoint/seed]
+                   (constantly
+                    (or seed
+                        ;; how often this world was updated, as a replay
+                        ;; counts the forks of an anchor: reproducible, and
+                        ;; afresh for every update of it
+                        (let [k [(:fork-id source) [::update (vec spin-ids)]]
+                              index (dec (get-in (swap! (:fork-indices session) clojure.core/update-in k (fnil inc 0)) k))]
+                          (sp/derive-seed (sp/seed source) [::update (vec spin-ids)] index)))))
                   ;; the update's table replaces the inherited one: a site
                   ;; handler of the session would otherwise take precedence
                   (rtp/swap-state!
@@ -395,10 +414,11 @@
                                      (quiescence/begin! w)
                                      (decide-site! s nil (assoc site-opts :done! #(quiescence/end! w)))))
                      ;; the root's end was delivered when the trace was made;
-                     ;; the world keeps that end marker, so these do not fire
+                     ;; the fork keeps that end marker, so these never fire
+                     ;; (a close during the update is caught by `closing?`)
                      sp/result-site (fn [_] nil)
                      sp/error-site (fn [_] nil)
-                     sp/abandoned-site (fn [event] (reset! abandoned (:savepoint/payload event)))}))
+                     sp/abandoned-site (fn [_] nil)}))
                   (binding [ec/*execution-context* world]
                     (doseq [s spins]
                       ;; a computation that throws ends in the trace's
@@ -412,9 +432,6 @@
                        (cond
                          (some-> session :closing? deref)
                          (failed! (ex-info "The session closed during the update" {:type ::session-closing}))
-
-                         @abandoned
-                         (failed! @abandoned)
 
                          :else
                          (let [t (settle-update trace world source session spin-ids @recorded)]

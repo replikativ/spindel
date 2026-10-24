@@ -181,3 +181,19 @@
                                                       (if old (select-keys old [:value]) {:value 5})))))]
       (is (= :error k))
       (is (= ::trace/duplicate-address (:type (ex-data e)))))))
+
+(deftest a-policy-that-resolves-then-throws-counts-its-site-once
+  (with-session [root session]
+    (let [original (run-original root session #(erring-program 3))
+          worlds (atom nil)
+          policy (fn [sp old]
+                   (if (= [:items 1 :a] (:savepoint/address sp))
+                     (fn [resolve _]
+                       (reset! worlds (:savepoint/world sp))
+                       (resolve {:value 7})
+                       (throw (ex-info "after resolving" {})))
+                     (select-keys old [:value])))
+          _ (outcome (trace/update original [(owner original 1)] policy))]
+      (is (some? @worlds))
+      (is (<= 0 (org.replikativ.spindel.engine.quiescence/in-flight @worlds))
+          "the site's count was released once"))))
