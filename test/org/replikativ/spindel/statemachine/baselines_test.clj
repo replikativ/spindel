@@ -147,21 +147,20 @@
                          (swap! seen conj [:deep ev fv]) (+ ev fv)))]
            (m/start! g)
            (doseq [x xs] (reset! a x) (await-drain rt))
-           {:seen @seen :value @g}))
+           {:seen @seen :value (second (m/cached rt g))}))
        (finally (ctx/close-context! rt))))))
 
 (deftest generated-glitch-freedom
-  ;; KNOWN BUG: a synchronous await diamond glitches. d awaits b then c, both
+  ;; Guards against synchronous await diamond glitches. d awaits b then c, both
   ;; tracking a; when c completes first, d resumes at its await-c site with the
   ;; b value it captured before, observing [old-b new-c] (shrinks to
   ;; (diamond [-1] 1): [0 -3] before [-2 -3]). engine-formalism.md 1.4 says
   ;; glitch freedom holds for the synchronous sub-graph.
-  (when known-bugs?
-    (check! :glitch-freedom *trials*
-            (prop/for-all [xs (gen/vector gen/small-integer 0 12) nonce (gen/choose 0 7)]
-                          (let [{:keys [seen value]} (diamond xs nonce)]
-                            (and (every? (fn [[_ b c]] (= (* 3 b) (* 2 c))) seen)
-                                 (= value (* 25 (last (cons 0 xs))))))))))
+  (check! :glitch-freedom *trials*
+          (prop/for-all [xs (gen/vector gen/small-integer 0 12) nonce (gen/choose 0 7)]
+                        (let [{:keys [seen value]} (diamond xs nonce)]
+                          (and (every? (fn [[_ b c]] (= (* 3 b) (* 2 c))) seen)
+                               (= value (* 25 (last (cons 0 xs)))))))))
 
 (deftest review-seed-corpus
   (testing "captured ia survives a change to b; repeat sites remain distinct"

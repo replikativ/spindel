@@ -15,11 +15,9 @@
 
   Stage 4 fix: every external-await (`await-deferred`, `await-mailbox`,
   the plain-fn awaitable path) wraps resolve/reject with a cancellation
-  gate. The associated engine cont owns the gate via `:cancel!`. All
-  cont-removal sites in the engine (`truncate-stale-conts!`,
-  `clear-all-await-continuations!`, `clear-deps!`, `full-cleanup-spin!`)
-  call `:cancel!` on every removed cont before dissociating. The
-  orphaned closure becomes a no-op."
+  gate. The associated engine cont carries a `:cancel-token`. Suffix
+  retirement, replacement, and cancellation arm the token atomically
+  with removal, so the orphaned closure becomes a no-op."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
@@ -202,7 +200,7 @@
                (is (empty? @received) "no message consumed yet")
 
             ;; Change signal mid-suspend. resume-single-observer truncates
-            ;; the await cont, which fires :cancel! → adds the cancel-token
+            ;; the await cont, which atomically adds the cancel-token
             ;; to :engine/cancelled-tokens.
                (reset! s :changed)
                (simple/await-drain-complete! ctx-root :timeout-ms 2000)
