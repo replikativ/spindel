@@ -23,6 +23,7 @@
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [incognito.edn :refer [read-string-safe]]))
 
 ;; =============================================================================
@@ -283,6 +284,8 @@
          metadata
          running
          drain-active)
+        ;; this world's in-flight tasks (`engine.quiescence`)
+        (assoc :quiescence (quiescence/tracker))
         ;; The creation-time bindings, stamped so the drain can NORMALIZE:
         ;; body-scoped context values (with :dom/* scope etc. assoc'd on)
         ;; are smuggled into `trigger-drain!` through enqueue closures, and
@@ -657,6 +660,9 @@
                     (:running parent-ctx)        ; Share parent's lifecycle flag
                     (:drain-active parent-ctx)   ; Share parent's drain-active counter
                     )
+                   ;; its own in-flight count: a busy sibling does not hold
+                   ;; this world's quiescence up (`engine.quiescence`)
+                   (assoc :quiescence (quiescence/tracker))
                    ;; The fork's creation-time bindings (parent base +
                    ;; fork overrides) — same drain-normalization stamp as
                    ;; create-execution-context. Deliberately built from

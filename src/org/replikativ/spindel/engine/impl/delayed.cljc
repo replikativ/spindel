@@ -10,7 +10,8 @@
   (:require [replikativ.logging :as log]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.engine.executor :as executor]))
+            [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]))
 
 (declare process-delayed-spins!)
 (declare fire-delayed-spin!)
@@ -136,10 +137,11 @@
     (doseq [{:keys [spin-fn id fire-time]} @ready-spins]
       (log/trace :engine/execute-delayed {:spin-id id :fire-time fire-time :now now})
       (when executor
-        (executor/execute! executor
-                           (executor/alive-fn context
-                                              #(binding [ec/*execution-context* context]
-                                                 (spin-fn))))))
+        (quiescence/submit! #(executor/execute! executor %)
+                            (quiescence/task context
+                                             (executor/alive-fn context
+                                                                #(binding [ec/*execution-context* context]
+                                                                   (spin-fn)))))))
 
     (count @ready-spins)))
 
@@ -185,10 +187,11 @@
     (when-let [{:keys [spin-fn id fire-time]} @entry]
       (log/trace :engine/execute-delayed {:spin-id id :fire-time fire-time :now (current-time context)})
       (when executor
-        (executor/execute! executor
-                           (executor/alive-fn context
-                                              #(binding [ec/*execution-context* context]
-                                                 (spin-fn))))))))
+        (quiescence/submit! #(executor/execute! executor %)
+                            (quiescence/task context
+                                             (executor/alive-fn context
+                                                                #(binding [ec/*execution-context* context]
+                                                                   (spin-fn)))))))))
 
 (defn cancel-delayed-spin!
   "Cancel a scheduled delayed spin by id. Returns true if cancelled, false if not found."

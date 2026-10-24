@@ -25,8 +25,15 @@
   regenerate, assess, propose) are policies; see docs/savepoints.md.
 
   The trace under construction is world state, so it forks with its world."
+  (:refer-clojure :exclude [update])
   (:require [org.replikativ.spindel.effects.savepoint :as sp]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
+            [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.spin.keyed :as keyed]
+            [org.replikativ.spindel.world.scope :as world-scope]))
 
 (def ^:private empty-trace
   {:trace/entries {} :trace/order []})
@@ -71,45 +78,72 @@
   "Add a decided site to the trace under construction. An address reached
   twice in one computation is an error: two sites named alike (an `:id`
   reused in a loop) would otherwise share one entry, and a replay or a
-  constraint could not tell them apart."
-  [world sp decision anchor]
-  (rtp/swap-state!
-   world [:savepoint/trace]
-   (fn [trace]
-     (let [address (:savepoint/address sp)]
-       (when (contains? (:trace/entries trace) address)
-         (throw (ex-info "Duplicate site address in one computation"
-                         {:type ::duplicate-address
-                          :address address
-                          :site (:savepoint/site sp)})))
-       (-> (or trace empty-trace)
-           (update :trace/order conj address)
-           (assoc-in [:trace/entries address]
-                     {:site (:savepoint/site sp)
-                      :path (:savepoint/path sp)
-                      :seq (:savepoint/seq sp)
-                      :payload (:savepoint/payload sp)
-                      :value (:value decision)
-                      :note (:note decision)
-                      :savepoint anchor}))))))
+  constraint could not tell them apart. An entry records the spin that
+  reached the site (`:spin`, its id).
+
+  `update` (a map, from `update`) marks an update: the trace already holds
+  the computation's entries, and a site its re-run reaches again replaces
+  its entry in place (program order is kept). It is still an error to reach
+  an address twice in the update itself (`:recorded`, an atom of a set), or
+  one held by a spin the update does not re-run (`:movable`, the spin ids
+  whose entries it may rewrite): that would be two sites named alike."
+  ([world sp decision anchor] (record! world sp decision anchor nil))
+  ([world sp decision anchor {:keys [recorded movable] :as update}]
+   (rtp/swap-state!
+    world [:savepoint/trace]
+    (fn [trace]
+      (let [trace (or trace empty-trace)
+            address (:savepoint/address sp)
+            present (get-in trace [:trace/entries address])
+            spin-id (:spin-id (::sp/k sp))]
+        (when (if update
+                (or (contains? @recorded address)
+                    (and present
+                         (not= spin-id (:spin present))
+                         (not (contains? movable (:spin present)))))
+                present)
+          (throw (ex-info "Duplicate site address in one computation"
+                          {:type ::duplicate-address
+                           :address address
+                           :site (:savepoint/site sp)})))
+        (-> (cond-> trace (not present) (clojure.core/update :trace/order conj address))
+            (assoc-in [:trace/entries address]
+                      {:site (:savepoint/site sp)
+                       :path (:savepoint/path sp)
+                       :seq (:savepoint/seq sp)
+                       :payload (:savepoint/payload sp)
+                       :value (:value decision)
+                       :note (:note decision)
+                       :spin spin-id
+                       :savepoint anchor})))))
+   (when update (swap! recorded conj (:savepoint/address sp)))))
 
 (defn- decide-site!
   "Decide `sp` with the run's policy, record it with `anchor`, and resume it —
-  or, when `until` holds for it, leave it pending and hand it to `park!`."
-  [sp anchor {:keys [live until park! fail!]}]
-  (let [{:keys [policy old]} @live]
+  or, when `until` holds for it, leave it pending and hand it to `park!`.
+  `done!` (optional) is called once the site is resumed, parked or failed —
+  an update counts a site in flight while its policy decides."
+  [sp anchor {:keys [live until park! fail! update done!]}]
+  (let [{:keys [policy old]} @live
+        ;; once, whatever the policy does (resolve then throw, call twice)
+        done! (if done!
+                (let [once (atom false)] #(when (compare-and-set! once false true) (done!)))
+                (fn []))]
     (if-not policy
-      (fail! sp (ex-info "The run has delivered" {:type ::delivered}))
+      (try (fail! sp (ex-info "The run has delivered" {:type ::delivered}))
+           (finally (done!)))
       (invoke! #(policy sp (get-in old [:trace/entries (:savepoint/address sp)]))
                (fn [decision]
                  (try
-                   (record! (:savepoint/world sp) sp decision anchor)
+                   (record! (:savepoint/world sp) sp decision anchor update)
                    (if (and until (until sp))
                      (park! sp (:value decision))
                      (sp/resume sp (:value decision)))
                    (catch #?(:clj Throwable :cljs :default) error
-                     (fail! sp error))))
-               #(fail! sp %)))))
+                     (fail! sp error))
+                   (finally (done!))))
+               (fn [error]
+                 (try (fail! sp error) (finally (done!))))))))
 
 (defn- handlers-of
   "The handlers of one run: decide every site, deliver the end once.
@@ -228,6 +262,186 @@
                       ;; The anchor already is the state at this site.
                       (decide-site! fork anchor site-opts))
                     reject)))))))
+
+(defn- subtree
+  "The spin ids of `ids` and every spin they hold, transitively, in `world`
+  (`live-children`: also those created before a resume point)."
+  [world ids]
+  (loop [todo (vec ids) seen #{}]
+    (if-let [id (peek todo)]
+      (if (contains? seen id)
+        (recur (pop todo) seen)
+        (recur (into (pop todo) (some-> (rtp/get-state world [:nodes id]) simple/live-children))
+               (conj seen id)))
+      seen)))
+
+(defn- settle-update
+  "The trace of the updated world `world` (a fork of `source`): `trace`'s
+  entries as the update rewrote them in place, without the entries it no
+  longer reaches (deaths) — those of spins under the re-run ones that are
+  gone, and those of spins that ran again but did not reach them — and
+  without anchors downstream of the first rewritten entry (they are forks of
+  the world before the update; a replay from one would bring the old values
+  back)."
+  [trace world source session spin-ids recorded]
+  (let [t (or (rtp/get-state world [:savepoint/trace]) empty-trace)
+        before (subtree source spin-ids)
+        after (subtree world spin-ids)
+        gone (into #{} (remove after) before)
+        ran (into #{} (filter #(not= (rtp/get-state world [:nodes % :run-gen])
+                                     (rtp/get-state source [:nodes % :run-gen])))
+                  after)
+        dead (into #{} (keep (fn [[address entry]]
+                               (let [owner (:spin entry)]
+                                 (when (or (contains? gone owner)
+                                           (and (contains? ran owner)
+                                                (not (contains? recorded address))))
+                                   address))))
+                   (:trace/entries t))
+        order (into [] (remove dead) (:trace/order t))
+        first-changed (first (keep-indexed (fn [i a] (when (contains? recorded a) i)) order))
+        stale (if first-changed (set (subvec order first-changed)) #{})
+        entries (reduce-kv (fn [m address entry]
+                             (cond (contains? dead address) m
+                                   (contains? stale address) (assoc m address (assoc entry :savepoint nil))
+                                   :else (assoc m address entry)))
+                           {} (:trace/entries t))
+        root (some-> (rtp/get-state world [:savepoint/task]) spin-core/spin-id)
+        result (when root (rtp/current-result world root))]
+    (cond-> (assoc t
+                   :trace/entries entries
+                   :trace/order order
+                   :trace/world world
+                   :trace/session session
+                   :trace/updated (vec recorded))
+      true (dissoc :trace/result :trace/error :trace/pending :trace/pending-value)
+      (= :ok (:variant result)) (assoc :trace/result (:payload result))
+      (= :error (:variant result)) (assoc :trace/error (:payload result)))))
+
+(defn update
+  "Re-run the spins `spin-ids` of the computation `trace` recorded, under
+  `policy`, in a fork of the world the trace ended in — and nothing else.
+
+  The incremental counterpart of `replay`: where a replay runs the program
+  again from an anchor (everything downstream of the site), an update runs
+  only the given spins (`spin.keyed` children: one key of a keyed loop) and
+  whatever their new results reach — a keyed spin patches its slot, a spin
+  awaiting it resumes. Their sites reach `policy` with their entry in
+  `trace`; a site reached again replaces its entry in place, a site reached
+  for the first time is added, and the entries the update no longer reaches
+  are removed (under the re-run spins: of spins that are gone, and of spins
+  that ran again without reaching them). A spin that resumes mid-body (on a
+  track or an await) is not checked for sites after its resume point that it
+  no longer reaches. Sites take no anchors (an update needs none), and
+  entries after the first rewritten one lose theirs.
+
+  The update is done when the fork is quiescent (`engine.quiescence`), a
+  site counted in flight while its policy decides: the consequences of a
+  change may stop anywhere, so the root re-completing cannot mark it. A
+  computation that throws resolves a trace with `:trace/error`, as `run`
+  does; the operation rejects when the policy or the machinery fails, or
+  the session closes while the update runs. Options: `:seed`, the fork's
+  random seed (default: derived from `trace`'s world, the spins and how
+  often that world was updated, so every update of it draws afresh);
+  `:spin-of` (fn [world spin-id]) finds a spin to re-run (default
+  `keyed/spin-of`).
+
+  Returns a CPS operation resolving the updated trace (`:trace/updated`, the
+  addresses the update decided). `trace` is not changed."
+  ([trace spin-ids policy] (update trace spin-ids policy nil))
+  ([trace spin-ids policy {:keys [seed spin-of]}]
+   (fn [resolve reject]
+     (let [[resolve reject] (sp/in-callers-world resolve reject)
+           session (:trace/session trace)
+           source (:trace/world trace)
+           spin-of (or spin-of keyed/spin-of)
+           delivered? (atom false)
+           deliver! (fn [f v] (when (compare-and-set! delivered? false true) (f v)))]
+       (if-not (and session source)
+         (reject (ex-info "The trace has no world to update" {:type ::no-world}))
+         (world-scope/fork!
+          (:scope session) source
+          (fn [{world :child-ctx}]
+            (let [scope (:scope session)
+                  active? (atom false)
+                  ;; give the fork back: its lease first, or the release
+                  ;; waits for an end that never comes (it never terminates)
+                  give-back! (fn []
+                               (when (compare-and-set! active? true false)
+                                 (world-scope/end-activity! scope (:fork-id world))))
+                  release! (let [once (atom false)]
+                             (fn []
+                               (when (compare-and-set! once false true)
+                                 (give-back!)
+                                 (sp/release-world! session world))))
+                  ;; reject now; release once nothing of the fork runs any more
+                  failed! (fn [error]
+                            (deliver! reject error)
+                            (quiescence/on-quiescent world release!))]
+              (try
+                (let [recorded (atom #{})
+                      live (volatile! {:policy policy :old trace})
+                      fail! (fn [sp-or-nil error]
+                              (failed! error)
+                              (when sp-or-nil
+                                (try (sp/abandon sp-or-nil) (catch #?(:clj Throwable :cljs :default) _ nil))))
+                      site-opts {:live live :fail! fail!
+                                 :update {:recorded recorded
+                                          :movable (subtree source spin-ids)}}
+                      spins (mapv (fn [id]
+                                    (or (spin-of world id)
+                                        (throw (ex-info "No spin to re-run" {:type ::no-spin :spin-id id}))))
+                                  spin-ids)]
+                  (world-scope/begin-activity! scope :savepoint/world world (:fork-id world))
+                  (reset! active? true)
+                  (rtp/swap-state!
+                   world [:savepoint/seed]
+                   (constantly
+                    (or seed
+                        ;; how often this world was updated, as a replay
+                        ;; counts the forks of an anchor: reproducible, and
+                        ;; afresh for every update of it
+                        (let [k [(:fork-id source) [::update (vec spin-ids)]]
+                              index (dec (get-in (swap! (:fork-indices session) clojure.core/update-in k (fnil inc 0)) k))]
+                          (sp/derive-seed (sp/seed source) [::update (vec spin-ids)] index)))))
+                  ;; the update's table replaces the inherited one: a site
+                  ;; handler of the session would otherwise take precedence
+                  (rtp/swap-state!
+                   world [:savepoint/handlers]
+                   (constantly
+                    {sp/any-site (fn [s]
+                                   (let [w (:savepoint/world s)]
+                                     (quiescence/begin! w)
+                                     (decide-site! s nil (assoc site-opts :done! #(quiescence/end! w)))))
+                     ;; the root's end was delivered when the trace was made;
+                     ;; the fork keeps that end marker, so these never fire
+                     ;; (a close during the update is caught by `closing?`)
+                     sp/result-site (fn [_] nil)
+                     sp/error-site (fn [_] nil)
+                     sp/abandoned-site (fn [_] nil)}))
+                  (binding [ec/*execution-context* world]
+                    (doseq [s spins]
+                      ;; a computation that throws ends in the trace's
+                      ;; :trace/error, as it does for `run`
+                      ((keyed/rerun! s) (fn [_] nil) (fn [_] nil))))
+                  (quiescence/on-quiescent
+                   world
+                   (fn []
+                     (vreset! live nil)
+                     (try
+                       (cond
+                         (some-> session :closing? deref)
+                         (failed! (ex-info "The session closed during the update" {:type ::session-closing}))
+
+                         :else
+                         (let [t (settle-update trace world source session spin-ids @recorded)]
+                           (give-back!)
+                           (deliver! resolve t)))
+                       (catch #?(:clj Throwable :cljs :default) error
+                         (failed! error))))))
+                (catch #?(:clj Throwable :cljs :default) error
+                  (failed! error)))))
+          reject))))))
 
 (defn earliest
   "The first address of `trace`, in program order, that is in `addresses`."

@@ -4,6 +4,7 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -212,11 +213,13 @@
              ;; Invoke child spin via execution-context scheduling to enable parallelism
              ;; Must explicitly bind *execution-context* because CLJS capture-bindings excludes it
              ;; to avoid circular references
-                   (executor/execute! (:executor execution-context)
-                                      (executor/alive-fn execution-context
-                                                         (fn []
-                                                           (binding [ec/*execution-context* execution-context]
-                                                             (child-spin on-ok on-err)))))))
+                   (quiescence/submit! #(executor/execute! (:executor execution-context) %)
+                                       (quiescence/task
+                                        execution-context
+                                        (executor/alive-fn execution-context
+                                                           (fn []
+                                                             (binding [ec/*execution-context* execution-context]
+                                                               (child-spin on-ok on-err))))))))
 
          ;; Async coordination; parent suspends
                spin-core/incomplete)
@@ -407,11 +410,13 @@
                                             (spin-core/set-owned-spins! race-spin-id nil)
                                             (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
-                           (executor/execute! (:executor execution-context)
-                                              (executor/alive-fn execution-context
-                                                                 (fn []
-                                                                   (binding [ec/*execution-context* execution-context]
-                                                                     (t on-ok on-err)))))))
+                           (quiescence/submit! #(executor/execute! (:executor execution-context) %)
+                                               (quiescence/task
+                                                execution-context
+                                                (executor/alive-fn execution-context
+                                                                   (fn []
+                                                                     (binding [ec/*execution-context* execution-context]
+                                                                       (t on-ok on-err))))))))
                        spin-core/incomplete)))))
              race-spin-id)]
         ;; Ownership edge for external cancel during the in-flight race window.

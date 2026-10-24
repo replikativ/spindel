@@ -44,6 +44,7 @@
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.world.scope :as world-scope]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.engine.hash :as h]
             [replikativ.logging :as log]
             [is.simm.partial-cps.async :as pcps-async]))
@@ -537,8 +538,8 @@
                       {:type ::session-closing
                        :savepoint/address (:savepoint/address sp)})))
     (claim! sp :resume)
-    (executor/dispatch! (:executor world)
-                        #(continue-in-slice! world k (:resolve k) value))
+    (quiescence/submit! #(executor/dispatch! (:executor world) %)
+                        (quiescence/task world #(continue-in-slice! world k (:resolve k) value)))
     nil))
 
 (defn abandon
@@ -548,14 +549,20 @@
   (let [world (:savepoint/world sp)
         k (::k sp)
         _ (claim! sp :abandon)
-        reject! (fn [w] (continue-in-slice! w k (:reject k) (cancellation-error)))]
+        reject! (fn [w] (continue-in-slice! w k (:reject k) (cancellation-error)))
+        ;; counted in flight until whichever path below unwinds it
+        _ (quiescence/begin! world)
+        once (let [done? (atom false)]
+               (fn [w] (try (reject! w)
+                            (finally (when (compare-and-set! done? false true)
+                                       (quiescence/end! world))))))]
     (try
-      (executor/dispatch! (:executor world) #(reject! world))
+      (executor/dispatch! (:executor world) #(once world))
       (catch #?(:clj Throwable :cljs :default) scheduling-error
         (log/warn :savepoint/abandon-schedule-failed
                   {:fork-id (:fork-id world) :error scheduling-error})
         (let [inline (executor/synchronous-executor)]
-          (executor/run-framed! inline #(reject! (assoc world :executor inline))))))
+          (executor/run-framed! inline #(once (assoc world :executor inline))))))
     nil))
 
 (defn ^:no-doc derive-seed [parent-seed address index]
