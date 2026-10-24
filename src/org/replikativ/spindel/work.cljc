@@ -20,6 +20,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.engine.fault :as fault]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.pubsub.buffer :as buffer]
             [org.replikativ.spindel.pubsub.mult :as mult]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -311,16 +312,18 @@
                              :work/strategy (:strategy state)})
         (executor/execute!
          (:executor ctx)
-         (executor/alive-fn
+         (quiescence/task
           ctx
-          (fn []
-            (binding [ec/*execution-context* ctx]
-              (child (fn [value]
-                       (hand-back! state-atom inbox claim job
-                                   :child-completed {:work/result value}))
-                     (fn [error]
-                       (hand-back! state-atom inbox claim job
-                                   :child-failed {:work/error error})))))))
+          (executor/alive-fn
+           ctx
+           (fn []
+             (binding [ec/*execution-context* ctx]
+               (child (fn [value]
+                        (hand-back! state-atom inbox claim job
+                                    :child-completed {:work/result value}))
+                      (fn [error]
+                        (hand-back! state-atom inbox claim job
+                                    :child-failed {:work/error error}))))))))
         state))
     (catch #?(:clj Throwable :cljs :default) error
       (swap! state-atom update :active dissoc (:work/id job))

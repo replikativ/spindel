@@ -25,6 +25,7 @@
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.addressing :as addressing]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [is.simm.partial-cps.async :as pcps-async]
             [clojure.set :as set])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue ForkJoinPool CountDownLatch]
@@ -1273,12 +1274,14 @@
                    latch (CountDownLatch. (count direct-observers))]
                (doseq [obs direct-observers]
                  (executor/execute! executor
-                                    (executor/alive-fn context
-                                                       (fn []
-                                                         (try
-                                                           (do-resume! obs)
-                                                           (finally
-                                                             (.countDown latch)))))))
+                                    (quiescence/task
+                                     context
+                                     (executor/alive-fn context
+                                                        (fn []
+                                                          (try
+                                                            (do-resume! obs)
+                                                            (finally
+                                                              (.countDown latch))))))))
                (ForkJoinPool/managedBlock
                 (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
                   (block [_]
@@ -1720,7 +1723,10 @@
                       (trigger-drain! context executor)))))))
           (finally
             ;; Decrement the active counter so stop-context! can complete.
-            (when drain-active (swap! drain-active dec))))))))
+            (when drain-active (swap! drain-active dec))
+            ;; A drain run outside a counted task (called directly) may be
+            ;; the last thing the world had to do.
+            (quiescence/check! context)))))))
 
 (defn- settled-state?
   [context state]
@@ -1846,8 +1852,9 @@
       ;; dispatch!: a drain triggered on a thread already running this
       ;; executor's work runs on that thread after its current task.
       (executor/dispatch! executor
-                          (executor/alive-fn context
-                                             #(drain-events! context executor)))
+                          (quiescence/task context
+                                           (executor/alive-fn context
+                                                              #(drain-events! context executor))))
       (log/trace :engine/trigger-drain)
       true)
     (do
