@@ -336,3 +336,45 @@
             (is (= 1 @exec-count))))
         (finally
           (ctx/stop-context! ctx))))))
+
+(deftest parallel-follows-a-child-back-to-its-first-value
+  ;; A re-completion is compared with what the parallel last delivered for
+  ;; that child, not with the child's first value: 1 → 2 → 1 must end at 1.
+  (let [ctx (ctx/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [s (sig/signal 1)
+              outer (spin (await (parallel (spin (:new (track s)))
+                                           (spin :other))))]
+          (is (= [1 :other] @outer))
+          (reset! s 2)
+          (await-drain ctx)
+          (is (= [2 :other] @outer))
+          (reset! s 1)
+          (await-drain ctx)
+          (is (= [1 :other] @outer) "back at the first value")))
+      (finally (ctx/stop-context! ctx)))))
+
+(deftest parallel-recovers-from-a-child-error-with-current-values
+  ;; After a child fails, parallel holds the error; when the child recovers
+  ;; (even to its first value) parallel recovers with every slot's CURRENT
+  ;; value, not the first ones.
+  (let [ctx (ctx/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* ctx]
+        (let [a (sig/signal 1)
+              b (sig/signal :x)
+              p (parallel (spin (:new (track a)))
+                          (spin (let [v (:new (track b))]
+                                  (if (= v :boom) (throw (ex-info "boom" {})) v))))
+              outer (spin (try (await p) (catch Exception _ :failed)))]
+          (is (= [1 :x] @outer))
+          (reset! a 2) (await-drain ctx)
+          (is (= [2 :x] @outer))
+          (reset! b :boom) (await-drain ctx)
+          (is (= :failed @outer))
+          (reset! b :x) (await-drain ctx)
+          (is (= [2 :x] @outer) "recovered to its first value; a keeps its current one")
+          (reset! b :y) (await-drain ctx)
+          (is (= [2 :y] @outer))))
+      (finally (ctx/stop-context! ctx)))))
