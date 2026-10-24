@@ -2578,18 +2578,29 @@
 ;; Spin Lifecycle (shared across all context implementations)
 ;; =============================================================================
 
+(defn- same-capture?
+  "Whether a captured value is unchanged: `identical?`, or — for a scalar
+  (number, character, keyword, symbol, boolean) — `=`. A scalar is boxed
+  afresh whenever the enclosing body computes it again (a loop index past
+  the JVM's small-Long cache, any double), so identity alone would re-run
+  every spin that captures one. `=` on scalars is O(1) and never throws."
+  [a b]
+  (or (identical? a b)
+      (and (or (number? a) (char? a) (keyword? a) (symbol? a) (boolean? a))
+           (= a b))))
+
 (defn- captures-changed?
   "True when a spin's captured environment differs from the previous one.
 
   The key set is fixed per `(spin …)` form (the macro bakes in the free
-  variables), so this reduces to: is any captured value not `identical?`
-  to its prior value. `identical?` — not `=` — because it is O(1), never
-  throws, and Clojure's structural sharing keeps an unchanged persistent
-  value `identical?`; the only cost is an occasional needless re-run when
-  a value is rebuilt `=`-equal but not `identical?`."
+  variables), so this reduces to: is any captured value not the same as
+  its prior value (`same-capture?`). Not `=` in general: `identical?` is
+  O(1), never throws, and Clojure's structural sharing keeps an unchanged
+  persistent value `identical?`; the only cost is an occasional needless
+  re-run when a collection is rebuilt `=`-equal but not `identical?`."
   [old new]
   (or (not= (set (keys old)) (set (keys new)))
-      (boolean (some (fn [[k v]] (not (identical? v (get old k)))) new))))
+      (boolean (some (fn [[k v]] (not (same-capture? v (get old k)))) new))))
 
 ;; -----------------------------------------------------------------------------
 ;; Reuse across worlds
