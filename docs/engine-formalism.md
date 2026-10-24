@@ -256,10 +256,11 @@ re-registration of an *existing* node, it re-runs (marks
     (captures-changed? old-captures new-captures))
 ```
 
-`captures-changed?` (`engine/impl/simple.cljc:1441-1452`) returns true
-if the key set differs *or* any value is not `identical?` to its prior.
+`captures-changed?` (`engine/impl/simple.cljc`) returns true if the key
+set differs *or* any value is not the same as its prior (`same-capture?`:
+`identical?`, or for a scalar the same value of the same type).
 
-* **Idempotence** — re-registering with `identical?` captures leaves the
+* **Idempotence** — re-registering with the same captures leaves the
   node `:clean` and `:completed?` true: `await`/`@spin` serve the cache.
   **Holds.**
 * **Re-registration with changed captures** invalidates the node's run
@@ -267,9 +268,15 @@ if the key set differs *or* any value is not `identical?` to its prior.
   or re-completed later by a track resume — closes over the old
   captures, and its result must not be certified `:clean` (3.4,
   generation rule). Only a fresh body entry certifies again. **Holds.**
-* **`identical?` not `=`** — O(1), never throws; Clojure structural
-  sharing keeps unchanged persistent values `identical?`. The cost is an
-  occasional needless re-run when a value is rebuilt `=`-equal but not
+* **`identical?`, scalars by type and value, never `=`** — `identical?`
+  is O(1) and never throws; Clojure structural sharing keeps unchanged
+  persistent values `identical?`. A scalar (number, character, keyword,
+  symbol, boolean) is boxed afresh when the body computes it again, so it
+  compares by type and value: JVM `.equals` (doubles bitwise, BigDecimal
+  with scale, mutable numbers by identity), JavaScript `Object.is` for
+  numbers. Not Clojure `=`, which equates captures a body can tell apart
+  (0.0 and -0.0, 1.0M and 1.00M, 1 and 1N). The cost is an occasional
+  needless re-run when a collection is rebuilt `=`-equal but not
   `identical?`. This makes the gate a **sound over-approximation**: it
   may re-run when it didn't need to, but it never *skips* a re-run that
   was needed. **Holds (conservative).**
@@ -477,7 +484,7 @@ stateDiagram-v2
     Running --> Suspended: body returns the incomplete sentinel (await/track)
     Suspended --> Running: resume-body! (cont fires)
     Completed --> Dirty: dependency changed → mark-dirty! / cache-result! cascade
-    Completed --> Completed: re-register with identical? captures (B-gate no-op)
+    Completed --> Completed: re-register with the same captures (B-gate no-op)
     Dirty --> Running: re-run (track resume / :spin-execution / B-gate re-register / await slow path)
     Completed --> [*]: GC + no observers + no live signal cont → full-cleanup-spin!
 ```
@@ -542,8 +549,8 @@ lexical scope — no stale closure.
 **Argument.** The parent re-run re-evaluates the inner `(spin …)` form,
 producing a fresh `cps-fn` closure over the new locals and a fresh
 `:captured-locals` map. `register-spin!`'s B-gate
-(`engine/impl/simple.cljc:1489-1497`) compares `:captured-locals` with
-`identical?` and re-runs the inner spin iff a capture changed. The
+compares `:captured-locals` capture by capture (`same-capture?`) and
+re-runs the inner spin iff a capture changed. The
 inner spin's id is *stable* across parent re-runs (per-spin chain-head
 re-seeded at parent body start, `addressing.cljc:121-127`), so the
 re-evaluation lands on the *same* SpinNode — re-registration, not a new

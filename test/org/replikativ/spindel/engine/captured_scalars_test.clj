@@ -36,3 +36,20 @@
           (is (= #{1} (set (vals @runs)))
               (str "children re-run: " (sort (keep (fn [[i c]] (when (> c 1) i)) @runs))))))
       (finally (ctx/stop-context! ctx)))))
+
+(deftest captures-a-body-can-tell-apart-re-run-the-child
+  ;; equal under Clojure `=`, different to a body that captures them
+  (doseq [[a b] [[0.0 -0.0] [1.0M 1.00M] [1 1N]]]
+    (let [ctx (ctx/create-execution-context)
+          runs (atom 0)
+          mk (fn [x] (spin (swap! runs inc) [(class x) (str (/ 1 (double x)) " " x)]))]
+      (try
+        (binding [ec/*execution-context* ctx]
+          (let [v (atom a)
+                parent (spin (await (addressing/with-key :c (mk @v))))
+                first-result @parent]
+            (reset! v b)
+            (ec/spin-mark-dirty! (spin-core/spin-id parent))
+            (is (not= first-result @parent) (str a " then " b))
+            (is (= 2 @runs) (str a " then " b " must re-run the child"))))
+        (finally (ctx/stop-context! ctx))))))
