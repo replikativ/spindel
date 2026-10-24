@@ -122,7 +122,7 @@
 
 #?(:clj
    (deftest a-cancelled-timer-leaves-the-executor-queue
-     (testing "cancelling a timer releases its task (and the context it closes over) at once"
+     (testing "a cancelled timer leaves the executor queue at once"
        (let [ec (ctx/create-execution-context)
              queue (.getQueue ^java.util.concurrent.ScheduledThreadPoolExecutor
                     @@#'org.replikativ.spindel.engine.executor/delay-executor)]
