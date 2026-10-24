@@ -610,7 +610,7 @@
   "Reset a spin's `:created-spins` set at the start of a (re-)run of its
   body. Children are re-registered as the body re-runs; whether a child
   must re-execute — because its captured environment changed — is decided
-  per-child by `register-spin!`'s identical?-gate (and a :resource child
+  per-child by `register-spin!`'s B-gate (`same-capture?`) (and a :resource child
   is always re-run), so no blanket invalidation of the subtree is needed.
   Dependency/continuation teardown of children that re-run is handled by
   the normal `record-deps!` reconciliation at body completion."
@@ -894,7 +894,7 @@
   3. mark the node `{:completed? false :running? true}` + dirty;
   4. clear `:created-spins` — the body slice re-runs from the track
      point, children are re-registered, and register-spin!'s
-     identical?-gate (B) re-runs only those whose captured environment
+     B-gate re-runs only those whose captured environment
      changed;
   5. restore the cont's `:slice-state` snapshot (deps tracking,
      addressing chain-head, context bindings);
@@ -2578,18 +2578,40 @@
 ;; Spin Lifecycle (shared across all context implementations)
 ;; =============================================================================
 
+(defn- same-capture?
+  "Whether a captured value is unchanged: `identical?`, or — for a scalar
+  (number, character, keyword, symbol, boolean) — the same value of the
+  same type. A scalar is boxed afresh whenever the enclosing body computes
+  it again (a loop index past the JVM's small-Long cache, any double), so
+  identity alone would re-run every spin that captures one.
+
+  Not Clojure `=`: it equates values a body can tell apart (0.0 and -0.0,
+  1.0M and 1.00M, 1 and 1N, two mutable `AtomicLong`s holding 5), and the
+  gate must only skip a re-run whose result could not differ. On the JVM
+  `.equals` compares type and value (doubles bitwise, BigDecimal with its
+  scale, mutable numbers by identity); in JavaScript, `Object.is` tells
+  0 from -0 and keywords and symbols compare with `=`. Cheap for every
+  scalar; a bignum's cost is its digits."
+  [a b]
+  (or (identical? a b)
+      #?(:clj (and (or (number? a) (char? a) (keyword? a) (symbol? a) (boolean? a))
+                   (.equals ^Object a b))
+         :cljs (cond (number? a) (and (number? b) (.is js/Object a b))
+                     (or (keyword? a) (symbol? a)) (= a b)
+                     :else false))))
+
 (defn- captures-changed?
   "True when a spin's captured environment differs from the previous one.
 
   The key set is fixed per `(spin …)` form (the macro bakes in the free
-  variables), so this reduces to: is any captured value not `identical?`
-  to its prior value. `identical?` — not `=` — because it is O(1), never
-  throws, and Clojure's structural sharing keeps an unchanged persistent
-  value `identical?`; the only cost is an occasional needless re-run when
-  a value is rebuilt `=`-equal but not `identical?`."
+  variables), so this reduces to: is any captured value not the same as
+  its prior value (`same-capture?`). Not `=` for collections: `identical?` is
+  O(1), never throws, and Clojure's structural sharing keeps an unchanged
+  persistent value `identical?`; the only cost is an occasional needless
+  re-run when a collection is rebuilt `=`-equal but not `identical?`."
   [old new]
   (or (not= (set (keys old)) (set (keys new)))
-      (boolean (some (fn [[k v]] (not (identical? v (get old k)))) new))))
+      (boolean (some (fn [[k v]] (not (same-capture? v (get old k)))) new))))
 
 ;; -----------------------------------------------------------------------------
 ;; Reuse across worlds
@@ -2724,7 +2746,7 @@
           ;; the stale cached result. A :resource spin (effectful, not
           ;; B-cacheable) is always re-run on re-registration; a
           ;; :computation spin only when its captured environment actually
-          ;; changed (identical?-compared). :result is kept as the previous
+          ;; changed (`same-capture?`). :result is kept as the previous
           ;; value (for value-change diffing).
                              (let [base (assoc existing-node
                                                :created-by creator-id
