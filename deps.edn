@@ -16,9 +16,10 @@
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.
-        ;; Exact public historical-overlay contract, pending its Maven release.
-        org.replikativ/yggdrasil {:git/url "https://github.com/replikativ/yggdrasil"
-                                  :git/sha "57a4a64ea1e0b8fe71719db314f051fc87672905"
+        ;; 0.3.51: the historical-overlay contract (#29) and overlay cleanup
+        ;; independent of temporary parents (#30). A Maven version, so the
+        ;; published pom carries it.
+        org.replikativ/yggdrasil {:mvn/version "0.3.51"
                                   :exclusions [is.simm/partial-cps]}
         org.replikativ/hasch {:mvn/version "0.4.104"}
         org.clojure/core.async {:mvn/version "1.9.865"}
