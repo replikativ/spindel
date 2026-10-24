@@ -538,7 +538,7 @@
                       {:type ::session-closing
                        :savepoint/address (:savepoint/address sp)})))
     (claim! sp :resume)
-    (executor/dispatch! (:executor world)
+    (quiescence/submit! #(executor/dispatch! (:executor world) %)
                         (quiescence/task world #(continue-in-slice! world k (:resolve k) value)))
     nil))
 

@@ -310,8 +310,8 @@
                              :work/id (:work/id job)
                              :work/value (:work/value job)
                              :work/strategy (:strategy state)})
-        (executor/execute!
-         (:executor ctx)
+        (quiescence/submit!
+         #(executor/execute! (:executor ctx) %)
          (quiescence/task
           ctx
           (executor/alive-fn

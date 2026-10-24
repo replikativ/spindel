@@ -1273,15 +1273,15 @@
              (let [executor (:executor context)
                    latch (CountDownLatch. (count direct-observers))]
                (doseq [obs direct-observers]
-                 (executor/execute! executor
-                                    (quiescence/task
-                                     context
-                                     (executor/alive-fn context
-                                                        (fn []
-                                                          (try
-                                                            (do-resume! obs)
-                                                            (finally
-                                                              (.countDown latch))))))))
+                 (quiescence/submit! #(executor/execute! executor %)
+                                     (quiescence/task
+                                      context
+                                      (executor/alive-fn context
+                                                         (fn []
+                                                           (try
+                                                             (do-resume! obs)
+                                                             (finally
+                                                               (.countDown latch))))))))
                (ForkJoinPool/managedBlock
                 (reify java.util.concurrent.ForkJoinPool$ManagedBlocker
                   (block [_]
@@ -1851,7 +1851,7 @@
     (do
       ;; dispatch!: a drain triggered on a thread already running this
       ;; executor's work runs on that thread after its current task.
-      (executor/dispatch! executor
+      (quiescence/submit! #(executor/dispatch! executor %)
                           (quiescence/task context
                                            (executor/alive-fn context
                                                               #(drain-events! context executor))))

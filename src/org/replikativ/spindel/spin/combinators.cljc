@@ -213,13 +213,13 @@
              ;; Invoke child spin via execution-context scheduling to enable parallelism
              ;; Must explicitly bind *execution-context* because CLJS capture-bindings excludes it
              ;; to avoid circular references
-                   (executor/execute! (:executor execution-context)
-                                      (quiescence/task
-                                       execution-context
-                                       (executor/alive-fn execution-context
-                                                          (fn []
-                                                            (binding [ec/*execution-context* execution-context]
-                                                              (child-spin on-ok on-err))))))))
+                   (quiescence/submit! #(executor/execute! (:executor execution-context) %)
+                                       (quiescence/task
+                                        execution-context
+                                        (executor/alive-fn execution-context
+                                                           (fn []
+                                                             (binding [ec/*execution-context* execution-context]
+                                                               (child-spin on-ok on-err))))))))
 
          ;; Async coordination; parent suspends
                spin-core/incomplete)
@@ -410,13 +410,13 @@
                                             (spin-core/set-owned-spins! race-spin-id nil)
                                             (spin-core/resume reject e))))]
                ;; Use captured execution-context, and bind it for the spin execution
-                           (executor/execute! (:executor execution-context)
-                                              (quiescence/task
-                                               execution-context
-                                               (executor/alive-fn execution-context
-                                                                  (fn []
-                                                                    (binding [ec/*execution-context* execution-context]
-                                                                      (t on-ok on-err))))))))
+                           (quiescence/submit! #(executor/execute! (:executor execution-context) %)
+                                               (quiescence/task
+                                                execution-context
+                                                (executor/alive-fn execution-context
+                                                                   (fn []
+                                                                     (binding [ec/*execution-context* execution-context]
+                                                                       (t on-ok on-err))))))))
                        spin-core/incomplete)))))
              race-spin-id)]
         ;; Ownership edge for external cancel during the in-flight race window.

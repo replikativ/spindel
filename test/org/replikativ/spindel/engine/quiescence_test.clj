@@ -108,3 +108,14 @@
                      (when-quiescent fork #(deref result)))
                   (str "re-run " i))))))
       (finally (ctx/stop-context! world)))))
+
+(deftest a-refused-task-releases-its-count
+  (let [world (ctx/create-execution-context)]
+    (try
+      (let [t (q/task world (fn [] :ran))]
+        (is (= 1 (q/in-flight world)))
+        (is (thrown? Exception (q/submit! (fn [_] (throw (ex-info "refused" {}))) t)))
+        (is (= 0 (q/in-flight world)) "released when the executor refused it")
+        (t)
+        (is (= 0 (q/in-flight world)) "running it later releases nothing twice"))
+      (finally (ctx/stop-context! world)))))

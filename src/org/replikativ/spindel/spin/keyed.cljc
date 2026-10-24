@@ -54,9 +54,15 @@
            kids (mapv (fn [k]
                         (addressing/with-key k (f k)))
                       ks)]
-       (ec/swap-state! (children-path ec/*spin-id*) (constantly (zipmap ks kids)))
-       (ec/swap-state! [:keyed/spins]
-                       (fn [m] (into (or m {}) (map (fn [kid] [(spin-core/spin-id kid) kid])) kids)))
+       (let [ids (into #{} (map spin-core/spin-id) kids)
+             dropped (remove ids (map spin-core/spin-id (vals (children ec/*spin-id*))))]
+         (ec/swap-state! (children-path ec/*spin-id*) (constantly (zipmap ks kids)))
+         ;; the registry holds the children of the last run only: a key that
+         ;; dropped out is released with its spin
+         (ec/swap-state! [:keyed/spins]
+                         (fn [m] (as-> (or m {}) m
+                                   (apply dissoc m dropped)
+                                   (into m (map (fn [kid] [(spin-core/spin-id kid) kid])) kids)))))
        (if (seq kids)
          (await (apply parallel kids))
          [])))))

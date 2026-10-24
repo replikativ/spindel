@@ -66,17 +66,32 @@
 
 (defn task
   "`f` as a task of `ctx`: counted in flight from now until it has run. The
-  count is released once, however often the returned fn is called."
+  count is released once, however often the returned fn is called, or by
+  `release!` when the task will not run (its executor refused it)."
   [ctx f]
   (if (tracker-of ctx)
-    (let [done? (atom false)]
+    (let [done? (atom false)
+          release (fn [] (when (compare-and-set! done? false true) (end! ctx)))]
       (begin! ctx)
-      (fn []
-        (try (f)
-             (finally
-               (when (compare-and-set! done? false true)
-                 (end! ctx))))))
+      (with-meta (fn [] (try (f) (finally (release))))
+        {::release release}))
     f))
+
+(defn release!
+  "Release the count of `task` (from `task`) that will not run: the executor
+  it was handed to refused it."
+  [task]
+  (when-let [release (::release (meta task))] (release))
+  nil)
+
+(defn submit!
+  "Hand `task` (from `task`) to `submit` (fn [task]), releasing its count if
+  that throws. Returns what `submit` returns."
+  [submit task]
+  (try (submit task)
+       (catch #?(:clj Throwable :cljs :default) error
+         (release! task)
+         (throw error))))
 
 (defn on-quiescent
   "Call `callback` (no arguments) once, when `ctx` is quiescent — now, if it
