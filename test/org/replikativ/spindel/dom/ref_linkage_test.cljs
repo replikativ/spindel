@@ -13,8 +13,8 @@
    Each ref records what it can SEE at the moment it fires, and the
    assertions are on that observation, not on the final tree.
 
-   Coordination: `comb/sleep` is how a CLJS test yields to the event loop
-   the engine's own async ops resolve on — see `jsdom-final-state-test`."
+   Coordination: poll for mount/update completion; retain a settle window
+   before checking that a superseded build never fired refs."
   (:refer-clojure :exclude [await])
   (:require [cljs.test :refer-macros [is testing use-fixtures]]
             [org.replikativ.spindel.engine.core :as ec]
@@ -23,6 +23,7 @@
             [org.replikativ.spindel.dom.browser :as browser]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
+            [org.replikativ.spindel.dom.test-helpers :refer [wait-until]]
             [org.replikativ.spindel.dom.foreach :as foreach]
             [org.replikativ.spindel.dom.foreign :as foreign :refer-macros [foreign-node]]
             [org.replikativ.spindel.signal :as sig]
@@ -96,7 +97,7 @@
                                                :closest? (some? (.closest el ".app-root"))}))
                           :on-unmount (fn [_])})))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 50))
+      (<? (wait-until "initial refs" #(and (= 4 (count @log)) (some? @foreign-seen))))
       (is (= [:leaf-1 :leaf-2 :section :root] (mapv :label @log))
           "post-order: descendants before their ancestor, siblings left to right")
       (is (every? linked? @log)
@@ -126,10 +127,11 @@
                                    :id item-fn xs))]
                   (el/ul {:class "app-root"} frag)))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 50))
+      (<? (wait-until "initial item ref" #(seq (mounts log :a))))
       (swap! items conj {:id "b"})
-      (<? (comb/sleep 50))
+      (<? (wait-until "appended item ref" #(seq (mounts log :b))))
       (swap! items #(into [{:id "c"}] %))
+      (<? (wait-until "prepended item ref" #(seq (mounts log :c))))
       (<? (comb/sleep 50))
       (is (= 3 (.-length (.querySelectorAll body ".item"))))
       (is (= 1 (count (mounts log :b))) "the appended item mounted once")
@@ -157,10 +159,11 @@
                                         (el/em {:ref (recorder log :open-child)} "x"))
                             (el/p {:class "closed" :ref (recorder log :closed)} "-")))))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 50))
+      (<? (wait-until "initial closed ref" #(seq (mounts log :closed))))
       (reset! open? true)
-      (<? (comb/sleep 50))
+      (<? (wait-until "open refs" #(seq (mounts log :open))))
       (reset! open? false)
+      (<? (wait-until "closed ref after flip" #(= 2 (count (mounts log :closed)))))
       (<? (comb/sleep 50))
       (is (= 1 (count (mounts log :open))))
       (is (= 2 (count (mounts log :closed))) "initial mount + flip back")
@@ -188,8 +191,9 @@
                     (el/main {:class "app-root" :ref (recorder log :root-b)}
                              (el/span {:ref (recorder log :leaf-b)} "b")))))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 50))
+      (<? (wait-until "initial root ref" #(seq (mounts log :root-a))))
       (reset! mode :b)
+      (<? (wait-until "replacement root ref" #(seq (mounts log :root-b))))
       (<? (comb/sleep 50))
       (is (= 1 (count (mounts log :root-b))))
       (is (every? linked? (concat (mounts log :root-a) (mounts log :leaf-a)
@@ -222,10 +226,11 @@
                                     :ref (recorder log x)}
                                    (str x)))))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 60))
+      (<? (wait-until "initial value ref" #(seq (mounts log 0))))
       (reset! v 1)
-      (<? (comb/sleep 1))
+      (<? (wait-until "superseded build started" #(some #{1} @started)))
       (reset! v 2)
+      (<? (wait-until "final value ref" #(seq (mounts log 2))))
       (<? (comb/sleep 100))
       (is (some #{1} @started) "the build for 1 did start")
       (is (= "2" (.-textContent (.querySelector body ".val"))))

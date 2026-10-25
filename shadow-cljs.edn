@@ -24,6 +24,8 @@
   :ci
   {:target :node-test
    :output-to "out/ci-tests.js"
+   ;; Keep test failures visible within CircleCI's 400 kB step output limit.
+   :main org.replikativ.spindel.ci-runner/main
    :ns-regexp "-test$"
    ;; `:useless-code` off: Closure reports the state machines core.async's `go`
    ;; generates (spindel's own, konserve's, kabel's) as unreachable code. konserve's
