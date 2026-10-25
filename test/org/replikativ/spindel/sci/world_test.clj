@@ -8,6 +8,50 @@
             [org.replikativ.spindel.sci.world :as world]
             [org.replikativ.spindel.spin.core :as spin-core]))
 
+(deftest interpreter-without-spindel-primitives-keeps-fork-selected-heap
+  (let [parent (context/create-execution-context)
+        loaded (atom [])
+        interrupted (atom 0)]
+    (try
+      (let [ref (world/create! parent {:spindel-primitives? false
+                                       :interrupt-fn #(swap! interrupted inc)
+                                       :sci-opts {:runtime-mode :standard
+                                                  :load-fn (fn [request] (swap! loaded conj (:namespace request)) nil)
+                                                  :namespaces {'fixture.runtime {'answer (constantly 42)}}}})
+            interpreter (world/context-in parent ref)]
+        (binding [ec/*execution-context* parent]
+          (is (= 42 (world/eval-string* ref "(require '[fixture.runtime :as rt]) (rt/answer)")))
+          (world/eval-string* ref "(def memory (atom [:parent])) (defn saved [] @memory)")
+          (is (= [:parent] (world/eval-string* ref "(saved)"))))
+        (is (pos? @interrupted))
+        (doseq [symbol ['org.replikativ.spindel.spin.core/make-spin
+                        'org.replikativ.spindel.engine.core/current-execution-context
+                        'org.replikativ.spindel.effects.await/await
+                        'is.simm.partial-cps.async/invoke-continuation]]
+          (is (nil? (sci/eval-form interpreter (list 'resolve (list 'quote symbol))))))
+        (is (thrown? Exception (sci/eval-string* interpreter "(require 'fixture.missing)")))
+        (is (= ['fixture.missing] @loaded))
+        (let [child (context/fork-context parent :mode :frozen)]
+          (try
+            (binding [ec/*execution-context* child]
+              (is (= [:parent :child] (world/eval-string* ref "(swap! memory conj :child)")))
+              (is (= [:parent :child] (world/eval-string* ref "(saved)"))))
+            (binding [ec/*execution-context* parent]
+              (is (= [:parent] (world/eval-string* ref "(saved)"))))
+            (is (not (identical? interpreter (world/context-in child ref))))
+            (finally (context/close-context! child)))))
+      (finally (context/close-context! parent)))))
+
+(deftest interpreter-surface-option-refuses-ambiguous-values
+  (let [runtime (context/create-execution-context)]
+    (try
+      (doseq [value [nil :false 0 "false"]]
+        (is (= ::world/invalid-options
+               (try (world/create! runtime {:spindel-primitives? value}) nil
+                    (catch clojure.lang.ExceptionInfo error (:type (ex-data error)))))))
+      (is (empty? (binding [ec/*execution-context* runtime] (component/registered))))
+      (finally (context/close-context! runtime)))))
+
 (deftest staged-interpreter-replacement-preserves-state-and-stable-resolvers
   (let [parent (context/create-execution-context)]
     (try

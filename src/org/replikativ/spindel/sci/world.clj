@@ -59,20 +59,35 @@
 
   Options are those accepted by `create-spin-macro-context`, except `:runtime`
   and `:resolve-sci-context`, which this component owns. Returns a stable
-  ComponentRef; resolving it in a descendant selects the forked interpreter."
+  ComponentRef; resolving it in a descendant selects the forked interpreter.
+
+  Set `:spindel-primitives? false` to omit Spindel's namespaces, native spin
+  bindings and CPS bootstrap. In that mode only `:sci-opts` and `:interrupt-fn`
+  configure the interpreter. Its SCI runtime remains forkable and uses the
+  same component ownership. This does not restrict capabilities the host
+  explicitly supplies through `:sci-opts`."
   ([runtime]
    (create! runtime {}))
   ([runtime opts]
+   (when-not (boolean? (get opts :spindel-primitives? true))
+     (throw (ex-info ":spindel-primitives? must be a boolean"
+                     {:type ::invalid-options})))
    (let [ref-holder (volatile! nil)
          interpreter
          (binding [ec/*execution-context* runtime]
            (sci/with-detached-context
-             #(macro/create-spin-macro-context
-               (assoc opts
-                      :runtime runtime
-                      :resolve-sci-context
-                      (fn [execution-context]
-                        (context-in execution-context @ref-holder))))))
+             #(if (get opts :spindel-primitives? true)
+                (macro/create-spin-macro-context
+                 (assoc opts
+                        :runtime runtime
+                        :resolve-sci-context
+                        (fn [execution-context]
+                          (context-in execution-context @ref-holder))))
+                (sci/init
+                 (-> (:sci-opts opts)
+                     (cond-> (:interrupt-fn opts) (assoc :interrupt-fn (:interrupt-fn opts)))
+                     (assoc :runtime-mode :forkable)
+                     (update :features (fn [features] (or features #{:clj}))))))))
          ref (binding [ec/*execution-context* runtime]
                (component/register! (->InterpreterWorld interpreter)))]
      (vreset! ref-holder ref)
