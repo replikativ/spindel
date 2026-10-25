@@ -15,11 +15,9 @@
    document, so `child-index-of` is real, fragment offsets are real, and the
    assertion is a `querySelectorAll` — the same measurement taken in Chrome.
 
-   Coordination note: CLJS is single-threaded, so `await-drain` (which blocks)
-   is JVM-only — a synchronous wait cannot observe `setTimeout`. Awaiting a
-   `comb/sleep` is the only way to yield to the event loop, and it is how the
-   engine's own async ops resolve. That is coordination, not a timing patch:
-   the fixture's own children resolve through the same mechanism."
+   Coordination: `wait-until` yields to the event loop until the expected
+   DOM state arrives. Fixed sleeps remain for in-flight interleavings and
+   settle windows that check for duplication after rendering completes."
   (:refer-clojure :exclude [await])
   (:require [cljs.test :refer-macros [is testing use-fixtures]]
             [org.replikativ.spindel.engine.core :as ec]
@@ -28,6 +26,7 @@
             [org.replikativ.spindel.dom.browser :as browser]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.dom.render :as render]
+            [org.replikativ.spindel.dom.test-helpers :refer [wait-until]]
             [org.replikativ.spindel.dom.foreach :as foreach]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -89,20 +88,22 @@
                             (el/ul {:class "section-items"}
                                    (el/li "one"))))))]
       (render/render-spin! body root discharge)
+      (<? (wait-until "initial shell" #(= 1 (n-matching body ".shell"))))
       (<? (comb/sleep 50))
       (is (= 0 (n-matching body ".section-items")) "collapsed at mount")
       (reset! open? true)
-      (<? (comb/sleep 50))
+      (<? (wait-until "expanded container" #(= 1 (n-matching body ".section-items"))))
       (is (= 1 (n-matching body ".section-items"))
           "expanded: exactly one container is on screen")
       (reset! open? false)
+      (<? (wait-until "collapsed container" #(= 0 (n-matching body ".section-items"))))
       (<? (comb/sleep 50))
       (is (= 0 (n-matching body ".section-items"))
           "collapsed again: the container is gone")
       (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; =============================================================================
-;; 1. A duplication bug, stated as a node count — MEASURED, both versions
+;; 1. Regression: duplication on collapse/expand, stated as a node count
 ;; =============================================================================
 ;;
 ;; The shape the browser duplicates on: expansion state lives IN the ifor-each
@@ -110,7 +111,7 @@
 ;; diff), so toggling one section changes that item's value and every section
 ;; re-renders.
 ;;
-;; What these two tests establish, on a real jsdom tree:
+;; Historical reproduction on a real jsdom tree (before the fixes):
 ;;
 ;;   in-flight toggles : 6 sections become 12, and 2 containers remain
 ;;   SETTLED toggles   : mount 6 ok; settled EXPAND 6 + 1 container ok;
@@ -126,8 +127,8 @@
 ;; measured in Chrome (9 stays 9 / 9 becomes 15); that difference is still
 ;; unaccounted for, and may be a second mechanism layered on this one.
 ;;
-;; These tests FAIL on both versions today. They are the acceptance criterion
-;; for the fix, not a description of working behaviour.
+;; These tests now pass and guard against regressions in both the in-flight
+;; and fully settled collapse/expand paths.
 
 (deftest-async collapse-expand-in-flight-does-not-duplicate
   (testing "after in-flight collapse/expand cycles, exactly one items
@@ -154,6 +155,7 @@
                                          ids)))]
                   (el/nav {:class "shell"} frag)))]
       (render/render-spin! body root discharge)
+      (<? (wait-until "all sections mounted" #(= 6 (n-matching body ".section"))))
       (<? (comb/sleep 100))
       (is (= 0 (n-matching body ".section-items")) "nothing expanded at mount")
       (is (= 6 (n-matching body ".section")) "all sections mounted")
@@ -172,6 +174,7 @@
       (reset! open-set #{})
       (<? (comb/sleep 1))
       (reset! open-set #{"c"})
+      (<? (wait-until "final expand" #(= 1 (n-matching body ".section-items"))))
       (<? (comb/sleep 300))
       (is (= 6 (n-matching body ".section"))
           (str "the section list must not grow, got "
@@ -209,13 +212,15 @@
                                          ids)))]
                   (el/nav {:class "shell"} frag)))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 200))
+      (<? (wait-until "all sections mounted" #(= 6 (n-matching body ".section"))))
       (is (= 6 (n-matching body ".section")) "mount")
       (reset! open-set #{"c"})
+      (<? (wait-until "settled expand" #(= 1 (n-matching body ".section-items"))))
       (<? (comb/sleep 300))
       (is (= 6 (n-matching body ".section")) "after settled expand")
       (is (= 1 (n-matching body ".section-items")) "one container open")
       (reset! open-set #{})
+      (<? (wait-until "settled collapse" #(= 0 (n-matching body ".section-items"))))
       (<? (comb/sleep 300))
       (is (= 6 (n-matching body ".section")) "after settled collapse")
       (is (= 0 (n-matching body ".section-items")) "container closed")
@@ -248,9 +253,10 @@
                 (let [{v :new} (track n)]
                   (el/div {:class "root"} (el/span (str "n=" v)))))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 50))
+      (<? (wait-until "initial root" #(= "n=0" (some-> (.querySelector body ".root") .-textContent))))
       (stamp! (.querySelector body ".root"))
       (reset! n 1)
+      (<? (wait-until "updated root" #(= "n=1" (some-> (.querySelector body ".root") .-textContent))))
       (<? (comb/sleep 100))
       (is (= 1 (n-matching body ".root")) "exactly one root")
       (is (kept? (.querySelector body ".root"))
@@ -267,9 +273,10 @@
                       _ (await (comb/sleep 1))]
                   (el/div {:class "root"} (el/span (str "n=" v)))))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 100))
+      (<? (wait-until "initial root" #(= "n=0" (some-> (.querySelector body ".root") .-textContent))))
       (stamp! (.querySelector body ".root"))
       (reset! n 1)
+      (<? (wait-until "updated root" #(= "n=1" (some-> (.querySelector body ".root") .-textContent))))
       (<? (comb/sleep 200))
       (is (= 1 (n-matching body ".root")) "exactly one root")
       (is (kept? (.querySelector body ".root"))
@@ -277,7 +284,7 @@
       (is (true? (integrity-clean?)) "no integrity violations recorded"))))
 
 ;; =============================================================================
-;; 3. OPEN, SEPARATE DEFECT: the fragment's parent is re-minted each re-render
+;; 3. Regression: fragment parent identity across re-renders
 ;; =============================================================================
 ;;
 ;; Found while diagnosing the eviction bug, and NOT fixed by it. Probing
@@ -324,7 +331,7 @@
 ;; deserves its own change; the eviction fix above is independent of it and
 ;; complete on its own.
 ;;
-;; This test FAILS. It is the acceptance criterion for that follow-up.
+;; This test now passes and guards the fragment parent identity fix.
 
 (deftest-async fragment-parent-keeps-its-identity-across-rerender
   (testing "a parent whose child is an awaited ifor-each fragment must be
@@ -348,10 +355,11 @@
                                          ids)))]
                   (el/nav {:class "shell"} frag)))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 200))
+      (<? (wait-until "all sections mounted" #(= 3 (n-matching body ".section"))))
       (is (= 3 (n-matching body ".section")) "mounted")
       (stamp! (.querySelector body ".shell"))
       (reset! open-set #{"b"})
+      (<? (wait-until "fragment update" #(= 1 (n-matching body ".section-items"))))
       (<? (comb/sleep 300))
       (is (= 3 (n-matching body ".section")) "still three sections")
       (is (kept? (.querySelector body ".shell"))
@@ -401,9 +409,8 @@
 ;; root spin awaiting the section, whose :await-reactive cont re-fires per
 ;; section re-completion so separate passes embed different-era builds.
 ;;
-;; THIS TEST FAILS (6 nested containers instead of 3 after one settled
-;; expand). It is the acceptance criterion for the commit-time
-;; reconciliation change.
+;; Before commit-time reconciliation this produced 6 nested containers
+;; instead of 3 after one settled expand. It now passes as a regression test.
 
 (deftest-async await-inside-element-child-does-not-duplicate
   (testing "collapse and re-expand a section whose element build suspends on
@@ -457,10 +464,12 @@
                 (el/div {:class "nav-shell"}
                         (await section)))]
       (render/render-spin! body root discharge)
+      (<? (wait-until "nested containers mounted" #(and (= 1 (n-matching body ".section-items")) (= 3 (n-matching body ".sub-items")))))
       (<? (comb/sleep 300))
       (is (= 1 (n-matching body ".section-items")) "mounted: one outer container")
       (is (= 3 (n-matching body ".sub-items")) "mounted: three nested containers")
       (swap! collapsed conj "kbs")
+      (<? (wait-until "outer collapse" #(= 0 (n-matching body ".section-items"))))
       (<? (comb/sleep 300))
       (is (= 0 (n-matching body ".section-items")) "settled collapse: outer gone")
       (swap! collapsed disj "kbs")
@@ -472,6 +481,7 @@
       (reset! (get pages "assist") ["p1" "p2"])
       (<? (comb/sleep 40))
       (reset! (get pages "notes") ["p1" "p2"])
+      (<? (wait-until "staggered page updates" #(every? (fn [kb] (.includes (.-textContent body) (str kb "-2"))) ["wiki" "assist" "notes"])))
       (<? (comb/sleep 500))
       (is (= 1 (n-matching body ".section-items"))
           (str "settled expand: ONE outer container, got "
@@ -481,8 +491,10 @@
                (n-matching body ".sub-items")))
       ;; second cycle — accumulation is the app signature (+6 per cycle)
       (swap! collapsed conj "kbs")
+      (<? (wait-until "outer collapse" #(= 0 (n-matching body ".section-items"))))
       (<? (comb/sleep 300))
       (swap! collapsed disj "kbs")
+      (<? (wait-until "second expand" #(= 3 (n-matching body ".sub-items"))))
       (<? (comb/sleep 500))
       (is (= 1 (n-matching body ".section-items"))
           (str "cycle 2: still one outer container, got "
@@ -527,25 +539,27 @@
                             (el/section {:class "content-a"} (panel "scope-a"))
                             (el/section {:class "content-b"} (panel "scope-b"))))))]
       (render/render-spin! body root discharge)
-      (<? (comb/sleep 100))
+      (<? (wait-until "initial panel A" #(= 1 (n-matching body ".content-a"))))
       (is (= 1 (n-matching body ".content-a")) "mounted on A")
       (reset! tab :b)
+      (<? (wait-until "panel B" #(= 1 (n-matching body ".content-b"))))
       (<? (comb/sleep 200))
       (is (= 1 (n-matching body ".content-b")) "switched to B")
       (is (= 0 (n-matching body ".content-a")) "A gone")
       ;; the survivor still updates AFTER the switch — the frozen-subtree
       ;; failure mode would leave it stuck at n=0
       (reset! n 1)
-      (<? (comb/sleep 200))
+      (<? (wait-until "survivor update" #(= "n=1" (some-> (.querySelector body ".survivor") .-textContent))))
       (is (= "n=1" (.-textContent (.querySelector body ".survivor")))
           "survivor reconciles in place across the switch")
       ;; and back: A->B->A re-mounts A cleanly against retired caches
       (reset! tab :a)
+      (<? (wait-until "panel A restored" #(= 1 (n-matching body ".content-a"))))
       (<? (comb/sleep 200))
       (is (= 1 (n-matching body ".content-a")) "back on A")
       (is (= 1 (n-matching body ".scoped-panel")) "exactly one panel")
       (reset! n 2)
-      (<? (comb/sleep 200))
+      (<? (wait-until "survivor update after return" #(= "n=2" (some-> (.querySelector body ".survivor") .-textContent))))
       (is (= "n=2" (.-textContent (.querySelector body ".survivor")))
           "survivor still live after A->B->A")
       (is (true? (integrity-clean?)) "no integrity violations recorded"))))
