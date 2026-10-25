@@ -51,6 +51,15 @@
 ;; AtomBackend - Default async state
 ;; =============================================================================
 
+(defn- update-path
+  "Keep absent nil writes absent; retain every core assoc on present paths
+  so delta-tracking containers observe the same operations as update-in."
+  [m path f]
+  (if (= ::absent (get-in m path ::absent))
+    (let [v (f nil)]
+      (if (nil? v) m (assoc-in m path v)))
+    (update-in m path f)))
+
 (defrecord AtomBackend [state-atom]
   PStateBackend
 
@@ -64,13 +73,7 @@
       ;; Swap at path. An update fn that keeps an absent target absent
       ;; (`#(when % …)`) creates no entry: a nil node under `:nodes` has no
       ;; owner, and no sweep removes it.
-      (get-in (swap! state-atom
-                     (fn [m]
-                       (if (= ::absent (get-in m path ::absent))
-                         (let [v (f nil)]
-                           (if (nil? v) m (assoc-in m path v)))
-                         (update-in m path f))))
-              path)))
+      (get-in (swap! state-atom update-path path f) path)))
 
   (backend-write-2! [_ path-a path-b f2]
     (swap! state-atom

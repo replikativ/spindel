@@ -3040,22 +3040,22 @@
                   ;; (same transaction as the write — nothing in between).
                   (cond-> (and run (= run (get-in rt-state [:run-callbacks spin-id :run])))
                     (update :run-callbacks dissoc spin-id))
-                  (update-in [:nodes spin-id]
-                             (fn [node]
-                               ;; Create SpinNode if it doesn't exist (preserve created-by/created-spins if exists)
-                               (let [node (or node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
-                                 (-> node
-                                     (assoc :result result)
-                                     (assoc :completed? true)
-                                     (assoc :running? false)
-                                     ;; Certify only an uninvalidated run.
-                                     ;; The mark stays until a fresh run, so
-                                     ;; a second write for the same run (a
-                                     ;; reject path re-caching) cannot
-                                     ;; certify it either.
-                                     (as-> n (if (run-invalidated? n)
-                                               (nodes/mark-dirty n)
-                                               (nodes/mark-clean n)))))))
+                  ;; Only :run-callbacks changed above: reuse the node read
+                  ;; from this transaction's immutable input.
+                  (assoc-in [:nodes spin-id]
+                            (let [node (or spin-node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
+                              (-> node
+                                  (assoc :result result)
+                                  (assoc :completed? true)
+                                  (assoc :running? false)
+                                  ;; Certify only an uninvalidated run.
+                                  ;; The mark stays until a fresh run, so
+                                  ;; a second write for the same run (a
+                                  ;; reject path re-caching) cannot
+                                  ;; certify it either.
+                                  (as-> n (if (run-invalidated? n)
+                                            (nodes/mark-dirty n)
+                                            (nodes/mark-clean n))))))
                   ;; Mark all observers dirty (they need to re-execute)
                   ;; BUT skip observers that:
                   ;; 1. Are currently running (have :running? true)
