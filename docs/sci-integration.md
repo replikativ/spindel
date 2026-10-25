@@ -59,6 +59,14 @@ The macro/world APIs enable SCI's opt-in `:forkable` runtime mode themselves;
 callers cannot accidentally construct a standard SCI runtime that lacks the
 managed continuation world.
 
+Hosts that supply their own restricted language surface can use
+`(sci-world/create! rt {:spindel-primitives? false :sci-opts {...}})`.
+This retains the same fork-selected interpreter component and forces SCI's
+`:forkable` runtime mode, but omits Spindel's namespace injection, native-spin
+bindings and CPS bootstrap. Only `:sci-opts` and `:interrupt-fn` configure this
+surface; the host is responsible for the capabilities it explicitly installs.
+This option alone is not an application permission policy.
+
 ## Setup
 
 ### Functional API (Recommended for Simple Cases)
