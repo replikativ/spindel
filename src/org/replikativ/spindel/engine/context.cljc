@@ -429,6 +429,9 @@
     :metadata - Fork metadata (default: parent metadata with updated process-id/depth)
     :process-id - Override auto-assigned process-id (default: parent + 1)
     :executor - Executor for the fork (default: share the parent's executor)
+    :checkpoints - Map of signal ids to opaque physical checkpoint origins.
+                   The host bridge validates the complete request before entry;
+                   the engine passes {:fork :checkpoint :checkpoint origin}.
     :mode - :following (default), where untouched state reads through to the
             live parent, or :frozen, where untouched state reads from a
             materialized fork-time view. Both modes remain copy-on-write.
@@ -461,7 +464,7 @@
   - Fork-local state (continuations, engine queue/timers) doesn't fall back
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
-  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork executor
+  [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots checkpoints convergent-fork executor
                         forkable-signals forkable-components fork-observer]
                  :or {state-updates {}
                       bindings {}
@@ -572,10 +575,13 @@
                         (reduce
                          (fn [m sig-id]
                            (if-let [pnode (rtp/get-state parent-ctx [:nodes sig-id])]
-                             (let [directive  (if-let [snap (get snapshots sig-id)]
-                                                {:fork :snapshot :snapshot snap}
-                                                ;; :convergent-fork (:branch default | :overlay) is
-                                                ;; opaque to the engine; the ygg bridge interprets it.
+                             (let [directive  (cond
+                                                (contains? checkpoints sig-id)
+                                                {:fork :checkpoint :checkpoint (get checkpoints sig-id)}
+                                                (contains? snapshots sig-id)
+                                                {:fork :snapshot :snapshot (get snapshots sig-id)}
+                                                :else
+                                                ;; Native policies are opaque to the engine.
                                                 {:fork :overlay :mode mode :convergent-fork convergent-fork})
                                    source (nodes/get-value pnode)
                                    observe! (when fork-observer
