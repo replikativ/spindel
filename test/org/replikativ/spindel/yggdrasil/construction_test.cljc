@@ -185,3 +185,18 @@
     (is (= [:ok nil] @first-result))
     (is (= :closed (:status (c/info owner))))
     (is (false? (:busy? (c/info owner))))))
+
+(deftest activated-work-needs-a-host-join-before-any-native-release
+  (let [owner (c/create {1 "native"}) live (atom #{}) calls (atom []) fail? (atom false)]
+    (acquire! owner 1 :native live calls fail?)
+    (c/observe! owner {:phase :activation})
+    (c/failed! owner (ex-info "Descriptor failed after activation" {}))
+    (is (= ::c/activation-unjoined (error-type #(c/dispose! owner sync-opts))))
+    (is (= #{:native} @live))
+    (is (empty? @calls))
+    ;; Only the HOST producer can establish that no continuation can wake again.
+    (let [activation (first (filter #(= :activation (:kind %)) (:receipts (c/info owner))))]
+      (c/resolve-uncertain! owner (:id activation) :disposed))
+    (c/dispose! owner sync-opts)
+    (is (empty? @live))
+    (is (= [:native] @calls))))
