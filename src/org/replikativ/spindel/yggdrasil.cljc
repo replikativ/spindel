@@ -172,6 +172,20 @@
      (throw (ex-info "Historical workspace forks require an asynchronous fork hook"
                      {:type ::async-snapshot-fork}))))
 
+(defn- checkpoint-fork
+  "Owned physical repository checkpoint. Retention belongs to the admitting
+   host; the portable origin descriptor is not itself a GC lease."
+  [sys checkpoint]
+  #?(:clj
+     (let [result (ygg/overlay-at-checkpoint sys checkpoint {:mode :frozen :sync? true})]
+       (when (fn? result)
+         (throw (ex-info "Checkpoint workspace requires asynchronous construction"
+                         {:type ::async-checkpoint-fork})))
+       result)
+     :cljs
+     (throw (ex-info "Checkpoint forks require an asynchronous engine fork hook"
+                     {:type ::async-checkpoint-fork}))))
+
 (defn- caps [sys]
   (when (satisfies? ygg/SystemIdentity sys) (ygg/capabilities sys)))
 
@@ -209,6 +223,9 @@
       ;; nested fork (fork of a fork) → fork the overlay's effective system
       (ovl/overlay? this)
       (rtp/fork-value (ovl/overlay-system this) fork-id directive)
+
+      (= :checkpoint (:fork directive))
+      (checkpoint-fork this (:checkpoint directive))
 
       ;; SNAPSHOT fork: only positively advertised isolated historical workspaces.
       ;; The async lift below covers DEFAULT branch forks, not this synchronous
@@ -1134,6 +1151,10 @@
      :mode      :following (default) | :frozen — overlay fork relation to parent
      :executor  optional child executor (default: share the parent's executor)
      :snapshots {system-id -> snapshot-id} — pin those systems at fixed values
+     :checkpoints {system-id -> exact checkpoint origin} — HOST admission input,
+       distinct from logical snapshots. The host retains each origin before
+       admission and through cleanup/evidence obligations. Not inherited by a
+       recursive child fork unless explicitly requested again.
      :systems   :all (default) | :none | #{system-id ...} — systems visible and
        forked in the child. Excluded systems are hidden, never shared writable.
      :rights    {system-id :write} — optional explicit grants. Other rights are
@@ -1192,6 +1213,45 @@
                                                {:type ::unsupported-fork-rights
                                                 :rights (into {} unsupported-rights)
                                                 :supported #{:write}})))
+            checkpoints (if (nil? (:checkpoints opts)) {} (:checkpoints opts))
+            _checkpoint-map (when-not (map? checkpoints)
+                              (throw (ex-info "Checkpoint policy must be a map"
+                                              {:type ::invalid-checkpoint-policy})))
+            checkpoint-ids (set (keys checkpoints))
+            _checkpoint-selection
+            (when-let [excluded (seq (remove selected-ids checkpoint-ids))]
+              (throw (ex-info "Checkpoint policy names systems excluded from the fork"
+                              {:type ::excluded-checkpoint-systems :systems (vec excluded)})))
+            _checkpoint-overlap
+            (when-let [overlap (seq (filter #(contains? (:snapshots opts) %) checkpoint-ids))]
+              (throw (ex-info "A system cannot use both a logical snapshot and a physical checkpoint"
+                              {:type ::overlapping-historical-policies :systems (vec overlap)})))
+            _checkpoint-shape
+            (doseq [[sid origin] checkpoints]
+              (when-not (ygg/checkpoint-origin? origin)
+                (throw (ex-info "Invalid checkpoint origin"
+                                {:type ::invalid-checkpoint-origin :system sid}))))
+            _checkpoint-platform
+            #?(:clj nil
+               :cljs (when (seq checkpoints)
+                       (throw (ex-info "Checkpoint forks require an asynchronous engine fork hook"
+                                       {:type ::async-checkpoint-fork}))))
+            ;; First check the ENTIRE map's capabilities before source reads.
+            _checkpoint-capabilities
+            (doseq [sid checkpoint-ids]
+              (when-not (ygg/supports-checkpoint-validation? (resolve-system sid)
+                                                             {:mode :frozen :sync? true})
+                (throw (ex-info "System cannot validate an exact checkpoint workspace"
+                                {:type ::unsupported-checkpoint-fork :system sid}))))
+            ;; Validation is read-only and acquires no workspace/writer/lease.
+            ;; Constructors recheck authoritatively after this whole-map pass.
+            _checkpoint-sources
+            (doseq [[sid origin] checkpoints]
+              (let [validated (ygg/validate-checkpoint-origin! (resolve-system sid) origin
+                                                               {:mode :frozen :sync? true})]
+                (when-not (= validated origin)
+                  (throw (ex-info "Checkpoint validation must complete synchronously with the same origin"
+                                  {:type ::invalid-checkpoint-validation :system sid})))))
             snapshot-ids (set (keys (:snapshots opts)))
             _included-snapshots (when-let [excluded (seq (remove selected-ids snapshot-ids))]
                                   (throw (ex-info "Snapshot policy names systems excluded from the fork"
@@ -1246,6 +1306,7 @@
                                       (when-let [sr (get selected-reg sid)]
                                         [(:id sr) snap])))
                            s))
+            origins (into {} (map (fn [[sid origin]] [(:id (get selected-reg sid)) origin])) checkpoints)
             state-updates (-> (or (:state-updates opts) {})
                               (assoc registry-key
                                      (backend/full-replacement selected-reg)
@@ -1260,7 +1321,8 @@
                                (assoc :state-updates state-updates
                                       :forkable-signals selected-signal-ids
                                       :fork-observer observe!))
-                     snaps (assoc :snapshots snaps))]
+                     snaps (assoc :snapshots snaps)
+                     (seq origins) (assoc :checkpoints origins))]
         (try
           (let [child-ctx (apply ctx/fork-context parent-ctx (mapcat identity fopts))
                 fork-id (:fork-id child-ctx)]
@@ -1298,6 +1360,7 @@
                             parent-head (if (fn? pv) (await pv) pv)
                             child-head (if (fn? cv) (await cv) cv)
                             snapshot? (contains? snapshot-ids sid)
+                            checkpoint? (contains? checkpoint-ids sid)
                             branch (when (satisfies? ygg/Branchable csys)
                                      (ygg/current-branch csys))
                             kind (cond snapshot? :snapshot
@@ -1317,7 +1380,7 @@
                                    :rights (if (= :shared kind)
                                              :shared
                                              (get-in opts [:rights sid] :write))}]
-                        (recur (next ps) (assoc acc sid entry)))
+                        (recur (next ps) (assoc acc sid (cond-> entry checkpoint? (assoc :checkpoint (get checkpoints sid))))))
                       acc))
                   descriptor {:fork/id fork-id
                               :fork/parent (:fork-id parent-ctx)
@@ -1859,6 +1922,9 @@
   ([fork-handle k] (copy-fork! fork-handle k {}))
   ([fork-handle k {:keys [admit on-copy-failure] :as opts}]
    (ensure-sync! opts :copy)
+   (when-not (or (nil? (:checkpoints opts)) (= {} (:checkpoints opts)))
+     (throw (ex-info "A copy preserves its source world; select checkpoints with fork!"
+                     {:type ::checkpoint-copy-policy})))
    (when-not (pos-int? k)
      (throw (ex-info "copy-fork! needs a positive number of copies"
                      {:type ::invalid-copy-count :k k})))

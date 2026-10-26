@@ -187,9 +187,12 @@
       fork-id   - unique id for this fork (keyword), for naming resources
       directive - how to fork, generic so the engine stays yggdrasil-free:
                     {:fork :overlay :mode :following|:frozen}  ; from CURRENT head
-                    {:fork :snapshot :snapshot <snapshot-id>}  ; from a FIXED value
+                    {:fork :snapshot :snapshot <snapshot-id>}  ; from a FIXED logical value
+                    {:fork :checkpoint :checkpoint <origin>}   ; exact physical repository basis
 
-    Returns the forked value. Must not mutate the original."))
+    Returns the forked VALUE synchronously, never a deferred/CPS operation.
+    Historical origin validation/retention belongs to the host bridge.
+    Must not mutate the original."))
 
 (extend-protocol PForkable
   #?(:clj Object :cljs default)

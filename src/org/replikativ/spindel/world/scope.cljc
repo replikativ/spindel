@@ -57,9 +57,13 @@
 (defn create
   "Create a finite world-ownership scope from optional purpose, fork-opts and
    a PResourceAuthority. Lifecycle keys are scope-owned and override values in
-   fork-opts."
+   fork-opts. Physical checkpoint selection is one-admission input: pass it
+   to an individual fork!, never to these reusable defaults."
   [{:keys [purpose fork-opts authority retain-released?]
     :or {purpose :simulation fork-opts {} retain-released? true}}]
+  (when-not (or (nil? (:checkpoints fork-opts)) (= {} (:checkpoints fork-opts)))
+    (throw (ex-info "Checkpoints must be selected for an individual fork, not scope defaults"
+                    {:type ::checkpoint-scope-defaults})))
   (atom {:id (random-uuid)
          :status :open
          :purpose purpose
