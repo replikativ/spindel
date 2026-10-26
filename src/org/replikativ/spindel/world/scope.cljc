@@ -12,6 +12,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.yggdrasil :as ygg]
+            [org.replikativ.spindel.yggdrasil.construction :as construction]
             [replikativ.logging :as log]))
 
 (declare maybe-complete-quiescence! recover!)
@@ -128,16 +129,26 @@
         (assoc-in [:recovery n] {:handle handle :refund? refund?})
         (update :next-handle inc))))
 
+(defn- add-construction-recovery [state owner parent-ctx]
+  (let [id (:id (construction/info owner))
+        existing (some (fn [[n entry]]
+                         (when (and (:construction entry)
+                                    (= id (:id (construction/info (:construction entry))))) n))
+                       (:recovery state))
+        n (or existing (:next-handle state))]
+    (cond-> (assoc-in state [:recovery n] {:construction owner :parent-ctx parent-ctx})
+      (nil? existing) (update :next-handle inc))))
+
 (defn- recovery-entry [state fork-id]
   (some (fn [[n {:keys [handle] :as entry}]]
-          (when (= fork-id (fork-id-of handle)) (assoc entry :index n)))
+          (when (and handle (= fork-id (fork-id-of handle))) (assoc entry :index n)))
         (:recovery state)))
 
 (defn- live-descriptors
   "Descriptors of the scope's copied worlds, then of its worlds."
   [{:keys [copied-worlds handles recovery]}]
   (-> []
-      (into (map (comp ygg/fork-descriptor :handle val)) recovery)
+      (into (keep (fn [[_ entry]] (when-let [handle (:handle entry)] (ygg/fork-descriptor handle)))) recovery)
       (into (keep (fn [[member fork-id]] (ygg/copied-descriptor member fork-id))) copied-worlds)
       (into (map ygg/fork-descriptor) (vals handles))))
 
@@ -168,7 +179,7 @@
                      "Cannot fork through a cancelled world scope")
 
         (or (:recovering? state) (seq (:recovery state)))
-        (scope-error scope ::recovery-required "World funding cleanup must finish before new work")
+        (scope-error scope ::recovery-required "World construction cleanup must finish before new work")
 
         (compare-and-set! scope state (update state :pending-forks inc))
         nil
@@ -190,7 +201,7 @@
         (if @delivered? (throw error) (deliver! reject error))))))
 
 (defn- recovery-error [scope original cleanup]
-  (ex-info "World construction failed and its funding still requires cleanup"
+  (ex-info "World construction failed and cleanup remains owned"
            {:type ::recovery-required :scope/id (:id @scope)
             :construction-error {:message (ex-message original) :type (:type (ex-data original))}
             :cleanup-error {:message (ex-message cleanup) :type (:type (ex-data cleanup))}}
@@ -240,8 +251,12 @@
                          (binding [ec/*execution-context* source-context]
                            (callback value))
                          (finally (maybe-complete-quiescence! scope)))))
+           own-construction! (fn [owner]
+                               (swap! scope add-construction-recovery owner source-context)
+                               true)
            opts (-> (merge fork-opts extra-fork-opts)
-                    (assoc :mode :frozen :purpose purpose :owner id :sync? false))]
+                    (assoc :mode :frozen :purpose purpose :owner id :sync? false
+                           :on-fork-failure own-construction!))]
        (letfn [(admit! [handle]
                  (finish! (fn [state]
                             (-> state
@@ -266,7 +281,11 @@
                                nil)))
                    (admit! handle)))
                (fail! [error]
-                 (finish! #(update % :pending-forks dec) reject error))]
+                 (finish! (fn [state]
+                            (cond-> (update state :pending-forks dec)
+                              (:construction/owner (ex-data error))
+                              (add-construction-recovery (:construction/owner (ex-data error)) source-context)))
+                          reject error))]
          (binding [ec/*execution-context* source-context
                    pcps-async/*in-trampoline* false]
            (try
@@ -394,38 +413,43 @@
           retired! (fn [n handle]
                      (swap! scope
                             (fn [state]
-                              (cond-> (-> state (update :recovery dissoc n)
-                                          (update :returned disj (fork-id-of handle)))
-                                (:retain-released? state)
+                              (cond-> (update state :recovery dissoc n)
+                                handle (update :returned disj (fork-id-of handle))
+                                (and handle (:retain-released? state))
                                 (update :released (fnil conj []) (ygg/fork-descriptor handle))))))]
       (cond
         (:error claim) (reject (:error claim))
         (:done? claim) (resolve nil)
         (:entries claim)
         (letfn [(step [entries depth]
-                  (if-let [[n {:keys [handle refund?]}] (first entries)]
+                  (if-let [[n {:keys [handle refund? construction parent-ctx]}] (first entries)]
                     (let [next! (fn []
                                   (retired! n handle)
                                   (if (< depth hop-depth)
                                     (step (next entries) (inc depth))
                                     (let [continue! #(step (next entries) 0)]
-                                      (try (executor/execute! (:executor (:parent-ctx handle)) continue!)
+                                      (try (executor/execute! (:executor (or parent-ctx (:parent-ctx handle))) continue!)
                                            (catch #?(:clj Throwable :cljs :default) _ (continue!))))))]
-                      (if (ygg/open-fork? handle)
-                        (returning!
-                         scope (:child-ctx handle)
-                         (fn []
-                           (binding [ec/*execution-context* (:parent-ctx handle)
-                                     pcps-async/*in-trampoline* false]
-                             (invoke-once! (authority-op #(ygg/discard-fork! handle (discard-opts handle)))
-                                           (fn [_] (next!)) finish!)))
-                         finish!)
-                        (if (and (= :discarded (:status (ygg/fork-disposition handle)))
-                                 (or (not refund?)
-                                     (contains? (:returned @scope) (fork-id-of handle))))
-                          (next!)
-                          (finish! (scope-error scope ::recovery-required
-                                                "Recovery child requires substrate settlement repair")))))
+                      (if construction
+                        ;; No child world was admitted or funded. Native
+                        ;; construction cleanup must never return a wallet.
+                        (invoke-once! (construction/dispose! construction {:sync? false})
+                                      (fn [_] (next!)) finish!)
+                        (if (ygg/open-fork? handle)
+                          (returning!
+                           scope (:child-ctx handle)
+                           (fn []
+                             (binding [ec/*execution-context* (:parent-ctx handle)
+                                       pcps-async/*in-trampoline* false]
+                               (invoke-once! (authority-op #(ygg/discard-fork! handle (discard-opts handle)))
+                                             (fn [_] (next!)) finish!)))
+                           finish!)
+                          (if (and (= :discarded (:status (ygg/fork-disposition handle)))
+                                   (or (not refund?)
+                                       (contains? (:returned @scope) (fork-id-of handle))))
+                            (next!)
+                            (finish! (scope-error scope ::recovery-required
+                                                  "Recovery child requires substrate settlement repair"))))))
                     (finish! nil)))]
           (step (:entries claim) 0))))))
 
@@ -506,12 +530,13 @@
                      (doseq [[c g] (map vector copies (or grants (repeat nil)))]
                        (vswap! attempted conj (fork-id-of c))
                        (settle-now (authority-op #(grant! authority context (:child-ctx c) g)))))
-             own-failure! (fn [{:keys [copies]}]
+             own-failure! (fn [{:keys [copies construction]}]
                             (swap! scope
                                    (fn [state]
-                                     (reduce (fn [state c]
-                                               (add-recovery state c (contains? @attempted (fork-id-of c))))
-                                             state copies)))
+                                     (cond-> (reduce (fn [state c]
+                                                       (add-recovery state c (contains? @attempted (fork-id-of c))))
+                                                     state copies)
+                                       construction (add-construction-recovery construction context))))
                             true)
              outcome
              (try

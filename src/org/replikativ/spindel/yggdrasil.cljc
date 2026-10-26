@@ -55,6 +55,7 @@
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.ygg-signal :as ys]
+            [org.replikativ.spindel.yggdrasil.construction :as construction]
             ;; protocols/types/overlay are cljc → required on BOTH platforms so the
             ;; bridge resolves/forks/diffs yggdrasil systems in cljs too. Only
             ;; yggdrasil.gc is JVM-only (it backs gc!/gc-system!, which stay :clj).
@@ -193,7 +194,10 @@
    `fork-value` branch-forks here directly; on cljs `fork-value` DEFERS (returns the
    parent system unchanged) and `fork!` finishes the branch in an AWAITED post-pass."
   [sys fork-id]
-  (-> sys (ygg/branch! fork-id) (ygg/checkout fork-id)))
+  (let [created (ygg/branch! sys fork-id)]
+    ;; Native branch ACK must be owned before checkout can fail.
+    (ctx/report-fork-event! {:phase :branch :value created :branch fork-id})
+    (ygg/checkout created fork-id)))
 
 ;; `Object`/`default`: extend the engine's PForkable to ALL values so a forkable
 ;; ygg-signal's value is branch/overlay/snapshot-forked; non-yggdrasil values fall to
@@ -1101,6 +1105,27 @@
     (settle-sync! fork-handle operation operation-f result-f callback)
     (settle-async! fork-handle operation operation-f result-f callback)))
 
+(defn- fail-construction!
+  [owner error opts]
+  (convey-context
+   (async+sync
+    (:sync? (merge yc/default-opts opts))
+    (async
+     (construction/failed! owner error)
+     (let [cleanup-error (try (await (construction/dispose! owner opts)) nil
+                              (catch #?(:clj Throwable :cljs :default) failure failure))]
+       (if-not cleanup-error
+         (throw error)
+         (let [handoff (construction/offer! owner (:on-fork-failure opts))]
+           (throw (ex-info "Fork construction failed with retained native ownership"
+                           (cond-> {:type ::construction-incomplete
+                                    :construction/info (construction/info owner)
+                                    :construction/claimed? (:claimed? handoff)
+                                    :cleanup-error cleanup-error}
+                             (not (:claimed? handoff)) (assoc :construction/owner (:owner handoff))
+                             (:error handoff) (assoc :handoff-error (:error handoff)))
+                           error)))))))))
+
 (defn fork!
   "Create a forked execution context with every ygg-signal overlaid (or snapshot-
    forked, per `opts`). Returns a ForkHandle for explicit merge/discard control.
@@ -1115,6 +1140,8 @@
        rejected until the substrate can enforce them rather than merely label them.
      :purpose   portable descriptor tag such as :run/:particle/:proposal
      :owner     initial affine settlement owner (default parent context fork-id)
+     :on-fork-failure HOST atomic ownership callback for an incomplete native
+       construction. Returning true claims its opaque cleanup owner, not a world.
      :convergent-fork :branch (default) | :overlay — a CONVERGENT CRDT forks as a
        real yggdrasil BRANCH by default (the natural CRDT API works in the fork: read
        `@ref`, write `g/conj`, `merge-fork!` folds back). `:overlay` forces the live-
@@ -1183,6 +1210,17 @@
               #?(:cljs
                  (throw (ex-info "Historical workspace forks require an asynchronous fork hook"
                                  {:type ::async-snapshot-fork :system sid}))))
+            ;; A known unsupported adapter is a pure preflight refusal, not an
+            ;; attempted native acquisition whose outcome needs reconciliation.
+            _supported-convergent
+            (doseq [sid selected-ids
+                    :let [system (ys/effective-system (resolve-system sid))]
+                    :when (and (satisfies? yc/PConvergent system)
+                               (not (convergent-branchable? system))
+                               (not (satisfies? ygg/Overlayable system)))]
+              (throw (ex-info "Cannot fork this convergent system: neither :branchable (no branch-fork) nor Overlayable (no overlay-fork)."
+                              {:system-type (ygg/system-type system)
+                               :system-id sid})))
             selected-reg (select-keys parent-reg selected-ids)
             selected-signal-ids (into #{} (map (comp :id val)) selected-reg)
             excluded-signal-ids (into #{}
@@ -1213,15 +1251,19 @@
                                      (backend/full-replacement selected-reg)
                                      :forkable-signals selected-signal-ids)
                               (update :nodes #(merge (or % {}) attenuated-nodes)))
+            construction-owner (construction/create (into {} (map (fn [[sid sr]] [(:id sr) sid])) selected-reg))
+            observe! #(construction/observe! construction-owner %)
+            popts (merge yc/default-opts opts)
+            owner (or (:owner opts) (:fork-id parent-ctx))
             fopts  (cond-> (-> opts
-                               (dissoc :systems :purpose :owner :rights)
+                               (dissoc :systems :purpose :owner :rights :on-fork-failure)
                                (assoc :state-updates state-updates
-                                      :forkable-signals selected-signal-ids))
-                     snaps (assoc :snapshots snaps))
-            child-ctx  (apply ctx/fork-context parent-ctx (mapcat identity fopts))
-            fork-id    (:fork-id child-ctx)
-            popts  (merge yc/default-opts opts)
-            owner  (or (:owner opts) (:fork-id parent-ctx))]
+                                      :forkable-signals selected-signal-ids
+                                      :fork-observer observe!))
+                     snaps (assoc :snapshots snaps))]
+        (try
+          (let [child-ctx (apply ctx/fork-context parent-ctx (mapcat identity fopts))
+                fork-id (:fork-id child-ctx)]
        ;; POST-PASS (Design B async lift): the engine's `fork-context`/`fork-value`
        ;; hook is SYNCHRONOUS, so a convergent BRANCH fork — durable `branch!`/`checkout`
        ;; that only yield a value synchronously on the JVM — is done here, AWAITED, over
@@ -1230,63 +1272,74 @@
        ;; a NO-OP; on cljs `fork-value` deferred (left the parent value), so this branches
        ;; each and seats the branched system as the fork's value. ONE code path, both
        ;; platforms (async+sync collapses to `do` on the JVM).
-        (loop [ps (seq (shared-pairs child-ctx parent-ctx))]
-          (when ps
-            (let [[_sid sig-ref cval _psys] (first ps)]
-              (when (and (convergent-branchable? cval)
-                         (not= fork-id (ygg/current-branch cval)))
-                (let [_        (await (ygg/branch! cval fork-id (ygg/current-branch cval) popts))
-                      branched (await (ygg/checkout cval fork-id popts))]
-                  (set-node-value! child-ctx sig-ref branched))))
-            (recur (next ps))))
+            (loop [ps (seq (shared-pairs child-ctx parent-ctx))]
+              (when ps
+                (let [[_sid sig-ref cval _psys] (first ps)]
+                  (when (and (convergent-branchable? cval)
+                             (not= fork-id (ygg/current-branch cval)))
+                    (observe! {:phase :before :signal (:id sig-ref) :source cval})
+                    (let [created (await (ygg/branch! cval fork-id (ygg/current-branch cval) popts))
+                          _ (observe! {:phase :branch :signal (:id sig-ref) :value created :branch fork-id})
+                          branched (await (ygg/checkout created fork-id popts))]
+                      (observe! {:phase :value :signal (:id sig-ref) :source cval :value branched})
+                      (set-node-value! child-ctx sig-ref branched))))
+                (recur (next ps))))
         ;; Capture the actual granted per-system fork shape, not merely the
         ;; requested policy. Versioned systems may degrade :following to :frozen.
-        (let [systems
-              (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc {}]
-                (if ps
-                  (let [[sid _ cval psys] (first ps)
-                        csys (ys/effective-system cval)
-                        pv (when (satisfies? ygg/Snapshotable psys)
-                             (ygg/snapshot-id psys))
-                        cv (when (satisfies? ygg/Snapshotable csys)
-                             (ygg/snapshot-id csys))
-                        parent-head (if (fn? pv) (await pv) pv)
-                        child-head (if (fn? cv) (await cv) cv)
-                        snapshot? (contains? snapshot-ids sid)
-                        branch (when (satisfies? ygg/Branchable csys)
-                                 (ygg/current-branch csys))
-                        kind (cond snapshot? :snapshot
-                                   (ovl/overlay? cval) :overlay
-                                   (= fork-id branch) :branch
-                                   (= cval psys) :shared
-                                   :else :forked)
-                        entry {:base-snapshot (cond (ovl/overlay? cval) (ygg/base-ref cval)
-                                                    snapshot? (get-in opts [:snapshots sid])
-                                                    :else parent-head)
-                               :head child-head
-                               :branch branch
-                               :mode (cond (ovl/overlay? cval) (:mode cval)
-                                           (= :shared kind) :shared
-                                           :else :frozen)
-                               :kind kind
-                               :rights (if (= :shared kind)
-                                         :shared
-                                         (get-in opts [:rights sid] :write))}]
-                    (recur (next ps) (assoc acc sid entry)))
-                  acc))
-              descriptor {:fork/id fork-id
-                          :fork/parent (:fork-id parent-ctx)
-                          :fork/purpose (or (:purpose opts) :unspecified)
-                          :fork/owner owner
-                          :fork/systems systems}
-              token (random-uuid)
-              authority (atom {:status :open :owner owner :token token})]
+            (let [systems
+                  (loop [ps (seq (shared-pairs child-ctx parent-ctx)) acc {}]
+                    (if ps
+                      (let [[sid _ cval psys] (first ps)
+                            csys (ys/effective-system cval)
+                            pv (when (satisfies? ygg/Snapshotable psys)
+                                 (ygg/snapshot-id psys))
+                            cv (when (satisfies? ygg/Snapshotable csys)
+                                 (ygg/snapshot-id csys))
+                            parent-head (if (fn? pv) (await pv) pv)
+                            child-head (if (fn? cv) (await cv) cv)
+                            snapshot? (contains? snapshot-ids sid)
+                            branch (when (satisfies? ygg/Branchable csys)
+                                     (ygg/current-branch csys))
+                            kind (cond snapshot? :snapshot
+                                       (ovl/overlay? cval) :overlay
+                                       (= fork-id branch) :branch
+                                       (= cval psys) :shared
+                                       :else :forked)
+                            entry {:base-snapshot (cond (ovl/overlay? cval) (ygg/base-ref cval)
+                                                        snapshot? (get-in opts [:snapshots sid])
+                                                        :else parent-head)
+                                   :head child-head
+                                   :branch branch
+                                   :mode (cond (ovl/overlay? cval) (:mode cval)
+                                               (= :shared kind) :shared
+                                               :else :frozen)
+                                   :kind kind
+                                   :rights (if (= :shared kind)
+                                             :shared
+                                             (get-in opts [:rights sid] :write))}]
+                        (recur (next ps) (assoc acc sid entry)))
+                      acc))
+                  descriptor {:fork/id fork-id
+                              :fork/parent (:fork-id parent-ctx)
+                              :fork/purpose (or (:purpose opts) :unspecified)
+                              :fork/owner owner
+                              :fork/systems systems}
+                  token (random-uuid)
+                  authority (atom {:status :open :owner owner :token token})]
           ;; The child world observes this shared authority atom. It remains
           ;; mutable while OPEN, but partition-fork!'s atomic transition freezes
           ;; registry shape for every recursively subdivided capability.
-          (rtp/swap-state! child-ctx [fork-authority-key] (constantly authority))
-          (rtp/swap-state! child-ctx [world-shape-key] (constantly :mutable))
-          (->ForkHandle child-ctx parent-ctx fork-id descriptor authority token))))))))
+              (rtp/swap-state! child-ctx [fork-authority-key] (constantly authority))
+              (rtp/swap-state! child-ctx [world-shape-key] (constantly :mutable))
+              (let [handle (->ForkHandle child-ctx parent-ctx fork-id descriptor authority token)]
+                (construction/transfer! construction-owner)
+                handle)))
+          (catch #?(:clj Throwable :cljs :default) error
+            ;; A throwing success continuation already received the handle.
+            ;; It cannot resurrect or dispose transferred native ownership.
+            (if (= :transferred (:status (construction/info construction-owner)))
+              (throw error)
+              (await (fail-construction! construction-owner error opts)))))))))))
 
 ;; `with-fork` is a JVM-only convenience macro. On cljs use the engine form it
 ;; expands to directly: `(ec/with-context (:child-ctx fork) …)`.
@@ -1797,8 +1850,9 @@
    `fork-handle` open and its world untouched. JVM / synchronous only.
 
    An optional synchronous `:on-copy-failure` receives {:copies raw-handles
-   :phase :construction|:admission|:source-transfer :error error}. Returning
-   true claims cleanup ownership of ALL supplied handles, suppressing automatic
+   :phase :construction|:admission|:source-transfer :error error}, plus
+   :construction when a partial native constructor also needs recovery. Returning
+   true claims cleanup ownership of ALL supplied handles and that construction, suppressing automatic
    discard. The callback must atomically claim ownership without throwing; no
    copy is returned as a successful result. Source transfer has not succeeded
    at these failure boundaries."
@@ -1822,17 +1876,37 @@
          made (volatile! [])
          fail! (fn [phase error]
                  (let [copies @made
-                       claimed? (and on-copy-failure
-                                     (true? (on-copy-failure {:copies copies :phase phase :error error})))]
-                   (when-not claimed?
-                     (doseq [c (rseq copies)] (discard-fork* c {})))
-                   (throw error)))
+                       partial (:construction/owner (ex-data error))
+                       payload {:copies copies :phase phase :error error}
+                       handoff (if partial
+                                 (construction/offer! partial
+                                                      (when on-copy-failure
+                                                        #(on-copy-failure (assoc payload :construction %))))
+                                 (try {:claimed? (and on-copy-failure (true? (on-copy-failure payload)))}
+                                      (catch #?(:clj Throwable :cljs :default) failure
+                                        {:claimed? false :error failure})))
+                       cleanup-errors (when-not (:claimed? handoff)
+                                        (reduce (fn [errors c]
+                                                  (try (discard-fork* c {}) errors
+                                                       (catch #?(:clj Throwable :cljs :default) failure
+                                                         (conj errors failure))))
+                                                [] (rseq copies)))]
+                   (if (or (:claimed? handoff) (:error handoff) (seq cleanup-errors))
+                     (throw (ex-info "Copy construction failed"
+                                     (cond-> (dissoc (ex-data error) :construction/owner)
+                                       (:claimed? handoff) (assoc :copy/claimed? true :construction/claimed? (boolean partial))
+                                       (and partial (not (:claimed? handoff))) (assoc :construction/owner partial)
+                                       (:error handoff) (assoc :handoff-error (:error handoff))
+                                       (seq cleanup-errors) (assoc :copy/cleanup-errors cleanup-errors
+                                                                   :copy/unsettled (filterv #(not (#{:discarded :merged} (:status (fork-disposition %)))) copies)))
+                                     error))
+                     (throw error))))
          copies (try
                   (binding [ec/*execution-context* (:child-ctx fork-handle)]
                     (dotimes [_ k]
                       (vswap! made conj
                               (fork! (merge {:mode :frozen :owner owner :purpose :copy}
-                                            (dissoc opts :admit :on-copy-failure))))))
+                                            (dissoc opts :admit :on-copy-failure :on-fork-failure))))))
                   @made
                   (catch #?(:clj Throwable :cljs :default) error
                     (fail! :construction error)))

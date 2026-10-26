@@ -26,6 +26,30 @@
             [org.replikativ.spindel.engine.quiescence :as quiescence]
             [incognito.edn :refer [read-string-safe]]))
 
+;; Native resource acquisition is a HOST construction extent, not a dynamic
+;; binding: CPS binding capture must never retain this owner in a child world.
+#?(:clj (defonce ^:private native-fork-observer (ThreadLocal.)))
+
+(defn report-fork-event!
+  "HOST-only synchronous native-constructor ACK. No callback enters directives
+   or semantic state. Async constructors use their explicit completion owner."
+  [event]
+  #?(:clj (when-let [observe! (.get ^ThreadLocal native-fork-observer)]
+            (observe! event))
+     :cljs nil))
+
+(defn- fork-native-value [source fork-id directive observe!]
+  #?(:clj
+     (let [previous (.get ^ThreadLocal native-fork-observer)]
+       (try
+         (.set ^ThreadLocal native-fork-observer observe!)
+         (rtp/fork-value source fork-id directive)
+         (finally
+           (if previous
+             (.set ^ThreadLocal native-fork-observer previous)
+             (.remove ^ThreadLocal native-fork-observer)))))
+     :cljs (rtp/fork-value source fork-id directive)))
+
 ;; =============================================================================
 ;; Incognito Handlers for Serialization
 ;; =============================================================================
@@ -438,7 +462,7 @@
   - Bindings are merged (child overrides parent)
   - Process-id auto-increments for Elle compatibility"
   [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots convergent-fork executor
-                        forkable-signals forkable-components]
+                        forkable-signals forkable-components fork-observer]
                  :or {state-updates {}
                       bindings {}
                       metadata nil
@@ -529,27 +553,6 @@
         forkable-ids (if (nil? forkable-signals)
                        (rtp/get-state parent-ctx [:forkable-signals])
                        forkable-signals)
-        forked-nodes (when (seq forkable-ids)
-                       (persistent!
-                        (reduce
-                         (fn [m sig-id]
-                           (if-let [pnode (rtp/get-state parent-ctx [:nodes sig-id])]
-                             (let [directive  (if-let [snap (get snapshots sig-id)]
-                                                {:fork :snapshot :snapshot snap}
-                                                ;; :convergent-fork (:branch default | :overlay) is
-                                                ;; opaque to the engine; the ygg bridge interprets it.
-                                                {:fork :overlay :mode mode :convergent-fork convergent-fork})
-                                   forked-val (rtp/fork-value (nodes/get-value pnode)
-                                                              fork-id directive)]
-                               (assoc! m sig-id
-                                       (nodes/->signal-node
-                                        forked-val nil nil (:deltaable? pnode)
-                                        (nodes/get-observers pnode)
-                                        (inc (or (:generation pnode) 0)))))
-                             m))
-                         (transient {})
-                         forkable-ids)))
-
         ;; Normalize explicit collections so one component is acquired once.
         ;; Component forks are rollback-free, process-local operations;
         ;; durable resources belong behind Yggdrasil ForkHandles.
@@ -564,6 +567,31 @@
                             {:type ::unknown-world-components
                              :component/ids (set unknown-component-ids)
                              :fork/parent (:fork-id parent-ctx)})))
+        forked-nodes (when (seq forkable-ids)
+                       (persistent!
+                        (reduce
+                         (fn [m sig-id]
+                           (if-let [pnode (rtp/get-state parent-ctx [:nodes sig-id])]
+                             (let [directive  (if-let [snap (get snapshots sig-id)]
+                                                {:fork :snapshot :snapshot snap}
+                                                ;; :convergent-fork (:branch default | :overlay) is
+                                                ;; opaque to the engine; the ygg bridge interprets it.
+                                                {:fork :overlay :mode mode :convergent-fork convergent-fork})
+                                   source (nodes/get-value pnode)
+                                   observe! (when fork-observer
+                                              (fn [event] (fork-observer (assoc event :signal sig-id))))
+                                   _ (when observe! (observe! {:phase :before :source source}))
+                                   forked-val (fork-native-value source fork-id directive observe!)
+                                   _ (when observe! (observe! {:phase :value :source source :value forked-val}))]
+                               (assoc! m sig-id
+                                       (nodes/->signal-node
+                                        forked-val nil nil (:deltaable? pnode)
+                                        (nodes/get-observers pnode)
+                                        (inc (or (:generation pnode) 0)))))
+                             m))
+                         (transient {})
+                         forkable-ids)))
+
         forked-components
         (persistent!
          (reduce
@@ -673,6 +701,9 @@
                                      (:bindings parent-ctx))
                                  bindings))
                    (ec/with-home))
+          ;; HOST construction ownership observes the private child before any
+          ;; following registration or queued child work can fail.
+          _ (when fork-observer (fork-observer {:phase :context :context fork}))
           ;; A following fork reads through to this parent's live state:
           ;; the parent must know (weakly) that it exists.
           _ (when-not (= :frozen mode)
@@ -700,6 +731,9 @@
       ;; waiting but nothing has poked its drain yet — the parent's drain
       ;; never touches a fork's fork-local queue. Trigger once.
       (when (seq (rtp/get-state fork [:engine/pending]))
+        ;; Once queued child work can run, snapshot quiescence is not a
+        ;; lifetime fence: a deferred/timer body may suspend and wake later.
+        (when fork-observer (fork-observer {:phase :activation :context fork}))
         (simple/trigger-drain! fork (:executor fork)))
       fork)))
 
