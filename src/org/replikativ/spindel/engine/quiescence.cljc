@@ -23,21 +23,22 @@
   "A fresh tracker, for a new world (`create-execution-context`,
   `fork-context`)."
   []
-  {:in-flight (atom 0) :listeners (atom [])})
+  {:state (atom {:in-flight 0 :listeners []})})
 
 (defn- tracker-of [ctx] (:quiescence ctx))
 
 (defn in-flight
   "How many tasks of `ctx` are scheduled or running."
   [ctx]
-  (if-let [t (tracker-of ctx)] @(:in-flight t) 0))
+  (if-let [t (tracker-of ctx)] (:in-flight @(:state t)) 0))
 
 (defn quiescent?
   "Whether `ctx` has no task in flight, no queued event and no drain."
   [ctx]
-  (and (zero? (in-flight ctx))
-       (not (rtp/get-state ctx [:engine/draining?]))
-       (empty? (rtp/get-state ctx [:engine/pending]))))
+  (let [state (rtp/get-state ctx [])]
+    (and (zero? (in-flight ctx))
+         (not (:engine/draining? state))
+         (empty? (:engine/pending state)))))
 
 (defn check!
   "Call `ctx`'s quiescence listeners if it is quiescent now. Each listener is
@@ -45,22 +46,30 @@
   world."
   [ctx]
   (when-let [t (tracker-of ctx)]
-    (when (and (seq @(:listeners t)) (quiescent? ctx))
-      (let [[listeners _] (swap-vals! (:listeners t) (constantly []))]
-        (doseq [listener listeners] (listener)))))
+    (let [state (:state t)]
+      (loop []
+        (let [{:keys [in-flight listeners] :as observed} @state]
+          (when (and (zero? in-flight) (seq listeners) (quiescent? ctx))
+            ;; Task admission and listener registration invalidate this exact
+            ;; observation. An older idle check must never claim a newer batch.
+            ;; CAS compares identity, so begin/end cannot create an ABA even
+            ;; when their resulting counter values happen to equal observed.
+            (if (compare-and-set! state observed (assoc observed :listeners []))
+              (doseq [listener listeners] (listener))
+              (recur)))))))
   nil)
 
 (defn begin!
   "Count one task of `ctx` in flight. Pair with `end!`; prefer `task`."
   [ctx]
-  (when-let [t (tracker-of ctx)] (swap! (:in-flight t) inc))
+  (when-let [t (tracker-of ctx)] (swap! (:state t) update :in-flight inc))
   nil)
 
 (defn end!
   "A task of `ctx` has run (or will not run)."
   [ctx]
   (when-let [t (tracker-of ctx)]
-    (when (zero? (swap! (:in-flight t) dec))
+    (when (zero? (:in-flight (swap! (:state t) update :in-flight dec)))
       (check! ctx)))
   nil)
 
@@ -98,7 +107,7 @@
   already is. Called on the thread that ends the world's last task."
   [ctx callback]
   (if-let [t (tracker-of ctx)]
-    (do (swap! (:listeners t) conj callback)
+    (do (swap! (:state t) update :listeners conj callback)
         (check! ctx))
     (callback))
   nil)

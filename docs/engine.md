@@ -603,6 +603,22 @@ returns that context's copy — `queue: 0` while the owning ctx holds
 `queue: 10`. Probe under the owning ctx:
 `(binding [ec/*execution-context* owning-ctx] @state-atom)`.
 
+### Quiescence observations
+
+`engine.quiescence` counts scheduled tasks separately for each world. A
+quiescence listener observes a point with no counted task, pending event or
+drain. Task admission and listener registration share one atomic tracker.
+An idle check claims only the exact listener batch it observed; if that
+tracker changed, it must observe again. Pending and draining flags come from
+one backend snapshot. An old idle check cannot consume a listener registered
+after new work was admitted.
+
+Callbacks run outside the tracker update. This orders prior work; it does not
+freeze concurrent changes throughout callback execution. A body suspended on
+an external delivery is not counted as running work. Quiescence alone therefore
+does not prove that an external resource can never resume; native disposal
+still needs its own cancellation and physical join acknowledgement.
+
 ### Event types
 
 | Event | When enqueued | What drain does |
@@ -1054,15 +1070,16 @@ still react to signal changes. But the JVM `Cleaner` (or CLJS
 `FinalizationRegistry`) fires on the now-unreachable `Spin` and asks
 the engine to clean up.
 
-`try-gc-cleanup-spin!` therefore checks whether any **live signal
-continuations** exist for the spin id before tearing down:
+`try-gc-cleanup-spin!` therefore checks the current node and its **transitive
+reactivity** in one immutable backend snapshot before tearing down:
 
 ```
 Cleaner fires on Spin <spin-id>
        │
        ▼
 try-gc-cleanup-spin!:
-  - if there are still observers OR live signal-continuations:
+  - if unfinished/running, externally suspended, observed,
+    or directly/transitively signal-dependent:
       mark :orphaned? true, keep node and continuations
   - else:
       full-cleanup-spin!  (remove from :nodes, both continuation
@@ -1070,12 +1087,18 @@ try-gc-cleanup-spin!:
       recursively let dep spins be eligible too
 ```
 
-Signal continuations count; spin-completion continuations don't (a
-parent awaiting a child holds the child via its `:awaited-spin`
-strong reference, so a real-leaf orphan is detectable). This is
-what keeps `(let [s (spin (track sig))] (s identity identity))`-style
-let-bound reactive code alive even when the user has no remaining
-strong reference.
+The traversal follows committed and in-flight dependencies and registered
+`:await-reactive` child-completion edges. `parallel` uses those completion
+callbacks to update its cached result without ordinary scheduler invalidation
+edges. An outer spin awaiting a reactive parallel must survive even if it has
+no direct signal subscriptions itself. The same check protects a suspended
+orphan after completion, when the generation sweep considers reaping it.
+
+A completion continuation alone does not imply reactivity: chains of constant
+one-shot children still reap. Lingering fired once-continuations do not add
+reactivity edges. These rules preserve let-bound reactive code without retaining
+all completed awaiters. The eligibility snapshot does not make eligibility and
+the subsequent cleanup transaction one atomic operation.
 
 Three refinements keep this from leaking:
 

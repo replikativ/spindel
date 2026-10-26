@@ -7,6 +7,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.quiescence :as q]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.combinators :refer [parallel]]
@@ -24,6 +25,53 @@
     (deref p 10000 ::timeout)))
 
 (defn- busy [ms] (Thread/sleep (long ms)))
+
+(deftest an-old-idle-observation-cannot-claim-a-newer-listener
+  (let [world (ctx/create-execution-context)
+        checked (promise) release-check (promise) callback (promise)
+        checker-thread (atom nil) admitted? (atom false)
+        original q/quiescent?]
+    (try
+      (with-redefs [q/quiescent?
+                    (fn [context]
+                      (let [quiet? (original context)]
+                        (when (and quiet? (identical? @checker-thread (Thread/currentThread)))
+                          (deliver checked true)
+                          (when-not (= true (deref release-check 10000 ::timeout))
+                            (throw (ex-info "Idle observation was not released" {}))))
+                        quiet?))]
+        (let [checker (future
+                        (reset! checker-thread (Thread/currentThread))
+                        (q/on-quiescent world (fn [] nil)))]
+          (try
+            (is (= true (deref checked 10000 ::timeout)))
+            (q/begin! world)
+            (reset! admitted? true)
+            (q/on-quiescent world #(deliver callback (q/in-flight world)))
+            (deliver release-check true)
+            (is (nil? (deref checker 10000 ::timeout)))
+            (is (= ::pending (deref callback 0 ::pending))
+                "the new listener belongs to the admitted task's next idle point")
+            (when (compare-and-set! admitted? true false) (q/end! world))
+            (is (= 0 (deref callback 10000 ::timeout)))
+            (finally
+              (deliver release-check true)
+              (deref checker 10000 nil)))))
+      (finally
+        (when (compare-and-set! admitted? true false) (q/end! world))
+        (ctx/stop-context! world)))))
+
+(deftest pending-and-draining-must-come-from-the-same-snapshot
+  (let [state (atom {:engine/draining? false :engine/pending [:posted-event]})
+        context (reify rtp/PState
+                  (get-state [_ path]
+                    (let [observed @state]
+                      ;; A real drain claims and consumes its queue atomically.
+                      ;; Separate field reads can combine two busy states into
+                      ;; a false idle observation across this transition.
+                      (reset! state {:engine/draining? true :engine/pending []})
+                      (get-in observed path))))]
+    (is (false? (q/quiescent? context)))))
 
 (deftest quiescence-waits-for-every-parallel-child
   (let [exec (executor/default-executor)]
