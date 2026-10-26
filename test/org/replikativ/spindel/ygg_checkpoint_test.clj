@@ -39,6 +39,53 @@
 (defn- text [conn path] (some-> (repo/read conn path) bytes/decode-utf8))
 (defn- caught [f] (try (f) nil (catch Throwable error error)))
 
+(defn- custom-checkpoint-system [conn validations allocations]
+  (let [base (gy/create conn {:system-name "custom"})]
+    (reify
+      p/SystemIdentity
+      (system-id [_] "custom")
+      (system-type [_] :custom)
+      (capabilities [_] {:checkpoint-overlay true :checkpoint-overlay-modes #{:sync}})
+      p/CheckpointOriginValidator
+      (-validate-checkpoint-origin [_ descriptor _]
+        (swap! validations inc)
+        descriptor)
+      p/Overlayable
+      (overlay [_ opts]
+        (swap! allocations inc)
+        ;; This adapter's opaque revision denotes this captured test state.
+        (p/overlay base (dissoc opts :checkpoint)))
+      (advance! [this] this)
+      (advance! [this _] this)
+      (peek-parent [_] nil)
+      (peek-parent [_ _] nil)
+      (base-ref [_] nil)
+      (overlay-writes [_] nil)
+      (merge-down! [_] nil)
+      (merge-down! [_ _] nil)
+      (discard! [_] nil)
+      (discard! [_ _] nil))))
+
+(deftest generic-checkpoint-origins-are-portable-and-adapter-defined
+  (with-repo
+    (fn [conn]
+      (let [validations (atom 0) allocations (atom 0)
+            origin {:kind :custom :revision "captured-test-state"}]
+        (ygg/register! (custom-checkpoint-system conn validations allocations))
+        (doseq [native [(atom :native) (fn [] :native)
+                        (with-meta origin {:native (atom nil)})]]
+          (let [error (caught #(ygg/fork! {:mode :frozen :systems #{"custom"}
+                                           :checkpoints {"custom" native}}))]
+            (is (= ::ygg/invalid-checkpoint-origin (:type (ex-data error))))))
+        (is (zero? @validations))
+        (is (zero? @allocations))
+        (let [fork (ygg/fork! {:mode :frozen :systems #{"custom"} :checkpoints {"custom" origin}})]
+          (try
+            (is (= origin (get-in (ygg/fork-descriptor fork) [:fork/systems "custom" :checkpoint])))
+            (is (= 1 @validations))
+            (is (= 1 @allocations))
+            (finally (ygg/discard-fork! fork))))))))
+
 (deftest checkpoint-fork-preserves-dirty-source-state-and-recursive-child-edits
   (with-repo
     (fn [conn]
@@ -89,7 +136,8 @@
         (ygg/register! (fixtures/->ProbeSystem "earlier" calls live discards captured failure (atom -1)))
         (doseq [[options expected-type]
                 [[{:checkpoints false} ::ygg/invalid-checkpoint-policy]
-                 [{:checkpoints {"workspace" (assoc origin :extra true)}} ::ygg/invalid-checkpoint-origin]
+                 [{:checkpoints {"workspace" nil}} ::ygg/invalid-checkpoint-origin]
+                 [{:checkpoints {"workspace" (assoc origin :extra true)}} :geschichte.workspace/invalid-checkpoint]
                  [{:systems #{"earlier"} :checkpoints {"workspace" origin}} ::ygg/excluded-checkpoint-systems]
                  [{:checkpoints {"workspace" origin} :snapshots {"workspace" "logical"}} ::ygg/overlapping-historical-policies]
                  [{:checkpoints {"earlier" origin}} ::ygg/unsupported-checkpoint-fork]

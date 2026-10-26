@@ -1,9 +1,14 @@
 # Exact repository checkpoint admission
 
 `yggdrasil/fork!` accepts a HOST-selected `:checkpoints` map from registered
-system IDs to portable checkpoint origin descriptors. It creates an isolated
-ordinary workspace at that physical repository state. Programs use the existing
+system IDs to bounded portable, adapter-defined checkpoint descriptors. It creates an isolated
+ordinary workspace at the selected state. Programs use the existing
 filesystem and database interfaces; there is no second retrieval API.
+
+Spindel rejects native handles before adapter work. Yggdrasil checks capabilities
+and dispatches source validation; each adapter owns its descriptor semantics.
+The following descriptor is Geschichte's. Geschichte resolves and constructs the
+repository workspace, while Yggdrasil retains overlay cleanup ownership.
 
 ```clojure
 {:checkpoints
