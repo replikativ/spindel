@@ -21,7 +21,8 @@
         ;; 0.3.51: the historical-overlay contract (#29) and overlay cleanup
         ;; independent of temporary parents (#30). A Maven version, so the
         ;; published pom carries it.
-        org.replikativ/yggdrasil {:mvn/version "0.3.51"
+        ;; 0.3.52 includes adapter-defined exact checkpoint origins and preflight (#33).
+        org.replikativ/yggdrasil {:mvn/version "0.3.52"
                                   :exclusions [is.simm/partial-cps]}
         org.replikativ/hasch {:mvn/version "0.4.104"}
         org.clojure/core.async {:mvn/version "1.9.865"}
@@ -42,7 +43,7 @@
                       org.replikativ/datahike {:mvn/version "0.8.1910" :exclusions [is.simm/partial-cps]}
                       ;; Isolated logical commit catalogs exercise cross-system
                       ;; merge-base inspection; not a runtime dependency.
-                      org.replikativ/geschichte {:mvn/version "0.1.22" :exclusions [is.simm/partial-cps]}
+                      org.replikativ/geschichte {:mvn/version "0.1.25" :exclusions [is.simm/partial-cps]}
                       ;; Released Clojars artifact (group is.simm, not
                       ;; org.replikativ — distributed-scope is published from
                       ;; the simm-is org). Pulls kabel + missionary as
