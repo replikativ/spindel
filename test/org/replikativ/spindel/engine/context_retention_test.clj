@@ -34,6 +34,7 @@
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.spin.combinators :refer [parallel]]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.await :refer [await]]
@@ -342,6 +343,33 @@
               (fn [effects] (spin (swap! effects inc)
                                   (await (spin :g))
                                   :sent)))))))
+
+(deftest a-dropped-child-with-reactive-completion-edges-rebuilds-on-reawait
+  (let [c (ctx/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* c]
+        (let [on (sig/signal true) value (sig/signal 1)
+              effects (atom 0) holder (atom nil)
+              creator (spin
+                       (if (:new (track on))
+                         (let [child (spin (swap! effects inc)
+                                           (await (parallel (spin (:new (track value))))))]
+                           (reset! holder child)
+                           (await child))
+                         :off))]
+          (is (= [1] @creator))
+          (simple/await-drain-complete! c)
+          (reset! on false)
+          (simple/await-drain-complete! c)
+          (is (= :off @creator))
+          (is (nodes/dirty? (ec/get-state [:nodes (spin-core/spin-id @holder)])))
+          (reset! value 2)
+          (simple/await-drain-complete! c)
+          (is (= 1 @effects) "detached machinery does not run without a consumer")
+          (is (= [2] @(spin (await @holder))))
+          (is (= 2 @effects) "re-await rebuilds the persistent completion wiring")
+          (java.lang.ref.Reference/reachabilityFence creator)))
+      (finally (ctx/stop-context! c)))))
 
 (deftest a-fork-sweep-does-not-copy-the-parents-creator
   (testing "while a following fork defers the parent's detach, the fork's own

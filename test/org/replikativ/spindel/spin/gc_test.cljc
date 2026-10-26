@@ -15,6 +15,7 @@
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.spin.core :as spin-core]
+            [org.replikativ.spindel.spin.combinators :refer [parallel]]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -38,6 +39,68 @@
 ;; =============================================================================
 ;; Cross-platform deterministic tests for full-cleanup-spin!
 ;; =============================================================================
+
+(defn- reactive-parent-case! [done delayed?]
+  (with-ctx [ctx]
+    (let [source (signal 1) gate (sync/create-deferred ctx) seen (atom nil)
+          outer (spin (let [values (await (parallel
+                                           (spin (let [value (:new (track source))]
+                                                   (when delayed? (await gate))
+                                                   value))
+                                           (spin :other)))]
+                        (reset! seen values) values))
+          id (spin-core/spin-id outer)]
+      (outer (fn [_]) (fn [error] (is false (str error))))
+      (await-engine-idle!
+       ctx
+       (fn []
+         (is (= (when-not delayed? [1 :other]) @seen))
+         ;; Use the actual serialized Cleaner path, independent of GC timing.
+         (rtp/enqueue! ctx {:type :gc-cleanup :id id})
+         (await-engine-idle!
+          ctx
+          (fn []
+            (is (true? (:orphaned? (rtp/get-state ctx [:nodes id]))))
+            (when delayed? (gate :ready))
+            (await-engine-idle!
+             ctx
+             (fn []
+               (is (= [1 :other] @seen))
+               ;; Deferred reaping must use the same transitive protection
+               ;; after a previously suspended orphan has completed.
+               (simple/clear-all-await-continuations! ctx)
+               (is (some? (rtp/get-state ctx [:nodes id])))
+               (reset! source 2)
+               (await-engine-idle!
+                ctx
+                (fn []
+                  (is (= [2 :other] @seen))
+                  (keep-reachable! outer)
+                  (done))))))))))))
+
+(deftest transitive-reactivity-survives-parent-gc
+  (async done (reactive-parent-case! done false)))
+
+(deftest suspended-orphan-retains-transitive-reactivity-after-completion
+  (async done (reactive-parent-case! done true)))
+
+(deftest constant-parallel-parent-is-still-reclaimable
+  (async done
+         (with-ctx [ctx]
+           (let [outer (spin (await (parallel (spin :a) (spin :b))))
+                 id (spin-core/spin-id outer)]
+             (outer (fn [_]) (fn [error] (is false (str error))))
+             (await-engine-idle!
+              ctx
+              (fn []
+                (is (true? (:completed? (rtp/get-state ctx [:nodes id]))))
+                (rtp/enqueue! ctx {:type :gc-cleanup :id id})
+                (await-engine-idle!
+                 ctx
+                 (fn []
+                   (is (nil? (rtp/get-state ctx [:nodes id])))
+                   (keep-reachable! outer)
+                   (done)))))))))
 
 (deftest test-full-cleanup-spin-removes-all-state
   (testing "full-cleanup-spin! removes all state locations atomically"

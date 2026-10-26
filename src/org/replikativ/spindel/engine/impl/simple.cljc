@@ -2123,6 +2123,13 @@
                             ))))
    true))
 
+(defn- superseded-with-creator? [spin-id node creator-node]
+  (let [creator (:created-by node)]
+    (and (some? creator) (not= creator spin-id)
+         (some? creator-node) (:completed? creator-node)
+         (not (:running? creator-node))
+         (not (contains? (live-children creator-node) spin-id)))))
+
 (defn- superseded-child?
   "True when `spin-id` was created by another spin's body and that creator
   has since finished a run that no longer holds it: the creator is complete
@@ -2141,17 +2148,12 @@
   and is then run afresh (a reaped node is re-registered; a detached one is
   dirty)."
   [context spin-id node]
-  (let [creator (:created-by node)]
-    (and (some? creator)
-         (not= creator spin-id)
-         ;; A creator absent from this world proves nothing: `*spin-id*`
-         ;; can name a spin of another context (a CLJS binding outliving
-         ;; its body), and then the child was never in its created set.
-         (let [cnode (rtp/get-state context [:nodes creator])]
-           (and (some? cnode)
-                (:completed? cnode)
-                (not (:running? cnode))
-                (not (contains? (live-children cnode) spin-id)))))))
+  ;; A creator absent from this world proves nothing: *spin-id* can name
+  ;; another context's spin, which never held this child in its created set.
+  (superseded-with-creator? spin-id node
+                            (rtp/get-state context [:nodes (:created-by node)])))
+
+(declare signal-dependent?)
 
 (defn- gc-quiescent?
   "True when `spin-id` is PROVABLY inert — the only state in which the
@@ -2172,8 +2174,9 @@
     `discourse.llm-test` ~20 % flake and the `fork-ctx-reentrancy`
     control flake — pump spins reaped between loop iterations).
   - no observers — no other spin depends on it.
-  - no track subscriptions — a signal cont can always re-fire; such a
-    spin is reactive infrastructure — UNLESS it is a `superseded-child?`:
+  - no direct or transitive signal dependencies — a signal cont can always
+    re-fire through a chain of awaits; such a spin is reactive infrastructure
+    — UNLESS it is a `superseded-child?`:
     its creator re-ran past its creation site without re-creating it, so
     nothing can reach it again and its track conts would only re-run a
     body whose result nobody receives.
@@ -2181,8 +2184,8 @@
     Mailbox / plain-fn) holds only the wrapped closure, not the Spin;
     conservatively treat any such cont as a pending delivery.
 
-  Lingering FIRED once-conts / reactive conts on a completed spin do NOT
-  block reaping (they linger until the generation sweep by design;
+  Lingering FIRED once-conts / signal-independent reactive conts on a completed
+  spin do NOT block reaping (they linger until the generation sweep by design;
   counting them would leak every completed parallel/awaiter — see
   seq.leak-test and spin.gc-test's cascade).
 
@@ -2192,17 +2195,21 @@
   enqueued before it (e.g. for THIS completed spin) has already
   dispatched, and its subscribers' resumes have run. Reaping never races
   event dispatch by construction."
-  [context spin-id node]
-  (and (or (:completed? node)
+  [context spin-id]
+  ;; A generation sweep can pass an older node. Eligibility uses the CURRENT
+  ;; node, creator and dependency graph from one immutable view instead.
+  (let [state (rtp/get-state context [])
+        node (get-in state [:nodes spin-id])]
+    (and node (or (:completed? node)
            ;; detached (`detach-superseded`): no run, no conts — inert even
            ;; if it was invalidated and never re-ran
-           (:detached? node))
-       (not (:running? node))
-       (empty? (nodes/get-observers node))
-       (or (empty? (rtp/get-state context [:track-subscriptions spin-id]))
-           (superseded-child? context spin-id node))
-       (not-any? (fn [[_k v]] (= :external-await (:kind v)))
-                 (rtp/get-state context [:await-conts spin-id]))))
+                  (:detached? node))
+         (not (:running? node))
+         (empty? (nodes/get-observers node))
+         (or (superseded-with-creator? spin-id node (get-in state [:nodes (:created-by node)]))
+             (not (signal-dependent? state spin-id (volatile! {}))))
+         (not-any? (fn [[_k v]] (= :external-await (:kind v)))
+                   (get-in state [:await-conts spin-id])))))
 
 (defn try-gc-cleanup-spin!
   "Called from GC callback (the JVM Cleaner / JS FinalizationRegistry):
@@ -2238,7 +2245,7 @@
         local? (backend/entity-locality (:backend context))]
     (when (and node ;; may already be cleaned
                (local? :nodes spin-id))
-      (if (gc-quiescent? context spin-id node)
+      (if (gc-quiescent? context spin-id)
         ;; Provably quiescent → safe to fully clean up + cascade to
         ;; dependencies. Stale spin-completion conts (awaits of
         ;; since-cleaned parents) are cleaned away by
@@ -2252,7 +2259,7 @@
               (when (and dep-node
                          (local? :nodes dep-id)
                          (:orphaned? dep-node)
-                         (gc-quiescent? context dep-id dep-node))
+                         (gc-quiescent? context dep-id))
                 (full-cleanup-spin! context dep-id local?)))))
         ;; NOT provably quiescent → only mark orphaned; deferred reaping
         ;; happens from engine-quiescent state (the generation sweep in
@@ -2281,6 +2288,11 @@
   awaiting a spin leaves a persistent `:await-reactive` continuation even
   when the awaited spin never changes (`(spin :g)`).
 
+  Combinators such as parallel maintain their own result from registered
+  reactive child completions rather than scheduler invalidation edges. Follow
+  those live outgoing continuations too; reverse subscription indexes can
+  retain retirement evidence and are not the liveness authority.
+
   `memo` (a volatile `{id bool}`) is shared across one detach pass, so N
   dropped children awaiting a shared chain of M spins cost O(N + M), not
   O(N × M): a search that finds no signal proves every spin it visited
@@ -2299,12 +2311,19 @@
               :else
               (let [n (get-in state [:nodes x])
                     deps (when n (nodes/get-deps n))
-                    tracking (get-in state [:spin-tracking x])]
+                    tracking (get-in state [:spin-tracking x])
+                    reactive-deps (for [[_ cont] (get-in state [:await-conts x])
+                                        :let [event (:event-key cont)]
+                                        :when (and (= :await-reactive (:kind cont))
+                                                   (vector? event) (= 2 (count event))
+                                                   (= :spin/complete (first event)))]
+                                    (second event))]
                 (if (or (seq (get-in state [:track-subscriptions x]))
                         (seq (:signals deps))
                         (seq (:signals tracking)))
                   (do (vswap! memo assoc x true id true) true)
-                  (recur (-> todo (into (:spins deps)) (into (:spins tracking)))
+                  (recur (-> todo (into (:spins deps)) (into (:spins tracking))
+                             (into reactive-deps))
                          (conj seen x))))))
           (do (vswap! memo into (map (fn [x] [x false])) seen)
               false))))))
@@ -2904,7 +2923,7 @@
               (let [node' (rtp/get-state context [:nodes spin-id])]
                 (when (and (:orphaned? node')
                            (local? :nodes spin-id)
-                           (gc-quiescent? context spin-id node'))
+                           (gc-quiescent? context spin-id))
                   (full-cleanup-spin! context spin-id local?))))
             ;; Retry a superseded-children release that a following fork
             ;; deferred (`release-superseded-children!`).
