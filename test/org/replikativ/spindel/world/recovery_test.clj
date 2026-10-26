@@ -52,8 +52,9 @@
       (let [source (fork! s root 8)
             handle (first (scope/handles @s))]
         (reset! armed? true)
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"requires cleanup"
-                              (await-cps #(scope/copy! s source 3 {:grants [2 2 2]} %1 %2))))
+        (let [error (try (await-cps #(scope/copy! s source 3 {:grants [2 2 2]} %1 %2))
+                         nil (catch clojure.lang.ExceptionInfo error error))]
+          (is (= ::scope/recovery-required (:type (ex-data error)))))
         (is (ygg/open-fork? handle))
         (is (= [handle] (scope/handles @s)))
         (is (= 2 (count (:recovery @s))) "the untouched third child was discarded without refund")
