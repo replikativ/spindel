@@ -50,9 +50,11 @@
     (.setThreadAllocatedMemoryEnabled bean true)
     (try
       (with-redefs [simple/full-cleanup-spin!
-                    (fn [world sid]
-                      (when (.get active?) (.incrementAndGet cleanup-calls))
-                      (cleanup world sid))]
+                    (fn counted-cleanup
+                      ([world sid] (counted-cleanup world sid (constantly true)))
+                      ([world sid local?]
+                       (when (.get active?) (.incrementAndGet cleanup-calls))
+                       (cleanup world sid local?)))]
         (binding [ec/*execution-context* rt cps/*in-trampoline* false]
           (let [f (body-fn kind retain!)]
             (dotimes [i warmup] (f i))

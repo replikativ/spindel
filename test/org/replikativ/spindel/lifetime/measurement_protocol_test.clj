@@ -37,9 +37,17 @@
 (deftest lifecycle-rejects-foreign-cleanup
   (with-redefs-fn {#'org.replikativ.spindel.lifecycle-bench/body-fn
                    (fn [& _]
-                     (fn [i] (simple/full-cleanup-spin! ec/*execution-context* :foreign) i))}
-    #(is (thrown-with-msg? clojure.lang.ExceptionInfo #"Cleanup contaminated"
-                           (lifecycle/run-one :L0 1 0)))))
+                     (fn [i]
+                       (simple/full-cleanup-spin! ec/*execution-context* :foreign)
+                       (simple/full-cleanup-spin! ec/*execution-context* :foreign (constantly true))
+                       i))}
+    #(let [error (try (lifecycle/run-one :L0 1 0)
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+       (is (instance? clojure.lang.ExceptionInfo error))
+       (when error
+         (is (re-find #"Cleanup contaminated" (ex-message error)))
+         (is (= 2 (:cleanup-calls (ex-data error))))))))
 
 (deftest large-parent-fixtures-keep-live-parent
   ;; Small operation batch; covers native root/following/frozen paths without
