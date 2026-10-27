@@ -171,3 +171,28 @@
                  (is (nil? (keyed/spin-of world sid)))
                  (keep-reachable! shared alias a b)
                  (done)))))))
+
+(deftest cleanup-shares-untouched-subscriptions-and-skips-absent-tables
+  (async done
+         (with-ctx [world]
+           (let [unrelated {[:signal :live] {:other #{:live-cont}}}
+                 absent [:pending-callbacks :run-callbacks :spin-tracking]]
+             (rtp/swap-state! world []
+                              #(assoc (apply dissoc % absent) :subscriptions unrelated))
+             (simple/full-cleanup-spin! world :reclaimed)
+             (is (identical? unrelated (rtp/get-state world [:subscriptions])))
+             (doseq [table absent]
+               (is (not (contains? (rtp/get-state world []) table))))
+        ;; A reverse edge can remain after its continuation is gone. Reclaim
+        ;; it too, keep other subscribers, and prune empty event buckets.
+             (rtp/swap-state! world [:subscriptions]
+                              #(assoc % [:spin/complete :child] {:reclaimed #{:old} :other #{:live}}
+                                      [:external-await :old] {:reclaimed #{:retired}}
+                                      [:external-await :empty] {}))
+             (simple/full-cleanup-spin! world :reclaimed)
+             (let [subs (rtp/get-state world [:subscriptions])]
+               (is (= {[:signal :live] {:other #{:live-cont}}
+                       [:spin/complete :child] {:other #{:live}}} subs))
+               (is (identical? (get unrelated [:signal :live])
+                               (get subs [:signal :live]))))
+             (done)))))
