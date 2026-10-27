@@ -56,7 +56,10 @@
                       ks)]
        (let [ids (into #{} (map spin-core/spin-id) kids)
              dropped (remove ids (map spin-core/spin-id (vals (children ec/*spin-id*))))]
-         (ec/swap-state! (children-path ec/*spin-id*) (constantly (zipmap ks kids)))
+         ;; Reclamation releases registry entries by structural ID, including
+         ;; when another container holds a different handle for the same spin.
+         (ec/swap-state! [:keyed ec/*spin-id*]
+                         (constantly {:children (zipmap ks kids) :spin-ids ids}))
          ;; the registry holds the children of the last run only: a key that
          ;; dropped out is released with its spin
          (ec/swap-state! [:keyed/spins]

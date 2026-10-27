@@ -2050,11 +2050,37 @@
                                       subs)))))))
   true)
 
+(defn- remove-spin-indexes
+  "Drop the auxiliary indexes of a reclaimed spin. Called only when its node
+  is removed, never on dependency clearing or body re-entry. A keyed container
+  also releases the child handles it registered for its last run, unless
+  another keyed container still holds their IDs."
+  [state spin-id]
+  (let [child-ids (get-in state [:keyed spin-id :spin-ids])
+        state (if (seq child-ids)
+                (let [held (into #{} (mapcat (comp :spin-ids val)) (dissoc (:keyed state) spin-id))]
+                  (update state :keyed/spins #(apply dissoc % (set/difference child-ids held))))
+                state)]
+    ;; Avoid creating absent tables (or copying inherited tables on a no-op).
+    (cond-> state
+      (contains? (get-in state [:addressing :chain-heads]) spin-id)
+      (update-in [:addressing :chain-heads] dissoc spin-id)
+      (contains? (get-in state [:addressing :occurrences]) spin-id)
+      (update-in [:addressing :occurrences] dissoc spin-id)
+      (contains? (:keyed state) spin-id)
+      (update :keyed dissoc spin-id)
+      (contains? (:keyed/spins state) spin-id)
+      (update :keyed/spins dissoc spin-id)
+      (contains? (:engine/spawned state) spin-id)
+      (update :engine/spawned dissoc spin-id)
+      (contains? (:engine/reuse-barriers state) spin-id)
+      (update :engine/reuse-barriers disj spin-id))))
+
 (defn full-cleanup-spin!
   "Remove ALL runtime state for a spin atomically.
 
   Unlike clear-deps! which only clears deps/continuations/subscriptions,
-  this removes the spin node itself and all 8+ state locations.
+  this removes the spin node itself and its auxiliary indexes.
 
   Used by GC cleanup when a spin is safe to fully remove (no observers).
 
@@ -2090,7 +2116,9 @@
                                              signal-deps spin-deps
                                              #{} #{}
                                              :skip)
-            ;; 3. Remove the spin node itself
+            ;; 3. Remove the spin node and its auxiliary indexes. Addressing
+            ;; survives completion/re-entry, but must not outlive the node.
+                            (remove-spin-indexes spin-id)
                             (update :nodes dissoc spin-id)
             ;; 4. Remove metadata
                             (update :spins-meta dissoc spin-id)
@@ -2442,7 +2470,7 @@
                                       (into {} (remove (fn [[[owner-id _] _]] (contains? dead owner-id)))
                                             retired)))))
                 state (if (seq reap)
-                        (-> state
+                        (-> (reduce remove-spin-indexes state reap)
                             (update :nodes #(reduce dissoc % reap))
                             (update :spins-meta #(reduce dissoc % reap)))
                         state)]
