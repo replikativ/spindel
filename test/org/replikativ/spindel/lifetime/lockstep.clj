@@ -6,6 +6,7 @@
   (:require [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.data :as data]
+            [clojure.walk :as walk]
             [is.simm.partial-cps.async :as cps]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -30,42 +31,58 @@
             [clojure.test.check.generators :as gen]
             [yggdrasil.convergent.gset :as g]))
 
-;; These are deliberately granular. Adding a row implementation must not silently
-;; opt its ownership, histories or indexes into the acceptance oracle.
-(def components
-  {:entities {:enabled? true :view :read-visible :fields [:kind :completed? :result]}
-   :entity-locality {:enabled? false :step :C2}
-   :dirty {:enabled? false :step :B3}
-   :pins {:enabled? false :step :C2}
-   :waiters {:enabled? false :step :B2}
-   :scopes {:enabled? false :step :B1}
-   :owners {:enabled? false :step :B1}
-   :reasons {:enabled? false :step :B3}
-   :runs {:enabled? false :step :B3}
-   :obligations {:enabled? false :step :B2}
-   :tokens {:enabled? false :step :B5}
-   :registry {:enabled? false :step :C1}
-   :lineage {:enabled? false :step :C1}
-   :fdeps {:enabled? false :step :D1}
-   :releasing {:enabled? false :step :D1}
-   :queue {:enabled? false :step :D1}
-   :admission {:enabled? false :step :E1}
-   :cuts {:enabled? false :step :E2}
-   :caps {:enabled? false :step :F1}
-   :records {:enabled? false :step :F2}})
+(declare entity-view canonical-view)
 
-(def action-support
-  (merge
-   (into {} (for [[step ts] [[:B6 [:t03]] [:B2 [:t06 :t08 :t35]]
-                             [:B3 [:t09 :t10 :t15]] [:B1 [:t12]] [:B4 [:t13]]
-                             [:C2 [:t14]] [:B5 [:t16 :t17 :t18]]
-                             [:E1 [:t26]] [:E2 [:t20 :t22 :t23 :t24 :t25]]
-                             [:E3 [:t21]] [:F1 [:t32 :t33]]
-                             [:F2 [:t27 :t28 :t29 :t30 :t31]] [:D1 [:t34 :t36 :t37 :queued :arrival :native-progress :waiter-unregister :thread-entry]]
-                             [:B2 [:unsubscribe]]]
-                  t ts] [t {:status :not-yet :step step}]))
-   (zipmap [:t01 :t02 :t04 :t05 :t07 :t11 :t19 :signal-write]
-           (repeat {:status :implemented :extent :partial}))))
+;; The descriptor owns both sides of the comparison and the laws it can enable.
+;; Unimplemented views have concrete paths, but cannot be enabled vacuously.
+(defn world-view [paths]
+  (fn [state]
+    (into {} (for [[w row] (:worlds state)]
+               [w (into {} (for [path paths] [path (get-in row path :absent)]))]))))
+
+(defn path-view [paths]
+  (fn [state] (into {} (for [path paths] [path (get-in state path :absent)]))))
+
+(def components
+  (into {}
+        (for [[id step paths laws scope]
+              [[:entities :A3 [[:entities]] #{:L1 :L3 :L4 :L5 :L6 :L7 :L8 :L9 :L10 :L11 :L13 :L20 :L22 :L23} :world]
+               [:entity-locality :C2 [[:entities]] #{:L9 :L20} :world]
+               [:dirty :B3 [[:entities]] #{} :world]
+               [:pins :C2 [[:pins]] #{:L1 :L3 :L4 :L7 :L13 :L14 :L16 :L18 :L19} :world]
+               [:waiters :B2 [[:env :waiters] [:env :native]] #{:L16 :L18 :L19 :L24} :global]
+               [:scopes :B1 [[:scopes] [:root]] #{:L1 :L2 :L3 :L6 :L7 :L9 :L14 :L16 :L18 :L19} :world]
+               [:owners :B1 [[:entities]] #{:L1 :L3 :L6 :L7 :L23} :world]
+               [:reasons :B3 [[:entities]] #{:L1 :L3 :L7 :L13} :world]
+               [:runs :B3 [[:runs]] #{:L1 :L2 :L3 :L4 :L5 :L6 :L7 :L9 :L10 :L13 :L14 :L15 :L16 :L18 :L19 :L22} :world]
+               [:obligations :B2 [[:obligations]] #{:L1 :L3 :L4 :L5 :L6 :L7 :L9 :L10 :L13 :L14 :L16 :L18 :L19 :L20 :L22 :L24} :world]
+               [:tokens :B5 [[:entities] [:env :handles]] #{:L3 :L7 :L8} :mixed]
+               [:registry :C1 [[:registry] [:known-worlds] [:lineages]] #{:L4 :L9 :L20 :L21} :global]
+               [:lineage :C1 [[:lineage]] #{:L9 :L14 :L21 :L23} :world]
+               [:fdeps :D1 [[:fdeps]] #{:L1 :L3 :L4 :L5 :L7 :L10 :L11 :L13 :L16 :L18 :L19 :L20 :L22} :world]
+               [:releasing :D1 [[:releasing]] #{:L1 :L3 :L4 :L10 :L13 :L16 :L18 :L19 :L20 :L22} :world]
+               [:queue :D1 [[:queue]] #{:L4 :L5 :L10 :L13 :L16 :L18 :L19 :L20 :L22} :world]
+               [:environment :D1 [[:env :outside] [:env :threads]] #{:L10 :L13 :L15 :L22} :global]
+               [:world-status :C1 [[:status] [:id] [:root]] #{:L9 :L14 :L16 :L19 :L20 :L21} :world]
+               [:admission :E1 [[:admission] [:seal-seq] [:seq]] #{:L16 :L19 :L22} :world]
+               [:cuts :E2 [[:cuts]] #{:L13 :L22} :global]
+               [:caps :F1 [[:caps] [:durable :caps]] #{:L1 :L3 :L4 :L13 :L16 :L17 :L18 :L19 :L20 :L22} :global]
+               [:records :F2 [[:records] [:durable :records] [:freed-bases] [:restarted?] [:model :durable-systems]] #{:L16 :L17 :L18 :L19} :global]]
+              :let [view (if (= scope :world) (world-view paths) (path-view paths))]]
+          [id {:enabled? (= id :entities) :step step
+               :model-paths paths :projected-paths paths :scope scope
+               :model-view (if (= id :entities) #(entity-view % true) view)
+               :projected-view (if (= id :entities) #(entity-view % false) view)
+               :available? (if (= id :entities)
+                             #(and (map? (:worlds %)) (every? (comp map? :entities val) (:worlds %)))
+                             (constantly false))
+               :compare = :invariants (conj laws :L12)
+               :partial-invariants (if (= id :entities) #{:L12} #{})
+               :invariant-view (when (= id :entities) #(canonical-view (entity-view % false)))
+               :kinds (if (= id :entities) #{:spin :signal} :all)
+               :fields (if (= id :entities) [:kind :completed? :result] :all)
+               :payload-fields (if (= id :entities) #{:result} #{})
+               :excluded-model-kinds (if (= id :entities) {:fork :C2} {})}])))
 
 (defn pause! [_] (throw (ex-info "Only in a scripted spin" {})))
 
@@ -110,7 +127,7 @@
 
 (defn new-driver []
   (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))]
-    (atom {:contexts {[:w 0] rt} :handles {} :ids {} :paused {} :delivered []})))
+    (atom {:contexts {[:w 0] rt} :handles {} :ids {} :paused {} :delivered [] :host-templates #{} :materialized #{} :parents {}})))
 
 (defn close! [driver]
   (doseq [rt (reverse (vals (:contexts @driver)))] (ctx/close-context! rt)))
@@ -126,64 +143,93 @@
     (binding [ec/*execution-context* rt ec/*spin-id* sid cps/*in-trampoline* false]
       (sc/resume resolve a))))
 
-(defn apply-action! [driver {:keys [t w e r v k] :as a}]
-  (let [w (or w [:w 0])
-        rt (get-in @driver [:contexts w])]
-    (binding [ec/*execution-context* rt]
-      (if (and r (#{:t01 :t02} t))
-        (send-command! driver w (first r) a)
-        (case t
-          :t01 (if-let [old (get-in @driver [:handles e])]
-                 (let [fresh (sc/make-spin (sc/spin-body old) (sc/spin-id old) nil :computation)]
-                   (swap! driver assoc-in [:handles e] fresh))
-                 (make-script! driver e))
-          :t02 (let [s (sig/->SignalRef
-                        (addressing/next-id "lockstep-signal" {:file "lifetime-script" :line 1 :column 1}
-                                            nil e) (:value a))]
-                 (sig/get-signal-value s)
-                 (swap! driver assoc-in [:handles e] s)
-                 (swap! driver assoc-in [:ids (:id s)] e))
-          :t04 (let [s (or (get-in @driver [:handles e]) (make-script! driver e))]
-                 (s (fn [x] (swap! driver update :delivered conj {:w w :e e :value x}))
-                    (fn [x] (swap! driver update :delivered conj {:w w :e e :error (error-type x)}))))
-          :t05 (send-command! driver w (first r) a)
-          :t07 (send-command! driver w (first r) a)
-          :t11 (when-let [s (get-in @driver [:handles (first r)])] (sc/cancel-spin! s))
-          :signal-write (reset! (get-in @driver [:handles e]) (:value a))
-          :t19 (let [h (ygg/fork! {:systems :none :sync? true})]
-                 (swap! driver assoc-in [:contexts v] (:child-ctx h))
-                 (swap! driver assoc-in [:forks k] h)))))))
+(defn scope-restriction [a]
+  (when (and (:scope a) (not= :root (first (:scope a)))) {:step :B1 :reason :explicit-scope}))
 
-(defn unsupported
-  "Returns a concrete limitation, including argument-level restrictions."
-  [a]
-  (let [support (get action-support (:t a))]
-    (cond
-      (not= :implemented (:status support)) (or support {:status :not-yet :step :D1})
-      (and (:scope a) (not= :root (first (:scope a)))) {:step :B1 :reason :explicit-scope}
-      (and (= :t02 (:t a)) (or (:key a) (not= :signal (get a :kind :signal)))) {:step :B6 :reason :keyed-or-atom}
-      (and (= :t04 (:t a)) (= :causal-follow (get-in a [:filter :mode]))) {:step :D1 :reason :host-filter}
-      (and (= :t05 (:t a))
-           (or (not (#{:track :await-once} (:kind a)))
-               (not= (:w a) (second (:debtor a))))) {:step :B2 :reason :nonlocal-or-nonscripted-effect}
-      :else nil)))
+(def action-support
+  (merge
+   (into {} (for [[step ts] [[:B6 [:t03]] [:B2 [:t06 :t08 :t35 :unsubscribe]]
+                             [:B3 [:t09 :t10 :t15]] [:B1 [:t12]] [:B4 [:t13]]
+                             [:C2 [:t14]] [:B5 [:t16 :t17 :t18]] [:E1 [:t26]]
+                             [:E2 [:t20 :t22 :t23 :t24 :t25]] [:E3 [:t21]]
+                             [:F1 [:t32 :t33]] [:F2 [:t27 :t28 :t29 :t30 :t31]]
+                             [:D1 [:t34 :t36 :t37 :queued :arrival :native-progress :waiter-unregister :thread-entry]]]
+                  t ts]
+              [t {:status :not-yet :step step :restrictions (constantly nil) :dispatch nil}]))
+   (update-vals
+    {:t08 {:status :macrostep-only :extent :local-completion :reason :needs-microstep-hook :dispatch nil}
+     :t01 {:lexical? true
+           :dispatch (fn [driver {:keys [w e]}]
+                       (if ec/*spin-id*
+                         (swap! driver update :materialized conj [w e])
+                         (when-not (get-in @driver [:handles e])
+                           (swap! driver update :host-templates conj [w e])))
+                       (if-let [old (get-in @driver [:handles e])]
+                         (let [fresh (sc/make-spin (sc/spin-body old) (sc/spin-id old) nil :computation)]
+                           (swap! driver assoc-in [:handles e] fresh))
+                         (make-script! driver e)))}
+     :t02 {:lexical? true
+           :restrictions (fn [a] (when (or (:key a) (not= :signal (get a :kind :signal)))
+                                   {:step :B6 :reason :keyed-or-atom}))
+           :dispatch (fn [driver {:keys [e value]}]
+                       (let [s (sig/->SignalRef
+                                (addressing/next-id "lockstep-signal" {:file "lifetime-script" :line 1 :column 1} nil e) value)]
+                         (sig/get-signal-value s)
+                         (swap! driver assoc-in [:handles e] s)
+                         (swap! driver assoc-in [:ids (:id s)] e)))}
+     :t04 {:restrictions (fn [a] (when (= :causal-follow (get-in a [:filter :mode]))
+                                   {:step :D1 :reason :host-filter}))
+           :dispatch (fn [driver {:keys [w e]}]
+                       (swap! driver update :materialized conj [w e])
+                       (let [s (or (get-in @driver [:handles e]) (make-script! driver e))]
+                         (s (fn [x] (swap! driver update :delivered conj {:w w :e e :value x}))
+                            (fn [x] (swap! driver update :delivered conj {:w w :e e :error (error-type x)})))))}
+     :t05 {:restrictions (fn [a] (when (or (not (#{:track :await-once} (:kind a)))
+                                           (not= (or (:w a) [:w 0]) (second (:debtor a))))
+                                   {:step :B2 :reason :nonlocal-or-nonscripted-effect}))
+           :dispatch (fn [driver {:keys [w r kind debtor] :as a}]
+                       (when (= :await-once kind) (swap! driver update :materialized conj [w (last debtor)]))
+                       (send-command! driver w (first r) a))}
+     :t07 {:dispatch (fn [driver {:keys [w r] :as a}] (send-command! driver w (first r) a))}
+     :t11 {:dispatch (fn [driver {:keys [r]}]
+                       (when-let [s (get-in @driver [:handles (first r)])] (sc/cancel-spin! s)))}
+     :signal-write {:dispatch (fn [driver {:keys [e value]}] (reset! (get-in @driver [:handles e]) value))}
+     :t19 {:dispatch (fn [driver {:keys [w v k]}]
+                       (let [h (ygg/fork! {:systems :none :sync? true})]
+                         (swap! driver assoc-in [:contexts v] (:child-ctx h))
+                         (swap! driver assoc-in [:parents v] w)
+                         (swap! driver assoc-in [:forks k] h)))}}
+    #(merge {:status :implemented :step :A3 :extent :partial :restrictions (constantly nil)} %))))
+
+(defn apply-action! [driver a]
+  (let [a (update a :w #(or % [:w 0]))
+        {:keys [dispatch lexical?]} (get action-support (:t a))
+        w (:w a)]
+    (binding [ec/*execution-context* (get-in @driver [:contexts w])]
+      (if (and lexical? (:r a))
+        (do (swap! driver update :materialized conj [w (:e a)])
+            (send-command! driver w (first (:r a)) a))
+        (dispatch driver a)))))
+
+(defn unsupported [a]
+  (let [{:keys [status restrictions] :as descriptor} (get action-support (:t a))]
+    (if (= :implemented status) (or (scope-restriction a) (restrictions a))
+        (dissoc (or descriptor {:status :not-yet :step :D1}) :dispatch :restrictions))))
 
 (defn project
   "Read only PState, never backend/atom fields. ids maps native addresses to
    structural script names; unknown runtime nodes stay visible as unknown ids.
-   Cold host templates have no world entity in T1, until invoked or created in a
-   body. PState exposes the visible view, so comparison uses model read-source;
+   The driver explicitly lists the host templates allowed to be absent. PState exposes the visible view, so comparison uses model read-source;
    local versus inherited storage is explicitly absent until C2."
   ([context] (project context {}))
   ([context ids] (project context ids #{}))
-  ([context ids other-created]
+  ([context ids excluded]
    (let [runtime-nodes (rtp/get-state context [:nodes])
-         created (set/union other-created (set (mapcat :created-spins (vals runtime-nodes))))
          entities
          (into {}
                (for [[id n] runtime-nodes
                      :let [kind (nodes/node-type n)]
-                     :when (or (= :signal kind) (:run-gen n) (:created-by n) (contains? created id))]
+                     :when (not (contains? excluded (get ids id id)))]
                  [(get ids id id)
                   (merge {:kind kind :completed? (boolean (:completed? n))
                           :result (if (= kind :signal) (delta/unwrap-deltaable (:snapshot n))
@@ -191,101 +237,197 @@
                                         (if (sc/error? result) {:error (error-type (:payload result))}
                                             (:payload result))))}
                          (zipmap [:owner :creator :kept? :tokens :order :reasons :dirty?] (repeat :absent)))]))]
-     (merge {:entities entities}
+     (merge {:entities (into entities (for [[id row] (rtp/get-state context [:atoms])]
+                                        [(get ids id [:native-atom id])
+                                         {:kind :atom :completed? false :result (:value row)}]))}
             (into {} (for [[component {:keys [enabled?]}] components
                            :when (not= :entities component)]
                        [component :absent]))))))
 
-(defn enabled? [component] (true? (get-in components [component :enabled?])))
+(deftype Payload [value]
+  Object
+  (equals [_ other] (and (instance? Payload other) (= value (.-value ^Payload other))))
+  (hashCode [_] (hash value)))
 
-(defn comparable [state]
-  (let [fields (concat (get-in components [:entities :fields])
-                       (when (enabled? :owners) [:owner :creator :kept? :order])
-                       (when (enabled? :dirty) [:dirty?])
-                       (when (enabled? :tokens) [:tokens])
-                       (when (enabled? :reasons) [:reasons]))
-        world-fields (filter enabled? [:scopes :runs :obligations :fdeps :releasing :queue :lineage :admission :pins])
-        global-fields (filter enabled? [:registry :cuts :caps :records])]
-    (m/canonical
-     (assoc (select-keys state global-fields)
-            :worlds (into {} (for [[w world] (:worlds state)]
-                               [w (assoc (select-keys world world-fields)
-                                         :entities (into {} (for [e (set (mapcat (comp keys :entities val) (:worlds state)))
-                                                                  :let [source (m/read-source state w e)
-                                                                        row (m/ent state source e)]
-                                                                  :when (#{:spin :signal} (:kind row))]
-                                                              [e (select-keys row fields)])))]))))))
+(defn entity-view [state model?]
+  (let [{:keys [fields payload-fields excluded-model-kinds]} (:entities components)]
+    {:worlds
+     (into {} (for [[w world] (:worlds state)]
+                [w {:entities
+                    (into {} (for [e (if model?
+                                       (set (mapcat (comp keys :entities val) (:worlds state)))
+                                       (keys (:entities world)))
+                                   :let [row (if model? (m/ent state (m/read-source state w e) e)
+                                                 (get-in world [:entities e]))]
+                                   :when (and row (not (and model? (contains? excluded-model-kinds (:kind row)))))]
+                               [e (into {} (for [[k v] (select-keys row fields)]
+                                             [k (if (payload-fields k) (Payload. v) v)]))]))}]))}))
 
-;; Full lifetime laws need unavailable rows. L12 alone is meaningful on the
-;; projected data subset; it makes no claim about hidden runtime internals.
-(def invariant-components
-  {:L1 #{:owners :scopes :reasons} :L2 #{:runs :owners :scopes}
-   :L3 #{:reasons :tokens} :L4 #{:runs :registry :fdeps :releasing :caps :queue}
-   :L5 #{:obligations :runs :fdeps :queue} :L6 #{:scopes :owners :obligations}
-   :L7 #{:runs :reasons :owners} :L8 #{:tokens :reasons}
-   :L9 #{:runs :lineage :obligations} :L10 #{:fdeps :obligations :queue :runs}
-   :L11 #{:releasing :fdeps :queue} :L12 #{:entities}
-   :L13 #{:runs :obligations :fdeps :releasing :pins :caps :cuts :queue :reasons}
-   :L14 #{:pins :lineage} :L15 #{:scopes :runs :obligations :queue}
-   :L16 #{:caps :admission} :L17 #{:caps :records} :L18 #{:records :caps}
-   :L19 #{:caps :records} :L20 #{:fdeps :releasing :runs :obligations :queue}
-   :L21 #{:registry :lineage} :L22 #{:cuts :admission :caps :queue}
-   :L23 #{:owners :lineage} :L24 #{:obligations :waiters}})
+(defn canonical-view [view]
+  ;; Only semantic positions reach the model alpha-renamer. Opaque payloads are
+  ;; restored afterwards, including nested vectors/maps/sets containing id tags.
+  (walk/postwalk #(if (instance? Payload %) (.-value ^Payload %) %) (m/canonical view)))
+
+(defn comparable
+  ([state] (comparable state true))
+  ([state model?]
+   (let [views (into {} (for [[id descriptor] components :when (:enabled? descriptor)]
+                          [id ((if model? (:model-view descriptor) (:projected-view descriptor)) state)]))]
+     ;; All components share one identity namespace. Per-component renaming
+     ;; could hide a wrong link to a scope/token represented by another view.
+     (select-keys (canonical-view views) (keys views)))))
+
+(defn availability-errors [projection]
+  (vec (for [[id descriptor] components
+             :when (and (:enabled? descriptor) (not ((:available? descriptor) projection)))]
+         {:kind :unavailable-component :component id :step (:step descriptor)})))
+
+(defn invariant-coverage []
+  (for [[id _] inv/predicates
+        :let [required (set (for [[c descriptor] components :when ((:invariants descriptor) id)] c))
+              enabled (set (for [[c descriptor] components :when (:enabled? descriptor)] c))
+              full? (and (seq required) (set/subset? required enabled))
+              partial (first (for [[c descriptor] components
+                                   :when (and (:enabled? descriptor) ((:partial-invariants descriptor) id))] c))]
+        :when (or full? partial)]
+    (cond-> {:id id :scope (if full? :full :projected-data-only) :required required}
+      (not full?) (assoc :partial-component partial))))
 
 (defn projection-invariants [projection]
-  (let [enabled (set (for [[c opts] components :when (:enabled? opts)] c))]
-    (vec (keep (fn [[id predicate]]
-                 (when (set/subset? (get invariant-components id) enabled)
-                   (inv/ev id (predicate
-                               (if (= id :L12)
-                                 (update projection :worlds
-                                         #(into {} (for [[w row] %] [w (dissoc row :obligations)])))
-                                 projection))))) inv/predicates))))
+  (vec (keep (fn [{:keys [id partial-component]}]
+               (let [predicate (get (into {} inv/predicates) id)
+                     view (if partial-component
+                            ((get-in components [partial-component :invariant-view]) projection) projection)]
+                 (inv/ev id (predicate view))))
+             (invariant-coverage))))
 
-(defn model-deliveries [before state]
-  (vec (for [ev (:events state) :when (= :host-delivery (:event ev))
-             :let [w (:world ev)
-                   ob (get-in before [:worlds w :obligations (:o ev)])
-                   e (or (:e ev) (nth (:debtor ob) 2 nil))
-                   source (or (m/read-source state w e) (m/read-source before w e))
-                   row (or (m/ent state source e) (m/ent before source e))]]
-         {:w w :e e :value (if (contains? ev :value) (:value ev) (:result row))})))
+(defn model-deliveries
+  ([before state] (model-deliveries before state {}))
+  ([before state rejections]
+   (vec (for [ev (:events state) :when (= :host-delivery (:event ev))
+              :let [w (:world ev)
+                    ob (get-in before [:worlds w :obligations (:o ev)])
+                    e (or (:e ev) (nth (:debtor ob) 2 nil))
+                    source (or (m/read-source state w e) (m/read-source before w e))
+                    row (or (m/ent state source e) (m/ent before source e))]]
+          (merge {:w w :e e}
+                 (if-let [error (get rejections [w e])]
+                   {:error error}
+                   {:value (if (contains? ev :value) (:value ev) (:result row))}))))))
+
+(def drain-policy :local-completion-fifo-to-script-checkpoint)
+
+(defn completion-hook-reason [before a]
+  (when (= :t07 (:t a))
+    (let [w (or (:w a) [:w 0]) e (first (:r a))]
+      (cond
+        (some (comp seq :queue val) (:worlds before)) :preexisting-queue
+        (seq (get-in before [:worlds w :fdeps])) :foreign-drain
+        (some (fn [[_ ob]] (and (= [:entity w e] (:debtor ob))
+                                (:standing? ob) (not= :host (first (:creditor ob)))))
+              (get-in before [:worlds w :obligations])) :reactive-reentry))))
+
+(defn model-macrostep [before action rejections]
+  (let [action (update action :w #(or % [:w 0]))
+        first-step (m/attempt (assoc before :events []) action)]
+    (loop [previous before a action result first-step constituents [] deliveries [] normative []]
+      (let [after (:state result)
+            violations (inv/check after)
+            constituent {:action a :refusal (:refusal result)
+                         :induced (vec (filter #(= :resume (:event %)) (:events after)))
+                         :model-invariants violations}
+            constituents (conj constituents constituent)
+            deliveries (into deliveries (model-deliveries previous after rejections))
+            normative (into normative violations)
+            w (:w action)
+            event (first (get-in after [:worlds w :queue]))]
+        (if (and (= :t07 (:t action)) (not (:refusal result)) (:completion event)
+                 (= w (:debtor-world event)))
+          (let [delivery (merge {:t :t08 :w w :e (:completion event)} (dissoc event :completion :seq))]
+            (recur after delivery (m/attempt after delivery) constituents deliveries normative))
+          {:state after :refusal (:refusal first-step) :constituents constituents
+           :deliveries deliveries :model-normative normative :policy drain-policy})))))
+
+(defn host-template? [driver w e]
+  (let [{:keys [materialized host-templates parents]} @driver]
+    (loop [w w]
+      (cond (contains? materialized [w e]) false
+            (contains? host-templates [w e]) true
+            (parents w) (recur (parents w))
+            :else false))))
+
+(defn projection [driver]
+  {:worlds (into {} (for [[w rt] (:contexts @driver)]
+                      [w (project rt (:ids @driver)
+                                  (set (filter #(host-template? driver w %) (vals (:ids @driver)))))]))})
+
+(defn state-differences [expected projected]
+  (let [actual (comparable projected false) expected (comparable expected)]
+    (vec (for [[id descriptor] components :when (:enabled? descriptor)
+               :when (not ((:compare descriptor) (get expected id) (get actual id)))]
+           {:kind :state :component id :expected (get expected id) :actual (get actual id)}))))
+
+(defn constituent-match? [witness constituent]
+  (let [a (:action constituent)]
+    (or (= witness a)
+        (and (= :queued (:t witness)) (= (:w witness) (:w a)) (= :t08 (:t a)))
+        (and (= :t08 (:t witness)) (= (:w witness) (:w a)) (= (:e witness) (:e a))
+             (every? (fn [[k v]] (= v (get a k))) (dissoc witness :t))))))
 
 (defn replay
-  "Every supported prefix edge is checked. First mismatch is a concrete prefix;
-   no continuation after divergence, no dropping unsupported middle actions."
+  "Compare at observable boundaries; retain constituent model microsteps.
+   Required internal interleavings need a native hook, never a translated walk."
   ([actions] (replay (m/init-state) actions))
   ([initial actions]
    (let [driver (new-driver)]
      (try
-       (loop [state initial remaining (seq actions) trace []]
-         (if-let [a (first remaining)]
-           (if-let [why (unsupported a)]
-             {:status :skipped :reason why :action a :checked (count trace)}
-             (let [{after :state refusal :refusal} (m/attempt state a)
-                   start (count (:delivered @driver))
-                   actual-refusal (try (binding [cps/*in-trampoline* false] (apply-action! driver a)) nil
-                                       (catch Throwable e (error-type e)))
-                   created (set (for [[_ context] (:contexts @driver)
-                                      [_ node] (rtp/get-state context [:nodes])
-                                      child (:created-spins node)] child))
-                   projected {:worlds (into {} (for [[w rt] (:contexts @driver)]
-                                                 [w (project rt (:ids @driver) created)]))}
-                   expected (comparable after) actual (comparable projected)
-                   delivered (subvec (:delivered @driver) start)
-                   expected-delivered (model-deliveries state after)
-                   bad (cond-> []
-                         (not= expected actual) (conj {:kind :state :expected expected :actual actual})
-                         (not= (get refusal :error) actual-refusal)
-                         (conj {:kind :refusal :expected (:error refusal) :actual actual-refusal})
-                         (not= expected-delivered delivered)
-                         (conj {:kind :delivery :expected expected-delivered :actual delivered}))
-                   invariant-errors (projection-invariants projected)
-                   prefix (conj trace a)]
-               (if (or (seq bad) (seq invariant-errors))
-                 {:status :discrepancy :trace prefix :differences bad :invariants invariant-errors}
-                 (recur after (next remaining) prefix))))
-           {:status :passed :checked (count trace)}))
+       (let [initial-projection (projection driver)
+             unavailable (availability-errors initial-projection)
+             errors (if (seq unavailable) unavailable (state-differences initial initial-projection))
+             initial-invariants (when-not (seq unavailable) (projection-invariants initial-projection))]
+         (if (or (seq errors) (seq initial-invariants))
+           {:status :discrepancy :checked 0 :trace [] :differences (vec errors) :invariants initial-invariants}
+           (loop [state initial remaining (seq actions) trace [] boundaries [] rejections {} normative []]
+             (if-let [a (first remaining)]
+               (if-let [why (or (unsupported a)
+                                (when-let [reason (completion-hook-reason state a)]
+                                  {:reason :needs-microstep-hook :detail reason}))]
+                 {:status :skipped :reason why :action a :trace trace :boundaries boundaries
+                  :checked (count trace) :model-normative normative}
+                 (let [w (or (:w a) [:w 0])
+                       rejections (if (and (= :t07 (:t a)) (:throw a))
+                                    (assoc rejections [w (first (:r a))] (:throw a)) rejections)
+                       {after :state refusal :refusal expected-delivered :deliveries
+                        :keys [constituents policy model-normative]} (model-macrostep state a rejections)
+                       drained (rest constituents)
+                       matching (take-while true? (map constituent-match? (next remaining) drained))
+                       consumed (count matching)
+                       pending-drain (drop consumed drained)
+                       internal-interleaving? (some (fn [later] (some #(constituent-match? later %) pending-drain))
+                                                    (drop (inc consumed) remaining))]
+                   (if internal-interleaving?
+                     {:status :skipped :reason {:reason :needs-microstep-hook :detail :witness-interleaving}
+                      :action a :checked (count trace) :trace trace :boundaries boundaries :model-normative normative}
+                     (let [start (count (:delivered @driver))
+                           actual-refusal (try (binding [cps/*in-trampoline* false] (apply-action! driver a)) nil
+                                               (catch Throwable e (error-type e)))
+                           projected (projection driver)
+                           unavailable (availability-errors projected)
+                           delivered (subvec (:delivered @driver) start)
+                           bad (cond-> (if (seq unavailable) unavailable (state-differences after projected))
+                                 (not= (:error refusal) actual-refusal)
+                                 (conj {:kind :refusal :expected (:error refusal) :actual actual-refusal})
+                                 (not= expected-delivered delivered)
+                                 (conj {:kind :delivery :expected expected-delivered :actual delivered}))
+                           invariant-errors (when-not (seq unavailable) (projection-invariants projected))
+                           prefix (into trace (take (inc consumed) remaining))
+                           boundaries (conj boundaries {:action a :policy policy :constituents constituents})
+                           normative (into normative model-normative)]
+                       (if (or (seq bad) (seq invariant-errors))
+                         {:status :discrepancy :trace prefix :checked (count prefix) :boundaries boundaries
+                          :differences bad :invariants invariant-errors :model-normative normative}
+                         (recur after (drop (inc consumed) remaining) prefix boundaries rejections normative))))))
+               {:status :passed :trace trace :boundaries boundaries :checked (count trace) :model-normative normative}))))
        (finally (close! driver))))))
 
 (defn witness-actions [witness]
@@ -322,10 +464,10 @@
           (recur (into (vec (rest frontier)) fresh) seen (into walks (map second edges))))))))
 
 (defn coverage []
-  {:actions action-support :components components
-   :invariant-prerequisites invariant-components
-   :enabled-invariants [{:id :L12 :scope :projected-data-only}]
-   :limitations [:no-complete-L-predicate-yet :synchronous-delivery-versus-explicit-model-queue
+  {:actions (update-vals action-support #(dissoc % :dispatch :restrictions))
+   :components (update-vals components #(dissoc % :model-view :projected-view :available? :compare :invariant-view))
+   :enabled-invariants (vec (invariant-coverage))
+   :limitations [:no-complete-L-predicate-yet :internal-interleavings-need-microstep-hook
                  :frozen-via-cut-not-yet :settlement-api-probes-only]})
 
 (defn settlement-probes []
@@ -386,8 +528,10 @@
 
 (def scripted-corpus
   (let [w [:w 0] e [:spin 0] r [e 1] child [:spin 1]]
-    {:completion [{:t :t04 :w w :e e} {:t :t07 :w w :r r :value 42}]
-     :errors [{:t :t04 :w w :e e}
+    {:completion [{:t :t01 :w w :e e :tok [:tok 0]}
+                  {:t :t04 :w w :e e :tok [:tok 0]} {:t :t07 :w w :r r :value 42}]
+     :errors [{:t :t01 :w w :e e :tok [:tok 0]}
+              {:t :t04 :w w :e e :tok [:tok 0]}
               {:t :t07 :w w :r r :value {:error ::scripted-error} :throw ::scripted-error}]
      :cancel [{:t :t04 :w w :e e} {:t :t11 :w w :r r}]
      :track [{:t :t02 :w w :e [:signal 0] :value 1} {:t :t04 :w w :e e}
@@ -411,10 +555,14 @@
             (recur (:state (m/attempt state a)) (rest choices) (conj actions a)))))))
 
 (defn discrepancy-key [result]
-  (mapv (fn [{:keys [kind expected actual] :as difference}]
-          (if (= :state kind)
-            {:kind kind :delta (vec (take 2 (data/diff expected actual)))}
-            (select-keys difference [:kind :expected :actual]))) (:differences result)))
+  {:differences
+   (mapv (fn [{:keys [kind expected actual] :as difference}]
+           (if (= :state kind)
+             {:kind kind :component (:component difference) :delta (vec (take 2 (data/diff expected actual)))}
+             (select-keys difference [:kind :component :expected :actual]))) (:differences result))
+   :invariants (set (for [{:keys [id evidence]} (:invariants result)]
+                      [id (set (map #(hash-map :shape (set (keys %))
+                                               :relation (select-keys % [:index :field :kind :relation :non-data-state])) evidence))]))})
 
 (defn minimize-discrepancy [result]
   (let [signature (discrepancy-key result)]
@@ -427,7 +575,11 @@
               (recur actions (inc i))))))))
 
 (defn check-all []
-  (let [ws (into {} (for [[name actions] (witnesses)] [name (replay actions)]))
+  (let [preflight (let [driver (new-driver)]
+                    (try (let [p (projection driver)]
+                           (into {} (for [[c d] components] [c ((:available? d) p)])))
+                         (finally (close! driver))))
+        ws (into {} (for [[name actions] (witnesses)] [name (replay actions)]))
         profiles {:one-spin {:spins 1 :signals 0 :atoms 0}
                   :source-only {:spins 0 :signals 1 :atoms 0}}
         searches (into {} (for [[name options] profiles]
@@ -441,30 +593,73 @@
                                 walk (generative/random-walk (m/init-state) choices)]
                             {:seed seed :result (replay (mapv :action (:trace walk)))
                              :supported-result (replay (supported-generated-walk choices))})) (range 10))]
-    {:coverage (coverage) :witnesses ws :profiles (assoc walks
-                                                         :settlement [(replay [bfs/following bfs/seal bfs/prepare-op])]
-                                                         :shared-cuts [(replay (cons bfs/following (bfs/cut-actions :frozen)))])
+    {:coverage (coverage) :component-availability preflight :witnesses ws :profiles (assoc walks
+                                                                                           :settlement [(replay [bfs/following bfs/seal bfs/prepare-op])]
+                                                                                           :shared-cuts [(replay (cons bfs/following (bfs/cut-actions :frozen)))])
      :profile-limits (merge (into {} (for [[name search] searches] [name (dissoc search :walks)]))
                             {:settlement :unsupported :shared-cuts :unsupported})
      :scripted (into {} (for [[name actions] scripted-corpus] [name (replay actions)]))
      :generated generated
      :settlement-probes (settlement-probes) :frozen-probe (frozen-probe) :stamp-probe (stamp-probe) :gc-hook-probe (gc-hook-probe)
-     :model-normative (into {} (for [name ["run6-F50.edn" "run6-F51.edn"]
-                                     :let [actions (:actions (check-io/read-witness name))]]
-                                 [name (bfs/violations (bfs/execute actions))]))}))
+     :model-normative (into {} (for [[name actions] (witnesses)
+                                     :let [violations (bfs/violations (bfs/execute actions))]
+                                     :when (seq violations)]
+                                 [name violations]))}))
 
-(defn -main [& [output]]
+(defn acceptance
+  "Runtime acceptance is independent of normative reference-model findings.
+   Requirements are explicit sets; absent, skipped and truncated items fail."
+  [report {:keys [witnesses transitions components profiles]}]
+  (let [results (concat (vals (:witnesses report)) (vals (:scripted report))
+                        (mapcat val (:profiles report)))
+        observed (set (for [r results :when (= :passed (:status r))
+                            boundary (:boundaries r) constituent (:constituents boundary)
+                            :when (nil? (:refusal constituent))]
+                        (get-in constituent [:action :t])))
+        failures (vec (concat
+                       (for [name witnesses :let [r (get-in report [:witnesses name])]
+                             :when (not= :passed (:status r))]
+                         {:kind :required-witness :name name :status (:status r)})
+                       (for [t (set/difference transitions observed)] {:kind :required-transition :transition t})
+                       (for [c components :when (not (and (true? (get-in report [:coverage :components c :enabled?]))
+                                                          (true? (get-in report [:component-availability c]))))]
+                         {:kind :required-component :component c})
+                       (for [profile profiles
+                             :when (or (not (contains? (:profiles report) profile))
+                                       (not= :exhausted (get-in report [:profile-limits profile :status]))
+                                       (not (every? #(= :passed (:status %)) (get-in report [:profiles profile]))))]
+                         {:kind :required-search :profile profile})))]
+    {:status (cond (seq failures) :failed
+                   (some seq (vals (select-keys (:model-normative report) witnesses))) :model-failed
+                   :else :passed)
+     :runtime-status (if (seq failures) :failed :passed) :failures failures
+     :required-model-failures (into {} (filter (comp seq val) (select-keys (:model-normative report) witnesses)))
+     :required {:witnesses witnesses :transitions transitions :components components :profiles profiles}
+     :model-normative (:model-normative report)}))
+
+(defn step-requirements [step]
+  (let [transitions (set (for [[t descriptor] action-support :when (= step (:step descriptor))] t))]
+    (when (empty? transitions) (throw (ex-info "Unknown implementation step" {:step step})))
+    {:transitions transitions
+     :components (set (for [[c descriptor] components :when (= step (:step descriptor))] c))
+     :witnesses (set (for [[name actions] (witnesses) :when (some #(transitions (:t %)) actions)] name))
+     :profiles (if (= step :A3) #{:one-spin :source-only} #{})}))
+
+(defn -main [& [output mode step]]
   (let [raw (check-all)
         results (concat (vals (:witnesses raw)) (vals (:scripted raw)) (mapcat val (:profiles raw))
                         (mapcat (juxt :result :supported-result) (:generated raw)))
         counts (frequencies (map :status results))
         findings (mapv (comp minimize-discrepancy first val)
                        (group-by discrepancy-key (filter #(= :discrepancy (:status %)) results)))
-        report (assoc raw :counts counts :discrepancies findings)]
+        report (cond-> (assoc raw :mode (or mode "diagnostic") :counts counts :discrepancies findings)
+                 (= mode "accept") (assoc :acceptance (acceptance raw (step-requirements (keyword step)))))]
     (prn (coverage))
-    (prn {:counts counts :witnesses (frequencies (map :status (vals (:witnesses report))))})
-    (doseq [[name result] (:witnesses report)] (prn {:witness name :result result}))
+    (prn {:counts counts :witnesses (frequencies (map :status (vals (:witnesses report))))
+          :acceptance (:acceptance report) :model-normative (:model-normative report)})
     (when output (spit output (str (pr-str report) "\n")))
     (shutdown-agents)
-    (when (or (pos? (get counts :discrepancy 0)) (some seq (vals (:model-normative report))))
+    (when (if (= mode "accept")
+            (not= :passed (get-in report [:acceptance :status]))
+            (or (pos? (get counts :discrepancy 0)) (some seq (vals (:model-normative report)))))
       (System/exit 1))))
