@@ -48,6 +48,12 @@
                       [w (into {} (for [[e row] (:entities world)] [e (:tokens row)]))]))
    :handles (get-in state [:env :handles] :absent)})
 
+(defn row-fields-view [table fields]
+  (fn [state]
+    (into {} (for [[w world] (:worlds state)]
+               [w (into {} (for [[id row] (get world table)]
+                             [id (select-keys row fields)]))]))))
+
 (def components
   (into {}
         (for [[id step paths laws scope]
@@ -58,6 +64,7 @@
                [:waiters :B2 [[:env :waiters] [:env :native]] #{:L16 :L18 :L19 :L24} :global]
                [:scopes :B1 [[:scopes] [:root]] #{:L1 :L2 :L3 :L6 :L7 :L9 :L14 :L16 :L18 :L19} :world]
                [:owners :B1 [[:entities]] #{:L1 :L3 :L6 :L7 :L23} :world]
+               [:run-owners :B1 [[:runs]] #{:L2 :L6} :world]
                [:reasons :B3 [[:entities]] #{:L1 :L3 :L7 :L13} :world]
                [:runs :B3 [[:runs]] #{:L1 :L2 :L3 :L4 :L5 :L6 :L7 :L9 :L10 :L13 :L14 :L15 :L16 :L18 :L19 :L22} :world]
                [:obligations :B2 [[:obligations]] #{:L1 :L3 :L4 :L5 :L6 :L7 :L9 :L10 :L13 :L14 :L16 :L18 :L19 :L20 :L22 :L24} :world]
@@ -73,11 +80,20 @@
                [:cuts :E2 [[:cuts]] #{:L13 :L22} :global]
                [:caps :F1 [[:caps] [:durable :caps]] #{:L1 :L3 :L4 :L13 :L16 :L17 :L18 :L19 :L20 :L22} :global]
                [:records :F2 [[:records] [:durable :records] [:freed-bases] [:restarted?] [:model :durable-systems]] #{:L16 :L17 :L18 :L19} :global]]
-              :let [view (case scope :world (world-view paths) :mixed token-view (path-view paths))]]
+              :let [view (case id
+                           :run-owners (row-fields-view :runs [:owner])
+                           :scopes (fn [state]
+                                     {:roots ((world-view [[:root]]) state)
+                                      :scopes ((row-fields-view :scopes [:kind :parent :status]) state)})
+                           (case scope :world (world-view paths) :mixed token-view (path-view paths)))]]
           [id {:enabled? (= id :entities) :step step
                :model-paths paths :projected-paths paths :scope scope
-               :model-view (if (= id :entities) #(entity-view % true) view)
-               :projected-view (if (= id :entities) #(entity-view % false) view)
+               :model-view (case id
+                             :entities #(entity-view % true)
+                             :owners #(entity-view % true (:owners components))
+                             view)
+               :projected-view (case id :entities #(entity-view % false)
+                                     :owners #(entity-view % false (:owners components)) view)
                :available? (if (= id :entities)
                              #(and (map? (:worlds %)) (every? (comp map? :entities val) (:worlds %)))
                              (constantly false))
@@ -85,9 +101,11 @@
                :partial-invariants (if (= id :entities) #{:L12} #{})
                :invariant-view (when (= id :entities) #(canonical-view (entity-view % false)))
                :kinds (if (= id :entities) #{:spin :signal} :all)
-               :fields (case id :entities [:kind :completed? :result] :tokens [:tokens :handles] :all)
+               :fields (case id :entities [:kind :completed? :result] :tokens [:tokens :handles]
+                             :owners [:owner :creator :order] :run-owners [:owner]
+                             :scopes [:root :kind :parent :status] :all)
                :payload-fields (if (= id :entities) #{:result} #{})
-               :excluded-model-kinds (if (= id :entities) {:fork :C2} {})}])))
+               :excluded-model-kinds (if (#{:entities :owners} id) {:fork :C2} {})}])))
 
 (defn pause! [_] (throw (ex-info "Only in a scripted spin" {})))
 
@@ -254,19 +272,21 @@
   (equals [_ other] (and (instance? Payload other) (= value (.-value ^Payload other))))
   (hashCode [_] (hash value)))
 
-(defn entity-view [state model?]
-  (let [{:keys [fields payload-fields excluded-model-kinds]} (:entities components)]
-    {:worlds
-     (into {} (for [[w world] (:worlds state)]
-                [w {:entities
-                    (into {} (for [e (if model?
-                                       (set (mapcat (comp keys :entities val) (:worlds state)))
-                                       (keys (:entities world)))
-                                   :let [row (if model? (m/ent state (m/read-source state w e) e)
-                                                 (get-in world [:entities e]))]
-                                   :when (and row (not (and model? (contains? excluded-model-kinds (:kind row)))))]
-                               [e (into {} (for [[k v] (select-keys row fields)]
-                                             [k (if (payload-fields k) (Payload. v) v)]))]))}]))}))
+(defn entity-view
+  ([state model?] (entity-view state model? (:entities components)))
+  ([state model? descriptor]
+   (let [{:keys [fields payload-fields excluded-model-kinds]} descriptor]
+     {:worlds
+      (into {} (for [[w world] (:worlds state)]
+                 [w {:entities
+                     (into {} (for [e (if model?
+                                        (set (mapcat (comp keys :entities val) (:worlds state)))
+                                        (keys (:entities world)))
+                                    :let [row (if model? (m/ent state (m/read-source state w e) e)
+                                                  (get-in world [:entities e]))]
+                                    :when (and row (not (and model? (contains? excluded-model-kinds (:kind row)))))]
+                                [e (into {} (for [[k v] (select-keys row fields)]
+                                              [k (if (payload-fields k) (Payload. v) v)]))]))}]))})))
 
 (defn canonical-view [view]
   ;; Only semantic positions reach the model alpha-renamer. Opaque payloads are
