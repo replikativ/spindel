@@ -24,6 +24,7 @@
             [org.replikativ.spindel.lifetime.generative-check :as generative]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.lifetime.model :as m]
+            [org.replikativ.spindel.lifetime.lockstep-manifests :as manifests]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.core :as sc]
             [org.replikativ.spindel.spin.cps :as spin-cps :refer [spin]]
@@ -174,7 +175,7 @@
    (into {} (for [[step ts] [[:B6 [:t03]] [:B2 [:t06 :t08 :t35 :unsubscribe]]
                              [:B3 [:t09 :t10 :t15]] [:B1 [:t12]] [:B4 [:t13]]
                              [:C2 [:t14]] [:B5 [:t16 :t17 :t18]] [:E1 [:t26]]
-                             [:E2 [:t20 :t22 :t23 :t24 :t25]] [:E3 [:t21]]
+                             [:E2 [:t20 :t20q :t22 :t23 :t24 :t25]] [:E3 [:t21]]
                              [:F1 [:t32 :t33]] [:F2 [:t27 :t28 :t29 :t30 :t31]]
                              [:D1 [:t34 :t36 :t37 :queued :arrival :native-progress :waiter-unregister :thread-entry]]]
                   t ts]
@@ -192,8 +193,8 @@
                            (swap! driver assoc-in [:handles e] fresh))
                          (make-script! driver e)))}
      :t02 {:lexical? true
-           :restrictions (fn [a] (when (or (:key a) (not= :signal (get a :kind :signal)))
-                                   {:step :B6 :reason :keyed-or-atom}))
+           :restrictions (fn [a] (cond (:key a) {:step :B6 :reason :keyed-signal}
+                                       (not= :signal (get a :kind :signal)) {:step :B1 :reason :atom-creation}))
            :dispatch (fn [driver {:keys [e value]}]
                        (let [s (sig/->SignalRef
                                 (addressing/next-id "lockstep-signal" {:file "lifetime-script" :line 1 :column 1} nil e) value)]
@@ -425,7 +426,8 @@
   "Compare at observable boundaries; retain constituent model microsteps.
    Required internal interleavings need a native hook, never a translated walk."
   ([actions] (replay (m/init-state) actions))
-  ([initial actions]
+  ([initial actions] (replay initial actions {}))
+  ([initial actions {:keys [observable-boundaries?]}]
    (let [driver (new-driver)]
      (try
        (let [initial-projection (projection driver)
@@ -450,7 +452,7 @@
                        matching (take-while true? (map constituent-match? (next remaining) drained))
                        consumed (count matching)
                        pending-drain (drop consumed drained)
-                       internal-interleaving? (and (seq pending-drain)
+                       internal-interleaving? (and (not observable-boundaries?) (seq pending-drain)
                                                    (some (fn [later]
                                                            (or (some #(constituent-match? later %) pending-drain)
                                                                (touches-drain? affected-entities later)))
@@ -477,41 +479,69 @@
                          {:status :discrepancy :trace prefix :checked (count prefix) :boundaries boundaries
                           :differences bad :invariants invariant-errors :model-normative normative}
                          (recur after (drop (inc consumed) remaining) prefix boundaries rejections normative))))))
-               {:status :passed :trace trace :boundaries boundaries :checked (count trace) :model-normative normative}))))
+               {:status :passed :trace trace :boundaries boundaries :checked (count trace)
+                :trace-semantics (if observable-boundaries? :observable-boundaries :model-microsteps)
+                :model-normative normative}))))
        (finally (close! driver))))))
 
 (defn witness-actions [witness]
   (or (:actions witness) (get-in witness [:witness :actions])))
 
-(defn witnesses []
+(defn witness-records []
   ;; Include all runs, including artifacts added after index.edn was written.
-  (for [file (sort-by #(.getName %) (file-seq (io/file (io/resource check-io/witness-root))))
-        :when (re-matches #"run.*\.edn" (.getName file))]
-    [(.getName file) (witness-actions (check-io/read-witness (.getName file)))]))
+  (let [root (io/file (io/resource check-io/witness-root))]
+    (for [file (sort (file-seq root))
+          :let [name (str (.relativize (.toPath root) (.toPath file)))]
+          :when (and (.isFile file) (not= "index.edn" (.getName file))
+                     (re-matches #"run.*\.edn" name))]
+      [name (check-io/read-witness name)])))
+
+(defn witnesses []
+  (map (fn [[name record]] [name (witness-actions record)]) (witness-records)))
+
+(defn stage-alphabet [state stage transitions]
+  ;; Extend model-enabled T4/T2 sites with the explicit owner argument. The
+  ;; transition itself still runs in the unchanged model, including refusals.
+  (let [enabled (m/enabled state)
+        candidates (mapcat
+                    (fn [a]
+                      (let [w (:w a)
+                            unkeyed (when (= :t02 (:t a)) (dissoc a :key))
+                            base (cond-> [a] unkeyed (conj unkeyed))]
+                        (concat base
+                                (for [b base
+                                      :when (#{:t02 :t04} (:t b))
+                                      scope (concat
+                                             (for [[id row] (get-in state [:worlds w :scopes])
+                                                   :when (= :open (:status row))] id)
+                                             (keys (get-in state [:worlds w :runs])))]
+                                  (assoc b :scope scope))))) enabled)]
+    (vec (distinct (filter #(and (transitions (:t %))
+                                 (manifests/relevant-action? stage %)
+                                 (m/within-bounds? (:state (m/attempt state %)))) candidates)))))
 
 (defn exhaustive-walks
-  "Replay every edge of the finite supported subprofile. This is not a proof of
-   the full model alphabet: unsupported transitions are outside this search."
-  [options]
-  (let [initial (m/init-state options) max-states 2000]
-    (loop [frontier [[initial []]] seen #{(m/canonical initial)} walks []]
-      (if (or (empty? frontier) (>= (count seen) max-states))
-        {:status (if (empty? frontier) :exhausted :state-limit)
-         :states (count seen) :edges (count walks) :pending (count frontier)
-         :bounds options :max-states max-states :walks walks}
-        (let [[s path] (first frontier)
-              edges (for [a (concat (m/enabled s)
-                                    (when (and (pos? (get options :signals 0))
-                                               (nil? (m/ent s [:w 0] [:signal 0])))
-                                      [{:t :t02 :w [:w 0] :e [:signal 0] :value false}]))
-                          :when (nil? (unsupported a))]
-                      [(:state (m/attempt s a)) (conj path a)])
-              [fresh seen] (reduce (fn [[queue visited] [after _ :as edge]]
-                                     (let [key (m/canonical after)]
-                                       (if (contains? visited key) [queue visited]
-                                           [(conj queue edge) (conj visited key)])))
-                                   [[] seen] edges)]
-          (recur (into (vec (rest frontier)) fresh) seen (into walks (map second edges))))))))
+  "Every edge of a finite declared alphabet. Stage profiles do not consult
+   adapter availability: an unavailable edge remains a failing gate result."
+  ([options] (exhaustive-walks options nil nil))
+  ([options stage transitions]
+   (let [initial (m/init-state options) max-states 2000]
+     (loop [frontier [[initial []]] seen #{(m/canonical initial)} walks []]
+       (if (or (empty? frontier) (>= (count seen) max-states))
+         {:status (if (empty? frontier) :exhausted :state-limit)
+          :states (count seen) :edges (count walks) :pending (count frontier)
+          :bounds options :alphabet transitions :max-states max-states :walks walks}
+         (let [[s path] (first frontier)
+               alphabet (if stage (stage-alphabet s stage transitions)
+                            (filter #(nil? (unsupported %)) (stage-alphabet s :A3 (set (keys action-support)))))
+               edges (for [a alphabet] [(:state (if stage (model-macrostep s a {}) (m/attempt s a)))
+                                        (conj path a)])
+               [fresh seen] (reduce (fn [[queue visited] [after _ :as edge]]
+                                      (let [key (m/canonical after)]
+                                        (if (contains? visited key) [queue visited]
+                                            [(conj queue edge) (conj visited key)])))
+                                    [[] seen] edges)]
+           (recur (into (vec (rest frontier)) fresh) seen (into walks (map second edges)))))))))
 
 (defn coverage []
   {:actions (update-vals action-support #(dissoc % :dispatch :restrictions))
@@ -619,94 +649,146 @@
     (loop [actions (:trace result) i 0]
       (if (>= i (count actions)) (assoc result :minimal-trace actions :minimality :single-deletion)
           (let [candidate (vec (concat (subvec actions 0 i) (subvec actions (inc i))))
-                replayed (replay candidate)]
+                replayed (if (= :observable-boundaries (:trace-semantics result))
+                           (replay (m/init-state) candidate {:observable-boundaries? true})
+                           (replay candidate))]
             (if (and (= :discrepancy (:status replayed)) (= signature (discrepancy-key replayed)))
               (recur candidate 0)
               (recur actions (inc i))))))))
 
-(defn check-all []
-  (let [preflight (let [driver (new-driver)]
-                    (try (let [p (projection driver)]
-                           (into {} (for [[c d] components] [c ((:available? d) p)])))
-                         (finally (close! driver))))
-        ws (into {} (for [[name actions] (witnesses)] [name (replay actions)]))
-        profiles {:one-spin {:spins 1 :signals 0 :atoms 0}
-                  :source-only {:spins 0 :signals 1 :atoms 0}}
-        searches (into {} (for [[name options] profiles]
-                            [name (exhaustive-walks
-                                   (merge {:worlds 1 :world-ids 1 :generations 1 :scopes 0
-                                           :handles 0 :cuts 0 :invocations 1
-                                           :filters [:local] :invoke-modes [:callback]} options))]))
-        walks (into {} (for [[name search] searches] [name (mapv replay (:walks search))]))
-        generated (mapv (fn [seed]
-                          (let [choices (gen/generate (gen/vector gen/nat 20) 20 seed)
-                                walk (generative/random-walk (m/init-state) choices)]
-                            {:seed seed :result (replay (mapv :action (:trace walk)))
-                             :supported-result (replay (supported-generated-walk choices))})) (range 10))]
-    {:coverage (coverage) :component-availability preflight :witnesses ws :profiles (assoc walks
-                                                                                           :settlement [(replay [bfs/following bfs/seal bfs/prepare-op])]
-                                                                                           :shared-cuts [(replay (cons bfs/following (bfs/cut-actions :frozen)))])
-     :profile-limits (merge (into {} (for [[name search] searches] [name (dissoc search :walks)]))
-                            {:settlement :unsupported :shared-cuts :unsupported})
-     :scripted (into {} (for [[name actions] scripted-corpus] [name (replay actions)]))
-     :generated generated
-     :settlement-probes (settlement-probes) :frozen-probe (frozen-probe) :stamp-probe (stamp-probe) :gc-hook-probe (gc-hook-probe)
-     :model-normative (into {} (for [[name actions] (witnesses)
-                                     :let [violations (bfs/violations (bfs/execute actions))]
-                                     :when (seq violations)]
-                                 [name violations]))}))
+(defn witness-prerequisites [actions]
+  (cond-> (set (map manifests/action-stage actions))
+    ;; These walks exercise owner-release and inherited closure, beyond B1's
+    ;; recording of ownership. Keep the full historical walk pending.
+    (and (some #(and (= :t01 (:t %)) (:r %)) actions)
+         (some #(= :t11 (:t %)) actions)) (conj :B3)
+    (and (some #(= :t19 (:t %)) actions)
+         (some #(= :t05 (:t %)) actions)) (conj :C2)))
+
+(defn step-requirements [step]
+  (let [stages (manifests/lineage step)
+        cumulative (fn [field] (apply set/union #{} (map #(get-in manifests/stages [% field] #{}) stages)))
+        transitions (cumulative :changes)
+        historical (for [[name record] (witness-records)
+                         :let [actions (witness-actions record)]
+                         :when (and (not (:negative-control? record)) (some #(transitions (:t %)) actions))]
+                     [name (set/difference (set/union (witness-prerequisites actions)
+                                                      (get manifests/historical-prerequisites name #{}))
+                                           (set stages))])]
+    {:stage step :stages stages :stub? (boolean (some #(get-in manifests/stages [% :stub?]) stages))
+     :changes (into {} (map #(vector % (get-in manifests/stages [% :changes])) stages))
+     :transitions transitions :components (cumulative :components)
+     :scripted (cumulative :scripted) :regressions (cumulative :regressions)
+     :generated (set (for [stage stages seed (get-in manifests/generated-specs [stage :seeds])] [stage seed]))
+     :profiles (cumulative :profiles)
+     :negative-controls (set (for [[name record] (witness-records) :when (:negative-control? record)] name))
+     :witnesses (set (for [[name missing] historical :when (empty? missing)] name))
+     :pending-witnesses (into {} (for [[name missing] historical :when (seq missing)]
+                                   [name {:status :pending :prerequisites missing}]))}))
+
+(defn stage-generated-walk [stage choices]
+  (let [transitions (get-in manifests/stages [stage :changes])
+        options (merge manifests/profile-defaults (get-in manifests/generated-specs [stage :bounds]))]
+    (loop [state (m/init-state options) choices choices actions []]
+      (let [alphabet (cond->> (stage-alphabet state stage transitions)
+                       (= stage :A3) (remove #(completion-hook-reason state %)))]
+        (if (or (empty? choices) (empty? alphabet)) actions
+            (let [a (nth alphabet (mod (first choices) (count alphabet)))
+                  after (:state (model-macrostep state a {}))]
+              (recur after (rest choices) (conj actions a))))))))
+
+(defn check-all
+  ([] (check-all :B1))
+  ([step]
+   (let [requirements (step-requirements step)
+         preflight (let [driver (new-driver)]
+                     (try (let [p (projection driver)]
+                            (into {} (for [[c d] components] [c ((:available? d) p)])))
+                          (finally (close! driver))))
+         ws (into {} (for [[name actions] (witnesses)] [name (replay actions)]))
+         searches (into {} (for [name (:profiles requirements)
+                                 :let [{:keys [stage alphabet bounds]} (manifests/profile-specs name)]]
+                             [name (exhaustive-walks (merge manifests/profile-defaults bounds) stage alphabet)]))
+         replay-boundaries #(assoc (replay (m/init-state) % {:observable-boundaries? true})
+                                   :trace-semantics :observable-boundaries)
+         walks (into {} (for [[name search] searches] [name (mapv replay-boundaries (:walks search))]))
+         scripts (merge scripted-corpus manifests/ownership-traces)
+         scripted (into {} (for [name (:scripted requirements)] [name (replay (scripts name))]))
+         generated (into {} (for [[stage seed :as id] (:generated requirements)
+                                  :let [length (get-in manifests/generated-specs [stage :length])
+                                        choices (gen/generate (gen/vector gen/nat length) length seed)]]
+                              [id (assoc (replay-boundaries (stage-generated-walk stage choices)) :stage stage :seed seed)]))
+         unrestricted (mapv (fn [seed]
+                              (let [choices (gen/generate (gen/vector gen/nat 20) 20 seed)
+                                    walk (generative/random-walk (m/init-state) choices)]
+                                {:seed seed :result (replay (mapv :action (:trace walk)))
+                                 :supported-result (replay (supported-generated-walk choices))})) (range 10))
+         model-results (for [[name record] (witness-records)]
+                         {:name name :negative-control? (:negative-control? record)
+                          :violations (bfs/violations (bfs/execute (witness-actions record)))})]
+     {:manifest requirements :coverage (coverage) :component-availability preflight
+      :witnesses ws :profiles walks
+      :profile-limits (into {} (for [[name search] searches] [name (dissoc search :walks)]))
+      :scripted scripted :regressions (select-keys scripted (:regressions requirements))
+      :generated generated :unrestricted-generated unrestricted
+      :settlement-probes (settlement-probes) :frozen-probe (frozen-probe)
+      :stamp-probe (stamp-probe) :gc-hook-probe (gc-hook-probe)
+      :model-negative-controls (into {} (for [{:keys [name negative-control? violations]} model-results
+                                              :when negative-control?]
+                                          [name {:status (if (seq violations) :detected :missed)
+                                                 :violations violations}]))
+      :model-normative (into {} (for [{:keys [name negative-control? violations]} model-results
+                                      :when (and (not negative-control?) (seq violations))]
+                                  [name violations]))})))
 
 (defn acceptance
-  "Runtime acceptance is independent of normative reference-model findings.
-   Requirements are explicit sets; absent, skipped and truncated items fail."
-  [report {:keys [witnesses transitions components profiles]}]
-  (let [results (concat (vals (:witnesses report)) (vals (:scripted report))
-                        (mapcat val (:profiles report)))
+  "Only declared, complete results count. Earlier stage requirements accumulate;
+   pending historical walks remain visible without pretending to have passed."
+  [report {:keys [witnesses transitions components profiles scripted generated regressions stub?] :as requirements}]
+  (let [selected (concat (for [name witnesses] [:witnesses name])
+                         (for [name scripted] [:scripted name])
+                         (for [name generated] [:generated name])
+                         (for [name regressions] [:regressions name]))
+        results (concat (map #(get-in report %) selected)
+                        (mapcat #(get-in report [:profiles %]) profiles))
         observed (set (for [r results :when (= :passed (:status r))
                             boundary (:boundaries r) constituent (:constituents boundary)
-                            :when (nil? (:refusal constituent))]
-                        (get-in constituent [:action :t])))
+                            :when (nil? (:refusal constituent))] (get-in constituent [:action :t])))
         failures (vec (concat
-                       (for [name witnesses :let [r (get-in report [:witnesses name])]
-                             :when (not= :passed (:status r))]
-                         {:kind :required-witness :name name :status (:status r)})
+                       (when stub? [{:kind :manifest-stub}])
+                       (for [[kind name :as path] selected
+                             :let [r (get-in report path)] :when (not= :passed (:status r))]
+                         {:kind :required-result :corpus kind :name name :status (:status r)})
                        (for [t (set/difference transitions observed)] {:kind :required-transition :transition t})
                        (for [c components :when (not (and (true? (get-in report [:coverage :components c :enabled?]))
                                                           (true? (get-in report [:component-availability c]))))]
                          {:kind :required-component :component c})
                        (for [profile profiles
-                             :when (or (not (contains? (:profiles report) profile))
+                             :let [walks (get-in report [:profiles profile])]
+                             :when (or (not (seq walks))
                                        (not= :exhausted (get-in report [:profile-limits profile :status]))
-                                       (not (every? #(= :passed (:status %)) (get-in report [:profiles profile]))))]
-                         {:kind :required-search :profile profile})))]
-    {:status (cond (seq failures) :failed
-                   (some seq (vals (select-keys (:model-normative report) witnesses))) :model-failed
-                   :else :passed)
+                                       (not (every? #(= :passed (:status %)) walks)))]
+                         {:kind :required-search :profile profile})))
+        normative (into {} (filter (comp seq val) (select-keys (:model-normative report) witnesses)))]
+    {:status (cond (seq failures) :failed (seq normative) :model-failed :else :passed)
      :runtime-status (if (seq failures) :failed :passed) :failures failures
-     :required-model-failures (into {} (filter (comp seq val) (select-keys (:model-normative report) witnesses)))
-     :required {:witnesses witnesses :transitions transitions :components components :profiles profiles}
+     :required-model-failures normative :required requirements
      :model-normative (:model-normative report)}))
 
-(defn step-requirements [step]
-  (let [transitions (set (for [[t descriptor] action-support :when (= step (:step descriptor))] t))]
-    (when (empty? transitions) (throw (ex-info "Unknown implementation step" {:step step})))
-    {:transitions transitions
-     :components (set (for [[c descriptor] components :when (= step (:step descriptor))] c))
-     :witnesses (set (for [[name actions] (witnesses) :when (some #(transitions (:t %)) actions)] name))
-     :profiles (if (= step :A3) #{:one-spin :source-only} #{})}))
-
 (defn -main [& [output mode step]]
-  (let [raw (check-all)
+  (let [raw (check-all (keyword (or step "B1")))
         results (concat (vals (:witnesses raw)) (vals (:scripted raw)) (mapcat val (:profiles raw))
-                        (mapcat (juxt :result :supported-result) (:generated raw)))
+                        (vals (:generated raw))
+                        (mapcat (juxt :result :supported-result) (:unrestricted-generated raw)))
         counts (frequencies (map :status results))
         findings (mapv (comp minimize-discrepancy first val)
                        (group-by discrepancy-key (filter #(= :discrepancy (:status %)) results)))
-        report (cond-> (assoc raw :mode (or mode "diagnostic") :counts counts :discrepancies findings)
-                 (= mode "accept") (assoc :acceptance (acceptance raw (step-requirements (keyword step)))))]
+        report (assoc raw :mode (or mode "diagnostic") :counts counts :discrepancies findings
+                      :acceptance (acceptance raw (:manifest raw)))]
     (prn (coverage))
     (prn {:counts counts :witnesses (frequencies (map :status (vals (:witnesses report))))
-          :acceptance (:acceptance report) :model-normative (:model-normative report)})
+          :acceptance (:acceptance report) :model-normative (:model-normative report)
+          :model-negative-controls (:model-negative-controls report)})
     (when output (spit output (str (pr-str report) "\n")))
     (shutdown-agents)
     (when (if (= mode "accept")
