@@ -3,11 +3,15 @@ import contextlib
 import io
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+# Keep test imports from dirtying the harness checked by the session runner.
+sys.dont_write_bytecode = True
 
 spec = importlib.util.spec_from_file_location('session', Path(__file__).with_name('lifetime_gate_session.py'))
 session = importlib.util.module_from_spec(spec)
