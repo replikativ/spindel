@@ -461,3 +461,97 @@
           (is (empty? (get (rtp/get-state child []) ::ygg/pending-stamps)))
           (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
           (is (= [] (ygg/retry-stamps! (ctx/restore-snapshot snapshot :drain-events? false)))))))))
+
+(deftest failed-family-preparation-restores-state-and-discard-cleans-up
+  (with-book [book]
+    (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+          adopted (ygg/transfer-fork! a :adopted)
+          family (:family a)
+          before @family]
+      (is (= ::ygg/stale-fork-handle (thrown-type #(ygg/settle-family! [a b]))))
+      (is (= before @family) "read-only preparation failure leaves the family untouched")
+      (is (every? ygg/open-fork? [adopted b]))
+      (ygg/discard-fork! adopted)
+      (ygg/discard-fork! b)
+      (is (every? #(= :discarded (:settled %)) (vals (:nodes @family))))
+      (is (= :discarded (:status @family)))
+      (is (not-any? #(contains? @family %) [:resume :operation-id :winners]))
+      (is (= 0 @(:stamp-calls book))))))
+
+(deftest concurrent-family-recovery-holds-one-operation-lease
+  (with-book [book 1]
+    (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+          entered (promise)
+          release (promise)]
+      (is (= ::ygg/family-stamp-failed
+             (thrown-type #(ygg/settle-family! [a b] {:operation-id :concurrent}))))
+      (reset! (:observe-stamp book)
+              #(do (deliver entered true) (deref release 10000 false)))
+      (let [recovery (future (ygg/settle-family! [a] {:operation-id :concurrent}))]
+        (try
+          (is (= true (deref entered 10000 :timeout)))
+          (is (= :merging (:status (ygg/copy-family b))))
+          (is (= ::ygg/copy-family-settled
+                 (thrown-type #(ygg/settle-family! [b] {:operation-id :concurrent}))))
+          (is (= 2 @(:stamp-calls book)))
+          (finally (deliver release true)))
+        (is (map? (deref recovery 10000 :timeout)))
+        (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) [a b])))
+        (is (nil? (:resume @(:family a))))))))
+
+(deftest transfer-or-discard-racing-later-member-preparation-rolls-back
+  (doseq [action [:transfer :discard]]
+    (with-book [book]
+      (let [members (sort-by #(str (:fork-id %)) (ygg/copy-fork! (ygg/fork!) 2))
+            [a b] members
+            family (:family a)
+            before @family
+            authority (:authority a)
+            adopted (atom nil)
+            raced? (atom false)]
+        ;; Force the race after the first claim but before the later claim.
+        (add-watch authority ::race
+                   (fn [_ _ old new]
+                     (when (and (= :open (:status old)) (= :settling (:status new))
+                                (compare-and-set! raced? false true))
+                       (case action
+                         :transfer (reset! adopted (ygg/transfer-fork! b :racer))
+                         :discard (ygg/discard-fork! b)))))
+        (try
+          (is (some? (thrown-type #(ygg/settle-family! members))))
+          (is @raced?)
+          (is (ygg/open-fork? a) "earlier claims roll back before any substrate work")
+          (is (= :open (:status @family)))
+          (is (nil? (:resume @family)))
+          (is (nil? (:operation-id @family)))
+          (is (= 0 @(:stamp-calls book)))
+          (when (= action :transfer)
+            (is (= before @family))
+            (is (ygg/open-fork? @adopted)))
+          (finally (remove-watch authority ::race)))
+        (ygg/discard-fork! a)
+        (when @adopted (ygg/discard-fork! @adopted))
+        (is (= :discarded (:status @family)))
+        (is (nil? (:resume @family)))))))
+
+(deftest read-only-family-preflight-failure-rolls-back-all-claims
+  (with-book [book]
+    (let [[a b :as members] (ygg/copy-fork! (ygg/fork!) 2)
+          family (:family a)
+          before @family
+          internal (get-in before [:nodes (ygg/copied-from a (:fork-id a)) :internal])
+          handles [a b internal]
+          authorities (mapv #(deref (:authority %)) handles)]
+      (with-redefs [ygg/family-review
+                    (fn [_]
+                      (is (= [:settling :settling :settling]
+                             (mapv #(-> % ygg/fork-disposition :status) handles)))
+                      (is (nil? (:resume @family)))
+                      (throw (ex-info "read-only preflight failed" {:type ::preflight})))]
+        (is (= ::preflight (thrown-type #(ygg/settle-family! members)))))
+      (is (= before @family))
+      (is (= authorities (mapv #(deref (:authority %)) handles)))
+      (is (= 0 @(:stamp-calls book)))
+      (doseq [member members] (ygg/discard-fork! member))
+      (is (= :discarded (:status @family)))
+      (is (nil? (:resume @family))))))
