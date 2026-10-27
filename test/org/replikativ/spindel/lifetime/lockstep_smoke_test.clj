@@ -221,7 +221,9 @@
         (is (= :state (get-in result [:differences 0 :kind])))))))
 
 (deftest completion-cannot-hide-an-implicit-interleaving
-  (let [actions (conj (lockstep/scripted-corpus :completion) {:t :t11 :w w :r [e 1]})
-        result (lockstep/replay actions)]
-    (is (= :skipped (:status result)))
-    (is (= :needs-microstep-hook (get-in result [:reason :reason])))))
+  (doseq [prefix [(lockstep/scripted-corpus :completion)
+                  (conj (lockstep/scripted-corpus :track) {:t :t07 :w w :r [e 1] :value 42})]]
+    (let [actions (conj prefix {:t :t11 :w w :r [e 1]})
+          result (lockstep/replay actions)]
+      (is (= :skipped (:status result)))
+      (is (= :needs-microstep-hook (get-in result [:reason :reason]))))))

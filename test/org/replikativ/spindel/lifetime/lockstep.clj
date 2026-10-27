@@ -360,7 +360,8 @@
             (recur after delivery (m/attempt after delivery) constituents deliveries normative))
           {:state after :refusal (:refusal first-step) :constituents constituents
            :deliveries deliveries :model-normative normative :policy drain-policy
-           :affected-entities (changed-entities (:state first-step) after)})))))
+           :affected-entities (cond-> (changed-entities (:state first-step) after)
+                                (= :t07 (:t action)) (conj [w (first (:r action))]))})))))
 
 (defn host-template? [driver w e]
   (let [{:keys [materialized host-templates parents]} @driver]
