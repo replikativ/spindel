@@ -9,7 +9,8 @@
 
   Registration is fail-closed: a value must explicitly implement
   `PWorldComponent`, or be wrapped with `forkable`, `shared` or `pinned`. Component forking
-  must be rollback-free and process-local. Effectful resources such as database
+  is process-local; unpublished copies with cleanup needs opt into retirement.
+  Effectful resources such as database
   branches and worktrees use Yggdrasil ForkHandles, where acquisition can be
   settled."
   (:refer-clojure :exclude [resolve])
@@ -21,6 +22,21 @@
 (defprotocol PWorldComponent
   (realization [component]
     "Return the value selected for programs running in this world."))
+
+(defprotocol PComponentRetirement
+  (retire-component! [component]
+    "HOST-only release after the owner has fenced admission and joined work.
+
+     Return means cleanup acknowledged; a throw leaves the exact component
+     owned for retry. Implementations must permit cleanup retries. Sharing
+     wrappers do not acquire retirement authority over their wrapped value."))
+
+(defprotocol PComponentForkRecovery
+  (failed-fork-cleanup [component error]
+    "Return a PComponentRetirement receipt for an unpublished failed copy,
+     or nil when failure left nothing to release. HOST-only; no cleanup runs
+     here. This classifier must not throw. The receipt must retain its exact
+     retry capability."))
 
 (defrecord ForkableComponent [value fork-fn]
   PWorldComponent

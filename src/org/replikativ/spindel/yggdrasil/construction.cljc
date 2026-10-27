@@ -3,6 +3,7 @@
    Private lifecycle state is never installed in a semantic execution world."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.quiescence :as quiescence]
+            [org.replikativ.spindel.engine.component :as component]
             [yggdrasil.protocols :as p]
             [yggdrasil.convergent :as yc]
             [yggdrasil.convergent.overlay :as overlay]
@@ -33,19 +34,48 @@
   [owner]
   (let [state @(cell owner)]
     {:id (:id state) :status (:status state) :busy? (boolean (:busy? state))
-     :receipts (mapv #(select-keys % [:id :system :kind :phase :depends-on]) (:entries state))}))
+     :receipts (mapv #(select-keys % [:id :system :component/id :kind :phase :depends-on]) (:entries state))}))
 
 (defn observe!
   "A construction-extent registrar. Called outside backend atom mutators.
    :before/:value bracket a registered system hook; :branch acknowledges the
    exact branch before checkout; :context retains the provisional child."
-  [owner {:keys [phase signal source value branch context] :as event}]
+  [owner {:keys [phase signal source value branch context cleanup] :as event}]
   (let [receipt (random-uuid)]
     (let [state (update!
                  owner
                  (fn [state]
                    (when-not (= :building (:status state)) (refuse! ::not-building))
                    (case phase
+                     :component-before
+                     (do (when (:active state) (refuse! ::nested-acquisition))
+                         (-> state
+                             (assoc :active (count (:entries state)))
+                             (update :entries conj {:id receipt :kind :component
+                                                    :component/id (:component/id event)
+                                                    :source source :phase :attempting})))
+
+                     (:component-value :component-failure)
+                     (let [n (:active state)
+                           entry (when (some? n) (get-in state [:entries n]))
+                           resource (if (= :component-failure phase) cleanup value)
+                           owned? (and resource (not (identical? source resource))
+                                       (satisfies? component/PComponentRetirement resource)
+                                       (not-any? #(identical? resource (:resource %)) (:entries state)))]
+                       (when-not (and (= :component (:kind entry))
+                                      (= (:component/id entry) (:component/id event)))
+                         (refuse! ::wrong-acquisition))
+                       (-> state
+                           (assoc :active nil)
+                           (assoc-in [:entries n]
+                                     (if owned?
+                                       (-> entry
+                                           (dissoc :source)
+                                           (assoc :kind (if (= :component-failure phase)
+                                                          :component-recovery :component)
+                                                  :phase :owned :resource resource))
+                                       (-> entry (dissoc :source) (assoc :phase :empty))))))
+
                      :before
                      (if-let [system (get (:system-ids state) signal)]
                        (do (when (:active state) (refuse! ::nested-acquisition))
@@ -56,10 +86,12 @@
                        state)
 
                      :branch
-                     (if-some [n (:active state)]
-                       (do (when-not (= signal (get-in state [:entries n :signal])) (refuse! ::wrong-acquisition))
-                           (update-in state [:entries n] assoc :kind :branch :phase :owned :resource value :branch branch))
-                       (refuse! ::missing-acquisition))
+                     (if-not (contains? (:system-ids state) signal)
+                       state
+                       (if-some [n (:active state)]
+                         (do (when-not (= signal (get-in state [:entries n :signal])) (refuse! ::wrong-acquisition))
+                             (update-in state [:entries n] assoc :kind :branch :phase :owned :resource value :branch branch))
+                         (refuse! ::missing-acquisition)))
 
                      :value
                      (if-some [n (:active state)]
@@ -156,6 +188,12 @@
            (loop [indices (seq (reverse (range (count (:entries state)))))]
              (when indices
                (let [n (first indices) entry (get-in @(cell owner) [:entries n])]
+                 ;; A heap can retain capabilities into earlier acquisitions.
+                 ;; Without an independence manifest, unresolved component
+                 ;; cleanup is a barrier to releasing those dependencies.
+                 (when (and (#{:component :component-recovery} (:kind entry))
+                            (not (#{:owned :disposed :empty} (:phase entry))))
+                   (refuse! ::incomplete))
                  (when (and (= :owned (:phase entry))
                             ;; A throwing checkout may still own a live handle
                             ;; into its acknowledged branch. Reconcile it before
@@ -166,7 +204,9 @@
                    (let [error (try
                                  (let [result (case (:kind entry)
                                                 :overlay (p/discard! (:resource entry) opts)
-                                                :branch (p/delete-branch! (:resource entry) (:branch entry) (merge yc/default-opts opts)))]
+                                                :branch (p/delete-branch! (:resource entry) (:branch entry) (merge yc/default-opts opts))
+                                                (:component :component-recovery)
+                                                (do (component/retire-component! (:resource entry)) nil))]
                                    (when (fn? result) (await result))
                                    nil)
                                  (catch #?(:clj Throwable :cljs :default) error error))]
@@ -174,8 +214,12 @@
                               #(update-in % [:entries n]
                                           (fn [entry]
                                             (if error
-                                              (assoc entry :phase :cleanup-uncertain :error error)
-                                              (-> entry (assoc :phase :disposed) (dissoc :source :resource :error))))))))
+                                              (assoc entry :phase (if (#{:component :component-recovery} (:kind entry))
+                                                                    :owned :cleanup-uncertain)
+                                                     :error error)
+                                              (-> entry (assoc :phase :disposed) (dissoc :source :resource :error))))))
+                     (when (and error (#{:component :component-recovery} (:kind entry)))
+                       (refuse! ::incomplete))))
                  (recur (next indices)))))
            (let [remaining (some #(not (#{:disposed :empty} (:phase %))) (:entries @(cell owner)))]
              (when remaining (refuse! ::incomplete))

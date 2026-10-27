@@ -1320,7 +1320,7 @@
                                (dissoc :systems :purpose :owner :rights :on-fork-failure)
                                (assoc :state-updates state-updates
                                       :forkable-signals selected-signal-ids
-                                      :fork-observer observe!))
+                                      :fork-owner construction-owner))
                      snaps (assoc :snapshots snaps)
                      (seq origins) (assoc :checkpoints origins))]
         (try
