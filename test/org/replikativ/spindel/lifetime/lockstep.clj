@@ -574,21 +574,42 @@
            :following (binding [ec/*execution-context* following] @s)}))
       (finally (ctx/close-context! rt)))))
 
+(defn pending-stamp-index
+  "Two explicit in-process layouts: A2 stores retry work in world/ephemeral;
+   main before A2 stores it at the top level. An empty A2 index takes priority.
+   This probe says nothing about F2 durable/restart recovery."
+  [rt]
+  (let [a2-path [:world/ephemeral ::ygg/pending-stamps]
+        a2 (rtp/get-state rt a2-path)]
+    (if (some? a2) {:path a2-path :entries a2}
+        {:path [::ygg/pending-stamps] :entries (rtp/get-state rt [::ygg/pending-stamps])})))
+
 (defn stamp-probe []
-  (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))]
+  (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))
+        calls (atom 0)]
     (try
       (binding [ec/*execution-context* rt cps/*in-trampoline* false]
         (ygg/register! (g/gset "a3-stamp" {:store-config {:backend :memory :id (random-uuid)}} {:sync? true})
                        {:grade :linear
                         :intents (fn [_] [{:intent/id :stamp :footprint #{:stamp}}])
                         :parent-footprint (constantly #{})
-                        :stamp (fn [_] (throw (ex-info "Scripted stamp failure" {:type ::stamp-error})))})
+                        :stamp (fn [_] (when (= 1 (swap! calls inc))
+                                         (throw (ex-info "Scripted stamp failure" {:type ::stamp-error}))))})
         (let [h (ygg/fork! {:sync? true})
-              error (try (ygg/merge-fork! h {:sync? true}) nil (catch Throwable e (error-type e)))]
-          {:trace [:register-failing-stamp :fork :merge]
-           :classification :known-plan-item :step :F2
-           :error error :disposition (ygg/fork-disposition h)
-           :pending-stamps (count (rtp/get-state rt [::ygg/pending-stamps]))}))
+              error (try (ygg/merge-fork! h {:sync? true}) nil (catch Throwable e (error-type e)))
+              disposition (ygg/fork-disposition h)
+              pending (pending-stamp-index rt)
+              failed-count (count (:entries pending))]
+          (assert (= 1 failed-count) "Failed stamp must retain one in-process retry")
+          (let [retried (ygg/retry-stamps! rt)
+                recovered-count (count (:entries (pending-stamp-index rt)))]
+            (assert (= 0 recovered-count) "Successful retry must remove the pending stamp")
+            {:trace [:register-fail-once-stamp :fork :merge :retry-stamps]
+             :classification :in-process-probe :durable-recovery :not-validated :step :F2
+             :error error :disposition disposition :retry-index-path (:path pending)
+             :pending-stamps failed-count :pending-stamps-after-recovery recovered-count
+             :retried (count retried) :stamp-calls @calls
+             :disposition-after-recovery (ygg/fork-disposition h)})))
       (finally (ctx/close-context! rt)))))
 
 (defn gc-hook-probe []
