@@ -579,3 +579,143 @@ explicitly unavailable until implemented; internal queue interleavings require a
 native microstep hook. Main still has the fork scaling and spin retention defects
 identified by the benchmark gates. The normative F50/F51 model items remain open
 in their owning workstream. All eight **harness review findings** are addressed.
+
+
+## Fix round 2
+
+Starting HEAD was **9064d80**, already rebased onto converged model **e79985c**;
+step 0's rebase was not repeated. All **143 model-owned files** under
+`test/org/replikativ/spindel/lifetime/` still match e79985c exactly. Runtime
+`src/` remains main 06ce205's tree `b1a9ec1ad9e9108de54a9dc9953f80008a640452`.
+No production code or model semantics changed.
+
+### Ownership comparison (review finding 1)
+
+`lockstep.clj` adds the B1 `:run-owners` component, comparing only run ids and
+`:owner`. `:owners` compares entity `:owner`, `:creator`, and `:order`;
+`:scopes` compares roots and scope kind/parent/status. Full run status/liveness
+remains B3. Entity ownership uses the same explicit read-visible perspective as
+the existing entity component; formal fork entities remain excluded until C2.
+Unavailable native B1 projections still fail closed.
+
+`lockstep_gate_test.clj` independently corrupts entity owner, creator, order,
+run owner, and each scope relationship field. It verifies that B1 ignores run
+status. The model-derived `:owner-lexical` trace creates a child in a run, then
+invokes it from an explicit scope: the entity stays owned/created by the original
+run while its work run belongs to the invoking scope. `:owner-join` verifies that
+joining from another scope does not replace an existing run's owner.
+
+### Cumulative acceptance (review finding 2)
+
+`lockstep_manifests.clj` defines explicit A3 and B1–B6 manifests, with later
+C1–F2 stages marked as failing stubs. `step-requirements` accumulates changed
+transitions, components, complete scripts, earlier accepted regressions, fixed
+seeded generated traces, and declared finite profiles. In particular, B1 changes
+**T1/T2/T4/T12**, rather than inheriting T1/T2/T4's exclusive A3 attribution.
+`acceptance` requires every selected result to pass, every profile to exhaust
+with passing edges, every component to be enabled/available, and successful
+coverage of the cumulative transition set. Missing/skipped/truncated results fail.
+
+Five complete B1 ownership scripts cover host handles, lexical creation and
+cross-scope invocation, signals/atoms under root/run/explicit owners, joining,
+and nested scope kinds. They contain no T13 or unsubscribe prerequisite. All
+scripts execute without refusal in the unchanged model. A test adapter owns an
+independent model state, projects only the stage's view, and refuses later-stage
+actions. It executes the complete B1 manifest successfully, including all
+required historical walks, profile edges, scripts, regressions and generated
+traces; injecting a required result failure then makes acceptance fail.
+
+Historical walks retain their complete actions. The current B1 manifest requires
+four host-readthrough witnesses and explicitly lists **110** relevant historical
+walks as pending with missing prerequisites. Dirty-cache walks require B3 and
+D1's native microstep hook. The negative control is identified separately;
+other witnesses that touch no cumulative stage transition remain diagnostic.
+Nothing calls a stopped historical prefix passed.
+
+Stage-generated/profile walks explicitly declare **observable-boundary** traces;
+T7 includes its local T8 drain. Their finite search advances the same macrostep
+used for comparison. Historical microstep walks keep the original interleaving
+checks, pinned by tests. The A3 generated alphabet excludes completion cases
+that require a native microstep hook; unrestricted generated walks remain in the
+diagnostic. Profile alphabets are independent of native adapter availability:
+unsupported edges remain visible as failing results, rather than disappearing.
+
+Witness discovery now includes nested run 7–10 paths and excludes only index
+files. The native action inventory explicitly labels T20q unavailable at E2.
+The corpus contains **130** files. The model's own `:negative-control?` metadata
+identifies `run7/stale-start-cancelling.edn`; its expected L10 violation appears
+under `:model-negative-controls`, not as a normative failure. The diagnostic's
+**`:model-normative` is empty**, including F50/F51.
+
+### In-process stamp probe (review finding 5)
+
+`pending-stamp-index` explicitly supports two protocol paths:
+
+- main before A2: `[::ygg/pending-stamps]`;
+- main+A2: `[:world/ephemeral ::ygg/pending-stamps]`, preferred when present,
+  including an empty map (a stale legacy index must not override it).
+
+`stamp-probe` installs a real fail-once GSet stamp, asserts **one** retained retry
+after failure, calls public `retry-stamps!`, and asserts **zero** after recovery.
+It records the chosen path, both counts, two stamp calls, and the dispositions
+before/after retry. `lockstep_stamp_test.clj` verifies the real main probe and
+both PState layouts, including empty-A2-index precedence. The main probe records
+1 → 0, two calls, one retry. Main's premature `:merged` publication is still
+visible; this harness change does not implement A2. A2 runtime integration is
+covered here by layout fixtures, not a second worktree or a separate A2 build.
+This is in-process recovery evidence, never F2 durable/restart validation.
+
+### Executed fail-before evidence
+
+`fix2-frozen-before.log` runs new regressions against the exact **9064d80**
+harness: **5 tests / 34 assertions, 24 failures, 0 errors**. The archived
+`fix2-before-harness.clj` has SHA-256
+`93082af15526de3172b55827d2907d43dadd788c02f0ae02b787502a6da0a791`, identical
+to that revision. Failures comprise one missed run-owner mutation, twelve
+false-green result failures, six missing B1 manifest requirements, three missed
+nested-corpus checks, and two missing recovery observations. Archived inputs
+are `fix2-before-harness.clj` and `fix2-before-tests.clj` in the report directory.
+
+The initial focused run also exposed the missing T20q descriptor after rebase
+and the conforming adapter's inability to satisfy raw-microstep profiles;
+`fix2-focused.log` preserves those failures. Subsequent focused checks pin the
+boundary distinction without weakening historical interleaving tests.
+
+### Coverage and validation
+
+One final diagnostic was executed against the converged corpus, exit **1**.
+The complete committed artifact is
+`dev/org/replikativ/spindel/baselines/lockstep-main-06ce205-fix2.edn`;
+`fix2-diagnostic.log` and `fix2-lockstep.edn` are in the external report directory.
+
+| Corpus | Complete passes | Stopped | Divergent |
+| --- | ---: | ---: | ---: |
+| Historical corpus, including one negative control (130) | 4 | 116 | 10 |
+| Scripted walks (14) | 7 | 5 | 2 |
+| Finite profile walks (14) | 7 | 5 | 2 |
+| Manifest-generated walks (20) | 0 | 9 | 11 |
+| Unrestricted/supported diagnostic generated walks (20) | 0 | 16 | 4 |
+| Total (198) | **18** | **151** | **29** |
+
+There are 16 minimized discrepancy signatures. Source-only exhausts **3 states /
+3 edges**; one-spin **4 / 4**; ownership-scopes **5 / 7**. Exhaustion does not
+accept skipped/divergent replay results. Native B1 acceptance remains **failed**
+for unavailable ownership projections, T12, cancellation and required generated
+results; the model-based B1-only adapter passes. No missing runtime feature or
+runtime discrepancy was waived to obtain an acceptance claim.
+
+- Final smoke, acceptance gates, stamp tests and existing pure benchmark gates:
+  **44 tests / 343 assertions, 0 failures/errors** (`fix2-diagnostic.log`, before
+  the diagnostic entry point). This includes the existing five benchmark gate
+  tests; no benchmark protocol, threshold or measurement was changed.
+- Full JVM: **1,478 tests / 72,690 assertions, 0 failures/errors**, exit **0**, one exclusive run, `fix2-jvm.log`.
+- Full CLJS: **539 tests / 2,027 assertions, 0 failures/errors**, exit **0**;
+  one slot-admitted `npx shadow-cljs compile ci` plus `node out/ci-tests.js`,
+  `JAVA_TOOL_OPTIONS=-Xmx1g`, `fix2-cljs.log`.
+- Cljfmt **0.9.2** passes all four changed code files (`fix2-format.log`);
+  `git diff --check` passes. Every JVM launch used an admission wrapper.
+
+Implementation commits: **3f42b6e** (ownership), **76fc3c3** (manifests/corpus),
+**98994ee** (stamp probe). No push, amend or stash was performed. Remaining
+runtime implementation and native microstep-hook work belongs to B1–F2; the
+existing benchmark failures from fix round 1 were not remeasured in this round.
