@@ -3534,9 +3534,13 @@
   One-shot/external awaits are detached and returned to exactly one caller.
   Reactive awaits remain registered. Options:
 
-  - `:result` — the child `Result` for a non-body continuation. Body awaits
-    select the child's current Result in this transaction, inline too. The
-    returned cont's `:on-resume` yields the validated wrapper, recorded as
+  - `:result` — the produced `Result` for a synchronous body completion or
+    a non-body continuation. Queued body awaits select the child's current
+    Result here. An inline body claim without a supplied Result selects
+    and revalidates the current cache too. A synchronous production can
+    finish in a fork on this stack; keep its supplied wrapper, as before.
+    The returned
+    cont's `:on-resume` yields the validated wrapper, recorded as
     `::delivered`. A second claim for the identical Result fails: the same
     completion reaches a parked await at most once, whether
     inline or through its queued `:spin-completion`. A re-completion caches a
@@ -3578,15 +3582,18 @@
                                   id (:id cont)
                                   child-id (second (:event-key cont))
                                   child (when (:body-slice? cont) (get-in rt-state [:nodes child-id]))
-                                  ;; Dispatch may have sampled an older wrapper.
-                                  ;; Select body results (inline too) in the same
-                                  ;; snapshot as prefix and readiness validation.
-                                  result (if (:body-slice? cont) (:result child) result)
-                                  batch-stale? (and inline? (:body-slice? cont)
+                                  ;; Select cached body results in this snapshot.
+                                  ;; A supplied synchronous production has already
+                                  ;; been certified by its completion callback.
+                                  cache-read? (and (:body-slice? cont)
+                                                   (or (not inline?) (nil? result)))
+                                  result (if cache-read? (:result child) result)
+                                  batch-stale? (and inline? cache-read?
                                                     (not (cancelled-result? result))
                                                     (not (batch-fresh? (:engine/current-batch rt-state) child-id)))
-                                  ready? (and (await-result-ready? child result)
-                                              (not batch-stale?))]
+                                  ready? (or (not (:body-slice? cont))
+                                             (and (await-result-ready? child result)
+                                                  (not batch-stale?)))]
                               (cond
                                 ;; A duplicate later completion may be the only
                                 ;; wakeup for an affected prefix in a frozen fork.

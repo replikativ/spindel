@@ -17,6 +17,49 @@
             [is.simm.partial-cps.async :as pcps]))
 
 ;; Every callback runs synchronously in these tests. No blocking Spin derefs.
+(deftest inline-production-keeps-its-supplied-result
+  (async done
+    (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
+      (binding [ec/*execution-context* world pcps/*in-trampoline* false]
+        (let [child (spin :stored)
+              parent (spin nil)
+              sid (sc/spin-id parent)
+              result (sc/ok :produced)
+              cont {:id ::production :kind :await-reactive :body-slice? true
+                    :event-key [:spin/complete (sc/spin-id child)]
+                    :registration (random-uuid)}]
+          (sync/spawn! child)
+          (ec/continuation-add! sid cont)
+          ;; A fresh inline production supplies its own certified wrapper;
+          ;; cache delivery supplies nil instead. Forked code
+          ;; can produce on this stack without updating this world's cache.
+          (let [claimed (simple/claim-continuation-for-resume!
+                         world sid (:id cont)
+                         {:result result :registration (:registration cont) :inline? true})]
+            (is (some? claimed))
+            (is (identical? result ((:on-resume claimed) world)))))))
+    (done)))
+
+(deftest non-body-completions-use-the-supplied-result
+  (async done
+    (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
+      (binding [ec/*execution-context* world pcps/*in-trampoline* false]
+        (let [parent (spin nil)
+              sid (sc/spin-id parent)
+              result (sc/ok :value)
+              cont {:id ::combinator :kind :await-reactive
+                    :event-key [:spin/complete ::combinator-child]
+                    :registration (random-uuid)}]
+          ;; Combinators select their result themselves. They need no body
+          ;; child node for the readiness check used by await slices.
+          (ec/continuation-add! sid cont)
+          (let [claimed (simple/claim-continuation-for-resume!
+                         world sid (:id cont)
+                         {:result result :registration (:registration cont) :inline? true})]
+            (is (some? claimed))
+            (is (identical? result ((:on-resume claimed) world)))))))
+    (done)))
+
 (deftest await-joins-a-local-execution-reservation
   (async done
            (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]

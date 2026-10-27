@@ -156,12 +156,12 @@
 ;; `spin-core/cancelled-after-registration`).
 
 (defn- claim-inline-resume!
-  "Claim the registered continuation `cont` to resume its slice inline, on
-  this stack, revalidating the child's current result. Nil when another resume claimed it
-  first — cancellation, or the queued `:spin-completion` delivering the same
-  result: that resume owns the slice. The claim marks the cont resumed at
-  once (the inline slice continues in the caller's trampoline, past this
-  handler), so cancellation no longer rejects the body through it."
+  "Claim this registration for inline delivery. Nil `result` requests the
+  current cache, revalidated with batch freshness; a supplied Result is a
+  fresh synchronous production. Returns the claimed cont, whose :on-resume
+  yields the selected wrapper, or nil when delivery/refresh has an owner.
+  The inline slice is marked resumed at once, so cancellation no longer
+  rejects the body through this registration."
   [ctx spin-id cont result]
   (simple/claim-continuation-for-resume!
    ctx spin-id (:id cont)
@@ -234,7 +234,7 @@
               ;; The registered cont is now visible to cancel-spin! and to a
               ;; queued completion of the child: resume only if the claim wins.
               (if-let [claimed (if is-reactive-spin
-                                 (claim-inline-resume! ctx spin-id cont cached)
+                                 (claim-inline-resume! ctx spin-id cont nil)
                                  {:on-resume (fn [_] cached)})]
                 (spin-core/match ((:on-resume claimed) ctx)
                   #(spin-core/resume resolve %)
