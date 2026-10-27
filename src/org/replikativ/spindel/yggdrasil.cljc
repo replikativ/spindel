@@ -2261,7 +2261,7 @@
                                 (assoc (stamp-plan top contributions skip)
                                        :group-id group-id :pending-id (random-uuid)
                                        :witnesses (atom {})
-                                       :retry #(merge-fork! fork-handle {:operation-id group-id})))]
+                                       :retry #(merge-fork! fork-handle {:sync? true :operation-id group-id})))]
                      (fn [leased callbacks]
                        (merge-chain! handles
                                      (assoc opts ::skip-systems skip :group-id group-id
@@ -2292,7 +2292,7 @@
                           :operation-id operation-id
                           :pending-id (random-uuid)
                           :witnesses (atom {})
-                          :retry #(merge-fork! fork-handle {:operation-id operation-id}))]
+                          :retry #(merge-fork! fork-handle {:sync? true :operation-id operation-id}))]
           (merge-fork* fork-handle
                        (assoc opts ::skip-systems skip :operation-id operation-id
                               ::before-complete (fn [payload _] (assoc payload :stamps (run-stamp! plan))))))))))

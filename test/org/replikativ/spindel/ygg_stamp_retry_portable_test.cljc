@@ -4,7 +4,72 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
-            [org.replikativ.spindel.yggdrasil :as ygg]))
+            [org.replikativ.spindel.yggdrasil :as ygg]
+            [yggdrasil.convergent :as yc]
+            [yggdrasil.convergent.gset :as g]))
+
+(defn- check-fail-once-stamp-retry [copy?]
+  (let [parent (context/create-execution-context)
+        calls (atom 0)
+        stamped (atom [])]
+    (try
+      (binding [ec/*execution-context* parent]
+        (ygg/register!
+         (g/gset "book" {:store-config {:backend :memory :id (random-uuid)}} {:sync? true})
+         {:grade :linear
+          :intents (fn [{:keys [system-id child-ctx]}]
+                     (binding [ec/*execution-context* child-ctx]
+                       (mapv (fn [x] {:intent/id x :footprint #{x}})
+                             (g/elements (ygg/system system-id) {:sync? true}))))
+          :stamp (fn [{:keys [contributions]}]
+                   (when (= 1 (swap! calls inc))
+                     (throw (ex-info "writer unavailable once" {})))
+                   (swap! stamped into (mapcat :intents contributions)))})
+        (let [source (ygg/fork! {:sync? true})
+              [handle loser] (if copy?
+                               (ygg/copy-fork! source 2 {:sync? true})
+                               [source nil])]
+          (binding [ec/*execution-context* (:child-ctx handle)]
+            (swap! (ygg/system-signal "book") #(g/conj % :draft {:sync? true})))
+          ;; Contribution collection calls fork-diff, which uses default-opts.
+          ;; Only the initial synchronous merge needs this setup; retry uses CLJS defaults.
+          (let [error (with-redefs [yc/default-opts (assoc yc/default-opts :sync? true)]
+                        (try (ygg/merge-fork! handle {:sync? true}) nil
+                             (catch #?(:clj Throwable :cljs :default) error
+                               (assoc (ex-data error) :exception error))))
+                pending (:pending error)]
+            (is (= ::ygg/stamp-failed (:type error)) (str (:exception error)))
+            (is (some? pending))
+            (is (= :incomplete (:status (ygg/fork-disposition handle))))
+            (is (= 1 @calls))
+            (is (empty? @stamped))
+            (is (= #{pending} (set (keys (rtp/get-state parent [:world/ephemeral ::ygg/pending-stamps])))))
+            (when copy?
+              (is (= :failed (:status (ygg/copy-family handle))))
+              (is (= :incomplete (:fork/status (ygg/copied-descriptor handle (:fork-id source))))))
+            ;; Keep CLJS defaults unchanged; exercise the same retry default on the JVM.
+            (with-redefs [yc/default-opts #?(:clj (assoc yc/default-opts :sync? false)
+                                             :cljs yc/default-opts)]
+              (is (false? (:sync? yc/default-opts)))
+              (is (= [pending] (ygg/retry-stamps! parent))))
+            (is (= :merged (:status (ygg/fork-disposition handle))))
+            (is (= 2 @calls))
+            (is (= [{:intent/id :draft :footprint #{:draft}}] @stamped))
+            (is (empty? (rtp/get-state parent [:world/ephemeral ::ygg/pending-stamps])))
+            (is (= [] (ygg/retry-stamps!)))
+            (is (= 2 @calls))
+            (when copy?
+              (is (= :merged (:status (ygg/copy-family handle))))
+              (is (= :merged (:fork/status (ygg/copied-descriptor handle (:fork-id source)))))
+              (is (nil? (:resume @(:family handle))))
+              (ygg/discard-fork! loser {:sync? true})))))
+      (finally (context/close-context! parent)))))
+
+(deftest single-fork-fail-once-stamp-retries-under-cljs-defaults
+  (check-fail-once-stamp-retry false))
+
+(deftest winning-copy-fail-once-stamp-retries-under-cljs-defaults
+  (check-fail-once-stamp-retry true))
 
 (deftest retry-index-is-never-inherited-or-snapshotted
   (let [parent (context/create-execution-context)
