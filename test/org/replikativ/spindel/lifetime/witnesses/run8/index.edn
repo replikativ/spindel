@@ -1,0 +1,13 @@
+["run8/F55.edn"
+ "run8/cancel-after-capture.edn"
+ "run8/cancel-queued-member.edn"
+ "run8/complete-after-capture.edn"
+ "run8/held-completion-cut.edn"
+ "run8/held-completion-following.edn"
+ "run8/join-admitted.edn"
+ "run8/rollback-pending-join.edn"
+ "run8/source-ended-before-join.edn"
+ "run8/aggregate-member-cancellation.edn"
+ "run8/F55-released-debtor.edn"
+ "run8/F55-after-attach.edn"
+ "run8/F56.edn"]

@@ -30,7 +30,8 @@
 (defn pending-start? [s w o ob]
   (let [[kind dw e] (:debtor ob)]
     (boolean (and (= :entity kind) (not= dw w)
-                  (some #(and (= e (:start-for %)) (= w (:creditor-world %)) (= o (:o %)))
+                  (some #(or (and (= e (:start-for %)) (= w (:creditor-world %)) (= o (:o %)))
+                             (and (= w (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
                         (queued-events s dw))))))
 (defn cancelled-in-flight? [s w o ob]
   (and (= :entity (first (:debtor ob))) (not= w (second (:debtor ob)))
@@ -432,6 +433,29 @@
                           (and (boolean (m/wr s w)) (not= :released (:status (m/wr s w)))))]
           {:registry-world w :status (:status (m/wr s w))}))))
 
+(defn basis-queue
+  "Independent copy-envelope scan over the captured admitted and held queues."
+  [base child]
+  (let [source (:id base)
+        events (concat (:queue base) (map :event (:held base)))
+        copies (:obligations child)
+        reissued (for [event events [o original] (:obligations base)
+                       :let [copy (get copies o)] :when copy
+                       :when (or (= o (:cancelled event))
+                                 (and (= (nth (:debtor original) 2 nil) (:completion event))
+                                      (= (second (:debtor original)) (get event :debtor-world source))))]
+                   (cond-> event (:completion event) (assoc :debtor-world (second (:debtor copy)))))]
+    (mapv #(assoc %1 :seq %2) (distinct (sort-by :seq reissued)) (range 1 (inc (count reissued))))))
+
+(defn captured-evidence [s w]
+  (into {} (for [[o ob] (:obligations (m/wr s w))]
+             [o {:phase (if (and (= :entity (first (:debtor ob))) (not= w (second (:debtor ob))))
+                          (first (obligation-phases s w o ob)) :admitted)
+                 :cancelled (first (filter #(= o (:cancelled %)) (queued-events s w)))
+                 :completions (vec (filter #(and (= (nth (:debtor ob) 2 nil) (:completion %))
+                                                 (= (second (:debtor ob)) (get % :debtor-world w)))
+                                           (queued-events s w)))}])))
+
 (defn l22
   "L22 cut fences, exclusion, exclusive permits and exact attached basis."
   [s]
@@ -475,9 +499,10 @@
                [{:c c :child (:child cut) :capability-not-unpublished true}])
              (when (= :attached (:phase cut))
                (let [w (first (keys (:basis cut))) v (:child cut)
-                     expected (m/copy-basis s (:basis cut) w v (:mode cut))
+                     transformed (m/copy-basis s (:basis cut) w v (:mode cut))
+                     expected (assoc transformed :queue (basis-queue (get-in cut [:basis w]) transformed))
                      actual (m/wr s v)]
-                 (for [field [:entities :runs :obligations :pins :queue]
+                 (for [field [:entities :runs :obligations :pins :queue :fdeps :releasing]
                        :when (not= (get expected field) (get actual field))]
                    {:c c :child v :field field :expected (get expected field) :actual (get actual field)}))))))
         (:cuts s))))
@@ -535,7 +560,9 @@
                                     (= (:queue b) (restored w)))
                                (and (= field :entities) (= w requester)
                                     (= (dissoc (:entities a) [:fork child]) (dissoc (:entities b) [:fork child])))
-                               (and (#{:fdeps :releasing} field)
+                               (and (= :t23 (:t action)) (= :queue field)
+                                    (= (vec (:queue a)) (vec (remove #(= child (:join-bundle %)) (:queue b)))))
+                               (and (= :t25 (:t action)) (#{:fdeps :releasing} field)
                                     (= (bundle-only (get a field)) (bundle-only (get b field))))))]
             {:cut c :world w :field field})
           (for [w (set/union (:registry before) (:registry after))
@@ -647,6 +674,15 @@
                                       (not= (:payload action) (:payload-hash rec)))))
                        (not (and refusal (= before after))))
               {:id :TL11 :evidence {:action action :refusal refusal}})
+            (when (and (= :t22 t) (not refusal))
+              (let [bad (for [world (get-in before [:cuts (:c action) :participants :worlds])
+                              :let [base (get-in after [:cuts (:c action) :basis world])
+                                    held (vec (filter #(= world (:w %)) (get-in before [:env :outside])))
+                                    evidence (captured-evidence before world)]
+                              :when (or (not= (m/wr before world) (dissoc base :held :copy-evidence))
+                                        (not= held (:held base)) (not= evidence (:copy-evidence base)))]
+                          {:world world :basis-not-single-view true})]
+                (when (seq bad) {:id :TL13 :evidence (vec bad)})))
             (when (and (= :t23 t) (seq (l22 after))) {:id :TL13 :evidence (l22 after)})
             (when (some #(and (= :exclusive (:event %))
                               (or (seq (:read-permits %))

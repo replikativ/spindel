@@ -294,7 +294,10 @@
   (let [base (cross-world-copy) child [:w 2] s (:state base)
         timer (first (for [[o ob] (:obligations (m/wr s child)) :when (= :timer (:kind ob))] o))]
     (is (empty? (violations base)) (pr-str (violations base)))
-    (is (some #(= :bundle (first %)) (:fdeps (m/wr s w))))
+    (is (some #(= child (:join-bundle %)) (:queue (m/wr s w))))
+    (let [admitted (execute s [{:t :t36 :w w}])]
+      (is (empty? (violations admitted)))
+      (is (some #(= [:bundle child #{[:signal 0]}] %) (:fdeps (m/wr (:state admitted) w)))))
     (is (:refusal (m/attempt s {:t :t06 :w child :o timer})))
     (let [s (:state (execute s [{:t :t24 :c [:cut 0]} {:t :t15 :w child}
                                 {:t :t26 :caller [:root v] :k [:cap 1] :op :seal :kind :discard}]))]
@@ -523,7 +526,7 @@
 
 (deftest inherited-activation-converts-bundle
   (let [fixture (cross-world-copy) child [:w 2]
-        s (:state (execute (:state fixture) [{:t :t24 :c [:cut 0] :e [:spin 3]}]))
+        s (:state (execute (:state fixture) [{:t :t36 :w w} {:t :t24 :c [:cut 0] :e [:spin 3]}]))
         timer (first (for [[o ob] (:obligations (m/wr s child)) :when (= :timer (:kind ob))] o))
         activated (execute s [{:t :t06 :w child :o timer}])
         state (:state activated)]
@@ -693,7 +696,7 @@
     reduction-equivalence smaller-settlement-exhaustion settlement-pareto-fallbacks
     shared-cuts-complete-protocol mixed-settlement-search broad-searches])
 
-(defn run7-suite!
+(defn run8-suite!
   "One JVM; sequential searches. Every multi-world smoke profile runs once."
   []
   (require 'org.replikativ.spindel.lifetime.generative-check)
@@ -721,7 +724,7 @@
                               (vals (ns-publics 'org.replikativ.spindel.lifetime.generative-check))))
                      (println "LIFETIME UNIT-COUNTS" @clojure.test/*report-counters*)
                      @clojure.test/*report-counters*))
-                 (run7-suite!))]
+                 (run8-suite!))]
     (shutdown-agents)
     (System/exit (if (zero? (+ (:fail counts) (:error counts))) 0 1))))
 
@@ -1181,9 +1184,6 @@
     (let [{:keys [actions target]} (check-io/read-witness file)
           result (execute actions)]
       (is (not-any? :refusal (:trace result)))
-      (is (some #(= target (:id %)) (first-failure actions)))
-      (is (= (count actions) (count (shortest-subsequence actions target))))
-      ;; Keep newly exposed invariant failures visible pending Part 4 triage.
       (is (empty? (violations result)) (str file " " (pr-str (violations result)))))))
 
 (deftest pending-start-cancellation-is-keyed
@@ -1239,7 +1239,7 @@
 
 (deftest held-control-traces-refine-zero-drain-p1
   ;; Refinement must use the same admission rule for ordinary and control
-  ;; envelopes. These traces still report their independent normative failures.
+  ;; envelopes. The resolved witnesses must agree under both protocols.
   (doseq [file ["run7/F52.edn" "run7/F53.edn"]]
     (let [actions (:actions (check-io/read-witness file))
           expanded (mapcat #(if (= :t20q (:t %))
@@ -1249,3 +1249,94 @@
       (is (not-any? :refusal (:trace p1)))
       (is (= (:state p1) (update-in (:state q) [:cuts [:cut 0]] dissoc :protocol)))
       (is (= (violations p1) (violations q))))))
+
+(deftest run8-artifact-replays
+  (doseq [file (check-io/read-witness "run8/index.edn")]
+    (let [{:keys [actions finding target]} (check-io/read-witness file)
+          result (execute actions)]
+      (is (seq actions) file)
+      (is (not-any? :refusal (:trace result)) file)
+      (when finding
+        (is (some #(= target (:id %)) (first-failure actions)) file)
+        (is (= actions (shortest-subsequence actions target)) file))
+      ;; New findings retain their normative assertions until specification triage.
+      (is (empty? (violations result)) (str file " " (pr-str (violations result)))))))
+
+(deftest run8-join-request-protocol
+  (let [actions (:actions (check-io/read-witness "run8/cancel-after-capture.edn"))
+        result (execute (take 8 actions)) state (:state result) child [:w 2]
+        request (first (:queue (m/wr state v)))
+        child-ob (get-in state [:worlds child :obligations [:o 1]])]
+    (is (empty? (violations result)))
+    (is (= child (:join-bundle request)))
+    (is (= #{[:spin 1]} (:debtors request)))
+    (is (= {[:o 1] {:debtor [:spin 1] :source-world w :source-o [:o 1]}} (:members request)))
+    (is (empty? (:fdeps (m/wr state v))))
+    (is (= [:pending-start] (inv/obligation-phases state child [:o 1] child-ob)))
+    (is (seq (inv/l10 (assoc-in state [:worlds v :queue] []))))
+    (let [corrupt (update-in state [:worlds v :fdeps] conj [:bundle child #{[:spin 1]}])]
+      (is (seq (inv/l10 corrupt))))
+    ;; T23 can enqueue requests, never write a foreign dependency from its basis.
+    (let [before (:before (last (:trace result)))
+          illegal (update-in state [:worlds v :fdeps] conj [:bundle child #{[:spin 1]}])]
+      (is (seq (inv/cut-footprint-errors before (last (take 8 actions)) illegal)))))
+  (let [actions (:actions (check-io/read-witness "run8/join-admitted.edn"))
+        attached (:state (execute (take 7 actions)))
+        child [:w 2]
+        admitted (execute attached [{:t :t36 :w v}])]
+    (is (= #{[:bundle child #{[:spin 1]}] [[:spin 1] w [:o 1]]}
+           (:fdeps (m/wr (:state admitted) v))))
+    (is (empty? (violations admitted)))
+    (let [obsolete (m/enqueue (:state admitted) v (dissoc (first (:queue (m/wr attached v))) :seq))
+          after (m/step obsolete {:t :t36 :w v})]
+      (is (= (:fdeps (m/wr (:state admitted) v)) (:fdeps (m/wr after v)))))))
+
+(deftest run8-copy-basis-evidence
+  (let [actions (:actions (check-io/read-witness "run7/F52.edn"))
+        captured (:state (execute (take 7 actions)))
+        child [:w 2]
+        attach (last actions)
+        held (get-in captured [:cuts [:cut 0] :basis w :held])
+        copied (m/step captured attach)]
+    (is (= (get-in captured [:env :outside]) held))
+    (is (= :cancelling (get-in captured [:cuts [:cut 0] :basis w :copy-evidence [:o 1] :phase])))
+    (is (= [{:cancelled [:o 1] :seq 1}] (:queue (m/wr copied child))))
+    ;; Removing the live mailbox after capture must not change the copied value.
+    (is (= (m/wr copied child)
+           (m/wr (m/step (assoc-in captured [:env :outside] []) attach) child)))
+    (is (= (get-in captured [:env :outside]) (get-in copied [:env :outside])))
+    (is (seq (inv/l22 (assoc-in copied [:worlds child :queue] []))))
+    (is (seq (inv/l22 (assoc-in copied [:worlds child :releasing] #{[[:spin 1] v [:o 1]]}))))))
+
+(deftest run8-fresh-start-retires-inherited
+  (let [timer-actions (take 3 (:actions (check-io/read-witness "run7/F54.edn")))
+        source (:state (execute timer-actions))
+        starter [{:t :t04 :w v :e [:spin 2]}
+                 {:t :t05 :w v :r [[:spin 2] 1] :kind :await-once :debtor [:entity v e]}]
+        foreign [{:t :t04 :w w :e [:spin 2]}
+                 {:t :t05 :w w :r [[:spin 2] 1] :kind :await-once :debtor [:entity v e]}
+                 {:t :t37 :w v}]]
+    (doseq [actions [[{:t :t04 :w v :e e}] starter foreign]]
+      (let [result (execute source actions) state (:state result)
+            resumed (m/step state {:t :t06 :w v :o [:o 1]})]
+        (is (not-any? :refusal (:trace result)))
+        (is (empty? (violations result)) (pr-str (violations result)))
+        (is (nil? (m/run state v r)))
+        (is (= [e 2] (m/current state v e)))
+        (is (nil? (get-in state [:worlds v :obligations [:o 1]])))
+        (is (nil? (m/ent state v [:timer [:o 1]])))
+        (is (= (m/wr state v) (m/wr resumed v)))
+        (is (= :parked (:status (m/run state w r))))))))
+
+(deftest run8-reissued-envelope-sequence
+  (let [old (:actions (check-io/read-witness "run7/F52.edn"))
+        arrivals (for [value [:first :second :third]]
+                   {:t :arrival :w w :event {:completion [:spin 1] :debtor-world v :value value}})
+        result (execute (concat (take 5 old) arrivals [(nth old 6) (last old)]))
+        child [:w 2] state (:state result)
+        after (m/enqueue state child {:completion [:spin 1] :debtor-world v :value :later})
+        events (inv/queued-events after child)]
+    (is (not-any? :refusal (:trace result)))
+    (is (empty? (violations result)) (pr-str (violations result)))
+    (is (= [:first :second :third :later] (mapv :value events)))
+    (is (= [1 2 3 4] (mapv :seq events)))))

@@ -157,7 +157,8 @@
 (defn pending-start? [s v o ob]
   (let [[kind w e] (:debtor ob)]
     (and (= :entity kind) (not= w v)
-         (some #(and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
+         (some #(or (and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
+                    (and (= v (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
                (pending-events s w)))))
 
 (defn cancelling? [s v o ob]
@@ -166,13 +167,15 @@
 
 (defn control-key [event]
   (if (:start-for event) [:start-for (:creditor-world event) (:o event)]
-      (first (for [k [:discard :cancelled :register-host :fdep-ended :fork-released]
+      (first (for [k [:discard :cancelled :register-host :fdep-ended :fork-released :join-bundle]
                    :when (contains? event k)] [k (get event k)]))))
 
 (defn enqueue [s w event]
   (cond
     (= :released (:status (wr s w)))
-    (cond (:start-for event) (enqueue s (:creditor-world event) {:cancelled (:o event) :value ::released})
+    (cond (:join-bundle event) (reduce #(enqueue %1 (:join-bundle event) {:cancelled %2 :value ::released})
+                                       s (keys (:members event)))
+          (:start-for event) (enqueue s (:creditor-world event) {:cancelled (:o event) :value ::released})
           (:register-host event) (emit s {:event :host-delivery :world w
                                           :o (:register-host event) :value ::released})
           :else s)
@@ -244,7 +247,10 @@
          t26-seal t34-release-world rule-l t08-deliver t36-cleanup t25-cut-fail step)
 
 (defn start-run [s w e owner cause]
-  (let [pred (current s w e) n (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0))) r [e n]
+  (let [inherited (for [[r rr] (:runs (wr s w))
+                        :when (and (= e (:spin rr)) (= :inherited (:status rr)))] r)
+        s (reduce #(t11-cancel %1 {:w w :r %2}) s inherited)
+        pred (current s w e) n (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0))) r [e n]
         seqno (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))]
     (require! (= :live (:status (wr s w))) ::sealed {:world w})
     (require! (open? s w owner) ::closed-scope {:world w :scope owner})
@@ -284,7 +290,7 @@
                     (-> s (update-in [:worlds w :entities] dissoc e)
                         (update-in [:worlds w :pins] disj e)
                         (update-in [:worlds w :queue]
-                                   #(vec (remove (fn [ev] (or (= e (:completion ev))
+                                   #(vec (remove (fn [ev] (or (and (= e (:completion ev)) (= w (:debtor-world ev)))
                                                               (= e (:signal-write ev)))) %)))
                         (update-in [:worlds w :runs]
                                    (fn [runs] (into {} (for [[r rr] runs]
@@ -573,13 +579,26 @@
   (reduce #(owner-release %1 w %2) s
           (vec (for [[e er] (:entities (wr s w)) :when (= scope (:owner er))] e))))
 
+(defn remove-request [event v o]
+  (cond
+    (and (= v (:creditor-world event)) (= o (:o event)) (:start-for event)) nil
+    (= v (:join-bundle event))
+    (let [members (dissoc (:members event) o)]
+      (when (seq members) (assoc event :members members :debtors (set (map :debtor (vals members))))))
+    :else event))
+
+(defn retire-request [s w v o]
+  (-> s (update-in [:worlds w :queue] #(vec (keep (fn [event] (remove-request event v o)) %)))
+      (update-in [:env :outside]
+                 #(vec (keep (fn [held]
+                               (if (= w (:w held))
+                                 (when-let [event (remove-request (:event held) v o)] (assoc held :event event))
+                                 held)) %)))))
+
 (defn cancel-foreign-debtor [s w v o]
   ;; These are this transaction's own rows, so no releasing/cleanup handshake.
   (let [ob (get-in s [:worlds v :obligations o]) e (nth (:debtor ob) 2)
-        request? #(and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
-        s (-> s (update-in [:worlds w :queue] #(vec (remove request? %)))
-              (update-in [:env :outside] #(vec (remove (fn [held] (and (= w (:w held))
-                                                                       (request? (:event held)))) %)))
+        s (-> s (retire-request w v o)
               (update-in [:worlds w :fdeps] disj [e v o])
               (enqueue v {:cancelled o}))
         other? (some (fn [[other candidate]]
@@ -710,24 +729,51 @@
                    (assoc-in [:worlds w :entities e :tokens] #{})) s))
            s (or es (keys (:entities (wr s w))))) w))
 
-(defn register-bundles [s v]
-  (reduce
-   (fn [s [o ob]]
-     (let [[kind dw e] (:debtor ob) source (:source-world ob)]
-       (if (and (= :entity kind) (not= dw v) (= :run (first (:creditor ob)))
-                (= :inherited (:status (run s v (nth (:creditor ob) 2)))))
-         (cond
-           (cancelling? s source o ob)
-           (let [event (first (filter #(= o (:cancelled %)) (pending-events s source)))]
-             (enqueue s v (dissoc event :seq)))
-           (pending-start? s source o ob)
-           (enqueue s dw {:start-for e :creditor-world v :o o})
-           :else (add-fdep s v o)) s)))
-   s (:obligations (wr s v))))
+(defn copy-evidence
+  "Capture phase and value envelopes once, before any copy is installed."
+  [s w]
+  (into {} (for [[o ob] (:obligations (wr s w))]
+             [o {:phase (cond (cancelling? s w o ob) :cancelling
+                              (pending-start? s w o ob) :pending-start
+                              :else :admitted)
+                 :cancelled (first (filter #(= o (:cancelled %)) (pending-events s w)))
+                 :completions (vec (filter #(and (= (nth (:debtor ob) 2 nil) (:completion %))
+                                                 (= (second (:debtor ob)) (get % :debtor-world w)))
+                                           (pending-events s w)))}])))
 
-(defn attach-world [s w v scope k systems child]
+(defn copy-queue [evidence obligations]
+  (let [events (distinct
+                (sort-by :seq
+                         (mapcat (fn [[o ob]]
+                                   (let [{:keys [cancelled completions]} (get evidence o)]
+                                     (concat (when cancelled [cancelled])
+                                             (map #(assoc % :debtor-world (second (:debtor ob))) completions))))
+                                 obligations)))]
+    (mapv #(assoc %1 :seq %2) events (range 1 (inc (count events))))))
+
+(defn register-bundles [s v evidence join?]
+  (let [inherited (for [[o ob] (:obligations (wr s v))
+                        :let [[kind dw e] (:debtor ob)]
+                        :when (and (= :entity kind) (not= dw v) (= :run (first (:creditor ob)))
+                                   (= :inherited (:status (run s v (nth (:creditor ob) 2)))))]
+                    [dw e o ob])
+        s (reduce (fn [s [dw e o _]]
+                    (case (get-in evidence [o :phase])
+                      :cancelling s
+                      :pending-start (enqueue s dw {:start-for e :creditor-world v :o o})
+                      (if join? s (add-fdep s v o)))) s inherited)]
+    (if-not join? s
+            (reduce (fn [s [dw rows]]
+                      (enqueue s dw {:join-bundle v :debtors (set (map second rows))
+                                     :members (into {} (for [[_ e o ob] rows]
+                                                         [o {:debtor e :source-world (:source-world ob) :source-o o}]))}))
+                    s (group-by first (filter #(= :admitted (get-in evidence [(nth % 2) :phase])) inherited))))))
+
+(defn attach-world [s w v scope k systems child evidence join?]
   (require! (not (contains? (:known-worlds s) v)) ::world-id-reused {:world v})
-  (let [s (-> s (assoc-in [:worlds v] child)
+  (let [last-seq (reduce max (get child :seq 0) (keep :seq (:queue child)))
+        s (-> s (assoc-in [:worlds v] child)
+              (cond-> (> last-seq (get child :seq 0)) (assoc-in [:clocks v] last-seq))
               (update :generation-clock #(reduce (fn [cl [r rr]]
                                                    (update cl [v (:spin rr)] (fnil max 0) (second r)))
                                                  (or % {}) (:runs child)))
@@ -743,7 +789,8 @@
                             (update-in s [:worlds v :entities e :tokens] set/union (covering-tokens s v e)) s)]
                     (reduce #(touch %1 v e %2) s (:tokens er))))
                 s (:entities child))
-        (register-bundles v))))
+        (register-bundles v evidence join?)
+        (rule-l v))))
 
 (defn copy-row [row w origin]
   (assoc row :origin origin :source-world w))
@@ -781,7 +828,10 @@
                                           (contains? es (nth (:debtor ob) 2 nil)) (copy-host? ob)))]
                        [o (cond-> (copy-obligation ob w v)
                             (= :host (first (:creditor ob))) (assoc :debtor [:entity v (nth (:debtor ob) 2)]))]))]
-    (attach-world s w v scope k systems (assoc child :runs copies :entities entities :obligations obs))))
+    (let [evidence (copy-evidence s w)]
+      (attach-world s w v scope k systems
+                    (assoc child :runs copies :entities entities :obligations obs
+                           :queue (copy-queue evidence obs)) evidence false))))
 
 (defn t20-cut-fence
   "T20 fence participants, holding later arrivals outside."
@@ -877,7 +927,9 @@
     (-> s (assoc-in [:env :threads th :excl-permits] components)
         (assoc-in [:cuts c :phase] :captured)
         (assoc-in [:cuts c :basis]
-                  (select-keys (:worlds s) (get-in cut [:participants :worlds])))
+                  (into {} (for [w (get-in cut [:participants :worlds])]
+                             [w (assoc (wr s w) :copy-evidence (copy-evidence s w)
+                                       :held (vec (filter #(= w (:w %)) (get-in s [:env :outside]))))])))
         (emit {:event :exclusive :thread th :read-permits (:read-permits thread)
                :components components}))))
 
@@ -904,7 +956,8 @@
                      (update :queue #(mapv (fn [ev] (cond-> ev (= w (:debtor-world ev))
                                                             (assoc :debtor-world v))) %)))
         parked (set (for [[r rr] (:runs base) :when (= :parked (:status rr))] r))
-        copied (-> replaced (assoc :id v :status :live :admission :fenced :seal-seq nil :fdeps #{})
+        copied (-> replaced (assoc :id v :status :live :admission :fenced :seal-seq nil :fdeps #{} :releasing #{})
+                   (dissoc :copy-evidence :held)
                    (assoc :lineage {:parent w :root (get-in base [:lineage :root])
                                     :mode mode :cut nil :basis nil})
 
@@ -916,7 +969,8 @@
                                        [id (cond-> (copy-row ob w :inherited)
                                              (#{:timer :external} (:kind ob)) (assoc :token nil :dormant? true)
                                              (= :host (first (:creditor ob))) (assoc :cont nil :descriptor? true))]))))]
-    copied))
+    (let [copied (assoc copied :queue (copy-queue (:copy-evidence base) (:obligations copied)))]
+      (wr (rule-l (assoc-in s [:worlds v] copied) v) v))))
 
 (defn t23-cut-attach
   "T23 attach a fenced logical basis with value-only causal descriptors."
@@ -929,7 +983,8 @@
                     (assoc-in [:lineage :cut] c)
                     (assoc-in [:lineage :basis] (:basis cut)))
           s (-> (attach-world s w v (:requester cut) k
-                              (get-in cut [:participants :systems]) child)
+                              (get-in cut [:participants :systems]) child
+                              (get-in cut [:basis w :copy-evidence]) true)
                 (assoc-in [:cuts c :phase] :attached) (assoc-in [:cuts c :child] v))]
       s)))
 
@@ -1185,6 +1240,29 @@
                 (update :registry disj w)
                 (update-in [:env :outside] #(vec (remove (fn [held] (= w (:w held))) %)))))))))
 
+(defn admit-join-bundle [s w event]
+  (let [v (:join-bundle event)]
+    (reduce
+     (fn [s [o {:keys [debtor source-world source-o]}]]
+       (if-let [ob (get-in s [:worlds v :obligations o])]
+         (let [source (get-in s [:worlds source-world :obligations source-o])
+               source-admitted? (and source (= [:entity w debtor] (:debtor source))
+                                     (or (contains? (:fdeps (wr s w)) [debtor source-world source-o])
+                                         (some (fn [[tag target d]]
+                                                 (and (= :bundle tag) (= source-world target) (contains? d debtor)))
+                                               (:fdeps (wr s w)))))
+               admitted? (or (contains? (:fdeps (wr s w)) [debtor v o])
+                             (some (fn [[tag target d]] (and (= :bundle tag) (= v target) (contains? d debtor)))
+                                   (:fdeps (wr s w))))]
+           (cond
+             (or admitted? (cancelling? s v o ob)) s
+             (and (= :live (:status (wr s w))) (ent s w debtor) source-admitted?)
+             (cond-> (add-fdep s v o)
+               (:completed? (ent s w debtor))
+               (enqueue v {:completion debtor :debtor-world w :value (:result (ent s w debtor))}))
+             :else (enqueue s v {:cancelled o :value ::released}))) s))
+     s (:members event))))
+
 (defn t36-cleanup
   "T36 local cleanup; an event whose row has gone is a no-op."
   [s {:keys [w]}]
@@ -1193,6 +1271,7 @@
             _ (require! ev ::empty-queue {:w w})
             s (update-in s [:worlds w :queue] #(vec (rest %)))
             s (cond
+                (:join-bundle ev) (admit-join-bundle s w ev)
                 (:fdep-ended ev) (update-in s [:worlds w :releasing] disj (:fdep-ended ev))
                 (:cancelled ev) (let [o (:cancelled ev)]
                                   (-> s (t06-resume {:w w :o o :value (:value ev ::cancelled)})
@@ -1295,7 +1374,7 @@
                  _ (require! ev ::empty-queue {:w w})
                  s (update-in s [:worlds w :queue] #(vec (rest %)))]
              (cond (:action ev) (step s (:action ev))
-                   (some ev [:fdep-ended :cancelled :fork-released]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
+                   (some ev [:fdep-ended :cancelled :fork-released :join-bundle]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
                    (:start-for ev) (t37-start-for (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
                    (:register-host ev)
                    (let [e (:e ev) o (:register-host ev)]
@@ -1532,7 +1611,7 @@
             (for [[o ob] (:obligations world) :when (:standing? ob)] {:t :unsubscribe :w w :o o})
             (for [[e er] (:entities world) :when (and live (#{:signal :atom} (:kind er)) (:owner er))]
               {:t :signal-write :w w :e e :value (not (:result er))})
-            (when (seq (:queue world)) [{:t (if (some (first (:queue world)) [:fdep-ended :cancelled :fork-released]) :t36 (if (:start-for (first (:queue world))) :t37 :queued)) :w w}])))) worlds)
+            (when (seq (:queue world)) [{:t (if (some (first (:queue world)) [:fdep-ended :cancelled :fork-released :join-bundle]) :t36 (if (:start-for (first (:queue world))) :t37 :queued)) :w w}])))) worlds)
       (mapcat (fn [[c cut]]
                 (concat [{:t :t25 :c c}]
                         (case (:phase cut)
