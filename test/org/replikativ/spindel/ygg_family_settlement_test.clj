@@ -414,3 +414,23 @@
         (is (= [{:system "book" :key :line-2 :intent :w-2 :with :parent}] conflicts)
             "its conflicts are the parent's claims on their footprints"))
       (ygg/discard-fork! w))))
+
+(deftest family-recovery-authenticates-every-supplied-capability
+  (doseq [invalid [:stale-participant :transferred-loser :discarded-loser :open-loser]
+          explicit-id? [false true]]
+    (testing (str invalid ", explicit id: " explicit-id?)
+      (with-book [book 1]
+        (let [[a b loser] (ygg/copy-fork! (ygg/fork!) 3)
+              adopted (when (= invalid :stale-participant) (ygg/transfer-fork! a :adopted))
+              _ (when (= invalid :transferred-loser) (ygg/transfer-fork! loser :other))
+              _ (when (= invalid :discarded-loser) (ygg/discard-fork! loser))
+              participants [(or adopted a) b]
+              bad (if adopted a loser)
+              opts (if explicit-id? {:operation-id :authenticated} {})]
+          (is (= ::ygg/family-stamp-failed
+                 (thrown-type #(ygg/settle-family! participants {:operation-id :authenticated}))))
+          (is (some? (thrown-type #(ygg/settle-family! [(first participants) bad] opts))))
+          (is (= 1 @(:stamp-calls book)) "invalid callers cannot invoke the saved operation")
+          (is (= :failed (:status (ygg/copy-family b))))
+          (ygg/settle-family! [b] opts)
+          (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) participants))))))))

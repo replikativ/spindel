@@ -2480,6 +2480,10 @@
    (ensure-sync! opts :merge)
    (let [family (family-of members)
          f @family]
+     (doseq [member members
+             :let [state @(:authority member)]]
+       (when-not (= (:token member) (:token state))
+         (throw (authority-error member state))))
      (cond
        (and (= :merged (:status f))
             (every? #(contains? (:winners f) (:fork-id %)) members))
@@ -2491,6 +2495,14 @@
 
        (= :failed (:status f))
        (do
+         ;; Authenticate the caller's subset before looking up the saved work.
+         ;; Captured handles in :resume cannot confer authority on its caller.
+         (doseq [member members
+                 :let [state @(:authority member)]]
+           (when-not (and (contains? (:winners f) (:fork-id member))
+                          (= :incomplete (:status state))
+                          (= (:operation-id f) (:operation-id state)))
+             (throw (authority-error member state))))
          (when (and (:operation-id opts) (not= (:operation-id opts) (:operation-id f)))
            (throw (ex-info "The copy family's operation id changed"
                            {:type ::copy-family-settled :family (:id f) :status (:status f)})))
