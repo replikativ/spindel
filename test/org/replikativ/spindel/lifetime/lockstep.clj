@@ -327,6 +327,19 @@
                                 (:standing? ob) (not= :host (first (:creditor ob)))))
               (get-in before [:worlds w :obligations])) :reactive-reentry))))
 
+(defn changed-entities [before after]
+  (set (mapcat
+        (fn [w]
+          (concat
+           (for [e (set/union (set (keys (get-in before [:worlds w :entities])))
+                              (set (keys (get-in after [:worlds w :entities]))))
+                 :when (not= (m/ent before w e) (m/ent after w e))] [w e])
+           (for [r (set/union (set (keys (get-in before [:worlds w :runs])))
+                              (set (keys (get-in after [:worlds w :runs]))))
+                 :when (not= (m/run before w r) (m/run after w r))]
+             [w (or (:spin (m/run before w r)) (:spin (m/run after w r)))])))
+        (keys (:worlds after)))))
+
 (defn model-macrostep [before action rejections]
   (let [action (update action :w #(or % [:w 0]))
         first-step (m/attempt (assoc before :events []) action)]
@@ -346,7 +359,8 @@
           (let [delivery (merge {:t :t08 :w w :e (:completion event)} (dissoc event :completion :seq))]
             (recur after delivery (m/attempt after delivery) constituents deliveries normative))
           {:state after :refusal (:refusal first-step) :constituents constituents
-           :deliveries deliveries :model-normative normative :policy drain-policy})))))
+           :deliveries deliveries :model-normative normative :policy drain-policy
+           :affected-entities (changed-entities (:state first-step) after)})))))
 
 (defn host-template? [driver w e]
   (let [{:keys [materialized host-templates parents]} @driver]
@@ -374,6 +388,13 @@
         (and (= :t08 (:t witness)) (= (:w witness) (:w a)) (= (:e witness) (:e a))
              (every? (fn [[k v]] (= v (get a k))) (dissoc witness :t))))))
 
+(defn touches-drain? [affected action]
+  (let [w (or (:w action) [:w 0])]
+    (or (contains? affected [w (:e action)])
+        (contains? affected [w (first (:r action))])
+        (and (= :entity (first (:debtor action)))
+             (contains? affected [(second (:debtor action)) (last (:debtor action))])))))
+
 (defn replay
   "Compare at observable boundaries; retain constituent model microsteps.
    Required internal interleavings need a native hook, never a translated walk."
@@ -398,13 +419,16 @@
                        rejections (if (and (= :t07 (:t a)) (:throw a))
                                     (assoc rejections [w (first (:r a))] (:throw a)) rejections)
                        {after :state refusal :refusal expected-delivered :deliveries
-                        :keys [constituents policy model-normative]} (model-macrostep state a rejections)
+                        :keys [constituents policy model-normative affected-entities]} (model-macrostep state a rejections)
                        drained (rest constituents)
                        matching (take-while true? (map constituent-match? (next remaining) drained))
                        consumed (count matching)
                        pending-drain (drop consumed drained)
-                       internal-interleaving? (some (fn [later] (some #(constituent-match? later %) pending-drain))
-                                                    (drop (inc consumed) remaining))]
+                       internal-interleaving? (and (seq pending-drain)
+                                                   (some (fn [later]
+                                                           (or (some #(constituent-match? later %) pending-drain)
+                                                               (touches-drain? affected-entities later)))
+                                                         (drop (inc consumed) remaining)))]
                    (if internal-interleaving?
                      {:status :skipped :reason {:reason :needs-microstep-hook :detail :witness-interleaving}
                       :action a :checked (count trace) :trace trace :boundaries boundaries :model-normative normative}

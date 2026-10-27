@@ -219,3 +219,9 @@
       (let [result (lockstep/replay [])]
         (is (= :discrepancy (:status result)))
         (is (= :state (get-in result [:differences 0 :kind])))))))
+
+(deftest completion-cannot-hide-an-implicit-interleaving
+  (let [actions (conj (lockstep/scripted-corpus :completion) {:t :t11 :w w :r [e 1]})
+        result (lockstep/replay actions)]
+    (is (= :skipped (:status result)))
+    (is (= :needs-microstep-hook (get-in result [:reason :reason])))))
