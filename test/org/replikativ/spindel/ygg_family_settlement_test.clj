@@ -38,10 +38,17 @@
   throw before the next one succeeds."
   [& [fail-stamps]]
   (let [journal (atom {:next 1 :numbers {}})
+        stamp-calls (atom 0)
+        realize-calls (atom 0)
+        observe-stamp (atom nil)
         failures (atom (or fail-stamps 0))]
     {:journal journal
+     :stamp-calls stamp-calls
+     :realize-calls realize-calls
+     :observe-stamp observe-stamp
      :policy
      {:grade :linear
+      :realize (fn [_] (swap! realize-calls inc))
       :intents (fn [{:keys [system-id child-ctx parent-ctx]}]
                  (for [d (set/difference (elements child-ctx system-id)
                                          (elements parent-ctx system-id))]
@@ -51,6 +58,8 @@
                                 (set/difference (elements parent-ctx system-id)
                                                 (elements child-ctx system-id))))
       :stamp (fn [{:keys [system-id parent-ctx final? contributions]}]
+               (swap! stamp-calls inc)
+               (when-let [observe @observe-stamp] (observe))
                (when (pos? @failures)
                  (swap! failures dec)
                  (throw (ex-info "writer unavailable" {})))
@@ -65,7 +74,8 @@
                                       (if (contains? (:numbers j) (prov d))
                                         j
                                         (-> j (assoc-in [:numbers (prov d)] (:next j)) (update :next inc))))
-                                    j drafts))))))}}))
+                                    j drafts)))))
+               nil)}}))
 
 (defmacro ^:private with-book [[book & [fails]] & body]
   `(let [ctx# (sp/create-execution-context)
@@ -141,11 +151,19 @@
     (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)]
       (add! a "book" (draft :a-1 1 :x))
       (add! b "book" (draft :b-1 2 :y))
-      (is (= ::ygg/family-stamp-failed (thrown-type #(ygg/settle-family! [a b]))))
+      (is (= ::ygg/family-stamp-failed
+             (thrown-type #(ygg/settle-family! [a b] {:operation-id :reconciled-stamp}))))
       (is (= :failed (:status (ygg/copy-family a))))
+      (is (= [:incomplete :incomplete]
+             (mapv #(-> % ygg/fork-disposition :status) [a b])))
+      (is (= :incomplete (:fork/status (ygg/copied-descriptor a (ygg/copied-from a (:fork-id a))))))
       (is (= {} (:numbers @(:journal book))))
+      (is (= ::ygg/copy-family-settled (thrown-type #(ygg/merge-fork! a))))
+      (is (= ::ygg/copy-family-settled
+             (thrown-type #(ygg/settle-family! [a] {:operation-id :different}))))
       (ygg/settle-family! [a])
       (is (= :merged (:status (ygg/copy-family a))))
+      (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) [a b])))
       (is (= {:a-1 1 :b-1 2} (:numbers @(:journal book))))
       (ygg/settle-family! [a])
       (is (= {:a-1 1 :b-1 2} (:numbers @(:journal book))) "idempotent"))))
@@ -203,14 +221,145 @@
       (is (= #{:w-1 :a-1} (set (map prov (elements "book"))))))))
 
 (deftest a-failed-single-stamp-is-retried
-  (with-book [book 1]
+  (with-book [book 2]
     (let [w (ygg/fork!)]
       (add! w "book" (draft :w-1 1 :x))
-      (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w))))
-      (is (= {} (:numbers @(:journal book))))
-      (is (= 1 (count (ygg/retry-stamps!))))
+      (let [error (try (ygg/merge-fork! w) nil
+                       (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= ::ygg/stamp-failed (:type error)))
+        (is (= :incomplete (:status (ygg/fork-disposition w))))
+        (is (= {} (:numbers @(:journal book))))
+        (is (= ::ygg/stamp-failed (thrown-type #(ygg/retry-stamps!))))
+        (is (= :incomplete (:status (ygg/fork-disposition w))))
+        (is (= [(:pending error)] (ygg/retry-stamps!))))
+      (is (= :merged (:status (ygg/fork-disposition w))))
       (is (= {:w-1 1} (:numbers @(:journal book))))
       (is (= [] (ygg/retry-stamps!)) "nothing pending"))))
+
+(deftest stamp-recovery-uses-the-original-operation-and-defers-the-callback
+  (with-book [book 1]
+    (let [w (ygg/fork!)
+          callbacks (atom [])
+          phases (atom [])
+          opts {:operation-id :single-stamp
+                :on-merge #(swap! callbacks conj %)}]
+      (reset! (:observe-stamp book)
+              #(swap! phases conj (select-keys (ygg/fork-disposition w) [:status :phase])))
+      (add! w "book" (draft :w-1 1 :x))
+      (add! w "kb" :ordinary-change)
+      (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w opts))))
+      (is (= {:status :incomplete :phase :mutating :operation-id :single-stamp}
+             (select-keys (ygg/fork-disposition w) [:status :phase :operation-id])))
+      (is (empty? @callbacks))
+      (is (= ::ygg/fork-not-open (thrown-type #(ygg/discard-fork! w))))
+      (is (= ::ygg/fork-not-open (thrown-type #(ygg/transfer-fork! w :other))))
+      (is (= ::ygg/fork-not-open
+             (thrown-type #(ygg/merge-fork! w {:operation-id :different}))))
+      (is (= ::ygg/fork-not-open (thrown-type #(ygg/merge-fork! w))))
+      (let [result (ygg/merge-fork! w {:operation-id :single-stamp})]
+        (is (= :merged (:status (ygg/fork-disposition w))))
+        (is (= result (ygg/merge-fork! w)))
+        (is (= 1 (count @callbacks)))
+        (is (= #{:ordinary-change} (elements "kb")))
+        (is (= {:w-1 1} (:numbers @(:journal book))))
+        (is (= 2 @(:stamp-calls book)))
+        (is (= 1 @(:realize-calls book)) "completed hooks are not replayed")
+        (is (= [{:status :settling :phase :mutating}
+                {:status :settling :phase :mutating}] @phases))
+        (is (= [] (ygg/retry-stamps!)))))))
+
+(deftest nested-copy-stamp-failure-keeps-every-capability-incomplete
+  (with-book [book 1]
+    (let [w (ygg/fork!)
+          _ (add! w "book" (draft :w-1 1 :x))
+          [a loser] (ygg/copy-fork! w 2)
+          [winner] (ygg/copy-fork! a 1)
+          phases (atom [])
+          statuses #(mapv (fn [id] (:fork/status (ygg/copied-descriptor winner id)))
+                          [(:fork-id a) (:fork-id w)])]
+      (add! winner "book" (draft :winner-1 2 :y))
+      (reset! (:observe-stamp book) #(swap! phases conj (statuses)))
+      (is (= ::ygg/stamp-failed
+             (thrown-type #(ygg/merge-fork! winner {:operation-id :copy-stamp}))))
+      (is (= :incomplete (:status (ygg/fork-disposition winner))))
+      (is (= [:incomplete :incomplete] (statuses)))
+      (is (not= :merged (:status (ygg/copy-family winner))))
+      (is (= ::ygg/copy-family-settled (thrown-type #(ygg/settle-family! [winner]))))
+      (ygg/merge-fork! winner {:operation-id :copy-stamp})
+      (is (= :merged (:status (ygg/fork-disposition winner))))
+      (is (= [:merged :merged] (statuses)))
+      (is (= [[:settling :settling] [:settling :settling]] @phases))
+      (is (= {:w-1 1 :winner-1 2} (:numbers @(:journal book))))
+      (ygg/discard-fork! loser))))
+
+(deftest successful-stamp-precedes-terminal-and-runs-once
+  (with-book [book]
+    (let [w (ygg/fork!)
+          events (atom [])
+          opts {:on-merge (fn [_] (swap! events conj (:status (ygg/fork-disposition w))))}]
+      (add! w "book" (draft :w-1 1 :x))
+      (reset! (:observe-stamp book)
+              #(swap! events conj (select-keys (ygg/fork-disposition w) [:status :phase])))
+      (let [result (ygg/merge-fork! w opts)]
+        (is (= result (ygg/merge-fork! w opts)))
+        (is (contains? (:stamps result) "book"))
+        (is (nil? (get-in result [:stamps "book"])))
+        (is (= [{:status :settling :phase :mutating} :merged] @events))
+        (is (= 1 @(:stamp-calls book)))))))
+
+(deftest successful-stamp-steps-are-not-replayed-on-recovery
+  (with-book [book]
+    (let [other (toy-book 1)]
+      (ygg/register! (mem-gset "zzz") (:policy other))
+      (let [w (ygg/fork!)]
+        (add! w "book" (draft :first 1 :x))
+        (add! w "zzz" (draft :second 1 :y))
+        (is (= ::ygg/stamp-failed
+               (thrown-type #(ygg/merge-fork! w {:operation-id :two-stamps}))))
+        (is (= 1 @(:stamp-calls book)))
+        (ygg/merge-fork! w {:operation-id :two-stamps})
+        (is (= 1 @(:stamp-calls book)) "the successful system's witness is reused")
+        (is (= 2 @(:stamp-calls other)))
+        (is (= {:first 1} (:numbers @(:journal book))))
+        (is (= {:second 1} (:numbers @(:journal other))))))))
+
+(deftest a-partly-committed-stamp-retries-the-original-contributions
+  (let [ctx (sp/create-execution-context)
+        book (toy-book)
+        fail? (atom true)
+        seen (atom [])
+        policy (update (:policy book) :stamp
+                       (fn [stamp]
+                         (fn [args]
+                           (swap! seen conj (mapv :intent/id (mapcat :intents (:contributions args))))
+                           (let [result (stamp args)]
+                             (when (compare-and-set! fail? true false)
+                               (throw (ex-info "failed after committing" {})))
+                             result))))]
+    (sp/with-context ctx
+      (ygg/register! (mem-gset "book") policy)
+      (let [w (ygg/fork!)]
+        (add! w "book" (draft :w-1 1 :x))
+        (is (= ::ygg/stamp-failed
+               (thrown-type #(ygg/merge-fork! w {:operation-id :partial-stamp}))))
+        (is (= :incomplete (:status (ygg/fork-disposition w))))
+        (is (= {:w-1 1} (:numbers @(:journal book))))
+        (ygg/merge-fork! w {:operation-id :partial-stamp})
+        (is (= :merged (:status (ygg/fork-disposition w))))
+        (is (= [[:w-1] [:w-1]] @seen))
+        (is (= {:w-1 1} (:numbers @(:journal book))))))))
+
+(deftest checkpoint-stamp-retry-remains-available
+  (with-book [book 2]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :x))
+      (is (= ::ygg/stamp-failed (thrown-type #(ygg/checkpoint! w))))
+      (is (= :open (:status (ygg/fork-disposition w))))
+      (is (thrown? clojure.lang.ExceptionInfo (ygg/retry-stamps!)))
+      (is (= 1 (count (ygg/retry-stamps!))))
+      (is (= [] (ygg/retry-stamps!)))
+      (is (= {:w-1 1} (:numbers @(:journal book))))
+      (ygg/discard-fork! w))))
 
 (deftest a-settled-family-cannot-settle-again
   (with-book [book]
