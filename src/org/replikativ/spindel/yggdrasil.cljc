@@ -2357,7 +2357,8 @@
    Returns the ids retried; one that fails again stays pending and throws."
   ([] (retry-stamps! (ec/current-execution-context)))
   ([ctx]
-   (vec (for [[id plan] (rtp/get-state ctx [pending-stamps-key])]
+   (vec (for [[id plan] (rtp/get-state ctx [pending-stamps-key])
+              :when (= (:fork-id ctx) (:fork-id (:parent-ctx plan)))]
           (do (if-let [retry (:retry plan)] (retry) (stamp! plan))
               (rtp/swap-state! ctx [pending-stamps-key] #(dissoc % id))
               id)))))

@@ -9,6 +9,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [clojure.set :as set]
             [yggdrasil.convergent.gset :as g]))
@@ -434,3 +436,28 @@
           (is (= :failed (:status (ygg/copy-family b))))
           (ygg/settle-family! [b] opts)
           (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) participants))))))))
+
+(deftest pending-stamp-retries-belong-only-to-the-parent-world
+  (doseq [mode [:following :frozen]]
+    (with-book [book 1]
+      (let [parent ec/*execution-context*
+            w (ygg/fork!)
+            callbacks (atom 0)
+            opts {:operation-id :world-owned :on-merge (fn [_] (swap! callbacks inc))}]
+        (add! w "book" (draft :w-1 1 :x))
+        (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w opts))))
+        (let [child (ctx/fork-context parent :mode mode)
+              snapshot (ctx/snapshot-context parent :clean-in-flight? false)]
+          (is (empty? (rtp/get-state child [::ygg/pending-stamps])))
+          (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
+          ;; Whole-state materialization must not cache an executable parent entry.
+          (is (empty? (get (rtp/get-state child []) ::ygg/pending-stamps)))
+          (is (= [] (ygg/retry-stamps! child)))
+          (is (= :incomplete (:status (ygg/fork-disposition w))))
+          (is (= 0 @callbacks))
+          (ygg/merge-fork! w {:operation-id :world-owned})
+          (is (= 1 @callbacks))
+          (is (= [] (ygg/retry-stamps! parent)))
+          (is (empty? (get (rtp/get-state child []) ::ygg/pending-stamps)))
+          (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
+          (is (= [] (ygg/retry-stamps! (ctx/restore-snapshot snapshot :drain-events? false)))))))))
