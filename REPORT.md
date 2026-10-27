@@ -341,3 +341,234 @@ Commits before this report/data commit:
 No push or amend. Source and model semantics remain unchanged. The requested
 baseline and full-suite run completed; only the additional causal probe remains
 unrun. All remaining lifetime acceptance gaps are explicit above.
+
+## Fix round 1
+
+Starting revision: `d2e9342`. The eight pivot findings are addressed in the
+harness and measurement contracts. Runtime `src/`, the read-only specification,
+plan, model transitions and invariant predicates are unchanged.
+
+### Comparison and driver contracts (findings 1, 2, 3, 7, 8)
+
+`lockstep.clj/components` now owns each component's model/projected paths and
+views, availability predicate, comparison operation, covered kinds/fields,
+exclusions and invariant prerequisites. There are **22 descriptors**; only the
+read-visible entity component is implemented. Enabling any unavailable component
+returns an `:unavailable-component` discrepancy before comparison, including an
+empty trace. Initial available state is also compared. Environment waiters/native
+registrations, outside events/threads, world status/root, registry history, and
+both runtime and durable capability/record locations are declared explicitly.
+Unavailable views require implementation before enablement; a switch cannot opt
+an absent environment or durable table into a vacuous predicate pass.
+
+`invariant-coverage` derives prerequisites and full/partial status from the
+component descriptors. The current law check remains **partial L12 over projected
+entity data**, not full L12 or full lifetime acceptance. A regression enables
+L24 from its actual waiter/obligation prerequisites and verifies that it runs.
+`action-support` now carries each action's status, argument restriction, native
+dispatch and implementing plan step; T8 is explicitly macro-step-only.
+
+`entity-view` keeps unexpected kinds and missing rows visible. `project` includes
+unmapped runtime atoms through PState as well as nodes. The only model-kind
+exclusion is the explicitly declared C2 fork entity. Host-template exclusions
+come from exact driver registrations/materializations and fork ancestry, rather
+than `:run-gen`, `:created-by` or other runtime metadata under review.
+
+`Payload`/`canonical-view` protect complete result/snapshot payloads before the
+model alpha-renamer runs, then restore them literally. All component views share
+one renaming namespace, preserving links between components. Tests mutate every
+reserved tag (`:w`, `:scope`, `:o`, `:tok`, `:op`, `:cap`, `:cut`) in both signal
+values and token-retained cached spin results, including nested maps/vectors/sets.
+There are missing-row and wrong-value mutations for both implemented entity kinds,
+44 fail-closed assertions (22 components × empty/nonempty traces), unexpected-kind
+mutations and an actual unexpected-runtime-atom regression.
+
+`discrepancy-key` includes invariant IDs and evidence relation/shape (including
+index/field), in addition to state deltas and both refusal types. Deletion cannot
+substitute L12 for L4, or collapse different L4 index relations.
+
+`acceptance`/`step-requirements` add a required witness/transition/component/search
+contract next to diagnostic mode. Required absent, stopped, divergent or truncated
+items fail; refused actions do not count as transition coverage. Required
+components must be enabled **and actually available**. Normative failures are
+collected over every historical model walk and reported separately; a required
+normative failure has `:model-failed` status with its runtime result retained.
+Unrelated normative failures do not reject an otherwise passing step.
+
+The standalone diagnostic command documented above still works. For the
+step-specific gate, append `accept A3` after its output filename (or substitute
+the implementing step). The default requirements are conservative: all historical
+witnesses touching that step's declared actions, its components, and the declared
+required searches. `acceptance` also accepts explicit requirement sets.
+
+### Observable completion contract (finding 4)
+
+`model-macrostep` applies unchanged T7, then the local FIFO completion T8 generated
+by that call. It aggregates edge-local host deliveries and records the policy,
+constituent actions, their full model invariant results, and induced resume audit
+events in `:boundaries`. T8's induced T6 is part of that atomic model transition;
+no model function or transition boundary was changed. Runtime/model state is
+compared after the synchronous call returns to a script checkpoint. A local
+awaiting parent resumes correctly in the added regression.
+
+A scripted `:throw` defines rejection delivery (`:error` with its error type);
+ordinary results, including a literal `{:error ...}` map, are `:value` payloads.
+The adapter retains rejection provenance for cached delivery comparison.
+Pre-existing queues, foreign drains, unsupported reactive re-entry and witness
+interleavings require a **`:needs-microstep-hook`** stop. Immediate matching
+witness T8/queue actions are recorded as already executed constituents. A later
+matching drain, or later action touching a drain participant before an explicit
+boundary, cannot be silently reordered. This includes a delivery-only participant
+whose entity row does not change. No unrelated environment event is drained.
+
+### Executed fail-before evidence
+
+Evidence is under `~/Development/spindel-work/impl/a3/`:
+
+- `fix1-original-regressions.log`: load the exact `d2e9342` harness, then execute
+  the new regression scenarios: **56 failed assertions and 3 errors**. This
+  confirms component, payload, kind-filter, completion and invariant-signature
+  defects against the old implementation, rather than merely predicting them.
+- `fix1-interleaving-before.log`: the pre-interleaving adapter (`7b362d3`) fails
+  **4 assertions**, covering implicit cancellation interleavings for both plain
+  and reactive completions. The final smoke suite passes those same assertions.
+- `fix1-gates-before.log`: original gate rules falsely accept duplicate fixtures,
+  reordered positional fixtures, a changed JDK and absent metadata: **4 failures**.
+- `fix1-retention-before.log`: restoring the old stable-census-only criterion
+  causes **5 failures** for heap drift, pending work, absent GC completion,
+  insufficient samples and missing census evidence.
+- `fix1-adapter-pure.log`: independent executable checks of T7/T8 constituents,
+  deliveries, induced resume, model/runtime acceptance attribution and semantic
+  interleaving footprints pass.
+
+### Coverage after the adapter
+
+The new complete artifact is
+`dev/org/replikativ/spindel/baselines/lockstep-main-06ce205-fix1.edn`.
+Checked prefixes, full witness passes, microsteps and stop reasons remain distinct.
+
+| Corpus | Complete passes | Stopped | Divergent |
+| --- | ---: | ---: | ---: |
+| Historical witnesses (87) | **4** | 74 | 9 |
+| Scripted walks (9) | **7** | 0 | 2 |
+| Exhaustive/profile walks (9) | 3 | 4 | 2 |
+| Seeded generated walks (20) | 0 | 16 | 4 |
+| Total (125) | **14** | **94** | **17** |
+
+Historical complete passes remain **4/87** (the host-readthrough witnesses).
+The adapter makes scripted successful completion and rejection pass, increasing
+all-walk passes from **12 to 14**. The four dirty-cache witnesses request an
+internal cancellation interleaving and now stop explicitly for a microstep hook;
+they are not accepted as completed witnesses. There are 11 minimized discrepancy
+signatures. One-spin still exhausts 5 states/5 edges; source-only 3 states/2 edges.
+Exhaustion alone does not accept their divergent or stopped walks.
+
+Evaluating the A3 requirements over this exact report exits **1**: 78 required
+witnesses, 74 required-witness failures, missing successful T11 coverage, and the
+required one-spin search's unsuccessful walks. `fix1-acceptance.edn` retains the
+requirements and every failure. The unchanged model separately reports F50/L16
+and F51/L10. Diagnostic exit **1** therefore remains intentional; no discrepancy
+or missing coverage was waived to obtain a green acceptance claim.
+
+### Measurement contract (findings 5, 6)
+
+`lifetime-gate-rules/{fixture-dimensions,measurement-protocol,validate!,evaluate}`
+keys fork results by `:small`, `:large`, `:populated`, validates exact fixture
+identities/dimensions and every raw sample, and requires protocol version **2**.
+Java version/vendor, OS/version, architecture, CPU count, heap limit, JVM options,
+machine, executor, allocation scope, admission and the measurement protocol must
+be present and compatible. Source revisions remain provenance and may differ.
+Reordering map entries has no effect; reordered positional reports and duplicate
+fixture substitutions are rejected. Old protocol reports are rejected.
+
+`fork-bench/benchmark` warms all shapes, measures fresh roots in the rotating
+order small/large/populated, large/populated/small, populated/small/large, and
+retains all three samples per fixture with median time/allocation. Each fixture
+has a recorded post-teardown GC/heap series outside its measured operation cost.
+`enum-bench/benchmark` warms both shapes in separate roots before measuring fresh
+100k-cycle roots. `full-gc!` records collector counts before/after every request,
+heap and census observations, cleanup completion and excluded GC wait time.
+Stabilization requires three completed-collection observations, expected terminal
+work/index counts of zero, stable census and heap spread at most 0.5%, with a
+30-second deadline. That tolerance is measurement stabilization, not a relaxation
+of the plan's 5% retention gate. Stored gates validate the observation series,
+not only its summary flag.
+
+The 18 census entries include metadata/callbacks, pending work, retired
+continuations, `[:addressing :chain-heads]` and `[:addressing :occurrences]`.
+`:following-worlds-live` is a 0/1 presence sentinel via the public following-fork
+query, not a claim of an exact registry count before C1. Auxiliary addressing rows
+are recorded separately from terminal pending-work expectations; their surviving
+counts remain visible as retention evidence. Calling-thread allocation remains
+scoped to that thread; Cleaner work is not claimed as total JVM allocation.
+
+### Re-recorded main baseline
+
+`main-06ce205.edn` was re-recorded **once**, using
+`exclusive.sh a3-fix1-baseline clojure -J-Xmx3g -M:bench -m ...lifetime-gates measure ...`.
+Measurement code revision: `568c83d`; runtime source tree remains
+`b1a9ec1ad9e9108de54a9dc9953f80008a640452` (main `06ce205`). Host: maturana,
+Linux amd64, 8 CPUs, Oracle Java 25.0.1; heap limit 3,221,225,472 B.
+Start: **2026-10-27T12:01:43Z**. Full JVM flags, platform version, raw distributions,
+collection completions and heap/census series are saved in the artifact.
+
+| Lifecycle | Median µs/spin | KiB/spin |
+| --- | ---: | ---: |
+| L0 | 94.015 | 47.930 |
+| L-child | 443.641 | 316.175 |
+| L2-await | 106.587 | 94.179 |
+| L2-track | 87.919 | 78.964 |
+
+| Fork fixture | Median µs/fork | Median B/fork |
+| --- | ---: | ---: |
+| 1k worlds / empty | 62.156 | 33,623.992 |
+| 5k worlds / empty | 160.125 | 54,596.632 |
+| 1k worlds / 10k entities / 1k parked | 75.602 | 33,639.992 |
+
+| Enumeration | Heap at 10k, B | Heap at 100k, B | Ratio | cycles/s |
+| --- | ---: | ---: | ---: | ---: |
+| fork→run→discard | 38,540,120 | 38,818,808 | 1.007231 | 7,041.512 |
+| spin create/complete | 42,887,944 | 87,380,768 | **2.037420** | 14,623.900 |
+
+All four enumeration checkpoints reached cleanup and heap stability in
+1.70–2.44 seconds. Terminal node, metadata, continuation, callback and pending-work
+counts are zero. The spin root retains **10,000 → 100,000 chain-head rows**;
+occurrence and retired-continuation counts are zero in this measurement. This
+pins a surviving index; it does not attribute every retained byte to that index.
+The saved observations also show large heap drops after the first collection
+while those counts remain constant, demonstrating why census stability alone
+was insufficient.
+
+**14 gates pass, 5 fail** (`fix1-gates-main.log`, exit **1**): world scaling time
+2.576159× and allocation 1.623740× exceed 1.5×; populated-parent time 1.216314×
+and allocation 1.000476× exceed the plan's literal no-growth limit; spin retention
+2.037420× exceeds 1.05×. The populated allocation difference is 16 B/fork; no
+unstated noise allowance was added. These measurements are evidence at the
+specified fixtures, not an asymptotic proof. Lifecycle/throughput self-comparisons
+only establish the new reference point. Absolute failures remain failures on
+main; recording the baseline grants no exemption.
+
+### Final validation and disposition
+
+- Lockstep diagnostic: exit **1** with the coverage table above;
+  `fix1-check.log`, committed `lockstep-main-06ce205-fix1.edn`.
+- Final smoke: **26 tests / 130 assertions, 0 failures/errors**, exit **0**;
+  `fix1-final-smoke.log` (final harness, including delivery-only footprints).
+- Pure gate tests: **5 tests / 59 assertions, 0 failures/errors**, exit **0**;
+  `fix1-gates.log`. Benchmark namespace load also passes.
+- Full JVM: **1,465 tests / 72,528 assertions, 0 failures/errors**, exit **0**;
+  `exclusive.sh a3-fix1-full-jvm clojure -J-Xmx3g -X:test`, **one full run**,
+  `fix1-jvm.log`. The delivery-only footprint refinement was completed while
+  this reservation was running and verified by the final focused smoke run;
+  the full suite was not repeated.
+- CLJS: `slot.sh`, `JAVA_TOOL_OPTIONS=-Xmx1g`, `npx shadow-cljs compile ci`, then
+  `node out/ci-tests.js`: **539 tests / 2,027 assertions, 0 failures/errors**,
+  exit **0**; `fix1-cljs.log`. One compile/run; it waited for the already-admitted
+  CLJS job in another worktree before compiling.
+- Cljfmt 0.9.2 passes all seven touched code files; `git diff --check` passes.
+
+No runtime/model bug was repaired or hidden by this test/dev round. B1–F2 remain
+explicitly unavailable until implemented; internal queue interleavings require a
+native microstep hook. Main still has the fork scaling and spin retention defects
+identified by the benchmark gates. The normative F50/F51 model items remain open
+in their owning workstream. All eight **harness review findings** are addressed.
