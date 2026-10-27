@@ -1113,8 +1113,9 @@ Notes:
 - **Phases of a cross-world obligation.** An obligation `o ∈ ob_v` with
   debtor `[:entity W e]`, `W ≠ v`, is in exactly one phase:
   - *pending-start*: `{:start-for e v o}`, or a `{:join-bundle v D}`
-    with `e ∈ D` (T23, copy rule 4), is queued in `W` (T5, T19, T23);
-    there is no dependency row, and `e` may be absent;
+    with `e ∈ D`, is queued in `W` (T5, T19, T24); or `v` is an attached
+    cut child whose requests T24 will issue (copy rule 4). There is no
+    dependency row, and `e` may be absent;
   - *admitted*: `e ∈ ent_W`, and `[e v o] ∈ fdeps_W` (active creditor)
     or `e ∈ D` of `[:bundle v D] ∈ fdeps_W` (inherited creditor);
   - *cancelling*: `{:cancelled o}` is queued in `v` (the debtor world
@@ -1151,9 +1152,10 @@ Notes:
   2. **Re-issue.** The copy `o′` in the child `v` gets fresh evidence
      of the same phase, addressed to `v`:
      - admitted → a dependency in the debtor world (T19: a bundle
-       member, written in the same transaction; T23: a join request,
-       rule 4);
-     - pending-start → its own `{:start-for e v o′}`;
+       member, written in the same transaction; cut child: a join request
+       issued at T24, rule 4);
+     - pending-start → its own `{:start-for e v o′}` (cut child: issued
+       at T24);
      - cancelling → its own `{:cancelled o′}` in `v`'s queue with the
        same payload;
      - a completion envelope already delivered to the source for `o`
@@ -1169,15 +1171,22 @@ Notes:
      events that resolve no copied creditor obligation. The child's
      `fdeps` and `releasing` start empty; only rule 2 fills
      dependencies, and only for its own copied creditors.
-  4. **No foreign writes from a stale view.** T19 is one transaction
-     of the parent, so it may write the debtor's dependency rows
-     directly. T23 runs after T22 while non-participant worlds keep
-     executing, so it never writes another world's dependency rows. For
-     each debtor world `X` it enqueues one aggregate
-     `{:join-bundle v D_X}` in `X`. `X`'s transaction admits each member
-     that still exists with an admitted source dependency, adding
-     `[:bundle v _]`, and makes every other member's obligation
-     cancelling (`{:cancelled o′}` in `v`).
+  4. **A cut child talks to other worlds only once it is released.**
+     T19 is one transaction of the parent, so it may write the debtor's
+     dependency rows directly. T23 writes nothing outside the child: the
+     child's cross-world copies are *pending-start* by virtue of the
+     cut being `:attached`, and no request or reply exists yet, so the
+     child stays exactly the basis until T24. T24, in the transaction
+     that makes the child executable, issues the requests:
+     - one aggregate `{:join-bundle v D_X}` per debtor world `X` of the
+       admitted copies;
+     - its own `{:start-for e v o′}` per pending-start copy.
+
+     `X`'s transaction (T36/T37) admits each member that still exists
+     with an admitted source dependency, adding `[:bundle v _]`, and
+     makes every other obligation cancelling (`{:cancelled o′}` in
+     `v`). A request to a released world fails locally (`::released`),
+     as for any request. T25 never issues them.
   5. **One generation.** A copy holds at most one generation of a
      spin. A fresh start of a spin that has a dormant `:inherited` run
      in `v` (T4, T5 or T37 Start) first retires that run: T11 on it,
@@ -1414,8 +1423,8 @@ created only here)
 | T20 | `cut-fence(c, P, s, mode)` | `P.worlds` is exactly one live engine world; its other participants are its SCI components and registered systems. No world or registered system of `P` participates in another active cut; SCI components may be shared and are serialized by T22. `s` is open. | `admission := :fenced` for `P`. Record the `fence-seq`. New events and deliveries for `P` go to `env.outside`. Set `phase := :fenced`. | L22 |
 | T21 | `cut-drain(c)` | `:fenced` | Small-step: each drain substep is an ordinary world transaction attributed to its world (TL6 applies); only the readiness update is a coordinator transaction. Each step applies the transition for the queue head (events carry `:seq`; only `seq ≤ fence-seq` is admitted) or one admitted body step of a running run (T5–T11). When no run in `P` is `:running`, the queues are empty, and every native op of `P` is `:joined` or at a declared boundary, set `phase := :ready`. Past the deadline, go to T25: a timeout is not evidence that the work stopped. | L22 |
 | T22 | `cut-capture(c)` | `:ready`. It runs as its own event, never inside the handler that parked the caller, and the coordinator thread holds no read permit (otherwise it refuses `::permit-held`). | Acquire the exclusive permits of every participating SCI component in ascending world-id order; a permit held by another cut is unavailable, so the cut waits (bounded by the deadline, else T25). Read each participating world's state **once**, together with the envelopes held for it in `env.outside` (rule 1 of the copy rule): that is the basis `b`. Fork each SCI component and branch each registered system at its retained base. Set `phase := :captured`. | L22 TL14 |
-| T23 | `cut-attach(c, mode ∈ {:frozen :materialized})` | `:captured` | Create world `v` whose state is the basis value of the engine world, installed as one persistent view root; every copied row is re-keyed to `v` and gets origin `:inherited` (the census counts the logical rows). `:parked` runs become `:inherited` copies `⟨v,r⟩`, with in-flight state following the copy rule (§4.1.2): phases re-issued with own evidence, `fdeps`/`releasing` start empty; their resource obligations are dormant (L5); native registrations are never copied. **Host creditors:** host execution continuations are never copied. A host-creditor obligation with `:filter {:mode :causal-follow :origin w}` is copied as a value-only delivery descriptor (the closure stays in the host); it is delivered at most once per (world, registration), in whichever causal descendant of `w` completes the copy. `:local` registrations are not copied. A copied `[:fork x]` is a read-only reference: capabilities are never copied (S1), and the copy neither owns `x` nor retains it. Copied pins are reasons within `v` only; `v` is added to `touched(tok)` for copied tokens. The parked caller (`hire!`) is one of the dormant copies, and the fork protocol never resumes it. Lineage is `{:parent w :root root(w) :mode mode :cut c :basis b}`. `[:fork v]` is owned by the requester. For each debtor world `X` of the admitted copies, enqueue one `{:join-bundle v D_X}` in `X` (copy rule 4); no foreign dependency row is written here. Add the capability, unpublished (`:published? false`; durable iff its scope contains a durable registered system, as in T19) and the registry entry. `v` stays `admission :fenced` and non-executable until T24. Set `phase := :attached`. | L9 L10 L14 L17 L18 L21 L22 |
-| T24 | `cut-release(c)` | `:attached` | `admission := :open` for the participants that are not sealed. Release the permits. Re-admit `env.outside` in arrival order. The child starts a fresh entrypoint run owned by `root(v)`; its inherited copies are already covered by the `[:bundle v D]` rows from T23, so release writes no dependency rows. Publish the child's capability (`:published? true`). Set `phase := :released`. | L10 L22 |
+| T23 | `cut-attach(c, mode ∈ {:frozen :materialized})` | `:captured` | Create world `v` whose state is the basis value of the engine world, installed as one persistent view root; every copied row is re-keyed to `v` and gets origin `:inherited` (the census counts the logical rows). `:parked` runs become `:inherited` copies `⟨v,r⟩`, with in-flight state following the copy rule (§4.1.2): phases re-issued with own evidence, `fdeps`/`releasing` start empty; their resource obligations are dormant (L5); native registrations are never copied. **Host creditors:** host execution continuations are never copied. A host-creditor obligation with `:filter {:mode :causal-follow :origin w}` is copied as a value-only delivery descriptor (the closure stays in the host); it is delivered at most once per (world, registration), in whichever causal descendant of `w` completes the copy. `:local` registrations are not copied. A copied `[:fork x]` is a read-only reference: capabilities are never copied (S1), and the copy neither owns `x` nor retains it. Copied pins are reasons within `v` only; `v` is added to `touched(tok)` for copied tokens. The parked caller (`hire!`) is one of the dormant copies, and the fork protocol never resumes it. Lineage is `{:parent w :root root(w) :mode mode :cut c :basis b}`. `[:fork v]` is owned by the requester. Nothing is written outside `v`: the child's cross-world copies stay pending-start until T24 issues their requests (copy rule 4). Add the capability, unpublished (`:published? false`; durable iff its scope contains a durable registered system, as in T19) and the registry entry. `v` stays `admission :fenced` and non-executable until T24. Set `phase := :attached`. | L9 L10 L14 L17 L18 L21 L22 |
+| T24 | `cut-release(c)` | `:attached` | `admission := :open` for the participants that are not sealed. Release the permits. Re-admit `env.outside` in arrival order. The child starts a fresh entrypoint run owned by `root(v)`, and in the same transaction issues its cross-world requests: one `{:join-bundle v D_X}` per debtor world and its own `{:start-for}` per pending-start copy (copy rule 4). Replies arrive at an executable child. Publish the child's capability (`:published? true`). Set `phase := :released`. | L10 L22 |
 | T25 | `cut-fail(c)` | a timeout, a refusal, or an error before T24 | Release the fence (`admission := :open` only for participants that are not sealed; a sealed participant stays `:fenced`) and the permits. Discard the partial component and system branches. If `v` was attached, remove atomically `v`, its registry entry, `[:fork v]`, its capability (deleted; still unpublished, so never handed out) and any `fdeps` rows created for it, so no executable child or authority is exposed. Ambiguous native ops stay owned by their runs. Set `phase := :failed`. | L4 L17 L22 |
 
 **P1q — the quiescent cut** (sublaw of P1; dvergr's interim cut). A
@@ -1554,7 +1563,7 @@ of the same run. A report never changes state.
 | TL3 | **No re-execution while wanted** (R4). In `w`, the body of a completed spin `e` is not entered again while `reasons(e) ≠ ∅` or a handle that touched `e` in `w` is reachable. The exceptions are T9 with cause `:track`, `:reactive` or `:dirty` (an input changed), and an explicit `rerun!`. T18 never re-executes (TL18). | safety |
 | TL4 | **GC is retention-only.** Reordering, delaying, duplicating or losing T16/T17 events changes only which idle caches exist. Every trace projected onto non-idle state is unchanged. CLJS without `FinalizationRegistry` is the case where every notification is lost. | safety |
 | TL5 | **No resurrection** (I21). A late completion, delivery, timer or callback whose run or obligation row is absent creates no entity, run or obligation. | safety |
-| TL6 | **Copy isolation** (S8). A transition attributed to world `v` writes only these rows outside `v`: `fdeps` rows of obligations it creates or ends, events enqueued in other worlds (completions, `{:cancelled o}`, `{:discard k}`, `{:register-host …}`, `{:start-for …}`, `{:fdep-ended …}`, `{:fork-released v}`), whose effects are those worlds' transactions, `[:fork v]`, and `v`'s durable capabilities and records. Releasing `v` never rejects into a parent's or sibling's copy. **Cut transitions** T20–T25 are coordinator transactions, attributed to the cut, not to a world; TL6 does not apply to them, except to the drain substeps of T21, which are world transactions. Their footprint is exactly: the participants' admission, fence and permit state; the child world `v` (created, made executable at T24, or removed whole at T25); `v`'s registry entry, `[:fork v]` in the requester's world, `v`'s capability, and the `{:join-bundle}` requests enqueued in debtor worlds. They run only while every participant is fenced (L22). No world transaction interleaves with the capture–attach critical section (T22–T23); drain substeps run admitted work before it. | safety |
+| TL6 | **Copy isolation** (S8). A transition attributed to world `v` writes only these rows outside `v`: `fdeps` rows of obligations it creates or ends, events enqueued in other worlds (completions, `{:cancelled o}`, `{:discard k}`, `{:register-host …}`, `{:start-for …}`, `{:fdep-ended …}`, `{:fork-released v}`), whose effects are those worlds' transactions, `[:fork v]`, and `v`'s durable capabilities and records. Releasing `v` never rejects into a parent's or sibling's copy. **Cut transitions** T20–T25 are coordinator transactions, attributed to the cut, not to a world; TL6 does not apply to them, except to the drain substeps of T21, which are world transactions. Their footprint is exactly: the participants' admission, fence and permit state; the child world `v` (created, made executable at T24, or removed whole at T25); `v`'s registry entry, `[:fork v]` in the requester's world, `v`'s capability, and (T24 only) the child's `{:join-bundle}` and `{:start-for}` requests enqueued in debtor worlds. They run only while every participant is fenced (L22). No transaction of a *participating* world interleaves with the capture–attach critical section (T22–T23); non-participant worlds keep running, which is why T23 sends nothing to them. Drain substeps run admitted work before it. | safety |
 | TL7 | **Atomic release.** T10, T11, T13, T34 and T36 reach the rule-L fixpoint of the acting world in the same transaction; effects on other worlds follow as their own transactions (TL6). | safety |
 | TL8 | **Seal** (S9, P4). After T26, no run starts in `v`. Cancel, close-scope, unsubscribe, unpin and release stay legal and idempotent. | safety |
 | TL9 | **Quiescent merge** (S2). A `:merge` without `:force` on a world that is not quiescent refuses and leaves the state unchanged. | safety |
@@ -1827,6 +1836,14 @@ per spin with retirement of a dormant inherited run on fresh start
 (F54); `{:join-bundle}` admission and cancellation in the debtor world
 under non-participant activity between T22 and T23; `run7/F52–F54`
 and every earlier witness.
+
+**Run 9 must re-check:** T23 writes nothing outside the child; attached
+children's cross-world copies are pending-start without a queued
+request; T24 issues `{:join-bundle}`/`{:start-for}` and replies reach
+only an executable child (F55, including the after-attach and
+released-debtor variants); T24's coordinator footprint includes those
+requests (F56); T25 issues none; TL6's narrowed non-interleaving
+sentence; `run8/*` and every earlier witness.
 
 A counterexample changes this specification, not main.
 
