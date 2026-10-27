@@ -94,11 +94,13 @@
                                  claim! simple/try-claim-execution!
                                  failed? (atom false)]
                              (with-redefs [simple/try-claim-execution!
-                                           (fn [rt sid]
-                                             (if (and (= mode :failure) (= sid (sc/spin-id b))
-                                                      (compare-and-set! failed? false true))
-                                               (throw (ex-info "refresh execution failed" {}))
-                                               (claim! rt sid)))]
+                                           (fn claim-with-failure
+                                             ([rt sid] (claim-with-failure rt sid nil))
+                                             ([rt sid opts]
+                                              (if (and (= mode :failure) (= sid (sc/spin-id b))
+                                                       (compare-and-set! failed? false true))
+                                                (throw (ex-info "refresh execution failed" {}))
+                                                (claim! rt sid opts))))]
                         ;; restore-snapshot drains explicitly while SOURCE is bound.
                                (ctx/restore-snapshot snapshot))))]
                      (is (= [:ok [2 0]] (cached source d)) (str mode " leaves source untouched"))

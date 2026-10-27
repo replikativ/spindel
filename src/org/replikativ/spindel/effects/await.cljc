@@ -179,7 +179,7 @@
   "Direct await handler for Spin.
 
   Fast path: If spin already completed, resolve immediately from cache.
-  Slow path: Register continuation and start child spin.
+  Slow path: Register continuation, then start or join the child spin.
 
   NOTE: In rebuild mode, we SKIP the fast path to ensure child spin bodies execute
   (for side effects like nested spin creation and continuation registration)."
@@ -377,10 +377,31 @@
               _ (ec/continuation-add! spin-id cont-map)
               _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
               cancellation (spin-core/cancelled-after-registration spin-id cont-map reject)]
-          (if cancellation
+          (cond
+            cancellation
             ;; Cancelled before cancel-spin! could see this await: the slice is
             ;; rejected (or owned by whoever claimed it); the child is not started.
             (:result cancellation)
+
+            ;; Register before the atomic cache/running claim. A clean detached child
+            ;; may already be running, or may have completed and drained its
+            ;; event since our first cache read. Never restart either body:
+            ;; join the live run, or claim the newly cached result inline.
+            (not (simple/try-claim-execution!
+                  ctx awaited-spin-id
+                  {:restart-dirty? true
+                   :ignore-cache? (and batch
+                                       (not (contains? @(:processed batch) awaited-spin-id)))}))
+            (let [cached (ec/spin-current-result awaited-spin-id)]
+              (if (and cached
+                       (not (simple/dirty? ctx awaited-spin-id))
+                       (claim-inline-resume! ctx spin-id cont-map cached))
+                (spin-core/match cached
+                  #(spin-core/resume resolve %)
+                  #(spin-core/resume reject %))
+                spin-core/incomplete))
+
+            :else
             (let [;; (Observer registration of parent in child.observers was done
                   ;; at await-spin entry via `(ec/deps-track-spin! ...)` — see
                   ;; the fast-path branch comment above.)

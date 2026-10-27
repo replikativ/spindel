@@ -3268,6 +3268,10 @@
   If already running OR already cached (clean), returns false without modifying state.
   If not running and not cached, atomically sets running?=true and returns true.
 
+  `:ignore-cache?` forces an await's batch refresh even with a clean cache;
+  `:restart-dirty?` preserves await's refresh of a running dirty child,
+  including a protocol mark-dirty! without a run-generation invalidation.
+
   This is CRITICAL for preventing duplicate execution when multiple
   :spin-execution events are enqueued for the same spin. The cache check
   must be atomic with the claim to prevent the race where thread A checks
@@ -3279,41 +3283,44 @@
 
   Returns: true if claimed (proceed to execute)
            false if already running/cached (skip execution or use cached value)"
-  [context spin-id]
-  (let [claimed? (atom false)]
-    (rtp/swap-state! context [:nodes spin-id]
-                     (fn [node]
-                       (if node
-                         (let [cached (nodes/get-value node)
-                               is-clean? (not (nodes/dirty? node))]
-                           (cond
-              ;; Already has clean cached result - don't claim
-                             (and cached is-clean?)
-                             (do (reset! claimed? false)
-                                 (log/trace :claim/failed-already-cached {:spin-id spin-id})
-                                 node)
+  ([context spin-id]
+   (try-claim-execution! context spin-id nil))
+  ([context spin-id {:keys [ignore-cache? restart-dirty?]}]
+   (let [claimed? (atom false)]
+     (rtp/swap-state! context [:nodes spin-id]
+                      (fn [node]
+                        (if node
+                          (let [cached (nodes/get-value node)
+                                is-clean? (not (nodes/dirty? node))]
+                            (cond
+               ;; Already has clean cached result - don't claim
+                              (and cached is-clean? (not ignore-cache?))
+                              (do (reset! claimed? false)
+                                  (log/trace :claim/failed-already-cached {:spin-id spin-id})
+                                  node)
 
-              ;; Already running - don't claim. Unless that run is stale
-              ;; (`invalidate-node`): its result will not be certified, so
-              ;; joining it would hand this caller an invalid value — start
-              ;; a fresh run instead. Its prologue cancels the stale run and
-              ;; hands that run's invoker callbacks to the new one
-              ;; (`mark-running!`), so no caller is stranded.
-                             (and (:running? node) (not (stale-run? node)))
-                             (do (reset! claimed? false)
-                                 (log/trace :claim/failed-already-running {:spin-id spin-id})
-                                 node)
+               ;; Already running - don't claim. Unless that run is stale
+               ;; (`invalidate-node`): its result will not be certified, so
+               ;; joining it would hand this caller an invalid value — start
+               ;; a fresh run instead. Its prologue cancels the stale run and
+               ;; hands that run's invoker callbacks to the new one
+               ;; (`mark-running!`), so no caller is stranded.
+                              (and (:running? node) (not (stale-run? node))
+                                   (not (and restart-dirty? (nodes/dirty? node))))
+                              (do (reset! claimed? false)
+                                  (log/trace :claim/failed-already-running {:spin-id spin-id})
+                                  node)
 
-              ;; Not running and not cached - claim it
-                             :else
-                             (do (reset! claimed? true)
-                                 (log/trace :claim/success-from-existing {:spin-id spin-id})
-                                 (assoc node :running? true))))
-          ;; No node - create and claim
-                         (do (reset! claimed? true)
-                             (log/trace :claim/success-new-node {:spin-id spin-id})
-                             (nodes/->spin-node nil :clean false true #{} {} nil #{})))))
-    @claimed?))
+               ;; Not running and not cached - claim it
+                              :else
+                              (do (reset! claimed? true)
+                                  (log/trace :claim/success-from-existing {:spin-id spin-id})
+                                  (assoc node :running? true))))
+           ;; No node - create and claim
+                          (do (reset! claimed? true)
+                              (log/trace :claim/success-new-node {:spin-id spin-id})
+                              (nodes/->spin-node nil :clean false true #{} {} nil #{})))))
+     @claimed?)))
 
 (defn ^:no-doc add-pending-callback!
   "Add a callback to be invoked when a currently-running spin completes.
