@@ -1126,8 +1126,10 @@ Notes:
   debtor world cancels the debtor (T11), it deletes `[e v o]` from its
   own `fdeps`, or removes `e` from `[:bundle v D]` unless another
   admitted inherited obligation of `v` still names `e`, before it
-  enqueues `{:cancelled o}`. These are its own rows, so no `releasing`
-  row is needed. Copies preserve the phase (T19, T23).
+  enqueues `{:cancelled o}`. If `o` is still pending-start, it instead
+  deletes the `{:start-for e v o}` request from its own queue. These are
+  its own rows and events, so no `releasing` row is needed, and `o` is
+  never in two phases. Copies preserve the phase (T19, T23).
 
   Every cross-world reference is either backed by rows (admitted) or
   in flight, meaning that it is backed by an event queued in the world
@@ -1336,7 +1338,7 @@ owner, creator and obligation edges. It never scans other worlds.
 
 | T | Transition | Pre | Effect | Re-establishes |
 |---|---|---|---|---|
-| T11 | `cancel(r)` | — (a no-op if absent) | Remove `r`. **Obligations with creditor `r`:** delete them; for `:external`, arm the token; for `:timer`, cancel the timer; drop their `fdeps`; set native ops to `:cancel-requested`. **Obligations whose debtor is `spin(r)`, if `r` was current:** a one-shot obligation fails, and its creditor receives a cancellation error (a host callback, or T6 with an error); a standing obligation receives the error once and ends. For a creditor in another world, the failure is an event `{:cancelled o}` enqueued in that world after this world retires the matching `fdeps` row or bundle member (§4.1.2 phases); its T6 is that world's transaction. **Stale predecessor:** if `r` was current and its predecessor is `:stale`, apply T10 to the predecessor (nothing can adopt its creations any more). **Runs owned by `r`:** T11. **Entities owned by `r`:** owner release (§4.3 rule 3), which cancels their work runs whatever their run owner. Rule L. | L1 L2 L5 L6 L24 TL2 |
+| T11 | `cancel(r)` | — (a no-op if absent) | Remove `r`. **Obligations with creditor `r`:** delete them; for `:external`, arm the token; for `:timer`, cancel the timer; drop their `fdeps`; set native ops to `:cancel-requested`. **Obligations whose debtor is `spin(r)`, if `r` was current:** a one-shot obligation fails, and its creditor receives a cancellation error (a host callback, or T6 with an error); a standing obligation receives the error once and ends. For a creditor in another world, the failure is an event `{:cancelled o}` enqueued in that world after this world retires the matching `fdeps` row or bundle member, or deletes the obligation's queued `{:start-for}` request (§4.1.2 phases); its T6 is that world's transaction. **Stale predecessor:** if `r` was current and its predecessor is `:stale`, apply T10 to the predecessor (nothing can adopt its creations any more). **Runs owned by `r`:** T11. **Entities owned by `r`:** owner release (§4.3 rule 3), which cancels their work runs whatever their run owner. Rule L. | L1 L2 L5 L6 L24 TL2 |
 | T12 | `open-scope(kind, parent)` | `parent` is open in a `:live` world | insert `{:kind :status :open}` | L6 |
 | T13 | `close-scope(s)` | `s` is not a run scope; idempotent | Atomic cascade: close child scopes; apply T11 to runs owned by `s`; owner release (§4.3 rule 3) of the entities owned by `s`. For `[:fork v]` owned by `s`: an event `{:discard k}` is enqueued in `v` for every open capability `k` of `v`; the resulting T15/T26 are `v`'s transactions, and `settle` retains the entity until they are terminal. If `s = root(w)`, run T34. Supervisor `shutdown!`, render unmount (`:stop!`), pubsub pump `close`, SCI component unregister and `with-new-scope` exit are all T13. | L1 L6 TL7 |
 | T14 | `pin!(e)` / `unpin!(e)` | `pin!`: `e ∈ ent_w`. `unpin!` on an absent row: no-op. | `pin!` adds `e` to the pins (a root-held reason); the owner is unchanged. `unpin!` removes `e` from the pins; rule L. | L1 L3 |
@@ -1368,8 +1370,48 @@ created only here)
 | T21 | `cut-drain(c)` | `:fenced` | Small-step: each drain substep is an ordinary world transaction attributed to its world (TL6 applies); only the readiness update is a coordinator transaction. Each step applies the transition for the queue head (events carry `:seq`; only `seq ≤ fence-seq` is admitted) or one admitted body step of a running run (T5–T11). When no run in `P` is `:running`, the queues are empty, and every native op of `P` is `:joined` or at a declared boundary, set `phase := :ready`. Past the deadline, go to T25: a timeout is not evidence that the work stopped. | L22 |
 | T22 | `cut-capture(c)` | `:ready`. It runs as its own event, never inside the handler that parked the caller, and the coordinator thread holds no read permit (otherwise it refuses `::permit-held`). | Acquire the exclusive permits of every participating SCI component in ascending world-id order; a permit held by another cut is unavailable, so the cut waits (bounded by the deadline, else T25). Read each participating world's state **once**: that is the basis `b`. Fork each SCI component and branch each registered system at its retained base. Set `phase := :captured`. | L22 TL14 |
 | T23 | `cut-attach(c, mode ∈ {:frozen :materialized})` | `:captured` | Create world `v` whose state is the basis value of the engine world, installed as one persistent view root; every copied row is re-keyed to `v` and gets origin `:inherited` (the census counts the logical rows). `:parked` runs become `:inherited` copies `⟨v,r⟩`, with their obligations' phases preserved as in T19; their resource obligations are dormant (L5); native registrations are never copied. **Host creditors:** host execution continuations are never copied. A host-creditor obligation with `:filter {:mode :causal-follow :origin w}` is copied as a value-only delivery descriptor (the closure stays in the host); it is delivered at most once per (world, registration), in whichever causal descendant of `w` completes the copy. `:local` registrations are not copied. A copied `[:fork x]` is a read-only reference: capabilities are never copied (S1), and the copy neither owns `x` nor retains it. Copied pins are reasons within `v` only; `v` is added to `touched(tok)` for copied tokens. The parked caller (`hire!`) is one of the dormant copies, and the fork protocol never resumes it. Lineage is `{:parent w :root root(w) :mode mode :cut c :basis b}`. `[:fork v]` is owned by the requester. Add the aggregate `[:bundle v D_W]` rows for the inherited obligations, as in T19. Add the capability, unpublished (`:published? false`; durable iff its scope contains a durable registered system, as in T19) and the registry entry. `v` stays `admission :fenced` and non-executable until T24. Set `phase := :attached`. | L9 L10 L14 L17 L18 L21 L22 |
-| T24 | `cut-release(c)` | `:attached` | `admission := :open`. Release the permits. Re-admit `env.outside` in arrival order. The child starts a fresh entrypoint run owned by `root(v)`; its inherited copies are already covered by the `[:bundle v D]` rows from T23, so release writes no dependency rows. Publish the child's capability (`:published? true`). Set `phase := :released`. | L10 L22 |
-| T25 | `cut-fail(c)` | a timeout, a refusal, or an error before T24 | Release the fence and the permits. Discard the partial component and system branches. If `v` was attached, remove atomically `v`, its registry entry, `[:fork v]`, its capability (deleted; still unpublished, so never handed out) and any `fdeps` rows created for it, so no executable child or authority is exposed. Ambiguous native ops stay owned by their runs. Set `phase := :failed`. | L4 L17 L22 |
+| T24 | `cut-release(c)` | `:attached` | `admission := :open` for the participants that are not sealed. Release the permits. Re-admit `env.outside` in arrival order. The child starts a fresh entrypoint run owned by `root(v)`; its inherited copies are already covered by the `[:bundle v D]` rows from T23, so release writes no dependency rows. Publish the child's capability (`:published? true`). Set `phase := :released`. | L10 L22 |
+| T25 | `cut-fail(c)` | a timeout, a refusal, or an error before T24 | Release the fence (`admission := :open` only for participants that are not sealed; a sealed participant stays `:fenced`) and the permits. Discard the partial component and system branches. If `v` was attached, remove atomically `v`, its registry entry, `[:fork v]`, its capability (deleted; still unpublished, so never handed out) and any `fdeps` rows created for it, so no executable child or authority is exposed. Ambiguous native ops stay owned by their runs. Set `phase := :failed`. | L4 L17 L22 |
+
+**P1q — the quiescent cut** (sublaw of P1; dvergr's interim cut). A
+P1q cut is a P1 cut whose drain executes nothing. It is T20 followed,
+in the same coordinator transaction, by a single readiness test, then
+T22–T25 unchanged:
+
+- **T20q** `cut-fence-quiescent(c, P, s, mode)`: preconditions and
+  effect of T20, plus every participating registered system must be
+  *controlled*: all its writes go through transactions of `P`'s world
+  (no writer outside the engine, such as another process on the same
+  connection). Then the **readiness test**, T21's ready condition
+  evaluated once without executing any step: no run of `P` is
+  `:running`; `P`'s queue holds no admitted event (`seq ≤ fence-seq`);
+  every native op of `P` is `:joined` or at a declared boundary. If it
+  holds, `phase := :ready`. Parked runs (watchers, `hire!` callers) and
+  dormant resources may remain; T23 copies them as inherited copies.
+- **Refusals**, each followed by T25 so the fence is released and
+  nothing else changes:
+  - `::cut-refused`: T20's preconditions fail (the participant is
+    sealed, released, or in another active cut; a registered system is
+    in another active cut);
+  - `::uncontrolled-writer`: a participating system is not controlled
+    (it can only join a full P1 cut whose adapter captures a basis);
+  - `::not-quiescent`: the readiness test fails. The refusal lists the
+    running runs, the admitted queued events and the unjoined native
+    ops. P1q never waits or drains; the caller may retry or use P1.
+- **Admission fence.** From T20q until T24 or T25, no new event or
+  delivery is admitted into `P` (it goes to `env.outside`). The
+  readiness established by the test therefore still holds at T22. This
+  replaces main's check-then-fork, which is a time-of-check to
+  time-of-use race.
+- **SCI permits.** T22 acquires the exclusive permit of every
+  participating SCI component in ascending world-id order, bounded by
+  the deadline (otherwise T25 with `::permit-timeout`). It refuses
+  `::permit-held` if the coordinator thread holds a read permit.
+- **Laws.** A P1q trace is a P1 trace in which T21 performs zero
+  steps, so L22, TL13 and TL14 hold unchanged. T24 and T25 never reopen
+  a sealed participant, and T26 or T34 on a participant aborts the cut
+  first.
+
 
 **G. Settlement** (per capability `k` of world `v`). Every settlement
 transition takes the caller's authority; "holder current" means
@@ -1382,7 +1424,7 @@ never merged, and results return as values.
 
 | T | Transition | Pre | Effect | Re-establishes |
 |---|---|---|---|---|
-| T26 | `seal(caller, k, op, kind, {:force f})` | `k` `:open` and published; holder current; `world(k) ∈ :worlds` (a capability of a world lost at T31 is reached only through restart recovery) | A `:merge` with `¬f` and `¬quiescent(v)` refuses `::not-quiescent` and lists the work runs and scopes; nothing changes. Otherwise, if `:discard` or `f`, run T15 first. Then `status(v) := :sealed`, `admission := :fenced`, `k := :sealed`. Quiescence is checked per world, not per partition leaf. | L16 TL8 TL9 |
+| T26 | `seal(caller, k, op, kind, {:force f})` | `k` `:open` and published; holder current; `world(k) ∈ :worlds` (a capability of a world lost at T31 is reached only through restart recovery) | If `v` participates in an active cut, the coordinator first applies T25 to it (as for T34). A `:merge` with `¬f` and `¬quiescent(v)` refuses `::not-quiescent` and lists the work runs and scopes; nothing changes. Otherwise, if `:discard` or `f`, run T15 first. Then `status(v) := :sealed`, `admission := :fenced`, `k := :sealed`. Quiescence is checked per world, not per partition leaf. | L16 TL8 TL9 |
 | T27 | `prepare(op, k, steps, bases, payload)` | `k` `:sealed`, `quiescent(v)`, `joined(v)` | Write the `Record` with the ordered steps and the retained bases: to `:durable` if `durable?(k)`, otherwise into runtime state. Set `k := :settling` and `op(k) := op`. A crash before this point implies neither acceptance nor partial change. | L18 |
 | T28 | `step(op, i, outcome)` | `:settling`. Steps `< i` are `:done`; step `i` is `:pending`, `:unknown` or `:failed`. | `:ok w` sets the step to `:done` with witness `w`. `:fail`, `:fail-permanent` or `:unknown` sets the step's status (`:failed`, with `:permanent? true` for the second) and `k := :incomplete`. Adapters identify the step's logical effect by `:effect-id`. | L18 L19 |
 | T29 | `finish(op)` | every step is `:done` | Set `k := :merged` or `:discarded`. Release the staged effects. Free the bases that no non-terminal capability (its `:bases`) and no open record needs. If every capability of `v` is terminal, run T34. | L18 TL10 |
@@ -1396,7 +1438,7 @@ never merged, and results return as values.
 | T34 | `release-world(w)` | No capability of `w` is `:settling` or `:incomplete`. And one of: (root) the host releases `w` or its root handle becomes unreachable (R8); or (fork) every capability of `w` is terminal. | If `w` participates in an active cut, the coordinator first applies T25 to that cut (aborting it, releasing permits and any partial child). Then one local transaction of `w`. Run T13 on `root(w)`, with the full cascade. Drop the inherited copies without rejecting into the parent or a sibling; the census (`scope-census`) counts the copies dropped without ever being resumed. Host creditors of `w`'s obligations receive `::released`. **Cleanup events:** for every obligation `o` in another world `V` whose debtor is in `w`, enqueue `{:cancelled o}` in `V`; for `w`'s own obligations into another world `W` and its `[:bundle w _]` rows, move the row to `releasing_W` and enqueue `{:fdep-ended …}` in `W`; enqueue `{:fork-released w}` in the parent for a fork. Requests still queued in `w` (`{:start-for}`, `{:register-host}`) fail their requesters with `::released`. Remove `w` from the registry, drop its state except the tombstone, and set `status := :released`. Descendants' lineage is untouched. | L18–L21 TL6 TL7 |
 | T35 | `host-entry(th, op)` | — | Any engine entry from a host thread (deref, invoke, Deferred or Mailbox delivery, SCI-conveyed fn) with no conveyed world refuses `::no-world`. Deliveries resume waiting continuations via T6 in the world holding the obligation. | L15 |
 | T36 | `cleanup(event)` in world `W` | the event is at the head of `W`'s queue | Local to `W`. `{:fdep-ended row}`: delete the row from `releasing_W` and apply rule L. `{:cancelled o}`: if `o` exists, fail it (one-shot) or end it (standing) as in T11 for a debtor-side cancellation; otherwise no-op. `{:fork-released v}`: remove `[:fork v]` and apply rule L. An event whose row is already gone is a no-op (so cancelling `o` before its `{:cancelled o}` arrives is harmless). | L3 L4 L5 L13 L20 TL6 TL7 |
-| T37 | `start-for(e, v, o)` in world `W` | the event is at the head of `W`'s queue | If `W` is sealed or `o` no longer exists in `v`: enqueue `{:cancelled o}` in `v` if `o` exists (`o` becomes cancelling; its creditor fails with `::released`); otherwise nothing. Else insert `e` if absent (owner `root(W)`, covering tokens), start its run owned by `root(W)` unless it now has a work run or a completed result, and admit `o`: add `[e v o]` to `fdeps_W` for an active creditor, or add `e` to `[:bundle v D]` (creating the row) for an inherited one. A completed result is sent as a completion envelope to `v`. | L5 L8 L10 L11 TL6 |
+| T37 | `start-for(e, v, o)` in world `W` | the event is at the head of `W`'s queue | If `o` is not pending-start (already cancelling, consumed or gone), nothing happens: a request never admits or restarts a cancelled obligation. Else, if `W` is sealed or `o` no longer exists in `v`: enqueue `{:cancelled o}` in `v` if `o` exists (`o` becomes cancelling; its creditor fails with `::released`); otherwise nothing. Else insert `e` if absent (owner `root(W)`, covering tokens), start its run owned by `root(W)` unless it now has a work run or a completed result, and admit `o`: add `[e v o]` to `fdeps_W` for an active creditor, or add `e` to `[:bundle v D]` (creating the row) for an inherited one. A completed result is sent as a completion envelope to `v`. | L5 L8 L10 L11 TL6 |
 
 **API mapping.**
 
@@ -1486,6 +1528,7 @@ of the same run. A report never changes state.
 | dvergr id | Spindel guarantee |
 |---|---|
 | P1 coordinated cut | T20–T25, L22, TL13 |
+| P1q quiescent cut (interim) | T20q + readiness test, then T22–T25 (sublaw after T25); refusals `::cut-refused`, `::uncontrolled-writer`, `::not-quiescent` |
 | P2 suspend–unwind–cut–resume | T22 preconditions (own event, no read permit held, ascending order); TL14. A blocking evaluation keeps its permit, so T21/T22 time out and T25 refuses. |
 | P3 world-local parked runs | L14, T23, TL1, TL6 |
 | P4 quiescent merge, post-seal cleanup | T15, T26, TL8, TL9 |
@@ -1723,6 +1766,14 @@ and T23 (F47); owner release cancelling every work run of the entity
 publication (F49); the four `run5-new-*.edn` witnesses, the
 inherited-creations and aggregate-census replays, and all earlier
 regressions.
+
+**Run 7 must re-check:** T26 on a cut participant aborting the cut
+first, and T24/T25 never reopening a sealed participant (F50);
+debtor-side cancellation deleting a pending-start request, and T37
+ignoring a request whose obligation is no longer pending-start (F51);
+P1q as T20q (readiness test, refusals `::cut-refused`,
+`::uncontrolled-writer`, `::not-quiescent`) followed by T22–T25;
+`run6-F50.edn`, `run6-F51.edn` and every earlier witness.
 
 A counterexample changes this specification, not main.
 
