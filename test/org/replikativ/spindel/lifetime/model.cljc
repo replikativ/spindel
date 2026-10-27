@@ -192,7 +192,9 @@
       (first (for [k [:discard :cancelled :register-host :fdep-ended :fork-released :join-bundle]
                    :when (contains? event k)] [k (get event k)]))))
 
-(defn enqueue [s w event]
+(defn enqueue
+  "Tombstone requests fail locally in the sender transaction; joins reject every member."
+  [s w event]
   (cond
     (= :released (:status (wr s w)))
     (cond (:join-bundle event) (reduce #(enqueue %1 (:join-bundle event) {:cancelled %2 :value ::released})
@@ -1023,7 +1025,8 @@
         (assoc-in [:cuts c :phase] phase))))
 
 (defn t24-cut-release
-  "T24 make the child executable and issue its cross-world copy requests."
+  "T24 make the child executable and issue its cross-world copy requests.
+  Enqueue rejects released debtors atomically with ::released in the child."
   [s {:keys [c e] :or {e [:entry 0]}}]
   (require! (= :attached (get-in s [:cuts c :phase])) ::cut-phase {:c c})
   (let [v (get-in s [:cuts c :child]) s (release-cut s c :released)

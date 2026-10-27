@@ -17,9 +17,9 @@
       (is (seq actions) file)
       (is (empty? (keep :refusal (:trace result))) file)
       (when finding
-        (is (some #(= target (:id %)) (b/first-failure actions)) file)
-        (is (= actions (b/shortest-subsequence actions target)) file))
-      ;; Keep the normative assertion red for a specification counterexample.
+        ;; Finding/minimality metadata is historical; Part 4 now resolves F57.
+        (is (= :L20 target) file)
+        (is (nil? (b/first-failure actions)) file))
       (is (empty? (b/violations result)) (str file " " (pr-str (b/violations result)))))))
 
 (defn variant [trace mode protocol]

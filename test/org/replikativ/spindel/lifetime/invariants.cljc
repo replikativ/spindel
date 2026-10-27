@@ -27,16 +27,39 @@
           (map :event (filter #(= w (:w %)) (get-in s [:env :outside])))))
 (defn queued? [s w key value]
   (boolean (some #(= value (get % key)) (queued-events s w))))
+(defn attached-cut-pending?
+  "The sole event-free L20 case: an unpublished cut child with exact basis evidence."
+  [s w o ob]
+  (let [world (m/wr s w) [_ dw _] (:debtor ob)
+        caps (m/caps-of s w)]
+    (boolean
+     (and (= :live (:status world)) (= :fenced (:admission world))
+          (= 1 (count caps)) (every? #(false? (:published? (val %))) caps)
+          (= :entity (first (:debtor ob))) (not= dw w)
+          (= :run (first (:creditor ob)))
+          (= :inherited (:origin ob))
+          (= :inherited (:status (m/run s w (nth (:creditor ob) 2 nil))))
+          (not-any? #(= :running (:status %)) (vals (:runs world)))
+          (not-any? #(or (and (= w (:creditor-world %)) (= o (:o %)))
+                         (and (= w (:join-bundle %)) (contains? (:members %) o)))
+                    (queued-events s dw))
+          (some (fn [[c cut]]
+                  (let [source (:source-world ob) base (get-in cut [:basis source])
+                        original (get-in base [:obligations o])]
+                    (and (= :attached (:phase cut)) (= w (:child cut))
+                         (= c (get-in world [:lineage :cut]))
+                         (= (:basis cut) (get-in world [:lineage :basis]))
+                         (contains? (get-in cut [:participants :worlds]) source)
+                         (#{:admitted :pending-start} (get-in base [:copy-evidence o :phase]))
+                         (= (:debtor original) (:debtor ob))
+                         (= [:run source (nth (:creditor ob) 2)] (:creditor original))
+                         (= :parked (get-in base [:runs (nth (:creditor ob) 2) :status])))))
+                (:cuts s))))))
+
 (defn pending-start? [s w o ob]
-  (let [[kind dw e] (:debtor ob)
-        attached? (some (fn [[_ cut]]
-                          (and (= :attached (:phase cut)) (= w (:child cut))
-                               (= :inherited (:status (m/run s w (nth (:creditor ob) 2 nil))))
-                               (some #(#{:admitted :pending-start} (get-in % [:copy-evidence o :phase]))
-                                     (vals (:basis cut)))))
-                        (:cuts s))]
+  (let [[kind dw e] (:debtor ob)]
     (boolean (and (= :entity kind) (not= dw w)
-                  (or attached?
+                  (or (attached-cut-pending? s w o ob)
                       (some #(or (and (= e (:start-for %)) (= w (:creditor-world %)) (= o (:o %)))
                                  (and (= w (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
                             (queued-events s dw)))))))
@@ -400,7 +423,7 @@
          {:k k :w w :world (m/wr s w) :record rec})))
 
 (defn l20
-  "L20 exact tombstones; foreign references require local cleanup events."
+  "L20 exact tombstones; local cleanup events or the attached-cut basis case."
   [s]
   (vec (mapcat
         (fn [[v world]]
@@ -415,7 +438,8 @@
                {:w w :released v :live-fdep fd})
              (for [[w o ob] (obligations s)
                    :when (and (= :entity (first (:debtor ob))) (= v (second (:debtor ob)))
-                              (not (queued? s w :cancelled o)))]
+                              (not (queued? s w :cancelled o))
+                              (not (attached-cut-pending? s w o ob)))]
                {:w w :released v :obligation o :missing :cancelled})
              (for [[w other] (:worlds s) fd (:releasing other)
                    :when (and (= v (second fd)) (not (queued? s w :fdep-ended fd)))]
@@ -566,25 +590,40 @@
         participants (or (:participants old) (:participants action))
         worlds (:worlds participants) child (or (:child old) (:child cut))
         requester (first worlds)
+        requests (when (= :t24 (:t action)) (release-requests before old))
+        ingress (mapcat (fn [[w event :as request]]
+                          (if (= :released (:status (m/wr before w)))
+                            (for [o (if (:join-bundle event) (keys (:members event)) [(:o event)])]
+                              [child {:cancelled o :value ::m/released}])
+                            [request])) requests)
         expected-ingress
         (reduce (fn [acc [w event]]
-                  (if (= :released (:status (m/wr before w))) acc
-                      (let [n (inc (get-in acc [:clocks w] (max (get-in before [:clocks w] 0)
-                                                                (get-in before [:worlds w :seq] 0))))
-                            held? (and (= :fenced (:admission (m/wr before w)))
-                                       (m/cut-participant? before w) (not (worlds w)))]
-                        (-> acc (assoc-in [:clocks w] n)
-                            (update-in [(if held? :held :queues) w] (fnil conj []) (assoc event :seq n))))))
+                  (let [n (inc (get-in acc [:clocks w] (max (get-in before [:clocks w] 0)
+                                                            (get-in before [:worlds w :seq] 0)
+                                                                ;; Fresh entrypoint precedes request rejection.
+                                                            (if (= w child)
+                                                              (inc (max (get-in before [:clocks w] 0)
+                                                                        (get-in before [:worlds w :seq] 0))) 0))))
+                        held? (and (= :fenced (:admission (m/wr before w)))
+                                   (m/cut-participant? before w) (not (worlds w)))]
+                    (-> acc (assoc-in [:clocks w] n)
+                        (update-in [(if held? :held :queues) w] (fnil conj []) (assoc event :seq n)))))
                 {:queues (into {} (for [[w world] (:worlds before)]
                                     [w (into (vec (:queue world))
                                              (when (worlds w)
                                                (map :event (filter #(= w (:w %)) (get-in before [:env :outside])))))]))}
-                (when (= :t24 (:t action)) (release-requests before old)))
+                ingress)
         expected-queues (:queues expected-ingress)
         ;; T24/T25 move held arrivals back to exactly their original queue.
         restored (fn [w] (into (vec (:queue (m/wr before w)))
                                (map :event (filter #(= w (:w %)) (get-in before [:env :outside])))))]
     (vec (concat
+          (when (and (= :t24 (:t action))
+                     (not= (merge {} (:clocks before) (:clocks expected-ingress)) (or (:clocks after) {})))
+            [{:cut c :clocks-not-exact true}])
+          (when (and (some #(= child (first %)) ingress)
+                     (not= (get expected-queues child) (:queue (m/wr after child))))
+            [{:cut c :child child :local-rejections-not-exact true}])
           (for [w worlds :when (and (not (#{:t20 :t20q} (:t action)))
                                     (not= :fenced (:admission (m/wr before w))))]
             {:cut c :w w :missing-fence true})
