@@ -1,0 +1,17 @@
+{:actions
+ [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t20q,
+   :c [:cut 0],
+   :scope [:root [:w 0]],
+   :mode :frozen,
+   :participants
+   {:worlds #{[:w 0]},
+    :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+    :systems #{:b :a}}}
+  {:t :t20q,
+   :c [:cut 1],
+   :scope [:root [:w 1]],
+   :mode :frozen,
+   :participants
+   {:worlds #{[:w 1]}, :components #{[[:w 1] :sci]}, :systems #{:a}}}],
+ :refusals [:org.replikativ.spindel.lifetime.model/cut-refused]}

@@ -1,0 +1,16 @@
+{:negative-control? true,
+ :actions
+ [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t04, :w [:w 1], :e [:spin 0]}
+  {:t :t05,
+   :w [:w 1],
+   :r [[:spin 0] 1],
+   :kind :await-once,
+   :debtor [:entity [:w 0] [:spin 1]]}
+  {:t :t04, :w [:w 0], :e [:spin 1]}
+  {:t :t11, :w [:w 0], :r [[:spin 1] 1]}
+  {:t :arrival,
+   :w [:w 0],
+   :event {:start-for [:spin 1], :creditor-world [:w 1], :o [:o 1]}}
+  {:t :t37, :w [:w 0]}],
+ :refusals []}

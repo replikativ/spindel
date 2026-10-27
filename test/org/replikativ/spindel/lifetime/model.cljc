@@ -142,15 +142,27 @@
 (defn spin-row [s w e owner]
   (assoc (row :spin owner) :tokens (covering-tokens s w e)))
 
+(defn pending-events [s w]
+  (concat (:queue (wr s w))
+          (map :event (filter #(= w (:w %)) (get-in s [:env :outside])))))
+
+(defn cut-participant? [s w]
+  (some #(and (active-cuts (:phase %))
+              (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s))))
+
+(defn quiescent-cut? [s w]
+  (some #(and (= :p1q (:protocol %)) (active-cuts (:phase %))
+              (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s))))
+
 (defn pending-start? [s v o ob]
   (let [[kind w e] (:debtor ob)]
     (and (= :entity kind) (not= w v)
          (some #(and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
-               (:queue (wr s w))))))
+               (pending-events s w)))))
 
 (defn cancelling? [s v o ob]
   (and (= :entity (first (:debtor ob))) (not= v (second (:debtor ob)))
-       (some #(= o (:cancelled %)) (:queue (wr s v)))))
+       (some #(= o (:cancelled %)) (pending-events s v))))
 
 (defn control-key [event]
   (if (:start-for event) [:start-for (:creditor-world event) (:o event)]
@@ -165,15 +177,19 @@
                                           :o (:register-host event) :value ::released})
           :else s)
     (and (control-key event)
-         (some #(= (control-key event) (control-key %)) (:queue (wr s w))))
+         (some #(= (control-key event) (control-key %)) (pending-events s w)))
     (if (:value event)
-      (update-in s [:worlds w :queue]
-                 #(mapv (fn [queued] (if (= (control-key event) (control-key queued))
-                                       (merge queued event) queued)) %)) s)
+      (-> s (update-in [:worlds w :queue]
+                       #(mapv (fn [queued] (if (= (control-key event) (control-key queued))
+                                             (merge queued event) queued)) %))
+          (update-in [:env :outside]
+                     #(mapv (fn [held] (if (and (= w (:w held))
+                                                (= (control-key event) (control-key (:event held))))
+                                         (update held :event merge event) held)) %))) s)
     :else
     (let [n (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))
           event (assoc event :seq n) s (assoc-in s [:clocks w] n)]
-      (if (and (= :fenced (:admission (wr s w))) (not (control-key event)))
+      (if (and (= :fenced (:admission (wr s w))) (or (cut-participant? s w) (not (control-key event))))
         (update-in s [:env :outside] conj {:w w :event event})
         (update-in s [:worlds w :queue] conj event)))))
 
@@ -560,7 +576,11 @@
 (defn cancel-foreign-debtor [s w v o]
   ;; These are this transaction's own rows, so no releasing/cleanup handshake.
   (let [ob (get-in s [:worlds v :obligations o]) e (nth (:debtor ob) 2)
-        s (-> s (update-in [:worlds w :fdeps] disj [e v o])
+        request? #(and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
+        s (-> s (update-in [:worlds w :queue] #(vec (remove request? %)))
+              (update-in [:env :outside] #(vec (remove (fn [held] (and (= w (:w held))
+                                                                       (request? (:event held)))) %)))
+              (update-in [:worlds w :fdeps] disj [e v o])
               (enqueue v {:cancelled o}))
         other? (some (fn [[other candidate]]
                        (and (not= o other) (= [:entity w e] (:debtor candidate))
@@ -698,7 +718,7 @@
                 (= :inherited (:status (run s v (nth (:creditor ob) 2)))))
          (cond
            (cancelling? s source o ob)
-           (let [event (first (filter #(= o (:cancelled %)) (:queue (wr s source))))]
+           (let [event (first (filter #(= o (:cancelled %)) (pending-events s source)))]
              (enqueue s v (dissoc event :seq)))
            (pending-start? s source o ob)
            (enqueue s dw {:start-for e :creditor-world v :o o})
@@ -786,9 +806,41 @@
                              :fence-seq (into {} (for [w (:worlds participants)]
                                                    [w (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0))]))}))))
 
+(defn cut-blockers
+  "Readiness diagnostics, without executing any admitted step."
+  [s c]
+  (let [cut (get-in s [:cuts c]) worlds (get-in cut [:participants :worlds])]
+    {:running (vec (for [w worlds [r rr] (:runs (wr s w)) :when (= :running (:status rr))] [w r]))
+     :admitted (vec (for [w worlds ev (:queue (wr s w))
+                          :when (<= (:seq ev) (get-in cut [:fence-seq w]))] [w ev]))
+     :native (vec (for [[n nr] (get-in s [:env :native])
+                        :when (and (worlds (first (:owner nr))) (not= :joined (:state nr))
+                                   (not (:boundary? nr)))] n))}))
+
+(defn t20q-cut-fence
+  "T20q is atomic T20 + readiness. Refusals roll back the tentative fence
+  (T25), retaining the model's unchanged-state refusal convention."
+  [s a]
+  (let [fenced (try (t20-cut-fence s a)
+                    (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+                      (refuse ::cut-refused {:cause (dissoc (ex-data e) :state)})))
+        uncontrolled (set/intersection (get-in a [:participants :systems])
+                                       (get-in s [:model :uncontrolled-systems] #{}))
+        blockers (cut-blockers fenced (:c a))]
+    (when (or (seq uncontrolled) (some seq (vals blockers)))
+      ;; Roll back before reporting the refusal. The enclosing atomic step
+      ;; discards this failed coordinator record along with its allocation.
+      (t25-cut-fail fenced {:c (:c a)})
+      (if (seq uncontrolled)
+        (refuse ::uncontrolled-writer {:systems uncontrolled})
+        (refuse ::not-quiescent blockers)))
+    (-> fenced (assoc-in [:cuts (:c a) :protocol] :p1q)
+        (assoc-in [:cuts (:c a) :phase] :ready))))
+
 (defn t21-cut-drain
   "T21 readiness only after admitted queue, running work and native boundaries drain."
   [s {:keys [c body]}]
+  (require! (not= :p1q (get-in s [:cuts c :protocol])) ::no-drain {:c c})
   (require! (= :fenced (get-in s [:cuts c :phase])) ::cut-phase {:c c})
   (let [worlds (get-in s [:cuts c :participants :worlds])
         w (first worlds) ev (first (:queue (wr s w)))
@@ -810,13 +862,14 @@
 
 (defn t22-cut-capture
   "T22 own-event exclusive acquisition, ordered by component world then id."
-  [s {:keys [c]}]
+  [s {:keys [c timeout?]}]
   (let [cut (get-in s [:cuts c]) th (:coordinator cut)
         components (vec (sort (get-in cut [:participants :components])))
         thread (get-in s [:env :threads th])]
     (require! (= :ready (:phase cut)) ::cut-phase {:c c})
     (require! (and (empty? (:read-permits thread)) (nil? (:run thread)))
               ::permit-held {:thread th})
+    (require! (not timeout?) ::permit-timeout {:c c})
     (require! (not-any? #(seq (set/intersection (set components) (:read-permits %)))
                         (vals (get-in s [:env :threads]))) ::permit-busy {:c c})
     (require! (not-any? #(seq (set/intersection (set components) (set (:excl-permits %))))
@@ -882,7 +935,8 @@
 
 (defn release-cut [s c phase]
   (let [cut (get-in s [:cuts c]) participants (get-in cut [:participants :worlds])
-        s (reduce #(assoc-in %1 [:worlds %2 :admission] :open) s participants)
+        s (reduce #(assoc-in %1 [:worlds %2 :admission]
+                             (if (= :sealed (:status (wr %1 %2))) :fenced :open)) s participants)
         outside (get-in s [:env :outside])]
     (-> (reduce (fn [s ev] (if (participants (:w ev))
                              (update-in s [:worlds (:w ev) :queue] conj (:event ev)) s)) s outside)
@@ -934,7 +988,11 @@
     (require! (wr s w) ::missing-world {:world w})
     (when (and (= :merge kind) (not force) (not (quiescent? s w)))
       (refuse ::not-quiescent {:world w :runs (:runs (wr s w)) :scopes (:scopes (wr s w))}))
-    (let [s (if (or force (= :discard kind)) (t15-cancel-world-work s {:w w}) s)]
+    (let [s (reduce (fn [s [c cut]]
+                      (if (and (active-cuts (:phase cut))
+                               (contains? (get-in cut [:participants :worlds]) w))
+                        (t25-cut-fail s {:c c}) s)) s (:cuts s))
+          s (if (or force (= :discard kind)) (t15-cancel-world-work s {:w w}) s)]
       (-> s (assoc-in [:worlds w :status] :sealed)
           (assoc-in [:worlds w :admission] :fenced)
           (assoc-in [:worlds w :seal-seq] (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))
@@ -1148,10 +1206,16 @@
   [s {:keys [w]}]
   (let [{e :start-for v :creditor-world o :o tok :tok :as ev} (first (:queue (wr s w)))
         _ (require! e ::not-start-request {:event ev})
-        s (update-in s [:worlds w :queue] #(vec (rest %)))
-        ob (get-in s [:worlds v :obligations o])]
+        ob (get-in s [:worlds v :obligations o])
+        pending? (and ob (= :armed (:slot ob))
+                      (pending-start? s v o ob) (not (cancelling? s v o ob))
+                      (not (contains? (:fdeps (wr s w)) [e v o]))
+                      (not (some (fn [[tag target debtors]]
+                                   (and (= :bundle tag) (= v target) (contains? debtors e)))
+                                 (:fdeps (wr s w)))))
+        s (update-in s [:worlds w :queue] #(vec (rest %)))]
     (cond
-      (nil? ob) s
+      (not pending?) s
       (not= :live (:status (wr s w))) (enqueue s v {:cancelled o :value ::released})
       :else
       (let [owner (:root (wr s w))
@@ -1166,14 +1230,17 @@
   "T35 H1; captured world cannot override an obligation's placement."
   [s {:keys [th op] :or {th :foreign}}]
   (require! (get-in s [:env :threads th :world]) ::no-world {:thread th})
-  (if op (if (= :resume (:kind op)) (t06-resume s op) s) s))
+  (if op (if (= :resume (:kind op))
+           (if (cut-participant? s (:w op))
+             (enqueue s (:w op) {:action (assoc op :t :t06)})
+             (t06-resume s op)) s) s))
 
 (def transitions
   {:t01 t01-create-spin :t02 t02-create-signal :t03 t03-touch-keyed :t04 t04-invoke
    :t05 t05-park :t06 t06-resume :t07 t07-complete :t08 t08-deliver :t09 t09-reenter
    :t10 t10-supersede :t11 t11-cancel :t12 t12-open-scope :t13 t13-close-scope
    :t14 t14-pin :t15 t15-cancel-world-work :t16 t16-handle-unreachable :t17 t17-gc-notify
-   :t18 t18-release-idle-caches :t19 t19-fork-following :t20 t20-cut-fence
+   :t18 t18-release-idle-caches :t19 t19-fork-following :t20 t20-cut-fence :t20q t20q-cut-fence
    :t21 t21-cut-drain :t22 t22-cut-capture :t23 t23-cut-attach :t24 t24-cut-release
    :t25 t25-cut-fail :t26 t26-seal :t27 t27-prepare :t28 t28-settlement-step
    :t29 t29-finish :t30 t30-recover :t31 t31-crash :t32 t32-transfer
@@ -1214,6 +1281,10 @@
   [s {:keys [t] :as a}]
   (try
     (let [before s s (assoc s :events [])]
+      (when (and (quiescent-cut? s (acting-world s a))
+                 (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11
+                    :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37} t))
+        (refuse ::not-admitted {:action a}))
       (release-fixpoint
        before
        (let [s (if-let [key (budget-key a)]
@@ -1223,7 +1294,8 @@
            (let [w (:w a) ev (first (:queue (wr s w)))
                  _ (require! ev ::empty-queue {:w w})
                  s (update-in s [:worlds w :queue] #(vec (rest %)))]
-             (cond (some ev [:fdep-ended :cancelled :fork-released]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
+             (cond (:action ev) (step s (:action ev))
+                   (some ev [:fdep-ended :cancelled :fork-released]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
                    (:start-for ev) (t37-start-for (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
                    (:register-host ev)
                    (let [e (:e ev) o (:register-host ev)]
@@ -1419,9 +1491,10 @@
                (when (< (count (:known-worlds s)) (:world-ids cfg))
                  [{:t :t19 :w w :v next-w :k next-k :scope root}])
                (when (< (get s :cut-allocations 0) (:cuts cfg))
-                 [{:t :t20 :c next-c :scope root
-                   :participants {:worlds #{w} :components #{[w :sci-a] [w :sci-b]}
-                                  :systems #{:a :b}}}])
+                 (for [t [:t20 :t20q]]
+                   {:t t :c next-c :scope root
+                    :participants {:worlds #{w} :components #{[w :sci-a] [w :sci-b]}
+                                   :systems #{:a :b}}}))
                (when (and (pos? (:signals cfg)) (not-any? #(= :signal (:kind %)) (vals (:entities world))))
                  [{:t :t02 :w w :e [:signal 0] :key :k}])
                (when (and (pos? (:atoms cfg)) (not-any? #(= :atom (:kind %)) (vals (:entities world))))

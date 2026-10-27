@@ -1,0 +1,40 @@
+{:finding :F52,
+ :target :L22,
+ :actions
+ [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :t05,
+   :w [:w 0],
+   :r [[:spin 0] 1],
+   :kind :await-once,
+   :debtor [:entity [:w 1] [:spin 1]]}
+  {:t :t37, :w [:w 1]}
+  {:t :t20q,
+   :c [:cut 0],
+   :scope [:root [:w 0]],
+   :mode :frozen,
+   :participants
+   {:worlds #{[:w 0]},
+    :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+    :systems #{:b :a}}}
+  {:t :t11, :w [:w 1], :r [[:spin 1] 1]}
+  {:t :t22, :c [:cut 0]}
+  {:t :t23, :c [:cut 0], :v [:w 2], :k [:cap 1], :mode :frozen}],
+ :valid-prefix? true,
+ :subsequence-minimal? true,
+ :violations
+ [{:id :L22,
+   :evidence
+   [{:c [:cut 0],
+     :child [:w 2],
+     :field :queue,
+     :expected [],
+     :actual [{:cancelled [:o 1], :seq 2}]}]}
+  {:id :TL13,
+   :evidence
+   [{:c [:cut 0],
+     :child [:w 2],
+     :field :queue,
+     :expected [],
+     :actual [{:cancelled [:o 1], :seq 2}]}]}],
+ :refusals []}

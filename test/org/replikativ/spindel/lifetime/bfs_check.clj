@@ -191,7 +191,7 @@
 
 (deftest refusal-and-canonical-contract
   (is (empty? (inv/check (m/init-state))))
-  (is (= 37 (count m/transitions)))
+  (is (= 38 (count m/transitions)))
   (let [s (:state (execute [following {:t :t04 :w v :e e}])) a (m/attempt s seal)]
     (is (= ::m/not-quiescent (get-in a [:refusal :error]))) (is (= s (:state a))))
   (let [s (m/init-state)] (is (= s (:state (m/attempt s {:t :t35 :th :foreign})))))
@@ -222,7 +222,8 @@
                :participants {:worlds #{w} :components #{[w :a] [v :b]} :systems #{:a}}}
               {:t :t20 :c [:cut 1] :scope [:root v] :coordinator :cb
                :participants {:worlds #{v} :components #{[w :a] [v :b]} :systems #{:b}}}]
-        alphabet (fn [s] (concat (remove #(get-in s [:cuts (:c %)]) cuts)
+        alphabet (fn [s] (concat (for [cut cuts t [:t20 :t20q] :when (not (get-in s [:cuts (:c cut)]))]
+                                   (assoc cut :t t))
                                  (for [[c cut] (:cuts s) t (case (:phase cut)
                                                              :fenced [:t21 :t25]
                                                              :ready [:t22 :t25]
@@ -418,6 +419,8 @@
                  {:t :t07 :w w :r r} {:t :t08 :w w :e e}
                  {:t :t16 :tok [:tok 0]} {:t :t17 :w w :e e :tok [:tok 0]} {:t :t18 :w w}]
                 (cut-actions :frozen)
+                (into [(assoc (first (cut-actions :frozen)) :t :t20q)]
+                      (drop 2 (cut-actions :frozen)))
                 (conj (vec (butlast (cut-actions :frozen))) {:t :t25 :c [:cut 0]})
                 [following seal prepare-op {:t :t28 :op :op :i 0 :outcome :fail}
                  {:t :t30 :op :op :k cap :caller root :payload :p}
@@ -538,7 +541,8 @@
         alphabet
         (fn [s]
           (concat
-           (remove #(get-in s [:cuts (:c %)]) cuts)
+           (for [cut cuts t [:t20 :t20q] :when (not (get-in s [:cuts (:c cut)]))]
+             (assoc cut :t t))
            (mapcat (fn [[c cut]]
                      (let [next-w [:w (inc (reduce max (map second (:known-worlds s))))]]
                        (concat
@@ -689,7 +693,7 @@
     reduction-equivalence smaller-settlement-exhaustion settlement-pareto-fallbacks
     shared-cuts-complete-protocol mixed-settlement-search broad-searches])
 
-(defn run6-suite!
+(defn run7-suite!
   "One JVM; sequential searches. Every multi-world smoke profile runs once."
   []
   (require 'org.replikativ.spindel.lifetime.generative-check)
@@ -717,7 +721,7 @@
                               (vals (ns-publics 'org.replikativ.spindel.lifetime.generative-check))))
                      (println "LIFETIME UNIT-COUNTS" @clojure.test/*report-counters*)
                      @clojure.test/*report-counters*))
-                 (run6-suite!))]
+                 (run7-suite!))]
     (shutdown-agents)
     (System/exit (if (zero? (+ (:fail counts) (:error counts))) 0 1))))
 
@@ -1042,10 +1046,206 @@
 
 (deftest run6-normative-counterexamples
   (doseq [name ["run6-F50.edn" "run6-F51.edn"]]
-    (let [{:keys [actions target]} (check-io/read-witness name)
+    (let [{:keys [actions]} (check-io/read-witness name)
+          result (execute actions)
+          refused (vec (keep :refusal (:trace result)))]
+      (if (= name "run6-F50.edn")
+        (do (is (= [::m/cut-phase] (mapv :error refused)))
+            (is (= :failed (get-in result [:state :cuts [:cut 0] :phase])))
+            (is (= :sealed (:status (m/wr (:state result) v))))
+            (is (= :fenced (:admission (m/wr (:state result) v)))))
+        (do (is (empty? refused))
+            (is (empty? (:queue (m/wr (:state result) w))))
+            (is (= [:cancelling] (inv/obligation-phases (:state result) v [:o 1]
+                                                        (get-in result [:state :worlds v :obligations [:o 1]]))))))
+      (doseq [edge (:trace result) :when (:refusal edge)]
+        (is (= (:before edge) (:after edge))))
+      (is (empty? (violations result)) (str name " " (pr-str (violations result)))))))
+
+(def quiescent-fence (assoc (first (cut-actions :frozen)) :t :t20q))
+
+(deftest run7-artifact-replays
+  (doseq [name (check-io/read-witness "run7/index.edn")]
+    (let [{:keys [actions initial-options refusals negative-control?]} (check-io/read-witness name)
+          result (execute (m/init-state initial-options) actions)]
+      (is (seq actions) name)
+      (is (= refusals (mapv :error (keep :refusal (:trace result)))) name)
+      (doseq [edge (:trace result) :when (:refusal edge)]
+        (is (= (:before edge) (:after edge)) name))
+      (if negative-control?
+        (do (is (seq (inv/l10 (:before (last (:trace result))))))
+            (is (empty? (inv/check (:state result))))
+            (is (empty? (inv/edge-check (last (:trace result)))))
+            (is (nil? (m/current (:state result) w [:spin 1]))))
+        (is (empty? (violations result)) (str name " " (pr-str (violations result)))))
+      (is (not-any? #(= :t21 (:t %)) actions) name))))
+
+(deftest quiescent-refusals-have-diagnostics
+  (let [running (:state (execute [invoke]))
+        queued (:state (execute [{:t :t02 :w w :e [:signal 0]}
+                                 {:t :arrival :w w :event {:completion [:signal 0] :debtor-world w}}]))
+        native (:state (execute [invoke {:t :t05 :w w :r r :kind :external :debtor [:host :native]}]))]
+    (doseq [[state field] [[running :running] [queued :admitted] [native :native]]]
+      (let [result (m/attempt state quiescent-fence)]
+        (is (= ::m/not-quiescent (get-in result [:refusal :error])))
+        (is (seq (get-in result [:refusal field])))
+        (is (= state (:state result)))
+        (is (empty? (:cuts (:state result))))
+        (is (= :open (:admission (m/wr (:state result) w)))))))
+  (doseq [state [(m/init-state) (:state (execute [invoke]))]]
+    (let [p1 (-> state (m/step (assoc quiescent-fence :t :t20))
+                 (m/step {:t :t25 :c [:cut 0]}))]
+      ;; Atomic refusal contracts preserve all semantic rows. The discarded
+      ;; coordinator record and allocation counter are only instrumentation.
+      (is (= (:worlds state) (:worlds p1)))
+      (is (= (get-in state [:env :native]) (get-in p1 [:env :native])))
+      (is (empty? (inv/check p1))))))
+
+(deftest quiescent-trace-refines-zero-drain-p1
+  (doseq [mode [:frozen :materialized] terminal [:t24 :t25]]
+    (let [setup [invoke {:t :t05 :w w :r r :kind :timer :debtor [:host :executor]}]
+          arrival {:t :arrival :w w :event {:completion [:spin 1] :debtor-world w :value :late}}
+          finish [{:t :t22 :c [:cut 0]} {:t :t23 :c [:cut 0] :v [:w 2] :k [:cap 1] :mode mode}
+                  {:t terminal :c [:cut 0]}]
+          q (execute (concat setup [(assoc quiescent-fence :mode mode) arrival] finish))
+          p1 (execute (concat setup [(assoc quiescent-fence :t :t20 :mode mode)
+                                     {:t :t21 :c [:cut 0]} arrival] finish))
+          readiness (nth (:trace p1) (inc (count setup)))]
+      (is (not-any? :refusal (:trace q)))
+      (is (not-any? :refusal (:trace p1)))
+      (is (= (:worlds (:before readiness)) (:worlds (:after readiness))))
+      (is (empty? (:events (:after readiness))))
+      (is (= (:state p1) (update-in (:state q) [:cuts [:cut 0]] dissoc :protocol)))
+      (is (empty? (violations p1)))
+      (is (empty? (violations q)))
+      (is (= :inherited (:status (m/run (:after (nth (:trace q) (+ (count setup) 3))) [:w 2] r)))))))
+
+(deftest quiescent-fence-and-readiness-negative-controls
+  (let [state (:state (execute [quiescent-fence]))
+        event {:cancelled [:o 99] :value ::m/released}
+        arrived (:state (execute state [{:t :arrival :w w :event event}
+                                        {:t :arrival :w w :event event}]))
+        bad (-> arrived (assoc-in [:worlds w :queue] [(assoc event :seq 1)])
+                (assoc-in [:env :outside] []))]
+    (is (empty? (:queue (m/wr arrived w))))
+    (is (= 1 (count (get-in arrived [:env :outside]))))
+    (is (empty? (inv/check arrived)))
+    (is (seq (inv/l22 bad)))
+    (is (= ::m/no-drain (get-in (m/attempt state {:t :t21 :c [:cut 0]}) [:refusal :error])))
+    (doseq [t [:t06 :t08 :t09 :t36 :t37 :queued]]
+      (is (= ::m/not-admitted (get-in (m/attempt state {:t t :w w}) [:refusal :error]))))
+    (let [released (:state (execute arrived [{:t :t25 :c [:cut 0]}]))]
+      (is (empty? (get-in released [:env :outside])))
+      (is (= [event] (mapv #(dissoc % :seq) (:queue (m/wr released w)))))))
+  (let [state (:state (execute [quiescent-fence]))
+        running (assoc-in state [:worlds w :runs r] {:spin e :owner root :status :running})
+        native (assoc-in state [:env :native :n] {:owner [w r] :state :running})]
+    (is (seq (inv/l22 running)))
+    (is (seq (inv/l22 native)))
+    (is (seq (inv/l22 (assoc-in state [:cuts [:cut 0] :phase] :fenced))))))
+
+(deftest seal-aborts-all-cut-phases
+  (doseq [protocol [:t20 :t20q] phase [:fenced :ready :captured :attached]
+          :when (not (and (= :t20q protocol) (= :fenced phase)))]
+    (let [fence (assoc quiescent-fence :t protocol :scope [:root v]
+                       :participants {:worlds #{v} :components #{[v :sci]} :systems #{:a}})
+          advance (case phase :fenced [] :ready [{:t :t21 :c [:cut 0]}]
+                        :captured [{:t :t21 :c [:cut 0]} {:t :t22 :c [:cut 0]}]
+                        :attached [{:t :t21 :c [:cut 0]} {:t :t22 :c [:cut 0]}
+                                   {:t :t23 :c [:cut 0] :v [:w 2] :k [:cap 1] :mode :frozen}])
+          actions (concat [following fence] (if (= :t20q protocol) (remove #(= :t21 (:t %)) advance) advance) [seal])
+          result (execute actions) state (:state result)]
+      (is (not-any? :refusal (:trace result)))
+      (is (empty? (violations result)) (pr-str (violations result)))
+      (is (= :failed (get-in state [:cuts [:cut 0] :phase])))
+      (is (= :sealed (:status (m/wr state v))))
+      (is (= :fenced (:admission (m/wr state v))))
+      (is (empty? (get-in state [:env :threads :coordinator :excl-permits])))
+      (is (nil? (m/wr state [:w 2])))
+      (is (nil? (m/cap state [:cap 1]))))))
+
+(deftest cut-release-never-reopens-sealed-participants
+  ;; Defence in depth, separate from T26's mandatory abort. Deliberately
+  ;; construct a sealed participant while retaining the active cut record.
+  (doseq [terminal [:t24 :t25]]
+    (let [state (:state (execute (butlast (cut-actions :frozen))))
+          sealed (-> state (assoc-in [:worlds w :status] :sealed)
+                     (assoc-in [:worlds w :seal-seq] 0))
+          result (m/step sealed {:t terminal :c [:cut 0]})]
+      (is (= :sealed (:status (m/wr result w))))
+      (is (= :fenced (:admission (m/wr result w))))
+      (is (empty? (inv/l16 result))))))
+
+(deftest run7-normative-counterexamples
+  (doseq [file ["run7/F52.edn" "run7/F53.edn" "run7/F54.edn"]]
+    (let [{:keys [actions target]} (check-io/read-witness file)
           result (execute actions)]
       (is (not-any? :refusal (:trace result)))
-      (is (some #(= target (:id %)) (first-failure actions)) name)
-      (is (= (count actions) (count (shortest-subsequence actions target))) name)
-      ;; Keep normative failures visible until Part 4 is triaged.
-      (is (empty? (violations result)) (str name " " (pr-str (violations result)))))))
+      (is (some #(= target (:id %)) (first-failure actions)))
+      (is (= (count actions) (count (shortest-subsequence actions target))))
+      ;; Keep newly exposed invariant failures visible pending Part 4 triage.
+      (is (empty? (violations result)) (str file " " (pr-str (violations result)))))))
+
+(deftest pending-start-cancellation-is-keyed
+  (let [child [:w 2]
+        setup [following {:t :t04 :w v :e e}
+               {:t :t05 :w v :r r :kind :await-once :debtor [:entity w [:spin 1]]}
+               {:t :t04 :w v :e [:spin 2]}
+               {:t :t05 :w v :r [[:spin 2] 1] :kind :await-once :debtor [:entity w [:spin 3]]}
+               {:t :t19 :w v :v child :k [:cap 1] :scope [:root v]}
+               {:t :t04 :w w :e [:spin 1]}
+               {:t :t11 :w w :r [[:spin 1] 1]}]
+        result (execute setup) state (:state result)]
+    (is (not-any? :refusal (:trace result)))
+    (is (empty? (violations result)) (pr-str (violations result)))
+    (is (= 2 (count (:queue (m/wr state w)))))
+    (is (every? #(= [:spin 3] (:start-for %)) (:queue (m/wr state w))))
+    (doseq [target [v child]]
+      (is (= [:cancelling] (inv/obligation-phases state target [:o 1]
+                                                  (get-in state [:worlds target :obligations [:o 1]]))))
+      (is (= [:pending-start] (inv/obligation-phases state target [:o 3]
+                                                     (get-in state [:worlds target :obligations [:o 3]])))))))
+
+(deftest stale-start-never-admits-or-restarts
+  (let [setup [following {:t :t04 :w v :e e}
+               {:t :t05 :w v :r r :kind :await-once :debtor [:entity w [:spin 1]]}]
+        request {:start-for [:spin 1] :creditor-world v :o [:o 1]}
+        admitted (:state (execute (conj setup {:t :t37 :w w})))
+        consumed (assoc-in admitted [:worlds v :obligations [:o 1] :slot] :consumed)
+        gone (update-in admitted [:worlds v :obligations] dissoc [:o 1])]
+    ;; Obsolete requests are corruption controls, not legal phase-preserving
+    ;; traces. T37 must discard them without any body entry or new authority.
+    (doseq [state [admitted consumed gone]]
+      (let [queued (m/enqueue state w request)
+            after (m/step queued {:t :t37 :w w})]
+        (is (= (:runs (m/wr state w)) (:runs (m/wr after w))))
+        (is (= (:fdeps (m/wr state w)) (:fdeps (m/wr after w))))
+        (is (empty? (:queue (m/wr after w))))
+        (is (empty? (:events after)))))))
+
+(deftest held-phase-evidence-is-required
+  (doseq [[file prefix-count expected] [["run7/p1q-held-start.edn" 4 :pending-start]
+                                        ["run7/F52.edn" 6 :cancelling]]]
+    (let [actions (:actions (check-io/read-witness file))
+          result (execute (take prefix-count actions)) state (:state result)
+          [world o ob] (first (for [[world o ob] (inv/obligations state)
+                                    :when (= :run (first (:creditor ob)))] [world o ob]))
+          missing (assoc-in state [:env :outside] [])]
+      (is (not-any? :refusal (:trace result)))
+      (is (empty? (violations result)))
+      (is (= [expected] (inv/obligation-phases state world o ob)))
+      (is (seq (inv/l10 missing)))
+      (is (not= [expected] (inv/obligation-phases missing world o ob))))))
+
+(deftest held-control-traces-refine-zero-drain-p1
+  ;; Refinement must use the same admission rule for ordinary and control
+  ;; envelopes. These traces still report their independent normative failures.
+  (doseq [file ["run7/F52.edn" "run7/F53.edn"]]
+    (let [actions (:actions (check-io/read-witness file))
+          expanded (mapcat #(if (= :t20q (:t %))
+                              [(assoc % :t :t20) {:t :t21 :c (:c %)}] [%]) actions)
+          q (execute actions) p1 (execute expanded)]
+      (is (not-any? :refusal (:trace q)))
+      (is (not-any? :refusal (:trace p1)))
+      (is (= (:state p1) (update-in (:state q) [:cuts [:cut 0]] dissoc :protocol)))
+      (is (= (violations p1) (violations q))))))

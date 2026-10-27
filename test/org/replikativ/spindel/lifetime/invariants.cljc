@@ -22,13 +22,16 @@
 (defn bound? [s w e] (= #{:obl} (m/reasons s w e)))
 (defn ev [id evidence] (when (seq evidence) {:id id :evidence (vec evidence)}))
 
+(defn queued-events [s w]
+  (concat (:queue (m/wr s w))
+          (map :event (filter #(= w (:w %)) (get-in s [:env :outside])))))
 (defn queued? [s w key value]
-  (boolean (some #(= value (get % key)) (:queue (m/wr s w)))))
+  (boolean (some #(= value (get % key)) (queued-events s w))))
 (defn pending-start? [s w o ob]
   (let [[kind dw e] (:debtor ob)]
     (boolean (and (= :entity kind) (not= dw w)
                   (some #(and (= e (:start-for %)) (= w (:creditor-world %)) (= o (:o %)))
-                        (:queue (m/wr s dw)))))))
+                        (queued-events s dw))))))
 (defn cancelled-in-flight? [s w o ob]
   (and (= :entity (first (:debtor ob))) (not= w (second (:debtor ob)))
        (queued? s w :cancelled o)))
@@ -441,6 +444,18 @@
              (for [w worlds :when (and (m/active-cuts (:phase cut))
                                        (not= :fenced (:admission (m/wr s w))))]
                {:c c :w w :missing-fence true})
+             (when (and (= :p1q (:protocol cut)) (m/active-cuts (:phase cut)))
+               (concat
+                (when-not (#{:ready :captured :attached} (:phase cut))
+                  [{:c c :quiescent-cut-phase (:phase cut)}])
+                (for [w worlds [r rr] (:runs (m/wr s w)) :when (= :running (:status rr))]
+                  {:c c :w w :running r})
+                (for [w worlds event (:queue (m/wr s w))]
+                  {:c c :w w :admitted-after-readiness event})
+                (for [[n nr] (get-in s [:env :native])
+                      :when (and (worlds (first (:owner nr))) (not= :joined (:state nr))
+                                 (not (:boundary? nr)))]
+                  {:c c :native-not-at-boundary n})))
              (for [[d other] (:cuts s) :when (and (not= c d) (m/active-cuts (:phase cut))
                                                   (m/active-cuts (:phase other))
                                                   (or (seq (set/intersection worlds (get-in other [:participants :worlds])))
@@ -497,7 +512,7 @@
 
 (defn writes [a b]
   (for [k (set/union (set (keys a)) (set (keys b))) :when (not= (get a k) (get b k))] k))
-(def cut-transitions #{:t20 :t21 :t22 :t23 :t24 :t25})
+(def cut-transitions #{:t20 :t20q :t21 :t22 :t23 :t24 :t25})
 (defn cut-footprint-errors [before action after]
   (let [c (:c action) old (get-in before [:cuts c]) cut (get-in after [:cuts c])
         participants (or (:participants old) (:participants action))
@@ -508,7 +523,7 @@
         restored (fn [w] (into (vec (:queue (m/wr before w)))
                                (map :event (filter #(= w (:w %)) (get-in before [:env :outside])))))]
     (vec (concat
-          (for [w worlds :when (and (not= :t20 (:t action))
+          (for [w worlds :when (and (not (#{:t20 :t20q} (:t action)))
                                     (not= :fenced (:admission (m/wr before w))))]
             {:cut c :w w :missing-fence true})
           (for [w (set/union (set (keys (:worlds before))) (set (keys (:worlds after))))
@@ -589,6 +604,12 @@
             (when (and (= :t06 t) (nil? (get-in before [:worlds w :obligations (:o action)]))
                        (not= (m/non-idle-projection before) (m/non-idle-projection after)))
               {:id :TL5 :evidence {:action action}})
+            (when (and (= :t20q t) (not refusal))
+              (let [c (:c action)
+                    p1 (-> before (m/step (assoc action :t :t20)) (m/step {:t :t21 :c c}))
+                    projected (update-in after [:cuts c] dissoc :protocol)]
+                (when (or (not= p1 projected) (seq (:events after)))
+                  {:id :TL13 :evidence {:quiescent-cut-not-zero-drain c}})))
             (when (and (cut-transitions t) (not refusal))
               (when-let [bad (seq (cut-footprint-errors before action after))]
                 {:id :TL6 :evidence (vec bad)}))
