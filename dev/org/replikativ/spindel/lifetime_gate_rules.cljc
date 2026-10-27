@@ -16,13 +16,22 @@
 (def required-empty
   (set (remove #{[:addressing :chain-heads] [:addressing :occurrences]} census-paths)))
 
-(def protocol-version 2)
+(def large-parent-shapes
+  (vec (for [mode [:root :following :frozen] path [:uncached-await :execution-event]] [mode path])))
+
+(def protocol-version 3)
 (def measurement-protocol
   {:fork {:warmup 200 :operations 1000 :samples 3
           :order [:small :large :populated :large :populated :small :populated :small :large]}
-   :lifecycle {:warm-shapes 1000 :warmup 2000 :operations 5000 :samples 3}
+   :lifecycle {:warm-shapes 10000 :warmup 2000 :operations 5000 :samples 3
+               :allocation :calling-thread-live-handles :cleanup :outside-timing}
+   :large-parent {:parent-nodes 10000 :warm-shapes 8 :warmup 300 :operations 300 :samples 3
+                  :shapes large-parent-shapes}
+   :pairing {:rounds 3 :order [:baseline :candidate] :overloaded :repeat-round
+             :max-load-per-core 0.5}
    :enumeration {:warmup 2000 :checkpoints [10000 100000]}
-   :gc {:stable-samples 3 :sample-pause-ms 500 :deadline-ms 30000 :heap-tolerance 0.005
+   :gc {:keyword-intern-drain :one-fresh-intern-between-gc-stabilizations
+        :stable-samples 3 :sample-pause-ms 500 :deadline-ms 30000 :heap-tolerance 0.005
         :census-paths census-paths :required-empty required-empty}})
 
 (def metadata-fields
@@ -39,36 +48,89 @@
          (<= (- (apply max heaps) (apply min heaps))
              (* (get-in measurement-protocol [:gc :heap-tolerance]) (apply max heaps))))))
 
-(defn measurement-stable? [point required]
+(defn gc-stable? [point required]
   (and (:gc-stable? point) (:gc-completed? point) (:cleanup-complete? point)
        (= required (:expected-empty point))
        (stable-observations? (:observations point) required)))
 
+(defn measurement-stable? [point required]
+  (and (true? (:keyword-intern-drained? point))
+       (gc-stable? (:pre-intern-gc point) required)
+       (gc-stable? point required)))
+
+(defn positive-finite? [x]
+  (and (number? x) (pos? x) #?(:clj (Double/isFinite (double x)) :cljs (js/Number.isFinite x))))
+
+(defn host-quiet? [data]
+  (let [observations (:host-observations data)]
+    (and (pos-int? (:processors data)) (seq observations)
+         (every? (fn [o]
+                   (and (string? (:uptime o)) (seq (:uptime o))
+                        (vector? (:foreign-high-cpu o))
+                        (number? (:load o)) (<= 0 (:load o) (/ (:processors data) 2.0))))
+                 observations))))
+
+(defn lifecycle-sample? [k row]
+  (and (= k (:lifecycle row)) (= 5000 (:spins row)) (= 2000 (:warmup row))
+       (= (case k :L-child 14000 :L2-await 7002 7000) (:retained-handles row))
+       (= 0 (:cleanup-calls row))
+       (= (case k :L2-await 12512500 :L2-track 12512500 12502500) (:checksum row))
+       (positive-finite? (:us-per-spin row)) (positive-finite? (:kb-per-spin row))))
+
+(defn large-parent-sample? [row]
+  (and (= 10000 (:parent-nodes row)) (= false (:shape-warmup? row))
+       (= 300 (:operations row)) (= 45150 (:checksum row))
+       (= (+ 10000 (if (= :uncached-await (:path row)) 600 300)) (:nodes-at-start row))
+       (positive-finite? (:ns-per-op row)) (positive-finite? (:bytes-per-op row))))
+
+(defn validate-report! [data]
+  (when-not (and (= protocol-version (:protocol-version data))
+                 (= measurement-protocol (:measurement-protocol data))
+                 (= :calling-thread-live-handles (:allocation data))
+                 (every? #(and (contains? data %) (some? (get data %))) metadata-fields)
+                 (host-quiet? data)
+                 (= #{:L0 :L-child :L2-await :L2-track} (set (map :lifecycle (:lifecycle data))))
+                 (= 4 (count (:lifecycle data)))
+                 (every? (fn [r] (and (lifecycle-sample? (:lifecycle r) r)
+                                      (= 3 (count (:samples r)))
+                                      (every? #(lifecycle-sample? (:lifecycle r) %) (:samples r)))) (:lifecycle data))
+                 (= 6 (count (:large-parent data)))
+                 (= (set large-parent-shapes) (set (map (juxt :mode :path) (:large-parent data))))
+                 (every? (fn [r] (and (large-parent-sample? r) (= 3 (count (:samples r)))
+                                      (every? #(and (= (select-keys r [:mode :path]) (select-keys % [:mode :path]))
+                                                    (large-parent-sample? %)) (:samples r)))) (:large-parent data))
+                 (map? (:fork data)) (= (set (keys fixture-dimensions)) (set (keys (:fork data))))
+                 (every? (fn [[id dimensions]]
+                           (let [row (get-in data [:fork id])]
+                             (and (= id (:fixture row)) (= dimensions (select-keys row (keys dimensions)))
+                                  (positive-finite? (:ns-per-op row)) (positive-finite? (:bytes-per-op row))
+                                  (= 3 (count (:samples row)))
+                                  (every? #(and (= id (:fixture %))
+                                                (= dimensions (select-keys % (keys dimensions)))
+                                                (= 1000 (:operations %))) (:samples row))))) fixture-dimensions)
+                 (= #{:fork :spin} (set (map :kind (:enumeration data))))
+                 (= 2 (count (:enumeration data)))
+                 (every? #(and (positive-finite? (:cycles-per-second %))
+                               (= [10000 100000] (mapv :cycles (:points %)))) (:enumeration data))
+                 (every? #(and (positive-finite? (:retained-bytes %))
+                               (seq (:observations %)) (contains? % :cleanup-complete?)
+                               (contains? % :gc-wait-ms) (contains? % :gc-completed?))
+                         (mapcat :points (:enumeration data))))
+    (throw (ex-info "Incomplete benchmark report, overloaded round or wrong measurement protocol" {:type ::incomplete}))))
+
 (defn validate! [baseline candidate]
-  (doseq [data [baseline candidate]]
-    (when-not (and (= protocol-version (:protocol-version data))
-                   (= measurement-protocol (:measurement-protocol data))
-                   (every? #(and (contains? data %) (some? (get data %))) metadata-fields)
-                   (= #{:L0 :L-child :L2-await :L2-track} (set (map :lifecycle (:lifecycle data))))
-                   (= 4 (count (:lifecycle data)))
-                   (map? (:fork data)) (= (set (keys fixture-dimensions)) (set (keys (:fork data))))
-                   (every? (fn [[id dimensions]]
-                             (let [row (get-in data [:fork id])]
-                               (and (= id (:fixture row)) (= dimensions (select-keys row (keys dimensions)))
-                                    (= 3 (count (:samples row)))
-                                    (every? #(and (= id (:fixture %))
-                                                  (= dimensions (select-keys % (keys dimensions)))
-                                                  (= 1000 (:operations %))) (:samples row))))) fixture-dimensions)
-                   (= #{:fork :spin} (set (map :kind (:enumeration data))))
-                   (= 2 (count (:enumeration data)))
-                   (every? #(= [10000 100000] (mapv :cycles (:points %))) (:enumeration data))
-                   (every? #(and (seq (:observations %)) (contains? % :cleanup-complete?)
-                                 (contains? % :gc-wait-ms) (contains? % :gc-completed?))
-                           (mapcat :points (:enumeration data))))
-      (throw (ex-info "Incomplete benchmark report or wrong measurement protocol" {:type ::incomplete}))))
+  (doseq [data [baseline candidate]] (validate-report! data))
   (doseq [field metadata-fields]
     (when-not (= (get baseline field) (get candidate field))
-      (throw (ex-info "Incomparable benchmark metadata" {:type ::incomparable :field field})))))
+      (throw (ex-info "Incomparable benchmark metadata" {:type ::incomparable :field field}))))
+  (let [b (:session baseline) c (:session candidate)]
+    (when-not (and (string? (:id b)) (seq (:id b)) (= (:id b) (:id c))
+                   (pos-int? (:round b)) (= (:round b) (:round c))
+                   (= :baseline (:role b)) (= :candidate (:role c))
+                   (= (* 2 (dec (:round b))) (:position b))
+                   (= (inc (:position b)) (:position c)))
+      (throw (ex-info "Relative gates require an alternating pair from the same session and round"
+                      {:type ::unpaired})))))
 
 (defn ratio-gate [name value limit]
   {:gate name :value value :limit limit :pass? (<= value limit)})
@@ -78,6 +140,7 @@
   (let [base-life (into {} (map (juxt :lifecycle identity) (:lifecycle baseline)))
         forks (:fork candidate)
         small (:small forks) large (:large forks) populated (:populated forks)
+        base-large (into {} (map (juxt (juxt :mode :path) identity) (:large-parent baseline)))
         base-enum (into {} (map (juxt :kind identity) (:enumeration baseline)))]
     (vec
      (concat
@@ -86,6 +149,11 @@
                   [(ratio-gate [k :time-ratio] (/ (:us-per-spin row) (:us-per-spin b)) 1.10)
                    (ratio-gate [k :extra-bytes] (* 1024 (- (:kb-per-spin row) (:kb-per-spin b))) 64)]))
               (:lifecycle candidate))
+      (mapcat (fn [row]
+                (let [shape ((juxt :mode :path) row) base (base-large shape)]
+                  (for [metric [:ns-per-op :bytes-per-op]]
+                    (ratio-gate (into [:large-parent] (conj shape metric))
+                                (/ (metric row) (metric base)) 1.10)))) (:large-parent candidate))
       [{:gate [:fork :gc-stable]
         :pass? (every? #(measurement-stable? (:post-fixture-gc %) #{}) (mapcat :samples (vals forks)))}]
       (for [metric [:ns-per-op :bytes-per-op]]

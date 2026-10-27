@@ -18,7 +18,12 @@
   (reduce + (map #(max 0 (.getCollectionCount ^java.lang.management.GarbageCollectorMXBean %))
                  (java.lang.management.ManagementFactory/getGarbageCollectorMXBeans))))
 
-(defn full-gc! [rt]
+(defn drain-keyword-interns! []
+  ;; A fresh intern expunges cleared weak entries in Clojure's global table.
+  ;; One fresh intern after clearing weak references, as in the causal control.
+  (clojure.lang.Keyword/intern (str "spindel-bench-drain-" (java.util.UUID/randomUUID))))
+
+(defn stabilize-gc! [rt]
   (let [start (System/nanoTime) empty-paths (if rt rules/required-empty #{})]
     (loop [observations []]
       (let [before (gc-count)
@@ -41,6 +46,13 @@
            :gc-wait-ms elapsed :census counts :observations observations
            :stabilisation (if stable? :stable :deadline)}
           (recur observations))))))
+
+(defn full-gc! [rt]
+  ;; First finish ordinary GC/engine cleanup so dead keywords have cleared.
+  ;; Then perform exactly the attribution's causal control and stabilize again.
+  (let [before (stabilize-gc! rt)]
+    (drain-keyword-interns!)
+    (assoc (stabilize-gc! rt) :keyword-intern-drained? true :pre-intern-gc before)))
 
 (defn cycle! [kind i]
   (case kind
