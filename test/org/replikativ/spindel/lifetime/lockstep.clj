@@ -43,6 +43,11 @@
 (defn path-view [paths]
   (fn [state] (into {} (for [path paths] [path (get-in state path :absent)]))))
 
+(defn token-view [state]
+  {:worlds (into {} (for [[w world] (:worlds state)]
+                      [w (into {} (for [[e row] (:entities world)] [e (:tokens row)]))]))
+   :handles (get-in state [:env :handles] :absent)})
+
 (def components
   (into {}
         (for [[id step paths laws scope]
@@ -68,7 +73,7 @@
                [:cuts :E2 [[:cuts]] #{:L13 :L22} :global]
                [:caps :F1 [[:caps] [:durable :caps]] #{:L1 :L3 :L4 :L13 :L16 :L17 :L18 :L19 :L20 :L22} :global]
                [:records :F2 [[:records] [:durable :records] [:freed-bases] [:restarted?] [:model :durable-systems]] #{:L16 :L17 :L18 :L19} :global]]
-              :let [view (if (= scope :world) (world-view paths) (path-view paths))]]
+              :let [view (case scope :world (world-view paths) :mixed token-view (path-view paths))]]
           [id {:enabled? (= id :entities) :step step
                :model-paths paths :projected-paths paths :scope scope
                :model-view (if (= id :entities) #(entity-view % true) view)
@@ -80,7 +85,7 @@
                :partial-invariants (if (= id :entities) #{:L12} #{})
                :invariant-view (when (= id :entities) #(canonical-view (entity-view % false)))
                :kinds (if (= id :entities) #{:spin :signal} :all)
-               :fields (if (= id :entities) [:kind :completed? :result] :all)
+               :fields (case id :entities [:kind :completed? :result] :tokens [:tokens :handles] :all)
                :payload-fields (if (= id :entities) #{:result} #{})
                :excluded-model-kinds (if (= id :entities) {:fork :C2} {})}])))
 

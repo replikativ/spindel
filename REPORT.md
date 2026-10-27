@@ -358,6 +358,8 @@ returns an `:unavailable-component` discrepancy before comparison, including an
 empty trace. Initial available state is also compared. Environment waiters/native
 registrations, outside events/threads, world status/root, registry history, and
 both runtime and durable capability/record locations are declared explicitly.
+The mixed token view includes per-world entity token sets and environment handles;
+its declaration cannot accidentally select a nonexistent top-level entity map.
 Unavailable views require implementation before enablement; a switch cannot opt
 an absent environment or durable table into a vacuous predicate pass.
 
@@ -437,6 +439,9 @@ Evidence is under `~/Development/spindel-work/impl/a3/`:
 - `fix1-retention-before.log`: restoring the old stable-census-only criterion
   causes **5 failures** for heap drift, pending work, absent GC completion,
   insufficient samples and missing census evidence.
+- `fix1-token-contract-before.log`: the previous mixed-path selector misses a
+  world-token-only mutation (**1 failed assertion**); the corrected `token-view`
+  detects it. The final smoke suite pins both sides of that descriptor's view.
 - `fix1-adapter-pure.log`: independent executable checks of T7/T8 constituents,
   deliveries, induced resume, model/runtime acceptance attribution and semantic
   interleaving footprints pass.
@@ -552,14 +557,16 @@ main; recording the baseline grants no exemption.
 
 - Lockstep diagnostic: exit **1** with the coverage table above;
   `fix1-check.log`, committed `lockstep-main-06ce205-fix1.edn`.
-- Final smoke: **26 tests / 130 assertions, 0 failures/errors**, exit **0**;
-  `fix1-final-smoke.log` (final harness, including delivery-only footprints).
+- Final smoke: **27 tests / 131 assertions, 0 failures/errors**, exit **0**;
+  `fix1-final-smoke.log` (final harness, including delivery-only footprints and
+  the unavailable token component's mixed view).
 - Pure gate tests: **5 tests / 59 assertions, 0 failures/errors**, exit **0**;
   `fix1-gates.log`. Benchmark namespace load also passes.
 - Full JVM: **1,465 tests / 72,528 assertions, 0 failures/errors**, exit **0**;
   `exclusive.sh a3-fix1-full-jvm clojure -J-Xmx3g -X:test`, **one full run**,
   `fix1-jvm.log`. The delivery-only footprint refinement was completed while
-  this reservation was running and verified by the final focused smoke run;
+  this reservation was running. That refinement and the subsequent unavailable
+  token-view mapping correction were verified by the final focused smoke run;
   the full suite was not repeated.
 - CLJS: `slot.sh`, `JAVA_TOOL_OPTIONS=-Xmx1g`, `npx shadow-cljs compile ci`, then
   `node out/ci-tests.js`: **539 tests / 2,027 assertions, 0 failures/errors**,

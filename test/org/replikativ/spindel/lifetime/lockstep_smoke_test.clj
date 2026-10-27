@@ -227,3 +227,11 @@
           result (lockstep/replay actions)]
       (is (= :skipped (:status result)))
       (is (= :needs-microstep-hook (get-in result [:reason :reason]))))))
+
+(deftest token-contract-includes-world-rows-and-environment
+  (let [descriptors (update-vals lockstep/components #(assoc % :enabled? false))
+        state {:worlds {w {:entities {e {:tokens #{[:tok 0]}}}}}
+               :env {:handles {[:tok 0] {:spin e :touched #{w} :dropped #{} :reachable? true}}}}]
+    (with-redefs [lockstep/components (assoc-in descriptors [:tokens :enabled?] true)]
+      (is (not= (lockstep/comparable state)
+                (lockstep/comparable (assoc-in state [:worlds w :entities e :tokens] #{[:tok 999]}) false))))))
