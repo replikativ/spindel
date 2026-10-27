@@ -749,7 +749,7 @@
   ;; and discover the error via their track continuation. The spin's own
   ;; completion event is the caller's (reject continuation or cancel-spin!).
   (let [ctx (ec/current-execution-context)
-        observers (ec/get-state [:observers spin-id])]
+        observers (some-> (ec/get-state [:nodes spin-id]) nodes/get-observers)]
     (doseq [observer-id observers]
       (simple/mark-dirty! ctx observer-id))))
 
