@@ -5,28 +5,42 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.lifetime-gate-rules :as rules]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.yggdrasil :as ygg]))
 
-(declare census)
+(defn census [rt]
+  (if-not rt {}
+          (assoc (into {} (for [path (remove #{[:following-worlds-live]} rules/census-paths)] [path (count (rtp/get-state rt path))]))
+                 [:following-worlds-live] (if (ec/following-forks? rt) 1 0))))
+
+(defn gc-count []
+  (reduce + (map #(max 0 (.getCollectionCount ^java.lang.management.GarbageCollectorMXBean %))
+                 (java.lang.management.ManagementFactory/getGarbageCollectorMXBeans))))
 
 (defn full-gc! [rt]
-  ;; GC and Cleaner dispatch are asynchronous. A fixed short sleep measures the
-  ;; callback backlog rather than retention at 100k. Require stable table counts
-  ;; across three further collections; report a timeout as invalid measurement.
-  (let [start (System/nanoTime)]
-    (dotimes [_ 3] (System/gc) (Thread/sleep 200))
-    (loop [previous (census rt) stable 0]
-      (System/gc)
-      (Thread/sleep 500)
-      (let [counts (census rt)
-            stable (if (= previous counts) (inc stable) 0)
-            elapsed (/ (- (System/nanoTime) start) 1e6)]
-        (if (or (>= stable 3) (>= elapsed 30000))
-          (let [runtime (Runtime/getRuntime)]
-            {:retained-bytes (- (.totalMemory runtime) (.freeMemory runtime))
-             :gc-stable? (>= stable 3) :gc-wait-ms elapsed :census counts})
-          (recur counts stable))))))
+  (let [start (System/nanoTime) empty-paths (if rt rules/required-empty #{})]
+    (loop [observations []]
+      (let [before (gc-count)
+            _ (System/gc)
+            _ (Thread/sleep (get-in rules/measurement-protocol [:gc :sample-pause-ms]))
+            after (gc-count)
+            runtime (Runtime/getRuntime)
+            counts (census rt)
+            elapsed (/ (- (System/nanoTime) start) 1e6)
+            observation {:gc-before before :gc-after after :gc-completed? (> after before)
+                         :elapsed-ms elapsed :heap-bytes (- (.totalMemory runtime) (.freeMemory runtime))
+                         :census counts}
+            observations (conj observations observation)
+            stable? (rules/stable-observations? observations empty-paths)
+            cleanup? (every? #(zero? (get counts % -1)) empty-paths)]
+        (if (or stable? (>= elapsed (get-in rules/measurement-protocol [:gc :deadline-ms])))
+          {:retained-bytes (:heap-bytes observation) :gc-stable? (boolean stable?)
+           :gc-completed? (every? :gc-completed? (take-last 3 observations))
+           :cleanup-complete? cleanup? :expected-empty empty-paths
+           :gc-wait-ms elapsed :census counts :observations observations
+           :stabilisation (if stable? :stable :deadline)}
+          (recur observations))))))
 
 (defn cycle! [kind i]
   (case kind
@@ -34,10 +48,6 @@
     :fork (let [h (ygg/fork! {:systems :none :sync? true})]
             (binding [ec/*execution-context* (:child-ctx h)] @(spin i))
             (ygg/discard-fork! h {:sync? true}))))
-
-(defn census [rt]
-  (into {} (for [path [:nodes :atoms :await-conts :track-subscriptions :subscriptions :spin-tracking :incremental]]
-             [path (count (rtp/get-state rt [path]))])))
 
 (defn run-one [kind]
   (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))]
@@ -57,5 +67,15 @@
              :cycles-per-second (/ 1e14 (reduce + (map :elapsed-ns points)))})))
       (finally (ctx/close-context! rt)))))
 
-(defn benchmark [] (mapv run-one [:fork :spin]))
+(defn warm-shape! [kind]
+  (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))]
+    (try
+      (binding [ec/*execution-context* rt cps/*in-trampoline* false]
+        (dotimes [i (get-in rules/measurement-protocol [:enumeration :warmup])] (cycle! kind i)))
+      (finally (ctx/close-context! rt))))
+  (full-gc! nil))
+
+(defn benchmark []
+  (doseq [kind [:fork :spin]] (warm-shape! kind))
+  (mapv run-one [:fork :spin]))
 (defn -main [& _] (benchmark) (shutdown-agents))

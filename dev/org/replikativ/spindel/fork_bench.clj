@@ -7,6 +7,8 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.enum-bench :as enumeration]
+            [org.replikativ.spindel.lifetime-gate-rules :as rules]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
@@ -57,9 +59,21 @@
               (doseq [h siblings] (ygg/discard-fork! h {:sync? true}))))))
       (finally (ctx/close-context! rt)))))
 
+(defn sample-fixture [id n]
+  (let [{:keys [live-worlds entities parked-runs]} (rules/fixture-dimensions id)]
+    (assoc (run-one live-worlds entities parked-runs n) :fixture id)))
+
 (defn benchmark []
-  (mapv (fn [[worlds entities parked]]
-          (let [r (run-one worlds entities parked 1000)] (prn r) (flush) r))
-        [[1000 0 0] [5000 0 0] [1000 10000 1000]]))
+  ;; Each shape is warm before any retained sample, each sample gets a fresh
+  ;; root, and the rotating order balances JIT and preceding-fixture effects.
+  (doseq [id [:small :large :populated]] (sample-fixture id 200) (enumeration/full-gc! nil))
+  (let [samples (mapv (fn [id]
+                        (let [r (assoc (sample-fixture id 1000) :post-fixture-gc (enumeration/full-gc! nil))]
+                          (prn r) (flush) r)) (get-in rules/measurement-protocol [:fork :order]))]
+    (into {} (for [[id rows] (group-by :fixture samples)]
+               [id (assoc (nth (sort-by :ns-per-op rows) 1)
+                          :ns-per-op (nth (sort (map :ns-per-op rows)) 1)
+                          :bytes-per-op (nth (sort (map :bytes-per-op rows)) 1)
+                          :samples (vec rows))]))))
 
 (defn -main [& _] (benchmark) (shutdown-agents))

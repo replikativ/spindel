@@ -20,12 +20,13 @@
                   :runtime-base (str/trim (:out (shell/sh "git" "log" "-1" "--format=%h" "--" "src")))
                   :machine (.getHostName (java.net.InetAddress/getLocalHost))
                   :os (System/getProperty "os.name") :arch (System/getProperty "os.arch")
-                  :java (System/getProperty "java.version")
+                  :java (System/getProperty "java.version") :java-vendor (System/getProperty "java.vendor")
+                  :os-version (System/getProperty "os.version")
+                  :jvm-options (vec (.getInputArguments (java.lang.management.ManagementFactory/getRuntimeMXBean)))
+                  :protocol-version rules/protocol-version :measurement-protocol rules/measurement-protocol
                   :max-heap-bytes (.maxMemory (Runtime/getRuntime))
                   :processors (.availableProcessors (Runtime/getRuntime))
                   :executor :synchronous :allocation :calling-thread
-                  :gc {:initial-collections 3 :initial-pause-ms 200
-                       :stable-samples 3 :sample-pause-ms 500 :deadline-ms 30000}
                   :admission :exclusive :measured-at (str (java.time.Instant/now))}
         ;; Warm every lifecycle shape before collecting any sample. Repeated
         ;; samples use median time, rather than counting class loading as work.
