@@ -1,6 +1,6 @@
 (ns org.replikativ.spindel.lifetime-gates
-  "Run under exclusive.sh with -J-Xmx3g -M:bench -m ...lifetime-gates
-   measure output.edn | check baseline.edn candidate.edn.
+  "Session entry: exclusive.sh LABEL python3 dev/lifetime_gate_session.py OUTPUT.
+   Worker modes: measure output.edn | check paired-baseline.edn candidate.edn.
    A baseline is a measurement, never an exemption from absolute gates."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]

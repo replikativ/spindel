@@ -16,18 +16,17 @@
   (clojure.test/test-all-vars 'org.replikativ.spindel.lifetime-gates-check))
 
 (deftest checkpoint-drains-once-between-stabilizations
-  (if-let [drain (ns-resolve 'org.replikativ.spindel.enum-bench 'drain-keyword-interns!)]
-    (let [calls (atom 0) collections (atom 0)]
-      (with-redefs-fn {drain #(swap! calls inc)
-                       #'enumeration/gc-count #(swap! collections inc)
-                       #'rules/measurement-protocol (-> rules/measurement-protocol
-                                                        (assoc-in [:gc :sample-pause-ms] 0)
-                                                        (assoc-in [:gc :heap-tolerance] 1.0))}
-        #(let [point (enumeration/full-gc! nil)]
-           (is (:keyword-intern-drained? point))
-           (is (= 1 @calls))
-           (is (rules/gc-stable? (:pre-intern-gc point) #{})))))
-    (is false "Checkpoint has no intern-table drain")))
+  (let [stabilize (ns-resolve 'org.replikativ.spindel.enum-bench 'stabilize-gc!)
+        drain (ns-resolve 'org.replikativ.spindel.enum-bench 'drain-keyword-interns!)]
+    (if (and stabilize drain)
+      (let [calls (atom [])]
+        (with-redefs-fn {stabilize (fn [_] (swap! calls conj :gc) (checks/stable-point #{}))
+                         drain #(swap! calls conj :intern)}
+          #(let [point (enumeration/full-gc! nil)]
+             (is (= [:gc :intern :gc] @calls))
+             (is (:keyword-intern-drained? point))
+             (is (rules/gc-stable? (:pre-intern-gc point) #{})))))
+      (is false "Checkpoint has no intern-table drain"))))
 
 (deftest lifecycle-keeps-children-and-warmup-handles
   (let [r (lifecycle/run-one :L-child 5 2)]
