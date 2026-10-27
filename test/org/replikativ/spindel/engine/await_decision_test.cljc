@@ -116,9 +116,11 @@
                                     (when (and (= sid (sc/spin-id child)) (not claimed?)) (dirty! rt))
                                     claimed?)))
                                simple/claim-continuation-for-resume!
-                               (fn [rt sid cid opts]
-                                 (when (= sid (sc/spin-id observer)) (dirty! rt))
-                                 (resume! rt sid cid opts))]
+                               (fn hooked-resume
+                                 ([rt sid cid] (hooked-resume rt sid cid nil))
+                                 ([rt sid cid opts]
+                                  (when (= sid (sc/spin-id observer)) (dirty! rt))
+                                  (resume! rt sid cid opts)))]
                    (sync/spawn! observer {:on-success #(swap! values conj %)}))
                  (is @forced?)
                  (is (= [:new] @values))
@@ -155,10 +157,12 @@
                    claim! simple/claim-continuation-for-resume!]
                (sync/spawn! child)
                (with-redefs [simple/claim-continuation-for-resume!
-                             (fn [rt sid cid opts]
-                               (when (= sid (sc/spin-id observer))
-                                 (simple/cache-result! rt (sc/spin-id child) (sc/ok :new)))
-                               (claim! rt sid cid opts))]
+                             (fn hooked-claim
+                               ([rt sid cid] (hooked-claim rt sid cid nil))
+                               ([rt sid cid opts]
+                                (when (= sid (sc/spin-id observer))
+                                  (simple/cache-result! rt (sc/spin-id child) (sc/ok :new)))
+                                (claim! rt sid cid opts)))]
                  (sync/spawn! observer {:on-success #(swap! values conj %)}))
                (is (= [:new] @values)))))
          (done)))
