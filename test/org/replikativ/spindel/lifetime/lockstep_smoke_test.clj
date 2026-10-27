@@ -69,3 +69,17 @@
         after (model/step before {:t :t11 :w w :r [e 1]})]
     (is (= [{:w w :e e :value ::model/cancelled}]
            (lockstep/model-deliveries before after)))))
+
+(deftest minimization-preserves-the-refusal-type
+  (is (not= (lockstep/discrepancy-key {:differences [{:kind :refusal :expected :unknown-handle :actual nil}]})
+            (lockstep/discrepancy-key {:differences [{:kind :refusal :expected :token-spin-mismatch :actual nil}]}))))
+
+(deftest following-cold-row-after-host-registration
+  (let [v [:w 1] parent [:spin 2] child [:spin 3]
+        trace [{:t :t19 :w w :v v :k [:cap 0] :scope [:root w]}
+               {:t :t04 :w v :e parent}
+               {:t :t04 :w w :e parent}
+               {:t :t01 :w w :r [parent 1] :e child :tok [:tok 0]}
+               {:t :t01 :w w :e child :tok [:tok 1]}]
+        result (lockstep/replay trace)]
+    (is (= :passed (:status result)) (pr-str result))))

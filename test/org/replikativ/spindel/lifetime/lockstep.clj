@@ -5,6 +5,7 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.java.io :as io]
             [clojure.set :as set]
+            [clojure.data :as data]
             [is.simm.partial-cps.async :as cps]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
@@ -174,9 +175,10 @@
    body. PState exposes the visible view, so comparison uses model read-source;
    local versus inherited storage is explicitly absent until C2."
   ([context] (project context {}))
-  ([context ids]
+  ([context ids] (project context ids #{}))
+  ([context ids other-created]
    (let [runtime-nodes (rtp/get-state context [:nodes])
-         created (set (mapcat :created-spins (vals runtime-nodes)))
+         created (set/union other-created (set (mapcat :created-spins (vals runtime-nodes))))
          entities
          (into {}
                (for [[id n] runtime-nodes
@@ -264,8 +266,11 @@
                    start (count (:delivered @driver))
                    actual-refusal (try (binding [cps/*in-trampoline* false] (apply-action! driver a)) nil
                                        (catch Throwable e (error-type e)))
+                   created (set (for [[_ context] (:contexts @driver)
+                                      [_ node] (rtp/get-state context [:nodes])
+                                      child (:created-spins node)] child))
                    projected {:worlds (into {} (for [[w rt] (:contexts @driver)]
-                                                 [w (project rt (:ids @driver))]))}
+                                                 [w (project rt (:ids @driver) created)]))}
                    expected (comparable after) actual (comparable projected)
                    delivered (subvec (:delivered @driver) start)
                    expected-delivered (model-deliveries state after)
@@ -406,7 +411,10 @@
             (recur (:state (m/attempt state a)) (rest choices) (conj actions a)))))))
 
 (defn discrepancy-key [result]
-  (mapv #(select-keys % [:kind :actual]) (:differences result)))
+  (mapv (fn [{:keys [kind expected actual] :as difference}]
+          (if (= :state kind)
+            {:kind kind :delta (vec (take 2 (data/diff expected actual)))}
+            (select-keys difference [:kind :expected :actual]))) (:differences result)))
 
 (defn minimize-discrepancy [result]
   (let [signature (discrepancy-key result)]
