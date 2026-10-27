@@ -2436,12 +2436,12 @@
   (try
     (let [result (stamp! plan)]
       (when (:retry plan)
-        (rtp/swap-state! (:parent-ctx plan) [pending-stamps-key]
+        (rtp/swap-state! (:parent-ctx plan) [:world/ephemeral pending-stamps-key]
                          #(dissoc % (:pending-id plan))))
       result)
     (catch #?(:clj Throwable :cljs :default) error
       (let [id (or (:pending-id plan) (random-uuid))]
-        (rtp/swap-state! (:parent-ctx plan) [pending-stamps-key]
+        (rtp/swap-state! (:parent-ctx plan) [:world/ephemeral pending-stamps-key]
                          #(assoc (or % {}) id plan))
         (throw (ex-info "Stamping the world's intents failed; retry-stamps! retries it"
                         {:type ::stamp-failed :pending id} error))))))
@@ -2452,10 +2452,10 @@
    Returns the ids retried; one that fails again stays pending and throws."
   ([] (retry-stamps! (ec/current-execution-context)))
   ([ctx]
-   (vec (for [[id plan] (rtp/get-state ctx [pending-stamps-key])
+   (vec (for [[id plan] (rtp/get-state ctx [:world/ephemeral pending-stamps-key])
               :when (= (:fork-id ctx) (:fork-id (:parent-ctx plan)))]
           (do (if-let [retry (:retry plan)] (retry) (stamp! plan))
-              (rtp/swap-state! ctx [pending-stamps-key] #(dissoc % id))
+              (rtp/swap-state! ctx [:world/ephemeral pending-stamps-key] #(dissoc % id))
               id)))))
 
 (defn- reseat-systems!

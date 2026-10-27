@@ -101,7 +101,7 @@
 
 (def non-inherited-paths
   "World-owned executable state: never read through, copied, or snapshotted."
-  #{:org.replikativ.spindel.yggdrasil/pending-stamps})
+  #{:world/ephemeral})
 
 (def default-fork-local-paths
   "Default set of fork-local paths that don't fall back to parent.

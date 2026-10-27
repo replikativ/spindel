@@ -461,21 +461,21 @@
               snapshot (ctx/snapshot-context parent :clean-in-flight? false)]
           (when (= mode :frozen)
             (is (map? @frozen-base))
-            (is (not (contains? @frozen-base ::ygg/pending-stamps))))
-          (is (empty? (rtp/get-state child [::ygg/pending-stamps])))
-          (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
+            (is (not (contains? @frozen-base :world/ephemeral))))
+          (is (empty? (rtp/get-state child [:world/ephemeral ::ygg/pending-stamps])))
+          (is (empty? (rtp/get-state snapshot [:world/ephemeral ::ygg/pending-stamps])))
           ;; Whole-state materialization must not cache an executable parent entry.
-          (is (empty? (get (rtp/get-state child []) ::ygg/pending-stamps)))
+          (is (empty? (get (rtp/get-state child []) :world/ephemeral)))
           (is (= [] (ygg/retry-stamps! child)))
           (is (= :incomplete (:status (ygg/fork-disposition w))))
           (is (= 0 @callbacks))
           (ygg/merge-fork! w {:operation-id :world-owned})
           (is (= 1 @callbacks))
-          (is (not (contains? @frozen-base ::ygg/pending-stamps))
+          (is (not (contains? @frozen-base :world/ephemeral))
               "the captured frozen base cannot retain the parent's executable plan")
           (is (= [] (ygg/retry-stamps! parent)))
-          (is (empty? (get (rtp/get-state child []) ::ygg/pending-stamps)))
-          (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
+          (is (empty? (get (rtp/get-state child []) :world/ephemeral)))
+          (is (empty? (rtp/get-state snapshot [:world/ephemeral ::ygg/pending-stamps])))
           (is (= [] (ygg/retry-stamps! (ctx/restore-snapshot snapshot :drain-events? false)))))))))
 
 (deftest failed-family-preparation-restores-state-and-discard-cleans-up
