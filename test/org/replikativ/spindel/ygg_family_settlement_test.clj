@@ -491,7 +491,7 @@
       (ygg/discard-fork! b)
       (is (every? #(= :discarded (:settled %)) (vals (:nodes @family))))
       (is (= :discarded (:status @family)))
-      (is (not-any? #(contains? @family %) [:resume :operation-id :winners]))
+      (is (not-any? #(contains? @family %) [:resume :attempt-id :group-id :winners]))
       (is (= 0 @(:stamp-calls book))))))
 
 (deftest concurrent-family-recovery-holds-one-operation-lease
@@ -539,7 +539,7 @@
           (is (ygg/open-fork? a) "earlier claims roll back before any substrate work")
           (is (= :open (:status @family)))
           (is (nil? (:resume @family)))
-          (is (nil? (:operation-id @family)))
+          (is (nil? (:group-id @family)))
           (is (= 0 @(:stamp-calls book)))
           (when (= action :transfer)
             (is (= before @family))
@@ -643,3 +643,126 @@
             (is (= 1 @callbacks))
             (is (= 2 @(:stamp-calls book))))))
       (finally (sh "rm" "-rf" path)))))
+
+(defn- outcome [f]
+  (try {:value (f)} (catch Throwable error {:error error})))
+
+(deftest failure-publication-includes-work-and-cannot-overwrite-a-completed-retry
+  (doseq [reconciled? [true false]
+          failures [1 2]]
+    (with-book [book failures]
+      (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+            family (:family a)
+            published (promise)
+            release (promise)
+            paused? (atom false)
+            settle #(if reconciled?
+                      (ygg/settle-family! [a] {:operation-id :publication})
+                      (ygg/merge-fork! a {:operation-id :publication}))]
+        (add-watch family ::publication
+                   (fn [_ _ old new]
+                     (when (and (= :merging (:status old)) (= :failed (:status new))
+                                (compare-and-set! paused? false true))
+                       (deliver published new)
+                       (deref release 10000 :timeout))))
+        (let [initial (future (outcome settle))]
+          (try
+            (let [failed (deref published 10000 :timeout)]
+              (is (map? failed))
+              (is (fn? (:resume failed)))
+              (when (= failures 2)
+                (is (some? (:error (outcome settle))))
+                (is (= :failed (:status @family)))
+                (is (fn? (:resume @family))))
+              (is (nil? (:error (outcome settle))))
+              (is (= :merged (:status @family)))
+              (is (nil? (:resume @family)))
+              (is (not (realized? initial)) "retry completes before the failing caller unwinds"))
+            (finally
+              (deliver release true)
+              (remove-watch family ::publication)))
+          (is (some? (:error (deref initial 10000 {}))))
+          (is (= :merged (:status @family)))
+          (is (nil? (:resume @family)))
+          (is (= failures (dec @(:stamp-calls book))))
+          (is (= :merged (:status (ygg/fork-disposition a))))
+          (ygg/discard-fork! b))))))
+
+(deftest rollback-keeps-its-lease-until-authorities-are-released
+  (doseq [failures [0 1]
+          same-group? [false true]]
+    (with-book [book failures]
+      (let [[a loser] (ygg/copy-fork! (ygg/fork!) 2)
+            family (:family a)
+            authority (:authority a)
+            reopened (promise)
+            release (promise)
+            paused? (atom false)
+            fail? (atom true)
+            successor (atom nil)
+            old-attempt (atom nil)
+            group (if same-group? :old :successor)
+            original @#'ygg/merge-fork-context!
+            settle #(ygg/merge-fork! a {:operation-id group})]
+        (add-watch authority ::reopen
+                   (fn [_ _ old new]
+                     (when (and (:operation-id old) (nil? (:operation-id new))
+                                (= :open (:status new))
+                                (compare-and-set! paused? false true))
+                       (reset! old-attempt (:attempt-id @family))
+                       (deliver reopened true)
+                       (deref release 10000 :timeout))))
+        (add-watch family ::successor
+                   (fn [_ _ old new]
+                     (when (and (not= :open (:status old)) (= :open (:status new)))
+                       (reset! successor (outcome settle)))))
+        (try
+          (with-redefs-fn {#'ygg/merge-fork-context!
+                           (fn [handle opts]
+                             (if (compare-and-set! fail? true false)
+                               (throw (ex-info "read-only failure" {:type ::preflight}))
+                               (original handle opts)))}
+            (fn []
+              (let [initial (future (outcome #(ygg/merge-fork! a {:operation-id :old})))]
+                (try
+                  (is (= true (deref reopened 10000 :timeout)))
+                  (is (= ::ygg/copy-family-settled
+                         (:type (ex-data (:error (outcome settle))))))
+                  (is (= 0 @(:stamp-calls book)))
+                  (finally (deliver release true)))
+                (is (= ::preflight (:type (ex-data (:error (deref initial 10000 {})))))))))
+          (is (some? @successor))
+          (is (= (if (pos? failures) :failed :merged) (:status @family)))
+          (is (= group (:group-id @family)))
+          (is (not= @old-attempt (:attempt-id @family)))
+          (is (= (pos? failures) (some? (:error @successor))))
+          (is (nil? (:error (outcome settle))))
+          (is (= :merged (:status @family)))
+          (is (nil? (:resume @family)))
+          (finally
+            (deliver release true)
+            (remove-watch authority ::reopen)
+            (remove-watch family ::successor)))
+        (ygg/discard-fork! loser)))))
+
+(deftest winning-copy-callback-failure-keeps-the-family-terminal
+  (with-book [book]
+    (let [[winner loser] (ygg/copy-fork! (ygg/fork!) 2)
+          callbacks (atom 0)
+          opts {:operation-id :callback
+                :on-merge (fn [_]
+                            (swap! callbacks inc)
+                            (is (= :merged (:status (ygg/copy-family winner))))
+                            (throw (ex-info "callback failed" {:type ::callback})))}]
+      (is (= ::callback (thrown-type #(ygg/merge-fork! winner opts))))
+      (is (= :merged (:status (ygg/copy-family winner))))
+      (is (= {:status :merged :callback-status :failed}
+             (select-keys (ygg/fork-disposition winner) [:status :callback-status])))
+      (is (map? (ygg/merge-fork! winner opts)))
+      (is (= 1 @callbacks))
+      (is (= 1 @(:stamp-calls book)))
+      (ygg/discard-fork! loser)
+      (is (= :merged (:status (ygg/copy-family winner))))
+      (is (every? #(contains? #{:merged :discarded} (:settled %))
+                  (vals (:nodes @(:family winner)))))
+      (is (nil? (:resume @(:family winner)))))))

@@ -2,6 +2,7 @@
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])
             [org.replikativ.spindel.engine.context :as context]
+            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.yggdrasil :as ygg]))
 
@@ -22,6 +23,30 @@
         (is (= 1 @calls))
         (doseq [ctx (conj children snapshot)]
           (is (empty? (get (rtp/get-state ctx []) :world/ephemeral)))))
+      (finally (context/close-context! parent)))))
+
+(deftest winning-copy-callback-cannot-change-terminal-family-state
+  (let [parent (context/create-execution-context)
+        calls (atom 0)]
+    (try
+      (binding [ec/*execution-context* parent]
+        (let [[winner loser] (ygg/copy-fork! (ygg/fork! {:sync? true}) 2 {:sync? true})
+              opts {:sync? true
+                    :on-merge (fn [_]
+                                (swap! calls inc)
+                                (throw (ex-info "callback" {:type ::callback})))}]
+          (is (= ::callback
+                 (try (ygg/merge-fork! winner opts) nil
+                      (catch #?(:clj Throwable :cljs :default) error (:type (ex-data error))))))
+          (is (= :merged (:status (ygg/copy-family winner))))
+          (is (= :merged (:fork/status (ygg/copied-descriptor
+                                        winner (ygg/copied-from winner (:fork-id winner))))))
+          (is (= :failed (:callback-status (ygg/fork-disposition winner))))
+          (is (map? (ygg/merge-fork! winner opts)))
+          (is (= 1 @calls))
+          (ygg/discard-fork! loser {:sync? true})
+          (is (= :merged (:status (ygg/copy-family winner))))
+          (is (nil? (:resume @(:family winner))))))
       (finally (context/close-context! parent)))))
 
 (deftest explicit-retry-context-refuses-a-foreign-plan

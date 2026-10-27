@@ -898,9 +898,7 @@
         (and (= :settling (:status state))
              (::preparation opts)
              (= (::preparation opts) (::preparation state)))
-        (if (compare-and-set! authority state (dissoc state ::preparation))
-          {:execute? true}
-          (recur))
+        {:execute? true}
 
         (= :open (:status state))
         (let [next-state (-> state
@@ -918,7 +916,8 @@
              (= operation (:operation state))
              (::remaining-merge state)
              (= (:operation-id opts) (:operation-id state)))
-        (if (compare-and-set! authority state (assoc state :status :settling))
+        (if (compare-and-set! authority state (cond-> (assoc state :status :settling)
+                                                (::preparation opts) (assoc ::preparation (::preparation opts))))
           {:execute? true :remaining-merge (::remaining-merge state)}
           (recur))
 
@@ -965,7 +964,7 @@
                           :last-operation operation
                           :last-error error)
                    (update :settlement-attempts (fnil inc 0))
-                   (dissoc :operation :phase ::preparation))
+                   (dissoc :operation :phase))
                (-> state
                    (assoc :status :incomplete
                           :last-operation operation
@@ -1097,7 +1096,9 @@
   (let [{:keys [execute? result remaining-merge]} (claim-settlement! fork-handle operation opts)]
     (if-not execute?
       result
-      (let [operation-f (or (:operation-f remaining-merge) operation-f)
+      (let [operation-f (if remaining-merge
+                          #((:operation-f remaining-merge) opts)
+                          operation-f)
             callback (if remaining-merge (:callback remaining-merge) callback)
             payload (try
                       (operation-f)
@@ -1106,7 +1107,9 @@
                         (throw error)))
             result (result-f payload)]
         (complete-settlement! fork-handle operation result)
-        (run-post-commit! fork-handle callback payload)
+        (if-let [callbacks (::post-commit opts)]
+          (when callback (swap! callbacks conj #(run-post-commit! fork-handle callback payload)))
+          (run-post-commit! fork-handle callback payload))
         result))))
 
 (defn- settle-async!
@@ -1866,14 +1869,14 @@
                              (when (final-settlement? fork-handle)
                                (run-system-hooks! fork-handle :realize))
                              (if-let [finish (::before-complete opts)]
-                               (let [remaining {:operation-f (fn [] (finish payload))
+                               (let [remaining {:operation-f (fn [resume-opts] (finish payload resume-opts))
                                                 :callback (:on-merge opts)}]
                                  ;; The substrate and hooks have completed. Retain
                                  ;; their witness before stamping, so recovery never
                                  ;; reads discarded overlays or merges them twice.
                                  (mark-settlement-mutating! fork-handle :merge)
                                  (swap! (:authority fork-handle) assoc ::remaining-merge remaining)
-                                 ((:operation-f remaining)))
+                                 ((:operation-f remaining) opts))
                                payload)))
                 #(select-keys % [:merged :child-only :stamps])
                 (:on-merge opts)))
@@ -1893,7 +1896,8 @@
 ;; =============================================================================
 ;;
 ;; A family is one atom:
-;;   {:id uuid :status :open | :merging | :merged | :discarded :winner fork-id
+;;   {:id uuid :status :open | :preparing | :merging | :failed | :merged | :discarded
+;;    :attempt-id uuid :group-id op :winner fork-id :resume continuation
 ;;    :nodes {fork-id {:via fork-id-or-nil     ; the handle it was copied from
 ;;                     :internal ForkHandle    ; a copied (consumed) handle, held
 ;;                                             ; by the family to settle it later
@@ -2053,24 +2057,64 @@
   [member fork-id]
   (some-> (:family member) deref (get-in [:nodes fork-id :internal]) fork-descriptor))
 
-(defn- claim-family!
-  [family fork-id]
+(defn- transition-family!
+  "One CAS publishes a family transition, fenced by status and attempt UUID.
+   The public group id is never an ownership fence. Concurrent node cleanup is
+   preserved; recovery requires exactly the authenticated failed state.
+
+   From-status  x event                      -> to-status
+   :open        x :prepare (fresh attempt)    -> :preparing
+   :preparing   x :start (captured resume)    -> :merging
+   :preparing   x :release (claims released) -> :open
+   :merging     x :release (read-only)       -> :open
+   :merging     x :fail (resume retained)    -> :failed
+   :failed      x :recover (fresh attempt)   -> :merging
+   :merging     x :complete (drop resume)    -> :merged
+   :open        x :discard (all discarded)  -> :discarded
+   Terminal states have no outgoing settlement transitions."
+  [family expected event data]
   (loop []
     (let [f @family]
-      (cond
-        (= :open (:status f))
-        (when-not (compare-and-set! family f (assoc f :status :merging :winner fork-id))
-          (recur))
+      (when (and (contains? (case event
+                              :prepare #{:open}
+                              :start #{:preparing}
+                              :recover #{:failed}
+                              :fail #{:merging}
+                              :release #{:preparing :merging}
+                              :complete #{:merging}
+                              :discard #{:open})
+                            (:status f))
+                 (= (:status expected) (:status f))
+                 (= (:attempt-id expected) (:attempt-id f))
+                 (or (not= :recover event) (identical? expected f)))
+        (let [next-state
+              (case event
+                :prepare (merge f data {:status :preparing})
+                :start (merge f data {:status :merging})
+                :recover (assoc f :status :merging :attempt-id (:attempt-id data))
+                :fail (assoc f :status :failed)
+                :release (-> f (assoc :status :open)
+                             (dissoc :attempt-id :winner :winners :group-id :resume :handles))
+                :complete (reduce (fn [f id] (assoc-in f [:nodes id :settled] :merged))
+                                  (-> f (assoc :status :merged) (dissoc :resume :handles))
+                                  (:settled-ids data))
+                :discard (assoc f :status :discarded))]
+          (if (compare-and-set! family f next-state)
+            next-state
+            (recur)))))))
 
-        (= fork-id (:winner f)) nil
+(defn- family-settled-error [family]
+  (let [f @family]
+    (ex-info "The copy family has already settled"
+             {:type ::copy-family-settled :family (:id f)
+              :status (:status f) :winner (:winner f)})))
 
-        :else
-        (throw (ex-info "The copy family has already settled"
-                        {:type ::copy-family-settled
-                         :fork-id fork-id
-                         :family (:id f)
-                         :status (:status f)
-                         :winner (:winner f)}))))))
+(defn- claim-family! [family selection group-id]
+  (let [f @family]
+    (or (when (= :open (:status f))
+          (transition-family! family f :prepare
+                              (assoc selection :group-id group-id :attempt-id (random-uuid))))
+        (throw (family-settled-error family)))))
 
 (declare intent-systems contribution parent-conflicts stamp-plan run-stamp! merge-fork!)
 
@@ -2088,7 +2132,7 @@
       (loop []
         (let [state @authority]
           (when (and (= (:token handle) (:token state))
-                     (= (:operation-id reserved) (:operation-id state))
+                     (= (::preparation reserved) (::preparation state))
                      (or (and (= :settling (:status state)) (= :preflight (:phase state)))
                          (and (= :open (:status state)) (= :merge (:last-operation state)))))
             (when-not (compare-and-set! authority state previous)
@@ -2097,7 +2141,7 @@
 (defn- prepare-chain!
   "Reserve every capability before installing family work or touching substrates."
   [handles opts]
-  (let [token (random-uuid)
+  (let [attempt-id (:attempt-id opts)
         claims (atom [])]
     (try
       (doseq [handle handles]
@@ -2108,11 +2152,11 @@
                 (throw (authority-error handle state)))
               (let [reserved (assoc state :status :settling :operation :merge :phase :preflight
                                     :operation-id (capability-operation-id (:group-id opts) handle)
-                                    :group-id (:group-id opts) ::preparation token)]
+                                    :group-id (:group-id opts) ::preparation attempt-id)]
                 (if (compare-and-set! authority state reserved)
                   (swap! claims conj [handle state reserved])
                   (recur)))))))
-      {:token token :claims @claims}
+      {:claims @claims}
       (catch #?(:clj Throwable :cljs :default) error
         (rollback-preparation! {:claims @claims})
         (throw error)))))
@@ -2123,28 +2167,49 @@
         handles))
 
 (defn- fail-family-preparation!
-  [family before handles preparation]
+  [family lease handles preparation]
   (if (chain-mutated? handles)
-    (swap! family assoc :status :failed)
+    ;; :resume was installed with :merging, so failure publishes the complete
+    ;; recoverable state. There is no trailing write after this CAS.
+    (transition-family! family lease :fail {})
     (do
       (rollback-preparation! preparation)
-      ;; Preserve concurrent discards of nonparticipants in :nodes.
-      (swap! family
-             (fn [f]
-               (reduce (fn [f k]
-                         (if (contains? before k) (assoc f k (get before k)) (dissoc f k)))
-                       f [:status :winner :winners :group-id :resume]))))))
+      ;; Keep the family lease until every authority has been released.
+      (transition-family! family lease :release {}))))
+
+(defn- run-family!
+  [family lease handles preparation]
+  (let [callbacks (atom [])
+        result (try
+                 (let [result ((:resume lease) lease callbacks)]
+                   (transition-family! family lease :complete
+                                       {:settled-ids (mapv :fork-id handles)})
+                   result)
+                 (catch #?(:clj Throwable :cljs :default) error
+                   (fail-family-preparation! family lease handles preparation)
+                   (throw error)))]
+    ;; Every capability and the family are terminal. Callback exceptions are
+    ;; diagnosed by run-post-commit!, outside the settlement failure boundary.
+    (doseq [callback @callbacks] (callback))
+    result))
+
+(defn- recover-family!
+  [family failed handles]
+  (let [lease (or (transition-family! family failed :recover {:attempt-id (random-uuid)})
+                  (throw (family-settled-error family)))]
+    (run-family! family lease handles nil)))
 
 (defn- merge-chain!
   "Keep every capability settling until the final operation has succeeded."
   [[fork-handle & more] opts finish]
   (merge-fork* fork-handle
-               (assoc opts :operation-id (capability-operation-id (:group-id opts) fork-handle)
+               (assoc opts :sync? true
+                      :operation-id (capability-operation-id (:group-id opts) fork-handle)
                       ::before-complete
-                      (fn [payload]
+                      (fn [payload current-opts]
                         (if (seq more)
                           (let [result (merge-chain! more
-                                                     (select-keys opts [:group-id ::skip-systems ::preparation])
+                                                     (select-keys current-opts [:group-id ::skip-systems ::preparation ::post-commit])
                                                      finish)]
                             (cond-> payload
                               (contains? result :stamps) (assoc :stamps (:stamps result))))
@@ -2154,61 +2219,60 @@
   [fork-handle opts]
   (ensure-sync! opts :merge)
   (let [family (:family fork-handle)
-        chain (loop [via (get-in @family [:nodes (:fork-id fork-handle) :via]) acc []]
+        f @family
+        state @(:authority fork-handle)
+        chain (loop [via (get-in f [:nodes (:fork-id fork-handle) :via]) acc []]
                 (if via
-                  (recur (get-in @family [:nodes via :via])
-                         (conj acc [via (get-in @family [:nodes via :internal])]))
+                  (recur (get-in f [:nodes via :via])
+                         (conj acc [via (get-in f [:nodes via :internal])]))
                   acc))
-        top (or (second (peek chain)) fork-handle)
-        skip (intent-systems fork-handle)
-        ;; what each world adds to the one above it, outermost first
-        contributions (when (seq skip)
-                        (mapv contribution (cons fork-handle (map second chain))))
-        contributions (vec (reverse contributions))]
-    (let [f @family]
-      (when-not (or (= :open (:status f)) (= (:fork-id fork-handle) (:winner f)))
-        (throw (ex-info "The copy family has already settled"
-                        {:type ::copy-family-settled :fork-id (:fork-id fork-handle)
-                         :family (:id f) :status (:status f) :winner (:winner f)}))))
-    (when (seq skip)
-      (when-let [conflicts (seq (parent-conflicts top contributions))]
-        (throw (ex-info "The world's intents conflict with its parent's"
-                        {:type ::merge-conflict :conflicts (vec conflicts)}))))
-    (let [before @family
-          handles (vec (cons fork-handle (map second chain)))
-          group-id (or (:operation-id opts) (random-uuid))
-          preparation (try (prepare-chain! handles {:group-id group-id})
-                           (catch #?(:clj Throwable :cljs :default) error
-                             (if (and (= ::fork-not-open (:type (ex-data error)))
-                                      (not= (:fork-id fork-handle) (:fork-id (ex-data error))))
-                               (throw (ex-info "Another member is settling the copy family"
-                                               {:type ::copy-family-settled :family (:id @family)} error))
-                               (throw error))))]
-      (try
-        (claim-family! family (:fork-id fork-handle))
-        (swap! family assoc :group-id group-id)
-        (let [plan (when (seq skip)
-                     (assoc (stamp-plan top contributions skip)
-                            :group-id group-id
-                            :pending-id (random-uuid)
-                            :witnesses (atom {})
-                            :retry #(merge-fork! fork-handle {:operation-id group-id})))]
-          (merge-chain!
-           handles
-           (assoc opts ::skip-systems skip :group-id group-id
-                  ::preparation (:token preparation))
-           (fn [payload]
-             (let [payload (cond-> payload (seq skip) (assoc :stamps (run-stamp! plan)))]
-               (swap! family
-                      (fn [f]
-                        (reduce (fn [f [via _]] (assoc-in f [:nodes via :settled] :merged))
-                                (-> f (assoc :status :merged)
-                                    (assoc-in [:nodes (:fork-id fork-handle) :settled] :merged))
-                                chain)))
-               payload))))
-        (catch #?(:clj Throwable :cljs :default) error
-          (fail-family-preparation! family before handles preparation)
-          (throw error))))))
+        handles (vec (cons fork-handle (map second chain)))]
+    (when-not (= (:token fork-handle) (:token state))
+      (throw (authority-error fork-handle state)))
+    (cond
+      (and (= :failed (:status f)) (= (:fork-id fork-handle) (:winner f)))
+      (do
+        (when-not (and (= :incomplete (:status state))
+                       (= (capability-operation-id (:group-id f) fork-handle) (:operation-id state))
+                       (contains? #{(:group-id f) (:operation-id state)} (:operation-id opts)))
+          (throw (authority-error fork-handle state)))
+        (recover-family! family f (:handles f)))
+
+      (not= :open (:status f))
+      (throw (family-settled-error family))
+
+      :else
+      (let [group-id (or (:operation-id opts) (random-uuid))
+            lease (claim-family! family {:winner (:fork-id fork-handle)} group-id)
+            preparation (try (prepare-chain! handles {:group-id group-id :attempt-id (:attempt-id lease)})
+                             (catch #?(:clj Throwable :cljs :default) error
+                               (transition-family! family lease :release {})
+                               (throw error)))
+            work (try
+                   (let [top (or (second (peek chain)) fork-handle)
+                         skip (intent-systems fork-handle)
+                         contributions (when (seq skip)
+                                         (vec (reverse (mapv contribution handles))))
+                         _ (when (seq skip)
+                             (when-let [conflicts (seq (parent-conflicts top contributions))]
+                               (throw (ex-info "The world's intents conflict with its parent's"
+                                               {:type ::merge-conflict :conflicts (vec conflicts)}))))
+                         plan (when (seq skip)
+                                (assoc (stamp-plan top contributions skip)
+                                       :group-id group-id :pending-id (random-uuid)
+                                       :witnesses (atom {})
+                                       :retry #(merge-fork! fork-handle {:operation-id group-id})))]
+                     (fn [leased callbacks]
+                       (merge-chain! handles
+                                     (assoc opts ::skip-systems skip :group-id group-id
+                                            ::preparation (:attempt-id leased) ::post-commit callbacks)
+                                     (fn [payload]
+                                       (cond-> payload (seq skip) (assoc :stamps (run-stamp! plan)))))))
+                   (catch #?(:clj Throwable :cljs :default) error
+                     (fail-family-preparation! family lease handles preparation)
+                     (throw error)))
+            merging (transition-family! family lease :start {:resume work :handles handles})]
+        (run-family! family merging handles preparation)))))
 
 (defn- merge-single!
   "Merge a fork that is not a copy. Systems settled by intents are not
@@ -2231,7 +2295,7 @@
                           :retry #(merge-fork! fork-handle {:operation-id operation-id}))]
           (merge-fork* fork-handle
                        (assoc opts ::skip-systems skip :operation-id operation-id
-                              ::before-complete #(assoc % :stamps (run-stamp! plan)))))))))
+                              ::before-complete (fn [payload _] (assoc payload :stamps (run-stamp! plan))))))))))
 
 (defn- winner-path
   "The worlds a winning member merges through: its copied-from chain."
@@ -2255,16 +2319,13 @@
         (swap! family assoc-in [:nodes via :settled] :discarded)
         (if-let [up (:via node)]
           (release-copied-world! family up via)
-          (swap! family (fn [f] (cond-> f (= :open (:status f)) (assoc :status :discarded)))))))))
+          (transition-family! family @family :discard {}))))))
 
 (defn- clean-terminal-family! [family]
-  (swap! family
-         (fn [f]
-           (if (every? #(contains? #{:merged :discarded} (:settled %)) (vals (:nodes f)))
-             (cond-> (dissoc f :resume)
-               (every? #(= :discarded (:settled %)) (vals (:nodes f)))
-               (-> (assoc :status :discarded) (dissoc :winners)))
-             f))))
+  (let [f @family]
+    (when (and (= :open (:status f))
+               (every? #(= :discarded (:settled %)) (vals (:nodes f))))
+      (transition-family! family f :discard {}))))
 
 (defn- discard-family-member!
   [fork-handle opts]
@@ -2298,17 +2359,18 @@
   ([fork-handle] (merge-fork! fork-handle {}))
   ([fork-handle opts]
    (let [state @(:authority fork-handle)
-         opts (if (and (:group-id state) (= (:operation-id opts) (:group-id state)))
-                (assoc opts :operation-id (:operation-id state))
-                opts)
-         winner? (or (nil? (:family fork-handle))
-                     (= (:fork-id fork-handle) (:winner @(:family fork-handle))))]
+         family (:family fork-handle)
+         winner? (or (nil? family)
+                     (and (= :merged (:status @family))
+                          (= (:fork-id fork-handle) (:winner @family))))
+         replay-opts (if (and (:group-id state) (= (:operation-id opts) (:group-id state)))
+                       (assoc opts :operation-id (:operation-id state))
+                       opts)]
      (if (and winner? (or (::remaining-merge state) (= :merged (:status state))))
-       ;; Recovery and terminal replay must not reconstruct contributions from
-       ;; overlays that settlement already disposed of.
+       ;; Recovery and terminal replay must not reconstruct disposed overlays.
        (do (when (::remaining-merge state) (ensure-sync! opts :merge))
-           (merge-fork* fork-handle opts))
-       (if (:family fork-handle)
+           (merge-fork* fork-handle replay-opts))
+       (if family
          (merge-family-member! fork-handle opts)
          (merge-single! fork-handle opts))))))
 
@@ -2604,65 +2666,45 @@
          (when (and (:operation-id opts) (not= (:operation-id opts) (:group-id f)))
            (throw (ex-info "The copy family's operation id changed"
                            {:type ::copy-family-settled :family (:id f) :status (:status f)})))
-         (when-not (compare-and-set! family f (assoc f :status :merging))
-           (throw (ex-info "The copy family is already recovering"
-                           {:type ::copy-family-settled :family (:id f)
-                            :status (:status @family)})))
-         ((:resume @family)))
+         (recover-family! family f (:handles f)))
 
        :else
-       (let [[via internal] (copied-world family members)
+       (let [[_via internal] (copied-world family members)
              handles (conj (vec (sort-by #(str (:fork-id %)) members)) internal)
              group-id (or (:operation-id opts) (random-uuid))
-             preparation (prepare-chain! handles {:group-id group-id})]
-         (try
-           (let [{:keys [conflicts contributions]} (family-review members)
-                 ids (set (map :fork-id members))]
-             (when (seq conflicts)
-               (throw (ex-info "The members' contributions conflict"
-                               {:type ::family-conflict :family (:id f) :conflicts conflicts})))
-             (when-not (compare-and-set! family f (assoc f :status :merging :winners ids
-                                                         :group-id group-id))
-               (throw (ex-info "The copy family has already settled"
-                               {:type ::copy-family-settled :family (:id f)
-                                :status (:status @family)})))
-             (let [skip (into #{} (mapcat intent-systems) (cons internal members))
-                   base (contribution internal)
-                   pending (assoc (stamp-plan internal (into [base] contributions) skip)
-                                  :witnesses (atom {}))
-                   finish (fn [payload]
-                            (let [stamps (try (stamp! pending)
-                                              (catch #?(:clj Throwable :cljs :default) error
-                                                (throw (ex-info "Stamping a reconciled family failed; settle-family! retries it"
-                                                                {:type ::family-stamp-failed :family (:id f)
-                                                                 :group-id group-id} error))))]
-                              (swap! family
-                                     (fn [f]
-                                       (reduce (fn [f id] (assoc-in f [:nodes id :settled] :merged))
-                                               (-> f (assoc :status :merged) (dissoc :resume))
-                                               (conj ids via))))
-                              (assoc payload :stamps stamps)))]
-               (letfn [(resume []
-                         (try
-                           (let [result (merge-chain! handles
-                                                      {::skip-systems skip :group-id group-id
-                                                       ::preparation (:token preparation)}
-                                                      finish)]
-                             (-> pending (dissoc :policies :witnesses) (assoc :stamps (:stamps result))))
-                           (catch #?(:clj Throwable :cljs :default) error
-                             (fail-family-preparation! family f handles preparation)
-                             ;; Only work past preflight needs a retained continuation.
-                             (when (chain-mutated? handles)
-                               (swap! family assoc :resume resume))
-                             (throw error))))]
-                 (resume))))
-           (catch #?(:clj Throwable :cljs :default) error
-             (when-not (chain-mutated? handles)
-               (rollback-preparation! preparation)
-               ;; A failed family CAS must not reset someone else's operation.
-               (when (= group-id (:group-id @family))
-                 (fail-family-preparation! family f handles preparation)))
-             (throw error))))))))
+             ids (set (map :fork-id members))
+             lease (claim-family! family {:winners ids} group-id)
+             preparation (try (prepare-chain! handles {:group-id group-id :attempt-id (:attempt-id lease)})
+                              (catch #?(:clj Throwable :cljs :default) error
+                                (transition-family! family lease :release {})
+                                (throw error)))
+             work (try
+                    (let [{:keys [conflicts contributions]} (family-review members)]
+                      (when (seq conflicts)
+                        (throw (ex-info "The members' contributions conflict"
+                                        {:type ::family-conflict :family (:id f) :conflicts conflicts})))
+                      (let [skip (into #{} (mapcat intent-systems) (cons internal members))
+                            base (contribution internal)
+                            pending (assoc (stamp-plan internal (into [base] contributions) skip)
+                                           :witnesses (atom {}))
+                            finish (fn [payload]
+                                     (let [stamps (try (stamp! pending)
+                                                       (catch #?(:clj Throwable :cljs :default) error
+                                                         (throw (ex-info "Stamping a reconciled family failed; settle-family! retries it"
+                                                                         {:type ::family-stamp-failed :family (:id f)
+                                                                          :group-id group-id} error))))]
+                                       (assoc payload :stamps stamps)))]
+                        (fn [leased callbacks]
+                          (let [result (merge-chain! handles
+                                                     {::skip-systems skip :group-id group-id
+                                                      ::preparation (:attempt-id leased) ::post-commit callbacks}
+                                                     finish)]
+                            (-> pending (dissoc :policies :witnesses) (assoc :stamps (:stamps result)))))))
+                    (catch #?(:clj Throwable :cljs :default) error
+                      (fail-family-preparation! family lease handles preparation)
+                      (throw error)))
+             merging (transition-family! family lease :start {:resume work :handles handles})]
+         (run-family! family merging handles preparation))))))
 
 ;; =============================================================================
 ;; Merge From Parent (Parent → Child sync)
