@@ -154,12 +154,34 @@
   (some #(and (= :p1q (:protocol %)) (active-cuts (:phase %))
               (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s))))
 
-(defn pending-start? [s v o ob]
+(defn pending-request? [s v o ob]
   (let [[kind w e] (:debtor ob)]
     (and (= :entity kind) (not= w v)
          (some #(or (and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
                     (and (= v (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
                (pending-events s w)))))
+
+(defn attached-pending? [s v o ob]
+  (some (fn [[_ cut]]
+          (and (= :attached (:phase cut)) (= v (:child cut))
+               (= :inherited (:status (run s v (nth (:creditor ob) 2 nil))))
+               (some #(#{:admitted :pending-start} (get-in % [:copy-evidence o :phase]))
+                     (vals (:basis cut)))))
+        (:cuts s)))
+
+(defn pending-start? [s v o ob]
+  (let [[kind w _] (:debtor ob)]
+    (and (= :entity kind) (not= w v)
+         (or (attached-pending? s v o ob) (pending-request? s v o ob)))))
+
+(defn known-foreign-obligation? [s w v o ob]
+  ;; A debtor knows only its own dependency rows and request envelopes.
+  (let [e (nth (:debtor ob) 2)]
+    (or (pending-request? s v o ob)
+        (contains? (:fdeps (wr s w)) [e v o])
+        (some (fn [[tag target d]]
+                (and (= :bundle tag) (= v target) (contains? d e)))
+              (:fdeps (wr s w))))))
 
 (defn cancelling? [s v o ob]
   (and (= :entity (first (:debtor ob))) (not= v (second (:debtor ob)))
@@ -646,7 +668,8 @@
                              (t06-resume s {:w v :o o :value ::cancelled}) s)]
                      (end-obligation s v o :cancel-delivered))))
                s (for [[v world] (:worlds s) [o ob] (:obligations world)
-                       :when (= [:entity w e] (:debtor ob))] [v o ob])) s)
+                       :when (and (= [:entity w e] (:debtor ob))
+                                  (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])) s)
           s (if (and current? (= :stale (:status (run s w (:pred rr)))))
               (t10-supersede s {:w w :r (:pred rr)}) s)
           s (release-owned s w r)
@@ -789,7 +812,7 @@
                             (update-in s [:worlds v :entities e :tokens] set/union (covering-tokens s v e)) s)]
                     (reduce #(touch %1 v e %2) s (:tokens er))))
                 s (:entities child))
-        (register-bundles v evidence join?)
+        (cond-> (not join?) (register-bundles v evidence false))
         (rule-l v))))
 
 (defn copy-row [row w origin]
@@ -1000,7 +1023,7 @@
         (assoc-in [:cuts c :phase] phase))))
 
 (defn t24-cut-release
-  "T24 release fence and start a fresh child entrypoint."
+  "T24 make the child executable and issue its cross-world copy requests."
   [s {:keys [c e] :or {e [:entry 0]}}]
   (require! (= :attached (get-in s [:cuts c :phase])) ::cut-phase {:c c})
   (let [v (get-in s [:cuts c :child]) s (release-cut s c :released)
@@ -1008,7 +1031,8 @@
                   s (caps-of s v))
         s (assoc-in s [:worlds v :admission] :open)
         s (assoc-in s [:worlds v :entities e] (row :spin (:root (wr s v))))]
-    (first (start-run s v e (:root (wr s v)) :entrypoint))))
+    (register-bundles (first (start-run s v e (:root (wr s v)) :entrypoint)) v
+                      (get-in s [:cuts c :basis (first (keys (get-in s [:cuts c :basis]))) :copy-evidence]) true)))
 
 (defn t25-cut-fail
   "T25 deadline/refusal: drop partial child, keep native ownership."
@@ -1017,15 +1041,10 @@
     (require! (active-cuts (:phase cut)) ::cut-phase {:c c})
     (let [s (release-cut s c :failed)]
       (if-not v s
-              (-> (reduce (fn [s [o _]] (end-obligation s v o :creditor-cancelled)) s (:obligations (wr s v)))
-                  ((fn [s] (reduce (fn [s [w _]]
-                                     (-> s (update-in [:worlds w :entities] dissoc [:fork v])
-                                         (update-in [:worlds w :fdeps]
-                                                    #(set (remove (fn [[_ target _]] (= v target)) %)))
-                                         (update-in [:worlds w :releasing]
-                                                    #(set (remove (fn [[_ target _]] (= v target)) %)))
-                                         (update-in [:worlds w :queue]
-                                                    #(vec (remove (fn [ev] (= v (second (:fdep-ended ev)))) %))))) s (:worlds s))))
+              (-> (reduce (fn [s [o ob]]
+                            (emit s {:event :obligation-exit :world v :o o :ob ob :cause :creditor-cancelled}))
+                          s (:obligations (wr s v)))
+                  (update-in [:worlds (first (get-in cut [:participants :worlds])) :entities] dissoc [:fork v])
                   (update :worlds dissoc v) (update :registry disj v)
                   (update :caps #(into {} (remove (fn [[_ cap]] (= v (:world cap))) %)))
                   (update-in [:durable :caps] #(into {} (remove (fn [[_ cap]] (= v (:world cap))) %))))))))
@@ -1222,7 +1241,8 @@
                 s (reduce (fn [s [v o]] (enqueue s v {:cancelled o}))
                           s (for [[v vw] (:worlds s) :when (not= w v)
                                   [o ob] (:obligations vw)
-                                  :when (= [:entity w] (subvec (:debtor ob) 0 2))] [v o]))
+                                  :when (and (= [:entity w] (subvec (:debtor ob) 0 2))
+                                             (known-foreign-obligation? s w v o ob))] [v o]))
                 s (reduce (fn [s [o ob]]
                             (cond-> (end-obligation s w o :creditor-cancelled)
                               (= :host (first (:creditor ob)))

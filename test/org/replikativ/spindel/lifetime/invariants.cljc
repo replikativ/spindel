@@ -28,11 +28,19 @@
 (defn queued? [s w key value]
   (boolean (some #(= value (get % key)) (queued-events s w))))
 (defn pending-start? [s w o ob]
-  (let [[kind dw e] (:debtor ob)]
+  (let [[kind dw e] (:debtor ob)
+        attached? (some (fn [[_ cut]]
+                          (and (= :attached (:phase cut)) (= w (:child cut))
+                               (= :inherited (:status (m/run s w (nth (:creditor ob) 2 nil))))
+                               (some #(#{:admitted :pending-start} (get-in % [:copy-evidence o :phase]))
+                                     (vals (:basis cut)))))
+                        (:cuts s))]
     (boolean (and (= :entity kind) (not= dw w)
-                  (some #(or (and (= e (:start-for %)) (= w (:creditor-world %)) (= o (:o %)))
-                             (and (= w (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
-                        (queued-events s dw))))))
+                  (or attached?
+                      (some #(or (and (= e (:start-for %)) (= w (:creditor-world %)) (= o (:o %)))
+                                 (and (= w (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
+                            (queued-events s dw)))))))
+
 (defn cancelled-in-flight? [s w o ob]
   (and (= :entity (first (:debtor ob))) (not= w (second (:debtor ob)))
        (queued? s w :cancelled o)))
@@ -538,12 +546,41 @@
 (defn writes [a b]
   (for [k (set/union (set (keys a)) (set (keys b))) :when (not= (get a k) (get b k))] k))
 (def cut-transitions #{:t20 :t20q :t21 :t22 :t23 :t24 :t25})
+(defn release-requests [s cut]
+  (let [v (:child cut) evidence (:copy-evidence (first (vals (:basis cut))))
+        rows (for [[o ob] (:obligations (m/wr s v))
+                   :let [[kind dw e] (:debtor ob)]
+                   :when (and (= :entity kind) (not= dw v) (= :run (first (:creditor ob)))
+                              (= :inherited (:status (m/run s v (nth (:creditor ob) 2)))))]
+               [dw e o ob])]
+    (concat
+     (for [[dw e o _] rows :when (= :pending-start (get-in evidence [o :phase]))]
+       [dw {:start-for e :creditor-world v :o o}])
+     (for [[dw members] (group-by first (filter #(= :admitted (get-in evidence [(nth % 2) :phase])) rows))]
+       [dw {:join-bundle v :debtors (set (map second members))
+            :members (into {} (for [[_ e o ob] members]
+                                [o {:debtor e :source-world (:source-world ob) :source-o o}]))}]))))
+
 (defn cut-footprint-errors [before action after]
   (let [c (:c action) old (get-in before [:cuts c]) cut (get-in after [:cuts c])
         participants (or (:participants old) (:participants action))
         worlds (:worlds participants) child (or (:child old) (:child cut))
         requester (first worlds)
-        bundle-only (fn [rows] (set (remove #(and (= :bundle (first %)) (= child (second %))) rows)))
+        expected-ingress
+        (reduce (fn [acc [w event]]
+                  (if (= :released (:status (m/wr before w))) acc
+                      (let [n (inc (get-in acc [:clocks w] (max (get-in before [:clocks w] 0)
+                                                                (get-in before [:worlds w :seq] 0))))
+                            held? (and (= :fenced (:admission (m/wr before w)))
+                                       (m/cut-participant? before w) (not (worlds w)))]
+                        (-> acc (assoc-in [:clocks w] n)
+                            (update-in [(if held? :held :queues) w] (fnil conj []) (assoc event :seq n))))))
+                {:queues (into {} (for [[w world] (:worlds before)]
+                                    [w (into (vec (:queue world))
+                                             (when (worlds w)
+                                               (map :event (filter #(= w (:w %)) (get-in before [:env :outside])))))]))}
+                (when (= :t24 (:t action)) (release-requests before old)))
+        expected-queues (:queues expected-ingress)
         ;; T24/T25 move held arrivals back to exactly their original queue.
         restored (fn [w] (into (vec (:queue (m/wr before w)))
                                (map :event (filter #(= w (:w %)) (get-in before [:env :outside])))))]
@@ -560,10 +597,8 @@
                                     (= (:queue b) (restored w)))
                                (and (= field :entities) (= w requester)
                                     (= (dissoc (:entities a) [:fork child]) (dissoc (:entities b) [:fork child])))
-                               (and (= :t23 (:t action)) (= :queue field)
-                                    (= (vec (:queue a)) (vec (remove #(= child (:join-bundle %)) (:queue b)))))
-                               (and (= :t25 (:t action)) (#{:fdeps :releasing} field)
-                                    (= (bundle-only (get a field)) (bundle-only (get b field))))))]
+                               (and (= :t24 (:t action)) (= :queue field)
+                                    (= (vec (:queue b)) (get expected-queues w (vec (:queue a)))))))]
             {:cut c :world w :field field})
           (for [w (set/union (:registry before) (:registry after))
                 :when (and (not= w child) (not= (contains? (:registry before) w) (contains? (:registry after) w)))]
@@ -591,7 +626,9 @@
             {:cut c :handle tok})
           (let [expected (if (#{:t24 :t25} (:t action))
                            (vec (remove #(worlds (:w %)) (get-in before [:env :outside])))
-                           (get-in before [:env :outside]))]
+                           (get-in before [:env :outside]))
+                expected (into expected (for [[w events] (:held expected-ingress) event events]
+                                          {:w w :event event}))]
             (when (not= expected (get-in after [:env :outside])) [{:cut c :env :outside}]))
           (for [field [:records :durable]
                 :let [a (if (= :durable field) (get-in before [:durable :records]) (:records before))

@@ -294,8 +294,8 @@
   (let [base (cross-world-copy) child [:w 2] s (:state base)
         timer (first (for [[o ob] (:obligations (m/wr s child)) :when (= :timer (:kind ob))] o))]
     (is (empty? (violations base)) (pr-str (violations base)))
-    (is (some #(= child (:join-bundle %)) (:queue (m/wr s w))))
-    (let [admitted (execute s [{:t :t36 :w w}])]
+    (is (not-any? #(= child (:join-bundle %)) (:queue (m/wr s w))))
+    (let [admitted (execute s [{:t :t24 :c [:cut 0]} {:t :t36 :w w}])]
       (is (empty? (violations admitted)))
       (is (some #(= [:bundle child #{[:signal 0]}] %) (:fdeps (m/wr (:state admitted) w)))))
     (is (:refusal (m/attempt s {:t :t06 :w child :o timer})))
@@ -526,7 +526,7 @@
 
 (deftest inherited-activation-converts-bundle
   (let [fixture (cross-world-copy) child [:w 2]
-        s (:state (execute (:state fixture) [{:t :t36 :w w} {:t :t24 :c [:cut 0] :e [:spin 3]}]))
+        s (:state (execute (:state fixture) [{:t :t24 :c [:cut 0] :e [:spin 3]} {:t :t36 :w w}]))
         timer (first (for [[o ob] (:obligations (m/wr s child)) :when (= :timer (:kind ob))] o))
         activated (execute s [{:t :t06 :w child :o timer}])
         state (:state activated)]
@@ -1252,19 +1252,25 @@
 
 (deftest run8-artifact-replays
   (doseq [file (check-io/read-witness "run8/index.edn")]
-    (let [{:keys [actions finding target]} (check-io/read-witness file)
+    (let [{:keys [actions]} (check-io/read-witness file)
           result (execute actions)]
       (is (seq actions) file)
-      (is (not-any? :refusal (:trace result)) file)
-      (when finding
-        (is (some #(= target (:id %)) (first-failure actions)) file)
-        (is (= actions (shortest-subsequence actions target)) file))
-      ;; New findings retain their normative assertions until specification triage.
+      (let [refused (filter :refusal (:trace result))
+            empty-at (case file
+                       "run8/F55.edn" 8
+                       "run8/join-admitted.edn" 7
+                       "run8/rollback-pending-join.edn" 8 nil)]
+        (is (= (if empty-at [::m/empty-queue] []) (mapv (comp :error :refusal) refused)) file)
+        (when empty-at
+          (is (= [empty-at] (keep-indexed #(when (:refusal %2) %1) (:trace result))) file))
+        (doseq [edge refused] (is (= (:before edge) (:after edge)) file)))
+      ;; Finding metadata records the original counterexample; run-8 triage
+      ;; moved request emission to T24. Keep every normative assertion enabled.
       (is (empty? (violations result)) (str file " " (pr-str (violations result)))))))
 
 (deftest run8-join-request-protocol
   (let [actions (:actions (check-io/read-witness "run8/cancel-after-capture.edn"))
-        result (execute (take 8 actions)) state (:state result) child [:w 2]
+        result (execute (take 9 actions)) state (:state result) child [:w 2]
         request (first (:queue (m/wr state v)))
         child-ob (get-in state [:worlds child :obligations [:o 1]])]
     (is (empty? (violations result)))
@@ -1276,12 +1282,12 @@
     (is (seq (inv/l10 (assoc-in state [:worlds v :queue] []))))
     (let [corrupt (update-in state [:worlds v :fdeps] conj [:bundle child #{[:spin 1]}])]
       (is (seq (inv/l10 corrupt))))
-    ;; T23 can enqueue requests, never write a foreign dependency from its basis.
+    ;; T24 may enqueue the exact requests, never write a foreign dependency.
     (let [before (:before (last (:trace result)))
           illegal (update-in state [:worlds v :fdeps] conj [:bundle child #{[:spin 1]}])]
-      (is (seq (inv/cut-footprint-errors before (last (take 8 actions)) illegal)))))
+      (is (seq (inv/cut-footprint-errors before (last (take 9 actions)) illegal)))))
   (let [actions (:actions (check-io/read-witness "run8/join-admitted.edn"))
-        attached (:state (execute (take 7 actions)))
+        attached (:state (execute (concat (take 7 actions) [{:t :t24 :c [:cut 0]}])))
         child [:w 2]
         admitted (execute attached [{:t :t36 :w v}])]
     (is (= #{[:bundle child #{[:spin 1]}] [[:spin 1] w [:o 1]]}
