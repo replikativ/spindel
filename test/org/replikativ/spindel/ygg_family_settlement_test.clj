@@ -11,8 +11,13 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [clojure.set :as set]
+            [clojure.java.io :as io]
+            [clojure.java.shell :refer [sh]]
+            [yggdrasil.adapters.git :as git]
+            [yggdrasil.protocols :as yp]
             [yggdrasil.convergent.gset :as g]))
 
 (defn- mem-gset [id]
@@ -446,8 +451,17 @@
             opts {:operation-id :world-owned :on-merge (fn [_] (swap! callbacks inc))}]
         (add! w "book" (draft :w-1 1 :x))
         (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w opts))))
-        (let [child (ctx/fork-context parent :mode mode)
+        (let [frozen-base (atom nil)
+              create-immutable backend/create-immutable-backend
+              child (with-redefs [backend/create-immutable-backend
+                                  (fn [state metadata]
+                                    (reset! frozen-base state)
+                                    (create-immutable state metadata))]
+                      (ctx/fork-context parent :mode mode))
               snapshot (ctx/snapshot-context parent :clean-in-flight? false)]
+          (when (= mode :frozen)
+            (is (map? @frozen-base))
+            (is (not (contains? @frozen-base ::ygg/pending-stamps))))
           (is (empty? (rtp/get-state child [::ygg/pending-stamps])))
           (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
           ;; Whole-state materialization must not cache an executable parent entry.
@@ -457,6 +471,8 @@
           (is (= 0 @callbacks))
           (ygg/merge-fork! w {:operation-id :world-owned})
           (is (= 1 @callbacks))
+          (is (not (contains? @frozen-base ::ygg/pending-stamps))
+              "the captured frozen base cannot retain the parent's executable plan")
           (is (= [] (ygg/retry-stamps! parent)))
           (is (empty? (get (rtp/get-state child []) ::ygg/pending-stamps)))
           (is (empty? (rtp/get-state snapshot [::ygg/pending-stamps])))
@@ -529,8 +545,8 @@
             (is (= before @family))
             (is (ygg/open-fork? @adopted)))
           (finally (remove-watch authority ::race)))
-        (ygg/discard-fork! a)
-        (when @adopted (ygg/discard-fork! @adopted))
+        (is (nil? (thrown-type #(ygg/discard-fork! a))))
+        (when @adopted (is (nil? (thrown-type #(ygg/discard-fork! @adopted)))))
         (is (= :discarded (:status @family)))
         (is (nil? (:resume @family)))))))
 
@@ -555,3 +571,75 @@
       (doseq [member members] (ygg/discard-fork! member))
       (is (= :discarded (:status @family)))
       (is (nil? (:resume @family))))))
+
+(deftest family-group-id-mints-stable-per-capability-operation-ids
+  (doseq [reconciled? [false true]]
+    (with-book [book 1]
+      (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+            internal (get-in @(:family a) [:nodes (ygg/copied-from a (:fork-id a)) :internal])
+            participants (if reconciled? [a b internal] [a internal])
+            settle #(if reconciled?
+                      (ygg/settle-family! [%] {:operation-id :group})
+                      (ygg/merge-fork! % {:operation-id :group}))]
+        (is (some? (thrown-type #(if reconciled?
+                                   (ygg/settle-family! [a b] {:operation-id :group})
+                                   (settle a)))))
+        (is (= :group (:group-id (ygg/copy-family a))))
+        (let [ids (mapv #(-> % ygg/fork-disposition :operation-id) participants)]
+          (is (= (count participants) (count (set ids))))
+          (is (= (mapv #(vector :group (:fork-id %)) participants) ids))
+          (settle a)
+          (is (= ids (mapv #(-> % ygg/fork-disposition :operation-id) participants)))
+          (is (every? #(= :merged (:status (ygg/fork-disposition %))) participants)))
+        (when-not reconciled? (ygg/discard-fork! b))))))
+
+(deftest partitioned-capability-stamp-recovery-stays-in-its-world-and-scope
+  (with-book [book 1]
+    (let [parent ec/*execution-context*
+          whole (ygg/fork!)
+          [ledger notes] (ygg/partition-fork! whole [{:systems #{"book"} :owner :ledger}
+                                                     {:systems #{"kb"} :owner :notes}])]
+      (add! whole "book" (draft :w-1 1 :x))
+      (add! whole "kb" :private-note)
+      (is (= ::ygg/stamp-failed
+             (thrown-type #(ygg/merge-fork! ledger {:operation-id :partition-stamp}))))
+      (is (= ::ygg/fork-not-open
+             (thrown-type #(ygg/merge-fork! whole {:operation-id :partition-stamp}))))
+      (is (= [] (ygg/retry-stamps! (ctx/fork-context parent :mode :frozen))))
+      (is (= :incomplete (:status (ygg/fork-disposition ledger))))
+      (is (ygg/open-fork? notes))
+      (is (= #{} (elements "kb")))
+      (ygg/merge-fork! ledger {:operation-id :partition-stamp})
+      (is (= :partition-stamp (:operation-id (ygg/fork-disposition ledger))))
+      (is (= {:w-1 1} (:numbers @(:journal book))))
+      (ygg/discard-fork! notes))))
+
+(deftest stamp-recovery-after-native-worktree-disposal-does-not-read-it-again
+  (let [directory (.toFile (java.nio.file.Files/createTempDirectory
+                            "spindel-a2-stamp-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        path (.getAbsolutePath directory)]
+    (try
+      (with-book [book 1]
+        (let [parent ec/*execution-context*
+              native (git/init! (str path "/repo") {:system-name "native"
+                                                    :worktrees-dir (str path "/worktrees")})
+              callbacks (atom 0)]
+          (yp/commit! native "basis")
+          (ygg/register! native)
+          (let [w (ygg/fork!)
+                worktree (ygg/with-fork w (yp/working-path (ygg/system "native")))]
+            (is (.exists (io/file worktree)))
+            (add! w "book" (draft :native-draft 1 :x))
+            (is (= ::ygg/stamp-failed
+                   (thrown-type #(ygg/merge-fork! w {:operation-id :native-stamp
+                                                     :on-merge (fn [_] (swap! callbacks inc))}))))
+            (is (not (.exists (io/file worktree))) "native disposal really removed the worktree")
+            (is (= [] (ygg/retry-stamps! (ctx/fork-context parent :mode :frozen))))
+            (is (= :incomplete (:status (ygg/fork-disposition w))))
+            (is (= 0 @callbacks))
+            (ygg/merge-fork! w {:operation-id :native-stamp})
+            (is (= :merged (:status (ygg/fork-disposition w))))
+            (is (= {:native-draft 1} (:numbers @(:journal book))))
+            (is (= 1 @callbacks))
+            (is (= 2 @(:stamp-calls book))))))
+      (finally (sh "rm" "-rf" path)))))

@@ -2031,7 +2031,7 @@
   [fork-handle]
   (when-let [family (:family fork-handle)]
     (let [f @family]
-      (-> (select-keys f [:id :status :winner :winners])
+      (-> (select-keys f [:id :status :winner :winners :group-id])
           (assoc :members (into {} (map (fn [[id n]] [id (select-keys n [:via :settled])]))
                                 (:nodes f)))))))
 
@@ -2074,6 +2074,13 @@
 
 (declare intent-systems contribution parent-conflicts stamp-plan run-stamp! merge-fork!)
 
+(defn- capability-operation-id [group-id handle]
+  ;; A group coordinates recovery; a Record still settles exactly one :cap.
+  ;; Copy-family capabilities are unpartitioned, so fork-id identifies each
+  ;; capability in the group. [group-id fork-id] is stable across retries and
+  ;; gives each Record its own [op i] step-effect namespace.
+  [group-id (:fork-id handle)])
+
 (defn- rollback-preparation!
   [{:keys [claims]}]
   (doseq [[handle previous reserved] (reverse claims)]
@@ -2100,7 +2107,8 @@
               (when-not (and (= (:token handle) (:token state)) (= :open (:status state)))
                 (throw (authority-error handle state)))
               (let [reserved (assoc state :status :settling :operation :merge :phase :preflight
-                                    :operation-id (:operation-id opts) ::preparation token)]
+                                    :operation-id (capability-operation-id (:group-id opts) handle)
+                                    :group-id (:group-id opts) ::preparation token)]
                 (if (compare-and-set! authority state reserved)
                   (swap! claims conj [handle state reserved])
                   (recur)))))))
@@ -2125,17 +2133,18 @@
              (fn [f]
                (reduce (fn [f k]
                          (if (contains? before k) (assoc f k (get before k)) (dissoc f k)))
-                       f [:status :winner :winners :operation-id :resume]))))))
+                       f [:status :winner :winners :group-id :resume]))))))
 
 (defn- merge-chain!
   "Keep every capability settling until the final operation has succeeded."
   [[fork-handle & more] opts finish]
   (merge-fork* fork-handle
-               (assoc opts ::before-complete
+               (assoc opts :operation-id (capability-operation-id (:group-id opts) fork-handle)
+                      ::before-complete
                       (fn [payload]
                         (if (seq more)
                           (let [result (merge-chain! more
-                                                     (select-keys opts [:operation-id ::skip-systems ::preparation])
+                                                     (select-keys opts [:group-id ::skip-systems ::preparation])
                                                      finish)]
                             (cond-> payload
                               (contains? result :stamps) (assoc :stamps (:stamps result))))
@@ -2167,26 +2176,35 @@
                         {:type ::merge-conflict :conflicts (vec conflicts)}))))
     (let [before @family
           handles (vec (cons fork-handle (map second chain)))
-          operation-id (or (:operation-id opts) (random-uuid))
-          preparation (prepare-chain! handles {:operation-id operation-id})]
+          group-id (or (:operation-id opts) (random-uuid))
+          preparation (try (prepare-chain! handles {:group-id group-id})
+                           (catch #?(:clj Throwable :cljs :default) error
+                             (if (and (= ::fork-not-open (:type (ex-data error)))
+                                      (not= (:fork-id fork-handle) (:fork-id (ex-data error))))
+                               (throw (ex-info "Another member is settling the copy family"
+                                               {:type ::copy-family-settled :family (:id @family)} error))
+                               (throw error))))]
       (try
         (claim-family! family (:fork-id fork-handle))
+        (swap! family assoc :group-id group-id)
         (let [plan (when (seq skip)
                      (assoc (stamp-plan top contributions skip)
-                            :operation-id operation-id
+                            :group-id group-id
                             :pending-id (random-uuid)
                             :witnesses (atom {})
-                            :retry #(merge-fork! fork-handle {:operation-id operation-id})))]
+                            :retry #(merge-fork! fork-handle {:operation-id group-id})))]
           (merge-chain!
            handles
-           (assoc opts ::skip-systems skip :operation-id operation-id
+           (assoc opts ::skip-systems skip :group-id group-id
                   ::preparation (:token preparation))
            (fn [payload]
              (let [payload (cond-> payload (seq skip) (assoc :stamps (run-stamp! plan)))]
                (swap! family
                       (fn [f]
                         (reduce (fn [f [via _]] (assoc-in f [:nodes via :settled] :merged))
-                                (assoc f :status :merged) chain)))
+                                (-> f (assoc :status :merged)
+                                    (assoc-in [:nodes (:fork-id fork-handle) :settled] :merged))
+                                chain)))
                payload))))
         (catch #?(:clj Throwable :cljs :default) error
           (fail-family-preparation! family before handles preparation)
@@ -2243,7 +2261,7 @@
   (swap! family
          (fn [f]
            (if (every? #(contains? #{:merged :discarded} (:settled %)) (vals (:nodes f)))
-             (cond-> (dissoc f :resume :operation-id)
+             (cond-> (dissoc f :resume)
                (every? #(= :discarded (:settled %)) (vals (:nodes f)))
                (-> (assoc :status :discarded) (dissoc :winners)))
              f))))
@@ -2280,6 +2298,9 @@
   ([fork-handle] (merge-fork! fork-handle {}))
   ([fork-handle opts]
    (let [state @(:authority fork-handle)
+         opts (if (and (:group-id state) (= (:operation-id opts) (:group-id state)))
+                (assoc opts :operation-id (:operation-id state))
+                opts)
          winner? (or (nil? (:family fork-handle))
                      (= (:fork-id fork-handle) (:winner @(:family fork-handle))))]
      (if (and winner? (or (::remaining-merge state) (= :merged (:status state))))
@@ -2548,17 +2569,19 @@
 
    A stamp that throws leaves every participating capability `:incomplete`
    and the family `:failed` with the original operation and stamp pending:
-   calling `settle-family!` again with any member retries it (stamps are
-   idempotent per intent). JVM / synchronous only."
+   calling `settle-family!` again with a current participating subset retries
+   it. The :operation-id option names the group; fork-disposition exposes each
+   capability's own :operation-id and the shared :group-id. Stamps are idempotent
+   per intent. JVM / synchronous only."
   ([members] (settle-family! members {}))
   ([members opts]
    (ensure-sync! opts :merge)
+   (doseq [member members
+           :let [state @(:authority member)]]
+     (when-not (= (:token member) (:token state))
+       (throw (authority-error member state))))
    (let [family (family-of members)
          f @family]
-     (doseq [member members
-             :let [state @(:authority member)]]
-       (when-not (= (:token member) (:token state))
-         (throw (authority-error member state))))
      (cond
        (and (= :merged (:status f))
             (every? #(contains? (:winners f) (:fork-id %)) members))
@@ -2576,9 +2599,9 @@
                  :let [state @(:authority member)]]
            (when-not (and (contains? (:winners f) (:fork-id member))
                           (contains? #{:incomplete :settling} (:status state))
-                          (= (:operation-id f) (:operation-id state)))
+                          (= (capability-operation-id (:group-id f) member) (:operation-id state)))
              (throw (authority-error member state))))
-         (when (and (:operation-id opts) (not= (:operation-id opts) (:operation-id f)))
+         (when (and (:operation-id opts) (not= (:operation-id opts) (:group-id f)))
            (throw (ex-info "The copy family's operation id changed"
                            {:type ::copy-family-settled :family (:id f) :status (:status f)})))
          (when-not (compare-and-set! family f (assoc f :status :merging))
@@ -2590,8 +2613,8 @@
        :else
        (let [[via internal] (copied-world family members)
              handles (conj (vec (sort-by #(str (:fork-id %)) members)) internal)
-             operation-id (or (:operation-id opts) (random-uuid))
-             preparation (prepare-chain! handles {:operation-id operation-id})]
+             group-id (or (:operation-id opts) (random-uuid))
+             preparation (prepare-chain! handles {:group-id group-id})]
          (try
            (let [{:keys [conflicts contributions]} (family-review members)
                  ids (set (map :fork-id members))]
@@ -2599,7 +2622,7 @@
                (throw (ex-info "The members' contributions conflict"
                                {:type ::family-conflict :family (:id f) :conflicts conflicts})))
              (when-not (compare-and-set! family f (assoc f :status :merging :winners ids
-                                                       :operation-id operation-id))
+                                                         :group-id group-id))
                (throw (ex-info "The copy family has already settled"
                                {:type ::copy-family-settled :family (:id f)
                                 :status (:status @family)})))
@@ -2612,7 +2635,7 @@
                                               (catch #?(:clj Throwable :cljs :default) error
                                                 (throw (ex-info "Stamping a reconciled family failed; settle-family! retries it"
                                                                 {:type ::family-stamp-failed :family (:id f)
-                                                                 :operation-id operation-id} error))))]
+                                                                 :group-id group-id} error))))]
                               (swap! family
                                      (fn [f]
                                        (reduce (fn [f id] (assoc-in f [:nodes id :settled] :merged))
@@ -2622,7 +2645,7 @@
                (letfn [(resume []
                          (try
                            (let [result (merge-chain! handles
-                                                      {::skip-systems skip :operation-id operation-id
+                                                      {::skip-systems skip :group-id group-id
                                                        ::preparation (:token preparation)}
                                                       finish)]
                              (-> pending (dissoc :policies :witnesses) (assoc :stamps (:stamps result))))
@@ -2637,7 +2660,7 @@
              (when-not (chain-mutated? handles)
                (rollback-preparation! preparation)
                ;; A failed family CAS must not reset someone else's operation.
-               (when (= operation-id (:operation-id @family))
+               (when (= group-id (:group-id @family))
                  (fail-family-preparation! family f handles preparation)))
              (throw error))))))))
 

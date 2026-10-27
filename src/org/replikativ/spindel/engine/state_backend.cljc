@@ -125,9 +125,9 @@
   (that would leak speculative state). A fork that wants to egress adds its own."
   (into non-inherited-paths
         #{:track-subscriptions :await-conts :subscriptions :engine/retired-conts
-    :world/components :world/forkable-components
-    :engine/pending :engine/draining?
-    :engine/delayed-spins :engine/timer-handles :listeners
+          :world/components :world/forkable-components
+          :engine/pending :engine/draining?
+          :engine/delayed-spins :engine/timer-handles :listeners
           :pending-callbacks :run-callbacks}))
 
 (def ^:private deleted ::deleted)
