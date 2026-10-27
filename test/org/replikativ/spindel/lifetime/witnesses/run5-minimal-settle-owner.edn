@@ -1,0 +1,1 @@
+{:actions [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]} {:t :t26, :caller [:root [:w 0]], :k [:cap 0], :op :op, :kind :merge} {:t :t13, :w [:w 0], :scope [:root [:w 0]]}], :valid-prefix? false, :violations []}

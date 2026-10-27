@@ -1,0 +1,1 @@
+{:actions [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]} {:t :t04, :w [:w 1], :e [:spin 0]} {:t :t05, :w [:w 1], :r [[:spin 0] 1], :kind :await-once, :debtor [:entity [:w 0] [:spin 1]]}], :valid-prefix? true, :violations [{:id :TL6, :evidence [{:world [:w 0], :field :entities} {:world [:w 0], :field :seq} {:world [:w 0], :field :runs}]}]}

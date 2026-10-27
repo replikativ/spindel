@@ -1,0 +1,1 @@
+{:actions [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback} {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]} {:t :t04, :w [:w 1], :e [:spin 0], :mode :callback}], :violations [{:id :TL6, :evidence [{:world [:w 0], :field :obligations}]}], :valid-prefix? true}

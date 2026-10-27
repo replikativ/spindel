@@ -1,0 +1,1 @@
+{:actions [{:t :t20, :c [:cut 0], :scope [:root [:w 0]], :mode :frozen, :participants {:worlds #{[:w 0]}, :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]}, :systems #{:b :a}}} {:t :t13, :w [:w 0], :scope [:root [:w 0]]}], :violations [], :clean? true, :refusals []}

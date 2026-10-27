@@ -1,0 +1,1 @@
+{:actions [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]} {:t :t26, :caller [:root [:w 0]], :k [:cap 0], :op :op, :kind :merge} {:t :t27, :k [:cap 0], :op :op, :payload :p, :bases {:a :base-a, :b :base-b}, :steps []} {:t :t29, :op :op}], :valid-prefix? false, :violations []}
