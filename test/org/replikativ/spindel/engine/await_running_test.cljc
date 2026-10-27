@@ -6,6 +6,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.core :as sc]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
@@ -30,6 +31,33 @@
           (is (= [:end] @child-values))
           (is (= 1 @runs) "await joins the existing run without restarting its input"))))
     (done)))
+
+#?(:clj
+   (deftest mailbox-completion-race-1000
+     (let [outcomes
+           (frequencies
+            (for [_ (range 1000)]
+              (let [world (ctx/create-execution-context)]
+                (try
+                  (binding [ec/*execution-context* world]
+                    (let [mailbox (sync/create-mailbox world)
+                          runs (atom 0)
+                          child (spin (swap! runs inc) (await mailbox))
+                          result (atom ::pending)]
+                      (sync/spawn! child)
+                      (sync/post! mailbox :end)
+                      (sync/spawn! (spin (await child))
+                                   {:on-success #(reset! result [:ok %])
+                                    :on-error #(reset! result [:error %])})
+                      (let [deadline (+ (System/nanoTime) 1000000000)]
+                        (loop []
+                          (when (and (not (simple/events-settled? world))
+                                     (< (System/nanoTime) deadline))
+                            (java.util.concurrent.locks.LockSupport/parkNanos 100000)
+                            (recur))))
+                      [@runs @result]))
+                  (finally (ctx/close-context! world))))))]
+       (is (= {[1 [:ok :end]] 1000} outcomes) (str outcomes)))))
 
 (deftest completion-before-await-registration
   (async done
