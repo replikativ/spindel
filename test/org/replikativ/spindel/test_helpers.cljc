@@ -151,11 +151,19 @@
           ;; so async work isn't truncated by an early teardown.
           (do
             (swap! cleanups# conj #(ctx/stop-context! ~ctx-sym))
-            (binding [ec/*execution-context* ~ctx-sym]
+            (binding [ec/*execution-context* ~ctx-sym
+                      ec/*spin-id* nil
+                      ec/*owner-scope* nil
+                      ec/*lifetime-run* nil
+                      ec/*run-gen* nil]
               ~@body))
           ;; Standalone (sync test): stop on body return, as before.
           (try
-            (binding [ec/*execution-context* ~ctx-sym]
+            (binding [ec/*execution-context* ~ctx-sym
+                      ec/*spin-id* nil
+                      ec/*owner-scope* nil
+                      ec/*lifetime-run* nil
+                      ec/*run-gen* nil]
               ~@body)
             (finally
               (ctx/stop-context! ~ctx-sym)))))))

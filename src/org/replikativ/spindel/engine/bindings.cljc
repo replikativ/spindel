@@ -103,6 +103,9 @@
      ;; NOTE: *execution-context* deliberately NOT included - bound by event handlers
      (or @resolved-capture-vars
          (let [vs [(resolve 'org.replikativ.spindel.engine.core/*spin-id*)
+                   (resolve 'org.replikativ.spindel.engine.core/*lifetime-run*)
+                   (resolve 'org.replikativ.spindel.engine.core/*run-gen*)
+                   (resolve 'org.replikativ.spindel.engine.core/*owner-scope*)
                    (resolve 'org.replikativ.spindel.engine.core/*yield-handler*)
                    (resolve 'org.replikativ.spindel.engine.core/*external-await-cancel-token*)]]
            (when (every? some? vs) (vreset! resolved-capture-vars vs))
@@ -111,9 +114,35 @@
      ;; CLJS: Use pre-registered vars
      @registered-vars))
 
+(defn lifetime-run-var [] (nth (get-vars-to-capture) 1))
+
+(defn run-gen-var [] (nth (get-vars-to-capture) 2))
+
+(defn owner-scope-var [] (nth (get-vars-to-capture) 3))
+
+(defn assoc-lifetime-run [captured run]
+  (assoc captured (lifetime-run-var) run))
+
+(defn assoc-run-gen [captured generation]
+  (assoc captured (run-gen-var) generation))
+
+(defn advance-run-scope [captured run-id]
+  (let [owner-var (owner-scope-var)
+        owner (get captured owner-var)]
+    (if (or (nil? owner)
+            (and (= :run (first owner))
+                 (= (nth owner 2) (nth run-id 2))))
+      (assoc captured owner-var run-id)
+      captured)))
+
 ;; =============================================================================
 ;; Platform-Specific Implementation
 ;; =============================================================================
+
+#?(:clj
+   (def ^:private core-capture-vars
+     (delay (let [vars (get-vars-to-capture)]
+              [(nth vars 0) (nth vars 4) (nth vars 5)]))))
 
 #?(:clj
    (defn capture-bindings
@@ -124,11 +153,21 @@
 
      Thread-safe, no side effects."
      []
-     (into {}
-           (keep (fn [^clojure.lang.Var v]
-                   (when (.isBound v)
-                     [v (.get v)]))
-                 (get-vars-to-capture)))))
+     (let [vars (get-vars-to-capture)
+           lifetime-var (nth vars 1)
+           generation-var (nth vars 2)
+           owner-var (nth vars 3)
+           lifetime (when (.isBound ^clojure.lang.Var lifetime-var) (.get ^clojure.lang.Var lifetime-var))
+           generation (when (.isBound ^clojure.lang.Var generation-var) (.get ^clojure.lang.Var generation-var))
+           owner (when (.isBound ^clojure.lang.Var owner-var) (.get ^clojure.lang.Var owner-var))
+           base (into {}
+                      (keep (fn [^clojure.lang.Var v]
+                              (when (.isBound v) [v (.get v)]))
+                            @core-capture-vars))]
+       (cond-> base
+         (some? lifetime) (assoc lifetime-var lifetime)
+         (some? generation) (assoc generation-var generation)
+         (some? owner) (assoc owner-var owner)))))
 
 #?(:cljs
    (defn capture-bindings
@@ -140,14 +179,20 @@
      In CLJS, dynamic vars have a .-val property that's a thunk.
      We capture the current value (deref the var) for later restoration."
      []
-     (let [vars (get-vars-to-capture)]
+     (let [vars (get-vars-to-capture)
+           [_ lifetime-var generation-var owner-var] vars]
        (into {}
              (keep (fn [v]
                      ;; v might be nil if registration failed
                      ;; Check if var exists and has a val thunk
                      (when (and v (.-val ^js v))
                        (try
-                         [v @v]
+                         (let [value @v]
+                           (when (or (some? value)
+                                     (and (not (identical? v lifetime-var))
+                                          (not (identical? v generation-var))
+                                          (not (identical? v owner-var))))
+                             [v value]))
                          (catch :default _
                            ;; If deref fails, skip this var
                            nil))))

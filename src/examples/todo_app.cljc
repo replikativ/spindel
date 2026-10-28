@@ -181,11 +181,10 @@
          filter-mode @(track filter-state)
 
           ;; Apply filter - returns Interval
-         visible-iv (case filter-mode
-                      :all todos-iv
-                      :active (ifilter #(not (:done %)) todos-iv)
-                      :done (ifilter :done todos-iv)
-                      todos-iv)
+         visible-iv (cond
+                      (= filter-mode :active) (ifilter #(not (:done %)) todos-iv)
+                      (= filter-mode :done) (ifilter :done todos-iv)
+                      :else todos-iv)
 
           ;; Compute stats from full list
          all-items @(:new todos-iv)

@@ -4,6 +4,7 @@
   Includes spin protocols, result types, continuation helpers,
   lifecycle management, and error combinators."
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.nodes :as nodes]
@@ -201,6 +202,8 @@
            (simple/enter-body! runtime spin-id {:rebuild? true})
            (binding [ec/*execution-context* runtime
                      ec/*spin-id* spin-id
+                     ec/*lifetime-run* (lifetime/body-run-seq runtime spin-id)
+                     ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                      ;; Return discarded: a trampoline of its own (see -invoke).
                      pcps-async/*in-trampoline* false]
              (spin-fn (fn [_] nil) (fn [_] nil)))
@@ -309,6 +312,8 @@
           (simple/enter-body! runtime spin-id {:rebuild? true})
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id
+                    ec/*lifetime-run* (lifetime/body-run-seq runtime spin-id)
+                    ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                     ;; The body's return is discarded: it must force its own
                     ;; Thunks (see Case 2).
                     pcps-async/*in-trampoline* false]
@@ -343,6 +348,18 @@
                 ;; Call reject via resume to handle Thunk returns
               (rejected-value (resume reject error) error))))
 
+        (and (not= spin-id simple/*execution-claim*)
+             (let [node (simple/get-node runtime spin-id)]
+               (and (:running? node)
+                    (not (nodes/dirty? node))
+                    (not (simple/stale-run? node)))))
+        (if (simple/try-join-spin! runtime spin-id
+                                   {:fork-id (:fork-id runtime)
+                                    :egress-policy ec/*callback-egress-policy*
+                                    :resolve resolve :reject reject})
+          :org.replikativ.spindel.spin/incomplete
+          (this resolve reject))
+
           ;; Case 2: Cache miss - execute spin
         :else
         (let [;; Local execution state (ephemeral, not in runtime)
@@ -373,32 +390,36 @@
               ;; world's thread) forces its Thunks in a trampoline of its own:
               ;; nothing here returns them to anybody.
               resume-callback! (fn [k x rt]
-                                 (if (and @in-body
+                                 (binding [ec/*spin-id* nil
+                                           ec/*lifetime-run* nil
+                                           ec/*run-gen* nil
+                                           ec/*owner-scope* nil]
+                                   (if (and @in-body
                                           ;; only a caller that is a running
                                           ;; trampoline takes a Thunk back;
                                           ;; plain callbacks force their own
-                                          caller-in-trampoline?
-                                          (nil? @caller-thunk)
+                                            caller-in-trampoline?
+                                            (nil? @caller-thunk)
                                           ;; this world: a fork completed on
                                           ;; this stack continues in the fork
-                                          (= (:fork-id rt) (:fork-id runtime))
-                                          #?(:clj (identical? sync-thread (Thread/currentThread))
-                                             :cljs true))
+                                            (= (:fork-id rt) (:fork-id runtime))
+                                            #?(:clj (identical? sync-thread (Thread/currentThread))
+                                               :cljs true))
                                    ;; Resume it as a trampoline activation
                                    ;; that does not force: whatever body runs
                                    ;; here (a hand-written one starts no
                                    ;; trampoline), the callback's Thunk comes
                                    ;; back instead of running the caller's
                                    ;; next iteration nested in this one.
-                                   (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
-                                              (fn [token]
-                                                (binding [pcps-async/*in-trampoline* token]
-                                                  (resume k x))))]
-                                     (when (is.simm.partial-cps.runtime/thunk? ret)
-                                       (vreset! caller-thunk ret))
-                                     ret)
-                                   (binding [pcps-async/*in-trampoline* false]
-                                     (resume k x))))]
+                                     (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
+                                                (fn [token]
+                                                  (binding [pcps-async/*in-trampoline* token]
+                                                    (resume k x))))]
+                                       (when (is.simm.partial-cps.runtime/thunk? ret)
+                                         (vreset! caller-thunk ret))
+                                       ret)
+                                     (binding [pcps-async/*in-trampoline* false]
+                                       (resume k x)))))]
 
           (log/debug :spin/start {:spin-id spin-id})
 
@@ -425,6 +446,7 @@
           ;; iteration's exception reaches its reject.)
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id
+                    ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                     pcps-async/*in-trampoline* false]
             (let [result (body-fn
                             ;; Resolve continuation
@@ -437,7 +459,10 @@
                                 ;; false: a newer run superseded this one — its
                                 ;; result is not published (and its callbacks
                                 ;; were handed to that run).
-                              (if-not (ec/spin-cache-result! spin-id (ok value) @run-gen)
+                              (if-not (ec/spin-cache-result! spin-id (ok value)
+                                                             (if (= (first ec/*run-gen*) spin-id)
+                                                               (second ec/*run-gen*)
+                                                               @run-gen))
                                 (do (reset! executing? false) value)
                                 (do
                                 ;; Record dependencies on the SpinNode
@@ -478,7 +503,10 @@
                             (let [_current-rt (ec/current-execution-context)]
                                 ;; Cache error via protocol (uses current-rt via dynamic binding).
                                 ;; false: superseded run, not published (see resolve).
-                              (if-not (ec/spin-cache-result! spin-id (error err) @run-gen)
+                              (if-not (ec/spin-cache-result! spin-id (error err)
+                                                             (if (= (first ec/*run-gen*) spin-id)
+                                                               (second ec/*run-gen*)
+                                                               @run-gen))
                                 (do (reset! executing? false) nil)
                                 (do
                                 ;; Record dependencies even on error
@@ -492,7 +520,10 @@
                                 ;; Abort downstream spins
                                   ;; (the private arity body directly: the
                                   ;; public var is cancel-spin!'s hook)
-                                  (abort-spin-chain* spin-id err @run-gen)
+                                  (abort-spin-chain* spin-id err
+                                                     (if (= (first ec/*run-gen*) spin-id)
+                                                       (second ec/*run-gen*)
+                                                       @run-gen))
 
                                 ;; Call all pending callbacks from local state
                                   (let [callbacks @callbacks-atom]

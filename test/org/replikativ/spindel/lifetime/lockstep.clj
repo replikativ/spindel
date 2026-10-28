@@ -13,6 +13,7 @@
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.effects :as effects]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.nodes :as nodes]
@@ -26,6 +27,7 @@
             [org.replikativ.spindel.lifetime.model :as m]
             [org.replikativ.spindel.lifetime.lockstep-manifests :as manifests]
             [org.replikativ.spindel.signal :as sig]
+            [org.replikativ.spindel.atom :as ratom]
             [org.replikativ.spindel.spin.core :as sc]
             [org.replikativ.spindel.spin.cps :as spin-cps :refer [spin]]
             [org.replikativ.spindel.yggdrasil :as ygg]
@@ -87,7 +89,7 @@
                                      {:roots ((world-view [[:root]]) state)
                                       :scopes ((row-fields-view :scopes [:kind :parent :status]) state)})
                            (case scope :world (world-view paths) :mixed token-view (path-view paths)))]]
-          [id {:enabled? (= id :entities) :step step
+          [id {:enabled? (boolean (or (= id :entities) (#{:scopes :owners :run-owners} id))) :step step
                :model-paths paths :projected-paths paths :scope scope
                :model-view (case id
                              :entities #(entity-view % true)
@@ -95,8 +97,16 @@
                              view)
                :projected-view (case id :entities #(entity-view % false)
                                      :owners #(entity-view % false (:owners components)) view)
-               :available? (if (= id :entities)
+               :available? (case id
+                             (:entities :owners)
                              #(and (map? (:worlds %)) (every? (comp map? :entities val) (:worlds %)))
+                             :scopes
+                             #(and (map? (:worlds %))
+                                   (every? (fn [[_ world]] (and (vector? (:root world))
+                                                                (map? (:scopes world))))
+                                           (:worlds %)))
+                             :run-owners
+                             #(and (map? (:worlds %)) (every? (comp map? :runs val) (:worlds %)))
                              (constantly false))
                :compare = :invariants (conj laws :L12)
                :partial-invariants (if (= id :entities) #{:L12} #{})
@@ -116,7 +126,7 @@
   (fn [context {:keys [awaitable]} resolve reject]
     (let [[driver e] awaitable]
       (swap! driver assoc-in [:paused [(:fork-id context) e]]
-             {:resolve resolve :reject reject :sid ec/*spin-id*})
+             {:resolve resolve :reject reject :sid ec/*spin-id* :run ec/*lifetime-run*})
       sc/incomplete)))
  'org.replikativ.spindel.engine.effects/one-arg->awaitable-map)
 
@@ -142,7 +152,9 @@
                                :t05 (do (case (:kind a)
                                           :track (iv/get-new (track (get-in @driver [:handles (last (:debtor a))])))
                                           :await-once (await (or (get-in @driver [:handles (last (:debtor a))])
-                                                                 (make-script! driver (last (:debtor a))))))
+                                                                 (binding [ec/*spin-id* nil
+                                                                           ec/*lifetime-run* nil]
+                                                                   (make-script! driver (last (:debtor a)))))))
                                         (recur))
                                (do (apply-action! driver (dissoc a :r)) (recur))))))]
     (swap! driver assoc-in [:handles e] s)
@@ -151,7 +163,7 @@
 
 (defn new-driver []
   (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))]
-    (atom {:contexts {[:w 0] rt} :handles {} :ids {} :paused {} :delivered [] :host-templates #{} :materialized #{} :parents {}})))
+    (atom {:contexts {[:w 0] rt} :handles {} :ids {} :scopes {} :paused {} :delivered [] :host-templates #{} :materialized #{} :parents {}})))
 
 (defn close! [driver]
   (doseq [rt (reverse (vals (:contexts @driver)))] (ctx/close-context! rt)))
@@ -161,19 +173,27 @@
 (defn send-command! [driver w e a]
   (let [rt (get-in @driver [:contexts w])
         key [(:fork-id rt) e]
-        {:keys [resolve sid]} (get-in @driver [:paused key])]
+        {:keys [resolve sid run]} (get-in @driver [:paused key])]
     (when-not resolve (throw (ex-info "Script is not at a driver checkpoint" {:type ::not-paused :w w :e e})))
     (swap! driver update :paused dissoc key)
-    (binding [ec/*execution-context* rt ec/*spin-id* sid cps/*in-trampoline* false]
+    (binding [ec/*execution-context* rt ec/*spin-id* sid
+              ec/*lifetime-run* run cps/*in-trampoline* false]
       (sc/resume resolve a))))
 
-(defn scope-restriction [a]
-  (when (and (:scope a) (not= :root (first (:scope a)))) {:step :B1 :reason :explicit-scope}))
+(defn runtime-scope [driver w scope]
+  (let [rt (get-in @driver [:contexts w])]
+    (case (first scope)
+      :root (lifetime/root-scope rt)
+      :scope (get-in @driver [:scopes w scope])
+      (let [s (get-in @driver [:handles (first scope)])]
+        (lifetime/body-run-id rt (sc/spin-id s))))))
+
+(defn scope-restriction [_] nil)
 
 (def action-support
   (merge
    (into {} (for [[step ts] [[:B6 [:t03]] [:B2 [:t06 :t08 :t35 :unsubscribe]]
-                             [:B3 [:t09 :t10 :t15 :slice-enter :t38]] [:B1 [:t12]] [:B4 [:t13 :join]]
+                             [:B3 [:t09 :t10 :t15 :slice-enter :t38]] [:B4 [:t13 :join]]
                              [:C2 [:t14]] [:B5 [:t16 :t17 :t18]] [:E1 [:t26]]
                              [:E2 [:t20 :t20q :t22 :t23 :t24 :t25]] [:E3 [:t21]]
                              [:F1 [:t32 :t33]] [:F2 [:t27 :t28 :t29 :t30 :t31]]
@@ -182,6 +202,12 @@
               [t {:status :not-yet :step step :restrictions (constantly nil) :dispatch nil}]))
    (update-vals
     {:t08 {:status :macrostep-only :extent :local-completion :reason :needs-microstep-hook :dispatch nil}
+     :t12 {:step :B1
+           :dispatch (fn [driver {:keys [w scope parent kind]}]
+                       (let [rt (get-in @driver [:contexts w])
+                             s (lifetime/open-scope! rt (or kind :explicit)
+                                                     (runtime-scope driver w parent))]
+                         (swap! driver assoc-in [:scopes w scope] s)))}
      :t01 {:lexical? true
            :dispatch (fn [driver {:keys [w e]}]
                        (if ec/*spin-id*
@@ -194,13 +220,18 @@
                          (make-script! driver e)))}
      :t02 {:lexical? true
            :restrictions (fn [a] (cond (:key a) {:step :B6 :reason :keyed-signal}
-                                       (not= :signal (get a :kind :signal)) {:step :B1 :reason :atom-creation}))
-           :dispatch (fn [driver {:keys [e value]}]
-                       (let [s (sig/->SignalRef
-                                (addressing/next-id "lockstep-signal" {:file "lifetime-script" :line 1 :column 1} nil e) value)]
-                         (sig/get-signal-value s)
-                         (swap! driver assoc-in [:handles e] s)
-                         (swap! driver assoc-in [:ids (:id s)] e)))}
+                                       (not (#{:signal :atom} (get a :kind :signal))) {:step :B1 :reason :source-kind}))
+           :dispatch (fn [driver {:keys [w e value kind]}]
+                       (if (= kind :atom)
+                         (let [a (ratom/create-atom value)]
+                           (swap! driver assoc-in [:handles e] a)
+                           (swap! driver assoc-in [:ids (ratom/atom-id a)] e))
+                         (let [s (sig/->SignalRef
+                                  (addressing/next-id "lockstep-signal" {:file "lifetime-script" :line 1 :column 1} nil e) value)]
+                           (sig/register-signal! (get-in @driver [:contexts w]) s)
+                           (sig/get-signal-value s)
+                           (swap! driver assoc-in [:handles e] s)
+                           (swap! driver assoc-in [:ids (:id s)] e))))}
      :t04 {:restrictions (fn [a] (when (= :causal-follow (get-in a [:filter :mode]))
                                    {:step :D1 :reason :host-filter}))
            :dispatch (fn [driver {:keys [w e]}]
@@ -230,10 +261,17 @@
         {:keys [dispatch lexical?]} (get action-support (:t a))
         w (:w a)]
     (binding [ec/*execution-context* (get-in @driver [:contexts w])]
-      (if (and lexical? (:r a))
-        (do (swap! driver update :materialized conj [w (:e a)])
-            (send-command! driver w (first (:r a)) a))
-        (dispatch driver a)))))
+      (binding [ec/*lifetime-run* (if-let [[creator] (:r a)]
+                                    (let [s (get-in @driver [:handles creator])]
+                                      (lifetime/body-run-id (get-in @driver [:contexts w])
+                                                            (sc/spin-id s)))
+                                    ec/*lifetime-run*)
+                ec/*owner-scope* (if (:scope a) (runtime-scope driver w (:scope a))
+                                     ec/*owner-scope*)]
+        (if (and lexical? (:r a))
+          (do (swap! driver update :materialized conj [w (:e a)])
+              (send-command! driver w (first (:r a)) a))
+          (dispatch driver a))))))
 
 (defn unsupported [a]
   (let [{:keys [status restrictions] :as descriptor} (get action-support (:t a))]
@@ -247,25 +285,65 @@
    local versus inherited storage is explicitly absent until C2."
   ([context] (project context {}))
   ([context ids] (project context ids #{}))
-  ([context ids excluded]
-   (let [runtime-nodes (rtp/get-state context [:nodes])
+  ([context ids excluded] (project context ids excluded [:w 0] {} {(:fork-id context) [:w 0]}))
+  ([context ids excluded w scope-ids world-ids]
+   (let [owner-id (fn [owner]
+                    (case (first owner)
+                      :root [:root (get world-ids (second owner) w)]
+                      :scope (get scope-ids owner [:scope (str (nth owner 2))])
+                      :run [(get ids (nth owner 2) (nth owner 2)) (nth owner 3)]
+                      owner))
+         runtime-nodes (rtp/get-state context [:nodes])
          entities
          (into {}
                (for [[id n] runtime-nodes
-                     :let [kind (nodes/node-type n)]
+                     :let [kind (nodes/node-type n)
+                           reactive? (or (seq (rtp/get-state context [:track-subscriptions id]))
+                                         (some #(= :await-reactive (:kind %))
+                                               (vals (rtp/get-state context [:await-conts id]))))
+                           live-run? (and (= kind :spin) (:run-gen n)
+                                          (or (:running? n) reactive?))]
                      :when (not (contains? excluded (get ids id id)))]
                  [(get ids id id)
                   (merge {:kind kind :completed? (boolean (:completed? n))
+                          :creator (owner-id (:lifetime/creator n))
+                          :order (or (:lifetime/order n) 0)
+                          :owner (if (some? (:lifetime/owner n))
+                                   (owner-id (:lifetime/owner n))
+                                   (when live-run?
+                                     [:root (get world-ids (:run-world n) w)]))
                           :result (if (= kind :signal) (delta/unwrap-deltaable (:snapshot n))
                                       (when-let [result (:result n)]
                                         (if (sc/error? result) {:error (error-type (:payload result))}
                                             (:payload result))))}
-                         (zipmap [:owner :creator :kept? :tokens :order :reasons :dirty?] (repeat :absent)))]))]
+                         (zipmap [:kept? :tokens :reasons :dirty?] (repeat :absent)))]))
+         runs (into {}
+                    (for [[id n] runtime-nodes
+                          :let [reactive? (or (seq (rtp/get-state context [:track-subscriptions id]))
+                                              (some #(= :await-reactive (:kind %))
+                                                    (vals (rtp/get-state context [:await-conts id]))))]
+                          :when (and (:run-gen n)
+                                     (= (:run-world n) (:fork-id context))
+                                     (or (:running? n) reactive?))]
+                      [[(get ids id id) (or (:lifetime/seq n) 1)]
+                       {:owner (owner-id (or (:lifetime/run-owner n)
+                                             (lifetime/root-scope context)))}]))
+         scopes (assoc (into {}
+                             (for [[id row] (rtp/get-state context [:lifetime/scopes])]
+                               [(get scope-ids id [:scope (str (nth id 2))])
+                                (update row :parent owner-id)]))
+                       [:root w] {:kind (if (ctx/root-context? context) :world-root :fork)
+                                  :parent nil :status :open})]
      (merge {:entities (into entities (for [[id row] (rtp/get-state context [:atoms])]
                                         [(get ids id [:native-atom id])
-                                         {:kind :atom :completed? false :result (:value row)}]))}
+                                         {:kind :atom :completed? false :result (:value row)
+                                          :owner (owner-id (:lifetime/owner row))
+                                          :creator nil :order 0}]))
+             :root [:root w]
+             :scopes scopes
+             :runs runs}
             (into {} (for [[component {:keys [enabled?]}] components
-                           :when (not= :entities component)]
+                           :when (not (#{:entities :scopes :runs} component))]
                        [component :absent]))))))
 
 (deftype Payload [value]
@@ -400,7 +478,12 @@
 (defn projection [driver]
   {:worlds (into {} (for [[w rt] (:contexts @driver)]
                       [w (project rt (:ids @driver)
-                                  (set (filter #(host-template? driver w %) (vals (:ids @driver)))))]))})
+                                  (set (filter #(host-template? driver w %) (vals (:ids @driver))))
+                                  w
+                                  (into {} (for [[model-id runtime-id] (get-in @driver [:scopes w])]
+                                             [runtime-id model-id]))
+                                  (into {} (for [[model-id runtime] (:contexts @driver)]
+                                             [(:fork-id runtime) model-id])))]))})
 
 (defn state-differences [expected projected]
   (let [actual (comparable projected false) expected (comparable expected)]

@@ -52,7 +52,7 @@
         s [:scope 0] child-scope [:scope 1]
         open {:t :t12 :w w :scope s :parent root}
         start {:t :t04 :w w :e e :mode :callback}
-        lexical {:t :t01 :w w :r r :e child :tok [:tok 0] :order 3}]
+        lexical {:t :t01 :w w :r r :e child :tok [:tok 0] :order 0}]
     {:owner-host [open {:t :t01 :w w :scope s :e e :tok [:tok 0]}
                   {:t :t04 :w w :scope s :e e :tok [:tok 0] :mode :callback}]
      :owner-lexical [open start lexical

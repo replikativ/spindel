@@ -75,6 +75,10 @@
   re-entry."
   nil)
 
+(def ^:dynamic *lifetime-run* nil)
+(def ^:dynamic *run-gen* nil)
+(def ^:dynamic *owner-scope* nil)
+
 (def ^:dynamic *yield-handler*
   "Yield handler for async-sequence generators (`gen-aseq`).
   Bound by `seq/core.cljc/with-yield` around the generator body;
@@ -128,6 +132,9 @@
 #?(:cljs
    (do
      (bindings/register-var! #'*spin-id*)
+     (bindings/register-var! #'*lifetime-run*)
+     (bindings/register-var! #'*run-gen*)
+     (bindings/register-var! #'*owner-scope*)
      (bindings/register-var! #'*yield-handler*)
      (bindings/register-var! #'*external-await-cancel-token*)))
 
