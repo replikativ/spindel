@@ -1,0 +1,31 @@
+{:actions
+ [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :t05,
+   :w [:w 0],
+   :r [[:spin 0] 1],
+   :kind :external,
+   :debtor [:host :native]}
+  {:t :native-progress,
+   :n [:cancel [:o 1]],
+   :state :running,
+   :boundary? true}
+  {:t :t20q,
+   :c [:cut 0],
+   :scope [:root [:w 0]],
+   :mode :frozen,
+   :participants
+   {:worlds #{[:w 0]},
+    :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+    :systems #{:b :a}}}
+  {:t :arrival,
+   :w [:w 0],
+   :event {:completion [:spin 1], :debtor-world [:w 0], :value :late}}
+  {:t :t35,
+   :th :host,
+   :op {:kind :resume, :w [:w 0], :o [:o 1], :value :callback}}
+  {:t :t22, :c [:cut 0]}
+  {:t :t23, :c [:cut 0], :v [:w 2], :k [:cap 1], :mode :frozen}
+  {:t :t24, :c [:cut 0], :e [:spin 3]}
+  {:t :queued, :w [:w 0]}
+  {:t :queued, :w [:w 0]}],
+ :refusals []}

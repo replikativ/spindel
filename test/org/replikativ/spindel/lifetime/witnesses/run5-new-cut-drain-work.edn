@@ -1,0 +1,1 @@
+{:actions [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback} {:t :t20, :c [:cut 0], :scope [:root [:w 0]], :mode :frozen, :participants {:worlds #{[:w 0]}, :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]}, :systems #{:b :a}}} {:t :t21, :c [:cut 0], :body {:t :t05, :w [:w 0], :r [[:spin 0] 1], :kind :timer, :debtor [:host :executor]}}], :violations [], :clean? true, :refusals []}

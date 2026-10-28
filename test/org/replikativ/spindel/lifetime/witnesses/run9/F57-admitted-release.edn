@@ -1,0 +1,35 @@
+{:actions
+ [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :t05,
+   :w [:w 0],
+   :r [[:spin 0] 1],
+   :kind :await-once,
+   :debtor [:entity [:w 1] [:spin 1]]}
+  {:t :t37, :w [:w 1]}
+  {:t :t20q,
+   :c [:cut 0],
+   :scope [:root [:w 0]],
+   :mode :frozen,
+   :participants
+   {:worlds #{[:w 0]},
+    :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+    :systems #{:b :a}}}
+  {:t :t22, :c [:cut 0]}
+  {:t :t26,
+   :caller [:root [:w 0]],
+   :k [:cap 0],
+   :op :gone,
+   :kind :discard}
+  {:t :t27, :k [:cap 0], :op :gone, :steps []}
+  {:t :t29, :op :gone}
+  {:t :t23, :c [:cut 0], :v [:w 2], :k [:cap 1], :mode :frozen}],
+ :variant-of :F57,
+ :refusals [],
+ :violations
+ [{:id :L20,
+   :evidence
+   [{:w [:w 2],
+     :released [:w 1],
+     :obligation [:o 1],
+     :missing :cancelled}]}]}

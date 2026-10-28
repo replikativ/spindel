@@ -11,6 +11,9 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.incremental.interval :as iv]
+            [org.replikativ.spindel.enum-bench :as enumeration]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.lifetime-load-monitor :as load]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   (:import [java.lang.management ManagementFactory]
@@ -18,37 +21,65 @@
 
 (defn- body-fn
   "A fn creating and running one fresh spin of `kind`, returning its result."
-  [kind]
+  [kind retain!]
   (case kind
     ;; no effect site
-    :L0 (fn [i] @(spin (+ i 1)))
+    :L0 (fn [i] @(retain! (spin (+ i 1))))
     ;; two awaits of cached spins
-    :L2-await (let [b (spin 1) c (spin 2)]
+    :L2-await (let [b (retain! (spin 1)) c (retain! (spin 2))]
                 @b @c
-                (fn [i] @(spin (+ i (await b) (await c)))))
+                (fn [i] @(retain! (spin (+ i (await b) (await c))))))
     ;; two tracks of signals
     :L2-track (let [a (sig/signal 1) b (sig/signal 2)]
-                (fn [i] @(spin (+ i (iv/get-new (track a)) (iv/get-new (track b))))))
+                (fn [i] @(retain! (spin (+ i (iv/get-new (track a)) (iv/get-new (track b)))))))
     ;; a parent creating and awaiting one child
-    :L-child (fn [i] @(spin (inc (await (spin i)))))))
+    :L-child (fn [i] @(retain! (spin (inc (await (retain! (spin i)))))))))
 
 (defn run-one [kind n warmup]
+  ;; Keep EVERY created handle (including lexical children and warmup spins)
+  ;; alive. No run is allowed to borrow cleanup from preceding operations.
+  ;; The preallocated list's stores allocate no per-operation storage.
+  (enumeration/full-gc! nil)
   (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))
+        handles (java.util.ArrayList. (+ 2 (* 2 (+ n warmup))))
+        retain! (fn [s] (.add handles s) s)
+        active? (java.util.concurrent.atomic.AtomicBoolean. false)
+        cleanup-calls (java.util.concurrent.atomic.AtomicLong. 0)
+        cleanup simple/full-cleanup-spin!
         ^ThreadMXBean bean (ManagementFactory/getThreadMXBean)
         tid (.getId (Thread/currentThread))]
     (.setThreadAllocatedMemoryEnabled bean true)
     (try
-      (binding [ec/*execution-context* rt cps/*in-trampoline* false]
-        (let [f (body-fn kind)]
-          (dotimes [i warmup] (f i))
-          (let [bytes (.getThreadAllocatedBytes bean tid)
-                start (System/nanoTime)
-                sum (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (f i))) acc))
-                elapsed (- (System/nanoTime) start)]
-            {:lifecycle kind :spins n :checksum sum
-             :us-per-spin (/ (double elapsed) n 1000)
-             :kb-per-spin (/ (double (- (.getThreadAllocatedBytes bean tid) bytes)) n 1024)})))
-      (finally (ctx/close-context! rt)))))
+      (with-redefs [simple/full-cleanup-spin!
+                    (fn counted-cleanup
+                      ([world sid] (counted-cleanup world sid (constantly true)))
+                      ([world sid local?]
+                       (when (.get active?) (.incrementAndGet cleanup-calls))
+                       (cleanup world sid local?)))]
+        (binding [ec/*execution-context* rt cps/*in-trampoline* false]
+          (let [f (body-fn kind retain!)]
+            (dotimes [i warmup] (f i))
+            (load/timed
+             (fn []
+               (.set active? true)
+               (let [bytes (.getThreadAllocatedBytes bean tid)
+                     start (System/nanoTime)
+                     sum (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (f i))) acc))
+                     elapsed (- (System/nanoTime) start)
+                     allocated (- (.getThreadAllocatedBytes bean tid) bytes)]
+                 (.set active? false)
+                 (java.lang.ref.Reference/reachabilityFence handles)
+                 (when-not (zero? (.get cleanup-calls))
+                   (throw (ex-info "Cleanup contaminated lifecycle sample"
+                                   {:cleanup-calls (.get cleanup-calls)})))
+                 {:lifecycle kind :spins n :warmup warmup :checksum sum
+                  :retained-handles (.size handles) :cleanup-calls (.get cleanup-calls)
+                  :us-per-spin (/ (double elapsed) n 1000)
+                  :kb-per-spin (/ (double allocated) n 1024)}))))))
+      (finally
+        (.set active? false)
+        (ctx/close-context! rt)
+        (java.lang.ref.Reference/reachabilityFence handles)))))
 
 (defn -main [& kinds]
   (let [n (Long/parseLong (System/getProperty "spindel.bench.ops" "5000"))

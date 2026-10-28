@@ -1,0 +1,16 @@
+{:actions
+ [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t20q,
+   :c [:cut 0],
+   :scope [:root [:w 1]],
+   :mode :frozen,
+   :participants
+   {:worlds #{[:w 1]}, :components #{[[:w 1] :sci]}, :systems #{:a}}}
+  {:t :t22, :c [:cut 0]}
+  {:t :t23, :c [:cut 0], :v [:w 2], :k [:cap 1], :mode :frozen}
+  {:t :t26,
+   :caller [:root [:w 0]],
+   :k [:cap 0],
+   :op :op,
+   :kind :merge}],
+ :refusals []}

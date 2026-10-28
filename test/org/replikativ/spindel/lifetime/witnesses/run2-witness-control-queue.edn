@@ -1,0 +1,1 @@
+{:actions [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]} {:t :t13, :w [:w 0], :scope [:root [:w 0]]}], :violations [{:id :L13, :evidence [{:w [:w 1], :index :queue, :size 1, :rows 0, :c 8}]} {:id :TL16, :evidence [{:w [:w 1], :index :queue, :size 1, :rows 0, :c 8}]}], :valid-prefix? true}

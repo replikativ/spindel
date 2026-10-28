@@ -1,0 +1,2949 @@
+{:witnesses
+ {"run2-witness-aggregate-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run4-witness-foreign-release.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-witness-foreign-reclaim.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run3-acknowledged-fork-gap.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :timer,
+    :debtor [:host :executor]},
+   :checked 3},
+  "run4-witness-dirty-cache.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t01, :w [:w 0], :e [:spin 0], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback, :tok [:tok 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+   :invariants []},
+  "run2-witness-dormant-timer.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :timer,
+    :debtor [:host :executor]},
+   :checked 1},
+  "run4-witness-host-readthrough.edn" {:status :passed, :checked 3},
+  "run2-witness-mixed-partition.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run6-F50.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 1]],
+    :participants
+    {:worlds #{[:w 1]}, :components #{[[:w 1] :sci]}, :systems #{:a}}},
+   :checked 1},
+  "run5-minimal-fork-release-gap.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap 0],
+    :op :op,
+    :kind :merge},
+   :checked 1},
+  "run3-minimal-crash-before-restart.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run3-witness-dormant-timer.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :timer,
+    :debtor [:host :executor]},
+   :checked 1},
+  "run2-witness-host-readthrough.edn" {:status :passed, :checked 3},
+  "run5-new-cancelled-start-on-sealed.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 1] [:spin 1]]},
+   :checked 2},
+  "run4-new-released-debtor-l10.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run3-witness-aggregate-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run5-witness-dormant-timer.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :timer,
+    :debtor [:host :executor]},
+   :checked 1},
+  "run4-minimal-foreign-await-start.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run5-new-cut-drain-work.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 1},
+  "run3-minimal-releasing-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run5-minimal-cut-release-isolation.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run6-F51.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run4-explicit-token-recreation.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1], :tok [:tok 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :invariants []},
+  "run2-witness-control-queue.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B4},
+   :action {:t :t13, :w [:w 0], :scope [:root [:w 0]]},
+   :checked 1},
+  "run5-new-copy-cancelling.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run4-new-completion-before-tombstone.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run4-minimal-ack-preempted.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-witness-mixed-partition.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run5-minimal-ack-preempted.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run2-witness-inherited-creations.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 2]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 2] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error :org.replikativ.spindel.spin.core/spin-cancelled}]}],
+   :invariants []},
+  "run3-witness-control-queue.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B4},
+   :action {:t :t13, :w [:w 0], :scope [:root [:w 0]]},
+   :checked 1},
+  "run5-witness-host-readthrough.edn" {:status :passed, :checked 3},
+  "run3-witness-foreign-release.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-minimal-crash-before-restart.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run3-witness-inherited-creations.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1]}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 2]}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 2]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error :org.replikativ.spindel.spin.core/spin-cancelled}]}],
+   :invariants []},
+  "run4-new-cut-drain-work.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 1},
+  "run5-new-independent-invoke.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 1], :tok [:tok 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}
+      {:w [:w 0],
+       :e [:spin 1],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :invariants []},
+  "run5-witness-mixed-partition.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run5-minimal-cut-rollback-isolation.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run5-witness-dirty-cache.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t01, :w [:w 0], :e [:spin 0], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback, :tok [:tok 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+   :invariants []},
+  "run3-minimal-foreign-await-start.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run5-minimal-foreign-await-start.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run5-new-released-debtor-l10.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run5-witness-control-queue.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B4},
+   :action {:t :t13, :w [:w 0], :scope [:root [:w 0]]},
+   :checked 1},
+  "run4-minimal-cut-rollback-isolation.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run3-minimal-cut-rollback-isolation.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run2-witness-dirty-cache.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t01, :w [:w 0], :e [:spin 0], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback, :tok [:tok 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+   :invariants []},
+  "run4-minimal-cut-release-isolation.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run4-new-fork-during-pending-start.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run5-new-recreated-incarnation.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1], :tok [:tok 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :invariants []},
+  "run3-witness-foreign-reclaim.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run3-witness-host-readthrough.edn" {:status :passed, :checked 3},
+  "run3-minimal-earlier-cleanup.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-witness-inherited-creations.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1]}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 2]}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 2]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error :org.replikativ.spindel.spin.core/spin-cancelled}]}],
+   :invariants []},
+  "run3-minimal-cut-release-isolation.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run5-witness-foreign-reclaim.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run3-witness-dirty-cache.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t01, :w [:w 0], :e [:spin 0], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback, :tok [:tok 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+   :invariants []},
+  "run5-new-debtor-cancel.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 1]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 1] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}],
+   :invariants []},
+  "run5-witness-inherited-creations.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1]}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 2]}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 2]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error :org.replikativ.spindel.spin.core/spin-cancelled}]}],
+   :invariants []},
+  "run3-minimal-ack-preempted.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run5-minimal-crash-before-restart.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run5-minimal-releasing-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run2-witness-foreign-release.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-minimal-settle-owner.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap 0],
+    :op :op,
+    :kind :merge},
+   :checked 1},
+  "run4-new-release-fenced-world.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run5-new-fork-during-pending-start.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2},
+  "run4-witness-dormant-timer.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :timer,
+    :debtor [:host :executor]},
+   :checked 1},
+  "run3-minimal-zero-census.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :timer,
+    :debtor [:host :executor]},
+   :checked 3},
+  "run3-minimal-settle-owner.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap 0],
+    :op :op,
+    :kind :merge},
+   :checked 1},
+  "run4-new-recreated-incarnation.edn"
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1], :tok [:tok 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :invariants []},
+  "run5-witness-foreign-release.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-minimal-releasing-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run3-witness-mixed-partition.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :F1},
+   :action
+   {:t :t33,
+    :k [:cap 0],
+    :op :split,
+    :successors
+    [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]},
+   :checked 1},
+  "run3-minimal-fork-release-gap.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap 0],
+    :op :op,
+    :kind :merge},
+   :checked 1},
+  "run4-minimal-earlier-cleanup.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run5-new-attached-child-settlement.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run2-witness-foreign-reclaim.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run5-witness-aggregate-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run5-new-release-fenced-world.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E2},
+   :action
+   {:t :t20,
+    :c [:cut 0],
+    :scope [:root [:w 0]],
+    :mode :frozen,
+    :participants
+    {:worlds #{[:w 0]},
+     :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+     :systems #{:b :a}}},
+   :checked 0},
+  "run4-witness-control-queue.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B4},
+   :action {:t :t13, :w [:w 0], :scope [:root [:w 0]]},
+   :checked 1},
+  "run4-witness-aggregate-census.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :B1},
+   :action
+   {:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]},
+   :checked 0},
+  "run4-new-cancelled-start-on-sealed.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 0],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 1] [:spin 1]]},
+   :checked 2},
+  "run5-generative.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap [:w 1]],
+    :op [:op [:cap [:w 1]]],
+    :kind :merge},
+   :checked 1},
+  "run5-minimal-settle-owner.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap 0],
+    :op :op,
+    :kind :merge},
+   :checked 1},
+  "run5-minimal-earlier-cleanup.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :track,
+    :debtor [:entity [:w 0] [:signal 0]]},
+   :checked 3},
+  "run4-minimal-fork-release-gap.edn"
+  {:status :skipped,
+   :reason {:status :not-yet, :step :E1},
+   :action
+   {:t :t26,
+    :caller [:root [:w 0]],
+    :k [:cap 0],
+    :op :op,
+    :kind :merge},
+   :checked 1},
+  "run5-new-completion-before-tombstone.edn"
+  {:status :skipped,
+   :reason {:step :B2, :reason :nonlocal-or-nonscripted-effect},
+   :action
+   {:t :t05,
+    :w [:w 1],
+    :r [[:spin 0] 1],
+    :kind :await-once,
+    :debtor [:entity [:w 0] [:spin 1]]},
+   :checked 2}},
+ :findings
+ [{:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 2],
+     :mode :callback,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t07, :w [:w 0], :r [[:spin 2] 1]}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 2], :value :result}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D00",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 2],
+     :mode :deref,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t01, :w [:w 0], :r [[:spin 2] 1], :e [:spin 3], :tok [:tok 0]}
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 3],
+     :tok [:tok 0],
+     :mode :deref,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 3],
+     :mode :callback,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t07, :w [:w 0], :r [[:spin 3] 1]}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual
+     [{:w [:w 0], :e [:spin 3], :value :result}
+      {:w [:w 0], :e [:spin 3], :value :result}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D01",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 2]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :steps [:B1 :B3 :C2 :D1],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 2] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error :org.replikativ.spindel.spin.core/spin-cancelled}]}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D02",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t01, :w [:w 0], :e [:spin 0], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback, :tok [:tok 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D03",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :steps [:B1 :B3],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D04",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 1]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 1] 1]}],
+   :steps [:B1 :B3 :C2 :D1],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D05",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t07,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :value
+     {:error :org.replikativ.spindel.lifetime.lockstep/scripted-error},
+     :throw :org.replikativ.spindel.lifetime.lockstep/scripted-error}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error
+       :org.replikativ.spindel.lifetime.lockstep/scripted-error}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D06",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 1],
+     :mode :callback,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t11, :w [:w 0], :r [[:spin 1] 1]}],
+   :steps [:B1 :B3],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 1],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D07",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 1],
+     :mode :deref,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t07, :w [:w 0], :r [[:spin 1] 1]}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 1], :value :result}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D08",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1], :tok [:tok 0]}
+    {:t :t04, :w [:w 0], :e [:spin 1], :tok [:tok 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :steps [:B1 :B3],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}
+      {:w [:w 0],
+       :e [:spin 1],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D09",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 2],
+     :mode :callback,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t01, :w [:w 0], :r [[:spin 2] 1], :e [:spin 0], :tok [:tok 0]}
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 1],
+     :mode :callback,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 3],
+     :mode :deref,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t01,
+     :w [:w 0],
+     :r [[:spin 1] 1],
+     :e [:spin 3],
+     :tok [:tok 0]}],
+   :steps [:B5],
+   :differences
+   [{:kind :refusal,
+     :expected
+     :org.replikativ.spindel.lifetime.model/token-spin-mismatch,
+     :actual nil}],
+   :classification :harness-bug,
+   :note
+   "The driver cannot pass a model incarnation token to main, which has no token API. Preserve the refusal mismatch as a diagnostic.",
+   :id "D10",
+   :invariants [],
+   :finding :token-refusal-not-representable,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1]}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 2]]}
+    {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :steps [:B1 :B3 :C2 :D1],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}},
+       [:w 1]
+       {:entities
+        {[:spin 0]
+         {:completed? false,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 2]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error :org.replikativ.spindel.spin.core/spin-cancelled}]}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D11",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 3],
+     :mode :deref,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t11, :w [:w 0], :r [[:spin 3] 1]}],
+   :steps [:B1 :B3],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 3] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 1] {:completed? false, :kind :spin, :result nil},
+         [:spin 3]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 3],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D12",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+    {:t :t01, :w [:w 0], :r [[:spin 0] 1], :e [:spin 1], :tok [:tok 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :steps [:B1 :B3],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D13",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 1]]}
+    {:t :t11, :w [:w 0], :r [[:spin 1] 1]}],
+   :steps [:B1 :B3],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}],
+   :classification :known-plan-item,
+   :note
+   "Main caches cancellation as a result and lacks the target owner/run cleanup. The checkpoint is not an engine await; egress from checkpoint-only runs is not a native cancellation test.",
+   :id "D14",
+   :invariants [],
+   :finding :cancellation-result-and-owner-release,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04,
+     :w [:w 0],
+     :e [:spin 1],
+     :mode :callback,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 1],
+     :mode :deref,
+     :filter {:mode :local, :origin [:w 0]}}
+    {:t :t07, :w [:w 0], :r [[:spin 1] 1]}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual
+     [{:w [:w 0], :e [:spin 1], :value :result}
+      {:w [:w 0], :e [:spin 1], :value :result}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D15",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}
+  {:minimal-trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1], :value 42}],
+   :steps [:D1],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value 42}]}],
+   :classification :harness-bug,
+   :note
+   "Microstep boundary cannot be isolated through main's synchronous public API; not evidence of an engine bug.",
+   :id "D16",
+   :invariants [],
+   :finding :compound-api-delivers-during-model-t07,
+   :minimality :single-deletion}],
+ :scripted
+ {:errors
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t07,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :value
+     {:error :org.replikativ.spindel.lifetime.lockstep/scripted-error},
+     :throw :org.replikativ.spindel.lifetime.lockstep/scripted-error}],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual
+     [{:w [:w 0],
+       :e [:spin 0],
+       :error
+       :org.replikativ.spindel.lifetime.lockstep/scripted-error}]}],
+   :invariants []},
+  :cancel-await
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t05,
+     :w [:w 0],
+     :r [[:spin 0] 1],
+     :kind :await-once,
+     :debtor [:entity [:w 0] [:spin 1]]}
+    {:t :t11, :w [:w 0], :r [[:spin 1] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil},
+         [:spin 1]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}],
+   :invariants []},
+  :nested {:status :passed, :checked 3},
+  :following {:status :passed, :checked 2},
+  :collections {:status :passed, :checked 1},
+  :cancel
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+   :differences
+   [{:kind :state,
+     :expected
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+        :queue [],
+        :runs {}}}},
+     :actual
+     {:adapter-effects nil,
+      :clocks {},
+      :cuts {},
+      :uses {},
+      :worlds
+      {[:w 0]
+       {:entities
+        {[:spin 0]
+         {:completed? true,
+          :kind :spin,
+          :result
+          {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+        :queue [],
+        :runs {}}}}}
+    {:kind :delivery,
+     :expected
+     [{:w [:w 0],
+       :e [:spin 0],
+       :value :org.replikativ.spindel.lifetime.model/cancelled}],
+     :actual []}],
+   :invariants []},
+  :await {:status :passed, :checked 2},
+  :completion
+  {:status :discrepancy,
+   :trace
+   [{:t :t04, :w [:w 0], :e [:spin 0]}
+    {:t :t07, :w [:w 0], :r [[:spin 0] 1], :value 42}],
+   :differences
+   [{:kind :delivery,
+     :expected [],
+     :actual [{:w [:w 0], :e [:spin 0], :value 42}]}],
+   :invariants []},
+  :track {:status :passed, :checked 3}},
+ :stamp-probe
+ {:trace [:register-failing-stamp :fork :merge],
+  :classification :known-plan-item,
+  :step :F2,
+  :error :org.replikativ.spindel.yggdrasil/stamp-failed,
+  :disposition
+  {:status :merged,
+   :owner :root-9ba000ef-c632-4c45-a3f6-2913ee527174,
+   :operation :merge,
+   :result {:merged [], :child-only []}},
+  :pending-stamps 1},
+ :counts {:skipped 82, :discrepancy 31, :passed 12},
+ :profile-limits
+ {:one-spin
+  {:status :exhausted,
+   :states 5,
+   :edges 5,
+   :pending 0,
+   :bounds
+   {:scopes 0,
+    :invoke-modes [:callback],
+    :atoms 0,
+    :filters [:local],
+    :invocations 1,
+    :generations 1,
+    :worlds 1,
+    :cuts 0,
+    :world-ids 1,
+    :handles 0,
+    :spins 1,
+    :signals 0},
+   :max-states 2000},
+  :source-only
+  {:status :exhausted,
+   :states 3,
+   :edges 2,
+   :pending 0,
+   :bounds
+   {:scopes 0,
+    :invoke-modes [:callback],
+    :atoms 0,
+    :filters [:local],
+    :invocations 1,
+    :generations 1,
+    :worlds 1,
+    :cuts 0,
+    :world-ids 1,
+    :handles 0,
+    :spins 0,
+    :signals 1},
+   :max-states 2000},
+  :settlement :unsupported,
+  :shared-cuts :unsupported},
+ :model-normative
+ {"run6-F50.edn"
+  [{:id :L16,
+    :evidence [{:w [:w 1], :admission :open, :seal-seq 0, :runs {}}]}],
+  "run6-F51.edn"
+  [{:id :L10,
+    :evidence
+    [{:v [:w 1], :o [:o 1], :phases [:pending-start :cancelling]}]}]},
+ :coverage
+ {:actions
+  {:t04 {:status :implemented, :extent :partial},
+   :t23 {:status :not-yet, :step :E2},
+   :t28 {:status :not-yet, :step :F2},
+   :unsubscribe {:status :not-yet, :step :B2},
+   :t08 {:status :not-yet, :step :B2},
+   :t35 {:status :not-yet, :step :B2},
+   :t32 {:status :not-yet, :step :F1},
+   :thread-entry {:status :not-yet, :step :D1},
+   :arrival {:status :not-yet, :step :D1},
+   :t17 {:status :not-yet, :step :B5},
+   :t31 {:status :not-yet, :step :F2},
+   :t19 {:status :implemented, :extent :partial},
+   :t34 {:status :not-yet, :step :D1},
+   :t01 {:status :implemented, :extent :partial},
+   :t27 {:status :not-yet, :step :F2},
+   :t36 {:status :not-yet, :step :D1},
+   :t33 {:status :not-yet, :step :F1},
+   :t26 {:status :not-yet, :step :E1},
+   :t02 {:status :implemented, :extent :partial},
+   :t20 {:status :not-yet, :step :E2},
+   :t14 {:status :not-yet, :step :C2},
+   :t29 {:status :not-yet, :step :F2},
+   :t12 {:status :not-yet, :step :B1},
+   :t30 {:status :not-yet, :step :F2},
+   :signal-write {:status :implemented, :extent :partial},
+   :t09 {:status :not-yet, :step :B3},
+   :t15 {:status :not-yet, :step :B3},
+   :queued {:status :not-yet, :step :D1},
+   :t24 {:status :not-yet, :step :E2},
+   :t21 {:status :not-yet, :step :E3},
+   :t10 {:status :not-yet, :step :B3},
+   :t16 {:status :not-yet, :step :B5},
+   :t05 {:status :implemented, :extent :partial},
+   :t03 {:status :not-yet, :step :B6},
+   :native-progress {:status :not-yet, :step :D1},
+   :t13 {:status :not-yet, :step :B4},
+   :waiter-unregister {:status :not-yet, :step :D1},
+   :t07 {:status :implemented, :extent :partial},
+   :t37 {:status :not-yet, :step :D1},
+   :t18 {:status :not-yet, :step :B5},
+   :t06 {:status :not-yet, :step :B2},
+   :t22 {:status :not-yet, :step :E2},
+   :t11 {:status :implemented, :extent :partial},
+   :t25 {:status :not-yet, :step :E2}},
+  :components
+  {:scopes {:enabled? false, :step :B1},
+   :caps {:enabled? false, :step :F1},
+   :entity-locality {:enabled? false, :step :C2},
+   :dirty {:enabled? false, :step :B3},
+   :admission {:enabled? false, :step :E1},
+   :owners {:enabled? false, :step :B1},
+   :releasing {:enabled? false, :step :D1},
+   :pins {:enabled? false, :step :C2},
+   :lineage {:enabled? false, :step :C1},
+   :obligations {:enabled? false, :step :B2},
+   :queue {:enabled? false, :step :D1},
+   :reasons {:enabled? false, :step :B3},
+   :waiters {:enabled? false, :step :B2},
+   :registry {:enabled? false, :step :C1},
+   :entities
+   {:enabled? true,
+    :view :read-visible,
+    :fields [:kind :completed? :result]},
+   :cuts {:enabled? false, :step :E2},
+   :records {:enabled? false, :step :F2},
+   :fdeps {:enabled? false, :step :D1},
+   :tokens {:enabled? false, :step :B5},
+   :runs {:enabled? false, :step :B3}},
+  :invariant-prerequisites
+  {:L6 #{:scopes :owners :obligations},
+   :L4 #{:caps :releasing :queue :registry :fdeps :runs},
+   :L8 #{:reasons :tokens},
+   :L20 #{:releasing :obligations :queue :fdeps :runs},
+   :L24 #{:obligations :waiters},
+   :L18 #{:caps :records},
+   :L10 #{:obligations :queue :fdeps :runs},
+   :L13
+   #{:caps
+     :releasing
+     :pins
+     :obligations
+     :queue
+     :reasons
+     :cuts
+     :fdeps
+     :runs},
+   :L1 #{:scopes :owners :reasons},
+   :L19 #{:caps :records},
+   :L16 #{:caps :admission},
+   :L21 #{:lineage :registry},
+   :L11 #{:releasing :queue :fdeps},
+   :L17 #{:caps :records},
+   :L22 #{:caps :admission :queue :cuts},
+   :L3 #{:reasons :tokens},
+   :L14 #{:pins :lineage},
+   :L23 #{:owners :lineage},
+   :L9 #{:lineage :obligations :runs},
+   :L2 #{:scopes :owners :runs},
+   :L12 #{:entities},
+   :L15 #{:scopes :obligations :queue :runs},
+   :L7 #{:owners :reasons :runs},
+   :L5 #{:obligations :queue :fdeps :runs}},
+  :enabled-invariants [{:id :L12, :scope :projected-data-only}],
+  :limitations
+  [:no-complete-L-predicate-yet
+   :synchronous-delivery-versus-explicit-model-queue
+   :frozen-via-cut-not-yet
+   :settlement-api-probes-only]},
+ :generated
+ [{:seed 0,
+   :result
+   {:status :skipped,
+    :reason {:status :not-yet, :step :B2},
+    :action {:t :t35, :th :foreign},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t11, :w [:w 0], :r [[:spin 1] 1]}],
+    :differences
+    [{:kind :state,
+      :expected
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 0] {:completed? false, :kind :spin, :result nil},
+          [:spin 1] {:completed? false, :kind :spin, :result nil}},
+         :queue [],
+         :runs {}}}},
+      :actual
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 0] {:completed? false, :kind :spin, :result nil},
+          [:spin 1]
+          {:completed? true,
+           :kind :spin,
+           :result
+           {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+         :queue [],
+         :runs {}}}}}
+     {:kind :delivery,
+      :expected
+      [{:w [:w 0],
+        :e [:spin 1],
+        :value :org.replikativ.spindel.lifetime.model/cancelled}],
+      :actual []}],
+    :invariants []}}
+  {:seed 1,
+   :result
+   {:status :skipped,
+    :reason {:step :D1, :reason :host-filter},
+    :action
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 2],
+     :mode :deref,
+     :filter {:mode :causal-follow, :origin [:w 0]}},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t19,
+      :w [:w 0],
+      :v [:w 1],
+      :k [:cap [:w 1]],
+      :scope [:root [:w 0]]}
+     {:t :t04,
+      :w [:w 1],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 1]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t05,
+      :w [:w 0],
+      :r [[:spin 3] 1],
+      :kind :await-once,
+      :debtor [:entity [:w 0] [:spin 0]]}
+     {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+    :invariants []}}
+  {:seed 2,
+   :result
+   {:status :skipped,
+    :reason {:status :not-yet, :step :B5},
+    :action {:t :t18, :w [:w 0]},
+    :checked 1},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+    :differences
+    [{:kind :state,
+      :expected
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 0] {:completed? false, :kind :spin, :result nil},
+          [:spin 2] {:completed? false, :kind :spin, :result nil}},
+         :queue [],
+         :runs {}}}},
+      :actual
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 0]
+          {:completed? true,
+           :kind :spin,
+           :result
+           {:error :org.replikativ.spindel.spin.core/spin-cancelled}},
+          [:spin 2] {:completed? false, :kind :spin, :result nil}},
+         :queue [],
+         :runs {}}}}}
+     {:kind :delivery,
+      :expected
+      [{:w [:w 0],
+        :e [:spin 0],
+        :value :org.replikativ.spindel.lifetime.model/cancelled}],
+      :actual []}],
+    :invariants []}}
+  {:seed 3,
+   :result
+   {:status :skipped,
+    :reason {:status :not-yet, :step :B3},
+    :action {:t :t15, :w [:w 0]},
+    :checked 2},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t19,
+      :w [:w 0],
+      :v [:w 1],
+      :k [:cap [:w 1]],
+      :scope [:root [:w 0]]}
+     {:t :t04,
+      :w [:w 1],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 1]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t01,
+      :w [:w 0],
+      :r [[:spin 2] 1],
+      :e [:spin 3],
+      :tok [:tok 0]}
+     {:t :t01,
+      :w [:w 0],
+      :r [[:spin 2] 1],
+      :e [:spin 3],
+      :tok [:tok 0]}
+     {:t :t01, :w [:w 0], :e [:spin 3], :tok [:tok 1]}
+     {:t :t04,
+      :w [:w 1],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 1]}}
+     {:t :t01,
+      :w [:w 0],
+      :r [[:spin 2] 1],
+      :e [:spin 3],
+      :tok [:tok 0]}
+     {:t :t04,
+      :w [:w 1],
+      :e [:spin 0],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 1]}}
+     {:t :t19,
+      :w [:w 0],
+      :v [:w 2],
+      :k [:cap [:w 2]],
+      :scope [:root [:w 0]]}
+     {:t :t04,
+      :w [:w 1],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 1]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :tok [:tok 0],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t05,
+      :w [:w 0],
+      :r [[:spin 2] 1],
+      :kind :await-once,
+      :debtor [:entity [:w 0] [:spin 3]]}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t05,
+      :w [:w 0],
+      :r [[:spin 0] 1],
+      :kind :await-once,
+      :debtor [:entity [:w 0] [:spin 2]]}
+     {:t :t04,
+      :w [:w 1],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 1]}}
+     {:t :t07, :w [:w 0], :r [[:spin 3] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual
+      [{:w [:w 0], :e [:spin 3], :value :result}
+       {:w [:w 0], :e [:spin 3], :value :result}]}],
+    :invariants []}}
+  {:seed 4,
+   :result
+   {:status :skipped,
+    :reason {:step :D1, :reason :host-filter},
+    :action
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 3],
+     :mode :deref,
+     :filter {:mode :causal-follow, :origin [:w 0]}},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t07, :w [:w 0], :r [[:spin 1] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual [{:w [:w 0], :e [:spin 1], :value :result}]}],
+    :invariants []}}
+  {:seed 5,
+   :result
+   {:status :skipped,
+    :reason {:status :not-yet, :step :B5},
+    :action {:t :t18, :w [:w 0]},
+    :checked 2},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t19,
+      :w [:w 0],
+      :v [:w 1],
+      :k [:cap [:w 1]],
+      :scope [:root [:w 0]]}
+     {:t :t19,
+      :w [:w 1],
+      :v [:w 2],
+      :k [:cap [:w 2]],
+      :scope [:root [:w 1]]}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t07, :w [:w 0], :r [[:spin 2] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual [{:w [:w 0], :e [:spin 2], :value :result}]}],
+    :invariants []}}
+  {:seed 6,
+   :result
+   {:status :skipped,
+    :reason {:status :not-yet, :step :D1},
+    :action
+    {:t :thread-entry,
+     :th :foreign,
+     :thread
+     {:world [:w 0],
+      :scope nil,
+      :run nil,
+      :read-permits #{},
+      :excl-permits []}},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t07, :w [:w 0], :r [[:spin 1] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual
+      [{:w [:w 0], :e [:spin 1], :value :result}
+       {:w [:w 0], :e [:spin 1], :value :result}]}],
+    :invariants []}}
+  {:seed 7,
+   :result
+   {:status :skipped,
+    :reason {:step :D1, :reason :host-filter},
+    :action
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 3],
+     :mode :deref,
+     :filter {:mode :causal-follow, :origin [:w 0]}},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t01, :w [:w 0], :e [:spin 3], :tok [:tok 1]}
+     {:t :t19,
+      :w [:w 0],
+      :v [:w 1],
+      :k [:cap [:w 1]],
+      :scope [:root [:w 0]]}
+     {:t :t07, :w [:w 0], :r [[:spin 1] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual
+      [{:w [:w 0], :e [:spin 1], :value :result}
+       {:w [:w 0], :e [:spin 1], :value :result}]}],
+    :invariants []}}
+  {:seed 8,
+   :result
+   {:status :skipped,
+    :reason {:status :not-yet, :step :D1},
+    :action {:t :t34, :w [:w 0]},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t11, :w [:w 0], :r [[:spin 3] 1]}],
+    :differences
+    [{:kind :state,
+      :expected
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 1] {:completed? false, :kind :spin, :result nil},
+          [:spin 3] {:completed? false, :kind :spin, :result nil}},
+         :queue [],
+         :runs {}}}},
+      :actual
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 1] {:completed? false, :kind :spin, :result nil},
+          [:spin 3]
+          {:completed? true,
+           :kind :spin,
+           :result
+           {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+         :queue [],
+         :runs {}}}}}
+     {:kind :delivery,
+      :expected
+      [{:w [:w 0],
+        :e [:spin 3],
+        :value :org.replikativ.spindel.lifetime.model/cancelled}],
+      :actual []}],
+    :invariants []}}
+  {:seed 9,
+   :result
+   {:status :skipped,
+    :reason {:step :D1, :reason :host-filter},
+    :action
+    {:t :t04,
+     :w [:w 0],
+     :e [:spin 0],
+     :mode :deref,
+     :filter {:mode :causal-follow, :origin [:w 0]}},
+    :checked 0},
+   :supported-result
+   {:status :discrepancy,
+    :trace
+    [{:t :t19,
+      :w [:w 0],
+      :v [:w 1],
+      :k [:cap [:w 1]],
+      :scope [:root [:w 0]]}
+     {:t :t19,
+      :w [:w 1],
+      :v [:w 2],
+      :k [:cap [:w 2]],
+      :scope [:root [:w 1]]}
+     {:t :t04,
+      :w [:w 2],
+      :e [:spin 0],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 2]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 2],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t01,
+      :w [:w 0],
+      :r [[:spin 2] 1],
+      :e [:spin 0],
+      :tok [:tok 0]}
+     {:t :t05,
+      :w [:w 0],
+      :r [[:spin 2] 1],
+      :kind :await-once,
+      :debtor [:entity [:w 0] [:spin 1]]}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :tok [:tok 0],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 1],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t04,
+      :w [:w 0],
+      :e [:spin 3],
+      :mode :deref,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t01,
+      :w [:w 0],
+      :r [[:spin 1] 1],
+      :e [:spin 3],
+      :tok [:tok 0]}],
+    :differences
+    [{:kind :refusal,
+      :expected
+      :org.replikativ.spindel.lifetime.model/token-spin-mismatch,
+      :actual nil}],
+    :invariants []}}],
+ :classification-note
+ "State and observable diagnostics are retained, not waived. Full L predicates and absent components are not accepted by a green smoke test.",
+ :runtime-base "06ce205",
+ :gc-hook-probe
+ {:notification :deterministic,
+  :before true,
+  :after false,
+  :model-transitions :not-yet,
+  :step :B5},
+ :harness-revision "7914b48",
+ :profiles
+ {:one-spin
+  [{:status :passed, :checked 1}
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t11, :w [:w 0], :r [[:spin 0] 1]}],
+    :differences
+    [{:kind :state,
+      :expected
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 0] {:completed? false, :kind :spin, :result nil}},
+         :queue [],
+         :runs {}}}},
+      :actual
+      {:adapter-effects nil,
+       :clocks {},
+       :cuts {},
+       :uses {},
+       :worlds
+       {[:w 0]
+        {:entities
+         {[:spin 0]
+          {:completed? true,
+           :kind :spin,
+           :result
+           {:error :org.replikativ.spindel.spin.core/spin-cancelled}}},
+         :queue [],
+         :runs {}}}}}
+     {:kind :delivery,
+      :expected
+      [{:w [:w 0],
+        :e [:spin 0],
+        :value :org.replikativ.spindel.lifetime.model/cancelled}],
+      :actual []}],
+    :invariants []}
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+    :invariants []}
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+    :invariants []}
+   {:status :discrepancy,
+    :trace
+    [{:t :t04,
+      :w [:w 0],
+      :e [:spin 0],
+      :mode :callback,
+      :filter {:mode :local, :origin [:w 0]}}
+     {:t :t07, :w [:w 0], :r [[:spin 0] 1]}],
+    :differences
+    [{:kind :delivery,
+      :expected [],
+      :actual [{:w [:w 0], :e [:spin 0], :value :result}]}],
+    :invariants []}],
+  :source-only
+  [{:status :passed, :checked 1} {:status :passed, :checked 2}],
+  :settlement
+  [{:status :skipped,
+    :reason {:status :not-yet, :step :E1},
+    :action
+    {:t :t26,
+     :caller [:root [:w 0]],
+     :k [:cap 0],
+     :op :op,
+     :kind :merge},
+    :checked 1}],
+  :shared-cuts
+  [{:status :skipped,
+    :reason {:status :not-yet, :step :E2},
+    :action
+    {:t :t20,
+     :c [:cut 0],
+     :scope [:root [:w 0]],
+     :mode :frozen,
+     :participants
+     {:worlds #{[:w 0]},
+      :components #{[[:w 0] :sci-a] [[:w 0] :sci-b]},
+      :systems #{:b :a}}},
+    :checked 1}]},
+ :settlement-probes
+ {:merge {:result {:merged []}, :repeat-equal? true},
+  :discard {:result {}, :repeat-equal? true}},
+ :frozen-probe {:parent 2, :frozen 1, :following 2}}

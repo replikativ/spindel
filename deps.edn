@@ -29,7 +29,7 @@
         org.replikativ/kabel {:mvn/version "0.3.139"}}
 
  :aliases
- {:test {:extra-paths ["test"]
+ {:test {:extra-paths ["test" "dev"]
          ;; An access to a runtime atom, deferred or mailbox from a world that
          ;; has no state for it fails the test instead of warning.
          :jvm-opts ["-Dspindel.missing-state=throw"]

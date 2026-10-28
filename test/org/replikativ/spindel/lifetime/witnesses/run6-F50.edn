@@ -1,0 +1,17 @@
+{:finding :F50,
+ :target :L16,
+ :actions
+ [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t20,
+   :c [:cut 0],
+   :scope [:root [:w 1]],
+   :participants
+   {:worlds #{[:w 1]}, :components #{[[:w 1] :sci]}, :systems #{:a}}}
+  {:t :t26, :caller [:root [:w 0]], :k [:cap 0], :op :op, :kind :merge}
+  {:t :t25, :c [:cut 0]}],
+ :valid-prefix? true,
+ :subsequence-minimal? true,
+ :violations
+ [{:id :L16,
+   :evidence [{:w [:w 1], :admission :open, :seal-seq 0, :runs {}}]}],
+ :refusals []}

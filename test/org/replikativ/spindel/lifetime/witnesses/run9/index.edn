@@ -1,0 +1,8 @@
+["run9/F57-admitted-after-attach.edn"
+ "run9/F57-admitted-release.edn"
+ "run9/F57-after-attach.edn"
+ "run9/F57-before-attach.edn"
+ "run9/join-at-release.edn"
+ "run9/rollback-two-members.edn"
+ "run9/sealed-at-release.edn"
+ "run9/start-at-release.edn"]

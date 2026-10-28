@@ -1,0 +1,40 @@
+{:finding :F54,
+ :target :L2,
+ :actions
+ [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :t05,
+   :w [:w 0],
+   :r [[:spin 0] 1],
+   :kind :timer,
+   :debtor [:host :executor]}
+  {:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]]}
+  {:t :t04, :w [:w 1], :e [:spin 0]}
+  {:t :t06, :w [:w 1], :o [:o 1]}],
+ :valid-prefix? true,
+ :subsequence-minimal? true,
+ :violations
+ [{:id :L2,
+   :evidence
+   [{:w [:w 1],
+     :e [:spin 0],
+     :runs
+     {[[:spin 0] 1]
+      {:pred nil,
+       :spawned #{},
+       :status :running,
+       :spin [:spin 0],
+       :creations #{},
+       :origin :inherited,
+       :seq 1,
+       :owner [:root [:w 1]],
+       :source-world [:w 0]},
+      [[:spin 0] 2]
+      {:spin [:spin 0],
+       :owner [:root [:w 1]],
+       :pred [[:spin 0] 1],
+       :status :running,
+       :creations #{},
+       :spawned #{},
+       :seq 2}},
+     :newest-nonstale [[:spin 0] 2]}]}],
+ :refusals []}

@@ -1,0 +1,1 @@
+{:actions [{:t :t19, :w [:w 0], :v [:w 1], :k [:cap 0], :scope [:root [:w 0]], :systems #{:memory :a}} {:t :t33, :k [:cap 0], :op :split, :successors [{:k [:cap 1], :scope #{:a}} {:k [:cap 2], :scope #{:memory}}]} {:t :t31}], :valid-prefix? false, :violations []}
