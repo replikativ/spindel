@@ -604,7 +604,8 @@
         parent-view-backend
         (if (= :frozen mode)
           (backend/create-immutable-backend
-           (backend/backend-deref (:backend parent-ctx))
+           (apply dissoc (backend/backend-deref (:backend parent-ctx))
+                  backend/non-inherited-paths)
            {:source-fork-id (:fork-id parent-ctx)
             :fork-mode :frozen})
           (:backend parent-ctx))
@@ -1003,7 +1004,7 @@
                         state)
 
         ;; Remove pending events if requested
-        final-state (cond-> cleaned-state
+        final-state (cond-> (apply dissoc cleaned-state backend/non-inherited-paths)
                       (not include-pending?) (assoc :engine/pending [])
                       ;; Components are live, process-local realizations. A
                       ;; portable snapshot keeps their durable substrates and
