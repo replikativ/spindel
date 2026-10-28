@@ -150,9 +150,9 @@
                                       (throw (ex-info "Test adapter cannot execute later stages" {:action a})))
                                     (let [{:keys [state deliveries refusal]}
                                           (legacy-macrostep (:control-state @driver) a
-                                                             (when (:throw a)
-                                                               {[(:w a) (first (:r a))]
-                                                                (:throw a)}))]
+                                                            (when (:throw a)
+                                                              {[(:w a) (first (:r a))]
+                                                               (:throw a)}))]
                                       (swap! driver #(-> % (assoc :control-state state) (update :delivered into deliveries)))
                                       (when refusal (throw (ex-info "Model refusal" {:type (:error refusal)})))))
                   l/settlement-probes (constantly :outside-manifest)
@@ -254,9 +254,9 @@
                                [:owner-scopes [:root]]]]
           (let [project l/projection
                 result (with-redefs [l/projection (fn [driver]
-                                                   (let [state (project driver)]
-                                                     (if (get-in state (into [:worlds w] path))
-                                                       (assoc-in state (into [:worlds w] path) :corrupt) state)))]
+                                                    (let [state (project driver)]
+                                                      (if (get-in state (into [:worlds w] path))
+                                                        (assoc-in state (into [:worlds w] path) :corrupt) state)))]
                          (l/replay (manifests/ownership-traces script)))]
             (is (= :discrepancy (:status result)) (pr-str path))
             (is (= :failed (:status (l/acceptance (assoc-in report [:scripted script] result) requirements)))

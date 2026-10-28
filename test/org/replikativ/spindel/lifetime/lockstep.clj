@@ -718,7 +718,7 @@
                (cond-> needs
                  (= :t11 (:t a)) (into #{:B2 :B3})
                  (#{::m/token-spin-mismatch ::m/unknown-handle ::m/idle-cache-released}
-                   (:error refusal)) (conj :B5)
+                  (:error refusal)) (conj :B5)
                  (and completion? (or (nil? row) (empty? (:tokens row)))) (into #{:B3 :B5})
                  (and (= :t11 (:t a))
                       (some #(= :following (get-in % [:lineage :mode])) (vals (:worlds state))))
@@ -734,14 +734,14 @@
         scripts (merge scripted-corpus manifests/ownership-traces)
         scripted-case (fn [name] {:actions (scripts name)
                                   :prerequisites (set/union (case-prerequisites (scripts name))
-                                                           (get manifests/scripted-prerequisites name #{}))})
+                                                            (get manifests/scripted-prerequisites name #{}))})
         cases {:witnesses (into {} (for [[name record] (witness-records)
                                          :let [actions (witness-actions record)]
                                          :when (and (not (:negative-control? record))
                                                     (some #(transitions (:t %)) actions))]
                                      [name {:actions actions
                                             :prerequisites (set/union (case-prerequisites actions)
-                                                                     (get manifests/historical-prerequisites name #{}))}]))
+                                                                      (get manifests/historical-prerequisites name #{}))}]))
                :scripted (into {} (for [name (cumulative :scripted)] [name (scripted-case name)]))
                :regressions (into {} (for [name (cumulative :regressions)] [name (scripted-case name)]))
                :generated (into {} (for [[id spec] manifests/generated-specs
@@ -751,20 +751,20 @@
                                                actions (stage-generated-walk id choices)]]
                                      [[id seed] {:actions actions :stage id :seed seed
                                                  :prerequisites (set/union (case-prerequisites actions)
-                                                                          (:prerequisites spec #{}))}]))
+                                                                           (:prerequisites spec #{}))}]))
                :profiles (into {} (for [name (cumulative :profiles)
                                         :let [spec (manifests/profile-specs name)]]
                                     [name {:spec spec :prerequisites (conj (:prerequisites spec #{}) (:stage spec))}]))}
         classified (reduce-kv
-                     (fn [result kind entries]
-                       (assoc result kind (set (for [[id c] entries
+                    (fn [result kind entries]
+                      (assoc result kind (set (for [[id c] entries
                                                     :when (set/subset? (:prerequisites c) (set stages))] id))
-                                     (keyword (str "pending-" (name kind)))
-                                     (into {} (for [[id c] entries
-                                                    :let [missing (set/difference (:prerequisites c) (set stages))]
-                                                    :when (seq missing)]
-                                                [id (assoc c :status :pending :prerequisites missing)]))))
-                     {} cases)]
+                             (keyword (str "pending-" (name kind)))
+                             (into {} (for [[id c] entries
+                                            :let [missing (set/difference (:prerequisites c) (set stages))]
+                                            :when (seq missing)]
+                                        [id (assoc c :status :pending :prerequisites missing)]))))
+                    {} cases)]
     (merge classified
            {:stage step :stages stages :cases cases
             :stub? (boolean (some #(get-in manifests/stages [% :stub?]) stages))
