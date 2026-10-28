@@ -23,7 +23,9 @@ class SessionTests(unittest.TestCase):
             self.assertTrue(session.overloaded(rows, 8))
 
     def test_foreign_process_record_excludes_own_work(self):
-        with patch.object(session, 'command', side_effect=['uptime', '1 80 java\n2 75 native\n3 0 sh']), patch.object(session.os, 'getloadavg', return_value=(1, 2, 3)):
+        with patch.object(session, 'command', side_effect=['uptime', '1 80 java\n2 75 native\n3 0 sh']), \
+             patch.object(session.os, 'getloadavg', return_value=(1, 2, 3)), \
+             patch.object(session.os, 'getpid', return_value=99):
             self.assertEqual(['2 75 native'], session.host([1])['foreign_high_cpu'])
 
     def run_session(self, codes, expected, loads=None):
