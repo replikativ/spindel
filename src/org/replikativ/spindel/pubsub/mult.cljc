@@ -256,10 +256,11 @@
                  (swap! tap-state-atom assoc :rendezvous-item item)
                  (let [waiter @space-available-atom]
                    (signal-item-available! tap-state-atom)
-                    ;; Recheck: if consumer already took the item before
-                    ;; we awaited, we'd see no :rendezvous-item and need
-                    ;; not wait. Otherwise wait on the captured waiter.
-                   (when (contains? @tap-state-atom :rendezvous-item)
+                    ;; Recheck closure too: untap may have replaced the
+                    ;; waiter before capture, leaving a fresh promise that
+                    ;; will never be delivered and an unconsumed slot.
+                   (when (and (not @closed?)
+                              (contains? @tap-state-atom :rendezvous-item))
                      (await (promise-spin waiter))))
                   ;; Post-await: if the tap was closed during the wait,
                   ;; the consumer never took the rendezvous-item. Clean
@@ -274,7 +275,9 @@
                  (when (and (not (buf/unblocking? buffer))
                             (buf/full? buffer))
                    (let [waiter @space-available-atom]
-                     (when (buf/full? buffer)
+                     ;; Untap can replace the waiter while the closed
+                     ;; buffer stays full. Recheck both after capture.
+                     (when (and (not @closed?) (buf/full? buffer))
                        (await (promise-spin waiter)))))
                   ;; Post-await: if the tap was closed during the wait,
                   ;; adding to the buffer would leak the item into a dead

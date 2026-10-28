@@ -24,6 +24,8 @@
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.quiescence :as quiescence]
+            [org.replikativ.spindel.engine.component :as component]
+            [org.replikativ.spindel.yggdrasil.construction :as construction]
             [incognito.edn :refer [read-string-safe]]))
 
 ;; Native resource acquisition is a HOST construction extent, not a dynamic
@@ -405,65 +407,8 @@
 ;; Forking
 ;; =============================================================================
 
-(defn fork-context
-  "Create a forked execution context from parent.
-
-  Forking creates a new context with:
-  - Overlay backend (memory efficient - stores only modifications)
-  - Same executor (shared for now)
-  - Inherited bindings (can be overridden)
-  - New fork-id
-  - Reference to parent context
-  - Auto-incremented process-id for Elle compatibility (if parent has :process-id)
-
-  Options:
-    :state-updates - Map of initial overlay state (optional)
-                     These values will be written to the overlay immediately.
-                     An entity under a shared key (`{:nodes {id node}}`) is a
-                     whole entity: it replaces the parent's, it is not merged
-                     field by field. (A following fork happens to read a
-                     field the entity lacks through from the parent; a
-                     frozen fork, once it owns the map, does not.)
-    :bindings - Fork-local configuration (merged with parent bindings)
-                Map of keys to values that spins can read via (:bindings *execution-context*)
-    :metadata - Fork metadata (default: parent metadata with updated process-id/depth)
-    :process-id - Override auto-assigned process-id (default: parent + 1)
-    :executor - Executor for the fork (default: share the parent's executor)
-    :checkpoints - Map of signal ids to opaque physical checkpoint origins.
-                   The host bridge validates the complete request before entry;
-                   the engine passes {:fork :checkpoint :checkpoint origin}.
-    :mode - :following (default), where untouched state reads through to the
-            live parent, or :frozen, where untouched state reads from a
-            materialized fork-time view. Both modes remain copy-on-write.
-
-  Returns: New ExecutionContext with overlay backend
-
-  Example:
-    ;; Fork with initial state modifications (a whole node, see above)
-    (def fork-1 (fork-context parent-ctx
-                  :state-updates {:nodes {sig-1 (assoc sig-1-node :snapshot 99)}}
-                  :bindings {:http-client mock-client
-                             :random-seed 12345}
-                  :metadata {:particle-id 1}))
-
-    ;; Spins can access fork-local config:
-    (spin
-      (let [client (:http-client (:bindings *execution-context*))]
-        (http-get client \"http://example.com\")))
-
-    ;; Process-id is automatically assigned for Elle:
-    (def sim (create-simulation-context))  ; process-id 0
-    (def fork (fork-context sim))          ; process-id 1
-    (def fork2 (fork-context fork))        ; process-id 2
-
-  Properties:
-  - :following fork creation is O(1) with OverlayBackend
-  - :frozen materializes the parent view once, then writes copy-on-write
-  - Overlay stores only modifications (memory efficient)
-  - Reads fall through to parent (shared observer graph)
-  - Fork-local state (continuations, engine queue/timers) doesn't fall back
-  - Bindings are merged (child overrides parent)
-  - Process-id auto-increments for Elle compatibility"
+(defn- construct-fork-context
+  "Construct the child under the caller-selected HOST construction observer."
   [parent-ctx & {:keys [state-updates bindings metadata process-id mode snapshots checkpoints convergent-fork executor
                         forkable-signals forkable-components fork-observer]
                  :or {state-updates {}
@@ -603,11 +548,30 @@
          (reduce
           (fn [ret component-id]
             (if (contains? parent-components component-id)
-              (assoc! ret component-id
-                      (rtp/fork-value
-                       (get parent-components component-id)
-                       fork-id
-                       {:fork :component :mode mode}))
+              (let [source (get parent-components component-id)
+                    notify! (fn [event]
+                              (when fork-observer
+                                (fork-observer (assoc event :component/id component-id :source source))))]
+                (notify! {:phase :component-before})
+                (let [child (try
+                              (rtp/fork-value source fork-id {:fork :component :mode mode})
+                              (catch #?(:clj Throwable :cljs :default) error
+                                (notify! {:phase :component-failure
+                                          :cleanup (when (satisfies? component/PComponentForkRecovery source)
+                                                     (try (component/failed-fork-cleanup source error)
+                                                          (catch #?(:clj Throwable :cljs :default) recovery-error
+                                                            ;; Preserve the original exception: it may be
+                                                            ;; the only owner of an unpublished target.
+                                                            (throw (ex-info "Component fork recovery classification failed"
+                                                                            {:type ::component-recovery-failed
+                                                                             :fork-error error
+                                                                             :recovery-error recovery-error}
+                                                                            error)))))})
+                                (throw error)))]
+                  ;; The owner acknowledges the returned child before any
+                  ;; observer, descriptor or runtime registration can fail.
+                  (notify! {:phase :component-value :value child})
+                  (assoc! ret component-id child)))
               ret))
           (transient {})
           component-ids))
@@ -640,7 +604,8 @@
         parent-view-backend
         (if (= :frozen mode)
           (backend/create-immutable-backend
-           (backend/backend-deref (:backend parent-ctx))
+           (apply dissoc (backend/backend-deref (:backend parent-ctx))
+                  backend/non-inherited-paths)
            {:source-fork-id (:fork-id parent-ctx)
             :fork-mode :frozen})
           (:backend parent-ctx))
@@ -742,6 +707,111 @@
         (when fork-observer (fork-observer {:phase :activation :context fork}))
         (simple/trigger-drain! fork (:executor fork)))
       fork)))
+
+(defn fork-context
+  "Create a forked execution context from parent.
+
+  Forking creates a new context with:
+  - Overlay backend (memory efficient - stores only modifications)
+  - Same executor (shared for now)
+  - Inherited bindings (can be overridden)
+  - New fork-id
+  - Reference to parent context
+  - Auto-incremented process-id for Elle compatibility (if parent has :process-id)
+
+  Options:
+    :state-updates - Map of initial overlay state (optional)
+                     These values will be written to the overlay immediately.
+                     An entity under a shared key (`{:nodes {id node}}`) is a
+                     whole entity: it replaces the parent's, it is not merged
+                     field by field. (A following fork happens to read a
+                     field the entity lacks through from the parent; a
+                     frozen fork, once it owns the map, does not.)
+    :bindings - Fork-local configuration (merged with parent bindings)
+                Map of keys to values that spins can read via (:bindings *execution-context*)
+    :metadata - Fork metadata (default: parent metadata with updated process-id/depth)
+    :process-id - Override auto-assigned process-id (default: parent + 1)
+    :executor - Executor for the fork (default: share the parent's executor)
+    :checkpoints - Map of signal ids to opaque physical checkpoint origins.
+                   The host bridge validates the complete request before entry;
+                   the engine passes {:fork :checkpoint :checkpoint origin}.
+    :mode - :following (default), where untouched state reads through to the
+            live parent, or :frozen, where untouched state reads from a
+            materialized fork-time view. Both modes remain copy-on-write.
+
+  Returns: New ExecutionContext with overlay backend
+
+  Example:
+    ;; Fork with initial state modifications (a whole node, see above)
+    (def fork-1 (fork-context parent-ctx
+                  :state-updates {:nodes {sig-1 (assoc sig-1-node :snapshot 99)}}
+                  :bindings {:http-client mock-client
+                             :random-seed 12345}
+                  :metadata {:particle-id 1}))
+
+    ;; Spins can access fork-local config:
+    (spin
+      (let [client (:http-client (:bindings *execution-context*))]
+        (http-get client \"http://example.com\")))
+
+    ;; Process-id is automatically assigned for Elle:
+    (def sim (create-simulation-context))  ; process-id 0
+    (def fork (fork-context sim))          ; process-id 1
+    (def fork2 (fork-context fork))        ; process-id 2
+
+  Properties:
+  - :following fork creation is O(1) with OverlayBackend
+  - :frozen materializes the parent view once, then writes copy-on-write
+  - Overlay stores only modifications (memory efficient)
+  - Reads fall through to parent (shared observer graph)
+  - Fork-local state (continuations, engine queue/timers) doesn't fall back
+  - Bindings are merged (child overrides parent)
+  - Process-id auto-increments for Elle compatibility
+
+   HOST construction ownership: :fork-owner shares an existing construction
+   owner with Yggdrasil. Direct forks acquire that same owner when components
+   require retirement/recovery. Failed cleanup retains :construction/owner in
+   the thrown HOST exception for explicit retry, never semantic world state.
+   Published components belong to the child, not to its constructor."
+  [parent-ctx & {:keys [fork-owner fork-observer forkable-components] :as opts}]
+  (let [ids (or forkable-components (rtp/get-state parent-ctx [:world/forkable-components]))
+        ;; A component may return a different implementation from fork-value;
+        ;; its source protocol set cannot predict the child's cleanup needs.
+        needs-owner? (seq ids)
+        owner (or fork-owner (when needs-owner? (construction/create {})))
+        owned? (and owner (nil? fork-owner))
+        observe! (if owner
+                   (fn [event]
+                     (when (#{:before :branch :value :context :activation
+                              :component-before :component-value :component-failure} (:phase event))
+                       (construction/observe! owner event))
+                     (when fork-observer
+                       (try (fork-observer event)
+                            (catch #?(:clj Throwable :cljs :default) error
+                              ;; The observer refused before the constructor
+                              ;; ran, so this attempt acquired no child.
+                              (when (= :component-before (:phase event))
+                                (construction/observe! owner (assoc event :phase :component-failure)))
+                              (throw error)))))
+                   fork-observer)]
+    (try
+      (let [child (apply construct-fork-context parent-ctx
+                         (mapcat identity (assoc (dissoc opts :fork-owner) :fork-observer observe!)))]
+        (when owned? (construction/transfer! owner))
+        child)
+      (catch #?(:clj Throwable :cljs :default) error
+        (when owned?
+          (construction/failed! owner error)
+          (try
+            (construction/dispose! owner {:sync? true})
+            (catch #?(:clj Throwable :cljs :default) cleanup-error
+              (throw (ex-info "Execution-context fork failed with retained component ownership"
+                              {:type ::construction-incomplete
+                               :construction/owner owner
+                               :construction/info (construction/info owner)
+                               :cleanup-error cleanup-error}
+                              error)))))
+        (throw error)))))
 
 ;; =============================================================================
 ;; Accessors
@@ -934,7 +1004,7 @@
                         state)
 
         ;; Remove pending events if requested
-        final-state (cond-> cleaned-state
+        final-state (cond-> (apply dissoc cleaned-state backend/non-inherited-paths)
                       (not include-pending?) (assoc :engine/pending [])
                       ;; Components are live, process-local realizations. A
                       ;; portable snapshot keeps their durable substrates and

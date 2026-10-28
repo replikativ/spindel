@@ -2050,11 +2050,51 @@
                                       subs)))))))
   true)
 
+(defn- remove-spin-indexes
+  "Drop the auxiliary indexes of a reclaimed spin. Called only when its node
+  is removed, never on dependency clearing or body re-entry. A keyed container
+  also releases the child handles it registered for its last run, unless
+  another keyed container still holds their IDs."
+  [state spin-id]
+  (let [addressing (:addressing state)
+        heads (:chain-heads addressing)
+        occurrences (:occurrences addressing)
+        heads? (contains? heads spin-id)
+        occurrences? (contains? occurrences spin-id)
+        keyed (:keyed state)
+        child-ids (:spin-ids (get keyed spin-id))
+        registry (:keyed/spins state)
+        registry (if (seq child-ids)
+                   (let [held (into #{} (mapcat (comp :spin-ids val)) (dissoc keyed spin-id))]
+                     (reduce dissoc registry (set/difference child-ids held)))
+                   registry)]
+    ;; Copy the addressing header once. A lone row needs only an assoc;
+    ;; use a transaction-local transient when both tables change.
+    (cond-> state
+      (or heads? occurrences?)
+      (assoc :addressing
+             (cond
+               (and heads? occurrences?)
+               (persistent! (-> (transient addressing)
+                                (assoc! :chain-heads (dissoc heads spin-id))
+                                (assoc! :occurrences (dissoc occurrences spin-id))))
+               heads? (assoc addressing :chain-heads (dissoc heads spin-id))
+               :else (assoc addressing :occurrences (dissoc occurrences spin-id))))
+      (contains? keyed spin-id)
+      (assoc :keyed (dissoc keyed spin-id))
+      (or (not (identical? registry (:keyed/spins state)))
+          (contains? registry spin-id))
+      (assoc :keyed/spins (dissoc registry spin-id))
+      (contains? (:engine/spawned state) spin-id)
+      (assoc :engine/spawned (dissoc (:engine/spawned state) spin-id))
+      (contains? (:engine/reuse-barriers state) spin-id)
+      (assoc :engine/reuse-barriers (disj (:engine/reuse-barriers state) spin-id)))))
+
 (defn full-cleanup-spin!
   "Remove ALL runtime state for a spin atomically.
 
   Unlike clear-deps! which only clears deps/continuations/subscriptions,
-  this removes the spin node itself and all 8+ state locations.
+  this removes the spin node itself and its auxiliary indexes.
 
   Used by GC cleanup when a spin is safe to fully remove (no observers).
 
@@ -2078,7 +2118,7 @@
   ;; skipped by dispatch.
    (rtp/swap-state! context []
                     (fn [state]
-                      (let [node (get-in state [:nodes spin-id])
+                      (let [node (get (:nodes state) spin-id)
                             deps (when node (nodes/get-deps node))
                             signal-deps (into #{} (filter #(local? :nodes %)) (:signals deps #{}))
                             spin-deps (into #{} (filter #(local? :nodes %)) (:spins deps #{}))]
@@ -2090,33 +2130,37 @@
                                              signal-deps spin-deps
                                              #{} #{}
                                              :skip)
-            ;; 3. Remove the spin node itself
-                            (update :nodes dissoc spin-id)
-            ;; 4. Remove metadata
-                            (update :spins-meta dissoc spin-id)
-            ;; 5. Remove continuations (both kinds)
-                            (update :track-subscriptions dissoc spin-id)
-                            (update :await-conts dissoc spin-id)
+            ;; 3. Remove the spin node and its auxiliary indexes. Addressing
+            ;; survives completion/re-entry, but must not outlive the node.
+                            (remove-spin-indexes spin-id)
+                            (as-> s
+                                  (reduce (fn [s table]
+                                            (let [rows (get s table)]
+                                              (if (contains? rows spin-id)
+                                                (assoc s table (dissoc rows spin-id))
+                                                s)))
+                                          s [:nodes :spins-meta :track-subscriptions :await-conts
+                                             :pending-callbacks :run-callbacks :spin-tracking]))
                             (update :engine/retired-conts
                                     (fn [retired]
                                       (into {}
                                             (remove (fn [[[owner-id _] _]]
                                                       (= owner-id spin-id)))
                                             retired)))
-            ;; 6. Remove pending callbacks
-                            (update :pending-callbacks dissoc spin-id)
-                            (update :run-callbacks dissoc spin-id)
-            ;; 7. Remove tracking data
-                            (update :spin-tracking dissoc spin-id)
-            ;; 9. Clean subscriptions (remove spin-id from all event keys)
+            ;; Reverse edges can outlive their conts, and generation cleanup
+            ;; can leave empty buckets. Until these have a complete owner
+            ;; index, scan all keys but copy only changed entries.
                             (update :subscriptions
                                     (fn [subs]
-                                      (when subs
-                                        (persistent!
-                                         (reduce-kv (fn [acc ek m]
-                                                      (let [m' (dissoc m spin-id)]
-                                                        (if (seq m') (assoc! acc ek m') acc)))
-                                                    (transient {}) subs)))))
+                                      (reduce-kv
+                                       (fn [acc ek m]
+                                         (if (contains? m spin-id)
+                                           (let [m' (dissoc m spin-id)]
+                                             (if (pos? (count m'))
+                                               (assoc acc ek m')
+                                               (dissoc acc ek)))
+                                           (if (pos? (count m)) acc (dissoc acc ek))))
+                                       subs subs)))
             ;; Note: await-parent relations live on :nodes :observers
             ;; now; signal observers (above) and the :subscriptions clean
             ;; (above) cover those. No separate :await-dependents map.
@@ -2442,7 +2486,7 @@
                                       (into {} (remove (fn [[[owner-id _] _]] (contains? dead owner-id)))
                                             retired)))))
                 state (if (seq reap)
-                        (-> state
+                        (-> (reduce remove-spin-indexes state reap)
                             (update :nodes #(reduce dissoc % reap))
                             (update :spins-meta #(reduce dissoc % reap)))
                         state)]
@@ -3262,57 +3306,22 @@
      gen)))
 
 (defn ^:no-doc try-claim-execution!
-  "Atomically try to claim execution of a spin.
-
-  Uses atomic swap to check cached/running? and set running? in one operation.
-  If already running OR already cached (clean), returns false without modifying state.
-  If not running and not cached, atomically sets running?=true and returns true.
-
-  This is CRITICAL for preventing duplicate execution when multiple
-  :spin-execution events are enqueued for the same spin. The cache check
-  must be atomic with the claim to prevent the race where thread A checks
-  cache, thread B completes and caches, then thread A claims and re-executes.
-
-  Args:
-    context - context record (implements PState protocol)
-    spin-id - ID of spin to claim
-
-  Returns: true if claimed (proceed to execute)
-           false if already running/cached (skip execution or use cached value)"
+  "Claim an execution event unless the spin is clean-cached or already live.
+  A failed claim is read-only, including on an inherited overlay node."
   [context spin-id]
-  (let [claimed? (atom false)]
-    (rtp/swap-state! context [:nodes spin-id]
-                     (fn [node]
-                       (if node
-                         (let [cached (nodes/get-value node)
-                               is-clean? (not (nodes/dirty? node))]
-                           (cond
-              ;; Already has clean cached result - don't claim
-                             (and cached is-clean?)
-                             (do (reset! claimed? false)
-                                 (log/trace :claim/failed-already-cached {:spin-id spin-id})
-                                 node)
-
-              ;; Already running - don't claim. Unless that run is stale
-              ;; (`invalidate-node`): its result will not be certified, so
-              ;; joining it would hand this caller an invalid value — start
-              ;; a fresh run instead. Its prologue cancels the stale run and
-              ;; hands that run's invoker callbacks to the new one
-              ;; (`mark-running!`), so no caller is stranded.
-                             (and (:running? node) (not (stale-run? node)))
-                             (do (reset! claimed? false)
-                                 (log/trace :claim/failed-already-running {:spin-id spin-id})
-                                 node)
-
-              ;; Not running and not cached - claim it
-                             :else
-                             (do (reset! claimed? true)
-                                 (log/trace :claim/success-from-existing {:spin-id spin-id})
-                                 (assoc node :running? true))))
-          ;; No node - create and claim
-                         (do (reset! claimed? true)
-                             (log/trace :claim/success-new-node {:spin-id spin-id})
-                             (nodes/->spin-node nil :clean false true #{} {} nil #{})))))
+  (let [claimed? (volatile! false)]
+    (rtp/swap-state! context []
+                     (fn [state]
+                       (vreset! claimed? false)
+                       (let [node (get-in state [:nodes spin-id])]
+                         (if (or (and (:result node) (not (nodes/dirty? node)))
+                                 (and (:running? node) (not (stale-run? node))))
+                           state
+                           (do
+                             (vreset! claimed? true)
+                             (assoc-in state [:nodes spin-id]
+                                       (assoc (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
+                                              :running? true :run-world (:fork-id context))))))))
     @claimed?))
 
 (defn ^:no-doc add-pending-callback!
@@ -3484,6 +3493,44 @@
   (and (some? result)
        (or (not (nodes/dirty? child)) (cancelled-result? result))))
 
+(defn- batch-fresh? [batch spin-id]
+  (or (nil? batch) (contains? @(:processed batch) spin-id)))
+
+(defn ^:no-doc decide-await!
+  "After registration, choose a delivery route or claim a new body.
+  Only a current, clean run owned by this world can be joined. A ready
+  result is revalidated by the continuation arbiter; unready results go
+  through its refresh claim. Non-start outcomes never copy a node."
+  [context spin-id]
+  (let [decision (volatile! nil)]
+    (rtp/swap-state! context []
+                     (fn [state]
+                       (let [node (get-in state [:nodes spin-id])
+                             result (:result node)
+                             action (cond
+                                      (and (await-result-ready? node result)
+                                           (or (cancelled-result? result)
+                                               (batch-fresh? (:engine/current-batch state) spin-id)))
+                                      :ready
+
+                                      (and (:running? node)
+                                           (= (:fork-id context) (:run-world node))
+                                           (not (stale-run? node))
+                                           (not (nodes/dirty? node)))
+                                      :join
+
+                                      (and node (nodes/dirty? node)) :refresh
+                                      :else :start)]
+                         (vreset! decision action)
+                         (if (= :start action)
+                           ;; Reserve local ownership before the body prologue.
+                           ;; Another local registration can join this start.
+                           (assoc-in state [:nodes spin-id]
+                                     (assoc (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
+                                            :running? true :run-world (:fork-id context)))
+                           state))))
+    @decision))
+
 (defn- earliest-affected-await
   "Choose the first invalid prefix of a body slice, in this world's view.
   An inherited in-flight claim has not delivered its captured suffix here."
@@ -3531,10 +3578,15 @@
   One-shot/external awaits are detached and returned to exactly one caller.
   Reactive awaits remain registered. Options:
 
-  - `:result` — the child `Result` this resume delivers (the returned cont's
-    `:on-resume` yields exactly it). A reactive cont records it
-    (`::delivered`). Queued body awaits read the selected child's Result in
-    the claim transaction. A second claim for the identical Result fails: the same completion reaches a parked await at most once, whether
+  - `:result` — the produced `Result` for a synchronous body completion or
+    a non-body continuation. Queued body awaits select the child's current
+    Result here. An inline body claim without a supplied Result selects
+    and revalidates the current cache too. A synchronous production can
+    finish in a fork on this stack; keep its supplied wrapper, as before.
+    The returned
+    cont's `:on-resume` yields the validated wrapper, recorded as
+    `::delivered`. A second claim for the identical Result fails: the same
+    completion reaches a parked await at most once, whether
     inline or through its queued `:spin-completion`. A re-completion caches a
     new Result and is delivered again (reactive re-fire).
   - `:registration` — the `:registration` token of the cont the caller
@@ -3574,12 +3626,18 @@
                                   id (:id cont)
                                   child-id (second (:event-key cont))
                                   child (when (:body-slice? cont) (get-in rt-state [:nodes child-id]))
-                                  ;; Dispatch may have sampled an older wrapper.
-                                  ;; Select queued body results in the same world
-                                  ;; snapshot as prefix and readiness validation.
-                                  result (if (and (:body-slice? cont) (not inline?))
-                                           (:result child)
-                                           result)]
+                                  ;; Select cached body results in this snapshot.
+                                  ;; A supplied synchronous production has already
+                                  ;; been certified by its completion callback.
+                                  cache-read? (and (:body-slice? cont)
+                                                   (or (not inline?) (nil? result)))
+                                  result (if cache-read? (:result child) result)
+                                  batch-stale? (and inline? cache-read?
+                                                    (not (cancelled-result? result))
+                                                    (not (batch-fresh? (:engine/current-batch rt-state) child-id)))
+                                  ready? (or (not (:body-slice? cont))
+                                             (and (await-result-ready? child result)
+                                                  (not batch-stale?)))]
                               (cond
                                 ;; A duplicate later completion may be the only
                                 ;; wakeup for an affected prefix in a frozen fork.
@@ -3587,7 +3645,7 @@
                                 ;; requested child are fresh in this world.
                                 (and (nil? earlier)
                                      (or (not (:body-slice? requested))
-                                         (await-result-ready? child result))
+                                         ready?)
                                      (= :await-reactive (:kind requested))
                                      (not (::refresh? requested))
                                      (not (::retry? requested))
@@ -3603,7 +3661,15 @@
                                 ;; not have inherited any dispatch for its child.
                                 ;; Keep refresh evidence until delivery, including
                                 ;; when recomputation reuses the exact Result.
-                                (and (:body-slice? cont) (not (await-result-ready? child result)))
+                                ;; A batch refresh may still hold the prior clean
+                                ;; cache. Only its local current run can wake us.
+                                (and batch-stale? (:running? child)
+                                     (= (:fork-id context) (:run-world child))
+                                     (not (stale-run? child))
+                                     (not (nodes/dirty? child)))
+                                rt-state
+
+                                (and (:body-slice? cont) (not ready?))
                                 (if (and (= (:fork-id context) (:world (::refresh? cont)))
                                          (:scheduled? (::refresh? cont)))
                                   rt-state
@@ -3613,11 +3679,14 @@
                                                   context spin-id id (:id refresh) child-id))]
                                     (vreset! scheduled? true)
                                     (-> rt-state
-                                        ;; A copied in-flight run belongs to its
-                                        ;; source world. Its fork-local execution
-                                        ;; must not merely join that absent run.
-                                        (cond-> (and (:running? child)
-                                                     (not= (:fork-id context) (:run-world child)))
+                                        ;; Foreign runs need local re-entry. An
+                                        ;; inline await also refreshes a running
+                                        ;; protocol-dirty child; an old batch
+                                        ;; cache must not win the event claim.
+                                        (cond-> (or batch-stale?
+                                                    (and (:running? child)
+                                                         (or inline?
+                                                             (not= (:fork-id context) (:run-world child)))))
                                           (update-in [:nodes child-id] invalidate-node))
                                         (assoc-in [:await-conts spin-id id ::refresh?] refresh)
                                         (update :engine/pending conj

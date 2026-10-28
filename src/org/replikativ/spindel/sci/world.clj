@@ -10,6 +10,22 @@
   component/PWorldComponent
   (realization [this] this)
 
+  component/PComponentRetirement
+  (retire-component! [_]
+    (sci/retire! context))
+
+  component/PComponentForkRecovery
+  (failed-fork-cleanup [_ error]
+    (when (sci/fork-recovery? error)
+      ;; This receipt is HOST construction state, never a world component.
+      (let [latest (volatile! error)]
+        (reify component/PComponentRetirement
+          (retire-component! [_]
+            (try (sci/recover-fork! @latest)
+                 (catch Throwable failure
+                   (vreset! latest failure)
+                   (throw failure))))))))
+
   rtp/PForkable
   (fork-value [_ _fork-id _directive]
     (->InterpreterWorld (sci/fork context))))
@@ -23,6 +39,47 @@
   "Resolve interpreter `ref` in the currently bound execution context."
   [ref]
   (:context (component/resolve ref)))
+
+(defn retire-in!
+  "Release the exact interpreter owned in `runtime`, then remove its lookup.
+
+   HOST-only: the caller must fence new use/publication and join actual work,
+   including callbacks and parked computations, before calling. Snapshot
+   quiescence or stopping the drain does not supply that lifetime fence.
+   Do not call on the drain or inside a backend updater.
+
+   `expected` must be identical to the selected SCI context. A failed retirement
+   retains that selection for retry. Missing entries refuse: lookup absence
+   is not a cleanup acknowledgment. Old contexts retained across replacement
+   remain owned by the caller; this only releases the selected context.
+   Related worlds and deliberately shared components are unaffected."
+  [runtime ref expected]
+  (when-not (component/component-ref? ref)
+    (throw (ex-info "Expected an interpreter component ref"
+                    {:type ::invalid-retirement})))
+  (let [id (:id ref)
+        selected (get (ec/get-state-in runtime [:world/components]) id)]
+    (when-not (instance? InterpreterWorld selected)
+      (throw (ex-info "Component is not an SCI interpreter in this world"
+                      {:type ::not-interpreter :component/id id})))
+    (when-not (identical? expected (:context selected))
+      (throw (ex-info "SCI interpreter changed before retirement"
+                      {:type ::stale-context :component/id id})))
+    ;; SCI cleanup can block/throw: never run it inside a retried updater.
+    (component/retire-component! selected)
+    (binding [ec/*execution-context* runtime]
+      (ec/swap-state!
+       []
+       (fn [state]
+         ;; A stale release must never remove a replacement. This check does
+         ;; not replace the caller's admission/publication exclusion.
+         (when-not (identical? selected (get-in state [:world/components id]))
+           (throw (ex-info "SCI interpreter changed during retirement"
+                           {:type ::stale-context :component/id id})))
+         (-> state
+             (update :world/components dissoc id)
+             (update :world/forkable-components disj id))))))
+  nil)
 
 (defn replace-context!
   "Atomically replace this world's interpreter under its existing stable ref.

@@ -413,6 +413,7 @@
                (a #(reset! ra %) #(reset! ra [:error %]))
                (settle! c)
                (is (= ::none @ra) "A parked on C's first run")
+               (ec/swap-state! [:nodes (spin-core/spin-id ch)] simple/invalidate-node)
                (b #(reset! rb %) #(reset! rb [:error %]))
                (settle! c)
                (is (= :fast @rb) "B got the superseding run's value inline")

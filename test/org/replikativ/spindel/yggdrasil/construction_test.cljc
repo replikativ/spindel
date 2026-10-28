@@ -200,3 +200,42 @@
     (c/dispose! owner sync-opts)
     (is (empty? @live))
     (is (= [:native] @calls))))
+
+(deftest component-cleanup-is-retryable-and-portable-without-native-reconciliation
+  (let [owner (c/create {}) calls (atom 0) fail? (atom true)
+        child (reify org.replikativ.spindel.engine.component/PComponentRetirement
+                (retire-component! [_]
+                  (swap! calls inc)
+                  (when @fail? (throw (ex-info "Before cleanup ACK" {})))))
+        result (atom nil)]
+    (c/observe! owner {:phase :component-before :component/id :sci :source :parent})
+    (c/observe! owner {:phase :component-value :component/id :sci :source :parent :value child})
+    (c/failed! owner (ex-info "Later constructor failed" {}))
+    ((c/dispose! owner {:sync? false})
+     #(reset! result [:ok %]) #(reset! result [:error (:type (ex-data %))]))
+    (is (= [:error ::c/incomplete] @result))
+    (is (= :owned (:phase (first (:receipts (c/info owner))))))
+    (reset! fail? false)
+    ((c/dispose! owner {:sync? false})
+     #(reset! result [:ok %]) #(reset! result [:error (:type (ex-data %))]))
+    (is (= [:ok nil] @result))
+    (is (= 2 @calls))
+    (is (= :closed (:status (c/info owner))))))
+
+(deftest unresolved-component-cleanup-preserves-earlier-native-dependencies
+  (let [owner (c/create {1 "storage"}) live (atom #{}) calls (atom []) fail? (atom true)
+        child (reify org.replikativ.spindel.engine.component/PComponentRetirement
+                (retire-component! [_]
+                  (swap! calls conj :heap)
+                  (when @fail? (throw (ex-info "Heap cleanup failed" {})))))]
+    (acquire! owner 1 :storage live calls (atom false))
+    (c/observe! owner {:phase :component-before :component/id :sci :source :parent})
+    (c/observe! owner {:phase :component-value :component/id :sci :source :parent :value child})
+    (c/failed! owner (ex-info "Later initialization refused" {}))
+    (is (= ::c/incomplete (error-type #(c/dispose! owner sync-opts))))
+    (is (= [:heap] @calls))
+    (is (= #{:storage} @live))
+    (reset! fail? false)
+    (c/dispose! owner sync-opts)
+    (is (= [:heap :heap :storage] @calls))
+    (is (empty? @live))))

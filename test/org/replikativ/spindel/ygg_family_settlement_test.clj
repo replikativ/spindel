@@ -9,8 +9,15 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.core :as sp]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [clojure.set :as set]
+            [clojure.java.io :as io]
+            [clojure.java.shell :refer [sh]]
+            [yggdrasil.adapters.git :as git]
+            [yggdrasil.protocols :as yp]
             [yggdrasil.convergent.gset :as g]))
 
 (defn- mem-gset [id]
@@ -38,10 +45,17 @@
   throw before the next one succeeds."
   [& [fail-stamps]]
   (let [journal (atom {:next 1 :numbers {}})
+        stamp-calls (atom 0)
+        realize-calls (atom 0)
+        observe-stamp (atom nil)
         failures (atom (or fail-stamps 0))]
     {:journal journal
+     :stamp-calls stamp-calls
+     :realize-calls realize-calls
+     :observe-stamp observe-stamp
      :policy
      {:grade :linear
+      :realize (fn [_] (swap! realize-calls inc))
       :intents (fn [{:keys [system-id child-ctx parent-ctx]}]
                  (for [d (set/difference (elements child-ctx system-id)
                                          (elements parent-ctx system-id))]
@@ -51,6 +65,8 @@
                                 (set/difference (elements parent-ctx system-id)
                                                 (elements child-ctx system-id))))
       :stamp (fn [{:keys [system-id parent-ctx final? contributions]}]
+               (swap! stamp-calls inc)
+               (when-let [observe @observe-stamp] (observe))
                (when (pos? @failures)
                  (swap! failures dec)
                  (throw (ex-info "writer unavailable" {})))
@@ -65,7 +81,8 @@
                                       (if (contains? (:numbers j) (prov d))
                                         j
                                         (-> j (assoc-in [:numbers (prov d)] (:next j)) (update :next inc))))
-                                    j drafts))))))}}))
+                                    j drafts)))))
+               nil)}}))
 
 (defmacro ^:private with-book [[book & [fails]] & body]
   `(let [ctx# (sp/create-execution-context)
@@ -141,11 +158,19 @@
     (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)]
       (add! a "book" (draft :a-1 1 :x))
       (add! b "book" (draft :b-1 2 :y))
-      (is (= ::ygg/family-stamp-failed (thrown-type #(ygg/settle-family! [a b]))))
+      (is (= ::ygg/family-stamp-failed
+             (thrown-type #(ygg/settle-family! [a b] {:operation-id :reconciled-stamp}))))
       (is (= :failed (:status (ygg/copy-family a))))
+      (is (= [:incomplete :incomplete]
+             (mapv #(-> % ygg/fork-disposition :status) [a b])))
+      (is (= :incomplete (:fork/status (ygg/copied-descriptor a (ygg/copied-from a (:fork-id a))))))
       (is (= {} (:numbers @(:journal book))))
+      (is (= ::ygg/copy-family-settled (thrown-type #(ygg/merge-fork! a))))
+      (is (= ::ygg/copy-family-settled
+             (thrown-type #(ygg/settle-family! [a] {:operation-id :different}))))
       (ygg/settle-family! [a])
       (is (= :merged (:status (ygg/copy-family a))))
+      (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) [a b])))
       (is (= {:a-1 1 :b-1 2} (:numbers @(:journal book))))
       (ygg/settle-family! [a])
       (is (= {:a-1 1 :b-1 2} (:numbers @(:journal book))) "idempotent"))))
@@ -203,14 +228,145 @@
       (is (= #{:w-1 :a-1} (set (map prov (elements "book"))))))))
 
 (deftest a-failed-single-stamp-is-retried
-  (with-book [book 1]
+  (with-book [book 2]
     (let [w (ygg/fork!)]
       (add! w "book" (draft :w-1 1 :x))
-      (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w))))
-      (is (= {} (:numbers @(:journal book))))
-      (is (= 1 (count (ygg/retry-stamps!))))
+      (let [error (try (ygg/merge-fork! w) nil
+                       (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+        (is (= ::ygg/stamp-failed (:type error)))
+        (is (= :incomplete (:status (ygg/fork-disposition w))))
+        (is (= {} (:numbers @(:journal book))))
+        (is (= ::ygg/stamp-failed (thrown-type #(ygg/retry-stamps!))))
+        (is (= :incomplete (:status (ygg/fork-disposition w))))
+        (is (= [(:pending error)] (ygg/retry-stamps!))))
+      (is (= :merged (:status (ygg/fork-disposition w))))
       (is (= {:w-1 1} (:numbers @(:journal book))))
       (is (= [] (ygg/retry-stamps!)) "nothing pending"))))
+
+(deftest stamp-recovery-uses-the-original-operation-and-defers-the-callback
+  (with-book [book 1]
+    (let [w (ygg/fork!)
+          callbacks (atom [])
+          phases (atom [])
+          opts {:operation-id :single-stamp
+                :on-merge #(swap! callbacks conj %)}]
+      (reset! (:observe-stamp book)
+              #(swap! phases conj (select-keys (ygg/fork-disposition w) [:status :phase])))
+      (add! w "book" (draft :w-1 1 :x))
+      (add! w "kb" :ordinary-change)
+      (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w opts))))
+      (is (= {:status :incomplete :phase :mutating :operation-id :single-stamp}
+             (select-keys (ygg/fork-disposition w) [:status :phase :operation-id])))
+      (is (empty? @callbacks))
+      (is (= ::ygg/fork-not-open (thrown-type #(ygg/discard-fork! w))))
+      (is (= ::ygg/fork-not-open (thrown-type #(ygg/transfer-fork! w :other))))
+      (is (= ::ygg/fork-not-open
+             (thrown-type #(ygg/merge-fork! w {:operation-id :different}))))
+      (is (= ::ygg/fork-not-open (thrown-type #(ygg/merge-fork! w))))
+      (let [result (ygg/merge-fork! w {:operation-id :single-stamp})]
+        (is (= :merged (:status (ygg/fork-disposition w))))
+        (is (= result (ygg/merge-fork! w)))
+        (is (= 1 (count @callbacks)))
+        (is (= #{:ordinary-change} (elements "kb")))
+        (is (= {:w-1 1} (:numbers @(:journal book))))
+        (is (= 2 @(:stamp-calls book)))
+        (is (= 1 @(:realize-calls book)) "completed hooks are not replayed")
+        (is (= [{:status :settling :phase :mutating}
+                {:status :settling :phase :mutating}] @phases))
+        (is (= [] (ygg/retry-stamps!)))))))
+
+(deftest nested-copy-stamp-failure-keeps-every-capability-incomplete
+  (with-book [book 1]
+    (let [w (ygg/fork!)
+          _ (add! w "book" (draft :w-1 1 :x))
+          [a loser] (ygg/copy-fork! w 2)
+          [winner] (ygg/copy-fork! a 1)
+          phases (atom [])
+          statuses #(mapv (fn [id] (:fork/status (ygg/copied-descriptor winner id)))
+                          [(:fork-id a) (:fork-id w)])]
+      (add! winner "book" (draft :winner-1 2 :y))
+      (reset! (:observe-stamp book) #(swap! phases conj (statuses)))
+      (is (= ::ygg/stamp-failed
+             (thrown-type #(ygg/merge-fork! winner {:operation-id :copy-stamp}))))
+      (is (= :incomplete (:status (ygg/fork-disposition winner))))
+      (is (= [:incomplete :incomplete] (statuses)))
+      (is (not= :merged (:status (ygg/copy-family winner))))
+      (is (= ::ygg/copy-family-settled (thrown-type #(ygg/settle-family! [winner]))))
+      (ygg/merge-fork! winner {:operation-id :copy-stamp})
+      (is (= :merged (:status (ygg/fork-disposition winner))))
+      (is (= [:merged :merged] (statuses)))
+      (is (= [[:settling :settling] [:settling :settling]] @phases))
+      (is (= {:w-1 1 :winner-1 2} (:numbers @(:journal book))))
+      (ygg/discard-fork! loser))))
+
+(deftest successful-stamp-precedes-terminal-and-runs-once
+  (with-book [book]
+    (let [w (ygg/fork!)
+          events (atom [])
+          opts {:on-merge (fn [_] (swap! events conj (:status (ygg/fork-disposition w))))}]
+      (add! w "book" (draft :w-1 1 :x))
+      (reset! (:observe-stamp book)
+              #(swap! events conj (select-keys (ygg/fork-disposition w) [:status :phase])))
+      (let [result (ygg/merge-fork! w opts)]
+        (is (= result (ygg/merge-fork! w opts)))
+        (is (contains? (:stamps result) "book"))
+        (is (nil? (get-in result [:stamps "book"])))
+        (is (= [{:status :settling :phase :mutating} :merged] @events))
+        (is (= 1 @(:stamp-calls book)))))))
+
+(deftest successful-stamp-steps-are-not-replayed-on-recovery
+  (with-book [book]
+    (let [other (toy-book 1)]
+      (ygg/register! (mem-gset "zzz") (:policy other))
+      (let [w (ygg/fork!)]
+        (add! w "book" (draft :first 1 :x))
+        (add! w "zzz" (draft :second 1 :y))
+        (is (= ::ygg/stamp-failed
+               (thrown-type #(ygg/merge-fork! w {:operation-id :two-stamps}))))
+        (is (= 1 @(:stamp-calls book)))
+        (ygg/merge-fork! w {:operation-id :two-stamps})
+        (is (= 1 @(:stamp-calls book)) "the successful system's witness is reused")
+        (is (= 2 @(:stamp-calls other)))
+        (is (= {:first 1} (:numbers @(:journal book))))
+        (is (= {:second 1} (:numbers @(:journal other))))))))
+
+(deftest a-partly-committed-stamp-retries-the-original-contributions
+  (let [ctx (sp/create-execution-context)
+        book (toy-book)
+        fail? (atom true)
+        seen (atom [])
+        policy (update (:policy book) :stamp
+                       (fn [stamp]
+                         (fn [args]
+                           (swap! seen conj (mapv :intent/id (mapcat :intents (:contributions args))))
+                           (let [result (stamp args)]
+                             (when (compare-and-set! fail? true false)
+                               (throw (ex-info "failed after committing" {})))
+                             result))))]
+    (sp/with-context ctx
+      (ygg/register! (mem-gset "book") policy)
+      (let [w (ygg/fork!)]
+        (add! w "book" (draft :w-1 1 :x))
+        (is (= ::ygg/stamp-failed
+               (thrown-type #(ygg/merge-fork! w {:operation-id :partial-stamp}))))
+        (is (= :incomplete (:status (ygg/fork-disposition w))))
+        (is (= {:w-1 1} (:numbers @(:journal book))))
+        (ygg/merge-fork! w {:operation-id :partial-stamp})
+        (is (= :merged (:status (ygg/fork-disposition w))))
+        (is (= [[:w-1] [:w-1]] @seen))
+        (is (= {:w-1 1} (:numbers @(:journal book))))))))
+
+(deftest checkpoint-stamp-retry-remains-available
+  (with-book [book 2]
+    (let [w (ygg/fork!)]
+      (add! w "book" (draft :w-1 1 :x))
+      (is (= ::ygg/stamp-failed (thrown-type #(ygg/checkpoint! w))))
+      (is (= :open (:status (ygg/fork-disposition w))))
+      (is (thrown? clojure.lang.ExceptionInfo (ygg/retry-stamps!)))
+      (is (= 1 (count (ygg/retry-stamps!))))
+      (is (= [] (ygg/retry-stamps!)))
+      (is (= {:w-1 1} (:numbers @(:journal book))))
+      (ygg/discard-fork! w))))
 
 (deftest a-settled-family-cannot-settle-again
   (with-book [book]
@@ -265,3 +421,348 @@
         (is (= [{:system "book" :key :line-2 :intent :w-2 :with :parent}] conflicts)
             "its conflicts are the parent's claims on their footprints"))
       (ygg/discard-fork! w))))
+
+(deftest family-recovery-authenticates-every-supplied-capability
+  (doseq [invalid [:stale-participant :transferred-loser :discarded-loser :open-loser]
+          explicit-id? [false true]]
+    (testing (str invalid ", explicit id: " explicit-id?)
+      (with-book [book 1]
+        (let [[a b loser] (ygg/copy-fork! (ygg/fork!) 3)
+              adopted (when (= invalid :stale-participant) (ygg/transfer-fork! a :adopted))
+              _ (when (= invalid :transferred-loser) (ygg/transfer-fork! loser :other))
+              _ (when (= invalid :discarded-loser) (ygg/discard-fork! loser))
+              participants [(or adopted a) b]
+              bad (if adopted a loser)
+              opts (if explicit-id? {:operation-id :authenticated} {})]
+          (is (= ::ygg/family-stamp-failed
+                 (thrown-type #(ygg/settle-family! participants {:operation-id :authenticated}))))
+          (is (some? (thrown-type #(ygg/settle-family! [(first participants) bad] opts))))
+          (is (= 1 @(:stamp-calls book)) "invalid callers cannot invoke the saved operation")
+          (is (= :failed (:status (ygg/copy-family b))))
+          (ygg/settle-family! [b] opts)
+          (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) participants))))))))
+
+(deftest pending-stamp-retries-belong-only-to-the-parent-world
+  (doseq [mode [:following :frozen]]
+    (with-book [book 1]
+      (let [parent ec/*execution-context*
+            w (ygg/fork!)
+            callbacks (atom 0)
+            opts {:operation-id :world-owned :on-merge (fn [_] (swap! callbacks inc))}]
+        (add! w "book" (draft :w-1 1 :x))
+        (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w opts))))
+        (let [frozen-base (atom nil)
+              create-immutable backend/create-immutable-backend
+              child (with-redefs [backend/create-immutable-backend
+                                  (fn [state metadata]
+                                    (reset! frozen-base state)
+                                    (create-immutable state metadata))]
+                      (ctx/fork-context parent :mode mode))
+              snapshot (ctx/snapshot-context parent :clean-in-flight? false)]
+          (when (= mode :frozen)
+            (is (map? @frozen-base))
+            (is (not (contains? @frozen-base :world/ephemeral))))
+          (is (empty? (rtp/get-state child [:world/ephemeral ::ygg/pending-stamps])))
+          (is (empty? (rtp/get-state snapshot [:world/ephemeral ::ygg/pending-stamps])))
+          ;; Whole-state materialization must not cache an executable parent entry.
+          (is (empty? (get (rtp/get-state child []) :world/ephemeral)))
+          (is (= [] (ygg/retry-stamps! child)))
+          (is (= :incomplete (:status (ygg/fork-disposition w))))
+          (is (= 0 @callbacks))
+          (ygg/merge-fork! w {:operation-id :world-owned})
+          (is (= 1 @callbacks))
+          (is (not (contains? @frozen-base :world/ephemeral))
+              "the captured frozen base cannot retain the parent's executable plan")
+          (is (= [] (ygg/retry-stamps! parent)))
+          (is (empty? (get (rtp/get-state child []) :world/ephemeral)))
+          (is (empty? (rtp/get-state snapshot [:world/ephemeral ::ygg/pending-stamps])))
+          (is (= [] (ygg/retry-stamps! (ctx/restore-snapshot snapshot :drain-events? false)))))))))
+
+(deftest failed-family-preparation-restores-state-and-discard-cleans-up
+  (with-book [book]
+    (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+          adopted (ygg/transfer-fork! a :adopted)
+          family (:family a)
+          before @family]
+      (is (= ::ygg/stale-fork-handle (thrown-type #(ygg/settle-family! [a b]))))
+      (is (= before @family) "read-only preparation failure leaves the family untouched")
+      (is (every? ygg/open-fork? [adopted b]))
+      (ygg/discard-fork! adopted)
+      (ygg/discard-fork! b)
+      (is (every? #(= :discarded (:settled %)) (vals (:nodes @family))))
+      (is (= :discarded (:status @family)))
+      (is (not-any? #(contains? @family %) [:resume :attempt-id :group-id :winners]))
+      (is (= 0 @(:stamp-calls book))))))
+
+(deftest concurrent-family-recovery-holds-one-operation-lease
+  (with-book [book 1]
+    (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+          entered (promise)
+          release (promise)]
+      (is (= ::ygg/family-stamp-failed
+             (thrown-type #(ygg/settle-family! [a b] {:operation-id :concurrent}))))
+      (reset! (:observe-stamp book)
+              #(do (deliver entered true) (deref release 10000 false)))
+      (let [recovery (future (ygg/settle-family! [a] {:operation-id :concurrent}))]
+        (try
+          (is (= true (deref entered 10000 :timeout)))
+          (is (= :merging (:status (ygg/copy-family b))))
+          (is (= ::ygg/copy-family-settled
+                 (thrown-type #(ygg/settle-family! [b] {:operation-id :concurrent}))))
+          (is (= 2 @(:stamp-calls book)))
+          (finally (deliver release true)))
+        (is (map? (deref recovery 10000 :timeout)))
+        (is (= [:merged :merged] (mapv #(-> % ygg/fork-disposition :status) [a b])))
+        (is (nil? (:resume @(:family a))))))))
+
+(deftest transfer-or-discard-racing-later-member-preparation-rolls-back
+  (doseq [action [:transfer :discard]]
+    (with-book [book]
+      (let [members (sort-by #(str (:fork-id %)) (ygg/copy-fork! (ygg/fork!) 2))
+            [a b] members
+            family (:family a)
+            before @family
+            authority (:authority a)
+            adopted (atom nil)
+            raced? (atom false)]
+        ;; Force the race after the first claim but before the later claim.
+        (add-watch authority ::race
+                   (fn [_ _ old new]
+                     (when (and (= :open (:status old)) (= :settling (:status new))
+                                (compare-and-set! raced? false true))
+                       (case action
+                         :transfer (reset! adopted (ygg/transfer-fork! b :racer))
+                         :discard (ygg/discard-fork! b)))))
+        (try
+          (is (some? (thrown-type #(ygg/settle-family! members))))
+          (is @raced?)
+          (is (ygg/open-fork? a) "earlier claims roll back before any substrate work")
+          (is (= :open (:status @family)))
+          (is (nil? (:resume @family)))
+          (is (nil? (:group-id @family)))
+          (is (= 0 @(:stamp-calls book)))
+          (when (= action :transfer)
+            (is (= before @family))
+            (is (ygg/open-fork? @adopted)))
+          (finally (remove-watch authority ::race)))
+        (is (nil? (thrown-type #(ygg/discard-fork! a))))
+        (when @adopted (is (nil? (thrown-type #(ygg/discard-fork! @adopted)))))
+        (is (= :discarded (:status @family)))
+        (is (nil? (:resume @family)))))))
+
+(deftest read-only-family-preflight-failure-rolls-back-all-claims
+  (with-book [book]
+    (let [[a b :as members] (ygg/copy-fork! (ygg/fork!) 2)
+          family (:family a)
+          before @family
+          internal (get-in before [:nodes (ygg/copied-from a (:fork-id a)) :internal])
+          handles [a b internal]
+          authorities (mapv #(deref (:authority %)) handles)]
+      (with-redefs [ygg/family-review
+                    (fn [_]
+                      (is (= [:settling :settling :settling]
+                             (mapv #(-> % ygg/fork-disposition :status) handles)))
+                      (is (nil? (:resume @family)))
+                      (throw (ex-info "read-only preflight failed" {:type ::preflight})))]
+        (is (= ::preflight (thrown-type #(ygg/settle-family! members)))))
+      (is (= before @family))
+      (is (= authorities (mapv #(deref (:authority %)) handles)))
+      (is (= 0 @(:stamp-calls book)))
+      (doseq [member members] (ygg/discard-fork! member))
+      (is (= :discarded (:status @family)))
+      (is (nil? (:resume @family))))))
+
+(deftest family-group-id-mints-stable-per-capability-operation-ids
+  (doseq [reconciled? [false true]]
+    (with-book [book 1]
+      (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+            internal (get-in @(:family a) [:nodes (ygg/copied-from a (:fork-id a)) :internal])
+            participants (if reconciled? [a b internal] [a internal])
+            settle #(if reconciled?
+                      (ygg/settle-family! [%] {:operation-id :group})
+                      (ygg/merge-fork! % {:operation-id :group}))]
+        (is (some? (thrown-type #(if reconciled?
+                                   (ygg/settle-family! [a b] {:operation-id :group})
+                                   (settle a)))))
+        (is (= :group (:group-id (ygg/copy-family a))))
+        (let [ids (mapv #(-> % ygg/fork-disposition :operation-id) participants)]
+          (is (= (count participants) (count (set ids))))
+          (is (= (mapv #(vector :group (:fork-id %)) participants) ids))
+          (settle a)
+          (is (= ids (mapv #(-> % ygg/fork-disposition :operation-id) participants)))
+          (is (every? #(= :merged (:status (ygg/fork-disposition %))) participants)))
+        (when-not reconciled? (ygg/discard-fork! b))))))
+
+(deftest partitioned-capability-stamp-recovery-stays-in-its-world-and-scope
+  (with-book [book 1]
+    (let [parent ec/*execution-context*
+          whole (ygg/fork!)
+          [ledger notes] (ygg/partition-fork! whole [{:systems #{"book"} :owner :ledger}
+                                                     {:systems #{"kb"} :owner :notes}])]
+      (add! whole "book" (draft :w-1 1 :x))
+      (add! whole "kb" :private-note)
+      (is (= ::ygg/stamp-failed
+             (thrown-type #(ygg/merge-fork! ledger {:operation-id :partition-stamp}))))
+      (is (= ::ygg/fork-not-open
+             (thrown-type #(ygg/merge-fork! whole {:operation-id :partition-stamp}))))
+      (is (= [] (ygg/retry-stamps! (ctx/fork-context parent :mode :frozen))))
+      (is (= :incomplete (:status (ygg/fork-disposition ledger))))
+      (is (ygg/open-fork? notes))
+      (is (= #{} (elements "kb")))
+      (ygg/merge-fork! ledger {:operation-id :partition-stamp})
+      (is (= :partition-stamp (:operation-id (ygg/fork-disposition ledger))))
+      (is (= {:w-1 1} (:numbers @(:journal book))))
+      (ygg/discard-fork! notes))))
+
+(deftest stamp-recovery-after-native-worktree-disposal-does-not-read-it-again
+  (let [directory (.toFile (java.nio.file.Files/createTempDirectory
+                            "spindel-a2-stamp-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        path (.getAbsolutePath directory)]
+    (try
+      (with-book [book 1]
+        (let [parent ec/*execution-context*
+              native (git/init! (str path "/repo") {:system-name "native"
+                                                    :worktrees-dir (str path "/worktrees")})
+              callbacks (atom 0)]
+          (yp/commit! native "basis")
+          (ygg/register! native)
+          (let [w (ygg/fork!)
+                worktree (ygg/with-fork w (yp/working-path (ygg/system "native")))]
+            (is (.exists (io/file worktree)))
+            (add! w "book" (draft :native-draft 1 :x))
+            (is (= ::ygg/stamp-failed
+                   (thrown-type #(ygg/merge-fork! w {:operation-id :native-stamp
+                                                     :on-merge (fn [_] (swap! callbacks inc))}))))
+            (is (not (.exists (io/file worktree))) "native disposal really removed the worktree")
+            (is (= [] (ygg/retry-stamps! (ctx/fork-context parent :mode :frozen))))
+            (is (= :incomplete (:status (ygg/fork-disposition w))))
+            (is (= 0 @callbacks))
+            (ygg/merge-fork! w {:operation-id :native-stamp})
+            (is (= :merged (:status (ygg/fork-disposition w))))
+            (is (= {:native-draft 1} (:numbers @(:journal book))))
+            (is (= 1 @callbacks))
+            (is (= 2 @(:stamp-calls book))))))
+      (finally (sh "rm" "-rf" path)))))
+
+(defn- outcome [f]
+  (try {:value (f)} (catch Throwable error {:error error})))
+
+(deftest failure-publication-includes-work-and-cannot-overwrite-a-completed-retry
+  (doseq [reconciled? [true false]
+          failures [1 2]]
+    (with-book [book failures]
+      (let [[a b] (ygg/copy-fork! (ygg/fork!) 2)
+            family (:family a)
+            published (promise)
+            release (promise)
+            paused? (atom false)
+            settle #(if reconciled?
+                      (ygg/settle-family! [a] {:operation-id :publication})
+                      (ygg/merge-fork! a {:operation-id :publication}))]
+        (add-watch family ::publication
+                   (fn [_ _ old new]
+                     (when (and (= :merging (:status old)) (= :failed (:status new))
+                                (compare-and-set! paused? false true))
+                       (deliver published new)
+                       (deref release 10000 :timeout))))
+        (let [initial (future (outcome settle))]
+          (try
+            (let [failed (deref published 10000 :timeout)]
+              (is (map? failed))
+              (is (fn? (:resume failed)))
+              (when (= failures 2)
+                (is (some? (:error (outcome settle))))
+                (is (= :failed (:status @family)))
+                (is (fn? (:resume @family))))
+              (is (nil? (:error (outcome settle))))
+              (is (= :merged (:status @family)))
+              (is (nil? (:resume @family)))
+              (is (not (realized? initial)) "retry completes before the failing caller unwinds"))
+            (finally
+              (deliver release true)
+              (remove-watch family ::publication)))
+          (is (some? (:error (deref initial 10000 {}))))
+          (is (= :merged (:status @family)))
+          (is (nil? (:resume @family)))
+          (is (= failures (dec @(:stamp-calls book))))
+          (is (= :merged (:status (ygg/fork-disposition a))))
+          (ygg/discard-fork! b))))))
+
+(deftest rollback-keeps-its-lease-until-authorities-are-released
+  (doseq [failures [0 1]
+          same-group? [false true]]
+    (with-book [book failures]
+      (let [[a loser] (ygg/copy-fork! (ygg/fork!) 2)
+            family (:family a)
+            authority (:authority a)
+            reopened (promise)
+            release (promise)
+            paused? (atom false)
+            fail? (atom true)
+            successor (atom nil)
+            old-attempt (atom nil)
+            group (if same-group? :old :successor)
+            original @#'ygg/merge-fork-context!
+            settle #(ygg/merge-fork! a {:operation-id group})]
+        (add-watch authority ::reopen
+                   (fn [_ _ old new]
+                     (when (and (:operation-id old) (nil? (:operation-id new))
+                                (= :open (:status new))
+                                (compare-and-set! paused? false true))
+                       (reset! old-attempt (:attempt-id @family))
+                       (deliver reopened true)
+                       (deref release 10000 :timeout))))
+        (add-watch family ::successor
+                   (fn [_ _ old new]
+                     (when (and (not= :open (:status old)) (= :open (:status new)))
+                       (reset! successor (outcome settle)))))
+        (try
+          (with-redefs-fn {#'ygg/merge-fork-context!
+                           (fn [handle opts]
+                             (if (compare-and-set! fail? true false)
+                               (throw (ex-info "read-only failure" {:type ::preflight}))
+                               (original handle opts)))}
+            (fn []
+              (let [initial (future (outcome #(ygg/merge-fork! a {:operation-id :old})))]
+                (try
+                  (is (= true (deref reopened 10000 :timeout)))
+                  (is (= ::ygg/copy-family-settled
+                         (:type (ex-data (:error (outcome settle))))))
+                  (is (= 0 @(:stamp-calls book)))
+                  (finally (deliver release true)))
+                (is (= ::preflight (:type (ex-data (:error (deref initial 10000 {})))))))))
+          (is (some? @successor))
+          (is (= (if (pos? failures) :failed :merged) (:status @family)))
+          (is (= group (:group-id @family)))
+          (is (not= @old-attempt (:attempt-id @family)))
+          (is (= (pos? failures) (some? (:error @successor))))
+          (is (nil? (:error (outcome settle))))
+          (is (= :merged (:status @family)))
+          (is (nil? (:resume @family)))
+          (finally
+            (deliver release true)
+            (remove-watch authority ::reopen)
+            (remove-watch family ::successor)))
+        (ygg/discard-fork! loser)))))
+
+(deftest winning-copy-callback-failure-keeps-the-family-terminal
+  (with-book [book]
+    (let [[winner loser] (ygg/copy-fork! (ygg/fork!) 2)
+          callbacks (atom 0)
+          opts {:operation-id :callback
+                :on-merge (fn [_]
+                            (swap! callbacks inc)
+                            (is (= :merged (:status (ygg/copy-family winner))))
+                            (throw (ex-info "callback failed" {:type ::callback})))}]
+      (is (= ::callback (thrown-type #(ygg/merge-fork! winner opts))))
+      (is (= :merged (:status (ygg/copy-family winner))))
+      (is (= {:status :merged :callback-status :failed}
+             (select-keys (ygg/fork-disposition winner) [:status :callback-status])))
+      (is (map? (ygg/merge-fork! winner opts)))
+      (is (= 1 @callbacks))
+      (is (= 1 @(:stamp-calls book)))
+      (ygg/discard-fork! loser)
+      (is (= :merged (:status (ygg/copy-family winner))))
+      (is (every? #(contains? #{:merged :discarded} (:settled %))
+                  (vals (:nodes @(:family winner)))))
+      (is (nil? (:resume @(:family winner)))))))

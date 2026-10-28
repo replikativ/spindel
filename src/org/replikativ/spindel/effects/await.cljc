@@ -156,16 +156,16 @@
 ;; `spin-core/cancelled-after-registration`).
 
 (defn- claim-inline-resume!
-  "Claim the registered continuation `cont` to resume its slice inline, on
-  this stack, with the child's `result`. False when another resume claimed it
-  first — cancellation, or the queued `:spin-completion` delivering the same
-  result: that resume owns the slice. The claim marks the cont resumed at
-  once (the inline slice continues in the caller's trampoline, past this
-  handler), so cancellation no longer rejects the body through it."
+  "Claim this registration for inline delivery. Nil `result` requests the
+  current cache, revalidated with batch freshness; a supplied Result is a
+  fresh synchronous production. Returns the claimed cont, whose :on-resume
+  yields the selected wrapper, or nil when delivery/refresh has an owner.
+  The inline slice is marked resumed at once, so cancellation no longer
+  rejects the body through this registration."
   [ctx spin-id cont result]
-  (some? (simple/claim-continuation-for-resume!
-          ctx spin-id (:id cont)
-          {:result result :registration (:registration cont) :inline? true})))
+  (simple/claim-continuation-for-resume!
+   ctx spin-id (:id cont)
+   {:result result :registration (:registration cont) :inline? true}))
 
 (defn- completing-world
   "The world a child completes in: the one bound when it completes, else the
@@ -179,7 +179,7 @@
   "Direct await handler for Spin.
 
   Fast path: If spin already completed, resolve immediately from cache.
-  Slow path: Register continuation and start child spin.
+  Slow path: Register continuation, then start or join the child spin.
 
   NOTE: In rebuild mode, we SKIP the fast path to ensure child spin bodies execute
   (for side effects like nested spin creation and continuation registration)."
@@ -233,8 +233,10 @@
               (:result cancellation)
               ;; The registered cont is now visible to cancel-spin! and to a
               ;; queued completion of the child: resume only if the claim wins.
-              (if (or (not is-reactive-spin) (claim-inline-resume! ctx spin-id cont cached))
-                (spin-core/match cached
+              (if-let [claimed (if is-reactive-spin
+                                 (claim-inline-resume! ctx spin-id cont nil)
+                                 {:on-resume (fn [_] cached)})]
+                (spin-core/match ((:on-resume claimed) ctx)
                   #(spin-core/resume resolve %)
                   #(spin-core/resume reject %))
                 spin-core/incomplete))))
@@ -289,8 +291,6 @@
         ;;   keep using the same continuation across multiple drain dispatches.
         :else
         (let [child-spin-fn (spin-core/spin-body spin-ref)
-              child-value (volatile! nil)
-              child-error (volatile! nil)
               child-completed? (volatile! false)
               child-result (volatile! nil)
               in-sync-phase (volatile! true)
@@ -343,7 +343,6 @@
                                 ;; this one — not published, not delivered.
                                 (when (ec/spin-cache-result! awaited-spin-id result @child-run)
                                   (when inline
-                                    (vreset! child-value v)
                                     (vreset! child-result result)
                                     (vreset! child-completed? true))
                                   ;; Commit deps so child registers as signal observer
@@ -359,7 +358,6 @@
                                    result (spin-core/error e)]
                                (when (ec/spin-cache-result! awaited-spin-id result @child-run)
                                  (when inline
-                                   (vreset! child-error e)
                                    (vreset! child-result result)
                                    (vreset! child-completed? true))
                                  (ec/graph-commit-deps! awaited-spin-id)
@@ -377,11 +375,24 @@
               _ (ec/continuation-add! spin-id cont-map)
               _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
               cancellation (spin-core/cancelled-after-registration spin-id cont-map reject)]
-          (if cancellation
+          (cond
+            cancellation
             ;; Cancelled before cancel-spin! could see this await: the slice is
             ;; rejected (or owned by whoever claimed it); the child is not started.
             (:result cancellation)
-            (let [;; (Observer registration of parent in child.observers was done
+
+            :else
+            (case (simple/decide-await! ctx awaited-spin-id)
+              :join spin-core/incomplete
+              (:ready :refresh)
+              (if-let [claimed (claim-inline-resume! ctx spin-id cont-map nil)]
+                (spin-core/match ((:on-resume claimed) ctx)
+                  #(spin-core/resume resolve %)
+                  #(spin-core/resume reject %))
+                spin-core/incomplete)
+
+              :start
+              (let [;; (Observer registration of parent in child.observers was done
                   ;; at await-spin entry via `(ec/deps-track-spin! ...)` — see
                   ;; the fast-path branch comment above.)
                   ;; Re-apply the awaited spin's captured scope (snapshotted at
@@ -391,10 +402,10 @@
                   ;; constructed under (e.g. ifor-each per-item DOM scope). This
                   ;; is the await-handler analogue of the :spin-execution-event
                   ;; handling in engine/impl/simple.cljc.
-                  spin-scope (rtp/get-state ctx [:nodes awaited-spin-id :spin-scope])
-                  child-ctx (if (seq spin-scope)
-                              (update ctx :bindings merge spin-scope)
-                              ctx)
+                    spin-scope (rtp/get-state ctx [:nodes awaited-spin-id :spin-scope])
+                    child-ctx (if (seq spin-scope)
+                                (update ctx :bindings merge spin-scope)
+                                ctx)
                   ;; THE body re-entry prologue — full parity with `Spin`'s
                   ;; `-invoke` Case 2, via the shared simple/enter-body! (the
                   ;; slow path calls `.-spin-fn` directly to inject
@@ -405,14 +416,14 @@
                   ;; slow-path re-runs — earliest(-stale) cont won dispatch and
                   ;; repainted frozen state (zombie bug, fixed 71d5801). See
                   ;; enter-body!'s docstring for the invariant.
-                  _ (vreset! child-run (simple/enter-body! ctx awaited-spin-id))
-                  _raw-result (binding [ec/*execution-context* child-ctx
-                                        ec/*spin-id* awaited-spin-id
-                                        pcps-async/*in-trampoline* false]
-                                (child-spin-fn child-resolve child-reject))]
+                    _ (vreset! child-run (simple/enter-body! ctx awaited-spin-id))
+                    _raw-result (binding [ec/*execution-context* child-ctx
+                                          ec/*spin-id* awaited-spin-id
+                                          pcps-async/*in-trampoline* false]
+                                  (child-spin-fn child-resolve child-reject))]
               ;; End sync phase — any future callback invocation is async.
-              (vreset! in-sync-phase false)
-              (cond
+                (vreset! in-sync-phase false)
+                (cond
                 ;; Synchronous completion — resume parent directly, if the
                 ;; claim wins: a cancellation while the child ran may already
                 ;; have rejected this slice through the registered cont.
@@ -420,18 +431,18 @@
                 ;; The pre-registered continuation (in-sync-phase suppressed
                 ;; the enqueue) stays in place to receive any future
                 ;; re-completions for reactive spins.
-                @child-completed?
-                (if (claim-inline-resume! ctx spin-id cont-map @child-result)
-                  (if @child-error
-                    (spin-core/resume reject @child-error)
-                    (spin-core/resume resolve @child-value))
-                  spin-core/incomplete)
+                  @child-completed?
+                  (if-let [claimed (claim-inline-resume! ctx spin-id cont-map @child-result)]
+                    (spin-core/match ((:on-resume claimed) ctx)
+                      #(spin-core/resume resolve %)
+                      #(spin-core/resume reject %))
+                    spin-core/incomplete)
 
                 ;; Async — child returned ::incomplete. The continuation is already
                 ;; registered above; drain will fire it once child-resolve/reject
                 ;; eventually enqueue the :spin-completion event.
-                :else
-                spin-core/incomplete))))))))
+                  :else
+                  spin-core/incomplete)))))))))
 
 (defn- cancellable-external-pair
   "Wrap (resolve, reject) into a fork-safe cancellation-aware pair and
