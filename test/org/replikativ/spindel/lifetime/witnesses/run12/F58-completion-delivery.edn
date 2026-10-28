@@ -1,0 +1,7 @@
+{:finding :F58,
+ :target :L15,
+ :actions
+ [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :slice-enter, :th :host, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :t07, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :queued, :w [:w 0]}]}

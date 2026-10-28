@@ -1,0 +1,8 @@
+{:actions
+ [{:t :t04 :w [:w 0] :e [:spin 0] :mode :callback :host 5}
+  {:t :t01 :w [:w 0] :r [[:spin 0] 1] :e [:spin 1] :tok [:tok 0]}
+  {:t :t04 :w [:w 0] :e [:spin 1] :tok [:tok 0] :mode :callback :host 5}
+  {:t :t02 :w [:w 0] :kind :atom :e [:atom 0] :r [[:spin 1] 1] :value 0}
+  {:t :t07 :w [:w 0] :r [[:spin 1] 1] :value 0}
+  {:t :t09 :w [:w 0] :e [:spin 1]}
+  {:t :t11 :w [:w 0] :r [[:spin 0] 1]}]}

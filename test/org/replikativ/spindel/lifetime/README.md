@@ -1,9 +1,9 @@
 # Lifetime reference model
 
 This is the executable acceptance oracle for Part 4 of
-`docs/engine-formalism.md` (implementation-plan step A3). It models T1–T37 and T20q
+`docs/engine-formalism.md` (implementation-plan step A3). It models T1–T38 and T20q
 as immutable EDN state transitions, independently of `src/`. Independent
-L1–L24 scans and finite-trace TL monitors check every explored edge,
+L1–L25 scans and finite-trace TL monitors check every explored edge,
 including refusals. Logical copied rows are expanded; physical O(1) attach
 cost and implementation lockstep are outside this model.
 
@@ -12,7 +12,7 @@ From the repository root, run the regression and generative checks:
 ```sh
 clojure -J-Xmx1g \
   -Sdeps '{:paths ["test"] :deps {org.clojure/test.check {:mvn/version "1.1.1"}}}' \
-  -M -m org.replikativ.spindel.lifetime.bfs-check regressions
+  -M -m org.replikativ.spindel.lifetime.run13-check regressions
 ```
 
 Omit `regressions` to include the sequential exhaustive profiles and four
@@ -41,10 +41,8 @@ zero work steps. Atomic T20q refusals discard their tentative coordinator
 record after rollback and preserve the input state, as other refusals do.
 Permit refusals at T22 retain the fence until an explicit T25.
 
-The normative checks for [`run7/F52.edn`](witnesses/run7/F52.edn),
-[`run7/F53.edn`](witnesses/run7/F53.edn), and
-[`run7/F54.edn`](witnesses/run7/F54.edn) remain red. The first two concern
-held control envelopes and copied phase/retirement rows; F54 concerns
-activation of an inherited generation after a fresh invocation.
+The earlier F52–F59 counterexamples are retained as regression witnesses.
+Run 13 covers unwinding run retirement and physical slice exit. Its small
+profiles exhaust; the broad profiles remain capped searches.
 
 `verified/` is a separate proof experiment and is not loaded by these checks.

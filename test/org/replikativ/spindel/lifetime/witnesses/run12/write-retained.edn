@@ -1,0 +1,25 @@
+{:actions
+ [{:t :t12, :w [:w 0], :scope [:scope 0], :parent [:root [:w 0]]}
+  {:t :t02,
+   :w [:w 0],
+   :scope [:scope 0],
+   :e [:signal 0],
+   :kind :signal,
+   :value 0}
+  {:t :t19,
+   :w [:w 0],
+   :v [:w 1],
+   :k [:cap 0],
+   :scope [:root [:w 0]],
+   :systems #{:memory}}
+  {:t :t04, :w [:w 1], :e [:spin 1]}
+  {:t :t05,
+   :w [:w 1],
+   :r [[:spin 1] 1],
+   :kind :track,
+   :debtor [:entity [:w 0] [:signal 0]]}
+  {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :slice-enter, :th :host, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :t11, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :t13, :w [:w 0], :scope [:scope 0]}
+  {:t :signal-write, :w [:w 0], :th :host, :e [:signal 0], :value 1}]}

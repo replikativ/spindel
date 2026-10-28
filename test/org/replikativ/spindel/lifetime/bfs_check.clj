@@ -19,8 +19,8 @@
   ([actions] (execute (m/init-state) actions))
   ([initial actions]
    (reduce (fn [{:keys [state trace]} action]
-             (let [{after :state refusal :refusal} (m/attempt state action)]
-               {:state after :trace (conj trace {:before state :action action :after after :refusal refusal})}))
+             (let [{after :state refusal :refusal observation :observation} (m/attempt state action)]
+               {:state after :trace (conj trace {:before state :action action :after after :refusal refusal :observation observation})}))
            {:state initial :trace []} actions)))
 (defn violations [{:keys [trace state]}]
   (vec (concat (mapcat #(inv/check (:after %)) trace) (inv/check-trace trace))))
@@ -80,6 +80,18 @@
                       {:seen (conj seen key) :errors (cond-> errors (seen key) (conj {:id :TL1 :evidence key}))})))
           {:seen monitor :errors []} events))
 
+(defn compact-state-key
+  "Lossless compressed structural EDN. Equality compares the complete bytes,
+  never a digest. Structural tags give deterministic map/set order and types."
+  [canonical-state]
+  (let [out (java.io.ByteArrayOutputStream.)
+        data (.getBytes (binding [*print-length* nil *print-level* nil
+                                  *print-readably* true *print-meta* false *print-dup* false]
+                          (pr-str (m/structural-key canonical-state))) "UTF-8")]
+    (with-open [zip (java.util.zip.DeflaterOutputStream. out)]
+      (.write zip data))
+    (String. (.toByteArray out) "ISO-8859-1")))
+
 (defn bfs
   "BFS with sleep sets; visited identity includes the sleep set and TL1 monitor.
   Exhausted means EVERY queued node was expanded, with no depth/state/time cut.
@@ -88,11 +100,13 @@
   canonical values, not collision-prone integer hashes. Witnesses are BFS shortest
   in this alphabet (sleep reduction may select a commuting representative)."
   ([initial] (bfs initial {}))
-  ([initial {:keys [max-states max-depth seconds alphabet por? max-heap-ratio]
+  ([initial {:keys [max-states max-depth seconds alphabet por? max-heap-ratio compact-keys?]
              :or {max-states 10000 max-depth 40 seconds 40 alphabet m/enabled por? true max-heap-ratio 0.70}}]
    (let [started (System/nanoTime)
          initial-node {:state initial :actions [] :monitor #{} :sleep #{}}
-         state-key (fn [s monitor sleep] (m/canonical (assoc s :resume-monitor monitor :sleep sleep)))
+         state-key (fn [s monitor sleep]
+                     (let [canonical (m/canonical (assoc s :resume-monitor monitor :sleep sleep))]
+                       (if compact-keys? (compact-state-key canonical) canonical)))
          initial-key (state-key initial #{} #{})]
      (loop [queue (conj clojure.lang.PersistentQueue/EMPTY initial-node)
             seen #{initial-key} counts {:states 1 :edges 0 :depth 0 :maximal 0 :slept 0 :candidates 0 :depth-cuts 0}
@@ -111,7 +125,7 @@
            (assoc counts :status stop :seconds elapsed :findings findings :transitions covered
                   :pending (count queue) :heap-used heap-used :heap-max (.maxMemory runtime)
                   :bounds (:model initial) :limits {:states max-states :depth max-depth :seconds seconds
-                                                    :retained-heap-ratio max-heap-ratio}
+                                                    :retained-heap-ratio max-heap-ratio :compact-keys? (boolean compact-keys?)}
                   :por-ratio (if (zero? (:candidates counts)) 0.0
                                  (double (/ (:slept counts) (:candidates counts)))))
            (let [{:keys [state actions monitor sleep]} (peek queue) queue (pop queue)
@@ -124,9 +138,9 @@
                   (fn [{:keys [queue seen counts findings covered prior] :as acc} action]
                     (if (and por? (sleep action))
                       (-> acc (update-in [:counts :slept] inc) (update :prior conj action))
-                      (let [{after :state refusal :refusal} (m/attempt state action)
-                            edge {:before state :action action :after after :refusal refusal}
-                            mon (advance-monitor monitor (if refusal [] (:events after)))
+                      (let [{after :state refusal :refusal observation :observation} (m/attempt state action)
+                            edge {:before state :action action :after after :refusal refusal :observation observation}
+                            mon (advance-monitor monitor (if (or refusal observation) [] (:events after)))
                             bad (concat (inv/check after) (inv/edge-check edge) (:errors mon))
                             next-actions (conj actions action)
                             sleep2 (if por? (set (filter #(independent? state action %) (into sleep prior))) #{})
@@ -191,7 +205,7 @@
 
 (deftest refusal-and-canonical-contract
   (is (empty? (inv/check (m/init-state))))
-  (is (= 38 (count m/transitions)))
+  (is (= 40 (count m/transitions)))
   (let [s (:state (execute [following {:t :t04 :w v :e e}])) a (m/attempt s seal)]
     (is (= ::m/not-quiescent (get-in a [:refusal :error]))) (is (= s (:state a))))
   (let [s (m/init-state)] (is (= s (:state (m/attempt s {:t :t35 :th :foreign})))))
@@ -208,16 +222,16 @@
       (is (empty? (:findings report)) (pr-str (:findings report))))))
 
 (deftest reduced-complete-search
-  (doseq [[name cfg] [[:one-spin {:spins 1 :signals 0 :atoms 0}]
+  (doseq [[name cfg] [[:one-spin {:spins 1 :signals 0 :atoms 0 :slices? true}]
                       [:source-only {:spins 0 :signals 1 :atoms 1}]]]
     (let [initial (m/init-state (merge {:worlds 1 :generations 1 :scopes 0 :handles 0 :cuts 0 :filters [:local] :invoke-modes [:callback]} cfg))
-          report (bfs initial {:seconds 900 :max-states 30000})]
+          report (bfs initial {:seconds 5400 :max-states 300000 :compact-keys? (= name :one-spin)})]
       (report! name report)
       (is (= :exhausted (:status report)))
       (is (empty? (:findings report)) (pr-str (:findings report))))))
 
 (deftest shared-component-cuts
-  (let [initial (:state (execute [following]))
+  (let [initial (update-in (:state (execute [following])) [:env :threads] dissoc :host)
         cuts [{:t :t20 :c [:cut 0] :scope root :coordinator :ca
                :participants {:worlds #{w} :components #{[w :a] [v :b]} :systems #{:a}}}
               {:t :t20 :c [:cut 1] :scope [:root v] :coordinator :cb
@@ -256,6 +270,25 @@
     (is (= (:findings full) (:findings reduced)))
     (is (pos? (:slept reduced)))
     (report! :por-check reduced)))
+
+(deftest compact-key-contract
+  (doseq [s (cons (m/init-state) (map :after (:trace (configuration :frozen))))]
+    (let [canonical (m/canonical s)
+          encoded (compact-state-key canonical)
+          decoded (with-open [zip (java.util.zip.InflaterInputStream.
+                                   (java.io.ByteArrayInputStream. (.getBytes encoded "ISO-8859-1")))]
+                    (clojure.edn/read-string (slurp zip :encoding "UTF-8")))]
+      (is (= (m/structural-key canonical) decoded))
+      (is (= encoded (compact-state-key (m/canonical canonical))))
+      (is (= encoded (binding [*print-length* 1 *print-level* 1 *print-readably* false]
+                       (compact-state-key canonical))))))
+  (let [initial (m/init-state {:worlds 1 :generations 1 :scopes 0 :handles 0 :cuts 0
+                               :spins 0 :signals 1 :atoms 1 :filters [:local] :invoke-modes [:callback]})
+        ordinary (bfs initial {:seconds 30})
+        compact (bfs initial {:seconds 30 :compact-keys? true})
+        fields [:status :states :edges :depth :depth-cuts :pending :findings :transitions]]
+    (is (= :exhausted (:status ordinary) (:status compact)))
+    (is (= (select-keys ordinary fields) (select-keys compact fields)))))
 
 (deftest canonical-renaming
   (let [s (:state (execute [following invoke {:t :t05 :w w :r r :kind :timer :debtor [:host :executor]}]))
@@ -377,9 +410,9 @@
   [actions]
   (loop [state (m/init-state) actions actions monitor #{}]
     (when-let [a (first actions)]
-      (let [{after :state refusal :refusal} (m/attempt state a)
-            edge {:before state :action a :after after :refusal refusal}
-            mon (advance-monitor monitor (if refusal [] (:events after)))
+      (let [{after :state refusal :refusal observation :observation} (m/attempt state a)
+            edge {:before state :action a :after after :refusal refusal :observation observation}
+            mon (advance-monitor monitor (if (or refusal observation) [] (:events after)))
             bad (vec (concat (inv/check after) (inv/edge-check edge) (:errors mon)))]
         (cond refusal nil
               (seq bad) (when (empty? (rest actions)) bad)
@@ -435,7 +468,8 @@
                 [following {:t :t04 :w v :e e}
                  {:t :t05 :w v :r r :kind :await-once :debtor [:entity w [:spin 1]]}
                  {:t :t37 :w w}]
-                [{:t :t35 :th :host}]]
+                [{:t :t35 :th :host}]
+                [invoke {:t :slice-enter :th :host :w w :r r} {:t :t38 :th :host}]]
         results (map execute traces)
         covered (set (for [result results edge (:trace result) :when (not (:refusal edge))] (get-in edge [:action :t])))]
     (println "LIFETIME TRANSITION-COVERAGE" (pr-str covered))
@@ -536,7 +570,7 @@
     (is (some #(and (= [:signal 0] (first %)) (= child (second %))) (:fdeps (m/wr state w))))))
 
 (deftest shared-cuts-complete-protocol
-  (let [initial (:state (execute [following]))
+  (let [initial (update-in (:state (execute [following])) [:env :threads] dissoc :host)
         cuts [{:t :t20 :c [:cut 0] :scope root :coordinator :ca
                :participants {:worlds #{w} :components #{[w :a] [v :b]} :systems #{:a}}}
               {:t :t20 :c [:cut 1] :scope [:root v] :coordinator :cb

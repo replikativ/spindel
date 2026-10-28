@@ -46,6 +46,15 @@
     (is (seq (corpus "run7/F52.edn")))
     (is (seq (corpus "run10/mixed-released.edn")))))
 
+(deftest retirement-witnesses-wait-for-their-implementation-stages
+  (is (= [:B3 :B3 :B4]
+         (mapv #(manifests/action-stage {:t %}) [:slice-enter :t38 :join])))
+  (let [pending (:pending-witnesses (l/step-requirements :B1))]
+    (doseq [name ["run13/completion-trailing-slice.edn"
+                  "run13/superseded-executing-slice.edn"
+                  "run13/nested-owner-release.edn"]]
+      (is (contains? pending name) name))))
+
 (defn passed-report [requirements]
   (let [result {:status :passed :actions [] :trace []
                 :boundaries [{:constituents (mapv #(hash-map :action {:t %})

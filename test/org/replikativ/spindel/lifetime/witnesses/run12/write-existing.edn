@@ -1,0 +1,14 @@
+{:actions
+ [{:t :t02, :w [:w 0], :e [:signal 0], :value 0}
+  {:t :t04, :w [:w 0], :e [:spin 1], :mode :callback}
+  {:t :t05,
+   :w [:w 0],
+   :r [[:spin 1] 1],
+   :kind :track,
+   :debtor [:entity [:w 0] [:signal 0]]}
+  {:t :t07, :w [:w 0], :r [[:spin 1] 1], :value 0}
+  {:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :slice-enter, :th :host, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :t11, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :signal-write, :th :host, :w [:w 0], :e [:signal 0], :value 1}
+  {:t :t08, :w [:w 0], :e [:signal 0], :value 1}]}

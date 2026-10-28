@@ -18,10 +18,10 @@
       {:state state :trace trace :failure first-failure}
       (let [actions (vec (m/enabled state))
             action (nth actions (mod (first choices) (count actions)))
-            {after :state refusal :refusal} (m/attempt state action)
-            edge {:before state :action action :after after :refusal refusal}
+            {after :state refusal :refusal observation :observation} (m/attempt state action)
+            edge {:before state :action action :after after :refusal refusal :observation observation}
             trace2 (conj trace edge)
-            mon (bfs/advance-monitor monitor (if refusal [] (:events after)))
+            mon (bfs/advance-monitor monitor (if (or refusal observation) [] (:events after)))
             bad (concat (inv/check after) (inv/edge-check edge) (:errors mon))]
         (recur after (rest choices) trace2
                (or first-failure
