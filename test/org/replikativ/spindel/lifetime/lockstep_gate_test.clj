@@ -261,3 +261,11 @@
             (is (= :discrepancy (:status result)) (pr-str path))
             (is (= :failed (:status (l/acceptance (assoc-in report [:scripted script] result) requirements)))
                 (pr-str path))))))))
+
+(deftest tokenless-lifecycle-profile-is-pending-until-b5
+  (let [b3 (l/step-requirements :B3) b5 (l/step-requirements :B5)]
+    (is (not (contains? (:profiles b3) :run-lifecycle)))
+    (is (= #{:B5} (get-in b3 [:pending-profiles :run-lifecycle :prerequisites])))
+    (is (contains? (:profiles b5) :run-lifecycle))
+    (is (= (get-in b3 [:pending-profiles :run-lifecycle :spec])
+           (get-in b5 [:cases :profiles :run-lifecycle :spec])))))

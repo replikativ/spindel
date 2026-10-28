@@ -84,7 +84,7 @@
    :ownership-scopes {:stage :B1 :alphabet #{:t04 :t12} :bounds {:spins 1 :signals 0 :atoms 0 :scopes 1}}
    :obligation-registration {:stage :B2 :alphabet #{:t02 :t04 :t05 :t06 :unsubscribe}
                              :bounds {:spins 1 :signals 1 :atoms 1}}
-   :run-lifecycle {:stage :B3 :alphabet #{:t04 :t07 :t09 :t10 :t11 :t15}
+   :run-lifecycle {:prerequisites #{:B5} :stage :B3 :alphabet #{:t04 :t07 :t09 :t10 :t11 :t15}
                    :bounds {:spins 1 :signals 0 :atoms 0 :generations 2}}
    :scope-close {:stage :B4 :alphabet #{:t04 :t12 :t13} :bounds {:spins 1 :signals 0 :atoms 0 :scopes 1}}
    :incarnations {:stage :B5 :alphabet #{:t01 :t04 :t07 :t16 :t17 :t18}

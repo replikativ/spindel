@@ -150,9 +150,10 @@
 (deftest acceptance-requires-complete-coverage
   (let [required {:witnesses #{"required"} :transitions #{:t07 :t08} :components #{:entities}
                   :profiles #{:one-spin}}
-        result (lockstep/replay (lockstep/scripted-corpus :completion))
+        actions (lockstep/scripted-corpus :completion)
+        result (assoc (lockstep/replay actions) :actions actions)
         report {:component-availability {:entities true} :coverage (lockstep/coverage) :witnesses {"required" result}
-                :profiles {:one-spin [result]} :profile-limits {:one-spin {:status :exhausted}}
+                :profiles {:one-spin [result]} :profile-limits {:one-spin {:status :exhausted :edges 1}}
                 :model-normative {"normative" [{:id :L16}]}}]
     (is (= :passed (:status (lockstep/acceptance report required))))
     (doseq [status [:skipped :discrepancy :truncated]]
