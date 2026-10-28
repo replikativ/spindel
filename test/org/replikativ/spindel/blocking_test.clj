@@ -5,6 +5,7 @@
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.spin.combinators :as comb]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.spin.cps :refer [spin]]
@@ -107,8 +108,8 @@
       (deliver gate :go)
       (.shutdown pool))))
 
-(deftest a-second-await-restarts-the-work
-  ;; the engine re-runs a resource Spin's body for a second awaiter: the
+(deftest invalidated-work-is-restarted-by-an-await
+  ;; An invalidated resource Spin is re-run by the next awaiter: the
   ;; first worker is interrupted, f runs again, and the Spin completes once
   (with-ctx [_]
     (let [first-started (promise)
@@ -127,6 +128,7 @@
           s2 (spin (let [v (await b)] (swap! after-await update :b inc) v))]
       (future (try @s1 (catch Throwable _ nil)))
       (is (true? (deref first-started 5000 false)))
+      (ec/swap-state! [:nodes (spin-core/spin-id b)] simple/invalidate-node)
       (is (= :second (deref s2 5000 ::timeout)))
       (is (= :second (deref s1 5000 ::timeout)) "both awaiters see the one completion")
       (is (true? (deref first-interrupted 5000 false)) "the superseded worker was interrupted")
@@ -156,8 +158,8 @@
           (.awaitTermination pool 5 TimeUnit/SECONDS)))
       (is (zero? @ran) "no cancelled queued work ran"))))
 
-(deftest a-queued-restart-completes-once
-  ;; a second awaiter supersedes a still-queued first execution
+(deftest invalidated-queued-work-is-restarted-once
+  ;; Invalidation lets a second awaiter supersede the queued execution.
   (with-ctx [_]
     (let [gate (promise)
           pool (busy-pool gate)
@@ -167,6 +169,7 @@
           s2 (spin (await b))]
       (future (try @s1 (catch Throwable _ nil)))
       (is (until #(= 1 (.size (.getQueue pool)))))
+      (ec/swap-state! [:nodes (spin-core/spin-id b)] simple/invalidate-node)
       (future (try @s2 (catch Throwable _ nil)))
       ;; the second execution has submitted its own work: the superseded
       ;; (cancelled) task and the live one are both queued
