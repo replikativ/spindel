@@ -27,7 +27,7 @@
       (is (= :passed (:status result)) (pr-str result)))))
 
 (deftest enabling-an-unprojected-component-fails-closed
-  (with-redefs [lockstep/components (assoc-in lockstep/components [:owners :enabled?] true)]
+  (with-redefs [lockstep/components (assoc-in lockstep/components [:obligations :enabled?] true)]
     (is (= :discrepancy (:status (lockstep/replay [{:t :t04 :w w :e e}]))))))
 
 (deftest unsupported-middle-is-not-deleted
@@ -43,9 +43,14 @@
         state (reduce model/step (model/init-state)
                       [{:t :t02 :w w :e source :value 1}
                        {:t :t19 :w w :v v :k [:cap 0] :scope [:root w]}])
-        view {:entities {source {:kind :signal :completed? false :result 1}}
-              :lineage :absent :obligations :absent}
-        projected {:worlds {w view v view}}]
+        entity {source {:kind :signal :completed? false :result 1
+                        :owner [:root w] :creator nil :order 0}}
+        projected {:worlds {w {:entities entity :root [:root w]
+                               :scopes {[:root w] {:kind :world-root :parent nil :status :open}}
+                               :runs {}}
+                            v {:entities entity :root [:root v]
+                               :scopes {[:root v] {:kind :fork :parent nil :status :open}}
+                               :runs {}}}}]
     (is (= (lockstep/comparable state) (lockstep/comparable projected)))
     (is (empty? (lockstep/projection-invariants projected)))
     (is (= :L12 (:id (first (lockstep/projection-invariants
@@ -89,10 +94,17 @@
 
 (deftest every-enabled-component-fails-closed
   (doseq [component (keys lockstep/components)
-          actions [[] [{:t :t04 :w w :e e}]]]
+          :let [actions [{:t :t04 :w w :e e}]]]
     (let [original lockstep/project]
       (with-redefs [lockstep/components (assoc-in lockstep/components [component :enabled?] true)
-                    lockstep/project (fn [& args] (assoc (apply original args) component :absent))]
+                    lockstep/project (fn [& args]
+                                       (let [projection (apply original args)]
+                                         (case component
+                                           :entities (assoc-in projection [:entities e :result] :absent)
+                                           :scopes (assoc projection :root :absent)
+                                           :owners (assoc-in projection [:entities e :owner] :absent)
+                                           :run-owners (assoc projection :runs :absent)
+                                           (assoc projection component :absent))))]
         (is (= :discrepancy (:status (lockstep/replay actions))) (str component " " actions))))))
 
 (deftest literal-payload-mutations

@@ -959,7 +959,9 @@
                                   (if @new-lifetime-run
                                     (-> cont
                                         (update :bindings bindings/assoc-lifetime-run @new-lifetime-run)
-                                        (update :bindings bindings/assoc-run-gen [spin-id @new-run-gen]))
+                                        (update :bindings bindings/assoc-run-gen [spin-id @new-run-gen])
+                                        (update :bindings bindings/advance-run-scope
+                                                (lifetime/body-run-id context spin-id)))
                                     cont)
                                   resume-fn)))))
 
@@ -3315,7 +3317,8 @@
                                                                           (<= (:order cont) (:transfer-prefix-order opts)))
                                                                    (-> cont
                                                                        (update :bindings bindings/assoc-run-gen [spin-id gen])
-                                                                       (update :bindings bindings/assoc-lifetime-run (nth run-id 3)))
+                                                                       (update :bindings bindings/assoc-lifetime-run (nth run-id 3))
+                                                                       (update :bindings bindings/advance-run-scope run-id))
                                                                    cont)]))))
                                         state)]
                             (hand-off-run-callbacks state spin-id))))
@@ -3971,7 +3974,9 @@
                 (on-resume context)
                 nil)
         ;; Get captured bindings (default to empty if not present or nil)
-        captured-bindings (or (:bindings cont) {})
+        captured-bindings (bindings/advance-run-scope
+                           (or (:bindings cont) {})
+                           (lifetime/body-run-id context spin-id))
         ;; Resume with restored bindings
         ;; Force trampolining by binding *in-trampoline* to false
         ;; This ensures that any Thunks returned by resume-fn are executed immediately
@@ -3981,10 +3986,13 @@
                                           (fn []
                                             (binding [pcps-async/*in-trampoline* false]
                                               (resume-fn value)))))
-        ret #?(:clj (fire)
-               :cljs (binding [ec/*lifetime-run* (get captured-bindings (bindings/lifetime-run-var) ec/*lifetime-run*)
-                               ec/*run-gen* (get captured-bindings (bindings/run-gen-var) ec/*run-gen*)
-                               ec/*owner-scope* (get captured-bindings (bindings/owner-scope-var) ec/*owner-scope*)]
+        ret #?(:clj (binding [ec/*lifetime-run* nil
+                              ec/*run-gen* nil
+                              ec/*owner-scope* nil]
+                      (fire))
+               :cljs (binding [ec/*lifetime-run* (get captured-bindings (bindings/lifetime-run-var))
+                               ec/*run-gen* (get captured-bindings (bindings/run-gen-var))
+                               ec/*owner-scope* (get captured-bindings (bindings/owner-scope-var))]
                        (fire)))]
     ;; Body slice suspended (returned ::incomplete). Under the unified-queue
     ;; design we do NOT clear :running? on suspension. The body is still

@@ -11,26 +11,28 @@
 
 (defn current-run-id [context]
   (let [run ec/*lifetime-run*
-        spin-id ec/*spin-id*]
+        spin-id ec/*spin-id*
+        node (when spin-id (rtp/get-state context [:nodes spin-id]))]
     (cond
-      (vector? run) run
-      (and (number? run) (= spin-id (first ec/*run-gen*)))
+      (and (vector? run) node)
+      (run-id context spin-id (nth run 3))
+      (and node (number? run) (= spin-id (first ec/*run-gen*)))
       (run-id context spin-id run)
-      spin-id
-      (let [node (rtp/get-state context [:nodes spin-id])]
-        (when (:run-gen node)
-          (run-id context spin-id (or (:lifetime/seq node) 1)))))))
+      (:run-gen node)
+      (run-id context spin-id (or (:lifetime/seq node) 1)))))
 
 (defn current-scope [context]
   (let [world (:fork-id context)
         explicit ec/*owner-scope*
-        run (current-run-id context)]
-    (when (and explicit (not= world (second explicit)))
+        foreign-run? (and (= :run (first explicit))
+                          (not= world (second explicit)))]
+    (when (and explicit (not= world (second explicit)) (not foreign-run?))
       (throw (ex-info "Scope belongs to another world" {:scope explicit :world world})))
     (cond
+      foreign-run?
+      (or (current-run-id context) (root-scope context))
       explicit explicit
-      (and run (= world (second run))) run
-      :else (root-scope context))))
+      :else (or (current-run-id context) (root-scope context)))))
 
 (defn open-scope!
   ([context kind]
@@ -57,8 +59,10 @@
           ~@body))))
 
 (defn body-run-id [context spin-id]
-  (or (rtp/get-state context [:nodes spin-id :lifetime/run])
-      (run-id context spin-id (or (rtp/get-state context [:nodes spin-id :lifetime/seq]) 1))))
+  (let [stored (rtp/get-state context [:nodes spin-id :lifetime/run])]
+    (if (= (:fork-id context) (second stored))
+      stored
+      (run-id context spin-id (or (rtp/get-state context [:nodes spin-id :lifetime/seq]) 1)))))
 
 (defn body-run-seq [context spin-id]
   (or (rtp/get-state context [:nodes spin-id :lifetime/seq]) 1))

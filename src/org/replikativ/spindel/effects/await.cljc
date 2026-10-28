@@ -427,6 +427,7 @@
                     _raw-result (binding [ec/*execution-context* child-ctx
                                           ec/*spin-id* awaited-spin-id
                                           ec/*lifetime-run* (lifetime/body-run-seq ctx awaited-spin-id)
+                                          ec/*owner-scope* (lifetime/body-run-id ctx awaited-spin-id)
                                           pcps-async/*in-trampoline* false]
                                   (child-spin-fn child-resolve child-reject))]
               ;; End sync phase — any future callback invocation is async.

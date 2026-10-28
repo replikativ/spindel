@@ -126,6 +126,15 @@
 (defn assoc-run-gen [captured generation]
   (assoc captured (run-gen-var) generation))
 
+(defn advance-run-scope [captured run-id]
+  (let [owner-var (owner-scope-var)
+        owner (get captured owner-var)]
+    (if (or (nil? owner)
+            (and (= :run (first owner))
+                 (= (nth owner 2) (nth run-id 2))))
+      (assoc captured owner-var run-id)
+      captured)))
+
 ;; =============================================================================
 ;; Platform-Specific Implementation
 ;; =============================================================================

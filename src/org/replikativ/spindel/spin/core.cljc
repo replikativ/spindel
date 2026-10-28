@@ -203,6 +203,7 @@
            (binding [ec/*execution-context* runtime
                      ec/*spin-id* spin-id
                      ec/*lifetime-run* (lifetime/body-run-seq runtime spin-id)
+                     ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                      ;; Return discarded: a trampoline of its own (see -invoke).
                      pcps-async/*in-trampoline* false]
              (spin-fn (fn [_] nil) (fn [_] nil)))
@@ -312,6 +313,7 @@
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id
                     ec/*lifetime-run* (lifetime/body-run-seq runtime spin-id)
+                    ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                     ;; The body's return is discarded: it must force its own
                     ;; Thunks (see Case 2).
                     pcps-async/*in-trampoline* false]
@@ -388,32 +390,36 @@
               ;; world's thread) forces its Thunks in a trampoline of its own:
               ;; nothing here returns them to anybody.
               resume-callback! (fn [k x rt]
-                                 (if (and @in-body
+                                 (binding [ec/*spin-id* nil
+                                           ec/*lifetime-run* nil
+                                           ec/*run-gen* nil
+                                           ec/*owner-scope* nil]
+                                   (if (and @in-body
                                           ;; only a caller that is a running
                                           ;; trampoline takes a Thunk back;
                                           ;; plain callbacks force their own
-                                          caller-in-trampoline?
-                                          (nil? @caller-thunk)
+                                            caller-in-trampoline?
+                                            (nil? @caller-thunk)
                                           ;; this world: a fork completed on
                                           ;; this stack continues in the fork
-                                          (= (:fork-id rt) (:fork-id runtime))
-                                          #?(:clj (identical? sync-thread (Thread/currentThread))
-                                             :cljs true))
+                                            (= (:fork-id rt) (:fork-id runtime))
+                                            #?(:clj (identical? sync-thread (Thread/currentThread))
+                                               :cljs true))
                                    ;; Resume it as a trampoline activation
                                    ;; that does not force: whatever body runs
                                    ;; here (a hand-written one starts no
                                    ;; trampoline), the callback's Thunk comes
                                    ;; back instead of running the caller's
                                    ;; next iteration nested in this one.
-                                   (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
-                                              (fn [token]
-                                                (binding [pcps-async/*in-trampoline* token]
-                                                  (resume k x))))]
-                                     (when (is.simm.partial-cps.runtime/thunk? ret)
-                                       (vreset! caller-thunk ret))
-                                     ret)
-                                   (binding [pcps-async/*in-trampoline* false]
-                                     (resume k x))))]
+                                     (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
+                                                (fn [token]
+                                                  (binding [pcps-async/*in-trampoline* token]
+                                                    (resume k x))))]
+                                       (when (is.simm.partial-cps.runtime/thunk? ret)
+                                         (vreset! caller-thunk ret))
+                                       ret)
+                                     (binding [pcps-async/*in-trampoline* false]
+                                       (resume k x)))))]
 
           (log/debug :spin/start {:spin-id spin-id})
 
@@ -440,6 +446,7 @@
           ;; iteration's exception reaches its reject.)
           (binding [ec/*execution-context* runtime
                     ec/*spin-id* spin-id
+                    ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                     pcps-async/*in-trampoline* false]
             (let [result (body-fn
                             ;; Resolve continuation
