@@ -6,6 +6,7 @@
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.lifetime-gate-rules :as rules]
+            [org.replikativ.spindel.lifetime-load-monitor :as load]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.yggdrasil :as ygg]))
 
@@ -67,10 +68,11 @@
       (binding [ec/*execution-context* rt cps/*in-trampoline* false]
         (loop [from 0 points []]
           (if-let [to (first (drop (count points) [10000 100000]))]
-            (let [start (System/nanoTime)]
-              (doseq [i (range from to)] (cycle! kind i))
-              (let [elapsed (- (System/nanoTime) start)
-                    point (merge {:cycles to :segment-cycles (- to from)
+            (let [elapsed (binding [load/*window* (pr-str [:enumeration kind from to])]
+                            (load/timed #(let [start (System/nanoTime)]
+                                           (doseq [i (range from to)] (cycle! kind i))
+                                           (- (System/nanoTime) start))))]
+              (let [point (merge {:cycles to :segment-cycles (- to from)
                                   :elapsed-ns elapsed
                                   :cycles-per-second (/ (* 1e9 (- to from)) elapsed)} (full-gc! rt))]
                 (prn {:enumeration kind :point point}) (flush)

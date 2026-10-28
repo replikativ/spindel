@@ -9,6 +9,7 @@
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.enum-bench :as enumeration]
             [org.replikativ.spindel.lifetime-gate-rules :as rules]
+            [org.replikativ.spindel.lifetime-load-monitor :as load]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.spin.sync :as sync]
@@ -20,10 +21,12 @@
   (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)
         tid (.getId (Thread/currentThread))]
     (.setThreadAllocatedMemoryEnabled bean true)
-    (let [bytes (.getThreadAllocatedBytes bean tid) start (System/nanoTime)]
-      (dotimes [i n] (f i))
-      {:operations n :ns-per-op (/ (double (- (System/nanoTime) start)) n)
-       :bytes-per-op (/ (double (- (.getThreadAllocatedBytes bean tid) bytes)) n)})))
+    (load/timed
+     (fn []
+       (let [bytes (.getThreadAllocatedBytes bean tid) start (System/nanoTime)]
+         (dotimes [i n] (f i))
+         {:operations n :ns-per-op (/ (double (- (System/nanoTime) start)) n)
+          :bytes-per-op (/ (double (- (.getThreadAllocatedBytes bean tid) bytes)) n)})))))
 
 (defn fork-discard! [_]
   (let [h (ygg/fork! {:systems :none :sync? true})]
@@ -67,9 +70,10 @@
   ;; Each shape is warm before any retained sample, each sample gets a fresh
   ;; root, and the rotating order balances JIT and preceding-fixture effects.
   (doseq [id [:small :large :populated]] (sample-fixture id 200) (enumeration/full-gc! nil))
-  (let [samples (mapv (fn [id]
-                        (let [r (assoc (sample-fixture id 1000) :post-fixture-gc (enumeration/full-gc! nil))]
-                          (prn r) (flush) r)) (get-in rules/measurement-protocol [:fork :order]))]
+  (let [samples (mapv (fn [i id]
+                        (binding [load/*window* (pr-str [:fork id i])]
+                          (let [r (assoc (sample-fixture id 1000) :post-fixture-gc (enumeration/full-gc! nil))]
+                            (prn r) (flush) r))) (range) (get-in rules/measurement-protocol [:fork :order]))]
     (into {} (for [[id rows] (group-by :fixture samples)]
                [id (assoc (nth (sort-by :ns-per-op rows) 1)
                           :ns-per-op (nth (sort (map :ns-per-op rows)) 1)

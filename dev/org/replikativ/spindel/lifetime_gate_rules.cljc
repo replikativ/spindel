@@ -19,7 +19,7 @@
 (def large-parent-shapes
   (vec (for [mode [:root :following :frozen] path [:uncached-await :execution-event]] [mode path])))
 
-(def protocol-version 3)
+(def protocol-version 4)
 (def measurement-protocol
   {:fork {:warmup 200 :operations 1000 :samples 3
           :order [:small :large :populated :large :populated :small :populated :small :large]}
@@ -27,12 +27,25 @@
                :allocation :calling-thread-live-handles :cleanup :outside-timing}
    :large-parent {:parent-nodes 10000 :warm-shapes 8 :warmup 300 :operations 300 :samples 3
                   :shapes large-parent-shapes}
-   :pairing {:rounds 3 :order [:baseline :candidate] :overloaded :repeat-round
-             :max-load-per-core 0.5}
+   :pairing {:rounds 4 :schedule [[:baseline :candidate] [:candidate :baseline]
+                                [:baseline :candidate] [:candidate :baseline]]
+             :max-attempts 12 :invalid :repeat-pair :exhausted :inconclusive
+             :aggregation :all-valid-pairs-must-pass
+             :max-load-per-core 0.5 :max-median-load-difference-per-core 0.10
+             :max-peak-load-difference-per-core 0.10 :monitors [:jvm :controller]}
    :enumeration {:warmup 2000 :checkpoints [10000 100000]}
    :gc {:keyword-intern-drain :one-fresh-intern-between-gc-stabilizations
         :stable-samples 3 :sample-pause-ms 500 :deadline-ms 30000 :heap-tolerance 0.005
         :census-paths census-paths :required-empty required-empty}})
+
+(def timed-windows
+  (set (map pr-str
+            (concat
+             (for [k [:L0 :L-child :L2-await :L2-track] i (range 3)] [:lifecycle k i])
+             (for [[mode path] large-parent-shapes i (range 3)] [:large-parent mode path i])
+             (map-indexed (fn [i id] [:fork id i]) (:order (:fork measurement-protocol)))
+             (for [kind [:fork :spin] [from to] [[0 10000] [10000 100000]]]
+               [:enumeration kind from to])))))
 
 (def metadata-fields
   [:machine :max-heap-bytes :executor :allocation :java :java-vendor :os :os-version :arch
@@ -69,6 +82,41 @@
                         (vector? (:foreign-high-cpu o))
                         (number? (:load o)) (<= 0 (:load o) (/ (:processors data) 2.0))))
                  observations))))
+
+(defn load-summary [observations]
+  (let [loads (sort (map :load observations)) n (count loads)]
+    {:median (if (odd? n) (nth loads (quot n 2))
+                 (/ (+ (nth loads (dec (quot n 2))) (nth loads (quot n 2))) 2.0))
+     :max (last loads)}))
+
+(defn monitor-windows [report field]
+  (let [observations (get report field)
+        groups (group-by :window observations)
+        role (get-in report [:session :role])]
+    (when (and (host-quiet? (assoc report :host-observations observations))
+               (every? #(= role (:role %)) observations)
+               (= (conj timed-windows "worker") (set (keys groups)))
+               (every? (fn [[_ rows]]
+                         (and (some #(= :start (:phase %)) rows)
+                              (some #(= :end (:phase %)) rows))) groups))
+      (assoc (update-vals groups load-summary) "worker" (load-summary observations)))))
+
+(defn pair-load-valid?
+  "Symmetric environmental admission, before any performance outcomes. Both
+   monitors must cover every timed sample and the whole worker. No missing data."
+  [baseline candidate]
+  (let [n (:processors baseline)]
+    (boolean
+     (and (pos-int? n) (= n (:processors candidate))
+          (every? (fn [field]
+                    (let [b (monitor-windows baseline field) c (monitor-windows candidate field)]
+                      (and b c
+                           (every? (fn [window]
+                                     (every? (fn [[metric limit]]
+                                               (<= (abs (- (get-in b [window metric]) (get-in c [window metric])))
+                                                   (* n limit)))
+                                             [[:median 0.10] [:max 0.10]])) (keys b)))))
+                  [:host-observations :controller-observations])))))
 
 (defn lifecycle-sample? [k row]
   (and (= k (:lifecycle row)) (= 5000 (:spins row)) (= 2000 (:warmup row))
@@ -119,16 +167,18 @@
     (throw (ex-info "Incomplete benchmark report, overloaded round or wrong measurement protocol" {:type ::incomplete}))))
 
 (defn validate! [baseline candidate]
+  (when-not (pair-load-valid? baseline candidate)
+    (throw (ex-info "Missing or incomparable load observations" {:type ::invalid-load-pair})))
   (doseq [data [baseline candidate]] (validate-report! data))
   (doseq [field metadata-fields]
     (when-not (= (get baseline field) (get candidate field))
       (throw (ex-info "Incomparable benchmark metadata" {:type ::incomparable :field field}))))
   (let [b (:session baseline) c (:session candidate)]
     (when-not (and (string? (:id b)) (seq (:id b)) (= (:id b) (:id c))
-                   (pos-int? (:round b)) (= (:round b) (:round c))
+                   (pos-int? (:round b)) (<= (:round b) 4) (= (:round b) (:round c))
                    (= :baseline (:role b)) (= :candidate (:role c))
-                   (= (* 2 (dec (:round b))) (:position b))
-                   (= (inc (:position b)) (:position c)))
+                   (= (+ (* 2 (dec (:round b))) (if (odd? (:round b)) 0 1)) (:position b))
+                   (= (+ (* 2 (dec (:round b))) (if (odd? (:round b)) 1 0)) (:position c)))
       (throw (ex-info "Relative gates require an alternating pair from the same session and round"
                       {:type ::unpaired})))))
 

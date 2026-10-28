@@ -10,7 +10,8 @@
             [org.replikativ.spindel.fork-bench :as fork]
             [org.replikativ.spindel.lifecycle-bench :as lifecycle]
             [org.replikativ.spindel.large-parent-bench :as large-parent]
-            [org.replikativ.spindel.lifetime-gate-rules :as rules]))
+            [org.replikativ.spindel.lifetime-gate-rules :as rules]
+            [org.replikativ.spindel.lifetime-load-monitor :as load]))
 
 (defn host-observation []
   (let [pid (.pid (java.lang.ProcessHandle/current))
@@ -21,6 +22,8 @@
      :foreign-high-cpu (vec (filter (fn [line]
                                       (let [[p cpu] (str/split (str/trim line) #"\s+")]
                                         (and (not= (str pid) p) (>= (Double/parseDouble cpu) 50.0)))) processes))}))
+
+(declare observe!)
 
 (defn measure-report! [output observations]
 
@@ -49,29 +52,48 @@
         ;; samples use median time, rather than counting class loading as work.
         _ (doseq [k [:L0 :L-child :L2-await :L2-track]] (lifecycle/run-one k (get-in rules/measurement-protocol [:lifecycle :warm-shapes]) 2000))
         life (mapv (fn [k]
-                     (let [samples (vec (repeatedly 3 #(lifecycle/run-one k 5000 2000)))
+                     (let [samples (mapv (fn [i] (binding [load/*window* (pr-str [:lifecycle k i])]
+                                                     (lifecycle/run-one k 5000 2000))) (range 3))
                            r (assoc (nth (sort-by :us-per-spin samples) 1)
                                     :kb-per-spin (second (sort (map :kb-per-spin samples))))]
                        (prn r) (flush) (assoc r :samples samples))) [:L0 :L-child :L2-await :L2-track])
         large (large-parent/benchmark)
         forks (fork/benchmark)
         enums (enumeration/benchmark)
+        _ (observe! observations (get-in metadata [:session :role]) "worker" :end)
         report (assoc metadata :lifecycle life :large-parent large :fork forks :enumeration enums
-                      :host-observations (conj @observations (host-observation))
+                      :host-observations @observations
                       :record-only? true)]
     (io/make-parents output)
     (spit output (str (pr-str report) "\n"))
     report))
 
+(defn observe! [observations role window phase]
+  ;; The controller probe is a separate process reading host load/ps itself.
+  ;; Both probes finish before timed counters start, or after they stop.
+  (let [external (shell/sh "python3" "dev/lifetime_gate_session.py" "observe"
+                           (System/getenv "SPINDEL_BENCH_HOST_LOG") (name role) window (name phase)
+                           (str (.pid (java.lang.ProcessHandle/current))))]
+    (when-not (zero? (:exit external))
+      (throw (ex-info "Controller window observation failed" external)))
+    (swap! observations conj (assoc (host-observation) :window window :phase phase :role role))))
+
 (defn measure! [output]
-  (let [observations (atom [(host-observation)])
-        running? (atom true)
-        monitor (future
-                  (while @running?
-                    (Thread/sleep 5000)
-                    (when @running? (swap! observations conj (host-observation)))))]
-    (try (measure-report! output observations)
-         (finally (reset! running? false) @monitor))))
+  (let [observations (atom [])
+        role (keyword (System/getenv "SPINDEL_BENCH_ROLE"))
+        active-window (atom nil)
+        running? (atom true)]
+    (observe! observations role "worker" :start)
+    (let [monitor (future
+                    (while @running?
+                      (Thread/sleep 5000)
+                      (when @running?
+                        (swap! observations conj (assoc (host-observation) :window (or @active-window "worker") :phase :sample :role role)))))]
+      (try
+        (binding [load/*observe!* (partial observe! observations role)
+                  load/*active-window* active-window]
+          (measure-report! output observations))
+        (finally (reset! running? false) @monitor)))))
 
 (defn -main [& [mode baseline-file candidate-file]]
   (case mode

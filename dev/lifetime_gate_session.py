@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Run beneath spindel-work/bin/exclusive.sh, from this worktree.
 
-One session: fresh JVMs alternate MAIN/candidate for three accepted rounds.
-Overloaded attempts are retained and repeated as whole pairs. Stored baseline
-is a record of round 2; acceptance always uses this session's paired files.
+Protocol v4: four preregistered AB/BA pairs, at most twelve attempts.
+Environmental admission precedes outcomes. Raw attempts are archived; this
+runner never replaces historical baselines.
 """
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -29,8 +30,51 @@ def host(own_pids=()):
                 if float(line.split()[1]) >= 50 and int(line.split()[0]) not in {os.getpid(), *own_pids}]}
 
 
+SCHEDULE = (("baseline", "candidate"), ("candidate", "baseline")) * 2
+MAX_ATTEMPTS = 12
+
+
 def overloaded(observations, cores):
-    return any(o["load"] < 0 or o["load"] > cores / 2 for o in observations)
+    return not observations or any(not math.isfinite(o["load"]) or o["load"] < 0
+                                   or o["load"] > cores / 2 for o in observations)
+
+
+def record_host(path, role, window, phase, observation):
+    # EDN is read by the pure gate checker. JSON strings/vectors are also EDN.
+    row = {"at": observation["at"], "uptime": observation["uptime"],
+           "load": observation["load"], "foreign-high-cpu": observation["foreign_high_cpu"],
+           "window": window}
+    line = "{" + " ".join(":" + k + " " + json.dumps(v, allow_nan=False) for k, v in row.items())
+    line += f" :role :{role} :phase :{phase}}}\n"
+    with Path(path).open("a") as log:
+        log.write(line)
+
+
+def active_window(path):
+    marker = Path(str(path) + ".window")
+    return json.loads(marker.read_text()) if marker.exists() else "worker"
+
+
+def check_pair(paths, host_paths, log_path):
+    # Archive enriched v4 reports, then veto environmental invalidity BEFORE
+    # evaluating any outcome. No call to evaluate occurs in the invalid branch.
+    code = """(require '[clojure.edn :as e] '[clojure.string :as s]
+                        '[org.replikativ.spindel.lifetime-gate-rules :as g])
+    (let [[bp cp bh ch] *command-line-args*
+          read-report (fn [p h]
+                        (let [r (assoc (e/read-string (slurp p)) :controller-observations
+                                       (mapv e/read-string (s/split-lines (slurp h))))]
+                          (spit p (str (pr-str r) "\n")) r))
+          b (read-report bp bh) c (read-report cp ch)]
+      (if-not (g/pair-load-valid? b c)
+        (do (prn {:status :environmental-invalid}) (System/exit 3))
+        (try (let [r (g/evaluate b c)]
+               (doseq [x r] (prn x))
+               (System/exit (if (every? :pass? r) 0 1)))
+             (catch Exception x (prn (ex-data x)) (System/exit 2)))))"""
+    with log_path.open("w") as log:
+        return subprocess.run(["bb", "-cp", "dev", "-e", code, *paths, *host_paths],
+                              stdout=log, stderr=subprocess.STDOUT).returncode
 
 
 def main(output):
@@ -44,7 +88,7 @@ def main(output):
     if command(["git", "status", "--porcelain", "--", "src", "dev", "deps.edn", "test"]):
         raise RuntimeError("Commit the measured harness/source/tests before measuring")
     # A source archive in our own worktree, never another contributor's checkout.
-    snapshot = Path("target/perf-v3") / session
+    snapshot = Path("target/perf-v4") / session
     snapshot.mkdir(parents=True)
     archive = subprocess.check_output(["git", "archive", baseline, "src"])
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
@@ -58,7 +102,9 @@ def main(output):
                 "source_trees": {role: command(["git", "rev-parse", rev + ":src"])
                                  for role, rev in [("baseline", baseline), ("candidate", candidate)]},
                 "harness_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
-                                   for p in sorted(Path("dev").rglob("*.clj*"))},
+                                   for p in sorted([*Path("dev").rglob("*.clj*"), Path(__file__)])},
+                "protocol_version": 4, "schedule": SCHEDULE,
+                "max_attempts": MAX_ATTEMPTS, "aggregation": "all-valid-pairs-must-pass",
                 "attempts": []}
     flags = ["-Xmx3g", "-XX:+UseG1GC", "-Dclojure.main.report=stderr"]
     # Use the JVM's actual processor count, the same N recorded in each report.
@@ -67,75 +113,75 @@ def main(output):
     manifest["processors"] = cores
     manifest["jvm_flags"] = flags
     accepted = []
-    round_number = 1
     attempt = 0
-    while round_number <= 3:
+    manifest_path = output / "session.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    while len(accepted) < len(SCHEDULE) and attempt < MAX_ATTEMPTS:
+        attempt += 1
+        round_number = len(accepted) + 1
         observation = host()
-        with (output / "admission.jsonl").open("a") as log:
-            log.write(json.dumps(observation) + "\n")
+        entry = {"round": round_number, "attempt": attempt, "order": SCHEDULE[round_number - 1],
+                 "admission": observation}
         if overloaded([observation], cores):
-            print("Waiting for quiet host:", observation["uptime"], flush=True)
+            entry["status"] = "environmental-invalid"
+            manifest["attempts"].append(entry)
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
             time.sleep(30)
             continue
-        attempt += 1
-        observations = [observation]
-        paths = []
-        for role, revision in [("baseline", baseline), ("candidate", candidate)]:
+        reports, host_paths = {}, {}
+        for index, role in enumerate(SCHEDULE[round_number - 1]):
+            revision = baseline if role == "baseline" else candidate
             name = f"r{round_number}-attempt{attempt}-{role}"
             report = output / (name + ".edn")
+            host_path = output / (name + "-host.ednlog")
             env = dict(os.environ, SPINDEL_BENCH_SESSION=session, SPINDEL_BENCH_ROUND=str(round_number),
                        SPINDEL_BENCH_ROLE=role, SPINDEL_BENCH_REVISION=revision,
-                       SPINDEL_BENCH_POSITION=str(2 * (round_number - 1) + (role == "candidate")))
+                       SPINDEL_BENCH_HOST_LOG=str(host_path),
+                       SPINDEL_BENCH_POSITION=str(2 * (round_number - 1) + index))
             args = ["java", *flags, "-cp", classpaths[role], "clojure.main", "-m",
                     "org.replikativ.spindel.lifetime-gates", "measure", str(report)]
             print("Measuring", name, flush=True)
+            record_host(host_path, role, "worker", "start", host())
             with (output / (name + ".log")).open("w") as log:
                 process = subprocess.Popen(args, env=env, stdout=log, stderr=subprocess.STDOUT)
                 while process.poll() is None:
-                    observations.append(host([process.pid]))
+                    record_host(host_path, role, active_window(host_path), "sample", host([process.pid]))
                     time.sleep(5)
+            record_host(host_path, role, "worker", "end", host())
             if process.returncode:
                 raise RuntimeError(f"Measurement failed: {name}; see its log")
-            paths.append(str(report))
-        observations.append(host())
-        rejected = overloaded(observations, cores)
-        # The JVM monitor samples at a different phase; either monitor can veto.
-        check_code = """(require '[clojure.edn :as e] '[org.replikativ.spindel.lifetime-gate-rules :as g])
-        (let [reports (mapv #(e/read-string (slurp %)) *command-line-args*)]
-          (if-not (every? g/host-quiet? reports)
-            (System/exit 3)
-            (try (let [r (apply g/evaluate reports)]
-                   (doseq [x r] (prn x))
-                   (System/exit (if (every? :pass? r) 0 1)))
-                 (catch Exception x (prn (ex-data x)) (System/exit 2)))))"""
-        with (output / f"r{round_number}-attempt{attempt}-gates.log").open("w") as log:
-            result = subprocess.run(["bb", "-cp", "dev", "-e", check_code, *paths],
-                                    stdout=log, stderr=subprocess.STDOUT)
-        if result.returncode not in {0, 1, 3}:
-            raise RuntimeError("Invalid measurement evidence; baseline will not be published")
-        rejected |= result.returncode == 3
-        manifest["attempts"].append({"round": round_number, "attempt": attempt,
-                                     "reports": paths, "host": observations,
-                                     "status": "repeat-overloaded" if rejected else "accepted"})
-        (output / "session.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        if rejected:
-            print("Repeating overloaded round", round_number, flush=True)
+            reports[role] = str(report)
+            host_paths[role] = str(host_path)
+        paths = [reports[role] for role in ("baseline", "candidate")]
+        gate_log = output / f"r{round_number}-attempt{attempt}-gates.log"
+        code = check_pair(paths, [host_paths[role] for role in ("baseline", "candidate")], gate_log)
+        if code not in {0, 1, 3}:
+            raise RuntimeError("Invalid measurement evidence; no acceptance or baseline publication")
+        entry.update(reports=reports, host_logs=host_paths,
+                     status="environmental-invalid" if code == 3 else "accepted")
+        manifest["attempts"].append(entry)
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        if code == 3:
             continue
-        accepted.append((paths, result.returncode))
-        (output / f"r{round_number}-gates.log").write_bytes(
-            (output / f"r{round_number}-attempt{attempt}-gates.log").read_bytes())
-        round_number += 1
-    # Keep v2 as historical evidence; the canonical main baseline is regenerated.
-    stored = Path("dev/org/replikativ/spindel/baselines/main-06ce205.edn")
-    (output / "stored-baseline-v3.edn").write_bytes(Path(accepted[1][0][0]).read_bytes())
-    # Baseline publication is explicit: only complete, accepted reports reach it.
-    stored.write_bytes(Path(accepted[1][0][0]).read_bytes())
-    all_passed = all(code == 0 for paths, code in accepted)
-    manifest["gates_passed"] = all_passed
-    (output / "session.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print("Session complete; gates passed:", all_passed, flush=True)
-    return 0 if all_passed else 1
+        # A valid failed outcome is retained, never retried for a better result.
+        accepted.append(code)
+        (output / f"r{round_number}-gates.log").write_bytes(gate_log.read_bytes())
+    complete = len(accepted) == len(SCHEDULE)
+    all_passed = complete and all(code == 0 for code in accepted)
+    manifest.update(status=("passed" if all_passed else "failed") if complete else "inconclusive",
+                    gates_passed=all_passed, valid_pairs=len(accepted))
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    print("Session:", manifest["status"], flush=True)
+    return (0 if all_passed else 1) if complete else 3
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    if sys.argv[1] == "observe":
+        output, role, window, phase, pid = sys.argv[2:]
+        record_host(output, role, window, phase, host([int(pid)]))
+        marker = Path(output + ".window")
+        temporary = Path(output + ".window.next")
+        temporary.write_text(json.dumps(window if phase == "start" else "worker"))
+        temporary.replace(marker)
+    else:
+        sys.exit(main(sys.argv[1]))

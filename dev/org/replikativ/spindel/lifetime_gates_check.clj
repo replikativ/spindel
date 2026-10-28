@@ -8,11 +8,16 @@
                :expected-empty required :observations [observation observation observation] :retained-bytes 1000}]
     (assoc point :keyword-intern-drained? true :pre-intern-gc point)))
 
+(defn observations [role value]
+  (vec (for [window (conj gates/timed-windows "worker") phase [:start :end]]
+         {:role role :window window :phase phase :load value :uptime "test uptime" :foreign-high-cpu []})))
+
 (def fixture
   (merge (zipmap gates/metadata-fields (repeat :test))
          {:protocol-version gates/protocol-version :measurement-protocol gates/measurement-protocol
           :revision "base" :source-revision "base-src" :allocation :calling-thread-live-handles
-          :processors 8 :host-observations [{:load 1.0 :uptime "test uptime" :foreign-high-cpu []}]
+          :processors 8 :host-observations (observations :baseline 1.0)
+          :controller-observations (observations :baseline 1.0)
           :session {:id "test-session" :round 1 :position 0 :role :baseline}
           :large-parent (vec (for [mode [:root :following :frozen] path [:uncached-await :execution-event]
                                    :let [r {:mode mode :path path :parent-nodes 10000 :shape-warmup? false
@@ -34,7 +39,10 @@
                                                     [10000 100000])}) [:fork :spin])}))
 
 (defn evaluate [baseline candidate]
-  (gates/evaluate baseline (update candidate :session assoc :role :candidate :position 1)))
+  (gates/evaluate baseline (-> candidate
+                                 (update :session assoc :role :candidate :position 1)
+                                 (update :host-observations #(mapv (fn [o] (assoc o :role :candidate)) %))
+                                 (update :controller-observations #(mapv (fn [o] (assoc o :role :candidate)) %)))))
 
 (deftest gate-boundaries
   (is (every? :pass? (evaluate fixture fixture)))
@@ -93,8 +101,8 @@
     (let [candidate (assoc-in fixture path [{:heap-bytes 1000 :gc-completed? true :census {}}])]
       (is (some #(false? (:pass? %)) (evaluate fixture candidate))))))
 
-(deftest protocol-v3-and-intern-drain-required
-  (is (= 3 gates/protocol-version))
+(deftest protocol-v4-and-intern-drain-required
+  (is (= 4 gates/protocol-version))
   (is (not (gates/measurement-stable? (dissoc (stable-point #{}) :keyword-intern-drained?) #{})))
   (is (some #(false? (:pass? %))
             (evaluate fixture (assoc-in fixture [:enumeration 0 :points 1 :keyword-intern-drained?] false))))
@@ -121,7 +129,7 @@
     (is (thrown? clojure.lang.ExceptionInfo (evaluate fixture candidate)))))
 
 (deftest overload-and-host-observations-fail-closed
-  (is (every? :pass? (evaluate fixture (assoc-in fixture [:host-observations 0 :load] 4))))
+  (is (gates/host-quiet? (assoc-in fixture [:host-observations 0 :load] 4)))
   (doseq [candidate [(assoc-in fixture [:host-observations 0 :load] 4.01)
                      (assoc-in fixture [:host-observations 0 :load] -1)
                      (assoc fixture :host-observations [])
@@ -130,7 +138,10 @@
     (is (thrown? clojure.lang.ExceptionInfo (evaluate fixture candidate)))))
 
 (deftest stored-or-unpaired-reports-cannot-pass-relative-gates
-  (let [candidate (assoc fixture :session {:id "test-session" :round 1 :position 1 :role :candidate})]
+  (let [candidate (-> fixture
+                      (assoc :session {:id "test-session" :round 1 :position 1 :role :candidate})
+                      (assoc :host-observations (observations :candidate 1.0)
+                             :controller-observations (observations :candidate 1.0)))]
     (is (every? :pass? (gates/evaluate fixture candidate)))
     (doseq [bad [(assoc-in candidate [:session :id] "older-session")
                  (assoc-in candidate [:session :round] 2)
@@ -143,3 +154,56 @@
   (doseq [v [nil ##NaN ##Inf -1 0]]
     (is (thrown? clojure.lang.ExceptionInfo
                  (evaluate fixture (assoc-in fixture [:lifecycle 0 :us-per-spin] v))))))
+
+(deftest symmetric-load-comparability-before-outcomes
+  ;; Under v3 both workers were below N/2, yet could differ by >0.10 N.
+  (let [higher (assoc-in fixture [:host-observations 0 :load] 2.0)]
+    (is (thrown? clojure.lang.ExceptionInfo (evaluate fixture higher)))
+    (is (thrown? clojure.lang.ExceptionInfo (evaluate higher fixture))))
+  (let [valid? (ns-resolve 'org.replikativ.spindel.lifetime-gate-rules 'pair-load-valid?)]
+    (is (some? valid?))
+    (when valid?
+      (is (valid? fixture fixture)))))
+
+(deftest load-pair-requires-each-window-and-both-statistics-on-both-monitors
+  (is (gates/pair-load-valid? fixture fixture))
+  (doseq [field [:host-observations :controller-observations]]
+    (let [window (first gates/timed-windows)
+          at-window (fn [rows loads]
+                      (into (vec (remove #(= window (:window %)) rows))
+                            (map-indexed (fn [i value] {:role :baseline :window window
+                                                       :phase (if (zero? i) :start :end)
+                                                       :load value :uptime "test" :foreign-high-cpu []}) loads)))
+          candidate #(update fixture field at-window %)]
+      (is (gates/pair-load-valid? fixture (candidate [1.8 1.8])))
+      ;; Equal peaks isolate the median rule; equal medians isolate the peak.
+      (is (false? (gates/pair-load-valid? (candidate [1 1 2]) (candidate [1.81 1.81 2]))))
+      (is (false? (gates/pair-load-valid? (candidate [1.81 1.81 2]) (candidate [1 1 2]))))
+      (doseq [loads [[1.0 1.81] [1.81 1.81] [1 1 1 2] [1.81 1.81 2]]]
+        (is (false? (gates/pair-load-valid? fixture (candidate loads))))
+        (is (false? (gates/pair-load-valid? (candidate loads) fixture))))
+      (doseq [bad [(update fixture field #(vec (remove (fn [o] (= window (:window o))) %)))
+                   (assoc fixture field [])
+                   (assoc-in fixture [field 0 :role] :wrong)
+                   (assoc-in fixture [field 0 :load] ##NaN)
+                   (assoc-in fixture [field 0 :load] 4.01)]]
+        (is (false? (gates/pair-load-valid? fixture bad)))))))
+
+(deftest whole-worker-comparability-cannot-hide-in-equal-fixtures
+  (doseq [field [:host-observations :controller-observations]]
+    (let [extra {:role :baseline :window "worker" :phase :sample
+                 :load 2.0 :uptime "test" :foreign-high-cpu []}
+          candidate (update fixture field conj extra)]
+      (is (false? (gates/pair-load-valid? fixture candidate)))
+      (is (false? (gates/pair-load-valid? candidate fixture))))))
+
+(deftest ba-order-is-required-on-even-rounds
+  (let [baseline (assoc-in fixture [:session :round] 2)
+        baseline (assoc-in baseline [:session :position] 3)
+        candidate (-> fixture (assoc :host-observations (observations :candidate 1.0)
+                                    :controller-observations (observations :candidate 1.0))
+                      (assoc :session {:id "test-session" :round 2 :position 2 :role :candidate}))]
+    (is (every? :pass? (gates/evaluate baseline candidate)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (gates/evaluate (assoc-in baseline [:session :position] 2)
+                                 (assoc-in candidate [:session :position] 3))))))

@@ -13,7 +13,8 @@
             [org.replikativ.spindel.spin.cps :refer [spin]]
             [org.replikativ.spindel.fork-bench :as bench]
             [org.replikativ.spindel.enum-bench :as enumeration]
-            [org.replikativ.spindel.lifetime-gate-rules :as rules]))
+            [org.replikativ.spindel.lifetime-gate-rules :as rules]
+            [org.replikativ.spindel.lifetime-load-monitor :as load]))
 
 (defn fresh-spin [i] (spin (+ i 1)))
 (defn awaiting-spin [s] (spin (await s)))
@@ -34,16 +35,17 @@
           nodes-at-start (count (rtp/get-state world [:nodes]))
           cpu (java.lang.management.ManagementFactory/getThreadMXBean)
           _ (.setThreadCpuTimeEnabled cpu true)
-          before (.getCurrentThreadCpuTime cpu)
-          r (bench/measure n f)
-          cpu-ns (- (.getCurrentThreadCpuTime cpu) before)
+          r (load/timed
+             (fn []
+               (let [before (.getCurrentThreadCpuTime cpu)
+                     measured (binding [load/*window* nil] (bench/measure n f))]
+                 (assoc measured :cpu-ns-per-op (/ (double (- (.getCurrentThreadCpuTime cpu) before)) n)))))
           checksum (reduce + results)]
       (assert (= (reduce + (range 1 (inc n))) checksum))
       (java.lang.ref.Reference/reachabilityFence children)
       (java.lang.ref.Reference/reachabilityFence parents)
       (doseq [s (concat parents children)] (simple/full-cleanup-spin! world (sc/spin-id s)))
-      (assoc r :cpu-ns-per-op (/ (double cpu-ns) n)
-             :nodes-at-start nodes-at-start :checksum checksum))))
+      (assoc r :nodes-at-start nodes-at-start :checksum checksum))))
 
 (defn sample [mode path population shape-warmup?]
   (let [root (ctx/create-execution-context :executor (ex/synchronous-executor))]
@@ -53,7 +55,7 @@
               _ (assert (= population (count (rtp/get-state root [:nodes]))))
               world (if (= mode :root) root (ctx/fork-context root :mode mode))]
           (try
-            (run-batch world path 300)
+            (binding [load/*window* nil] (run-batch world path 300))
             (enumeration/full-gc! nil)
             (let [r (assoc (run-batch world path 300)
                            :mode mode :path path :parent-nodes population :shape-warmup? shape-warmup?)]
@@ -73,7 +75,8 @@
 (defn benchmark []
   (warm-shapes!)
   (mapv (fn [[mode path]]
-          (let [samples (vec (repeatedly 3 #(sample mode path 10000 false)))
+          (let [samples (mapv (fn [i] (binding [load/*window* (pr-str [:large-parent mode path i])]
+                                                       (sample mode path 10000 false))) (range 3))
                 row (assoc (second (sort-by :ns-per-op samples))
                            :bytes-per-op (second (sort (map :bytes-per-op samples)))
                            :samples samples)]

@@ -13,6 +13,7 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.enum-bench :as enumeration]
             [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.lifetime-load-monitor :as load]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]])
   (:import [java.lang.management ManagementFactory]
@@ -58,21 +59,23 @@
         (binding [ec/*execution-context* rt cps/*in-trampoline* false]
           (let [f (body-fn kind retain!)]
             (dotimes [i warmup] (f i))
-            (.set active? true)
-            (let [bytes (.getThreadAllocatedBytes bean tid)
-                  start (System/nanoTime)
-                  sum (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (f i))) acc))
-                  elapsed (- (System/nanoTime) start)
-                  allocated (- (.getThreadAllocatedBytes bean tid) bytes)]
-              (.set active? false)
-              (java.lang.ref.Reference/reachabilityFence handles)
-              (when-not (zero? (.get cleanup-calls))
-                (throw (ex-info "Cleanup contaminated lifecycle sample"
-                                {:cleanup-calls (.get cleanup-calls)})))
-              {:lifecycle kind :spins n :warmup warmup :checksum sum
-               :retained-handles (.size handles) :cleanup-calls (.get cleanup-calls)
-               :us-per-spin (/ (double elapsed) n 1000)
-               :kb-per-spin (/ (double allocated) n 1024)}))))
+            (load/timed
+             (fn []
+               (.set active? true)
+               (let [bytes (.getThreadAllocatedBytes bean tid)
+                     start (System/nanoTime)
+                     sum (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (f i))) acc))
+                     elapsed (- (System/nanoTime) start)
+                     allocated (- (.getThreadAllocatedBytes bean tid) bytes)]
+                 (.set active? false)
+                 (java.lang.ref.Reference/reachabilityFence handles)
+                 (when-not (zero? (.get cleanup-calls))
+                   (throw (ex-info "Cleanup contaminated lifecycle sample"
+                                   {:cleanup-calls (.get cleanup-calls)})))
+                 {:lifecycle kind :spins n :warmup warmup :checksum sum
+                  :retained-handles (.size handles) :cleanup-calls (.get cleanup-calls)
+                  :us-per-spin (/ (double elapsed) n 1000)
+                  :kb-per-spin (/ (double allocated) n 1024)}))))))
       (finally
         (.set active? false)
         (ctx/close-context! rt)
