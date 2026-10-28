@@ -24,27 +24,27 @@
 
 (deftest await-running-mult-pump
   (async done
-    (with-redefs [th/create-test-context
-                  #(ctx/create-execution-context :executor (ex/synchronous-executor))]
-      (with-ctx [world]
-        (let [mailbox (sync/create-mailbox world)
-              m (mult/mult (finite-mailbox mailbox))
-              results (atom [])
-              observer (spin (await (mult/mult-pump m)))
-              add! ec/continuation-add!
-              forced? (atom false)]
-          (mult/start! m)
-          (with-redefs [ec/continuation-add!
-                        (fn [sid cont]
-                          (when (and (= sid (sc/spin-id observer))
-                                     (compare-and-set! forced? false true))
-                            (sync/post! mailbox ::end))
-                          (add! sid cont))]
-            (run-spin! observer #(swap! results conj %) #(is false (str %))))
-          (is @forced?)
-          (is (mult/mult-closed? m))
-          (is (= 1 (count @results)) "completion before registration still wakes the awaiter"))))
-    (done)))
+         (with-redefs [th/create-test-context
+                       #(ctx/create-execution-context :executor (ex/synchronous-executor))]
+           (with-ctx [world]
+             (let [mailbox (sync/create-mailbox world)
+                   m (mult/mult (finite-mailbox mailbox))
+                   results (atom [])
+                   observer (spin (await (mult/mult-pump m)))
+                   add! ec/continuation-add!
+                   forced? (atom false)]
+               (mult/start! m)
+               (with-redefs [ec/continuation-add!
+                             (fn [sid cont]
+                               (when (and (= sid (sc/spin-id observer))
+                                          (compare-and-set! forced? false true))
+                                 (sync/post! mailbox ::end))
+                               (add! sid cont))]
+                 (run-spin! observer #(swap! results conj %) #(is false (str %))))
+               (is @forced?)
+               (is (mult/mult-closed? m))
+               (is (= 1 (count @results)) "completion before registration still wakes the awaiter"))))
+         (done)))
 
 #?(:clj
    (deftest mult-pump-completion-race-1000

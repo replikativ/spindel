@@ -19,113 +19,113 @@
 ;; Every callback runs synchronously in these tests. No blocking Spin derefs.
 (deftest inline-production-keeps-its-supplied-result
   (async done
-    (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
-      (binding [ec/*execution-context* world pcps/*in-trampoline* false]
-        (let [child (spin :stored)
-              parent (spin nil)
-              sid (sc/spin-id parent)
-              result (sc/ok :produced)
-              cont {:id ::production :kind :await-reactive :body-slice? true
-                    :event-key [:spin/complete (sc/spin-id child)]
-                    :registration (random-uuid)}]
-          (sync/spawn! child)
-          (ec/continuation-add! sid cont)
+         (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
+           (binding [ec/*execution-context* world pcps/*in-trampoline* false]
+             (let [child (spin :stored)
+                   parent (spin nil)
+                   sid (sc/spin-id parent)
+                   result (sc/ok :produced)
+                   cont {:id ::production :kind :await-reactive :body-slice? true
+                         :event-key [:spin/complete (sc/spin-id child)]
+                         :registration (random-uuid)}]
+               (sync/spawn! child)
+               (ec/continuation-add! sid cont)
           ;; A fresh inline production supplies its own certified wrapper;
           ;; cache delivery supplies nil instead. Forked code
           ;; can produce on this stack without updating this world's cache.
-          (let [claimed (simple/claim-continuation-for-resume!
-                         world sid (:id cont)
-                         {:result result :registration (:registration cont) :inline? true})]
-            (is (some? claimed))
-            (is (identical? result ((:on-resume claimed) world)))))))
-    (done)))
+               (let [claimed (simple/claim-continuation-for-resume!
+                              world sid (:id cont)
+                              {:result result :registration (:registration cont) :inline? true})]
+                 (is (some? claimed))
+                 (is (identical? result ((:on-resume claimed) world)))))))
+         (done)))
 
 (deftest non-body-completions-use-the-supplied-result
   (async done
-    (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
-      (binding [ec/*execution-context* world pcps/*in-trampoline* false]
-        (let [parent (spin nil)
-              sid (sc/spin-id parent)
-              result (sc/ok :value)
-              cont {:id ::combinator :kind :await-reactive
-                    :event-key [:spin/complete ::combinator-child]
-                    :registration (random-uuid)}]
+         (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
+           (binding [ec/*execution-context* world pcps/*in-trampoline* false]
+             (let [parent (spin nil)
+                   sid (sc/spin-id parent)
+                   result (sc/ok :value)
+                   cont {:id ::combinator :kind :await-reactive
+                         :event-key [:spin/complete ::combinator-child]
+                         :registration (random-uuid)}]
           ;; Combinators select their result themselves. They need no body
           ;; child node for the readiness check used by await slices.
-          (ec/continuation-add! sid cont)
-          (let [claimed (simple/claim-continuation-for-resume!
-                         world sid (:id cont)
-                         {:result result :registration (:registration cont) :inline? true})]
-            (is (some? claimed))
-            (is (identical? result ((:on-resume claimed) world)))))))
-    (done)))
+               (ec/continuation-add! sid cont)
+               (let [claimed (simple/claim-continuation-for-resume!
+                              world sid (:id cont)
+                              {:result result :registration (:registration cont) :inline? true})]
+                 (is (some? claimed))
+                 (is (identical? result ((:on-resume claimed) world)))))))
+         (done)))
 
 (deftest await-joins-a-local-execution-reservation
   (async done
-           (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
-             (binding [ec/*execution-context* world pcps/*in-trampoline* false]
-               (let [mailbox (sync/create-mailbox world)
-                     runs (atom 0) values (atom [])
-                     child (spin (swap! runs inc) (await mailbox))
-                     observer (spin (await child))
-                     claim! simple/try-claim-execution!]
-                 (with-redefs [simple/try-claim-execution!
-                               (fn [rt sid]
-                                 (let [claimed? (claim! rt sid)]
-                                   (when (and claimed? (= sid (sc/spin-id child)))
+         (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))]
+           (binding [ec/*execution-context* world pcps/*in-trampoline* false]
+             (let [mailbox (sync/create-mailbox world)
+                   runs (atom 0) values (atom [])
+                   child (spin (swap! runs inc) (await mailbox))
+                   observer (spin (await child))
+                   claim! simple/try-claim-execution!]
+               (with-redefs [simple/try-claim-execution!
+                             (fn [rt sid]
+                               (let [claimed? (claim! rt sid)]
+                                 (when (and claimed? (= sid (sc/spin-id child)))
                                      ;; The event owns a start but has not entered
                                      ;; the body prologue yet. Its world is evidence
                                      ;; of a local completion route already.
-                                     (sync/spawn! observer {:on-success #(swap! values conj %)}))
-                                   claimed?))]
-                   (simple/process-event! world {:type :spin-execution :id (sc/spin-id child)
-                                                 :spin child :resolve-fn identity :reject-fn identity}))
-                 (sync/post! mailbox :end)
-                 (is (= [:end] @values))
-                 (is (= 1 @runs)))))
-           (done)))
+                                   (sync/spawn! observer {:on-success #(swap! values conj %)}))
+                                 claimed?))]
+                 (simple/process-event! world {:type :spin-execution :id (sc/spin-id child)
+                                               :spin child :resolve-fn identity :reject-fn identity}))
+               (sync/post! mailbox :end)
+               (is (= [:end] @values))
+               (is (= 1 @runs)))))
+         (done)))
 
 (deftest invalidation-after-ready-decision
   (async done
-           (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))
-                 cb (atom nil) values (atom []) runs (atom 0)]
-             (binding [ec/*execution-context* world pcps/*in-trampoline* false]
-               (let [child (spin (if (= 1 (swap! runs inc))
-                                  (await (fn [r _] (reset! cb r) sc/incomplete)) :new))
-                     observer (spin (await child))
-                     add! ec/continuation-add!
-                     claim! simple/try-claim-execution!
-                     resume! simple/claim-continuation-for-resume!
-                     forced? (atom false)
-                     dirty! (fn [rt]
-                              (when (compare-and-set! forced? false true)
-                                (simple/mark-dirty! rt (sc/spin-id child))))]
-                 (sync/spawn! child)
-                 (with-redefs [ec/continuation-add!
-                               (fn [sid cont]
-                                 (when (= sid (sc/spin-id observer)) ((deref cb) :old))
-                                 (add! sid cont))
+         (let [world (ctx/create-execution-context :executor (ex/synchronous-executor))
+               cb (atom nil) values (atom []) runs (atom 0)]
+           (binding [ec/*execution-context* world pcps/*in-trampoline* false]
+             (let [child (spin (if (= 1 (swap! runs inc))
+                                 (await (fn [r _] (reset! cb r) sc/incomplete)) :new))
+                   observer (spin (await child))
+                   add! ec/continuation-add!
+                   claim! simple/try-claim-execution!
+                   resume! simple/claim-continuation-for-resume!
+                   forced? (atom false)
+                   dirty! (fn [rt]
+                            (when (compare-and-set! forced? false true)
+                              (simple/mark-dirty! rt (sc/spin-id child))))]
+               (sync/spawn! child)
+               (with-redefs [ec/continuation-add!
+                             (fn [sid cont]
+                               (when (= sid (sc/spin-id observer)) ((deref cb) :old))
+                               (add! sid cont))
                                ;; Before the fix, dirty immediately after the failed
                                ;; execution claim. After it, dirty before the arbiter
                                ;; revalidates the ready decision. Both must refresh.
-                               simple/try-claim-execution!
-                               (fn hooked-claim
-                                 ([rt sid] (hooked-claim rt sid nil))
-                                 ([rt sid opts]
-                                  (let [claimed? (if opts (claim! rt sid opts) (claim! rt sid))]
-                                    (when (and (= sid (sc/spin-id child)) (not claimed?)) (dirty! rt))
-                                    claimed?)))
-                               simple/claim-continuation-for-resume!
-                               (fn hooked-resume
-                                 ([rt sid cid] (hooked-resume rt sid cid nil))
-                                 ([rt sid cid opts]
-                                  (when (= sid (sc/spin-id observer)) (dirty! rt))
-                                  (resume! rt sid cid opts)))]
-                   (sync/spawn! observer {:on-success #(swap! values conj %)}))
-                 (is @forced?)
-                 (is (= [:new] @values))
-                 (is (= 2 @runs)))))
-           (done)))
+                             simple/try-claim-execution!
+                             (fn hooked-claim
+                               ([rt sid] (hooked-claim rt sid nil))
+                               ([rt sid opts]
+                                (let [claimed? (if opts (claim! rt sid opts) (claim! rt sid))]
+                                  (when (and (= sid (sc/spin-id child)) (not claimed?)) (dirty! rt))
+                                  claimed?)))
+                             simple/claim-continuation-for-resume!
+                             (fn hooked-resume
+                               ([rt sid cid] (hooked-resume rt sid cid nil))
+                               ([rt sid cid opts]
+                                (when (= sid (sc/spin-id observer)) (dirty! rt))
+                                (resume! rt sid cid opts)))]
+                 (sync/spawn! observer {:on-success #(swap! values conj %)}))
+               (is @forced?)
+               (is (= [:new] @values))
+               (is (= 2 @runs)))))
+         (done)))
 
 (deftest dirty-cancellation-during-registration-is-terminal
   (async done
