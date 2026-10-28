@@ -2050,11 +2050,51 @@
                                       subs)))))))
   true)
 
+(defn- remove-spin-indexes
+  "Drop the auxiliary indexes of a reclaimed spin. Called only when its node
+  is removed, never on dependency clearing or body re-entry. A keyed container
+  also releases the child handles it registered for its last run, unless
+  another keyed container still holds their IDs."
+  [state spin-id]
+  (let [addressing (:addressing state)
+        heads (:chain-heads addressing)
+        occurrences (:occurrences addressing)
+        heads? (contains? heads spin-id)
+        occurrences? (contains? occurrences spin-id)
+        keyed (:keyed state)
+        child-ids (:spin-ids (get keyed spin-id))
+        registry (:keyed/spins state)
+        registry (if (seq child-ids)
+                   (let [held (into #{} (mapcat (comp :spin-ids val)) (dissoc keyed spin-id))]
+                     (reduce dissoc registry (set/difference child-ids held)))
+                   registry)]
+    ;; Copy the addressing header once. A lone row needs only an assoc;
+    ;; use a transaction-local transient when both tables change.
+    (cond-> state
+      (or heads? occurrences?)
+      (assoc :addressing
+             (cond
+               (and heads? occurrences?)
+               (persistent! (-> (transient addressing)
+                                (assoc! :chain-heads (dissoc heads spin-id))
+                                (assoc! :occurrences (dissoc occurrences spin-id))))
+               heads? (assoc addressing :chain-heads (dissoc heads spin-id))
+               :else (assoc addressing :occurrences (dissoc occurrences spin-id))))
+      (contains? keyed spin-id)
+      (assoc :keyed (dissoc keyed spin-id))
+      (or (not (identical? registry (:keyed/spins state)))
+          (contains? registry spin-id))
+      (assoc :keyed/spins (dissoc registry spin-id))
+      (contains? (:engine/spawned state) spin-id)
+      (assoc :engine/spawned (dissoc (:engine/spawned state) spin-id))
+      (contains? (:engine/reuse-barriers state) spin-id)
+      (assoc :engine/reuse-barriers (disj (:engine/reuse-barriers state) spin-id)))))
+
 (defn full-cleanup-spin!
   "Remove ALL runtime state for a spin atomically.
 
   Unlike clear-deps! which only clears deps/continuations/subscriptions,
-  this removes the spin node itself and all 8+ state locations.
+  this removes the spin node itself and its auxiliary indexes.
 
   Used by GC cleanup when a spin is safe to fully remove (no observers).
 
@@ -2078,7 +2118,7 @@
   ;; skipped by dispatch.
    (rtp/swap-state! context []
                     (fn [state]
-                      (let [node (get-in state [:nodes spin-id])
+                      (let [node (get (:nodes state) spin-id)
                             deps (when node (nodes/get-deps node))
                             signal-deps (into #{} (filter #(local? :nodes %)) (:signals deps #{}))
                             spin-deps (into #{} (filter #(local? :nodes %)) (:spins deps #{}))]
@@ -2090,33 +2130,37 @@
                                              signal-deps spin-deps
                                              #{} #{}
                                              :skip)
-            ;; 3. Remove the spin node itself
-                            (update :nodes dissoc spin-id)
-            ;; 4. Remove metadata
-                            (update :spins-meta dissoc spin-id)
-            ;; 5. Remove continuations (both kinds)
-                            (update :track-subscriptions dissoc spin-id)
-                            (update :await-conts dissoc spin-id)
+            ;; 3. Remove the spin node and its auxiliary indexes. Addressing
+            ;; survives completion/re-entry, but must not outlive the node.
+                            (remove-spin-indexes spin-id)
+                            (as-> s
+                                  (reduce (fn [s table]
+                                            (let [rows (get s table)]
+                                              (if (contains? rows spin-id)
+                                                (assoc s table (dissoc rows spin-id))
+                                                s)))
+                                          s [:nodes :spins-meta :track-subscriptions :await-conts
+                                             :pending-callbacks :run-callbacks :spin-tracking]))
                             (update :engine/retired-conts
                                     (fn [retired]
                                       (into {}
                                             (remove (fn [[[owner-id _] _]]
                                                       (= owner-id spin-id)))
                                             retired)))
-            ;; 6. Remove pending callbacks
-                            (update :pending-callbacks dissoc spin-id)
-                            (update :run-callbacks dissoc spin-id)
-            ;; 7. Remove tracking data
-                            (update :spin-tracking dissoc spin-id)
-            ;; 9. Clean subscriptions (remove spin-id from all event keys)
+            ;; Reverse edges can outlive their conts, and generation cleanup
+            ;; can leave empty buckets. Until these have a complete owner
+            ;; index, scan all keys but copy only changed entries.
                             (update :subscriptions
                                     (fn [subs]
-                                      (when subs
-                                        (persistent!
-                                         (reduce-kv (fn [acc ek m]
-                                                      (let [m' (dissoc m spin-id)]
-                                                        (if (seq m') (assoc! acc ek m') acc)))
-                                                    (transient {}) subs)))))
+                                      (reduce-kv
+                                       (fn [acc ek m]
+                                         (if (contains? m spin-id)
+                                           (let [m' (dissoc m spin-id)]
+                                             (if (pos? (count m'))
+                                               (assoc acc ek m')
+                                               (dissoc acc ek)))
+                                           (if (pos? (count m)) acc (dissoc acc ek))))
+                                       subs subs)))
             ;; Note: await-parent relations live on :nodes :observers
             ;; now; signal observers (above) and the :subscriptions clean
             ;; (above) cover those. No separate :await-dependents map.
@@ -2442,7 +2486,7 @@
                                       (into {} (remove (fn [[[owner-id _] _]] (contains? dead owner-id)))
                                             retired)))))
                 state (if (seq reap)
-                        (-> state
+                        (-> (reduce remove-spin-indexes state reap)
                             (update :nodes #(reduce dissoc % reap))
                             (update :spins-meta #(reduce dissoc % reap)))
                         state)]
