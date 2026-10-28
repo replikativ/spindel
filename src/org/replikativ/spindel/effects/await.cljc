@@ -7,6 +7,7 @@
   - SignalRef: error (use track instead)"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.impl.simple :as simple]
@@ -341,7 +342,10 @@
                                     result (spin-core/ok v)]
                                 ;; false: a newer run of the child superseded
                                 ;; this one — not published, not delivered.
-                                (when (ec/spin-cache-result! awaited-spin-id result @child-run)
+                                (when (ec/spin-cache-result! awaited-spin-id result
+                                                             (if (= (first ec/*run-gen*) awaited-spin-id)
+                                                               (second ec/*run-gen*)
+                                                               @child-run))
                                   (when inline
                                     (vreset! child-result result)
                                     (vreset! child-completed? true))
@@ -356,7 +360,10 @@
               child-reject (fn [e]
                              (let [inline (inline?)
                                    result (spin-core/error e)]
-                               (when (ec/spin-cache-result! awaited-spin-id result @child-run)
+                               (when (ec/spin-cache-result! awaited-spin-id result
+                                                            (if (= (first ec/*run-gen*) awaited-spin-id)
+                                                              (second ec/*run-gen*)
+                                                              @child-run))
                                  (when inline
                                    (vreset! child-result result)
                                    (vreset! child-completed? true))
@@ -419,6 +426,7 @@
                     _ (vreset! child-run (simple/enter-body! ctx awaited-spin-id))
                     _raw-result (binding [ec/*execution-context* child-ctx
                                           ec/*spin-id* awaited-spin-id
+                                          ec/*lifetime-run* (lifetime/body-run-seq ctx awaited-spin-id)
                                           pcps-async/*in-trampoline* false]
                                   (child-spin-fn child-resolve child-reject))]
               ;; End sync phase — any future callback invocation is async.
@@ -573,13 +581,20 @@
            (when (try (ec/current-execution-context)
                       (catch #?(:clj Throwable :cljs :default) _ nil))
              (ec/continuation-remove! spin-id cont-id {:only-token cancel-token})))
+         captured-run-gen ec/*run-gen*
+         captured-lifetime-run ec/*lifetime-run*
+         captured-owner-scope ec/*owner-scope*
          ;; Resume the awaiting body as ITS spin. A delivery from another
          ;; spin's stack (spawn! callbacks, plain-fn thunks) must not let
          ;; the body's next awaits register under the deliverer's id.
          in-owner (fn [k x]
-                    (if (= ec/*spin-id* spin-id)
+                    (if (and (= ec/*spin-id* spin-id)
+                             (= ec/*run-gen* captured-run-gen))
                       (k x)
                       (binding [ec/*spin-id* spin-id
+                                ec/*run-gen* captured-run-gen
+                                ec/*lifetime-run* captured-lifetime-run
+                                ec/*owner-scope* captured-owner-scope
                                 pcps-async/*in-trampoline* false]
                         (k x))))
          wrapped-resolve (fn [v]

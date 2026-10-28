@@ -1,6 +1,7 @@
 (ns org.replikativ.spindel.atom
   (:refer-clojure :exclude [atom])
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.state-backend :as backend]
             [replikativ.logging :as log])
   #?(:clj (:import [java.lang.ref WeakReference])))
@@ -265,6 +266,7 @@
   [initial-value & {:keys [meta]}]
   (let [runtime (ec/current-execution-context)
         atom-id (keyword (gensym "atom-"))
+        owner (lifetime/current-scope runtime)
         runtime-atom-obj (->RuntimeAtom atom-id)]  ; No runtime captured!
 
     ;; Initialize state in runtime (value + metadata, fork-safe). Watchers live
@@ -272,7 +274,10 @@
     (binding [ec/*execution-context* runtime]
       (ec/swap-state! [:atoms atom-id]
                       (fn [_] {:value initial-value
-                               :meta meta})))
+                               :meta meta
+                               :lifetime/owner owner})))
+
+    (lifetime/record-owned-source! runtime owner atom-id)
 
     ;; Register for GC cleanup: remove the entry from the CREATING context's
     ;; state once the atom is collected. A fork copies the :atoms map, so the

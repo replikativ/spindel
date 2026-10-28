@@ -2,7 +2,9 @@
   "Signal creation and manipulation"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.nodes :as nodes]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             ;; The `signal` macro's EXPANSION emits `addressing/next-address!`,
             ;; so any ns expanding `(signal …)` needs addressing loaded. Alias it
             ;; (not a bare require) so that dependency is visible at the use site
@@ -194,14 +196,19 @@
 ;; Ensure a signal has an initialized entry in the runtime state
 (defn ensure-signal-initialized!
   [^SignalRef signal-ref]
-  (let [id (:id signal-ref)]
-    (when-not (ec/get-state [:nodes id])
-      ;; Write to [:nodes id] using SignalNode (Phase 1B)
-      (ec/swap-state! [:nodes id]
-                      (fn [existing-node]
-                        (or existing-node
-                            (let [wrapped (d/wrap-deltaable (:initial-value signal-ref))]
-                              (nodes/->signal-node wrapped nil nil (d/deltaable? wrapped) #{}))))))
+  (let [id (:id signal-ref)
+        context (ec/current-execution-context)
+        existing (ec/get-state [:nodes id])]
+    (when (nil? existing)
+      (let [owner (lifetime/current-scope context)]
+        ;; Write to [:nodes id] using SignalNode (Phase 1B).
+        (ec/swap-state! [:nodes id]
+                        (fn [node]
+                          (or node
+                              (let [wrapped (d/wrap-deltaable (:initial-value signal-ref))]
+                                (assoc (nodes/->signal-node wrapped nil nil (d/deltaable? wrapped) #{})
+                                       :lifetime/owner owner)))))
+        (lifetime/record-owned-source! context (ec/get-state [:nodes id :lifetime/owner]) id)))
     nil))
 
 ;; Simple value read helper (non-reactive)
@@ -236,12 +243,13 @@
     (ec/swap-state! [:nodes id]
                     (fn [node]
                       (when node
-                        (nodes/->signal-node
-                         (nodes/get-value node)
-                         (:old-snapshot node)  ; preserve old-snapshot for change detection
-                         nil                   ; clear deltas only
-                         (:deltaable? node)
-                         (nodes/get-observers node)))))))
+                        (assoc (nodes/->signal-node
+                                (nodes/get-value node)
+                                (:old-snapshot node)  ; preserve old-snapshot for change detection
+                                nil                   ; clear deltas only
+                                (:deltaable? node)
+                                (nodes/get-observers node))
+                               :lifetime/owner (:lifetime/owner node)))))))
 
 ;; =============================================================================
 ;; Signal Interval Helper (replaces SignalDeltaView)
@@ -272,6 +280,21 @@
 ;; Signal Creation and Manipulation
 ;; =============================================================================
 
+(defn register-signal! [context signal-ref]
+  (let [id (:id signal-ref)
+        owner (lifetime/current-scope context)]
+    (binding [ec/*execution-context* context]
+      (ensure-signal-initialized! signal-ref))
+    (when (lifetime/successor-run? (rtp/get-state context [:nodes id :lifetime/owner]) owner)
+      (rtp/swap-state! context [:nodes id]
+                       (fn [node]
+                         (if (lifetime/successor-run? (:lifetime/owner node) owner)
+                           (assoc node :lifetime/owner owner)
+                           node)))
+      (when (= owner (rtp/get-state context [:nodes id :lifetime/owner]))
+        (lifetime/record-owned-source! context owner id))))
+  signal-ref)
+
 #?(:clj
    (defmacro signal
      "Create a SignalRef with deterministic ID based on addressing chain.
@@ -301,14 +324,16 @@
                         :column (:column (meta &form))}]
         `(let [ctx# (ec/current-execution-context)
                id# (addressing/next-address! ctx# "signal" ~source-loc)]
-           (->SignalRef id# (d/clear-deltas ~initial-value)))))
+           (org.replikativ.spindel.signal/register-signal!
+            ctx# (->SignalRef id# (d/clear-deltas ~initial-value))))))
      ([ctx initial-value]
       (let [source-loc {:file *file*
                         :line (:line (meta &form))
                         :column (:column (meta &form))}]
         `(let [ctx# ~ctx
                id# (addressing/next-address! ctx# "signal" ~source-loc)]
-           (->SignalRef id# (d/clear-deltas ~initial-value)))))))
+           (org.replikativ.spindel.signal/register-signal!
+            ctx# (->SignalRef id# (d/clear-deltas ~initial-value))))))))
 
 (defn- swap-signal*-explicit
   "Internal worker for swap-signal! using PState protocol."
@@ -326,12 +351,13 @@
                                              clean-value (d/clear-deltas new-value)
                                ;; Increment generation for O(1) identity-based caching
                                              old-generation (or (:generation old-node) 0)]
-                                         (nodes/->signal-node clean-value
-                                                              old-value
-                                                              deltas
-                                                              (:deltaable? old-node)
-                                                              (nodes/get-observers old-node)
-                                                              (inc old-generation))))))]
+                                         (assoc (nodes/->signal-node clean-value
+                                                                     old-value
+                                                                     deltas
+                                                                     (:deltaable? old-node)
+                                                                     (nodes/get-observers old-node)
+                                                                     (inc old-generation))
+                                                :lifetime/owner (:lifetime/owner old-node))))))]
 
       ;; Either collect for batch or enqueue immediately
       (if (and *batching?* *batched-signal-ids*)
@@ -368,12 +394,13 @@
                 ;; Increment generation for O(1) identity-based caching
                                              old-generation (or (:generation old-node) 0)]
                                          (vreset! changed? (not= old-value clean-value))
-                                         (nodes/->signal-node clean-value
-                                                              old-value
-                                                              deltas
-                                                              (:deltaable? old-node)
-                                                              (nodes/get-observers old-node)
-                                                              (inc old-generation))))))]
+                                         (assoc (nodes/->signal-node clean-value
+                                                                     old-value
+                                                                     deltas
+                                                                     (:deltaable? old-node)
+                                                                     (nodes/get-observers old-node)
+                                                                     (inc old-generation))
+                                                :lifetime/owner (:lifetime/owner old-node))))))]
 
       ;; Enqueue engine event
       (ec/enqueue-event! {:type :signal-change :id id})
@@ -428,12 +455,13 @@
           :else
           (let [deltas      (d/get-deltas newval)
                 clean-value (d/clear-deltas newval)
-                new-node    (nodes/->signal-node clean-value
-                                                 (nodes/get-value old-node)
-                                                 deltas
-                                                 (:deltaable? old-node)
-                                                 (nodes/get-observers old-node)
-                                                 (inc (or (:generation old-node) 0)))]
+                new-node    (assoc (nodes/->signal-node clean-value
+                                                        (nodes/get-value old-node)
+                                                        deltas
+                                                        (:deltaable? old-node)
+                                                        (nodes/get-observers old-node)
+                                                        (inc (or (:generation old-node) 0)))
+                                   :lifetime/owner (:lifetime/owner old-node))]
             ;; cas-state! guards on node identity; a losing race (node replaced, even
             ;; with an =-value) re-checks the value identity above and retries — a
             ;; bounded sync loop (no await inside ⇒ no partial-cps loop/recur hazard).

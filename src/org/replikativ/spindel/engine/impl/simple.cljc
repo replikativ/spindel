@@ -21,6 +21,7 @@
             [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.state-backend :as backend]
@@ -851,6 +852,10 @@
     (doseq [sid @prefix-signals]
       (track-signal-dep! context spin-id sid))))
 
+(declare mark-running!)
+
+(def ^:dynamic *execution-claim* nil)
+
 (defn- resume-body!
   "Resume a suspended spin body slice from one of its continuations.
 
@@ -899,57 +904,64 @@
 
   Returns whatever `resume-continuation!` returns."
   [context spin-id cont mode]
+  (let [new-lifetime-run (volatile! nil)
+        new-run-gen (volatile! nil)]
   ;; 1. Remove stale continuations (order > resumed continuation's order).
-  (case mode
-    :track (truncate-stale-conts! context spin-id cont)
-    :await (when (and (:body-slice? cont) (::suffix? cont))
-             (truncate-stale-conts! context spin-id cont)))
+    (case mode
+      :track (truncate-stale-conts! context spin-id cont)
+      :await (when (and (:body-slice? cont) (::suffix? cont))
+               (truncate-stale-conts! context spin-id cont)))
 
   ;; 2. Re-track the resumed signal dependency (track resumes only — the
   ;; signal the track cont resumed on is the cont's own :signal-id).
-  (case mode
-    :track (track-signal-dep! context spin-id (:signal-id cont))
-    :await nil)
+    (case mode
+      :track (track-signal-dep! context spin-id (:signal-id cont))
+      :await nil)
 
   ;; 3. Mark spin as not completed, dirty, AND running.
-  (case mode
-    :track (rtp/swap-state! context [:nodes spin-id]
-                            (fn [node]
-                              (when node
-                                (-> node
-                                    (assoc :completed? false)
-                                    (assoc :running? true :run-world (:fork-id context))
-                                    (nodes/mark-dirty)))))
-    :await (when (and (:body-slice? cont)
-                      (not= (:fork-id context) (::resumed? cont))
-                      (not= (:fork-id context)
-                            (rtp/get-state context [:nodes spin-id :run-world])))
+    (case mode
+      :track (let [owner (rtp/get-state context [:nodes spin-id :lifetime/run-owner])]
+               (vreset! new-run-gen (mark-running! context spin-id
+                                                   {:owner owner :dirty? true
+                                                    :transfer-prefix-order (:order cont)}))
+               (vreset! new-lifetime-run
+                        (lifetime/body-run-seq context spin-id)))
+      :await (when (and (:body-slice? cont)
+                        (not= (:fork-id context) (::resumed? cont))
+                        (not= (:fork-id context)
+                              (rtp/get-state context [:nodes spin-id :run-world])))
              ;; A copied slice now runs here. A later dirty-child handoff
              ;; may join it in this world instead of superseding it again.
-             (rtp/swap-state! context [:nodes spin-id]
-                              (fn [node] (when node (assoc node :run-world (:fork-id context)))))))
+               (rtp/swap-state! context [:nodes spin-id]
+                                (fn [node] (when node (assoc node :run-world (:fork-id context)))))))
 
   ;; 4. Reset :created-spins for this body slice; children are re-registered
   ;; as the body re-runs, and register-spin! re-runs any whose captured
   ;; environment changed (B) — no blanket invalidation needed.
   ;; The children created BEFORE the resume point are not re-created by
   ;; the resumed slice; they stay held (`clear-created-spins-to-resume-point!`).
-  (case mode
-    :track (clear-created-spins-to-resume-point! context spin-id cont)
-    :await nil)
+    (case mode
+      :track (clear-created-spins-to-resume-point! context spin-id cont)
+      :await nil)
 
   ;; 5. + 6. Restore the cont's per-slice snapshot — deps tracking,
   ;; addressing chain-head, context bindings — so the post-resume body
   ;; slice continues consistently with where it suspended, then resume.
-  (let [ctx-with-bindings (restore-slice-state! context spin-id cont)
-        resume-fn (case mode
-                    :track (fn [signal-value]
-                             (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))
-                    :await (:resume-fn cont))]
-    (binding [ec/*execution-context* ctx-with-bindings
-              ec/*spin-id* spin-id
-              pcps-async/*in-trampoline* false]
-      (rtp/resume-continuation! context spin-id cont resume-fn))))
+    (let [ctx-with-bindings (restore-slice-state! context spin-id cont)
+          resume-fn (case mode
+                      :track (fn [signal-value]
+                               (pcps-async/invoke-continuation (:resolve-fn cont) signal-value))
+                      :await (:resume-fn cont))]
+      (binding [ec/*execution-context* ctx-with-bindings
+                ec/*spin-id* spin-id
+                pcps-async/*in-trampoline* false]
+        (rtp/resume-continuation! context spin-id
+                                  (if @new-lifetime-run
+                                    (-> cont
+                                        (update :bindings bindings/assoc-lifetime-run @new-lifetime-run)
+                                        (update :bindings bindings/assoc-run-gen [spin-id @new-run-gen]))
+                                    cont)
+                                  resume-fn)))))
 
 (defn- compute-descendant-observers
   "Given observer spin-ids, find those that are descendants of other observers.
@@ -1484,6 +1496,7 @@
                 ;; Initial body code sees the spin's captured construction scope.
                 (binding [ec/*execution-context* effective-ctx
                           ec/*spin-id* tid
+                          *execution-claim* tid
                           ec/*callback-egress-policy* callback-egress-policy]
                   (spin resolve-fn reject-fn)
                   nil))
@@ -2774,7 +2787,10 @@
   Returns: true"
   [context spin-id spin-meta]
   ;; Get the current spin-id (creator) from dynamic binding
-  (let [creator-id ec/*spin-id*]
+  (let [creator-id ec/*spin-id*
+        creator-run (lifetime/current-run-id context)
+        lifetime-owner (when (or creator-run ec/*owner-scope*)
+                         (lifetime/current-scope context))]
 
     (when (= :computation (:kind spin-meta))
       (adopt-from-reuse-source! context spin-id))
@@ -2811,7 +2827,14 @@
                              (let [base (assoc existing-node
                                                :created-by creator-id
                                                :captured-locals new-caps
-                                               :kind kind)]
+                                               :kind kind)
+                                   base (if (and creator-run (= lifetime-owner creator-run)
+                                                 (= creator-id (:created-by existing-node))
+                                                 (:lifetime/creator existing-node))
+                                          (assoc base :lifetime/owner creator-run
+                                                 :lifetime/creator creator-run
+                                                 :lifetime/order creator-mark)
+                                          base)]
                              ;; Any run of the OLD closure — in flight, or
                              ;; re-completed later by a track resume — is
                              ;; stale: `invalidate-node` keeps it from
@@ -2822,10 +2845,14 @@
                                  (-> base (assoc :completed? false) (invalidate-node))
                                  base))
           ;; First registration: new node, record the captured environment.
-                             (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
-                                    :captured-locals new-caps
-                                    :creator-cont-mark creator-mark
-                                    :kind kind))))))
+                             (cond-> (assoc (nodes/->spin-node nil :clean false false #{} {} creator-id #{})
+                                            :captured-locals new-caps
+                                            :creator-cont-mark creator-mark
+                                            :kind kind)
+                               (and creator-run (= lifetime-owner creator-run))
+                               (assoc :lifetime/owner creator-run
+                                      :lifetime/creator creator-run
+                                      :lifetime/order creator-mark)))))))
 
     ;; If there's a creator (other than ourselves), add this spin to its
     ;; created-spins set. Self-add could occur on CLJS if a stale async
@@ -3096,6 +3123,19 @@
             ;; Its result is not the node's to keep.
             (do (vreset! written? false) rt-state)
             (let [observers (if spin-node (nodes/get-observers spin-node) #{})
+                  lifetime-run (:lifetime/run spin-node)
+                  idle-release? (and run
+                                     (or (:lifetime/owner spin-node)
+                                         lifetime-run
+                                         (:lifetime/run-owner spin-node))
+                                     (not (run-invalidated? spin-node))
+                                     (not (seq (get-in rt-state [:track-subscriptions spin-id])))
+                                     (not (some #(= :await-reactive (:kind %))
+                                                (vals (get-in rt-state [:await-conts spin-id]))))
+                                     (not (some #(= lifetime-run
+                                                    (get-in rt-state [:nodes % :lifetime/owner]))
+                                                (:created-spins spin-node)))
+                                     (empty? (:lifetime/owned-sources spin-node)))
                   completion-event-key [:spin/complete spin-id]]
               (-> rt-state
                   ;; The run completed: its invoker callbacks are being
@@ -3118,7 +3158,11 @@
                                   ;; certify it either.
                                   (as-> n (if (run-invalidated? n)
                                             (nodes/mark-dirty n)
-                                            (nodes/mark-clean n))))))
+                                            (nodes/mark-clean n)))
+                                  (cond-> idle-release?
+                                    (assoc :lifetime/owner nil
+                                           :lifetime/run nil
+                                           :lifetime/run-owner nil)))))
                   ;; Mark all observers dirty (they need to re-execute)
                   ;; BUT skip observers that:
                   ;; 1. Are currently running (have :running? true)
@@ -3225,22 +3269,58 @@
   (`hand-off-run-callbacks`), so no completion can slip between the two.
 
   Returns: the new run generation"
-  [context spin-id]
-  (let [gen (next-run-gen)
-        stamp (fn [node]
-                (-> (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
-                    (assoc :running? true :run-gen gen :run-world (:fork-id context))
-                    (dissoc :invalid-gen)))]
+  ([context spin-id]
+   (mark-running! context spin-id nil))
+  ([context spin-id opts]
+   (let [gen (next-run-gen)
+         owner (if (contains? opts :owner) (:owner opts)
+                   (when (or ec/*owner-scope*
+                             (vector? ec/*lifetime-run*)
+                             (and ec/*spin-id* (not= ec/*spin-id* spin-id)))
+                     (lifetime/current-scope context)))
+         dirty? (:dirty? opts)
+         transfer-prefix? (number? (:transfer-prefix-order opts))
+         stamp (fn [node]
+                 (let [node (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
+                       seq-no (if (:run-gen node)
+                                (inc (or (:lifetime/seq node) 1))
+                                1)]
+                   (-> node
+                       (assoc :running? true :run-gen gen :run-world (:fork-id context))
+                       (cond-> (> seq-no 1) (assoc :lifetime/seq seq-no))
+                       (cond-> owner
+                         (assoc :lifetime/run (lifetime/run-id context spin-id seq-no)
+                                :lifetime/run-owner owner))
+                       (cond-> (and owner (nil? (:lifetime/owner node)))
+                         (assoc :lifetime/owner owner))
+                       (dissoc :invalid-gen :execution-claimed?)
+                       (cond-> dirty? (assoc :completed? false))
+                       (cond-> dirty? nodes/mark-dirty))))]
     ;; The whole-state transaction only when there is something to hand off:
     ;; under an overlay backend it re-merges the state, a path swap does not.
-    (if (rtp/get-state context [:run-callbacks spin-id])
-      (rtp/swap-state! context []
-                       (fn [state]
-                         (-> state
-                             (update-in [:nodes spin-id] stamp)
-                             (hand-off-run-callbacks spin-id))))
-      (rtp/swap-state! context [:nodes spin-id] stamp))
-    gen))
+     (if (or transfer-prefix?
+             (rtp/get-state context [:run-callbacks spin-id]))
+       (rtp/swap-state! context []
+                        (fn [state]
+                          (let [state (update-in state [:nodes spin-id] stamp)
+                                node (get-in state [:nodes spin-id])
+                                run-id (or (:lifetime/run node)
+                                           (lifetime/run-id context spin-id (or (:lifetime/seq node) 1)))
+                                state (if transfer-prefix?
+                                        (update-in state [:await-conts spin-id]
+                                                   (fn [conts]
+                                                     (into {}
+                                                           (for [[id cont] conts]
+                                                             [id (if (and (number? (:order cont))
+                                                                          (<= (:order cont) (:transfer-prefix-order opts)))
+                                                                   (-> cont
+                                                                       (update :bindings bindings/assoc-run-gen [spin-id gen])
+                                                                       (update :bindings bindings/assoc-lifetime-run (nth run-id 3)))
+                                                                   cont)]))))
+                                        state)]
+                            (hand-off-run-callbacks state spin-id))))
+       (rtp/swap-state! context [:nodes spin-id] stamp))
+     gen)))
 
 (defn ^:no-doc register-run-callbacks!
   "Record the invoker callbacks of run `run` of `spin-id` (`-invoke` Case 2
@@ -3321,8 +3401,27 @@
                              (vreset! claimed? true)
                              (assoc-in state [:nodes spin-id]
                                        (assoc (or node (nodes/->spin-node nil :clean false true #{} {} nil #{}))
-                                              :running? true :run-world (:fork-id context))))))))
+                                              :running? true :run-world (:fork-id context)
+                                              :execution-claimed? true)))))))
     @claimed?))
+
+(defn ^:no-doc try-join-spin!
+  "Atomically join a live run with a callback. A completion that wins the
+  transaction is observed by the caller's retry through the cached path."
+  [context spin-id callback]
+  (let [joined? (volatile! false)]
+    (rtp/swap-state! context []
+                     (fn [state]
+                       (vreset! joined? false)
+                       (let [node (get-in state [:nodes spin-id])]
+                         (if (and (:running? node)
+                                  (not (nodes/dirty? node))
+                                  (not (stale-run? node)))
+                           (do (vreset! joined? true)
+                               (update-in state [:pending-callbacks spin-id]
+                                          (fnil conj []) callback))
+                           state))))
+    @joined?))
 
 (defn ^:no-doc add-pending-callback!
   "Add a callback to be invoked when a currently-running spin completes.
@@ -3877,10 +3976,16 @@
         ;; Force trampolining by binding *in-trampoline* to false
         ;; This ensures that any Thunks returned by resume-fn are executed immediately
         ;; rather than being returned to the caller (which would lose them)
-        ret (bindings/restore-bindings captured-bindings
-                                       (fn []
-                                         (binding [pcps-async/*in-trampoline* false]
-                                           (resume-fn value))))]
+        fire (fn []
+               (bindings/restore-bindings captured-bindings
+                                          (fn []
+                                            (binding [pcps-async/*in-trampoline* false]
+                                              (resume-fn value)))))
+        ret #?(:clj (fire)
+               :cljs (binding [ec/*lifetime-run* (get captured-bindings (bindings/lifetime-run-var) ec/*lifetime-run*)
+                               ec/*run-gen* (get captured-bindings (bindings/run-gen-var) ec/*run-gen*)
+                               ec/*owner-scope* (get captured-bindings (bindings/owner-scope-var) ec/*owner-scope*)]
+                       (fire)))]
     ;; Body slice suspended (returned ::incomplete). Under the unified-queue
     ;; design we do NOT clear :running? on suspension. The body is still
     ;; in-flight; resolution happens later via cache-result!. See
