@@ -10,7 +10,7 @@
 (def active-cuts #{:fenced :ready :captured :attached})
 (def defaults {:worlds 3 :world-ids 4 :invocations 2 :host-registrations 2 :spins 4 :generations 2 :scopes 2 :handles 2
                :steps 2 :cuts 2 :depth 40 :crashes 1 :failures 1 :unknowns 1 :writes 1
-               :registrations 1 :signals 1 :atoms 1 :filters [:local :causal-follow] :invoke-modes [:deref :callback] :durable-systems #{:a :b}})
+               :threads 2 :slice-enters 1 :registrations 1 :signals 1 :atoms 1 :filters [:local :causal-follow] :invoke-modes [:deref :callback] :durable-systems #{:a :b}})
 
 (defn world-row [w parent mode root]
   {:id w :lineage {:parent parent :root root :mode mode :cut nil :basis nil}
@@ -41,11 +41,35 @@
 (defn ent [s w e] (get-in s [:worlds w :entities e]))
 (defn run [s w r] (get-in s [:worlds w :runs r]))
 (defn work? [r] (boolean (work-status (:status r))))
+(defn busy? [r] (or (work? r) (= :unwinding (:status r))))
+(defn cut-busy? [r] (and (busy? r) (not= :parked (:status r))))
 (defn open? [s w scope]
-  (or (contains? (:runs (wr s w)) scope)
+  (or (and (run s w scope) (not= :unwinding (:status (run s w scope))))
       (= :open (get-in s [:worlds w :scopes scope :status]))))
 (defn current [s w e]
   (last (sort-by second (for [[r row] (:runs (wr s w)) :when (= e (:spin row))] r))))
+(defn owner-chain [s w r]
+  (loop [id r chain [] seen #{}]
+    (cond
+      (nil? id) (conj chain w)
+      (seen id) chain
+      (= :unwinding (:status (run s w id))) (into chain (:anchor (run s w id)))
+      :else (recur (or (:owner (run s w id))
+                       (get-in s [:worlds w :scopes id :parent]))
+                   (conj chain id) (conj seen id)))))
+(defn physical? [s w r]
+  (or (some #(and (= w (:world %)) (= r (:run %))) (vals (get-in s [:env :threads])))
+      (some #(and (= [w r] (:owner %)) (not= :joined (:state %))) (vals (get-in s [:env :native])))))
+(defn join-blockers [s w x]
+  (if (= :released (:status (wr s w)))
+    (vec (distinct (keep #(when (= x (:world %)) (:run %)) (vals (get-in s [:env :threads])))))
+    (vec (for [[r rr] (:runs (wr s w))
+               :when (and (busy? rr) (some #{x} (owner-chain s w r)))] r))))
+(defn join-ready? [s w x]
+  (if (= :released (:status (wr s w)))
+    (not-any? #(= x (:world %)) (vals (get-in s [:env :threads])))
+    (empty? (join-blockers s w x))))
+
 (defn reactive? [s w r]
   (boolean (some (fn [[_ o]] (and (= [:run w r] (:creditor o))
                                   (:standing? o) (#{:track :await-reactive} (:kind o))))
@@ -53,7 +77,7 @@
 (defn final? [s w e]
   (and (:completed? (ent s w e)) (not (reactive? s w (current s w e)))))
 (defn quiescent? [s w]
-  (and (not-any? work? (vals (:runs (wr s w))))
+  (and (not-any? busy? (vals (:runs (wr s w))))
        (not-any? #(and (#{:timer :external} (:kind %))
                        (not= :inherited (:status (run s w (nth (:creditor %) 2 nil)))))
                  (vals (:obligations (wr s w))))))
@@ -97,7 +121,7 @@
       (seq (fdep-targets (update world :fdeps set/union (:releasing world)) e)) (conj :dep)
       (some (fn [[r rr]]
               (and (= e (:spin rr)) (= :completed (:status rr))
-                   (or (some #(= r (:owner %)) (vals (:runs world)))
+                   (or (some #(and (= r (:owner %)) (not= :unwinding (:status %))) (vals (:runs world)))
                        (some (fn [[child er]] (and (= r (:owner er))
                                                    (not= child e) (seq (reasons s w child))))
                              (:entities world))))) (:runs world)) (conj :scope)
@@ -274,7 +298,9 @@
   (let [inherited (for [[r rr] (:runs (wr s w))
                         :when (and (= e (:spin rr)) (= :inherited (:status rr)))] r)
         s (reduce #(t11-cancel %1 {:w w :r %2}) s inherited)
-        pred (current s w e) n (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0))) r [e n]
+        ;; An unwinding row is physical evidence, never a predecessor index.
+        pred (let [r (current s w e)] (when (not= :unwinding (:status (run s w r))) r))
+        n (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0))) r [e n]
         seqno (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))]
     (require! (= :live (:status (wr s w))) ::sealed {:world w})
     (require! (open? s w owner) ::closed-scope {:world w :scope owner})
@@ -290,36 +316,39 @@
                                                     (contains? (:touched h) w)))
                                    (get-in s [:env :handles])))})) r]))
 
+(def ^:dynamic *cascading?* false)
+
 (defn rule-l
   "§4.3 reclamation fixpoint, including idle completed-row normalization."
   [s w]
-  (if (= :released (:status (wr s w))) s
-      (loop [s s]
-        (let [world (wr s w)
-              idle (for [[e _] (:entities world) :when (idle? s w e)] e)
-              normalized
-              (reduce (fn [s e]
-                        (let [rs (for [[r rr] (:runs (wr s w)) :when (= e (:spin rr))] r)]
-                          (-> (reduce #(t10-supersede %1 {:w w :r %2}) s rs)
-                              (assoc-in [:worlds w :entities e :owner] nil)))) s idle)
-              dead (for [[e er] (:entities (wr normalized w))
-                         :when (and (empty? (reasons normalized w e))
-                                    (not (and (idle? normalized w e) (seq (:tokens er)))))] e)]
-          (if (empty? dead) normalized
-              (recur
-               (reduce
-                (fn [s e]
-                  (let [rs (for [[r rr] (:runs (wr s w)) :when (= e (:spin rr))] r)
-                        s (reduce #(t11-cancel %1 {:w w :r %2}) s rs)]
-                    (-> s (update-in [:worlds w :entities] dissoc e)
-                        (update-in [:worlds w :pins] disj e)
-                        (update-in [:worlds w :queue]
-                                   #(vec (remove (fn [ev] (or (and (= e (:completion ev)) (= w (:debtor-world ev)))
-                                                              (= e (:signal-write ev)))) %)))
-                        (update-in [:worlds w :runs]
-                                   (fn [runs] (into {} (for [[r rr] runs]
-                                                         [r (update rr :creations disj e)])))))))
-                normalized dead)))))))
+  (if (or *cascading?* (= :released (:status (wr s w)))) s
+      (binding [*cascading?* true]
+        (loop [s s]
+          (let [world (wr s w)
+                idle (for [[e _] (:entities world) :when (idle? s w e)] e)
+                normalized
+                (reduce (fn [s e]
+                          (let [rs (for [[r rr] (:runs (wr s w)) :when (and (= e (:spin rr)) (#{:completed :stale} (:status rr)))] r)]
+                            (-> (reduce #(t10-supersede %1 {:w w :r %2}) s rs)
+                                (assoc-in [:worlds w :entities e :owner] nil)))) s idle)
+                dead (for [[e er] (:entities (wr normalized w))
+                           :when (and (empty? (reasons normalized w e))
+                                      (not (and (idle? normalized w e) (seq (:tokens er)))))] e)]
+            (if (and (empty? dead) (= s normalized)) normalized
+                (recur
+                 (reduce
+                  (fn [s e]
+                    (let [rs (for [[r rr] (:runs (wr s w)) :when (= e (:spin rr))] r)
+                          s (reduce #(t11-cancel %1 {:w w :r %2}) s rs)]
+                      (-> s (update-in [:worlds w :entities] dissoc e)
+                          (update-in [:worlds w :pins] disj e)
+                          (update-in [:worlds w :queue]
+                                     #(vec (remove (fn [ev] (or (and (= e (:completion ev)) (= w (:debtor-world ev)))
+                                                                (= e (:signal-write ev)))) %)))
+                          (update-in [:worlds w :runs]
+                                     (fn [runs] (into {} (for [[r rr] runs]
+                                                           [r (update rr :creations disj e)])))))))
+                  normalized dead))))))))
 
 (defn t01-create-spin
   "T1 create-spin: host handles, lexical creations and predecessor adoption."
@@ -572,12 +601,13 @@
                                             [id (if (and (= child (:spin rr)) (= r (:owner rr)))
                                                   (assoc rr :owner r2) rr)]))))) s prefix) w))))
 
-(defn remove-run [s w r cause]
+(defn end-run-links
+  "Logical teardown; retirement keeps the owner row until descendants snapshot anchors."
+  [s w r cause]
   (let [s (reduce (fn [s [o ob]] (if (= [:run w r] (:creditor ob))
                                    (end-obligation s w o :creditor-cancelled) s))
                   s (:obligations (wr s w)))]
-    (-> s (update-in [:worlds w :runs] dissoc r)
-        (update-in [:worlds w :runs] #(into {} (for [[id rr] %] [id (update rr :spawned disj r)])))
+    (-> s (update-in [:worlds w :runs] #(into {} (for [[id rr] %] [id (update rr :spawned disj r)])))
         (update-in [:env :native]
                    #(into {} (for [[n nr] %]
                                [n (if (and (= [w r] (:owner nr)) (not= :joined (:state nr)))
@@ -585,14 +615,55 @@
         (emit {:event :run-exit :world w :r r :cause cause
                :t (if (= cause :superseded) :t10 :t11)}))))
 
+(defn retire-run
+  "§4.3 run retirement: close child scopes before logical teardown, then retain
+  only physical evidence. Nested teardown reaches rule L at the outer boundary."
+  [s w r cause logical-effects anchor]
+  (let [rr (run s w r) chain (or anchor (owner-chain s w r))]
+    (binding [*cascading?* true]
+      (let [scopes (loop [parents #{r} found #{}]
+                     (let [children (set (for [[id row] (:scopes (wr s w))
+                                               :when (contains? parents (:parent row))] id))]
+                       (if (empty? children) found
+                           (recur children (into found children)))))
+            s (reduce #(t13-close-scope %1 {:w w :scope %2}) s
+                      (for [[id row] (:scopes (wr s w)) :when (= r (:parent row))] id))
+            s (update-in s [:worlds w :scopes] #(apply dissoc % scopes))
+            s (logical-effects (end-run-links s w r cause))
+            s (update-in s [:worlds w :runs] dissoc r)]
+        (if (physical? s w r)
+          (-> s
+              (assoc-in [:worlds w :runs r]
+                        (assoc rr :status :unwinding :owner nil :anchor chain :retired? true
+                               :creations #{} :spawned #{} :pred nil))
+              (update-in [:env :threads]
+                         #(into {} (for [[th tr] %]
+                                     [th (cond-> tr (and (= w (:world tr)) (= r (:run tr)))
+                                                 (assoc :retired? true))])))
+              (update-in [:env :native]
+                         #(into {} (for [[n nr] %]
+                                     [n (cond-> nr (= [w r] (:owner nr)) (assoc :retired? true))])))
+              (update-in [:worlds w :runs]
+                         #(into {} (for [[id row] %]
+                                     [id (cond-> (update row :spawned disj r)
+                                           (= r (:pred row)) (assoc :pred nil))])))
+              (update-in [:worlds w :entities]
+                         #(into {} (for [[id row] %]
+                                     [id (cond-> row (= r (:creator row)) (assoc :creator nil))]))))
+          s)))))
+
 (defn owner-release [s w e]
-  ;; Entity lifetime is independent of the invoking run's owner (F48).
+  ;; Entity lifetime dominates every run owner, including completed scopes (V03).
   (if (ent s w e)
     (let [s (cond-> (assoc-in s [:worlds w :entities e :owner] nil)
               (= :spin (:kind (ent s w e))) (assoc-in [:worlds w :entities e :dirty?] true))
           runs (vec (for [[r rr] (:runs (wr s w))
                           :when (and (= e (:spin rr)) (work? rr))] r))
-          s (reduce #(t11-cancel %1 {:w w :r %2}) s runs)]
+          s (reduce #(t11-cancel %1 {:w w :r %2}) s runs)
+          completed (vec (for [[r rr] (:runs (wr s w))
+                               :when (and (= e (:spin rr))
+                                          (#{:completed :stale} (:status rr)))] r))
+          s (reduce #(t10-supersede %1 {:w w :r %2}) s completed)]
       (reduce (fn [s [o ob]]
                 (let [s (if (= :run (first (:creditor ob)))
                           (t06-resume s {:w w :o o :value ::cancelled}) s)]
@@ -639,44 +710,53 @@
                                    (when (seq (disj d e)) [:bundle v (disj d e)]) fd)) %))))))
 
 (defn t10-supersede
-  "T10 remove completed/stale predecessor and unadopted owned state."
+  "T10 retire completed/stale runs at successor completion or owner release.
+  Release every owned entity, including entities absent from creations(r)."
   [s {:keys [w r]}]
   (if-let [rr (run s w r)]
-    (do (require! (#{:completed :stale} (:status rr)) ::not-predecessor {:r r})
-        (let [owned (for [[c cr] (:runs (wr s w)) :when (= r (:owner cr))] c)
-              s (reduce #(t11-cancel %1 {:w w :r %2}) s owned)
-              s (remove-run s w r :superseded)
-              s (update-in s [:worlds w :entities]
-                           #(into {} (remove (fn [[_ er]]
-                                               (and (= r (:owner er))
-                                                    (#{:cache-row :keyed-entry} (:kind er)))) %)))
-              s (release-owned s w r)]
-          (rule-l s w))) s))
+    (let [chain (owner-chain s w r)]
+      (require! (#{:completed :stale} (:status rr)) ::not-predecessor {:r r})
+      (rule-l
+       (retire-run
+        s w r :superseded
+        (fn [s]
+          (let [owned (for [[c cr] (:runs (wr s w)) :when (= r (:owner cr))] c)
+                s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s owned)
+                s (update-in s [:worlds w :entities]
+                             #(into {} (remove (fn [[_ er]]
+                                                 (and (= r (:owner er))
+                                                      (#{:cache-row :keyed-entry} (:kind er)))) %)))]
+            (release-owned s w r)))
+        chain) w)) s))
 
 (defn t11-cancel
-  "T11 cancel a copy, fail debtor obligations, recursively release owned runs."
-  [s {:keys [w r]}]
-  (if-let [rr (run s w r)]
-    (let [e (:spin rr) current? (= r (current s w e))
-          s (remove-run s w r :cancelled)
-          children (for [[c cr] (:runs (wr s w)) :when (= r (:owner cr))] c)
-          s (reduce #(t11-cancel %1 {:w w :r %2}) s children)
-          s (if current?
-              (reduce
-               (fn [s [v o ob]]
-                 (if (not= v w)
-                   (cancel-foreign-debtor s w v o)
-                   (let [s (if (= :run (first (:creditor ob)))
-                             (t06-resume s {:w v :o o :value ::cancelled}) s)]
-                     (end-obligation s v o :cancel-delivered))))
-               s (for [[v world] (:worlds s) [o ob] (:obligations world)
-                       :when (and (= [:entity w e] (:debtor ob))
-                                  (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])) s)
-          s (if (and current? (= :stale (:status (run s w (:pred rr)))))
-              (t10-supersede s {:w w :r (:pred rr)}) s)
-          s (release-owned s w r)
-          s (if (ent s w e) (assoc-in s [:worlds w :entities e :dirty?] true) s)]
-      (rule-l s w)) s))
+  "T11 retire a copy, fail debtor obligations, recursively release owned runs."
+  [s {:keys [w r anchor]}]
+  (if-let [rr (when (not= :unwinding (:status (run s w r))) (run s w r))]
+    (let [chain (or anchor (owner-chain s w r))
+          e (:spin rr) current? (= r (current s w e))]
+      (rule-l
+       (retire-run
+        s w r :cancelled
+        (fn [s]
+          (let [children (for [[c cr] (:runs (wr s w)) :when (= r (:owner cr))] c)
+                s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s children)
+                s (if current?
+                    (reduce
+                     (fn [s [v o ob]]
+                       (if (not= v w)
+                         (cancel-foreign-debtor s w v o)
+                         (let [s (if (= :run (first (:creditor ob)))
+                                   (t06-resume s {:w v :o o :value ::cancelled}) s)]
+                           (end-obligation s v o :cancel-delivered))))
+                     s (for [[v world] (:worlds s) [o ob] (:obligations world)
+                             :when (and (= [:entity w e] (:debtor ob))
+                                        (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])) s)
+                s (if (and current? (= :stale (:status (run s w (:pred rr)))))
+                    (t10-supersede s {:w w :r (:pred rr)}) s)
+                s (release-owned s w r)]
+            (if (ent s w e) (assoc-in s [:worlds w :entities e :dirty?] true) s)))
+        chain) w)) s))
 
 (defn t12-open-scope
   "T12 open explicit, supervisor, render or SCI scope."
@@ -686,21 +766,22 @@
   (assoc-in s [:worlds w :scopes scope] {:kind kind :parent parent :status :open}))
 
 (defn close-owned [s w scope]
-  (let [children (for [[c cr] (:scopes (wr s w))
-                       :when (and (= scope (:parent cr)) (= :open (:status cr)))] c)
-        s (reduce #(close-owned %1 w %2) s children)
-        runs (for [[r rr] (:runs (wr s w)) :when (= scope (:owner rr))] r)
-        s (reduce #(t11-cancel %1 {:w w :r %2}) s runs)
-        forks (for [[e er] (:entities (wr s w))
-                    :when (and (= :fork (:kind er)) (not (:reference? er)) (= scope (:owner er)))] (second e))
-        s (reduce (fn [s v]
-                    (reduce (fn [s [k cap]]
-                              (if (= :open (:disposition cap))
-                                (enqueue s v {:discard k}) s))
-                            s (caps-of s v))) s forks)]
-    (-> s (release-owned w scope)
-        (assoc-in [:worlds w :scopes scope :status] :closed)
-        (rule-l w))))
+  (rule-l
+   (binding [*cascading?* true]
+     (let [children (for [[c cr] (:scopes (wr s w))
+                          :when (and (= scope (:parent cr)) (= :open (:status cr)))] c)
+           s (reduce #(close-owned %1 w %2) s children)
+           runs (for [[r rr] (:runs (wr s w)) :when (= scope (:owner rr))] r)
+           s (reduce #(t11-cancel %1 {:w w :r %2}) s runs)
+           forks (for [[e er] (:entities (wr s w))
+                       :when (and (= :fork (:kind er)) (not (:reference? er)) (= scope (:owner er)))] (second e))
+           s (reduce (fn [s v]
+                       (reduce (fn [s [k cap]]
+                                 (if (= :open (:disposition cap))
+                                   (enqueue s v {:discard k}) s))
+                               s (caps-of s v))) s forks)]
+       (-> s (release-owned w scope)
+           (assoc-in [:worlds w :scopes scope :status] :closed)))) w))
 
 (defn t13-close-scope
   "T13 idempotent close, including implicit fork discard."
@@ -885,7 +966,7 @@
   "Readiness diagnostics, without executing any admitted step."
   [s c]
   (let [cut (get-in s [:cuts c]) worlds (get-in cut [:participants :worlds])]
-    {:running (vec (for [w worlds [r rr] (:runs (wr s w)) :when (= :running (:status rr))] [w r]))
+    {:running (vec (for [w worlds [r rr] (:runs (wr s w)) :when (cut-busy? rr)] [w r]))
      :admitted (vec (for [w worlds ev (:queue (wr s w))
                           :when (<= (:seq ev) (get-in cut [:fence-seq w]))] [w ev]))
      :native (vec (for [[n nr] (get-in s [:env :native])
@@ -927,7 +1008,7 @@
         s (cond body (step s body)
                 ev (step s {:t :queued :w w})
                 :else s)
-        ready? (every? #(and (not-any? (fn [rr] (= :running (:status rr)))
+        ready? (every? #(and (not-any? cut-busy?
                                        (vals (:runs (wr s %))))
                              (empty? (:queue (wr s %)))
                              (every? (fn [n] (or (not= % (first (:owner n)))
@@ -1238,7 +1319,9 @@
                           s (:obligations world))
               ;; Drop dormant copies without rejecting into any other copy.
                 s (reduce (fn [s [r rr]]
-                            (if (= :inherited (:status rr)) (remove-run s w r :cancelled) s))
+                            (if (= :inherited (:status rr))
+                              (-> s (end-run-links w r :cancelled)
+                                  (update-in [:worlds w :runs] dissoc r)) s))
                           s (:runs world))
                 s (close-owned s w (:root world))
                 s (reduce (fn [s [v o]] (enqueue s v {:cancelled o}))
@@ -1337,6 +1420,33 @@
              (enqueue s (:w op) {:action (assoc op :t :t06)})
              (t06-resume s op)) s) s))
 
+(defn finish-unwinding [s w r]
+  (if (and (= :unwinding (:status (run s w r))) (not (physical? s w r)))
+    (rule-l (update-in s [:worlds w :runs] dissoc r) w) s))
+
+(defn slice-enter [s {:keys [w r th]}]
+  (require! (= :running (:status (run s w r))) ::not-running {:w w :r r})
+  (require! (nil? (get-in s [:env :threads th :run])) ::thread-busy {:th th})
+  (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
+                      (vals (get-in s [:env :threads]))) ::slice-busy {:w w :r r})
+  (assoc-in s [:env :threads th]
+            (merge (get-in s [:env :threads th])
+                   {:world w :scope r :run r :obligation-world w :executing? true})))
+
+(defn t38-slice-exit [s {:keys [th]}]
+  (let [{:keys [world run]} (get-in s [:env :threads th])]
+    (require! run ::no-slice {:th th})
+    (-> s (update-in [:env :threads th]
+                     #(-> % (assoc :run nil :scope nil :executing? false)
+                          (dissoc :retired? :obligation-world)))
+        (finish-unwinding world run))))
+
+(defn join-observation [s {:keys [w x timeout?]}]
+  (let [runs (join-blockers s w x) ready? (join-ready? s w x)]
+    (when (and (not ready?) timeout?)
+      (refuse ::join-timeout {:w w :x x :busy runs}))
+    {:complete? ready? :busy runs}))
+
 (def transitions
   {:t01 t01-create-spin :t02 t02-create-signal :t03 t03-touch-keyed :t04 t04-invoke
    :t05 t05-park :t06 t06-resume :t07 t07-complete :t08 t08-deliver :t09 t09-reenter
@@ -1346,7 +1456,7 @@
    :t21 t21-cut-drain :t22 t22-cut-capture :t23 t23-cut-attach :t24 t24-cut-release
    :t25 t25-cut-fail :t26 t26-seal :t27 t27-prepare :t28 t28-settlement-step
    :t29 t29-finish :t30 t30-recover :t31 t31-crash :t32 t32-transfer
-   :t33 t33-partition :t34 t34-release-world :t35 t35-host-entry :t36 t36-cleanup :t37 t37-start-for})
+   :t33 t33-partition :t34 t34-release-world :t35 t35-host-entry :t36 t36-cleanup :t37 t37-start-for :t38 t38-slice-exit :slice-enter slice-enter})
 
 (defn changed-worlds [before after]
   (set (for [w (set/union (set (keys (:worlds before))) (set (keys (:worlds after))))
@@ -1358,7 +1468,13 @@
   (if (and w (wr after w) (not= :released (:status (wr after w)))) (rule-l after w) after))
 
 (defn acting-world [s a]
-  (or (:w a) (get-in a [:op :w])
+  (or (when (and (not (#{:slice-enter :t35} (:t a)))
+                 (get-in s [:env :threads (:th a) :run]))
+        (get-in s [:env :threads (:th a) :world]))
+      (:w a) (get-in a [:op :w])
+      (when (#{:t38 :slice-enter :native-progress} (:t a))
+        (or (get-in s [:env :threads (:th a) :world])
+            (first (get-in s [:env :native (:n a) :owner]))))
       (when (#{:t01 :t02 :t04} (:t a))
         (get-in s [:env :threads (get a :th :host) :world]))
       (:world (cap s (:k a))) (:world (cap s (:cap (record s (:op a)))))
@@ -1369,6 +1485,7 @@
   (case (:t a)
     :t31 (when (not= :restart (:phase a)) [:crash])
     :t28 (when (not= :ok (:outcome a)) [(:outcome a) (:op a) (:i a)])
+    :slice-enter [:slice-enter (:w a) (:r a)]
     :signal-write [:write (:w a) (:e a)]
     :t04 [:invoke (:w a) (:e a)]
     :t05 nil
@@ -1379,10 +1496,22 @@
 
 (defn step
   "One atomic transition. Refusal throws ex-info; its :state is the unchanged input.
-  Native progress, arrivals and thread re-entry are explicit environment actions."
+  Native progress, arrivals and thread re-entry are explicit environment actions.
+  An explicit :th attributes a requested effect to that thread's slice; omitted
+  :th denotes an engine/coordinator action (legacy host selection still applies)."
   [s {:keys [t] :as a}]
   (try
-    (let [before s s (assoc s :events [])]
+    (let [thread (get-in s [:env :threads (:th a)])
+          slice? (:run thread)
+          unwinding? (= :unwinding (:status (run s (:world thread) (:run thread))))
+          a (if (and slice? (not (#{:t38 :slice-enter :t35} t))) (assoc a :w (:world thread)) a)
+          w (acting-world s a)
+          _ (when (and slice? (not= :t38 t) (= :released (:status (wr s (:world thread)))))
+              (refuse ::released {:w w :thread (:th a)}))
+          _ (when (and unwinding?
+                       (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
+              (refuse ::cancelled {:w w :r (:run thread)}))
+          before s s (assoc s :events [])]
       (when (and (quiescent-cut? s (acting-world s a))
                  (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11
                     :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37} t))
@@ -1414,9 +1543,14 @@
                                      (t26-seal s {:k k :caller (:holder (cap s k)) :op [:implicit k] :kind :discard}) s))
                    (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
                    :else s))
-           :native-progress (update-in s [:env :native (:n a)] merge (select-keys a [:state :boundary?]))
+           :native-progress
+           (let [[w r] (get-in s [:env :native (:n a) :owner])]
+             (-> s (update-in [:env :native (:n a)] merge (select-keys a [:state :boundary?]))
+                 (finish-unwinding w r)))
            :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
-           :thread-entry (assoc-in s [:env :threads (:th a)] (:thread a))
+           :thread-entry
+           (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
+               (assoc-in s [:env :threads (:th a)] (:thread a)))
            :unsubscribe
            (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
                  [_ dw _] (:debtor ob)]
@@ -1424,13 +1558,15 @@
              (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
            :signal-write
            (let [w (:w a) e (:e a) er (ent s w e)]
-             (live! s w)
-             (require! (and (#{:signal :atom} (:kind er)) (:owner er)) ::released {:w w :e e})
-             (if (= :fenced (:admission (wr s w)))
-               (update-in s [:env :outside] conj {:w w :event {:signal-write e :value (:value a)}})
-               (let [targets (conj (fdep-targets (wr s w) e) w)]
-                 (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a)})
-                         (assoc-in s [:worlds w :entities e :result] (:value a)) targets))))
+             (require! (not= :released (:status (wr s w))) ::released {:w w})
+             (when-not (and unwinding? (nil? er))
+               (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
+             (if (and unwinding? (nil? er)) s
+                 (if (= :fenced (:admission (wr s w)))
+                   (update-in s [:env :outside] conj {:w w :event {:signal-write e :value (:value a)}})
+                   (let [targets (conj (fdep-targets (wr s w) e) w)]
+                     (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a)})
+                             (assoc-in s [:worlds w :entities e :result] (:value a)) targets)))))
            :arrival (enqueue s (:w a) (:event a))
            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
        (acting-world before a)))
@@ -1438,7 +1574,9 @@
       (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
 
 (defn attempt [s a]
-  (try {:state (step s a)}
+  (try (if (= :join (:t a))
+         {:state s :observation (join-observation s a)}
+         {:state (step s a)})
        (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
          {:state s :refusal (dissoc (ex-data e) :state)})))
 
@@ -1561,7 +1699,21 @@
     (distinct
      (concat
       [{:t :t31 :phase :crash} {:t :t31 :phase :restart} {:t :t35 :th :foreign}]
-      (for [w (conj (set (keys worlds)) nil)]
+      (when (:slices? cfg)
+        (concat
+         (for [[w world] worlds [r rr] (:runs world) th [:host :foreign]
+               :when (and (= :running (:status rr))
+                          (nil? (get-in s [:env :threads th :run]))
+                          (not-any? #(and (= w (:world %)) (= r (:run %)))
+                                    (vals (get-in s [:env :threads]))))]
+           {:t :slice-enter :th th :w w :r r})
+         (for [[th tr] (get-in s [:env :threads]) :when (:run tr)] {:t :t38 :th th})
+         (for [[w world] worlds x (distinct (concat [w] (keys (:scopes world))
+                                                    (keys (:runs world)) (mapcat :anchor (vals (:runs world)))))
+               timeout? [false true]]
+           {:t :join :w w :x x :timeout? timeout?})))
+      (for [w (conj (set (keys worlds)) nil)
+            :when (nil? (get-in s [:env :threads :foreign :run]))]
         {:t :thread-entry :th :foreign
          :thread {:world w :scope nil :run nil :read-permits #{} :excl-permits []}})
       (for [[w world] worlds [o ob] (:obligations world)
@@ -1587,7 +1739,7 @@
               (concat
                (for [i (range (:spins cfg)) :let [e [:spin i]]
                      mode (:invoke-modes cfg) f (:filters cfg)]
-                 {:t :t04 :w w :e e :mode mode :filter {:mode f :origin w}})
+                 {:t :t04 :w w :e e :scope root :mode mode :filter {:mode f :origin w}})
                (when (< (count (:scopes world)) (inc (:scopes cfg)))
                  [{:t :t12 :w w :scope [:scope (count (:scopes world))] :parent root}])
                (when (< (count (:known-worlds s)) (:world-ids cfg))
@@ -1611,7 +1763,7 @@
               (for [e es [tok h] (get-in s [:env :handles])
                     :when (= e (:spin h))
                     mode (:invoke-modes cfg) f (:filters cfg)]
-                {:t :t04 :w w :e e :tok tok :mode mode :filter {:mode f :origin w}}))
+                {:t :t04 :w w :e e :scope root :tok tok :mode mode :filter {:mode f :origin w}}))
             (mapcat
              (fn [[r rr]]
                (concat
@@ -1682,9 +1834,10 @@
          (every? #(<= % (:generations cfg)) (vals (:generation-clock s)))
          (every? (fn [[[kind & _] n]]
                    (<= n (case kind :invoke (:invocations cfg) :host-register (:host-registrations cfg)
-                               :register (:registrations cfg) :source 1 :pin 1 :write (:writes cfg)
+                               :register (:registrations cfg) :slice-enter (:slice-enters cfg) :source 1 :pin 1 :write (:writes cfg)
                                :crash (:crashes cfg) :reenter (dec (:generations cfg))
                                :unknown (:unknowns cfg) (:fail :fail-permanent) (:failures cfg) n))) (:uses s))
+         (<= (count (get-in s [:env :threads])) (:threads cfg))
          (<= (count (get-in s [:env :handles])) (:handles cfg))
          (<= (get s :cut-allocations 0) (:cuts cfg))
          (every? #(<= (count (:steps %)) (:steps cfg)) (vals (all-records s)))
@@ -1714,6 +1867,7 @@
                    (:fail :fail-permanent) (< (+ (get-in s [:uses [:fail (:op a) (:i a)]] 0)
                                                  (get-in s [:uses [:fail-permanent (:op a) (:i a)]] 0)) (:failures cfg))
                    :unknown (< n (:unknowns cfg)) true)
+            :slice-enter (< n (:slice-enters cfg))
             :signal-write (< n (:writes cfg))
             :t04 (and (< n (:invocations cfg))
                       (< (get-in s [:uses [:host-register (or (read-source s (:w a) (:e a)) (:w a)) (:e a)]] 0)
@@ -1743,6 +1897,6 @@
                      (let [dw (read-source s (:w a) (:e a))]
                        (or (work? (run s dw (current s dw (:e a))))
                            (:completed? (ent s dw (:e a)))))))
-            (:t08 :queued :t21 :t24 :t36 :t19 :t23) (within-bounds? (:state (attempt s a)))
+            (:thread-entry :slice-enter :t22 :t08 :queued :t21 :t24 :t36 :t19 :t23) (within-bounds? (:state (attempt s a)))
             true))))
      (raw-enabled s))))

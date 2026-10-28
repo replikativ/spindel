@@ -93,7 +93,7 @@
   [s]
   (vec
    (concat
-    (for [[w r rr] (runs s) :when (not (m/open? s w (:owner rr)))]
+    (for [[w r rr] (runs s) :when (and (not= :unwinding (:status rr)) (not (m/open? s w (:owner rr))))]
       {:w w :r r :owner (:owner rr)})
     (for [[w world] (:worlds s) [e group] (group-by (comp :spin val) (:runs world))
           :let [work (filter #(m/work? (val %)) group)
@@ -122,7 +122,7 @@
       {:index :creations :w w :r r :missing e})
     (for [[w r rr] (runs s) child (:spawned rr) :when (not (m/run s w child))]
       {:index :spawned :w w :r r :missing child})
-    (for [[w r rr] (runs s) :when (not (m/ent s w (:spin rr)))]
+    (for [[w r rr] (runs s) :when (and (not= :unwinding (:status rr)) (not (m/ent s w (:spin rr))))]
       {:index :run-spin :w w :r r :missing (:spin rr)})
     (for [[w world] (:worlds s) e (:pins world) :when (not (m/ent s w e))]
       {:index :pins :w w :missing e})
@@ -185,7 +185,7 @@
   [s]
   (vec (concat
         (for [[w e er] (entities s) :when (m/idle? s w e)
-              :when (or (:owner er) (some #(= e (:spin %)) (vals (:runs (m/wr s w)))))]
+              :when (or (:owner er) (some #(and (= e (:spin %)) (not= :unwinding (:status %))) (vals (:runs (m/wr s w)))))]
           {:w w :e e :owner (:owner er) :runs (:runs (m/wr s w))})
         (for [[tok h] (get-in s [:env :handles]) :when (contains? h :result)]
           {:tok tok :handle h}))))
@@ -304,7 +304,14 @@
                 obs (count (filter #(let [[k dw _] (:debtor (nth % 2))]
                                       (and (= :entity k) (= dw w) (not= w (first %))))
                                    (obligations s)))]
-            (concat (for [[index size] (census world) :when (> size (+ (* census-constant n) (* census-constant control)))]
+            (concat (let [unwinding (count (filter #(= :unwinding (:status %)) (vals (:runs world))))
+                          threads (count (filter #(and (= w (:world %)) (:run %))
+                                                 (vals (get-in s [:env :threads]))))
+                          native (count (filter #(and (= w (first (:owner %))) (not= :joined (:state %)))
+                                                (vals (get-in s [:env :native]))))]
+                      (when (> unwinding (+ threads native))
+                        [{:w w :unwinding unwinding :threads threads :unjoined native}]))
+                    (for [[index size] (census world) :when (> size (+ (* census-constant n) (* census-constant control)))]
                       {:w w :index index :size size :rows n :control control :c census-constant})
                     (when (not (<= deps fd (+ obs in-flight))) [{:w w :dep-retained deps :fdeps fd :obligations obs :in-flight in-flight}])
                     (for [[key events] (group-by m/control-key
@@ -319,7 +326,7 @@
   [s]
   (vec (concat
         (for [[w world] (:worlds s)
-              :when (and (not-any? m/work? (vals (:runs world)))
+              :when (and (not-any? m/busy? (vals (:runs world)))
                          (some #(and (#{:timer :external} (:kind %))
                                      (= :inherited (:status (m/run s w (nth (:creditor %) 2 nil)))))
                                (vals (:obligations world)))
@@ -340,7 +347,9 @@
   (vec (for [[th thread] (get-in s [:env :threads]) :when (:executing? thread)
              :when (or (nil? (:world thread))
                        (not= (:world thread) (:obligation-world thread))
-                       (not (m/run s (:world thread) (:run thread))))]
+                       (and (not= :released (:status (m/wr s (:world thread))))
+                            (not (m/run s (:world thread) (:run thread))))
+                       (not (:run thread)))]
          {:thread th :slice thread})))
 
 (defn l16
@@ -504,7 +513,7 @@
                (concat
                 (when-not (#{:ready :captured :attached} (:phase cut))
                   [{:c c :quiescent-cut-phase (:phase cut)}])
-                (for [w worlds [r rr] (:runs (m/wr s w)) :when (= :running (:status rr))]
+                (for [w worlds [r rr] (:runs (m/wr s w)) :when (#{:running :unwinding} (:status rr))]
                   {:c c :w w :running r})
                 (for [w worlds event (:queue (m/wr s w))]
                   {:c c :w w :admitted-after-readiness event})
@@ -559,11 +568,49 @@
                        (and (:armed? waiter) (not (:registered? waiter))))]
          {:token token :waiter waiter :obligation ob})))
 
+(defn l25
+  "L25 exact retired (cancelled, superseded or normalised)/physical equivalence, no ownership, obligations or indexes.
+  Retirement provenance on thread/native links survives removal of the run."
+  [s]
+  (vec
+   (concat
+    (for [[w r rr] (runs s)
+          :let [world (m/wr s w)
+                threads (filter #(and (= w (:world %)) (= r (:run %)))
+                                (vals (get-in s [:env :threads])))
+                native (filter #(and (= [w r] (:owner %)) (not= :joined (:state %)))
+                               (vals (get-in s [:env :native])))
+                retired? (or (:retired? rr) (some :retired? threads) (some :retired? native))
+                expected? (and retired? (or (seq threads) (seq native)))
+                unwinding? (= :unwinding (:status rr))
+                indexed? (or (:owner rr) (seq (:creations rr)) (seq (:spawned rr)) (:pred rr)
+                             (some #(or (= r (:owner %)) (= r (:creator %))) (vals (:entities world)))
+                             (some #(or (= r (:owner %)) (= r (:pred %)) (contains? (:spawned %) r))
+                                   (vals (:runs world)))
+                             (some #(= r (:parent %)) (vals (:scopes world)))
+                             (some #(= [:run w r] (:creditor %)) (vals (:obligations world))))
+                malformed? (or (not (:retired? rr)) indexed?
+                               (not (and (vector? (:anchor rr)) (= r (first (:anchor rr)))
+                                         (= w (last (:anchor rr))))))]
+          :when (or (not= (boolean expected?) unwinding?) (and unwinding? malformed?))]
+      {:w w :r r :unwinding? unwinding? :retired? (boolean retired?)
+       :threads (vec threads) :unjoined (vec native) :indexed? (boolean indexed?) :row rr})
+    (for [[th tr] (get-in s [:env :threads])
+          :when (and (:retired? tr) (:run tr)
+                     (not= :released (:status (m/wr s (:world tr))))
+                     (not= :unwinding (:status (m/run s (:world tr) (:run tr)))))]
+      {:thread th :retired-slice-without-unwinding tr})
+    (for [[n nr] (get-in s [:env :native]) :let [[w r] (:owner nr)]
+          :when (and (:retired? nr) (not= :joined (:state nr))
+                     (not= :released (:status (m/wr s w)))
+                     (not= :unwinding (:status (m/run s w r))))]
+      {:native n :retired-op-without-unwinding nr}))))
+
 (def predicates
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates)))
 
@@ -676,11 +723,47 @@
 
 (declare edge-check)
 
+(defn owner-release-errors
+  "Rule 3 leaves a released entity runless, even when its run had another owner.
+  Derive release from ownership changes, independently of run-exit audit events."
+  [before after]
+  (vec (for [[w e er] (entities before)
+             :let [new (m/ent after w e)]
+             :when (and (:owner er) (nil? (:owner new)))
+             [r rr] (:runs (m/wr after w))
+             :when (and (= e (:spin rr)) (not= :unwinding (:status rr)))]
+         {:w w :e e :released-owner (:owner er) :surviving-run r :status (:status rr)})))
+
+(defn join-errors [{:keys [before action after refusal observation]}]
+  (when (= :join (:t action))
+    (let [{:keys [w x timeout?]} action
+          under? (fn [r rr]
+                   (if (= :unwinding (:status rr)) (some #{x} (:anchor rr))
+                       (loop [id r seen #{}]
+                         (cond (= id x) true (nil? id) (= x w) (seen id) false
+                               :else (recur (or (:owner (m/run before w id))
+                                                (get-in before [:worlds w :scopes id :parent]))
+                                            (conj seen id))))))
+          busy (set (for [[r rr] (:runs (m/wr before w))
+                          :when (and (#{:running :parked :unwinding} (:status rr)) (under? r rr))] r))
+          busy (if (= :released (:status (m/wr before w)))
+                 (set (keep #(when (= x (:world %)) (:run %)) (vals (get-in before [:env :threads])))) busy)
+          ready? (if (= :released (:status (m/wr before w)))
+                   (not-any? #(= x (:world %)) (vals (get-in before [:env :threads])))
+                   (empty? busy))
+          timeout? (and timeout? (not ready?))]
+      (when (or (not= before after)
+                (if timeout?
+                  (not (and (= ::m/join-timeout (:error refusal)) (= busy (set (:busy refusal)))))
+                  (or refusal (not= ready? (:complete? observation))
+                      (not= busy (set (:busy observation))))))
+        [{:action action :expected-ready? ready? :busy busy :refusal refusal :observation observation}]))))
+
 (defn ordinary-edge-check
   "Finite safety obligations for one transaction; events are independently checked
   against before/after rows as well as audited causes. No violation allowlist here."
-  [{:keys [before action after refusal]}]
-  (let [t (:t action) w (m/acting-world before action) events (if refusal [] (:events after))
+  [{:keys [before action after refusal] :as edge}]
+  (let [t (:t action) w (m/acting-world before action) events (if (or refusal (= :join t)) [] (:events after))
         before-obs (set (for [[v o ob] (obligations before) :when (not (:standing? ob))] [v o]))
         after-obs (set (map #(subvec (vec %) 0 2) (obligations after)))
         exits (filter #(= :obligation-exit (:event %)) events)
@@ -689,7 +772,8 @@
         body-entries (filter #(= :body-entry (:event %)) events)]
     (vec
      (keep identity
-           [(when (and (not refusal) (not= t :t31)
+           [(when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
+            (when (and (not refusal) (not= t :t31)
                        (seq (set/difference removed exit-ids)))
               {:id :TL2 :evidence {:lost (set/difference removed exit-ids)}})
             (when (some #(and (not (get-in % [:ob :standing?]))
@@ -701,9 +785,22 @@
             (when (and (#{:t16 :t17} t) (not refusal)
                        (not= (m/non-idle-projection before) (m/non-idle-projection after)))
               {:id :TL4 :evidence {:action action}})
-            (when (and (= :t07 t) (nil? (m/run before w (:r action)))
-                       (not= (m/non-idle-projection before) (m/non-idle-projection after)))
+            (when (and (= :t07 t) (or (nil? (m/run before w (:r action)))
+                                      (= :unwinding (:status (m/run before w (:r action)))))
+                       (not= (dissoc before :events) (dissoc after :events)))
               {:id :TL5 :evidence {:action action}})
+            (let [th (get-in before [:env :threads (:th action)])
+                  r (:run th) v (:world th)]
+              (when (and (= :unwinding (:status (m/run before v r)))
+                         (or (some #(and (= v (first %)) (= r (:owner (nth % 2)))) (entities after))
+                             (some #(and (= v (first %)) (= r (:owner (nth % 2)))
+                                         (not= :unwinding (:status (nth % 2)))) (runs after))
+                             (some #(= [:run v r] (:creditor (nth % 2))) (obligations after))
+                             (and (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t)
+                                  (not (and refusal (= before after)
+                                            (= (if (= :released (:status (m/wr before v)))
+                                                 ::m/released ::m/cancelled) (:error refusal)))))))
+                {:id :TL5 :evidence {:unwinding-slice r :action action}}))
             (when (and (= :t06 t) (nil? (get-in before [:worlds w :obligations (:o action)]))
                        (not= (m/non-idle-projection before) (m/non-idle-projection after)))
               {:id :TL5 :evidence {:action action}})
@@ -728,6 +825,9 @@
                 (when (seq illegal) {:id :TL6 :evidence (vec illegal)})))
             (when (and (#{:t10 :t11 :t13 :t34 :t36} t) (seq (l03 after)))
               {:id :TL7 :evidence (l03 after)})
+            (when (and (not refusal) (not= :t31 t))
+              (when-let [bad (seq (owner-release-errors before after))]
+                {:id :TL7 :evidence (vec bad)}))
             (when (or (some #(#{:sealed :released} (:status (m/wr before (:world %)))) body-entries)
                       (some #(and (= :resume (:event %))
                                   (#{:sealed :released} (:status (m/wr before (:world %))))) events))
@@ -814,6 +914,7 @@
    (let [resumes (mapcat
                   (fn [edge]
                     (for [ev (:events (:after edge)) :when (and (not (:refusal edge))
+                                                                (not= :join (get-in edge [:action :t]))
                                                                 (or (= :resume (:event ev))
                                                                     (and (= :host-delivery (:event ev)) (:causal? ev))))
                           key (cond-> [(if (= :host-delivery (:event ev)) [:host (:world ev) (:o ev)]

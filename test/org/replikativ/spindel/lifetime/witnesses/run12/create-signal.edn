@@ -1,0 +1,5 @@
+{:actions
+ [{:t :t04, :w [:w 0], :e [:spin 0], :mode :callback}
+  {:t :slice-enter, :th :host, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :t11, :w [:w 0], :r [[:spin 0] 1]}
+  {:t :t02, :th :host, :w [:w 0], :e [:signal 0]}]}

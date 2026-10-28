@@ -1,0 +1,28 @@
+{:actions
+ [{:t :t19,
+   :w [:w 0],
+   :v [:w 1],
+   :k [:cap 0],
+   :scope [:root [:w 0]],
+   :systems #{:memory}}
+  {:t :t12, :w [:w 1], :scope [:scope 0], :parent [:root [:w 1]]}
+  {:t :t04,
+   :w [:w 1],
+   :scope [:scope 0],
+   :e [:spin 0],
+   :mode :callback}
+  {:t :t05,
+   :w [:w 1],
+   :r [[:spin 0] 1],
+   :kind :await-once,
+   :debtor [:entity [:w 1] [:spin 1]]}
+  {:t :t05,
+   :w [:w 1],
+   :r [[:spin 1] 1],
+   :kind :external,
+   :debtor [:host :native]}
+  {:t :t35, :th :host, :op {:kind :resume, :w [:w 1], :o [:o 2]}}
+  {:t :native-progress, :n [:cancel [:o 2]], :state :joined}
+  {:t :slice-enter, :th :host, :w [:w 1], :r [[:spin 1] 1]}
+  {:t :t11, :w [:w 1], :r [[:spin 0] 1]}
+  {:timeout? true, :w [:w 1], :t :join, :x [[:spin 0] 1]}]}

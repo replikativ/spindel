@@ -173,7 +173,7 @@
 (def action-support
   (merge
    (into {} (for [[step ts] [[:B6 [:t03]] [:B2 [:t06 :t08 :t35 :unsubscribe]]
-                             [:B3 [:t09 :t10 :t15]] [:B1 [:t12]] [:B4 [:t13]]
+                             [:B3 [:t09 :t10 :t15 :slice-enter :t38]] [:B1 [:t12]] [:B4 [:t13 :join]]
                              [:C2 [:t14]] [:B5 [:t16 :t17 :t18]] [:E1 [:t26]]
                              [:E2 [:t20 :t20q :t22 :t23 :t24 :t25]] [:E3 [:t21]]
                              [:F1 [:t32 :t33]] [:F2 [:t27 :t28 :t29 :t30 :t31]]
