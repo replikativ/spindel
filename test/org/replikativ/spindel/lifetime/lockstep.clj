@@ -686,37 +686,92 @@
     (and (some #(= :t19 (:t %)) actions)
          (some #(= :t05 (:t %)) actions)) (conj :C2)))
 
-(defn step-requirements [step]
-  (let [stages (manifests/lineage step)
-        cumulative (fn [field] (apply set/union #{} (map #(get-in manifests/stages [% field] #{}) stages)))
-        transitions (cumulative :changes)
-        historical (for [[name record] (witness-records)
-                         :let [actions (witness-actions record)]
-                         :when (and (not (:negative-control? record)) (some #(transitions (:t %)) actions))]
-                     [name (set/difference (set/union (witness-prerequisites actions)
-                                                      (get manifests/historical-prerequisites name #{}))
-                                           (set stages))])]
-    {:stage step :stages stages :stub? (boolean (some #(get-in manifests/stages [% :stub?]) stages))
-     :changes (into {} (map #(vector % (get-in manifests/stages [% :changes])) stages))
-     :transitions transitions :components (cumulative :components)
-     :scripted (cumulative :scripted) :regressions (cumulative :regressions)
-     :generated (set (for [stage stages seed (get-in manifests/generated-specs [stage :seeds])] [stage seed]))
-     :profiles (cumulative :profiles)
-     :negative-controls (set (for [[name record] (witness-records) :when (:negative-control? record)] name))
-     :witnesses (set (for [[name missing] historical :when (empty? missing)] name))
-     :pending-witnesses (into {} (for [[name missing] historical :when (seq missing)]
-                                   [name {:status :pending :prerequisites missing}]))}))
+(defn valid-handle-association? [state a]
+  (let [handle (get-in state [:env :handles (:tok a)])]
+    (or (nil? (:tok a)) (nil? handle) (= (:e a) (:spin handle)))))
 
-(defn stage-generated-walk [stage choices]
-  (let [transitions (get-in manifests/stages [stage :changes])
-        options (merge manifests/profile-defaults (get-in manifests/generated-specs [stage :bounds]))]
+(defn stage-generated-walk [id choices]
+  (let [spec (manifests/generated-specs id)
+        stage (get spec :stage id)
+        transitions (get-in manifests/stages [stage :changes])
+        options (merge manifests/profile-defaults (:bounds spec))]
     (loop [state (m/init-state options) choices choices actions []]
       (let [alphabet (cond->> (stage-alphabet state stage transitions)
+                       (= :valid-handles (:domain spec)) (filter #(valid-handle-association? state %))
                        (= stage :A3) (remove #(completion-hook-reason state %)))]
         (if (or (empty? choices) (empty? alphabet)) actions
             (let [a (nth alphabet (mod (first choices) (count alphabet)))
                   after (:state (model-macrostep state a {}))]
               (recur after (rest choices) (conj actions a))))))))
+
+(defn case-prerequisites
+  "Semantic needs of a COMPLETE walk, beyond its transition alphabet. Refusals
+   and reclamation are stage requirements even on otherwise early T ids."
+  [actions]
+  (loop [state (m/init-state) actions (seq actions)
+         needs (witness-prerequisites actions)]
+    (if-let [a (first actions)]
+      (let [{after :state refusal :refusal} (model-macrostep state a {})
+            completion? (= :t07 (:t a))
+            row (when completion? (m/ent after (:w a) (first (:r a))))]
+        (recur after (next actions)
+               (cond-> needs
+                 (= :t11 (:t a)) (into #{:B2 :B3})
+                 (#{::m/token-spin-mismatch ::m/unknown-handle ::m/idle-cache-released}
+                   (:error refusal)) (conj :B5)
+                 (and completion? (or (nil? row) (empty? (:tokens row)))) (into #{:B3 :B5})
+                 (and (= :t11 (:t a))
+                      (some #(= :following (get-in % [:lineage :mode])) (vals (:worlds state))))
+                 (into #{:C2 :D1}))))
+      needs)))
+
+(defn step-requirements [step]
+  (let [stages (manifests/lineage step)
+        cumulative (fn [field] (apply set/union #{} (map #(get-in manifests/stages [% field] #{}) stages)))
+        declared-transitions (cumulative :changes)
+        transitions (cond-> declared-transitions
+                      (not (contains? (set stages) :B3)) (disj :t11))
+        scripts (merge scripted-corpus manifests/ownership-traces)
+        scripted-case (fn [name] {:actions (scripts name)
+                                  :prerequisites (set/union (case-prerequisites (scripts name))
+                                                           (get manifests/scripted-prerequisites name #{}))})
+        cases {:witnesses (into {} (for [[name record] (witness-records)
+                                         :let [actions (witness-actions record)]
+                                         :when (and (not (:negative-control? record))
+                                                    (some #(transitions (:t %)) actions))]
+                                     [name {:actions actions
+                                            :prerequisites (set/union (case-prerequisites actions)
+                                                                     (get manifests/historical-prerequisites name #{}))}]))
+               :scripted (into {} (for [name (cumulative :scripted)] [name (scripted-case name)]))
+               :regressions (into {} (for [name (cumulative :regressions)] [name (scripted-case name)]))
+               :generated (into {} (for [[id spec] manifests/generated-specs
+                                         :when (contains? (set stages) (get spec :stage id))
+                                         seed (:seeds spec)
+                                         :let [choices (gen/generate (gen/vector gen/nat (:length spec)) (:length spec) seed)
+                                               actions (stage-generated-walk id choices)]]
+                                     [[id seed] {:actions actions :stage id :seed seed
+                                                 :prerequisites (set/union (case-prerequisites actions)
+                                                                          (:prerequisites spec #{}))}]))
+               :profiles (into {} (for [name (cumulative :profiles)
+                                        :let [spec (manifests/profile-specs name)]]
+                                    [name {:spec spec :prerequisites (conj (:prerequisites spec #{}) (:stage spec))}]))}
+        classified (reduce-kv
+                     (fn [result kind entries]
+                       (assoc result kind (set (for [[id c] entries
+                                                    :when (set/subset? (:prerequisites c) (set stages))] id))
+                                     (keyword (str "pending-" (name kind)))
+                                     (into {} (for [[id c] entries
+                                                    :let [missing (set/difference (:prerequisites c) (set stages))]
+                                                    :when (seq missing)]
+                                                [id (assoc c :status :pending :prerequisites missing)]))))
+                     {} cases)]
+    (merge classified
+           {:stage step :stages stages :cases cases
+            :stub? (boolean (some #(get-in manifests/stages [% :stub?]) stages))
+            :changes (into {} (map #(vector % (get-in manifests/stages [% :changes])) stages))
+            :transitions transitions :pending-transitions (set/difference declared-transitions transitions)
+            :components (cumulative :components)
+            :negative-controls (set (for [[name record] (witness-records) :when (:negative-control? record)] name))})))
 
 (defn check-all
   ([] (check-all :B1))
@@ -731,14 +786,13 @@
                                  :let [{:keys [stage alphabet bounds]} (manifests/profile-specs name)]]
                              [name (exhaustive-walks (merge manifests/profile-defaults bounds) stage alphabet)]))
          replay-boundaries #(assoc (replay (m/init-state) % {:observable-boundaries? true})
-                                   :trace-semantics :observable-boundaries)
+                                   :trace-semantics :observable-boundaries :actions (vec %))
          walks (into {} (for [[name search] searches] [name (mapv replay-boundaries (:walks search))]))
-         scripts (merge scripted-corpus manifests/ownership-traces)
-         scripted (into {} (for [name (:scripted requirements)] [name (replay (scripts name))]))
+         scripted (into {} (for [name (set/union (:scripted requirements) (:regressions requirements))]
+                             [name (replay (get-in requirements [:cases :scripted name :actions]))]))
          generated (into {} (for [[stage seed :as id] (:generated requirements)
-                                  :let [length (get-in manifests/generated-specs [stage :length])
-                                        choices (gen/generate (gen/vector gen/nat length) length seed)]]
-                              [id (assoc (replay-boundaries (stage-generated-walk stage choices)) :stage stage :seed seed)]))
+                                  :let [c (get-in requirements [:cases :generated id])]]
+                              [id (assoc (replay-boundaries (:actions c)) :stage stage :seed seed)]))
          unrestricted (mapv (fn [seed]
                               (let [choices (gen/generate (gen/vector gen/nat 20) 20 seed)
                                     walk (generative/random-walk (m/init-state) choices)]
@@ -747,7 +801,8 @@
          model-results (for [[name record] (witness-records)]
                          {:name name :negative-control? (:negative-control? record)
                           :violations (bfs/violations (bfs/execute (witness-actions record)))})]
-     {:manifest requirements :coverage (coverage) :component-availability preflight
+     {:pending (select-keys requirements [:pending-scripted :pending-regressions :pending-generated :pending-profiles :pending-witnesses])
+      :manifest requirements :coverage (coverage) :component-availability preflight
       :witnesses ws :profiles walks
       :profile-limits (into {} (for [[name search] searches] [name (dissoc search :walks)]))
       :scripted scripted :regressions (select-keys scripted (:regressions requirements))
@@ -778,7 +833,10 @@
         failures (vec (concat
                        (when stub? [{:kind :manifest-stub}])
                        (for [[kind name :as path] selected
-                             :let [r (get-in report path)] :when (not= :passed (:status r))]
+                             :let [r (get-in report path)
+                                   actions (get-in requirements (into [:cases] (conj path :actions)))]
+                             :when (or (not= :passed (:status r))
+                                       (and actions (not= actions (:trace r))))]
                          {:kind :required-result :corpus kind :name name :status (:status r)})
                        (for [t (set/difference transitions observed)] {:kind :required-transition :transition t})
                        (for [c components :when (not (and (true? (get-in report [:coverage :components c :enabled?]))
@@ -788,7 +846,10 @@
                              :let [walks (get-in report [:profiles profile])]
                              :when (or (not (seq walks))
                                        (not= :exhausted (get-in report [:profile-limits profile :status]))
-                                       (not (every? #(= :passed (:status %)) walks)))]
+                                       (not= (count walks) (get-in report [:profile-limits profile :edges]))
+                                       (not (every? #(and (= :passed (:status %))
+                                                          (vector? (:actions %))
+                                                          (= (:actions %) (:trace %))) walks)))]
                          {:kind :required-search :profile profile})))
         normative (into {} (filter (comp seq val) (select-keys (:model-normative report) witnesses)))]
     {:status (cond (seq failures) :failed (seq normative) :model-failed :else :passed)

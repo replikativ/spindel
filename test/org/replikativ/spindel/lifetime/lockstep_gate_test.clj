@@ -3,7 +3,8 @@
             [org.replikativ.spindel.lifetime.lockstep :as l]
             [org.replikativ.spindel.lifetime.lockstep-manifests :as manifests]
             [clojure.set :as set]
-            [org.replikativ.spindel.lifetime.model :as m]))
+            [org.replikativ.spindel.lifetime.model :as m]
+            [clojure.test.check.generators :as gen]))
 
 (def w [:w 0])
 (def e [:spin 0])
@@ -46,7 +47,7 @@
     (is (seq (corpus "run10/mixed-released.edn")))))
 
 (defn passed-report [requirements]
-  (let [result {:status :passed
+  (let [result {:status :passed :actions [] :trace []
                 :boundaries [{:constituents (mapv #(hash-map :action {:t %})
                                                   (:transitions requirements))}]}]
     {:coverage {:components (zipmap (:components requirements) (repeat {:enabled? true}))}
@@ -56,7 +57,7 @@
      :generated (zipmap (:generated requirements) (repeat result))
      :regressions (zipmap (:regressions requirements) (repeat result))
      :profiles (zipmap (:profiles requirements) (repeat [result]))
-     :profile-limits (zipmap (:profiles requirements) (repeat {:status :exhausted}))}))
+     :profile-limits (zipmap (:profiles requirements) (repeat {:status :exhausted :edges 1}))}))
 
 (deftest acceptance-rejects-relevant-result-failures
   (let [requirements {:transitions #{:t01 :t02 :t04 :t12} :components #{} :witnesses #{}
@@ -101,9 +102,26 @@
       (is (= (inc (count actions)) (count states)))
       (is (every? #(manifests/relevant-action? :B1 %) actions)))))
 
-(defn with-model-adapter [stage f]
-  ;; A stage-only test double, not runtime projection synthesized from expected
-  ;; state. It owns an independent model state and rejects later-stage actions.
+(defn legacy-macrostep [state a rejections]
+  ;; Ownership records use the model's creation/invocation operations. The
+  ;; control deliberately retains native pre-B3 cancellation and pre-B5
+  ;; token acceptance; it must NOT conform on those later-stage cases.
+  (cond
+    (= :t11 (:t a))
+    {:state (-> state
+                (assoc-in [:worlds (:w a) :entities (first (:r a)) :completed?] true)
+                (assoc-in [:worlds (:w a) :entities (first (:r a)) :result] {:error ::m/cancelled})
+                (assoc-in [:worlds (:w a) :runs (:r a) :status] :completed))
+     :deliveries []}
+
+    (and (= :t01 (:t a)) (:tok a)
+         (not= (:e a) (get-in state [:env :handles (:tok a) :spin] (:e a))))
+    (l/model-macrostep state (dissoc a :tok) rejections)
+
+    :else (l/model-macrostep state a rejections)))
+
+(defn with-ownership-control [stage f]
+  ;; Independent control state, with explicit legacy behaviors above.
   (let [required (l/step-requirements stage)
         descriptors (into {} (for [[id d] l/components]
                                [id (cond-> (assoc d :enabled? (contains? (:components required) id))
@@ -113,10 +131,10 @@
                                                                         (every? map? (map w [:entities :scopes :runs])))
                                                                       (:worlds %)))))]))]
     (with-redefs [l/components descriptors
-                  l/new-driver #(atom {:model (m/init-state) :delivered []})
+                  l/new-driver #(atom {:control-state (m/init-state) :delivered []})
                   l/close! (constantly nil)
                   l/projection (fn [driver]
-                                 (let [s (:model @driver)
+                                 (let [s (:control-state @driver)
                                        entities (set (mapcat (comp keys :entities val) (:worlds s)))]
                                    (update s :worlds
                                            #(into {} (for [[w world] %]
@@ -131,11 +149,11 @@
                                     (when-not (manifests/relevant-action? stage a)
                                       (throw (ex-info "Test adapter cannot execute later stages" {:action a})))
                                     (let [{:keys [state deliveries refusal]}
-                                          (l/model-macrostep (:model @driver) a
+                                          (legacy-macrostep (:control-state @driver) a
                                                              (when (:throw a)
                                                                {[(:w a) (first (:r a))]
                                                                 (:throw a)}))]
-                                      (swap! driver #(-> % (assoc :model state) (update :delivered into deliveries)))
+                                      (swap! driver #(-> % (assoc :control-state state) (update :delivered into deliveries)))
                                       (when refusal (throw (ex-info "Model refusal" {:type (:error refusal)})))))
                   l/settlement-probes (constantly :outside-manifest)
                   l/frozen-probe (constantly :outside-manifest)
@@ -143,8 +161,8 @@
                   l/gc-hook-probe (constantly :outside-manifest)]
       (f required))))
 
-(deftest a-conforming-b1-only-adapter-satisfies-its-manifest
-  (with-model-adapter
+(deftest ownership-control-with-legacy-semantics-satisfies-b1
+  (with-ownership-control
     :B1
     (fn [requirements]
       (let [report (l/check-all :B1)
@@ -162,12 +180,12 @@
         (is (= :skipped (:status (l/replay [{:t :t13 :w w :scope [:root w]}]))))))))
 
 (deftest generated-and-profile-walks-declare-observable-boundaries
-  (with-model-adapter
+  (with-ownership-control
     :B1
     (fn [_]
       (let [trace (conj (l/scripted-corpus :completion) {:t :t11 :w w :r r})]
         (is (= :skipped (:status (l/replay trace))))
-        (is (= :passed (:status (l/replay (m/init-state) trace {:observable-boundaries? true}))))))))
+        (is (= :passed (:status (l/replay (m/init-state) (l/scripted-corpus :completion) {:observable-boundaries? true}))))))))
 
 (deftest profile-alphabets-do-not-shrink-with-adapter-availability
   (let [{:keys [stage alphabet bounds]} (manifests/profile-specs :ownership-scopes)]
@@ -176,3 +194,70 @@
         (is (= :exhausted (:status search)))
         (is (pos? (:edges search)))
         (is (some #(some (fn [a] (= :t12 (:t a))) %) (:walks search)))))))
+
+(deftest semantic-prerequisites-keep-later-cases-pending
+  (let [b1 (l/step-requirements :B1) b3 (l/step-requirements :B3) b5 (l/step-requirements :B5)]
+    (doseq [name [:cancel :cancel-await]]
+      (is (not (contains? (:scripted b1) name)))
+      (is (= #{:B2 :B3} (get-in b1 [:pending-scripted name :prerequisites])))
+      (is (contains? (:scripted b3) name)))
+    (is (not (contains? (:profiles b1) :one-spin)))
+    (is (seq (get-in b1 [:pending-profiles :one-spin :prerequisites])))
+    (is (contains? (:profiles b5) :one-spin))
+    (is (contains? (:generated b1) [:B1 0]))
+    (is (contains? (:generated b5) [:B1-legacy 0]))
+    (is (= #{:B5} (get-in b1 [:pending-generated [:B1-legacy 0] :prerequisites])))))
+
+(deftest b1-domain-has-valid-handle-entity-associations
+  (doseq [seed (range 10)
+          :let [choices (gen/generate (gen/vector gen/nat 20) 20 seed)
+                actions (l/stage-generated-walk :B1 choices)]]
+    (reduce (fn [s a]
+              (let [result (m/attempt s a)]
+                (is (not= ::m/token-spin-mismatch (get-in result [:refusal :error])) (pr-str [seed a]))
+                (:state result))) (m/init-state) actions)))
+
+(deftest legacy-control-retains-later-divergences
+  (let [start {:t :t04 :w w :e e}
+        state (:state (legacy-macrostep (m/init-state) start {}))
+        cancel {:t :t11 :w w :r r}
+        token {:t :t01 :w w :e e :tok [:tok 0]}
+        mismatch (assoc token :e child)
+        state-with-token (:state (legacy-macrostep state token {}))]
+    (is (not= (:state (l/model-macrostep state cancel {}))
+              (:state (legacy-macrostep state cancel {}))))
+    (is (= ::m/token-spin-mismatch (get-in (l/model-macrostep state-with-token mismatch {}) [:refusal :error])))
+    (is (nil? (:refusal (legacy-macrostep state-with-token mismatch {}))))))
+
+(deftest pending-cases-arrive-unchanged-and-prefixes-never-pass
+  (let [b1 (l/step-requirements :B1) b5 (l/step-requirements :B5)]
+    (doseq [kind [:scripted :generated :witnesses]
+            [id entry] ((keyword (str "pending-" (name kind))) b1)]
+      (is (= (:actions entry) (get-in b5 [:cases kind id :actions])) (pr-str [kind id])))
+    (is (= (l/stage-generated-walk :B1-legacy (gen/generate (gen/vector gen/nat 20) 20 0))
+           (get-in b1 [:pending-generated [:B1-legacy 0] :actions]))))
+  (with-ownership-control :B1
+    (fn [requirements]
+      (let [report (l/check-all :B1)]
+        (is (= :failed (:status (l/acceptance (assoc-in report [:scripted :owner-host :trace] []) requirements))))
+        (doseq [changed [(update-in report [:profiles :ownership-scopes] pop)
+                         (assoc-in report [:profiles :ownership-scopes 0 :trace] [])
+                         (update-in report [:profiles :ownership-scopes 0] dissoc :actions)]]
+          (is (= :failed (:status (l/acceptance changed requirements)))))
+        (doseq [[script path] [[:owner-lexical [:entities child :owner]]
+                               [:owner-lexical [:entities child :creator]]
+                               [:owner-lexical [:entities child :order]]
+                               [:owner-lexical [:runs [child 1] :owner]]
+                               [:owner-scopes [:scopes [:scope 0] :parent]]
+                               [:owner-scopes [:scopes [:scope 0] :kind]]
+                               [:owner-scopes [:scopes [:scope 0] :status]]
+                               [:owner-scopes [:root]]]]
+          (let [project l/projection
+                result (with-redefs [l/projection (fn [driver]
+                                                   (let [state (project driver)]
+                                                     (if (get-in state (into [:worlds w] path))
+                                                       (assoc-in state (into [:worlds w] path) :corrupt) state)))]
+                         (l/replay (manifests/ownership-traces script)))]
+            (is (= :discrepancy (:status result)) (pr-str path))
+            (is (= :failed (:status (l/acceptance (assoc-in report [:scripted script] result) requirements)))
+                (pr-str path))))))))

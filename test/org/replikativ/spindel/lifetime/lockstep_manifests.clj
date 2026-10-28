@@ -73,10 +73,13 @@
                     {:t :t12 :w w :scope [:scope 3] :parent root :kind :sci-component}
                     {:t :t04 :w w :scope child-scope :e e :mode :callback}]}))
 
+(def scripted-prerequisites
+  {:cancel #{:B2 :B3} :cancel-await #{:B2 :B3}})
+
 (def profile-specs
   ;; Explicit finite alphabets, independent of the current adapter's support.
   ;; Unavailable edges must yield skipped results, never disappear from a gate.
-  {:one-spin {:stage :A3 :alphabet #{:t01 :t04 :t07 :t11} :bounds {:spins 1 :signals 0 :atoms 0}}
+  {:one-spin {:prerequisites #{:B3 :B5} :stage :A3 :alphabet #{:t01 :t04 :t07 :t11} :bounds {:spins 1 :signals 0 :atoms 0}}
    :source-only {:stage :A3 :alphabet #{:t02 :signal-write} :bounds {:spins 0 :signals 1 :atoms 0}}
    :ownership-scopes {:stage :B1 :alphabet #{:t04 :t12} :bounds {:spins 1 :signals 0 :atoms 0 :scopes 1}}
    :obligation-registration {:stage :B2 :alphabet #{:t02 :t04 :t05 :t06 :unsubscribe}
@@ -98,7 +101,11 @@
   (let [seeds [0 1 2 3 4 5 6 7 8 9]
         bounds {:spins 2 :signals 1 :atoms 1 :scopes 2 :handles 1}]
     {:A3 {:seeds seeds :length 20 :bounds bounds}
-     :B1 {:seeds seeds :length 20 :bounds bounds}
+     :B1 {:seeds seeds :length 20 :bounds bounds :domain :valid-handles}
+     ;; Preserve the original generated cases, including invalid-token actions,
+     ;; as full B5 requirements. Seeds, bounds and choice order are unchanged.
+     :B1-legacy {:stage :B1 :seeds seeds :length 20 :bounds bounds
+                 :prerequisites #{:B5}}
      :B2 {:seeds seeds :length 20 :bounds bounds}
      :B3 {:seeds seeds :length 20 :bounds (assoc bounds :generations 2)}
      :B4 {:seeds seeds :length 20 :bounds bounds}
