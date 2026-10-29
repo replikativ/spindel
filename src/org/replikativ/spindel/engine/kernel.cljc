@@ -626,6 +626,16 @@
                 {:world w :scope r :run r :executing? true :retired? true
                  :obligation-world w :anchor (:anchor row) :cleanup-ticket n})))
 
+(defn- cleanup-adopt! [ctx {:keys [n th]}]
+  (let [state (root-state ctx) row (get-in state [:env :native n])
+        thread (get-in state [:env :threads th])]
+    (require! (and (cleanup-op? row) (= :ready (:phase row))) ::not-ready {:n n})
+    (require! (and (:executing? thread) (= (:owner row) [(:world thread) (:run thread)])
+                   (nil? (:cleanup-ticket thread))) ::wrong-slice {:n n :th th})
+    (root-edit! ctx assoc-in [:env :native n :phase] :claimed)
+    (root-edit! ctx update-in [:env :threads th] assoc :cleanup-ticket n
+                :retired? true :anchor (:anchor row))))
+
 (defn- cleanup-boundary! [ctx {:keys [th]} phase]
   (let [n (get-in (root-state ctx) [:env :threads th :cleanup-ticket])
         row (get-in (root-state ctx) [:env :native n])]
@@ -1435,15 +1445,16 @@
          (require! (and (vector? (:fresh-runs action))
                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs action)))
                    ::invalid-run-allocation {:action action}))
-       (when (and slice? (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (header ctx (:world thread)))))
+       (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (header ctx (:world thread)))))
          (require! false ::released {:w w :thread (:th action)}))
        (when (and unwinding? (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
          (require! false ::cancelled {:w w :r (:run thread)}))
        (when (and (or (:cleanup-ticket thread)
                       (cleanup-op? (get-in (root-state ctx) [:env :native (cleanup-ticket (:world thread) (:run thread))])))
-                  (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)))
+                  (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)))
          (require! false ::cleanup-only {:thread (:th action) :action action}))
        (case t
+         :cleanup-adopt (cleanup-adopt! ctx action)
          :cleanup-claim (cleanup-claim! ctx action)
          :cleanup-park (cleanup-boundary! ctx action :waiting)
          :cleanup-return (cleanup-boundary! ctx action :returning)
@@ -1553,7 +1564,12 @@
          :thread-entry
          (do (require! (nil? (get-in (root-state ctx) [:env :threads (:th action) :run]))
                        ::thread-busy {:th (:th action)})
-             (require! (nil? (get-in action [:thread :cleanup-ticket])) ::protected-cleanup {:th (:th action)})
+             (require! (and (nil? (get-in action [:thread :cleanup-ticket]))
+                            (not (cleanup-op?
+                                  (get-in (root-state ctx)
+                                          [:env :native (cleanup-ticket (get-in action [:thread :world])
+                                                                        (get-in action [:thread :run]))]))))
+                       ::protected-cleanup {:th (:th action)})
              (root-edit! ctx assoc-in [:env :threads (:th action)] (:thread action)))
          :waiter-unregister (root-edit! ctx update-in [:env :waiters] dissoc (:token action))
          :t35

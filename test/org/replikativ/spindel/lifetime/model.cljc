@@ -1700,7 +1700,7 @@
    :t25 t25-cut-fail :t26 t26-seal :t27 t27-prepare :t28 t28-settlement-step
    :t29 t29-finish :t30 t30-recover :t31 t31-crash :t32 t32-transfer
    :t33 t33-partition :t34 t34-release-world :t35 t35-host-entry :t36 t36-cleanup :t37 t37-start-for :t38 t38-slice-exit :slice-enter slice-enter
-   :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
+   :cleanup-adopt cleanup/adopt :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
    :cleanup-deliver cleanup/deliver :cleanup-return cleanup/returning
    :cleanup-cell cleanup/access})
 
@@ -1752,14 +1752,14 @@
           unwinding? (= :unwinding (:status (run s (:world thread) (:run thread))))
           a (if (and slice? (not (#{:t38 :slice-enter :t35} t))) (assoc a :w (:world thread)) a)
           w (acting-world s a)
-          _ (when (and slice? (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (wr s (:world thread)))))
+          _ (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (wr s (:world thread)))))
               (refuse ::released {:w w :thread (:th a)}))
           _ (when (and unwinding?
                        (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
               (refuse ::cancelled {:w w :r (:run thread)}))
           _ (when (and (or (:cleanup-ticket thread)
                            (cleanup/protected? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
-                       (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)))
+                       (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)))
               (refuse ::cleanup-only {:thread (:th a) :action a}))
           before s s (assoc s :events [])]
       (when (and (quiescent-cut? s (acting-world s a))
@@ -1804,7 +1804,11 @@
            :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
            :thread-entry
            (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
-               (require! (nil? (get-in a [:thread :cleanup-ticket])) ::protected-cleanup {:th (:th a)})
+               (require! (and (nil? (get-in a [:thread :cleanup-ticket]))
+                              (not (cleanup/protected?
+                                    (get-in s [:env :native (cleanup/ticket (get-in a [:thread :world])
+                                                                            (get-in a [:thread :run]))]))))
+                         ::protected-cleanup {:th (:th a)})
                (assoc-in s [:env :threads (:th a)] (:thread a)))
            :unsubscribe
            (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])

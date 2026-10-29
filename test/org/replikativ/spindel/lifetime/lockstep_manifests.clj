@@ -29,7 +29,7 @@
    :B3 {:after :B2 :changes #{:t07 :t09 :t10 :t11 :t15 :slice-enter :t38}
         :components #{:runs :reasons :dirty} :scripted #{}
         :regressions #{} :profiles #{:run-lifecycle}}
-   :B4 {:after :B3 :changes #{:t13 :join :cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell}
+   :B4 {:after :B3 :changes #{:t13 :join :cleanup-adopt :cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell}
         :components #{} :scripted #{} :regressions #{} :profiles #{:scope-close}}
    :B5 {:after :B4 :changes #{:t01 :t04 :t05 :t16 :t17 :t18}
         :components #{:tokens} :scripted #{} :regressions #{} :profiles #{:incarnations}}
@@ -134,7 +134,7 @@
                 :t19 :A3 :signal-write :A3 :t12 :B1 :t06 :B2 :t35 :B2 :unsubscribe :B2
                 :t09 :B3 :t10 :B3 :t15 :B3 :slice-enter :B3 :t38 :B3
                 :t13 :B4 :join :B4
-                :cleanup-claim :B4 :cleanup-park :B4 :cleanup-return :B4
+                :cleanup-adopt :B4 :cleanup-claim :B4 :cleanup-park :B4 :cleanup-return :B4
                 :cleanup-deliver :B4 :cleanup-cell :B4 :t16 :B5 :t17 :B5 :t18 :B5
                 :t03 :B6 :t14 :C2 :t20 :E1 :t26 :E1 :t20q :E2 :t22 :E2 :t23 :E2
                 :t24 :E2 :t25 :E2 :t21 :E3 :t32 :F1 :t33 :F1

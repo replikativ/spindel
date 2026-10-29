@@ -72,6 +72,19 @@
                          {:world w :scope r :run r :executing? true :retired? true
                           :obligation-world w :anchor (:anchor row) :cleanup-ticket n})))))
 
+(defn adopt
+  "Transfer exit authority to the generation's existing physical frame.
+  No dispatch, re-entry or second frame is created."
+  [s {:keys [n th]}]
+  (let [{:keys [owner phase] :as row} (get-in s [:env :native n])
+        thread (get-in s [:env :threads th])]
+    (require! (and (protected? row) (= :ready phase)) ::not-ready {:n n})
+    (require! (and (:executing? thread) (= owner [(:world thread) (:run thread)])
+                   (nil? (:cleanup-ticket thread))) ::wrong-slice {:n n :th th})
+    (-> s (assoc-in [:env :native n :phase] :claimed)
+        (update-in [:env :threads th] assoc :cleanup-ticket n
+                   :retired? true :anchor (:anchor row)))))
+
 (defn suspend [s {:keys [th]}]
   (let [n (get-in s [:env :threads th :cleanup-ticket]) row (get-in s [:env :native n])]
     (require! (and n (= :claimed (:phase row))) ::not-claimed {:th th})
@@ -149,6 +162,11 @@
            th [:host :foreign] :when (and (nil? (get-in s [:env :threads th :run]))
                                           (not (apply active-slice? s (:owner row))))]
        {:t :cleanup-claim :n n :th th})
+     (for [[n row] (get-in s [:env :native]) :when (and (protected? row) (= :ready (:phase row)))
+           [th thread] (get-in s [:env :threads])
+           :when (and (:executing? thread) (= (:owner row) [(:world thread) (:run thread)])
+                      (nil? (:cleanup-ticket thread)))]
+       {:t :cleanup-adopt :n n :th th})
      (for [[n row] (get-in s [:env :native]) :when (and (protected? row) (= :waiting (:phase row)))]
        {:t :cleanup-deliver :n n :sequence (:sequence row) :value :cleanup-value})
      (for [[th thread] (get-in s [:env :threads])

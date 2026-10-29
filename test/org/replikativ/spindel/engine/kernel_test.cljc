@@ -526,3 +526,34 @@
                        (catch #?(:clj Exception :cljs :default) error (:error (ex-data error))))]
         (is (= :unused-run-allocation (some-> error name keyword)))
         (is (= before (kernel/snapshot actual)))))))
+
+(deftest protected-cleanup-adopts-only-its-existing-frame
+  (let [r [:cleanup 1] n [:cps-exit w r]]
+    (compare-walk!
+     (model/init-state {:cps-exit? true :slices? true})
+     (into (cleanup-fixture-actions)
+           [{:t :t11 :w w :r r}
+            {:t :cleanup-adopt :n n :th :foreign}
+            {:t :cleanup-adopt :n n :th :worker}
+            {:t :cleanup-adopt :n n :th :worker}
+            {:t :cleanup-cell :th :worker :cell [w r :cell] :value :in-place}
+            {:t :cleanup-park :th :worker}
+            {:t :cleanup-deliver :n n :sequence 1 :value :ready}
+            {:t :cleanup-adopt :n n :th :worker}
+            {:t :cleanup-claim :n n :th :foreign}
+            {:t :t38 :th :worker}
+            {:t :thread-entry :th :foreign
+             :thread {:world w :run r :scope r :executing? true :retired? true}}
+            {:t :cleanup-claim :n n :th :foreign}
+            {:t :cleanup-return :th :foreign}
+            {:t :t38 :th :foreign}]))))
+
+(deftest released-cleanup-adopts-the-surviving-frame
+  (let [r [:cleanup 1] n [:cps-exit w r]
+        released (reduce model/step (model/init-state {:cps-exit? true :slices? true})
+                         (conj (cleanup-fixture-actions) {:t :t34 :w w}))]
+    (compare-walk! released
+                   [{:t :cleanup-adopt :n n :th :worker}
+                    {:t :cleanup-cell :th :worker :cell [w r :cell] :value :released}
+                    {:t :cleanup-return :th :worker}
+                    {:t :t38 :th :worker}])))

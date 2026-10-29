@@ -141,7 +141,7 @@
                   (filter #(= n (:n %)) (m/raw-enabled s))))
     (is (some #(= :cleanup-claim (:t %)) (m/raw-enabled s)))))
 
-(deftest only-claim-can-create-a-cleanup-frame
+(deftest generic-entry-cannot-create-a-cleanup-frame
   (let [s (-> (cancelled) (checked {:t :cleanup-claim :n n :th :worker})
               (checked {:t :cleanup-return :th :worker}))]
     (refused s {:t :thread-entry :th :foreign
@@ -233,3 +233,84 @@
     (is (every? (:covered result #{})
                 [:cleanup-claim :cleanup-park :cleanup-deliver :cleanup-return :t38 :t34])
         (pr-str result))))
+
+(deftest running-cancellation-adopts-the-existing-physical-frame
+  (let [before (checked (entered) {:t :t11 :w w :r r})
+        wrong (assoc-in before [:env :threads :foreign]
+                        {:world w :run [:other 1] :scope [:other 1] :executing? true})]
+    (refused before {:t :cleanup-adopt :n n :th :foreign} ::cleanup/wrong-slice)
+    (refused wrong {:t :cleanup-adopt :n n :th :foreign} ::cleanup/wrong-slice)
+    (is (some #{{:t :cleanup-adopt :n n :th :worker}} (cleanup/enabled before)))
+    (let [claimed (checked before {:t :cleanup-adopt :n n :th :worker})]
+      (is (= (set (keys (get-in before [:env :threads])))
+             (set (keys (get-in claimed [:env :threads])))))
+      (is (= r (get-in claimed [:env :threads :worker :run])))
+      (is (= :claimed (get-in claimed [:env :native n :phase])))
+      (is (false? (m/join-ready? claimed w r)))
+      (refused claimed {:t :cleanup-adopt :n n :th :worker} ::cleanup/not-ready)
+      (refused claimed {:t :cleanup-claim :n n :th :foreign} ::cleanup/not-ready)
+      (let [written (checked claimed {:t :cleanup-cell :th :worker :cell cell :value :in-place})
+            returning (checked written {:t :cleanup-return :th :worker})
+            done (checked returning {:t :t38 :th :worker})]
+        (is (= :in-place (get-in returning [:env :cleanup-cells cell :result])))
+        (is (false? (m/join-ready? returning w r)))
+        (is (m/join-ready? done w r))
+        (is (empty? (get-in done [:env :cleanup-cells])))))))
+
+(deftest adopted-frame-parks-without-concurrent-resumption
+  (let [s (-> (entered) (checked {:t :t11 :w w :r r})
+              (checked {:t :cleanup-adopt :n n :th :worker})
+              (checked {:t :cleanup-park :th :worker})
+              (checked {:t :cleanup-deliver :n n :sequence 1 :value :ready}))]
+    ;; Callback-before-return cannot re-adopt the suspending frame or dispatch
+    ;; another one. Its existing callback sequence must survive the handoff.
+    (refused s {:t :cleanup-adopt :n n :th :worker} ::cleanup/wrong-slice)
+    (refused s {:t :cleanup-claim :n n :th :foreign} ::cleanup/slice-busy)
+    (let [s (-> s (checked {:t :t38 :th :worker})
+                (checked {:t :cleanup-claim :n n :th :foreign}))]
+      (is (= 1 (get-in s [:env :native n :sequence])))
+      (is (= :ready (get-in s [:env :native n :delivery])))
+      (is (m/join-ready? (finish s :foreign) w r)))))
+
+(deftest adoption-edge-oracle-rejects-an-equivalent-replacement-frame
+  (let [before (checked (entered) {:t :t11 :w w :r r})
+        action {:t :cleanup-adopt :n n :th :worker}
+        after (checked before action)
+        worker (get-in after [:env :threads :worker])
+        foreign (get-in after [:env :threads :foreign])
+        moved (-> after (assoc-in [:env :threads :foreign] worker)
+                  (update-in [:env :threads] #(if foreign (assoc % :worker foreign) (dissoc % :worker))))]
+    ;; Local conservation sees one correct owner and one claimed frame; the
+    ;; pre/post oracle must also preserve the physical thread's identity.
+    (is (empty? (cleanup/errors moved)))
+    (doseq [corrupt [moved (assoc-in after [:env :native n :sequence] 9)]]
+      (is (some #(= :TL21 (:id %))
+                (inv/edge-check {:before before :action action :after corrupt}))))))
+
+(deftest generic-thread-entry-cannot-forge-a-frame-to-adopt
+  (let [ready (cancelled)]
+    (refused ready {:t :thread-entry :th :foreign
+                    :thread {:world w :run r :scope r :executing? true :retired? true}}
+             ::m/protected-cleanup)))
+
+(deftest released-world-can-adopt-its-surviving-physical-frame
+  (let [released (checked (entered) {:t :t34 :w w})
+        claimed (checked released {:t :cleanup-adopt :n n :th :worker})]
+    (is (= :released (get-in claimed [:worlds w :status])))
+    (is (false? (m/join-ready? claimed w w)))
+    (let [done (finish claimed :worker)]
+      (is (m/join-ready? done w w))
+      (is (empty? (get-in done [:env :cleanup-cells]))))))
+
+(deftest queued-adoption-still-checks-the-original-physical-frame
+  (let [adopt {:t :cleanup-adopt :n n :th :worker}
+        before (-> (checked (entered) {:t :t11 :w w :r r})
+                   (assoc-in [:worlds w :queue] [{:action adopt}]))
+        action {:t :queued :w w}
+        after (checked before action)
+        corrupt (-> after
+                    (assoc-in [:env :threads :foreign] (get-in after [:env :threads :worker]))
+                    (update-in [:env :threads] dissoc :worker))]
+    (is (empty? (cleanup/errors corrupt)))
+    (is (some #(= :TL21 (:id %))
+              (inv/edge-check {:before before :action action :after corrupt})))))
