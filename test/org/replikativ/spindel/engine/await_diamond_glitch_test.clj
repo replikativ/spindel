@@ -452,16 +452,14 @@
            b (spin (iv/get-new (track a)))
            prefix (atom 0)
            d (spin (swap! prefix inc) (await b))
-           cache! ec/spin-cache-result!
+           cache! simple/commit-result!
            invalidated? (atom false)]
-       (with-redefs [ec/spin-cache-result!
-                     (fn
-                       ([sid result] (cache! sid result))
-                       ([sid result run]
-                        (when (and (= sid (sc/spin-id b))
-                                   (compare-and-set! invalidated? false true))
-                          (rtp/swap-state! rt [:nodes sid] simple/invalidate-node))
-                        (cache! sid result run)))]
+       (with-redefs [simple/commit-result!
+                     (fn [world sid result & args]
+                       (when (and (seq args) (= sid (sc/spin-id b))
+                                  (compare-and-set! invalidated? false true))
+                         (rtp/swap-state! rt [:nodes sid] simple/invalidate-node))
+                       (apply cache! world sid result args))]
          (is (= [:ok 1] (start! d))))
        (await-drain rt 1000)
        (is @invalidated?)

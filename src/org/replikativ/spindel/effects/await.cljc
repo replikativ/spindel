@@ -337,42 +337,22 @@
                         (and @in-sync-phase
                              #?(:clj (identical? sync-thread (Thread/currentThread))
                                 :cljs true)))
-              child-resolve (fn [v]
-                              (let [inline (inline?)
-                                    result (spin-core/ok v)]
-                                ;; false: a newer run of the child superseded
-                                ;; this one — not published, not delivered.
-                                (when (ec/spin-cache-result! awaited-spin-id result
-                                                             (if (= (first ec/*run-gen*) awaited-spin-id)
-                                                               (second ec/*run-gen*)
-                                                               @child-run))
-                                  (when inline
-                                    (vreset! child-result result)
-                                    (vreset! child-completed? true))
-                                  ;; Commit deps so child registers as signal observer
-                                  (ec/graph-commit-deps! awaited-spin-id)
-                                  (if inline
-                                    (notify-others!)
-                                    ;; Async completion: fire event so parent continuation resumes
-                                    (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
-                                  (serve-pending! :resolve v)))
-                              v)
-              child-reject (fn [e]
-                             (let [inline (inline?)
-                                   result (spin-core/error e)]
-                               (when (ec/spin-cache-result! awaited-spin-id result
-                                                            (if (= (first ec/*run-gen*) awaited-spin-id)
-                                                              (second ec/*run-gen*)
-                                                              @child-run))
-                                 (when inline
-                                   (vreset! child-result result)
-                                   (vreset! child-completed? true))
-                                 (ec/graph-commit-deps! awaited-spin-id)
-                                 (if inline
-                                   (notify-others!)
-                                   (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
-                                 (serve-pending! :reject e)))
-                             nil)
+              complete-child! (fn [proposed]
+                                (when-let [result (simple/commit-result!
+                                                   (completing-world ctx) awaited-spin-id proposed
+                                                   (if (= (first ec/*run-gen*) awaited-spin-id)
+                                                     (second ec/*run-gen*) @child-run))]
+                                  (let [inline (inline?)]
+                                    (when inline
+                                      (vreset! child-result result)
+                                      (vreset! child-completed? true))
+                                    (ec/graph-commit-deps! awaited-spin-id)
+                                    (if inline (notify-others!)
+                                        (simple/enqueue-completion-event! (completing-world ctx) awaited-spin-id))
+                                    (serve-pending! (if (spin-core/ok? result) :resolve :reject)
+                                                    (:payload result)))))
+              child-resolve (fn [v] (complete-child! (spin-core/ok v)) v)
+              child-reject (fn [e] (complete-child! (spin-core/error e)) nil)
               is-reactive-spin (satisfies? spin-core/PSpin spin-ref)
               cont-map (spin-await-cont-map spin-id spin-ref awaited-spin-id
                                             resolve reject source-loc

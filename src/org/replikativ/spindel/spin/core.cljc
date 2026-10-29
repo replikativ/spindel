@@ -277,6 +277,33 @@
   (or (not (contains? cb :fork-id))
       (callback-visible-in-world? current-rt (:fork-id cb) (:egress-policy cb))))
 
+(defn- finish-run!
+  "Commit one result and deliver the result that won arbitration. A cancelled
+  generation can finish its cleanup, but cannot publish its proposed value."
+  [spin-id run proposed callbacks-atom resume-callback! executing?]
+  (let [rt (ec/current-execution-context)]
+    (try
+      (if-let [result (simple/commit-result! rt spin-id proposed run)]
+        (let [failed? (error? result) value (:payload result)
+              callback-key (if failed? :reject :resolve)]
+          (ec/graph-commit-deps! spin-id)
+          (simple/enqueue-completion-event! rt spin-id)
+          (log/debug (if failed? :spin/errored :spin/completed)
+                     {:spin-id spin-id :enqueued :spin-completion})
+          (when failed? (abort-spin-chain* spin-id value run))
+          (doseq [{callback-world :fork-id :keys [egress-policy] :as callback} @callbacks-atom
+                  :when (callback-visible-in-world? rt callback-world egress-policy)]
+            (resume-callback! (get callback callback-key) value rt))
+          (let [pending (simple/take-pending-callbacks! rt spin-id)]
+            (when (seq pending)
+              (log/trace (if failed? :spin/pending-callbacks-error :spin/pending-callbacks)
+                         {:spin-id spin-id :count (count pending)}))
+            (doseq [callback pending :when (serve-pending-callback? rt callback)]
+              ((get callback callback-key) value)))
+          (when-not failed? value))
+        (when (ok? proposed) (:payload proposed)))
+      (finally (reset! executing? false)))))
+
 (deftype Spin [spin-id spin-fn]
   PSpin
   (spin-id [_] spin-id)
@@ -449,105 +476,16 @@
                     ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                     pcps-async/*in-trampoline* false]
             (let [result (body-fn
-                            ;; Resolve continuation
                           (fn [value]
-                              ;; CRITICAL: Get CURRENT runtime, not captured one!
-                              ;; When continuation is resumed in a fork context,
-                              ;; we need to write to the fork's state, not the parent's.
-                            (let [current-rt (ec/current-execution-context)]
-                                ;; Cache result via protocol (uses current-rt via dynamic binding).
-                                ;; false: a newer run superseded this one — its
-                                ;; result is not published (and its callbacks
-                                ;; were handed to that run).
-                              (if-not (ec/spin-cache-result! spin-id (ok value)
-                                                             (if (= (first ec/*run-gen*) spin-id)
-                                                               (second ec/*run-gen*)
-                                                               @run-gen))
-                                (do (reset! executing? false) value)
-                                (do
-                                ;; Record dependencies on the SpinNode
-                                  (ec/graph-commit-deps! spin-id)
-
-                                ;; Emit spin-completion event for engine
-                                ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
-                                  (simple/enqueue-completion-event! current-rt spin-id)
-                                  (log/debug :spin/completed {:spin-id spin-id :enqueued :spin-completion})
-
-                                ;; Call all pending callbacks from local state
-                                  (let [callbacks @callbacks-atom]
-                                    (doseq [{callback-fork-id :fork-id
-                                             :keys [resolve egress-policy] :as cb} callbacks
-                                            :when (callback-visible-in-world?
-                                                   current-rt callback-fork-id
-                                                   egress-policy)]
-                                    ;; Call resolve via resume to handle Thunk returns
-                                      (resume-callback! resolve value current-rt)))
-
-                                ;; CRITICAL: Also call any pending callbacks from shared state
-                                ;; These are from duplicate :spin-execution events that were skipped
-                                  (let [pending (simple/take-pending-callbacks! current-rt spin-id)]
-                                    (when (seq pending)
-                                      (log/trace :spin/pending-callbacks {:spin-id spin-id :count (count pending)})
-                                      (doseq [{:keys [resolve] :as cb} pending
-                                              :when (serve-pending-callback? current-rt cb)]
-                                        (resolve value))))  ; Direct call, not resume
-
-                                  (reset! executing? false)
-                                  value))))  ; Return for trampoline - closes (let [current-rt ...])
-
-                            ;; Reject continuation
+                            (finish-run! spin-id
+                                         (if (= (first ec/*run-gen*) spin-id)
+                                           (second ec/*run-gen*) @run-gen)
+                                         (ok value) callbacks-atom resume-callback! executing?))
                           (fn [err]
-                              ;; CRITICAL: Get CURRENT runtime, not captured one!
-                              ;; When continuation is resumed in a fork context,
-                              ;; we need to write to the fork's state, not the parent's.
-                            (let [_current-rt (ec/current-execution-context)]
-                                ;; Cache error via protocol (uses current-rt via dynamic binding).
-                                ;; false: superseded run, not published (see resolve).
-                              (if-not (ec/spin-cache-result! spin-id (error err)
-                                                             (if (= (first ec/*run-gen*) spin-id)
-                                                               (second ec/*run-gen*)
-                                                               @run-gen))
-                                (do (reset! executing? false) nil)
-                                (do
-                                ;; Record dependencies even on error
-                                  (ec/graph-commit-deps! spin-id)
-
-                                ;; Notify dependents just like success path
-                                ;; CRITICAL: Use enqueue-completion-event! for glitch-free batching
-                                  (simple/enqueue-completion-event! _current-rt spin-id)
-                                  (log/debug :spin/errored {:spin-id spin-id :enqueued :spin-completion})
-
-                                ;; Abort downstream spins
-                                  ;; (the private arity body directly: the
-                                  ;; public var is cancel-spin!'s hook)
-                                  (abort-spin-chain* spin-id err
-                                                     (if (= (first ec/*run-gen*) spin-id)
-                                                       (second ec/*run-gen*)
-                                                       @run-gen))
-
-                                ;; Call all pending callbacks from local state
-                                  (let [callbacks @callbacks-atom]
-                                    (doseq [{callback-fork-id :fork-id
-                                             :keys [reject egress-policy] :as cb} callbacks
-                                            :when (callback-visible-in-world?
-                                                   _current-rt callback-fork-id
-                                                   egress-policy)]
-                                    ;; Call reject via resume to handle Thunk returns
-                                      (resume-callback! reject err _current-rt)))
-
-                                ;; CRITICAL: Also call any pending callbacks from shared state
-                                ;; These are from duplicate :spin-execution events that were skipped
-                                  (let [current-rt (ec/current-execution-context)
-                                        pending (simple/take-pending-callbacks! current-rt spin-id)]
-                                    (when (seq pending)
-                                      (log/trace :spin/pending-callbacks-error {:spin-id spin-id :count (count pending)})
-                                      (doseq [{:keys [reject] :as cb} pending
-                                              :when (serve-pending-callback? current-rt cb)]
-                                        (reject err))))  ; Direct call, not resume
-
-                                  (reset! executing? false)
-                                ;; Don't re-throw! Error already recorded in spin state.
-                                  nil)))))]  ; Return nil instead of throwing
+                            (finish-run! spin-id
+                                         (if (= (first ec/*run-gen*) spin-id)
+                                           (second ec/*run-gen*) @run-gen)
+                                         (error err) callbacks-atom resume-callback! executing?)))]
 
                 ;; Body suspended (returned ::incomplete). We do NOT clear
                 ;; :running? here — the body is still in-flight, just waiting
@@ -764,25 +702,28 @@
      err - The error/exception that caused the abortion
      run - the run generation the error comes from (a reject continuation
            passes its own); omitted for a cancellation"
-  ([spin-id err] (abort-spin-chain* spin-id err nil))
+  ([spin-id err] (abort-spin-chain* spin-id err nil (= ::spin-cancelled (:type (ex-data err)))))
   ([spin-id err run] (abort-spin-chain* spin-id err run)))
 
 (defn- abort-spin-chain*
-  [spin-id err run]
+  ([spin-id err run] (abort-spin-chain* spin-id err run false))
+  ([spin-id err run cancel?]
   ;; Cache the error on the spin itself. This is `cancel-spin!`'s cache write
   ;; (its race tests pin where it happens); on a reject continuation's path
   ;; it repeats the write the continuation made — under the SAME run
   ;; generation, so a fresh run that entered in between is left alone
   ;; (`cache-result!` ignores an outdated run) and an invalidated run is not
   ;; certified.
-  (ec/spin-cache-result! spin-id (error err) run)
+   (if cancel?
+     (simple/cancel-result! (ec/current-execution-context) spin-id (error err))
+     (ec/spin-cache-result! spin-id (error err) run))
   ;; Propagate error to track observers: mark them dirty so they re-execute
   ;; and discover the error via their track continuation. The spin's own
   ;; completion event is the caller's (reject continuation or cancel-spin!).
-  (let [ctx (ec/current-execution-context)
-        observers (some-> (ec/get-state [:nodes spin-id]) nodes/get-observers)]
-    (doseq [observer-id observers]
-      (simple/mark-dirty! ctx observer-id))))
+   (let [ctx (ec/current-execution-context)
+         observers (some-> (ec/get-state [:nodes spin-id]) nodes/get-observers)]
+     (doseq [observer-id observers]
+       (simple/mark-dirty! ctx observer-id)))))
 
 ;; Export the ::spin-cancelled constant for use by other namespaces
 (def spin-cancelled ::spin-cancelled)
