@@ -10,6 +10,18 @@
 ;; Dependency graph and observer management
 ;; ----------------------------------------------------------------------------
 
+(defprotocol PWorldIdentity
+  "Stable non-nil identity of an execution world. Lexical context derivatives
+   preserve it; forks and restored worlds have distinct identities even when
+   they share a physical store. Identity must not retain the world itself."
+  (world-identity [ctx]))
+
+;; Existing contexts have a distinct backend per world. Native contexts can
+;; implement this protocol with a separate identity for a shared family store.
+(extend-protocol PWorldIdentity
+  #?(:clj Object :cljs default)
+  (world-identity [ctx] (:backend ctx)))
+
 (defprotocol PGraph
   "Operations on the dependency graph and observer sets. Implementations must
   ensure their own consistency (e.g., dosync for STM, swap! for atom runtimes)."

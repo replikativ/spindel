@@ -36,6 +36,14 @@
   overlay-backend copies of this record."
   nil)
 
+(defn same-world?
+  "Whether two context views identify the same world, independently of their
+   lexical bindings or a shared native store. Missing identity is not a match."
+  [a b]
+  (when (and a b)
+    (let [identity-a (rtp/world-identity a) identity-b (rtp/world-identity b)]
+      (and (some? identity-a) (some? identity-b) (identical? identity-a identity-b)))))
+
 (defn restore-scope
   "What `*execution-context*` is restored to when a continuation leaves a
   `binding` form that rebound it. `saved` is the context outside the form,
@@ -56,7 +64,7 @@
   `saved`."
   [saved current entered]
   (if (and saved current entered
-           (identical? (:backend saved) (:backend entered)))
+           (same-world? saved entered))
     (assoc current :bindings (:bindings saved))
     saved))
 
@@ -234,7 +242,7 @@
   backend (a record re-pointed at a new backend without re-stamping)."
   [ctx]
   (let [h (some-> (:home ctx) deref)]
-    (if (and h (identical? (:backend h) (:backend ctx)))
+    (if (and h (same-world? h ctx))
       h
       ctx)))
 
