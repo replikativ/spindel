@@ -1229,7 +1229,9 @@ no scope is named, an entity created in W is owned by W's root.
 
 ```
 work(r)      ≡ status(r) ∈ {:running :parked}
-busy(r)      ≡ work(r) ∨ status(r) = :unwinding          ; physically not yet exited
+busy(r)      ≡ work(r) ∨ status(r) = :unwinding          ; logical work/retirement
+physical(w,r) ≡ (∃th. world(th) = w ∧ run(th) = r) ∨ (∃n. owner(n) = ⟨w,r⟩ ∧ state(n) ≠ :joined)
+join-busy(w,r) ≡ busy(r) ∨ physical(w,r)
 dormant(r)   ≡ status(r) = :inherited
 current(r)   ≡ r is the newest run of spin(r) in its world
 open(s)      ≡ s ∈ scopes_w ∧ status(s) = :open          ; run scopes: row exists
@@ -1672,7 +1674,7 @@ never merged, and results return as values.
 | `cancel-world-work!` | T15 |
 | `pin!` / `unpin!` | T14 |
 | `release-idle-caches!` | T18 |
-| `join!` (run, scope or world; timeout) | observation: completes when `subtree(x)` has no `busy` run (TL19); on timeout refuses `::join-timeout` listing the runs still busy |
+| `join!` (run, scope or world; timeout) | observation: completes when `subtree(x)` has no `join-busy` run (TL19); on timeout refuses `::join-timeout` listing the runs still busy |
 | `scope-census` | the L13 census |
 | merge / discard / transfer / partition | the ygg settlement API |
 
@@ -1747,7 +1749,7 @@ of the same run. A report never changes state.
 | TL16 | **Bounded memory.** L13 holds after every transaction. The retention that a following fork `v` adds to its parent is at most the number of `v`'s open obligations into the parent plus its ended ones whose cleanup is still queued in the parent (logical members, L13), independent of `v`'s age and the parent's churn. | safety |
 | TL17 | **Watchers persist** (R5; between crashes). An invoked run ends only through T7 (non-reactive), T10, T11, T13 or T34. The GC never ends one. | safety |
 | TL18 | **No re-execution through a released handle.** Once T18 has dropped `e`'s cache in `w`, awaiting or dereffing a handle that touched `e` in `w` fails with `::idle-cache-released`. The body is never entered through that handle. | safety |
-| TL19 | **Join.** `join!(x)` (a run, a scope, or a world) completes iff no `busy` run has `x` in its owner chain or `:anchor` (after world release: only actual thread slices and unjoined native participants count; a selected idle context is not physical work). T34 snapshots their run/scope ancestry as pure IDs before dropping world rows; the release-edge oracle checks that ancestry independently. It completes once every such slice has exited (T38) and every native op is `:joined`; if the timeout passes first it refuses `::join-timeout` listing the runs still busy and changes nothing. | progress (conditional on slices returning) |
+| TL19 | **Join.** `join!(x)` (a run, a scope, or a world) completes iff no logical `busy` run and no actual thread slice/unjoined native participant has `x` in its owner chain or `:anchor`. Physical participants count even when their run is `:completed` or `:stale`; joining does not wait for a later delivery or reclamation to mark that run `:unwinding`. After world release only physical participants count; a selected idle context is not physical work. T34 snapshots their run/scope ancestry as pure IDs before dropping world rows; the release-edge oracle checks that ancestry independently. It completes once every such slice has exited (T38) and every native op is `:joined`; if the timeout passes first it refuses `::join-timeout` listing the runs still busy and changes nothing. | progress (conditional on slices returning) |
 | TL20 | **Local execution normalization.** After an ordinary successful publication in world W, no unrooted non-unwinding completed run remains in W. Foreign worlds await their own publication; T16/T17 are retention-only and do not retire execution. Unwinding physical join evidence survives until its return boundary. This postcondition is checked from rows and rooted reachability independently of Rule L. | safety |
 
 The lifetime model treats completion payloads as opaque values. It models
