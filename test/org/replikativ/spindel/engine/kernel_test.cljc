@@ -43,6 +43,11 @@
           (when-not seal?
             (is (= (view expected) (view (kernel/snapshot actual))) (str actions))))))))
 
+(deftest source-bursts-refine-latest-notification-storage
+  (compare-walk! (model/init-state)
+                 (into [{:t :t02 :w w :e signal :value 0}]
+                       (map #(hash-map :t :signal-write :w w :e signal :value %) (range 1 33)))))
+
 (deftest obligation-kind-walks
   (doseq [[kind debtor] [[:track [:entity w signal]]
                          [:await-once [:entity w child]]

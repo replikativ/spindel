@@ -4,6 +4,34 @@
             [org.replikativ.spindel.lifetime.model :as model]
             [org.replikativ.spindel.lifetime.invariants :as inv]))
 
+(deftest source-bursts-retain-latest-notification-without-growing-history
+  (let [w [:w 0] source [:signal 0]
+        initial (model/step (model/init-state) {:t :t02 :w w :e source :value 0})
+        states (rest (reductions model/step initial
+                                 (map #(hash-map :t :signal-write :w w :e source :value %) (range 1 129))))
+        final (last states)]
+    (doseq [state states] (is (empty? (inv/check state))))
+    (is (= [{:completion source :debtor-world w :value 128 :source-change? true :seq 128}]
+           (get-in final [:worlds w :queue])))
+    (is (= 128 (get-in final [:worlds w :entities source :result])))))
+
+(deftest source-conflation-preserves-retained-fifo-and-cut-segments
+  (let [w [:w 0] a [:signal 0] b [:signal 1]
+        initial (model/init-state)
+        event (fn [id value] {:completion id :debtor-world w :value value :source-change? true})
+        before (-> initial (model/enqueue w (event a 1)) (model/enqueue w (event b 2)))
+        after (model/enqueue before w (event a 3))
+        fenced (assoc-in after [:worlds w :admission] :fenced)
+        held (-> fenced (model/enqueue w (event a 4)) (model/enqueue w (event a 5)))]
+    (is (= [[b 2 2] [a 3 3]] (mapv (juxt :completion :value :seq) (get-in after [:worlds w :queue]))))
+    (is (= (get-in after [:worlds w :queue]) (get-in held [:worlds w :queue])))
+    (is (= [{:w w :event (assoc (event a 5) :seq 5)}] (get-in held [:env :outside])))
+    ;; First-result completions retain their values and are never conflated.
+    (let [first-results (-> initial
+                            (model/enqueue w {:completion :spin :debtor-world w :value 1})
+                            (model/enqueue w {:completion :spin :debtor-world w :value 2}))]
+      (is (= [1 2] (mapv :value (get-in first-results [:worlds w :queue])))))))
+
 (deftest standing-await-first-value-resumes-its-original-run
   (let [w [:w 0] p [:spin 0] c [:spin 1] s [:signal 0]
         before (reduce model/step (model/init-state)

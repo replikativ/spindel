@@ -150,6 +150,7 @@
 (def ^:const n-generation 12) (def ^:const n-body 13) (def ^:const n-rank 14)
 (def ^:const n-ready 15) (def ^:const n-resume 16) (def ^:const n-work 17) (def ^:const n-current 18) (def ^:const n-pending-generation 19)
 (def ^:const n-runtime 20) (def ^:const n-origin 21) (def ^:const n-source-world 22) (def ^:const n-created-by 23) (def ^:const n-creator-refs 24) (def ^:const n-creator-source 25)
+(def ^:const n-source-event 26)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
@@ -257,7 +258,7 @@
       (mark! rt node))))
 
 (defn- node! [rt id kind owner]
-  (let [node (slots 26)]
+  (let [node (slots 27)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
@@ -398,6 +399,7 @@
       (put node n-dirty true))))
 
 (defn- drop-node-events! [rt node]
+  (put node n-source-event nil)
   #?(:clj (.removeIf ^java.util.Collection (:events rt)
                      (reify java.util.function.Predicate
                        (test [_ event] (identical? node (a event 0)))))
@@ -537,8 +539,7 @@
                 (when-let [node (find! (:nodes target) (a dead t-spin))]
                   (remove! (a node n-tokens) dead) (mark! target node))
                 (boundary! target (when (:audit target) {:t :t17 :w (:world target) :e (a dead t-spin) :tok (a dead t-id)})))
-              (recur))))
-  (drain! rt))
+              (recur)))))
 
 (defn notify-unreachable!
   "Deterministic exercise of the host-finalization handoff for experiments."
@@ -935,6 +936,7 @@
         n (subscriber-buffer! rt node)
         dependents (a (:counters rt) 4)
         order (when (:audit rt) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
+    (when (identical? event (a node n-source-event)) (put node n-source-event nil))
     (try
       (dotimes [index n]
         (let [ob (a dependents index)]
@@ -1113,9 +1115,18 @@
 (defn- write-source! [rt node source value]
   (when node
     (put node n-value value)
-    (push! (:events rt) (doto (slots 3) (put 0 node) (put 1 value)
-                              (put 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1))
-                                                                     (long (a (:counters rt) 2)))))))))
+    (let [old (a node n-source-event)
+          event (or old (slots 3))]
+      ;; These are invalidations of state, rather than a lossless change feed.
+      ;; Moving the newest envelope to the tail preserves retained FIFO order.
+      (when old
+        #?(:clj (.remove ^java.util.ArrayDeque (:events rt) old)
+           :cljs (.splice (:events rt) (.indexOf (:events rt) old) 1)))
+      (put node n-source-event event)
+      (put event 0 node) (put event 1 value)
+      (put event 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1))
+                                                   (long (a (:counters rt) 2))))))
+      (push! (:events rt) event)))
   (boundary! rt (when (:audit rt) (cond-> {:t :signal-write :w (:world rt) :e (:id source) :value value}
                                     (current-activation) (assoc :th :engine)))))
 
@@ -1235,7 +1246,8 @@
                                       (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
                                       (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                       (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (:world rt)}))]))
-           :queue (mapv (fn [event] {:completion (a (a event 0) n-id) :debtor-world (:world rt) :value (a event 1) :seq (a event 2)})
+           :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (:world rt) :value (a event 1) :seq (a event 2)}
+                                      (= :signal (a (a event 0) n-kind)) (assoc :source-change? true)))
                         (filter #(identical? rt (a (a % 0) n-runtime))
                                 #?(:clj (seq (:events rt)) :cljs (array-seq (:events rt)))))
            :seq (a (:counters rt) 1)

@@ -261,7 +261,14 @@
   (let [n (inc (max (get (header ctx w) :seq 0)
                     (get-in (root-state ctx) [:clocks w] 0)))]
     (root-edit! ctx assoc-in [:clocks w] n)
-    (header-edit! ctx w update :queue conj (assoc event :seq n))))
+    (let [event (assoc event :seq n)]
+      (header-edit! ctx w update :queue
+                    (fn [events]
+                      (conj (if (:source-change? event)
+                              (vec (remove #(and (:source-change? %)
+                                                 (= (:debtor-world event) (:debtor-world %))
+                                                 (= (:completion event) (:completion %))) events))
+                              events) event))))))
 
 (defn- allocate! [ctx tag]
   (let [n (get-in (root-state ctx) [:serial tag] 0)]
@@ -1326,10 +1333,10 @@
              (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
            (when er
              (edit! ctx w :entities e assoc :result (:value action))
-             (enqueue! ctx w {:completion e :debtor-world w :value (:value action)})
+             (enqueue! ctx w {:completion e :debtor-world w :value (:value action) :source-change? true})
              (doseq [v (set (for [[x v d] (:fdeps (header ctx w))
                                   :when (if (= :bundle x) (contains? d e) (= x e))] v))]
-               (enqueue! ctx v {:completion e :debtor-world w :value (:value action)}))))
+               (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true}))))
          :unsubscribe
          (let [ob (read-row ctx w :obligations o)]
            (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})

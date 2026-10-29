@@ -221,6 +221,16 @@
       (first (for [k [:discard :cancelled :register-host :fdep-ended :fork-released :join-bundle]
                    :when (contains? event k)] [k (get event k)]))))
 
+(defn source-notification-key [event]
+  ;; Provenance survives debtor release. Never infer conflation eligibility
+  ;; from the current entity row or apply it to first-result completions.
+  (when (:source-change? event) [(:debtor-world event) (:completion event)]))
+
+(defn append-notification [events event]
+  (if-let [key (source-notification-key event)]
+    (conj (vec (remove #(= key (source-notification-key %)) events)) event)
+    (conj events event)))
+
 (defn enqueue
   "Tombstone requests fail locally in the sender transaction; joins reject every member."
   [s w event]
@@ -246,8 +256,15 @@
     (let [n (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))
           event (assoc event :seq n) s (assoc-in s [:clocks w] n)]
       (if (and (= :fenced (:admission (wr s w))) (or (cut-participant? s w) (not (control-key event))))
-        (update-in s [:env :outside] conj {:w w :event event})
-        (update-in s [:worlds w :queue] conj event)))))
+        (update-in s [:env :outside]
+                   (fn [held]
+                     (let [key (source-notification-key event)]
+                       (conj (if key
+                               (vec (remove #(and (= w (:w %))
+                                                  (= key (source-notification-key (:event %)))) held))
+                               held)
+                             {:w w :event event}))))
+        (update-in s [:worlds w :queue] append-notification event)))))
 
 (defn cleanup-dependency [s dw fd _creditor-world]
   (if (or (= :released (:status (wr s dw)))
@@ -1627,7 +1644,7 @@
                  (if (= :fenced (:admission (wr s w)))
                    (update-in s [:env :outside] conj {:w w :event {:signal-write e :value (:value a)}})
                    (let [targets (conj (fdep-targets (wr s w) e) w)]
-                     (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a)})
+                     (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
                              (assoc-in s [:worlds w :entities e :result] (:value a)) targets)))))
            :arrival (enqueue s (:w a) (:event a))
            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))

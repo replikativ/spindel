@@ -1329,6 +1329,22 @@ kept-children diagnostic).
 
 ### 4.3 Liveness and reclamation
 
+Signal and atom writes publish each new state, but their pending reactive
+notifications are conflatable state invalidations, not a lossless change
+feed. An envelope records `:source-change? true` and immutable debtor-world
+and entity provenance. Within one destination's admitted queue, a newer
+notification replaces an older one with the same provenance by removing it
+and appending the new value with its new sequence number. Held notifications
+are a separate segment: a post-fence value never rewrites a pre-fence basis.
+Classification does not depend on whether the debtor row still exists.
+Per-write host watches remain per-commit egress.
+
+Spin completions and first-result deliveries are not conflated by this rule.
+Lossless bursts and held raw ingress still require bounded admission or
+backpressure; signal conflation alone does not establish their L13 bound.
+The census constant remains fixed, rather than absorbing queued history into
+its denominator.
+
 **Rule L.** After every transaction, for every world `W` and every
 `e ∈ entities_W`:
 

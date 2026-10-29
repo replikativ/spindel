@@ -272,6 +272,27 @@
            (is (= before (c/snapshot-family rt))))
          (verify-boundaries! rt)))))
 
+#?(:clj
+   (deftest source-burst-while-dispatch-is-busy-retains-only-latest-state
+     (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+           values (atom []) observed (c/cspin rt :observed (iv/get-new (c/track source)))
+           unsubscribe (c/observe! rt observed #(swap! values conj %) #(throw %))
+           entered (promise) release (promise)
+           start (fn [_ _] (deliver entered true) @release nil)
+           blocker (c/cspin rt :blocker (c/await-host start))
+           runner (future (c/observe! rt blocker (fn [_]) (fn [_])))]
+       (is (= true (deref entered 10000 nil)))
+       (dotimes [i 128] (c/set-signal! rt source (inc i)))
+       (is (= [0] @values))
+       (is (= 1 (count (:queue (c/snapshot rt)))))
+       (is (= 128 (c/read-signal rt source)))
+       (deliver release true)
+       (is (fn? (deref runner 10000 nil)))
+       (is (= [0 128] @values))
+       (c/cancel-spin! rt blocker)
+       (verify-boundaries! rt)
+       (unsubscribe))))
+
 (deftest varied-depth-ready-work-stays-glitch-free
   (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
         edges [[] [] [0] [1] [0 1] [2 4] [3] [6 1]
