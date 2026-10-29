@@ -606,11 +606,26 @@
                      (not= :unwinding (:status (m/run s w r))))]
       {:native n :retired-op-without-unwinding nr}))))
 
+(defn l26
+  "L26 adoption ancestry contains only older same-spin generations with semantic references."
+  [s]
+  (vec (for [[w r rr] (runs s)
+             :let [world (m/wr s w)
+                   relevant (into (set (for [[id row] (:runs world)
+                                             :when (not= :unwinding (:status row))] id))
+                                  (keep :creator (vals (:entities world))))]
+             :when (or (not (set? (:ancestors rr)))
+                       (and (= :unwinding (:status rr)) (seq (:ancestors rr)))
+                       (some #(or (not (contains? relevant %))
+                                  (not= (first r) (first %))
+                                  (not (< (second %) (second r)))) (:ancestors rr)))]
+         {:w w :r r :ancestors (:ancestors rr)})))
+
 (def predicates
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates)))
 

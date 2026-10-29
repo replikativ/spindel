@@ -347,3 +347,7 @@
       {:t :queued :w v}
       {:t :t07 :w v :r [parent 1] :value 42}
       {:t :queued :w v}])))
+
+(deftest predecessor-adoption-survives-retired-intermediates
+  (compare-walk! (model/init-state) (handoff/burst-child-handoff-actions))
+  (compare-walk! (model/init-state) (handoff/retired-creator-adoption-actions)))

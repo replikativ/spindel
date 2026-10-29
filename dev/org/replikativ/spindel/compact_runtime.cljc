@@ -114,11 +114,11 @@
 (def ^:const n-dirty 9) (def ^:const n-runs 10) (def ^:const n-dependents 11)
 (def ^:const n-generation 12) (def ^:const n-body 13) (def ^:const n-rank 14)
 (def ^:const n-ready 15) (def ^:const n-resume 16) (def ^:const n-work 17) (def ^:const n-current 18) (def ^:const n-pending-generation 19)
-(def ^:const n-runtime 20) (def ^:const n-origin 21) (def ^:const n-source-world 22) (def ^:const n-created-by 23)
+(def ^:const n-runtime 20) (def ^:const n-origin 21) (def ^:const n-source-world 22) (def ^:const n-created-by 23) (def ^:const n-creator-refs 24) (def ^:const n-creator-source 25)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
-(def ^:const r-owned 9) (def ^:const r-backlinks 10) (def ^:const r-childruns 11) (def ^:const r-physical 12) (def ^:const r-anchor 13) (def ^:const r-origin 14) (def ^:const r-source-world 15) (def ^:const r-wide 16) (def ^:const r-reactives 17)
+(def ^:const r-owned 9) (def ^:const r-backlinks 10) (def ^:const r-childruns 11) (def ^:const r-physical 12) (def ^:const r-anchor 13) (def ^:const r-origin 14) (def ^:const r-source-world 15) (def ^:const r-wide 16) (def ^:const r-reactives 17) (def ^:const r-ancestors 18)
 (def ^:const o-id 0) (def ^:const o-kind 1) (def ^:const o-debtor 2)
 (def ^:const o-run 3) (def ^:const o-standing 4) (def ^:const o-resolve 5)
 (def ^:const o-reject 6) (def ^:const o-order 7) (def ^:const o-slot 8)
@@ -155,7 +155,7 @@
                            (compare [_ x y]
                              (compare (long (a x n-rank)) (long (a y n-rank))))))
                 :cljs (array))
-             (atom false) (doto (slots 8) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 8)) (put 1 0) (put 2 0) (put 3 (id-dict)) (put 6 (members)) (put 7 (id-dict)))
+             (atom false) (doto (slots 9) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 8)) (put 1 0) (put 2 0) (put 3 (id-dict)) (put 6 (members)) (put 7 (id-dict)))
              (when audit? (atom [])) (when audit? (members))
              (doto (slots 1) (put 0 0)) (doto (slots 4) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
@@ -183,7 +183,7 @@
 (defn- reactive? [run] (boolean (and run (pos? (long (or (a run r-reactives) 0))))))
 (defn- reactive-delta! [run delta]
   (put run r-reactives (+ (long (or (a run r-reactives) 0)) (long delta))))
-(declare drain! wanted? retire! cancel! reclaim! snapshot snapshot-family schedule! adopt! collect-token!)
+(declare drain! wanted? retire! cancel! reclaim! snapshot snapshot-family schedule! adopt! collect-token! map-value)
 
 (defn- wanted? [node]
   (or (and (open-owner? (a node n-owner))
@@ -214,13 +214,35 @@
       (mark! rt node))))
 
 (defn- node! [rt id kind owner]
-  (let [node (slots 24)]
+  (let [node (slots 26)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
-    (put node n-created-by (members))
+    (put node n-created-by (members)) (put node n-creator-refs (dict))
     (put node n-runs (dict)) (put node n-dependents (members))
     (put node n-generation (or (find! (a (:counters rt) 3) id) 0)) (put node n-rank 0)
     (assoc! (:nodes rt) id node) (owner! rt node owner) node))
+
+(defn- creator! [rt node creator]
+  (let [old (a node n-creator)
+        source (when creator (if (vector? creator) (find! (:nodes rt) (nth creator 0)) (a creator r-node)))]
+    (when-not (identical? old creator)
+      (doseq [[value source delta] [[old (a node n-creator-source) -1] [creator source 1]]
+              :when (and value source)]
+        (let [gen (if (vector? value) (nth value 1) (a value r-gen))
+              refs (a source n-creator-refs) n (+ delta (long (or (find! refs gen) 0)))]
+          (if (zero? n) (dissoc! refs gen) (assoc! refs gen n))
+          (add! (a (:counters rt) 8) source)))
+      (put node n-creator creator)
+      (put node n-creator-source source))))
+
+(defn- prune-ancestry! [rt]
+  (each! [node (a (:counters rt) 8)]
+         (each! [run (values (a node n-runs))]
+                (each-copy! [gen (a run r-ancestors)]
+                            (when-not (or (when-let [live (find! (a node n-runs) gen)] (not= :unwinding (a live r-status)))
+                                          (find! (a node n-creator-refs) gen))
+                              (remove! (a run r-ancestors) gen)))))
+  #?(:clj (.clear ^java.util.Set (a (:counters rt) 8)) :cljs (.clear (a (:counters rt) 8))))
 
 (defn- creation! [run node]
   (add-run! run r-created node) (add! (a node n-created-by) run))
@@ -262,13 +284,14 @@
 (defn- forget-run! [rt run]
   (let [node (a run r-node)]
     (dissoc! (a node n-runs) (a run r-gen))
+    (add! (a (:counters rt) 8) node)
     (remove! (a (:counters rt) 6) run)
     (when (identical? run (current node))
       (put node n-current (last (sort-by #(a % r-gen) (values (a node n-runs))))))
     (mark! rt node)
     ;; Dead obligations carry their own creditor node/generation. They never
     ;; interpret a recycled run's identity when dispatching an old trigger.
-    (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns]]
+    (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
       (if (a run r-wide)
         (put run field (members))
         #?(:clj (.clear ^java.util.Set (a run field)) :cljs (.clear (a run field)))))
@@ -296,13 +319,18 @@
              (when (identical? run (a node n-creator))
           ;; A surviving cache keeps the logical creator ID, not the old run's
           ;; mutable ownership graph.
-               (put node n-creator [(a (a run r-node) n-id) (a run r-gen)])))
+               (if physical? (creator! rt node nil)
+                   (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
       (when-let [owner (a run r-owner)]
         (when-not (root-owner? owner)
           (remove! (a owner r-childruns) run) (mark! rt (a owner r-node))))
       (if physical?
         (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
             (put run r-anchor anchor)
+            (add! (a (:counters rt) 8) (a run r-node))
+            (each! [successor (values (a (a run r-node) n-runs))]
+                   (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
+            #?(:clj (.clear ^java.util.Set (a run r-ancestors)) :cljs (.clear (a run r-ancestors)))
             #?(:clj (do (.clear ^java.util.Set (a run r-created)) (.clear ^java.util.Set (a run r-spawned)))
                :cljs (do (.clear (a run r-created)) (.clear (a run r-spawned)))))
         (forget-run! rt run))
@@ -340,11 +368,27 @@
           (each-copy! [run (values (a node n-runs))] (retire! rt run))
           (each-copy! [creator (a node n-created-by)] (uncreate! creator node))
           (drop-node-events! rt node)
+          (creator! rt node nil)
           (dissoc! (:nodes rt) (a node n-id))
-          (put node n-body nil)))
+          (put node n-body nil) (put node n-value nil) (put node n-resume nil)
+          #?(:clj (.clear ^java.util.Set (a node n-tokens)) :cljs (.clear (a node n-tokens)))))
       (recur))))
 
 (defn- audit-derived-state! [rt]
+  (let [nodes (vec (values (:nodes rt)))
+        sources (members)]
+    (doseq [node nodes]
+      (add! sources node)
+      (when-let [source (a node n-creator-source)] (add! sources source)))
+    (each! [source sources]
+           (let [expected (frequencies
+                           (for [node nodes :when (identical? source (a node n-creator-source))
+                                 :let [creator (a node n-creator)]]
+                             (if (vector? creator) (nth creator 1) (a creator r-gen))))
+                 actual (map-value (a source n-creator-refs))]
+             (when-not (= expected actual)
+               (throw (ex-info "Creator-generation count mismatch" {:entity (a source n-id) :expected expected :actual actual}))))))
+
   (each! [node (values (:nodes rt))]
          (let [current-active (boolean (#{:running :parked :inherited :stale} (some-> (current node) (a r-status))))
                any-active (boolean (any! (values (a node n-runs)) #(#{:running :parked :inherited :stale} (a % r-status))))]
@@ -357,6 +401,7 @@
 
 (defn- boundary! [rt action]
   (reclaim! rt)
+  (prune-ancestry! rt)
   (when (:audit rt)
     (audit-derived-state! rt)
     (swap! (:audit rt) conj [action (snapshot rt) (snapshot-family rt)])))
@@ -375,13 +420,9 @@
 
 (defn- predecessor-run? [previous caller]
   (when (and previous caller (not (root-owner? previous)))
-    (let [id (if (vector? previous) previous [(a (a previous r-node) n-id) (a previous r-gen)])
-          node (a caller r-node)]
-      (when (= (first id) (a node n-id))
-        (loop [gen (a caller r-pred)]
-          (cond (nil? gen) false
-                (= gen (second id)) true
-                :else (when-let [row (find! (a node n-runs) gen)] (recur (a row r-pred)))))))))
+    (let [id (if (vector? previous) (nth previous 0) (a (a previous r-node) n-id))
+          gen (if (vector? previous) (nth previous 1) (a previous r-gen))]
+      (and (= id (a (a caller r-node) n-id)) (has? (a caller r-ancestors) gen)))))
 
 (defn signal [requested id value]
   (let [rt (execution-runtime requested)]
@@ -457,12 +498,12 @@
                 (check-running! run)
                 (when (and run (nil? node))
                   (let [node (node! rt id :spin run)]
-                    (put node n-creator run) (put node n-kept (reactive? run)) (put node n-order order)
+                    (creator! rt node run) (put node n-kept (reactive? run)) (put node n-order order)
                     (creation! run node)))
                 (when-let [node (find! (:nodes rt) id)]
                   (when (predecessor-run? (a node n-creator) run)
                     (adopt! rt node run)
-                    (owner! rt node run) (put node n-creator run) (put node n-kept (reactive? run))
+                    (owner! rt node run) (creator! rt node run) (put node n-kept (reactive? run))
                     (put node n-order order) (creation! run node))
                   (touch! rt node token))
                 (boundary! rt (when (:audit rt) (cond-> {:t :t01 :w (:world rt) :e id :tok (a token t-id)}
@@ -532,8 +573,8 @@
 
 (defn- run-slots! [rt]
   (or (pop! (a (:counters rt) 0))
-      (let [run (slots 18)]
-        (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns]]
+      (let [run (slots 19)]
+        (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
           (put run field (members)))
         run)))
 
@@ -547,6 +588,9 @@
     (put node n-generation generation)
     (assoc! (a (:counters rt) 3) (a node n-id) generation)
     (put run r-reactives 0)
+    (when (and pred (not= :unwinding (a pred r-status)))
+      (each! [gen (a pred r-ancestors)] (add-run! run r-ancestors gen))
+      (add-run! run r-ancestors (a pred r-gen)))
     (put run r-node node) (put run r-gen generation) (put run r-owner owner)
     (put run r-pred (when (and pred (not= :unwinding (a pred r-status))) (a pred r-gen))) (put run r-status :running)
     (put run r-seq (put (:counters rt) 1 (inc (max (long (a (:counters rt) 1)) (long (a (:counters rt) 2))))))
@@ -576,7 +620,7 @@
   (let [previous (a node n-owner)]
     (when (predecessor-run? previous caller)
       (when (identical? previous (a node n-creator))
-        (put node n-creator caller) (put node n-kept (reactive? caller))
+        (creator! rt node caller) (put node n-kept (reactive? caller))
         (creation! caller node))
       (owner! rt node caller)
       (each! [run (values (a node n-runs))]
@@ -722,7 +766,7 @@
       (each-copy! [child (a previous r-created)]
                   (when (< (long (a child n-order)) (long order))
                     (owner! rt child run)
-                    (when (a child n-creator) (put child n-creator run))
+                    (when (a child n-creator) (creator! rt child run))
                     (uncreate! previous child) (creation! run child)
                     (each! [cr (values (a child n-runs))]
                            (when (identical? previous (a cr r-owner))
@@ -961,6 +1005,7 @@
            :runs (into {} (for [run (items (a (:counters rt) 6)) :let [node (a run r-node)]]
                             [(run-id run) (cond-> {:spin (a node n-id) :owner (owner-id (a run r-owner))
                                                    :pred (when-let [gen (a run r-pred)] [(a node n-id) gen])
+                                                   :ancestors (set (map #(vector (a node n-id) %) (items (a run r-ancestors))))
                                                    :status (a run r-status) :seq (a run r-seq)
                                                    :creations (set (map #(a % n-id) (items (a run r-created))))
                                                    :spawned (set (map run-id (items (a run r-spawned))))}
@@ -1040,14 +1085,16 @@
                        (put copy n-origin :inherited) (put copy n-source-world (:world rt))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
-                (let [copy (slots 18) node (find! node-map (a run r-node))]
+                (let [copy (slots 19) node (find! node-map (a run r-node))]
                   (assoc! run-map run copy)
                   (put copy r-node node) (put copy r-gen (a run r-gen))
                   (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-origin :inherited) (put copy r-source-world (:world rt))
-                  (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns]]
+                  (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                     (put copy field (members)))
+                  (each! [gen (a run r-ancestors)] (add-run! copy r-ancestors gen))
+                  (add! (a (:counters child) 8) node)
                   (assoc! (a node n-runs) (a copy r-gen) copy)
                   (when (or (nil? (current node)) (> (long (a copy r-gen)) (long (a (current node) r-gen))))
                     (put node n-current copy) (put node n-generation (a copy r-gen)))
@@ -1057,7 +1104,7 @@
                      (let [copy (find! node-map node)
                            creator (a node n-creator)]
                        (when-let [owner (find! run-map (a node n-owner))] (owner! child copy owner))
-                       (put copy n-creator (or (find! run-map creator) (run-id creator)))))
+                       (creator! child copy (or (find! run-map creator) (run-id creator)))))
               (doseq [run copies]
                 (let [copy (find! run-map run)]
                   (each! [created (a run r-created)]
@@ -1079,6 +1126,7 @@
                                              (assoc! (:tickets child) (a clone o-host) (members)))]
                              (add! waiters clone))))))
               (reclaim! child)
+              (prune-ancestry! child)
               (put (:counters child) 1 (a (:counters rt) 1))
               (put (:counters child) 7 (a (:counters rt) 7))
               (assoc! (a (:counters rt) 7) [:cap world]
@@ -1101,12 +1149,13 @@
           (let [runs (a (:counters rt) 6)
                 pool (items (a (:counters rt) 0))]
             {:live-runs (count! runs)
+             :ancestry-references (reduce + 0 (map #(count! (a % r-ancestors)) (items runs)))
              :pooled-runs (count pool)
              :pooled-references
              (reduce + 0 (for [run pool]
                            (+ (count (filter some? (map #(a run %) [r-node r-owner r-pred r-anchor])))
                               (reduce + 0 (map #(count! (a run %))
-                                               [r-created r-spawned r-obs r-owned r-backlinks r-childruns])))))
+                                               [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors])))))
              :orphan-creation-links
              (count (for [node (values (:nodes rt)) creator (items (a node n-created-by))
                           :when (not (has? runs creator))] creator))

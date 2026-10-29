@@ -149,9 +149,14 @@
    :kept? false :result nil :tokens #{} :key nil :order 0})
 (defn caps-of [s w] (filter #(= w (:world (val %))) (all-caps s)))
 (defn predecessor? [s w old r]
-  (loop [p (:pred (run s w r)) seen #{}]
-    (cond (nil? p) false (= old p) true (seen p) false
-          :else (recur (:pred (run s w p)) (conj seen p)))))
+  (contains? (:ancestors (run s w r)) old))
+
+(defn prune-ancestry [s w]
+  (let [world (wr s w)
+        relevant (into (set (for [[r rr] (:runs world) :when (not= :unwinding (:status rr))] r)) (keep :creator (vals (:entities world))))]
+    (update-in s [:worlds w :runs]
+               #(into {} (for [[r rr] %]
+                           [r (update rr :ancestors (fn [ids] (set (filter relevant ids))))])))))
 
 (defn touch [s w e tok]
   (if (and tok (ent s w e))
@@ -306,7 +311,9 @@
     (require! (open? s w owner) ::closed-scope {:world w :scope owner})
     [(-> s (assoc-in [:generation-clock [w e]] n) (assoc-in [:worlds w :seq] seqno)
          (assoc-in [:worlds w :runs r]
-                   {:spin e :owner owner :pred pred :status :running
+                   {:spin e :owner owner :pred pred
+                    :ancestors (cond-> (get-in s [:worlds w :runs pred :ancestors] #{}) pred (conj pred))
+                    :status :running
                     :creations #{} :spawned #{} :seq seqno})
          (cond-> (run s w owner) (update-in [:worlds w :runs owner :spawned] conj r))
          (emit {:event :body-entry :world w :e e :r r :cause cause
@@ -334,7 +341,7 @@
                 dead (for [[e er] (:entities (wr normalized w))
                            :when (and (empty? (reasons normalized w e))
                                       (not (and (idle? normalized w e) (seq (:tokens er)))))] e)]
-            (if (and (empty? dead) (= s normalized)) normalized
+            (if (and (empty? dead) (= s normalized)) (prune-ancestry normalized w)
                 (recur
                  (reduce
                   (fn [s e]
@@ -667,7 +674,7 @@
           (-> s
               (assoc-in [:worlds w :runs r]
                         (assoc rr :status :unwinding :owner nil :anchor chain :retired? true
-                               :creations #{} :spawned #{} :pred nil))
+                               :creations #{} :spawned #{} :pred nil :ancestors #{}))
               (update-in [:env :threads]
                          #(into {} (for [[th tr] %]
                                      [th (cond-> tr (and (= w (:world tr)) (= r (:run tr)))

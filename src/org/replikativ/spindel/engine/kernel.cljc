@@ -537,7 +537,7 @@
     (when (physical? ctx w r)
       (put! ctx w :runs r
             (assoc rr :status :unwinding :owner nil :anchor chain :retired? true
-                   :creations #{} :spawned #{} :pred nil))
+                   :creations #{} :spawned #{} :pred nil :ancestors #{}))
       (index-add! ctx w :runs-by-spin (:spin rr) r)
       (index-add! ctx w :runs-by-owner nil r)
       (root-edit! ctx update-in [:env :threads]
@@ -670,6 +670,16 @@
       (when (read-row ctx w :runs creator)
         (edit! ctx w :runs creator update :creations disj e)))))
 
+(defn- prune-ancestry! [ctx]
+  (doseq [w (:known-worlds (root-state ctx))]
+    (let [runs (store/table-view (:tx ctx) w :runs)
+          relevant (into (set (for [[r rr] runs :when (not= :unwinding (:status rr))] r))
+                         (keep :creator (vals (store/table-view (:tx ctx) w :entities))))]
+      (doseq [[r row] runs
+              :let [ancestors (set (filter relevant (:ancestors row)))]
+              :when (not= ancestors (:ancestors row))]
+        (edit! ctx w :runs r assoc :ancestors ancestors)))))
+
 (defn- rule-l! [ctx]
   (loop [cursor 0]
     (when (< cursor (count @(:work ctx)))
@@ -717,10 +727,7 @@
     (edit! ctx w :entities e assoc :tokens #{})))
 
 (defn- predecessor? [ctx w previous r]
-  (loop [p (:pred (read-row ctx w :runs r))]
-    (cond (nil? p) false
-          (= p previous) true
-          :else (recur (:pred (read-row ctx w :runs p))))))
+  (contains? (:ancestors (read-row ctx w :runs r)) previous))
 
 (defn- create-source! [ctx {:keys [w e key value kind order] :or {kind :signal order 0} :as action}]
   (let [scope (owner ctx w action)
@@ -757,7 +764,9 @@
                         (get-in (root-state ctx) [:clocks w] 0)))]
     (root-edit! ctx assoc-in [:generation-clock [w e]] n)
     (header-edit! ctx w assoc :seq seqno)
-    (put! ctx w :runs r {:spin e :owner scope :pred pred :status :running
+    (put! ctx w :runs r {:spin e :owner scope :pred pred
+                         :ancestors (cond-> (get (read-row ctx w :runs pred) :ancestors #{}) pred (conj pred))
+                         :status :running
                          :creations #{} :spawned #{} :seq seqno})
     (index-add! ctx w :runs-by-spin e r)
     (index-add! ctx w :runs-by-owner scope r)
@@ -1311,6 +1320,7 @@
            (end-obligation! ctx w o :creditor-cancelled))
          (throw (ex-info "Unsupported kernel transition" {:action action})))
        (rule-l! ctx)
+       (prune-ancestry! ctx)
        (when diagnostics? (root-edit! ctx assoc :events @(:events ctx)))
        {:events (if diagnostics? @(:events ctx) [])
         :commands @(:commands ctx) :result @(:result ctx)}))))

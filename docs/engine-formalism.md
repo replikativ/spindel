@@ -1049,7 +1049,7 @@ World
  :entities  {e {:kind ek :origin og :owner s-or-nil :creator r-or-nil
                 :completed? bool :kept? bool :order n :result v :tokens #{tok} :key k-or-nil}}
                                        ; :order = creator's continuation order at creation
- :runs      {r {:spin e :owner s :pred r-or-nil :status rs
+ :runs      {r {:spin e :owner s :pred r-or-nil :ancestors #{r} :status rs
                 :creations #{e} :spawned #{r} :seq n
                 :anchor [s]-or-nil}}   ; :unwinding only: owner chain at cancellation (join)
  :obligations {o {:kind ok :debtor end :creditor end :standing? bool
@@ -1277,6 +1277,19 @@ track point (T9, prefix adoption), so children created before any
 must be found (R4). A non-reactive run is only re-entered from the
 start by `:dirty`/`:rerun!`.
 
+**Adoption ancestry.** `:pred` records the immediate predecessor used by
+lifecycle cleanup. Adoption uses `:ancestors`, inherited from the chosen
+predecessor plus that predecessor's ID at run creation. Removing an
+intermediate stale row must not sever eligibility to an older completed
+basis, or a burst of child completions can destroy a fan-in's subscriptions.
+At publication, prune ancestor IDs that name neither a non-unwinding run nor
+a surviving entity's creator. Ancestry itself is never a retention reason.
+A new run after cancellation inherits only its chosen predecessor's ancestry;
+it does not acquire other generations merely because they remain relevant.
+This keeps eligibility evidence bounded by current rows and cached creators,
+rather than all past executions. A physically retired row has empty ancestry
+and remains subject to L25's complete detachment.
+
 **Cost.** A reactive run keeps every child it creates while reactive
 until the run is removed (T10, T11). T9 keeps at most one `:stale`
 generation per spin, so a spin holds the kept children of its current
@@ -1441,7 +1454,7 @@ must survive retirement of the predecessor that originally created it.
 | T6 | `resume(o, v)` | `o ∈ ob_w`, `slot(o) = :armed`, and its creditor copy `⟨w,r⟩` is `:parked` or `:inherited` (activation: see legality) | **Inherited copy with a cross-world debtor:** its debtor is already retained by the fork's `[:bundle w D]` row (T19/T23); a one-shot `o` removes its debtor from `D` when no other inherited obligation of `w` names it (O(log n)). **H1:** the executing thread is bound to `w`, the world holding `o`, whatever path runs it: the drain, a deferred or mailbox delivery, an embedder thread, or an SCI-conveyed fn. A captured binding never overrides `w`. A one-shot `o` and its `fdeps` row are deleted in this transaction; a standing `o` gets `:slot :consumed` (its later deliveries re-enter through T9). Set `r := :running` (an inherited copy now counts as work). **Activation of an inherited copy:** its dormant resource obligations are armed in the same transaction (native registration and cancel token allocated; a timer is registered for its remaining duration); members of `[:bundle w D]` still named by the copy's obligations become ordinary `fdeps` rows. | L5 L10 L14 L15 TL1 |
 | T7 | `complete(r, res)` | `r ∈ runs_w`, `:running`, `current(r)`. On a missing or non-current run, or an `:unwinding` one: no-op (TL5); an unwinding row ends only through T38. T7 itself is not deferred to physical return: if this run's own slice is still executing when T10 normalises it, the row is retired to `:unwinding` (§4.3) until T38. | Cache `res` on `e = spin(r)` and set `r := :completed`. Enqueue the completion envelope `{:completion e res}` (value-only, §4.1.2) in `w`, and in every `v` with `[e v _] ∈ fdeps_w`. Apply T10 to every predecessor in `:completed`/`:stale`. Remove the `:timer`/`:waiter` entities owned by `r`, cancelling them and arming their tokens. Rule L. | L1–L3 L7 L24 |
 | T8 | `deliver(e)` (process `{:completion e}`) | — | For each obligation whose debtor is `e`: a run creditor with an armed slot goes to T6, including the first delivery of a standing `:await-reactive` obligation. A consumed standing run-creditor slot re-enters through T9; an inherited copy activates through T6. A host `:deref` invokes its callback and is deleted; a standing host `:callback` re-delivers, and on a `final(e)` is delivered and deleted. | L5 TL1 TL2 |
-| T9 | `reenter(e, cause)`, where `cause ∈ {:track o, :reactive o, :dirty, :rerun!}` | live; `r` = the current run of `e` | If a predecessor of `r` is already `:stale`, apply T10 to it first: at most one stale generation per spin. Add `r' = [e n+1]` `{:owner owner(r) :pred r :status :running}`. If `work(r)`: set `r := :stale` and delete `r`'s creditor obligations (arming tokens, cancelling timers, dropping `fdeps`), except the standing `:track` obligations at or before the resume point, which move to `r'`. Creations of `r` with `:order` below the resume point's continuation order move to `r'` (prefix adoption). Other creations and spawned runs stay with `r` and can be adopted until `r'` completes; a successor that never completes keeps them. If `r` is `:completed`, it stays as the basis until `r'` completes. | L2 L5 |
+| T9 | `reenter(e, cause)`, where `cause ∈ {:track o, :reactive o, :dirty, :rerun!}` | live; `r` = the current run of `e` | If a predecessor of `r` is already `:stale`, apply T10 to it first: at most one stale generation per spin. Add `r' = [e n+1]` `{:owner owner(r) :pred r :ancestors (ancestors(r) ∪ {r}) :status :running}`. If `work(r)`: set `r := :stale` and delete `r`'s creditor obligations (arming tokens, cancelling timers, dropping `fdeps`), except the standing `:track` obligations at or before the resume point, which move to `r'`. Creations of `r` with `:order` below the resume point's continuation order move to `r'` (prefix adoption). Other creations and spawned runs stay with `r` and can be adopted until `r'` completes; a successor that never completes keeps them. If `r` is `:completed`, it stays as the basis until `r'` completes. | L2 L5 |
 | T10 | `supersede(r)` (inside T7 of a successor) | `r` is `:completed` or `:stale`; inside T7 of a successor, or without a successor as part of owner release (§4.3 rule 3) | Retire `r` (§4.3, run retirement: its child scopes close first; it stays `:unwinding` while a slice of it executes). Each `e' ∈ creations(r)` with `creator(e') = r` gets owner release (§4.3 rule 3), which applies T11 to every work run of `e'`. Each spawned run not adopted gets T11. Keyed entries and cache rows owned by `r` are removed; any other entity owned by `r` gets owner release. Standing obligations with creditor `r` end. Rule L. | L1 L3 L6 |
 
 **C. Cancellation, scopes and pins**
@@ -1599,6 +1612,7 @@ violated.
 | L23 | **Keys.** A keyed signal has `id = keyid(root(w),k)` and `:key k`, and there is at most one per id. Cache rows and keyed entries are keyed by `[instance site\|key]` with an owner. No row is keyed by site alone. | entities | V: `[:incremental "comb-file-line-col"]` (`incremental/combinators.cljc` 60–74; typed combinators alike); keyed signals only via `->SignalRef` |
 | L24 | **Armed teardown** (R13; between crashes). Every waiter still registered in a resource has either an open `:external` obligation or an armed token. Every armed token belongs to a waiter that is still registered. | atoms, tokens | V: I16; teardown leaves gates unarmed (AS-IS G7) |
 | L25 | **Unwinding.** `status(r) = :unwinding ⇔ r` was retired (cancelled, superseded or normalised; §4.3 run retirement) `∧ (∃th. run(th) = r ∨ ∃n. owner(n) = [w r] ∧ state(n) ≠ :joined)`. An `:unwinding` run owns no scope or entity, is the parent of no scope, is the creditor of no obligation, gives no reason to any entity, is in no index except the thread/native-op links and `:anchor`, and may outlive its spin's entity (L4 does not apply to its `:spin`). | runs, env | M: completion, supersession and cancel forget running slices; native ops orphaned |
+| L26 | **Adoption ancestry.** Every run's `:ancestors` is a set of older generations of the same spin. Every member names a non-unwinding run or a surviving entity creator. An unwinding row has empty ancestry. Membership is inherited only from the chosen predecessor, never reconstructed from relevance. | runs, entities | Candidate model and compact engine; bounded evidence survives retirement of intermediate rows |
 
 **Checker shape.** L1, L2, L5–L7 and L10–L11 can be checked
 incrementally on the ids a transaction touched, which is cheap enough

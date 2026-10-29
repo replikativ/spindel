@@ -10,7 +10,7 @@
                [table {:fields fields :positions (zipmap fields (range))}]))
         {:entities [:kind :origin :owner :creator :completed? :kept? :result
                     :tokens :key :order :dirty? :reference? :source-world]
-         :runs [:spin :owner :pred :status :creations :spawned :seq
+         :runs [:spin :owner :pred :ancestors :status :creations :spawned :seq
                 :anchor :retired? :origin :source-world]
          :obligations [:kind :debtor :creditor :standing? :cont :token :order
                        :origin :slot :filter :dormant? :timer-armed?]

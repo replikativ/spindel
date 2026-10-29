@@ -572,3 +572,49 @@
     (is (= [[[1 :first] [2 :second]]] @values))
     (is (= :outside *tag*))
     (verify-boundaries! rt)))
+
+(deftest compact-fanin-retains-cold-children-across-coalesced-invalidations
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+        children (mapv (fn [id] (c/cspin rt [:leaf id] (iv/get-new (c/track source)))) (range 3))
+        spin (c/cspin rt :root
+                      (loop [remaining children total 0]
+                        (if-let [child (first remaining)]
+                          (recur (next remaining) (+ total (c/await child)))
+                          total)))
+        values (atom [])]
+    (c/observe! rt spin #(swap! values conj %) #(throw %))
+    (doseq [value [1 2 3]] (c/set-signal! rt source value))
+    (is (= [0 3 6 9] @values))
+    (verify-boundaries! rt)))
+
+(deftest compact-ancestry-does-not-accumulate-unreferenced-history
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+        spin (c/cspin rt :spin (iv/get-new (c/track source))) values (atom [])]
+    (c/observe! rt spin #(swap! values conj %) #(throw %))
+    (doseq [value (range 1 51)]
+      (c/set-signal! rt source value)
+      (is (zero? (:ancestry-references (c/storage-stats rt)))))
+    (is (= (vec (range 51)) @values))
+    (verify-boundaries! rt)))
+
+#?(:clj
+   (deftest compact-physical-cancellation-detaches-a-surviving-creators-cache
+     (let [rt (c/runtime {:audit? true}) created (promise) leave (promise)
+           child-holder (atom nil) errors (atom [])
+           spin (c/cspin rt :parent
+                         (let [child (c/cspin rt :child 42)]
+                           (reset! child-holder child)
+                           (c/await child)
+                           (deliver created true)
+                           @leave))
+           worker (future (c/observe! rt spin (fn [_]) #(swap! errors conj %)))]
+       (try
+         (is (= true (deref created 10000 ::timeout)))
+         (c/cancel-spin! rt spin)
+         (is (nil? (get-in (c/snapshot rt) [:entities :child :creator])))
+         (finally (deliver leave true)))
+       (is (fn? (deref worker 10000 ::timeout)))
+       (is (= 1 (count @errors)))
+       (is (= 42 (get-in (c/snapshot rt) [:entities :child :result])))
+       (is (some? @child-holder))
+       (verify-boundaries! rt))))

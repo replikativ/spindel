@@ -120,3 +120,42 @@
     (is (= nested (get-in after [:worlds v :entities e :owner])))
     (is (= :inherited (get-in after [:worlds v :entities e :origin])))
     (is (empty? (inv/check after)))))
+
+(defn burst-child-handoff-actions []
+  (let [w [:w 0] p [:spin 0] c [:spin 1] s [:signal 0]]
+    (into (vec (take 8 (cold-child-handoff-actions)))
+          [{:t :t09 :w w :e p :order 0}
+           {:t :t09 :w w :e p :order 0}
+           {:t :t09 :w w :e p :order 0}
+           {:t :t05 :w w :r [p 4] :kind :await-reactive :debtor [:entity w c]}
+           {:t :t06 :w w :o [:o 3] :value 10}
+           {:t :t07 :w w :r [p 4] :value 10}])))
+
+(deftest retired-intermediate-does-not-break-predecessor-adoption
+  (let [s (reduce model/step (model/init-state) (burst-child-handoff-actions))
+        w [:w 0] p [:spin 0] c [:spin 1]]
+    (is (= [p 4] (get-in s [:worlds w :entities c :owner])))
+    (is (= [p 4] (get-in s [:worlds w :runs [c 1] :owner])))
+    (is (model/reactive? s w [c 1]))
+    (is (empty? (inv/check s)))))
+
+(defn retired-creator-adoption-actions []
+  (let [w [:w 0] p [:spin 0] c [:spin 1]]
+    [{:t :t04 :w w :e p :mode :callback}
+     {:t :t01 :w w :e c :r [p 1] :tok [:h 0]}
+     {:t :t05 :w w :r [p 1] :kind :await-reactive :debtor [:entity w c]}
+     {:t :t07 :w w :r [c 1] :value 10}
+     {:t :t08 :w w :e c :value 10}
+     {:t :t07 :w w :r [p 1] :value 10}
+     {:t :t09 :w w :e p :order 0}
+     {:t :t07 :w w :r [p 2] :value :skip}
+     {:t :t09 :w w :e p :order 0}
+     {:t :t01 :w w :e c :r [p 3] :tok [:h 1]}]))
+
+(deftest retired-creator-remains-an-adoption-anchor
+  (let [s (reduce model/step (model/init-state) (retired-creator-adoption-actions))
+        w [:w 0] p [:spin 0] c [:spin 1]]
+    (is (= [p 3] (get-in s [:worlds w :entities c :creator])))
+    (is (nil? (get-in s [:worlds w :entities c :owner])))
+    (is (not (contains? (get-in s [:worlds w :runs [p 3] :ancestors]) [p 1])))
+    (is (empty? (inv/check s)))))
