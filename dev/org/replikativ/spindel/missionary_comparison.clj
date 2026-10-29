@@ -60,6 +60,26 @@
       :fanin (let [children (mapv (fn [_] (leaf)) (range 50))]
                [(m/signal (apply m/latest (fn [& values] (reduce + values)) children))]))))
 
+(defn- missionary-cp-graph [kind source]
+  (let [leaf (fn [] (m/signal (m/cp (m/?< source))))]
+    (case kind
+      :fanout (mapv (fn [_] (leaf)) (range 100))
+      :chain [(reduce (fn [prev _] (m/signal (m/cp (inc (m/?< prev)))))
+                      (leaf) (range 50))]
+      :diamond (let [b (m/signal (m/cp (* 2 (m/?< source))))
+                     c (m/signal (m/cp (* 3 (m/?< source))))
+                     d (m/signal (m/cp (+ (m/?< b) (m/?< c))))
+                     e (m/signal (m/cp (* 2 (m/?< d))))
+                     f (m/signal (m/cp (* 3 (m/?< d))))
+                     g (m/signal (m/cp (+ (m/?< e) (m/?< f))))]
+                 [d g])
+      :fanin (let [children (mapv (fn [_] (leaf)) (range 50))]
+               [(m/signal (m/cp
+                           (loop [remaining children total 0]
+                             (if-let [child (first remaining)]
+                               (recur (next remaining) (+ total (m/?< child)))
+                               total))))]))))
+
 (defn- expected-values [kind n]
   (case kind
     :fanout (vec (repeat 100 n))
@@ -220,10 +240,10 @@
         cancel (task (fn [_]) (fn [error] (vreset! failure error)))]
     {:last-value last-value :seen seen :failure failure :cancel cancel}))
 
-(defn- run-missionary [kind n warmup]
+(defn- run-missionary-graph [build kind n warmup]
   (let [source-atom (atom 0)
         source (m/signal (m/watch source-atom))
-        roots (missionary-graph kind source)
+        roots (build kind source)
         observers (mapv observe! roots)]
     (try
       (let [measurement (measure-updates #(swap! source-atom inc) warmup n)
@@ -236,6 +256,11 @@
                           {:kind kind :expected expected :observed observed :seen seen})))
         measurement)
       (finally (doseq [{:keys [cancel]} observers] (cancel))))))
+
+(defn- run-missionary [kind n warmup]
+  (run-missionary-graph missionary-graph kind n warmup))
+(defn- run-missionary-cp [kind n warmup]
+  (run-missionary-graph missionary-cp-graph kind n warmup))
 
 (defn- run-spindel-l0 [n warmup]
   (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))
@@ -283,7 +308,7 @@
         kinds (mapv keyword (.split (System/getProperty "spindel.compare.kinds"
                                                         "l0,fanout,chain,diamond,fanin") ","))]
     (.setThreadAllocatedMemoryEnabled bean true)
-    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :spindel-observed} implementations))
+    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :spindel-observed :missionary-cp} implementations))
       (throw (ex-info "Experimental engines require explicit reactive benchmark kinds"
                       {:kinds kinds :engines implementations})))
     (doseq [kind kinds
@@ -299,6 +324,7 @@
                         :kernel run-kernel
                         :kernel-cells run-kernel-cells
                         :compact run-compact
+                        :missionary-cp run-missionary-cp
                         :missionary run-missionary) kind n warmup))]
         (prn (merge {:kind kind :implementation implementation :trial trial
                      :operations n :warmup warmup}
