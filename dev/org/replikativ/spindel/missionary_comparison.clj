@@ -22,6 +22,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.kernel-runtime :as k]
+            [org.replikativ.spindel.compact-runtime :as c]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]])
@@ -84,6 +85,26 @@
                          (loop [children children total 0]
                            (if-let [child (first children)]
                              (recur (next children) (+ total (k/await child)))
+                             total)))]))))
+
+(defn- compact-graph [rt kind source]
+  (let [leaf (fn [id] (c/cspin rt id (iv/get-new (c/track source))))]
+    (case kind
+      :fanout (mapv #(leaf [:leaf %]) (range 100))
+      :chain [(reduce (fn [prev i] (c/cspin rt [:chain i] (inc (c/await prev))))
+                      (leaf :head) (range 50))]
+      :diamond (let [b (c/cspin rt :b (* 2 (iv/get-new (c/track source))))
+                     c (c/cspin rt :c (* 3 (iv/get-new (c/track source))))
+                     d (c/cspin rt :d (+ (c/await b) (c/await c)))
+                     e (c/cspin rt :e (* 2 (c/await d)))
+                     f (c/cspin rt :f (* 3 (c/await d)))
+                     g (c/cspin rt :g (+ (c/await e) (c/await f)))]
+                 [d g])
+      :fanin (let [children (mapv #(leaf [:leaf %]) (range 50))]
+               [(c/cspin rt :root
+                         (loop [children children total 0]
+                           (if-let [child (first children)]
+                             (recur (next children) (+ total (c/await child)))
                              total)))]))))
 
 (defn- measure-updates [update! warmup n]
@@ -149,6 +170,31 @@
          input (volatile! 0)]
      (try
        (let [measurement (measure-updates #(k/set-signal! rt source (vswap! input inc)) warmup n)
+             observed (mapv deref values)
+             seen (mapv deref counts)
+             expected (expected-values kind (+ n warmup))]
+         (when-not (and (= expected observed)
+                        (= (vec (repeat (count roots) (inc (+ n warmup)))) seen))
+           (throw (ex-info "Kernel result mismatch"
+                           {:kind kind :expected expected :observed observed :seen seen})))
+         measurement)
+       (finally (doseq [cancel cancellations] (cancel)))))))
+
+(defn- run-compact
+  ([kind n warmup] (run-compact kind n warmup {}))
+  ([kind n warmup options]
+   (let [rt (c/runtime (merge {:diagnostics? false} options))
+         source (c/signal rt :source 0)
+         roots (compact-graph rt kind source)
+         values (mapv (fn [_] (volatile! nil)) roots)
+         counts (mapv (fn [_] (volatile! 0)) roots)
+         cancellations (mapv (fn [root value seen]
+                               (c/observe! rt root
+                                           #(do (vreset! value %) (vswap! seen inc))
+                                           #(throw %))) roots values counts)
+         input (volatile! 0)]
+     (try
+       (let [measurement (measure-updates #(c/set-signal! rt source (vswap! input inc)) warmup n)
              observed (mapv deref values)
              seen (mapv deref counts)
              expected (expected-values kind (+ n warmup))]
@@ -237,7 +283,7 @@
         kinds (mapv keyword (.split (System/getProperty "spindel.compare.kinds"
                                                         "l0,fanout,chain,diamond,fanin") ","))]
     (.setThreadAllocatedMemoryEnabled bean true)
-    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :spindel-observed} implementations))
+    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :spindel-observed} implementations))
       (throw (ex-info "Experimental engines require explicit reactive benchmark kinds"
                       {:kinds kinds :engines implementations})))
     (doseq [kind kinds
@@ -252,6 +298,7 @@
                         :spindel-observed run-spindel-observed
                         :kernel run-kernel
                         :kernel-cells run-kernel-cells
+                        :compact run-compact
                         :missionary run-missionary) kind n warmup))]
         (prn (merge {:kind kind :implementation implementation :trial trial
                      :operations n :warmup warmup}
