@@ -799,17 +799,20 @@
                                             (conj seen id))))))
           busy (set (for [[r rr] (:runs (m/wr before w))
                           :when (and (#{:running :parked :unwinding} (:status rr)) (under? r rr))] r))
-          busy (if (= :released (:status (m/wr before w)))
-                 (set (concat
-                       (keep (fn [thread]
-                               (when (and (:run thread) (= w (:world thread))
-                                          (or (= x w) (= x (:run thread)) (some #{x} (:anchor thread))))
-                                 (:run thread))) (vals (get-in before [:env :threads])))
-                       (keep (fn [native]
-                               (let [[world r] (:owner native)]
-                                 (when (and (= w world) (not= :joined (:state native))
-                                            (or (= x w) (= x r) (some #{x} (:anchor native)))) r)))
-                             (vals (get-in before [:env :native]))))) busy)
+          physical-under? (fn [r participant]
+                            (or (= x w) (= x r)
+                                (some #{x} (if (= :released (:status (m/wr before w)))
+                                             (:anchor participant)
+                                             (physical-ancestry before w r)))))
+          busy (into busy
+                     (concat
+                      (for [[_ thread] (get-in before [:env :threads])
+                            :let [r (:run thread)]
+                            :when (and r (= w (:world thread)) (physical-under? r thread))] r)
+                      (for [[_ native] (get-in before [:env :native])
+                            :let [[world r] (:owner native)]
+                            :when (and (= w world) (not= :joined (:state native))
+                                       (physical-under? r native))] r)))
           ready? (empty? busy)
           timeout? (and timeout? (not ready?))]
       (when (or (not= before after)

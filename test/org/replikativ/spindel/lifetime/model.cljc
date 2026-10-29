@@ -62,19 +62,24 @@
   (or (some #(and (= w (:world %)) (= r (:run %))) (vals (get-in s [:env :threads])))
       (some #(and (= [w r] (:owner %)) (not= :joined (:state %))) (vals (get-in s [:env :native])))))
 (defn join-blockers [s w x]
-  (if (= :released (:status (wr s w)))
+  (let [released? (= :released (:status (wr s w)))
+        physical-under? (fn [r participant]
+                          (if released?
+                            (or (= x w) (= x r) (some #{x} (:anchor participant)))
+                            (some #{x} (owner-chain s w r))))]
     (vec (distinct
           (concat
-           (for [[_ thread] (get-in s [:env :threads])
-                 :let [r (:run thread)]
-                 :when (and r (= w (:world thread))
-                            (or (= x w) (= x r) (some #{x} (:anchor thread))))] r)
-           (for [[_ native] (get-in s [:env :native])
-                 :let [[world r] (:owner native)]
+           (when-not released?
+             (for [[r rr] (:runs (wr s w))
+                   :when (and (busy? rr) (some #{x} (owner-chain s w r)))] r))
+           ;; A completed or stale row can still have a physical participant.
+           ;; Joining must not depend on a later delivery/normalization turning
+           ;; that row into :unwinding first.
+           (for [[_ thread] (get-in s [:env :threads]) :let [r (:run thread)]
+                 :when (and r (= w (:world thread)) (physical-under? r thread))] r)
+           (for [[_ native] (get-in s [:env :native]) :let [[world r] (:owner native)]
                  :when (and (= w world) (not= :joined (:state native))
-                            (or (= x w) (= x r) (some #{x} (:anchor native))))] r))))
-    (vec (for [[r rr] (:runs (wr s w))
-               :when (and (busy? rr) (some #{x} (owner-chain s w r)))] r))))
+                            (physical-under? r native))] r))))))
 (defn join-ready? [s w x]
   (empty? (join-blockers s w x)))
 
