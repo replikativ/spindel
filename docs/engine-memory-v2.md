@@ -315,7 +315,7 @@ while any engine API it calls still enters its own transition.
 
 A representation adapter projects each committed `StoreHead` or gate-released
 mutable state to the
-reference model's rows. Check L1–L25 after every successful transition and
+reference model's rows. Check L1–L26 after every successful transition and
 unchanged state after refusal. Replay the complete staged lockstep traces;
 do not hide unsupported edges by shortening a trace. In particular:
 
@@ -360,13 +360,19 @@ exercise only row storage, so they cannot predict whole-engine speed. They
 show why the mutable path must be included in the implementation and measured
 with the full scheduler, dependency graph, and callback path.
 
-For the no-fork matched graphs, target performance within roughly 2×
-Missionary in throughput and allocation before calling the engine competitive.
-Report any remaining gap by transition count, allocations, dependency work,
-CPS dispatch and executor handoff. Measure fork frequency separately so its
-copy cost does not hide a slow unforked path. A body proved unable to park may
-run without CPS/Thunk dispatch; bodies with unknown effects retain the general
-path until a sound direct/dynamic handoff is implemented.
+For the no-fork matched graphs, aim to match or beat Missionary in time
+and allocation on both JVM and optimized CLJS. A timing gap below 10× may be
+acceptable for extended semantics; it is a tolerance, not the optimization
+target. Report remaining costs by transition count, allocations, dependency
+work, CPS dispatch and executor handoff. Measure allocation, retained heap and
+GC pauses separately. Profile collected allocations as well as survivors;
+heap growth alone does not measure allocation rate. Run unprofiled trials for
+throughput because allocation sampling changes execution cost.
+
+Measure fork frequency separately so copy cost does not hide a slow unforked
+path. A body proved unable to park may run without CPS/Thunk dispatch; bodies
+with unknown effects retain the general path until a sound direct/dynamic
+handoff is implemented.
 
 ## Implementation sequence
 
@@ -384,3 +390,36 @@ path until a sound direct/dynamic handoff is implemented.
    engine. A faster kernel alone is insufficient if CPS dispatch and host
    egress dominate afterward; non-parking bodies also need the direct
    execution path described above.
+
+## Replacement acceptance
+
+The default engine changes only after these gates pass on JVM and CLJS:
+
+1. The shared benchmark driver covers fixed and changing dependency graphs,
+   parking/resumption, cancellation and creation/reclamation. JVM allocation
+   counts and JS allocation profiles are reported with their distinct scopes.
+   Optimized Node builds are measured separately from development builds.
+2. Native storage, registration closures, work queues and scratch buffers have
+   bounded retention after churn. Host collection removes idle caches while
+   wanted work survives. Diagnostic traces and checker-only history are
+   excluded explicitly from production memory claims.
+3. The executable replacement covers the public contracts: source intervals
+   and deltas, spins, Deferred/Mailbox/native effects, scopes, all fork modes,
+   foreign dependencies, coordinated cuts, disposal and physical joining.
+   Its published transitions refine the model; refused operations leave state
+   unchanged. Restricted prototype support does not satisfy this gate.
+4. Behavioral tests run against an explicit engine selection on both
+   platforms. Model replay and generated interleavings supplement the full
+   functional suite. JVM concurrency stress and JS event-loop/optimized-build
+   checks exercise publication and callback handoff.
+5. An independently reviewed change selects the new engine by default after
+   all gates pass. The old execution path is removed once the replacement
+   passes the same integration checks, rather than remaining as a hidden
+   fallback for unsupported operations.
+
+The current compact probe is executable on both platforms, but still has
+restricted parked-fork support and is not yet the public runtime replacement.
+The pure model covers the lifecycle/control plane; functional tests remain
+responsible for real CPS execution, values, interval/delta behavior and public
+subsystems. Allocation profiles and retained-heap probes check physical costs
+that logical transition replay cannot establish.

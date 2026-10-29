@@ -980,7 +980,7 @@ are derived from it directly and accept engine changes:
 
 - a pure-Clojure **reference model**: a transition system over the
   data in §4.1;
-- a debug-mode **invariant checker** for L1–L25.
+- a debug-mode **invariant checker** for L1–L26.
 
 Where `origin/main` (06ce205) differs from this contract, §4.8 says so.
 Nothing in Part 4 claims that main already behaves this way.
@@ -994,7 +994,7 @@ Nothing in Part 4 claims that main already behaves this way.
   S\*, H1 and W6.
 
 **Numbering.** `I1–I24` cite the as-is memory model. This part uses
-**L1–L25** (state invariants), **TL1–TL19** (temporal laws), **T1–T38**
+**L1–L26** (state invariants), **TL1–TL19** (temporal laws), **T1–T38**
 (transitions) and **O1–O14** and **F05** (decisions, §4.11). "Review G*n*" cites a gap
 from the dvergr/simmis review.
 
@@ -1770,7 +1770,7 @@ covered:
   point.
 - **Cuts:** one cut with one SCI component. One configuration has two
   concurrent cuts over two shared components (TL14).
-- **Assertions:** L1–L25 after every transition. TL1–TL19 as monitors
+- **Assertions:** L1–L26 after every transition. TL1–TL19 as monitors
   over history variables: resumes per `(w,o)`; body entries per `(w,e)`
   with their cause, reasons and reachable tokens; obligation exits by
   cause; rows written outside the acting world.

@@ -34,7 +34,22 @@
        (if (:ns &env) `(cljs.core/aset ~xs ~i ~value) `(let [^"[Ljava.lang.Object;" array# ~xs] (aset array# (int ~i) (clojure.lang.RT/box ~value)))))))
 (defn- slots [n] #?(:clj (object-array n) :cljs (make-array n)))
 #?(:cljs (deftype IDMap [buckets]))
-(defn- dict [] #?(:clj (java.util.HashMap.) :cljs (js/Map.)))
+#?(:cljs
+   (deftype ValuesView [m]
+     ;; Borrowed views stay internal; snapshots realize values under the gate.
+     ISeqable
+     (-seq [_]
+       (when (pos? (.-size m)) (array-seq (js/Array.from (.values m)))))))
+(defn- empty-native? [xs]
+  #?(:clj (.isEmpty ^java.util.Collection xs)
+     :cljs (cond (instance? ValuesView xs) (zero? (.-size (.-m xs)))
+                 (array? xs) (zero? (.-length xs))
+                 :else (zero? (.-size xs)))))
+(defn- dict []
+  #?(:clj (java.util.HashMap.)
+     :cljs (let [m (js/Map.)]
+             (set! (.-spindelValues m) (ValuesView. m))
+             m)))
 (defn- id-dict [] #?(:clj (dict) :cljs (IDMap. (js/Map.))))
 (defn- find! [m k]
   #?(:clj (.get ^java.util.Map m k)
@@ -67,10 +82,16 @@
                        (recur (+ i 2)))))))
              (.delete m k))))
 (defn- members [] #?(:clj (java.util.HashSet.) :cljs (js/Set.)))
+(def ^:private empty-members #?(:clj (java.util.Collections/emptySet) :cljs (js/Set.)))
+(defn- clear-members! [s]
+  (when-not (empty-native? s)
+    #?(:clj (.clear ^java.util.Set s) :cljs (.clear s))))
 (defn- add! [s x] #?(:clj (.add ^java.util.Set s x) :cljs (.add s x)))
 (defn- remove! [s x] #?(:clj (.remove ^java.util.Set s x) :cljs (.delete s x)))
 (defn- has? [s x] #?(:clj (.contains ^java.util.Set s x) :cljs (.has s x)))
-(defn- items [s] #?(:clj (seq s) :cljs (array-seq (js/Array.from s))))
+(defn- items [s]
+  #?(:clj (seq s)
+     :cljs (if (instance? ValuesView s) (seq s) (array-seq (js/Array.from s)))))
 (defn- values [m]
   #?(:clj (.values ^java.util.Map m)
      :cljs (if (instance? IDMap m)
@@ -80,7 +101,7 @@
                                         (when (< i (.-length bucket))
                                           (.push result (aget bucket i)) (recur (+ i 2))))))
                result)
-             (.values m))))
+             (.-spindelValues m))))
 (defn- count! [s] #?(:clj (.size ^java.util.Collection s) :cljs (.-size s)))
 (defn- queue [] #?(:clj (java.util.ArrayDeque.) :cljs (array)))
 (defn- push! [q x] #?(:clj (.addLast ^java.util.ArrayDeque q x) :cljs (.push q x)))
@@ -90,24 +111,27 @@
 (def ^:private empty-array #?(:clj (object-array 0) :cljs (array)))
 (defn- copy-items [xs]
   #?(:clj (.toArray ^java.util.Collection xs ^objects empty-array)
-     :cljs (js/Array.from xs)))
+     :cljs (if (empty-native? xs) empty-array
+               (js/Array.from (if (instance? ValuesView xs) (.values (.-m xs)) xs)))))
 (defn- any! [xs pred]
-  #?(:clj (let [it (.iterator ^java.lang.Iterable xs)]
-            (loop [] (when (.hasNext it)
-                       (let [x (.next it)] (if (pred x) true (recur))))))
-     :cljs (let [it (js* "~{}[Symbol.iterator]()" xs)]
-             (loop [] (let [entry (.next it)]
-                        (when-not (.-done entry)
-                          (if (pred (.-value entry)) true (recur))))))))
+  (when-not (empty-native? xs)
+    #?(:clj (let [it (.iterator ^java.lang.Iterable xs)]
+              (loop [] (when (.hasNext it)
+                         (let [x (.next it)] (if (pred x) true (recur))))))
+       :cljs (let [it (if (instance? ValuesView xs) (.values (.-m xs))
+                          (js* "~{}[Symbol.iterator]()" xs))]
+               (loop [] (let [entry (.next it)]
+                          (when-not (.-done entry)
+                            (if (pred (.-value entry)) true (recur)))))))))
 
 #?(:clj
    (do
      (defmacro each! [[x xs] & body]
        (if (:ns &env)
-         `(let [it# (~'js* "~{}[Symbol.iterator]()" ~xs)]
-            (loop [] (let [entry# (.next it#)]
-                       (when-not (.-done entry#)
-                         (let [~x (.-value entry#)] ~@body) (recur)))))
+         `(let [coll# ~xs]
+            (when-not (empty-native? coll#)
+              (.forEach (if (instance? ValuesView coll#) (.-m coll#) coll#)
+                        (fn [~x] ~@body))))
          `(let [^java.util.Collection coll# ~xs]
             (when-not (.isEmpty coll#)
               (let [^java.util.Iterator it# (.iterator coll#)]
@@ -186,6 +210,12 @@
   (loop [parent (:parent rt)]
     (when parent (or (find! (:nodes parent) id) (recur (:parent parent))))))
 
+(defn- work-status? [status] (case status (:running :parked) true false))
+(defn- active-status? [status] (case status (:running :parked :inherited :stale) true false))
+(defn- resumable-status? [status] (case status (:parked :inherited) true false))
+(defn- basis-status? [status] (case status (:completed :stale) true false))
+(defn- fork-busy-status? [status] (case status (:running :unwinding :inherited) true false))
+
 (defn- current [node] (a node n-current))
 (defn- open-owner? [owner] (or (root-owner? owner) (and owner (not= :unwinding (a owner r-status)))))
 (defn- mark! [rt node]
@@ -202,7 +232,7 @@
            (or (not= :spin (a node n-kind)) (not (a node n-complete)) (a node n-kept)))
       ;; A current non-work shell cannot hide an older active generation:
       ;; T7 retires predecessors and T11 retires its stale predecessor.
-      (#{:running :parked :inherited :stale} (some-> (current node) (a r-status)))
+      (active-status? (some-> (current node) (a r-status)))
       (pos? (count! (a node n-dependents)))
       (any! (values (a node n-runs))
             (fn [run]
@@ -211,7 +241,8 @@
                        (any! (a run r-owned) #(and (not (identical? node %)) (wanted? %)))))))))
 
 (defn- add-run! [run field member]
-  (let [set (a run field)]
+  (let [before (a run field)
+        set (if (identical? before empty-members) (put run field (members)) before)]
     (add! set member)
     (when (> (count! set) 64) (put run r-wide true))))
 
@@ -291,7 +322,7 @@
               (owner! rt node nil)
               (when (= :spin (a node n-kind)) (put node n-dirty true))
               (each-copy! [child (values (a node n-runs))]
-                          (if (#{:running :parked} (a child r-status)) (cancel! rt child) (retire! rt child)))
+                          (if (work-status? (a child r-status)) (cancel! rt child) (retire! rt child)))
               (each-copy! [ob (a node n-dependents)] (reject-dependent! rt ob))))
 
 (defn- forget-run! [rt run]
@@ -306,8 +337,8 @@
     ;; interpret a recycled run's identity when dispatching an old trigger.
     (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
              (if (a run r-wide)
-               (put run field (members))
-               #?(:clj (.clear ^java.util.Set (a run field)) :cljs (.clear (a run field)))))
+               (put run field empty-members)
+               (clear-members! (a run field))))
     (put run r-wide nil)
     (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives]]
              (put run field nil))
@@ -343,9 +374,9 @@
             (add! (a (:counters rt) 8) (a run r-node))
             (each! [successor (values (a (a run r-node) n-runs))]
                    (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
-            #?(:clj (.clear ^java.util.Set (a run r-ancestors)) :cljs (.clear (a run r-ancestors)))
-            #?(:clj (do (.clear ^java.util.Set (a run r-created)) (.clear ^java.util.Set (a run r-spawned)))
-               :cljs (do (.clear (a run r-created)) (.clear (a run r-spawned)))))
+            (clear-members! (a run r-ancestors))
+            (clear-members! (a run r-created))
+            (clear-members! (a run r-spawned)))
         (forget-run! rt run))
       (mark! rt (a run r-node)))))
 
@@ -388,6 +419,8 @@
       (recur))))
 
 (defn- audit-derived-state! [rt]
+  (when-not (zero? (count! empty-members))
+    (throw (ex-info "Shared empty membership was mutated" {})))
   (let [nodes (vec (values (:nodes rt)))
         sources (members)]
     (doseq [node nodes]
@@ -403,8 +436,8 @@
                (throw (ex-info "Creator-generation count mismatch" {:entity (a source n-id) :expected expected :actual actual}))))))
 
   (each! [node (values (:nodes rt))]
-         (let [current-active (boolean (#{:running :parked :inherited :stale} (some-> (current node) (a r-status))))
-               any-active (boolean (any! (values (a node n-runs)) #(#{:running :parked :inherited :stale} (a % r-status))))]
+         (let [current-active (boolean (active-status? (some-> (current node) (a r-status))))
+               any-active (boolean (any! (values (a node n-runs)) #(active-status? (a % r-status))))]
            (when-not (= current-active any-active)
              (throw (ex-info "Active-run projection mismatch" {:entity (a node n-id)})))))
   (each! [run (a (:counters rt) 6)]
@@ -591,7 +624,7 @@
   (or (pop! (a (:counters rt) 0))
       (let [run (slots 19)]
         (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
-                 (put run field (members)))
+                 (put run field empty-members))
         run)))
 
 (defn- start! [rt node owner reentry?]
@@ -626,7 +659,7 @@
     (next-number! rt 0)
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
     (when run (put ob o-creditor-generation (a run r-gen)) (put ob o-creditor-node (a run r-node)))
-    (put ob o-standing (boolean (#{:track :await-reactive :callback} kind)))
+    (put ob o-standing (case kind (:track :await-reactive :callback) true false))
     (put ob o-resolve resolve) (put ob o-reject reject) (put ob o-order order)
     (put ob o-slot (if (= kind :track) :consumed :armed)) (put ob o-live true)
     (when (= :await-once kind) (assoc! (:deliveries rt) id ob))
@@ -703,7 +736,7 @@
                                                        :kind :await-reactive :order order :debtor [:entity (:world rt) id]}
                                                 token (assoc :tok (a token t-id)))))
               (when (and (a node n-complete)
-                         (not (#{:running :parked} (some-> (current node) (a r-status)))))
+                         (not (work-status? (some-> (current node) (a r-status)))))
                 (put ob o-slot :consumed) (put run r-status :running) (put ob o-value (a node n-value))
                 (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (a ob o-id)] :value (a node n-value)})))
               ob))))
@@ -747,7 +780,7 @@
     (locked rt
             (when-let [ob (find! (:deliveries rt) (:obligation delivery))]
               (let [run (a ob o-run)]
-                (when (and (= :armed (a ob o-slot)) (#{:parked :inherited} (a run r-status)))
+                (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                   (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
                   (schedule! rt (a run r-node) ob))))
             (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (:obligation delivery)] :value value})))
@@ -762,13 +795,13 @@
                 (put run r-status :completed)
                 (push! (:events rt) (doto (slots 3) (put 0 node) (put 1 value) (put 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1)) (long (a (:counters rt) 2))))))))
                 (each-copy! [previous (values (a node n-runs))]
-                            (when (and (not (identical? previous run)) (#{:completed :stale} (a previous r-status)))
+                            (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
                               (retire! rt previous)))
                 (mark! rt node))
               (boundary! rt (when (:audit rt) {:t :t07 :w (:world rt) :r [(a node n-id) (a run r-gen)] :value value}))))))
 
 (defn- reenter! [rt node trigger]
-  (let [previous (current node) work? (#{:running :parked} (a previous r-status))
+  (let [previous (current node) work? (work-status? (a previous r-status))
         order (a trigger o-order)]
     (each-copy! [old (values (a node n-runs))]
                 (when (= :stale (a old r-status)) (retire! rt old)))
@@ -926,11 +959,11 @@
                      (when (and (nil? (find! (:nodes rt) (:id handle))) (parent-node rt (:id handle)))
                        (throw (ex-info "Foreign invocation is outside this slice" {:id (:id handle)})))
                      (let [node (or (find! (:nodes rt) (:id handle)) (node! rt (:id handle) :spin (:owner-root rt)))
-                           cached? (and (a node n-complete) (not (a node n-dirty)) (not (#{:running :parked} (some-> (current node) (a r-status)))))]
+                           cached? (and (a node n-complete) (not (a node n-dirty)) (not (work-status? (some-> (current node) (a r-status)))))]
                        (put node n-body (:body handle))
                        (when-not (a node n-owner) (owner! rt node (:owner-root rt)))
                        (touch! rt node (:token handle))
-                       (when-not (or cached? (#{:running :parked} (some-> (current node) (a r-status)))) (start! rt node (:owner-root rt) false))
+                       (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node (:owner-root rt) false))
                        (let [ob (ob! rt :callback node nil 0 nil nil)]
                          (put ob o-success success) (put ob o-failure failure)
                          (when cached?
@@ -1081,7 +1114,7 @@
                 run-map (dict)
                 selected (members)]
             (each! [run (a (:counters rt) 6)]
-                   (when (#{:running :unwinding :inherited} (a run r-status))
+                   (when (fork-busy-status? (a run r-status))
                      (throw (ex-info "Fork requires a parked boundary" {:world (:world rt)}))))
             (doseq [run copies]
               (each! [ob (a run r-obs)]
@@ -1117,7 +1150,7 @@
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-origin :inherited) (put copy r-source-world (:world rt))
                   (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
-                           (put copy field (members)))
+                           (put copy field empty-members))
                   (each! [gen (a run r-ancestors)] (add-run! copy r-ancestors gen))
                   (add! (a (:counters child) 8) node)
                   (assoc! (a node n-runs) (a copy r-gen) copy)
