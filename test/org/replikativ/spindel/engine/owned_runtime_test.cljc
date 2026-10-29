@@ -1367,7 +1367,7 @@
         (when audit? (verify-boundaries! rt))))))
 
 (deftest wide-retention-graph-drops-obsolete-proofs-and-edges
-  (let [rt (c/runtime {:audit? true})
+  (let [rt (c/runtime {:audit? true :record-audit? false})
         source (c/signal rt :wide-source 0)
         children (mapv (fn [i] (c/cspin rt [:wide-child i] (iv/get-new (c/track source))))
                        (range 96))
@@ -1385,3 +1385,30 @@
       (is (empty? (:obligations state)))
       (is (zero? (:liveness-scratch-references stats)))
       (is (zero? (:stale-liveness-references stats))))))
+
+(deftest structural-auditing-without-retained-history
+  (let [rt (c/runtime {:audit? true :record-audit? false})
+        ticket (c/ticket :structural-only)
+        values (atom [])
+        spin (c/cspin rt :structural-spin (c/park ticket))]
+    (c/observe! rt spin #(swap! values conj %) #(throw %))
+    (let [child (c/fork-parked! rt :structural-child)]
+      (c/resume-ticket! child (c/pending-ticket child ticket) :child)
+      (c/resume-ticket! rt (c/pending-ticket rt ticket) :parent)
+      (is (= [:parent] @values))
+      (is (= :child (get-in (c/snapshot child) [:entities :structural-spin :result])))
+      (doseq [runtime [rt child]]
+        (is (some? (:audit runtime)))
+        (is (nil? @(:audit runtime)))
+        (is (zero? (:liveness-scratch-references (c/storage-stats runtime))))))))
+
+#?(:clj
+   (deftest structural-only-mode-still-checks-derived-state
+     (let [rt (c/runtime {:audit? true :record-audit? false})
+           source (c/signal rt :checked-source 0)
+           audit-var (ns-resolve 'org.replikativ.spindel.engine.impl.owned 'audit-derived-state!)
+           checked (ex-info "structural check reached" {})]
+       (with-redefs-fn {audit-var (fn [_] (throw checked))}
+         #(is (identical? checked
+                          (try (c/set-signal! rt source 1) nil
+                               (catch Throwable error error))))))))

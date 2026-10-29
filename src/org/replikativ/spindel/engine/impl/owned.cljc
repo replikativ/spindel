@@ -351,7 +351,7 @@
 
 (defn runtime
   ([] (runtime {}))
-  ([{:keys [audit? world-id] :or {world-id w}}]
+  ([{:keys [audit? record-audit? world-id] :or {record-audit? true world-id w}}]
    (let [family (id-dict) gate #?(:clj (Object.) :cljs nil)
          rt (->OwnedRuntime
              gate (id-dict) (dict) (queue) (queue) (queue)
@@ -361,7 +361,7 @@
                              (compare (long (a x n-rank)) (long (a y n-rank))))))
                 :cljs (array))
              (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 8)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
-             (when audit? (atom [])) (when audit? (members))
+             (when audit? (atom (when record-audit? []))) (when audit? (members))
              (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 4) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
              {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
@@ -838,12 +838,15 @@
 (defn- boundary! [rt action]
   (reclaim! rt)
   (prune-ancestry! rt)
-  (when (runtime-field rt :audit)
+  (when-let [audit (runtime-field rt :audit)]
     (audit-derived-state! rt)
     (let [pending (a (runtime-field rt :counters) 9)
-          action (assoc action :fresh-runs (vec (items pending)))]
+          ;; A nil trace keeps structural auditing without retaining worlds.
+          recording? (some? @audit)
+          action (when recording? (assoc action :fresh-runs (vec (items pending))))]
       #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
-      (swap! (runtime-field rt :audit) conj [action (snapshot rt) (snapshot-family rt)]))))
+      (when recording?
+        (swap! audit conj [action (snapshot rt) (snapshot-family rt)])))))
 
 (defn- touch! [rt node token]
   (when token (add! (a node n-tokens) token) (add! (a token t-touched) (runtime-field rt :world))))
