@@ -251,6 +251,87 @@
     (is (= 1 @failures))
     (verify-boundaries! rt)))
 
+(deftest throwing-observers-finish-deliveries-and-preserve-the-computation-result
+  (doseq [failed? [false true]]
+    (let [rt (c/runtime {:audit? true}) callbacks (atom nil)
+          computation-error (ex-info "computation rejected" {})
+          observer-errors [(ex-info "observer one" {}) (ex-info "observer two" {})]
+          attempted (atom []) delivered (atom []) cached (atom [])
+          s (c/cspin rt :native
+                     (c/await-host (fn [resolve reject] (reset! callbacks [resolve reject]) nil)))
+          receive (fn [value] (swap! delivered conj value))]
+      (doseq [error observer-errors]
+        (let [observer (fn [_] (swap! attempted conj error) (throw error))]
+          (c/observe! rt s observer observer)))
+      (c/observe! rt s receive receive)
+      (let [caught (try ((nth @callbacks (if failed? 1 0)) (if failed? computation-error 42)) nil
+                        (catch #?(:clj Throwable :cljs :default) error error))]
+        (is (= 2 (count @attempted)))
+        (is (identical? (first @attempted) caught))
+        (is (= [(if failed? computation-error 42)] @delivered)))
+      ;; Observers cannot turn a cached success into a computation failure,
+      ;; nor replace the original rejection with their own exceptions.
+      (c/observe! rt s #(swap! cached conj %) #(swap! cached conj %))
+      (is (= [(if failed? computation-error 42)] @cached))
+      ((first @callbacks) :late)
+      ((second @callbacks) (ex-info "late rejection" {}))
+      (is (= 2 (count @attempted)))
+      (is (= 1 (count @delivered)))
+      (verify-boundaries! rt))))
+
+(deftest throwing-observer-still-delivers-reentrant-registration
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+        s (c/cspin rt :reader (iv/get-new (c/track source)))
+        delivered (atom []) failure (ex-info "observer failed" {})]
+    (c/observe! rt s
+                (fn [value]
+                  (when (= 1 value)
+                    (c/observe! rt s #(swap! delivered conj %) #(throw %))
+                    (throw failure)))
+                #(throw %))
+    (is (identical? failure (try (c/set-signal! rt source 1) nil
+                                 (catch #?(:clj Throwable :cljs :default) error error))))
+    (is (= [1] @delivered))
+    (verify-boundaries! rt)))
+
+#?(:cljs
+   (deftest falsey-observer-and-cancellation-errors-are-reported
+     (doseq [payload [nil false] cancel? [false true]]
+       (let [rt (c/runtime) callbacks (atom nil) delivered (atom [])
+             s (c/cspin rt :native
+                        (c/await-host
+                         (fn [resolve reject]
+                           (reset! callbacks [resolve reject])
+                           (when cancel? (fn [] (throw payload))))))]
+         (when-not cancel?
+           (c/observe! rt s (fn [_] (throw payload)) (fn [_]))
+           (c/observe! rt s (fn [_] (throw (ex-info "later observer" {}))) (fn [_])))
+         (c/observe! rt s #(swap! delivered conj %) #(swap! delivered conj :cancelled))
+         (let [caught (try
+                        (if cancel? (c/cancel-spin! rt s) ((first @callbacks) 42))
+                        {:thrown? false}
+                        (catch :default error {:thrown? true :payload error}))]
+           (is (= {:thrown? true :payload payload} caught))
+           (is (= [(if cancel? :cancelled 42)] @delivered)))))))
+
+#?(:clj
+   (deftest first-observer-error-survives-a-dispatch-handoff
+     (let [rt (c/runtime) deliver (atom nil)
+           s (c/cspin rt :native (c/await-host (fn [resolve _] (reset! deliver resolve) nil)))
+           first-error (ex-info "first observer" {}) later-error (ex-info "later observer" {})
+           dispatch-var (ns-resolve 'org.replikativ.spindel.engine.impl.owned 'next-dispatch!)
+           dispatch @dispatch-var injected? (atom false)]
+       (c/observe! rt s (fn [_] (throw first-error)) #(throw %))
+       ;; Force an arrival between the empty observation and releasing the
+       ;; drain claim, without adding a production scheduling hook.
+       (with-redefs-fn
+         {dispatch-var (fn [runtime]
+                         (let [entry (dispatch runtime)]
+                           (when (and (nil? entry) (compare-and-set! injected? false true))
+                             (c/observe! rt s (fn [_] (throw later-error)) #(throw %)))
+                           entry))}
+         #(is (identical? first-error (try (@deliver 42) nil (catch Throwable error error))))))))
+
 (deftest native-registration-refuses-fork-atomically
   (let [rt (c/runtime {:audit? true})
         s (c/cspin rt :native (c/await-host (fn [_ _] (fn []))))
@@ -984,6 +1065,58 @@
       (is (= 0 (:scratch-references stats))))))
 
 (def ^:dynamic *tag* :outside)
+
+(deftest forked-rejection-restores-nested-bindings-and-finally-in-its-own-world
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 1)
+        ticket (c/ticket :outside) cleanup (atom []) parent-values (atom [])
+        failure (ex-info "rejected ticket" {})
+        spin (c/cspin rt :spin
+                      (binding [*tag* :outer]
+                        (let [result (binding [*tag* :inner]
+                                       (try (c/park ticket)
+                                            :unexpected-success
+                                            (catch #?(:clj Exception :cljs :default) error
+                                              [*tag* (c/read-signal rt source) (ex-message error)])
+                                            (finally (swap! cleanup conj [*tag* (c/read-signal rt source)]))))]
+                          [*tag* result])))]
+    (c/observe! rt spin #(swap! parent-values conj %) #(throw %))
+    (let [child (c/fork-parked! rt [:w 1])]
+      ;; The restricted parked-fork prototype has no general inherited-source
+      ;; materialization yet. Distinct local sources test world authority here.
+      (c/signal child :source 20)
+      (c/set-signal! rt source 10)
+      (c/resume-ticket! child (c/pending-ticket child ticket) (c/->Failure failure))
+      (is (= [:outer [:inner 20 "rejected ticket"]]
+             (get-in (c/snapshot child) [:entities :spin :result])))
+      (is (= [] @parent-values))
+      (is (= [[:inner 20]] @cleanup))
+      (is (= :outside *tag*))
+      (c/resume-ticket! rt (c/pending-ticket rt ticket) (c/->Failure failure))
+      (is (= [[:outer [:inner 10 "rejected ticket"]]] @parent-values))
+      (is (= [[:inner 20] [:inner 10]] @cleanup))
+      (is (= :outside *tag*))
+      (verify-boundaries! rt))))
+
+(deftest asynchronous-rejection-restores-bindings-through-catch-and-finally
+  (async done
+         (let [rt (c/runtime) cleanup (atom nil) failure (ex-info "native rejection" {})
+               spin (c/cspin rt :spin
+                             (binding [*tag* :inside]
+                               (try (c/await-host
+                                     (fn [_ reject]
+                                       #?(:clj (future (reject failure))
+                                          :cljs (js/setTimeout #(reject failure) 0))
+                                       nil))
+                                    (catch #?(:clj Exception :cljs :default) error
+                                      [*tag* (identical? failure error)])
+                                    (finally (reset! cleanup *tag*)))))]
+           (c/observe! rt spin
+                       (fn [value]
+                         (is (= [:inside true] value))
+                         (is (= :inside @cleanup))
+                         (done))
+                       (fn [error] (is false (str error)) (done)))
+           (is (= :outside *tag*)))))
 
 (deftest compact-fork-restores-user-bindings-and-keeps-world-authority
   (let [rt (c/runtime {:audit? true}) ticket (c/ticket :outside)

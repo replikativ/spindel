@@ -1506,25 +1506,36 @@
                     ;; Logical cancellation is already committed. A failed
                     ;; detach must not strand other cancellation/delivery work.
                     (let [error (try ((a entry 0)) nil
-                                     (catch #?(:clj Throwable :cljs :default) error error))]
+                                     (catch #?(:clj Throwable :cljs :default) error [error]))]
                       (recur (or failure error)))
-                    (do
-                      (when-not (= :event entry)
-                        (if (= 2 (alength ^objects entry))
-                          (let [ob (a entry 0) value (a entry 1)]
-                            (cond
-                              (instance? Failure value) ((a ob o-failure) (:error value))
-                              (= cancelled value) ((a ob o-failure) (ex-info "Cancelled" {}))
-                              :else ((a ob o-success) value)))
-                          (execute! (a entry n-runtime) entry)))
-                      (recur failure)))
+                    (if (and (not= :event entry) (= 2 (alength ^objects entry)))
+                      ;; Host observers own their exceptions. Finish committed
+                      ;; deliveries, including reentrant registrations, before
+                      ;; reporting the first error to the drain's caller.
+                      (let [ob (a entry 0) value (a entry 1)
+                            error (try
+                                    (cond
+                                      (instance? Failure value) ((a ob o-failure) (:error value))
+                                      (= cancelled value) ((a ob o-failure) (ex-info "Cancelled" {}))
+                                      :else ((a ob o-success) value))
+                                    nil
+                                    (catch #?(:clj Throwable :cljs :default) error [error]))]
+                        (recur (or failure error)))
+                      (do
+                        (when-not (= :event entry) (execute! (a entry n-runtime) entry))
+                        (recur failure))))
                   failure))
               (finally (reset! (runtime-field rt :draining) false)))]
-        (when (locked rt (or (queued? (runtime-field rt :posts)) (queued? (runtime-field rt :events)) (queued? (runtime-field rt :hosts))
-                             #?(:clj (not (.isEmpty ^java.util.PriorityQueue (runtime-field rt :ready)))
-                                :cljs (pos? (.-length (runtime-field rt :ready))))))
-          (drain! rt))
-        (when failure (throw failure))))))
+        (let [later-failure
+              (try
+                (when (locked rt (or (queued? (runtime-field rt :posts)) (queued? (runtime-field rt :events)) (queued? (runtime-field rt :hosts))
+                                     #?(:clj (not (.isEmpty ^java.util.PriorityQueue (runtime-field rt :ready)))
+                                        :cljs (pos? (.-length (runtime-field rt :ready))))))
+                  (drain! rt))
+                nil
+                (catch #?(:clj Throwable :cljs :default) error [error]))]
+          ;; A tagged error also preserves JavaScript's `throw null/false`.
+          (when-let [error (or failure later-failure)] (throw (first error))))))))
 
 (defn- observe-token! [rt id token body success failure]
   (let [ob (locked rt
