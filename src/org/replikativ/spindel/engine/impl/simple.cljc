@@ -2938,10 +2938,15 @@
   Returns: map of {:spins-affected count :continuations-cleared count}"
   [context]
   (let [all-nodes (rtp/get-state context [:nodes])
+        spin-ids (keys (rtp/get-state context [:spins-meta]))
         local? (backend/entity-locality (:backend context))
         result (atom {:spins-affected 0 :continuations-cleared 0})]
 
-    (doseq [[spin-id node] all-nodes]
+    ;; Signal nodes have no await continuations, orphaned Spin handle, or
+    ;; dropped children. The spin registry bounds this generation sweep to
+    ;; nodes that can actually need cleanup.
+    (doseq [spin-id spin-ids
+            :let [node (get all-nodes spin-id)]]
       (when node
         ;; CRITICAL: Only clear await continuations from COMPLETED spins
         ;; If a spin is still running (suspended awaiting children), DON'T clear

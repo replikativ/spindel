@@ -149,9 +149,14 @@
    :kept? false :result nil :tokens #{} :key nil :order 0})
 (defn caps-of [s w] (filter #(= w (:world (val %))) (all-caps s)))
 (defn predecessor? [s w old r]
-  (loop [p (:pred (run s w r)) seen #{}]
-    (cond (nil? p) false (= old p) true (seen p) false
-          :else (recur (:pred (run s w p)) (conj seen p)))))
+  (contains? (:ancestors (run s w r)) old))
+
+(defn prune-ancestry [s w]
+  (let [world (wr s w)
+        relevant (into (set (for [[r rr] (:runs world) :when (not= :unwinding (:status rr))] r)) (keep :creator (vals (:entities world))))]
+    (update-in s [:worlds w :runs]
+               #(into {} (for [[r rr] %]
+                           [r (update rr :ancestors (fn [ids] (set (filter relevant ids))))])))))
 
 (defn touch [s w e tok]
   (if (and tok (ent s w e))
@@ -216,6 +221,16 @@
       (first (for [k [:discard :cancelled :register-host :fdep-ended :fork-released :join-bundle]
                    :when (contains? event k)] [k (get event k)]))))
 
+(defn source-notification-key [event]
+  ;; Provenance survives debtor release. Never infer conflation eligibility
+  ;; from the current entity row or apply it to first-result completions.
+  (when (:source-change? event) [(:debtor-world event) (:completion event)]))
+
+(defn append-notification [events event]
+  (if-let [key (source-notification-key event)]
+    (conj (vec (remove #(= key (source-notification-key %)) events)) event)
+    (conj events event)))
+
 (defn enqueue
   "Tombstone requests fail locally in the sender transaction; joins reject every member."
   [s w event]
@@ -241,8 +256,15 @@
     (let [n (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))
           event (assoc event :seq n) s (assoc-in s [:clocks w] n)]
       (if (and (= :fenced (:admission (wr s w))) (or (cut-participant? s w) (not (control-key event))))
-        (update-in s [:env :outside] conj {:w w :event event})
-        (update-in s [:worlds w :queue] conj event)))))
+        (update-in s [:env :outside]
+                   (fn [held]
+                     (let [key (source-notification-key event)]
+                       (conj (if key
+                               (vec (remove #(and (= w (:w %))
+                                                  (= key (source-notification-key (:event %)))) held))
+                               held)
+                             {:w w :event event}))))
+        (update-in s [:worlds w :queue] append-notification event)))))
 
 (defn cleanup-dependency [s dw fd _creditor-world]
   (if (or (= :released (:status (wr s dw)))
@@ -294,19 +316,34 @@
 (declare t06-resume t09-reenter t10-supersede t11-cancel t13-close-scope
          t26-seal t34-release-world rule-l t08-deliver t36-cleanup t25-cut-fail step)
 
+(def ^:dynamic *fresh-runs* nil)
+
+(defn allocate-generation [s w e dense]
+  (if *fresh-runs*
+    (let [[world entity stamp :as witness] (first @*fresh-runs*)]
+      (require! (and (vector? witness) (= 3 (count witness))
+                     (= w world) (= e entity) (integer? stamp)
+                     (> stamp (reduce max 0 (vals (:generation-clock s)))))
+                ::invalid-run-allocation {:expected [w e] :witness witness})
+      (vswap! *fresh-runs* next)
+      stamp)
+    dense))
+
 (defn start-run [s w e owner cause]
   (let [inherited (for [[r rr] (:runs (wr s w))
                         :when (and (= e (:spin rr)) (= :inherited (:status rr)))] r)
         s (reduce #(t11-cancel %1 {:w w :r %2}) s inherited)
         ;; An unwinding row is physical evidence, never a predecessor index.
         pred (let [r (current s w e)] (when (not= :unwinding (:status (run s w r))) r))
-        n (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0))) r [e n]
+        n (allocate-generation s w e (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0)))) r [e n]
         seqno (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))]
     (require! (= :live (:status (wr s w))) ::sealed {:world w})
     (require! (open? s w owner) ::closed-scope {:world w :scope owner})
     [(-> s (assoc-in [:generation-clock [w e]] n) (assoc-in [:worlds w :seq] seqno)
          (assoc-in [:worlds w :runs r]
-                   {:spin e :owner owner :pred pred :status :running
+                   {:spin e :owner owner :pred pred
+                    :ancestors (cond-> (get-in s [:worlds w :runs pred :ancestors] #{}) pred (conj pred))
+                    :status :running
                     :creations #{} :spawned #{} :seq seqno})
          (cond-> (run s w owner) (update-in [:worlds w :runs owner :spawned] conj r))
          (emit {:event :body-entry :world w :e e :r r :cause cause
@@ -334,7 +371,7 @@
                 dead (for [[e er] (:entities (wr normalized w))
                            :when (and (empty? (reasons normalized w e))
                                       (not (and (idle? normalized w e) (seq (:tokens er)))))] e)]
-            (if (and (empty? dead) (= s normalized)) normalized
+            (if (and (empty? dead) (= s normalized)) (prune-ancestry normalized w)
                 (recur
                  (reduce
                   (fn [s e]
@@ -375,7 +412,7 @@
 
 (defn t02-create-signal
   "T2 create-signal/create-atom. Keyed lookup follows lineage ancestors."
-  [s {:keys [e kind key value] :or {kind :signal} :as a}]
+  [s {:keys [e kind key value order] :or {kind :signal order 0} :as a}]
   (let [w (selected s a) owner (cs s a w) e (if key (keyid s w key) e)
         source (loop [v w]
                  (cond (ent s v e) v
@@ -387,14 +424,20 @@
       (let [er (ent s source e)]
         (require! (and (= :signal (:kind er)) (= key (:key er))) ::key-collision {:e e})
         (if (and (= source w) (predecessor? s w (:owner er) owner))
-          (assoc-in s [:worlds w :entities e :owner] owner) s))
-      (assoc-in s [:worlds w :entities e] (assoc (row kind owner) :key key :result value)))))
+          (-> s (assoc-in [:worlds w :entities e :owner] owner)
+              (assoc-in [:worlds w :entities e :order] order)
+              (update-in [:worlds w :runs owner :creations] conj e)) s))
+      (cond-> (assoc-in s [:worlds w :entities e]
+                        (assoc (row kind owner) :key key :result value :order order))
+        (run s w owner) (update-in [:worlds w :runs owner :creations] conj e)))))
 
 (defn t03-touch-keyed
   "T3 touch-keyed/cache-row, indexed by spin instance."
-  [s {:keys [w r key kind] :or {kind :cache-row}}]
+  [s {:keys [w r key kind order] :or {kind :cache-row order 0}}]
   (require! (work? (run s w r)) ::not-work {:r r})
-  (assoc-in s [:worlds w :entities [(:spin (run s w r)) key]] (row kind r)))
+  (let [e [(:spin (run s w r)) key]]
+    (-> s (assoc-in [:worlds w :entities e] (assoc (row kind r) :order order))
+        (update-in [:worlds w :runs r :creations] conj e))))
 
 (defn read-source [s w e]
   (loop [v w]
@@ -407,6 +450,24 @@
   (live! s w)
   (require! (not-any? #(and (= w (:child %)) (= :attached (:phase %)))
                       (vals (:cuts s))) ::not-admitted {:w w}))
+
+(defn adopt-call-target
+  "A successor that invokes/awaits a predecessor-owned spin adopts its
+  ownership and its runs. Host-created handles have no lexical T1 to repeat."
+  [s w e scope]
+  (let [er (ent s w e) old (:owner er)]
+    (if (and (= :spin (:kind er)) (predecessor? s w old scope))
+      (-> s
+          (assoc-in [:worlds w :entities e :owner] scope)
+          (cond-> (= old (:creator er))
+            (assoc-in [:worlds w :entities e :creator] scope)
+            (= old (:creator er)) (assoc-in [:worlds w :entities e :kept?] (reactive? s w scope))
+            (= old (:creator er)) (update-in [:worlds w :runs scope :creations] conj e))
+          (update-in [:worlds w :runs]
+                     #(into {} (for [[r rr] %]
+                                 [r (if (and (= e (:spin rr)) (= old (:owner rr)))
+                                      (assoc rr :owner scope) rr)]))))
+      s)))
 (defn t04-invoke
   "T4 invoke: join, cached delivery, or fresh body entry."
   [s {:keys [e tok mode host] :or {mode :deref host :caller} :as a}]
@@ -427,6 +488,7 @@
                                               :tokens (covering-tokens s w e)
                                               :origin :copied :source-world source)
                               (spin-row s w e owner))))
+          s (if join? s (adopt-call-target s w e owner))
           s (if (and (not join?) (nil? (:owner (ent s w e))))
               (assoc-in s [:worlds w :entities e :owner] owner) s)
           s (if join? s (touch s dw e tok))
@@ -461,6 +523,7 @@
                            (not (:completed? (ent s dw e))))
         s (if (and await? (= dw w) (nil? (ent s dw e)))
             (do (live! s dw) (assoc-in s [:worlds dw :entities e] (spin-row s dw e r))) s)
+        s (if (and await? (= dw w)) (adopt-call-target s w e r) s)
         _ (when (and (= :entity dk) (not foreign-cold?))
             (require! (ent s dw e) ::missing-debtor {:debtor debtor}))
         completed? (and (= dk :entity) (:completed? (ent s dw e)))
@@ -565,7 +628,8 @@
                 (or (not (:standing? ob)) (final? s dw e)) (end-obligation w o :delivered))
               (if (cancelling? s w o ob)
                 (-> s (t06-resume {:w w :o o :value value}) (end-obligation w o :delivered))
-                (if (and (:standing? ob) (not= :inherited (:status (run s w (nth (:creditor ob) 2)))))
+                (if (and (:standing? ob) (= :consumed (:slot ob))
+                         (not= :inherited (:status (run s w (nth (:creditor ob) 2)))))
                   (t09-reenter s {:w w :e (first (nth (:creditor ob) 2))
                                   :cause (if (= :track (:kind ob)) :track :reactive)
                                   :order (:order ob)})
@@ -588,12 +652,17 @@
                             (assoc-in s [:worlds w :obligations o :creditor] [:run w r2])
                             (if (work? rr) (end-obligation s w o :creditor-cancelled) s))))
                     s (:obligations (wr s w)))
+          s (update-in s [:worlds w :scopes]
+                       #(into {} (for [[id sr] %]
+                                   [id (if (and (= r (:parent sr)) (< (get sr :order 0) order))
+                                         (assoc sr :parent r2) sr)])))
           prefix (filter #(< (get-in s [:worlds w :entities % :order] 0) order)
                          (:creations rr))]
       (rule-l
        (reduce (fn [s child]
                  (-> s (assoc-in [:worlds w :entities child :owner] r2)
-                     (assoc-in [:worlds w :entities child :creator] r2)
+                     (cond-> (:creator (ent s w child))
+                       (assoc-in [:worlds w :entities child :creator] r2))
                      (update-in [:worlds w :runs r2 :creations] conj child)
                      (update-in [:worlds w :runs r :creations] disj child)
                      (update-in [:worlds w :runs]
@@ -635,7 +704,7 @@
           (-> s
               (assoc-in [:worlds w :runs r]
                         (assoc rr :status :unwinding :owner nil :anchor chain :retired? true
-                               :creations #{} :spawned #{} :pred nil))
+                               :creations #{} :spawned #{} :pred nil :ancestors #{}))
               (update-in [:env :threads]
                          #(into {} (for [[th tr] %]
                                      [th (cond-> tr (and (= w (:world tr)) (= r (:run tr)))
@@ -760,10 +829,12 @@
 
 (defn t12-open-scope
   "T12 open explicit, supervisor, render or SCI scope."
-  [s {:keys [w scope parent kind] :or {kind :explicit}}]
+  [s {:keys [w scope parent kind order] :or {kind :explicit order 0}}]
   (live! s w)
   (require! (open? s w parent) ::closed-scope {:parent parent})
-  (assoc-in s [:worlds w :scopes scope] {:kind kind :parent parent :status :open}))
+  (assoc-in s [:worlds w :scopes scope]
+            (cond-> {:kind kind :parent parent :status :open}
+              (run s w parent) (assoc :order order))))
 
 (defn close-owned [s w scope]
   (rule-l
@@ -918,15 +989,22 @@
   (let [child (assoc (world-row v w :following (get-in s [:worlds w :lineage :root])) :seq (get-in s [:worlds w :seq] 0))
         copies (into {} (for [[r rr] (:runs (wr s w)) :when (= :parked (:status rr))]
                           [r (assoc (copy-row rr w :inherited) :status :inherited :owner (:root child))]))
+        scopes (loop [parents (set (keys copies)) found {}]
+                 (let [children (into {} (for [[id sr] (:scopes (wr s w))
+                                               :when (contains? parents (:parent sr))]
+                                           [id (copy-row sr w :inherited)]))]
+                   (if (empty? children) found
+                       (recur (set (keys children)) (merge found children)))))
+        owners (into (set (keys copies)) (keys scopes))
         es (set (concat (map :spin (vals copies))
                         (for [[e er] (:entities (wr s w))
-                              :when (or (contains? copies (:owner er)) (contains? copies (:creator er)))] e)))
+                              :when (or (contains? owners (:owner er)) (contains? copies (:creator er)))] e)))
         copies (into {} (for [[r rr] copies]
                           [r (-> rr (update :creations set/intersection es)
                                  (update :spawned set/intersection (set (keys copies))))]))
         entities (into {} (for [e es :let [er (ent s w e)]]
                             [e (cond-> (assoc (copy-row er w :inherited) :owner
-                                              (if (contains? copies (:owner er)) (:owner er) (:root child)))
+                                              (if (contains? owners (:owner er)) (:owner er) (:root child)))
                                  (= :fork (:kind er)) (assoc :reference? true))]))
         obs (into {} (for [[o ob] (:obligations (wr s w))
                            :when (or (contains? copies (nth (:creditor ob) 2 nil))
@@ -937,6 +1015,7 @@
     (let [evidence (copy-evidence s w)]
       (attach-world s w v scope k systems
                     (assoc child :runs copies :entities entities :obligations obs
+                           :scopes (merge (:scopes child) scopes)
                            :queue (copy-queue evidence obs)) evidence false))))
 
 (defn t20-cut-fence
@@ -1494,7 +1573,7 @@
     :t09 [:reenter (:w a) (:e a)]
     nil))
 
-(defn step
+(defn- step*
   "One atomic transition. Refusal throws ex-info; its :state is the unchanged input.
   Native progress, arrivals and thread re-entry are explicit environment actions.
   An explicit :th attributes a requested effect to that thread's slice; omitted
@@ -1565,11 +1644,28 @@
                  (if (= :fenced (:admission (wr s w)))
                    (update-in s [:env :outside] conj {:w w :event {:signal-write e :value (:value a)}})
                    (let [targets (conj (fdep-targets (wr s w) e) w)]
-                     (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a)})
+                     (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
                              (assoc-in s [:worlds w :entities e :result] (:value a)) targets)))))
            :arrival (enqueue s (:w a) (:event a))
            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
        (acting-world before a)))
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+      (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
+
+(defn step
+  "Apply a transition with optional checked fresh-run allocation evidence.
+   A present empty vector forbids allocation; copies consume no evidence."
+  [s a]
+  (try
+    (if (contains? a :fresh-runs)
+      (do (require! (and (vector? (:fresh-runs a))
+                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs a)))
+                    ::invalid-run-allocation {:action a})
+          (binding [*fresh-runs* (volatile! (:fresh-runs a))]
+            (let [result (step* s a)]
+              (require! (empty? @*fresh-runs*) ::unused-run-allocation {:remaining @*fresh-runs*})
+              result)))
+      (step* s a))
     (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
       (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
 
