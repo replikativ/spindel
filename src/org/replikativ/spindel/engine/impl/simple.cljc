@@ -3091,7 +3091,12 @@
                                {:spin-id parent-id :signal-id sid})
                     (resume-body! context parent-id earliest :track)))))))))))
 
-(defn cache-result!
+(defn- cancelled-result? [result]
+  (and (= :error (:variant result))
+       (= :org.replikativ.spindel.spin.core/spin-cancelled
+          (:type (ex-data (:payload result))))))
+
+(defn ^:no-doc commit-result!
   "Cache a spin's result value and mark observers dirty.
 
   Marks spin as completed and stores the Result record. Also marks all
@@ -3103,7 +3108,7 @@
   `:clean` only if nothing invalidated that generation (`invalidate-node`);
   otherwise it is stored and delivered, but the node stays `:dirty`. A
   completion of a run that is no longer the node's current one (a newer
-  run entered since) changes nothing and returns false: the caller must not
+  run entered since) changes nothing and returns nil: the caller must not
   publish it (no deps commit, completion event or callbacks).
 
   TRANSACTIONAL: All state changes happen atomically in a single swap-state! to
@@ -3115,21 +3120,28 @@
     result - Result record (from org.replikativ.spindel.spin.core)
     run - run generation, or nil
 
-  Returns: true, or false for a superseded run's completion"
-  ([context spin-id result] (cache-result! context spin-id result nil))
-  ([context spin-id result run]
-   (let [written? (volatile! true)]
+  Returns the effective committed Result, or nil for a superseded run.
+  Cancellation remains authoritative until a fresh generation enters."
+  ([context spin-id result] (commit-result! context spin-id result nil))
+  ([context spin-id result run] (commit-result! context spin-id result run false))
+  ([context spin-id result run cancel?]
+   (let [committed (volatile! nil)]
      (rtp/swap-state!
       context []
       (fn [rt-state]
-        (vreset! written? true)
+        (vreset! committed nil)
         (let [spin-node (get-in rt-state [:nodes spin-id])]
           (if (and run spin-node (not= run (:run-gen spin-node)))
             ;; An older run — a newer one has entered since (its prologue
             ;; cancelled this one's waits; this completion slipped past them).
             ;; Its result is not the node's to keep.
-            (do (vreset! written? false) rt-state)
-            (let [observers (if spin-node (nodes/get-observers spin-node) #{})
+            rt-state
+            (let [cancellation (:cancelled-completion spin-node)
+                  result (if (and cancellation (= (:run cancellation) (:run-gen spin-node))
+                                  (or (nil? run) (= run (:run cancellation))))
+                           (:result cancellation) result)
+                  _ (vreset! committed result)
+                  observers (if spin-node (nodes/get-observers spin-node) #{})
                   lifetime-run (:lifetime/run spin-node)
                   idle-release? (and run
                                      (or (:lifetime/owner spin-node)
@@ -3156,6 +3168,8 @@
                             (let [node (or spin-node (nodes/->spin-node nil :clean false false #{} {} nil #{}))]
                               (-> node
                                   (assoc :result result)
+                                  (cond-> cancel?
+                                    (assoc :cancelled-completion {:run (:run-gen spin-node) :result result}))
                                   (assoc :completed? true)
                                   (assoc :running? false)
                                   ;; Certify only an uninvalidated run.
@@ -3195,7 +3209,20 @@
                                                    node)))))
                                 state
                                 observers))))))))
-     @written?)))
+     @committed)))
+
+(defn cache-result!
+  "Boolean protocol facade for atomic result arbitration."
+  ([context spin-id result] (cache-result! context spin-id result nil))
+  ([context spin-id result run]
+   (boolean (commit-result! context spin-id result run))))
+
+(defn ^:no-doc cancel-result!
+  "Commit an explicit cancellation and fence this generation's later results.
+  An ordinary error cache write, including propagated child cancellation, does
+  not revoke its owner's authority to publish future reactive values."
+  [context spin-id result]
+  (commit-result! context spin-id result nil true))
 
 (defn current-result
   "Get the current cached result of a spin.
@@ -3300,7 +3327,7 @@
                                 :lifetime/run-owner owner))
                        (cond-> (and owner (nil? (:lifetime/owner node)))
                          (assoc :lifetime/owner owner))
-                       (dissoc :invalid-gen :execution-claimed?)
+                       (dissoc :invalid-gen :execution-claimed? :cancelled-completion)
                        (cond-> dirty? (assoc :completed? false))
                        (cond-> dirty? nodes/mark-dirty))))]
     ;; The whole-state transaction only when there is something to hand off:
@@ -3588,11 +3615,6 @@
   [context cont]
   (when-let [claim (resume-claimed-key cont)]
     (= (:fork-id context) (:world claim))))
-
-(defn- cancelled-result? [result]
-  (and (= :error (:variant result))
-       (= :org.replikativ.spindel.spin.core/spin-cancelled
-          (:type (ex-data (:payload result))))))
 
 (defn- await-result-ready?
   "Cancellation is terminal even if the cancelled run was invalidated."
