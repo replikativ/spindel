@@ -81,6 +81,41 @@
          #"closed world scope"
          (scope/begin-activity! world-scope :late-work)))))
 
+(deftest published-quiescence-fences-individual-world-release
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :search :fork-opts {:systems :none}})
+        session (scope/begin-activity! world-scope :session)
+        world (binding [ec/*execution-context* root] (fork! world-scope root))
+        child (:child-ctx world) outcome (atom nil) substrate (atom nil)
+        discard-fork! ygg/discard-fork!]
+    (try
+      (with-redefs [ygg/discard-fork!
+                    (fn [handle opts]
+                      (fn [resolve reject]
+                        (reset! substrate #((discard-fork! handle opts) resolve reject))))]
+        ((scope/await-quiescence world-scope)
+         (fn [_]
+           ;; This is the interval between quiescence publication and the
+           ;; session close reader's scope-wide discard.
+           (let [before @world-scope]
+             ((scope/release! world-scope child)
+              #(reset! outcome [:ok %])
+              #(reset! outcome [:error (:type (ex-data %))]))
+             (is (= [:error ::scope/scope-consumed] @outcome))
+             (is (= before @world-scope))
+             (is (nil? @substrate))
+             (is (zero? (:pending-forks @world-scope)))))
+         #(throw %))
+        (scope/end-activity! world-scope session))
+      ;; Keep cleanup deterministic even when this test runs against the
+      ;; unfixed admission path and the mocked release has started.
+      (when-let [finish @substrate] (finish))
+      (await-cps (scope/discard! world-scope))
+      (is (= :discarded (:status @world-scope)))
+      (finally
+        (context/stop-context! child)
+        (context/stop-context! root)))))
+
 (deftest discard-rejects-live-activity-without-consuming-the-scope
   (let [world-scope (scope/create {:purpose :search})
         activity (scope/begin-activity! world-scope :evaluation)

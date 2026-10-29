@@ -731,7 +731,7 @@
            (fn [state]
              (let [handle (handle-of state fork-id)]
                (cond
-                 (not= :open (:status state))
+                 (or (not= :open (:status state)) (:quiescent? state))
                  [state {:error (scope-error scope ::scope-consumed
                                              "Cannot release from a consumed world scope")}]
 
