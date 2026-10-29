@@ -1294,8 +1294,8 @@
                   (put ob o-delivery-error failed?)
                   (schedule! rt (a run r-node) ob))))
             (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world)
-                                                         :o [:o (:obligation delivery)]
-                                                         :value (diagnostic-value value failed?)})))
+                                                           :o [:o (:obligation delivery)]
+                                                           :value (diagnostic-value value failed?)})))
     (drain! rt)))
 
 (defn resume-ticket! [requested delivery value]
@@ -1316,8 +1316,8 @@
                 (put ob o-delivery-error failed?)
                 (schedule! rt (a run r-node) ob))))
           (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world)
-                                                       :o [:o (:obligation delivery)]
-                                                       :value (diagnostic-value value failed?)})))
+                                                         :o [:o (:obligation delivery)]
+                                                         :value (diagnostic-value value failed?)})))
   (drain! rt))
 
 (defn- host-callback [rt delivery failed?]
@@ -1379,9 +1379,9 @@
                  (put run r-status :completed)
                  (push! (runtime-field rt :events)
                         (doto (slots 4) (put 0 node) (put 1 value) (put 3 failed?)
-                          (put 2 (put (runtime-field rt :counters) 2
-                                      (inc (max (long (a (runtime-field rt :counters) 1))
-                                                (long (a (runtime-field rt :counters) 2))))))))
+                              (put 2 (put (runtime-field rt :counters) 2
+                                          (inc (max (long (a (runtime-field rt :counters) 1))
+                                                    (long (a (runtime-field rt :counters) 2))))))))
                  (each-copy! [previous (values (a node n-runs))]
                              (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
                                (retire! rt previous)))
@@ -1593,7 +1593,7 @@
                        (put ob o-success success) (put ob o-failure failure)
                        (when cached?
                          (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 (a ob (if (= :error (a node n-complete)) o-failure o-success)))
-                                 (put 1 (a node n-value))))
+                                                                (put 1 (a node n-value))))
                          (when-not (reactive? (current node)) (end-ob! rt ob)))
                        (boundary! rt (when (runtime-field rt :audit) {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode :callback}))
                        ob)))]
