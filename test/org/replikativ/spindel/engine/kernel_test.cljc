@@ -48,6 +48,14 @@
                  (into [{:t :t02 :w w :e signal :value 0}]
                        (map #(hash-map :t :signal-write :w w :e signal :value %) (range 1 33)))))
 
+(deftest dirty-await-refines-fresh-owned-run
+  (doseq [kind [:await-once :await-reactive]]
+    (compare-walk! (model/init-state) (handoff/dirty-await-actions kind))))
+
+(deftest await-refines-joining-active-refresh
+  (doseq [kind [:await-once :await-reactive]]
+    (compare-walk! (model/init-state) (handoff/refreshing-await-actions kind))))
+
 (deftest obligation-kind-walks
   (doseq [[kind debtor] [[:track [:entity w signal]]
                          [:await-once [:entity w child]]

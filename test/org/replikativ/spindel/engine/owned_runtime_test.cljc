@@ -17,6 +17,68 @@
       :cljs [IHash (-hash [_] 0)
              IEquiv (-equiv [_ other] (and (instance? EqualID other) (= id (.-id other))))]))
 
+#?(:cljs
+   (deftest inline-memberships-match-native-set-mutations
+     (let [actual (c/->InlineSet nil nil nil 0 nil) expected (js/Set.)
+           keys [nil false js/undefined 0 -0.0 js/NaN 1 2 :key (js-obj) (array) [1] [1]]
+           seed (volatile! 31245)
+           check (fn []
+                   (let [reference (js/Array.from expected) copied (.toArray actual) visited (array)]
+                     (is (= (.-size expected) (.-size actual) (.-length copied)))
+                     (.forEach actual (fn [value] (.push visited value)))
+                     (is (= (.-length reference) (.-length visited)))
+                     (dotimes [i (.-length reference)]
+                       (is (js/Object.is (aget reference i) (aget copied i)))
+                       (is (js/Object.is (aget reference i) (aget visited i))))
+                     (doseq [key keys]
+                       (is (= (.has expected key) (.has actual key)))
+                       (let [pred (fn [value] (js/Object.is key value))]
+                         (is (= (.some reference pred) (.some actual pred)))))))]
+       ;; Cross the inline/spill boundary, empty it again, then exercise mixed
+       ;; inserts/removals/clears with stable object keys, nil/false and NaN.
+       (doseq [key keys] (.add expected key) (.add actual key) (check))
+       (doseq [key keys] (is (= (.delete expected key) (.delete actual key))) (check))
+       (dotimes [_ 2000]
+         (let [bits (vreset! seed (bit-or (+ (js/Math.imul 1664525 @seed) 1013904223) 0))
+               key (nth keys (mod (unsigned-bit-shift-right bits 0) (count keys)))
+               op (bit-and (unsigned-bit-shift-right bits 20) 7)]
+           (cond (< op 4) (do (.add expected key) (is (identical? actual (.add actual key))))
+                 (< op 6) (is (= (.delete expected key) (.delete actual key)))
+                 (= op 7) (do (.clear expected) (.clear actual))))
+         (check)))))
+
+#?(:cljs
+   (deftest owned-queue-wraps-grows-removes-and-releases-storage
+     (let [q (c/->OwnedQueue (doto (make-array 16) (.fill nil)) 0 0)
+           expected (atom []) seed (volatile! 981)
+           check (fn []
+                   (let [copied (.toArray q)]
+                     (is (= @expected (vec copied)))
+                     (is (= (count @expected) (.-length q)))
+                     (is (= 0 (.staleReferences q)))
+                     (when (empty? @expected) (is (<= (.capacity q) 256)))))]
+       (dotimes [i 1024] (.add q i) (swap! expected conj i))
+       (dotimes [_ 901] (is (= (first @expected) (.poll q))) (swap! expected #(vec (rest %))))
+       (dotimes [i 900] (.add q i) (swap! expected conj i))
+       (check)
+       (.removeWhere q even?) (swap! expected #(vec (remove even? %))) (check)
+       (dotimes [_ (count @expected)] (is (= (first @expected) (.poll q))) (swap! expected #(vec (rest %))))
+       (check)
+       (is (= 16 (.capacity q)))
+       (dotimes [_ 3000]
+         (let [bits (vreset! seed (bit-or (+ (js/Math.imul 1664525 @seed) 1013904223) 0))
+               value (bit-and (unsigned-bit-shift-right bits 9) 31)
+               op (bit-and (unsigned-bit-shift-right bits 20) 7)]
+           (cond
+             (< op 4) (do (.add q value) (swap! expected conj value))
+             (= op 4) (do (is (= (first @expected) (.poll q))) (swap! expected #(vec (rest %))))
+             (= op 5) (let [before @expected index (first (keep-indexed #(when (= %2 value) %1) before))]
+                        (is (= (some? index) (.remove q value)))
+                        (when (some? index) (reset! expected (into (subvec before 0 index) (subvec before (inc index))))))
+             (= op 6) (do (.removeWhere q even?) (swap! expected #(vec (remove even? %))))
+             :else (do (.clear q) (reset! expected []))))
+         (check)))))
+
 (defn- model-value [value]
   ;; The executable model uses symbolic identifiers and error values. Keep
   ;; equality/collision and actual exception identity tests on the runtime too.
@@ -69,6 +131,7 @@
              (throw (ex-info "Boundary mismatch" {:action action :world id :difference (vec difference)})))
            (is (= true (= ev actual)))))
        (is (empty? (inv/check expected)))
+       (is (empty? (inv/edge-check {:before state :action action :after expected})))
        expected))
    (model/init-state) @(:audit rt)))
 
@@ -321,6 +384,38 @@
     (is (true? (c/compare-and-set-signal! rt source initial [2])))
     (is (= [2] (c/read-signal rt source)))
     (verify-boundaries! rt)))
+
+(deftest cached-await-production-and-replayed-transitions-have-the-same-state
+  (let [view (fn [rt]
+               (-> (c/snapshot rt)
+                   (dissoc :handles)
+                   (update :global dissoc :generation-clock)
+                   (update :entities #(into {} (map (fn [[id node]] [id (dissoc node :tokens)]) %)))))
+        exercise (fn [audit?]
+                   (let [rt (c/runtime {:audit? audit?})
+                         checkpoints (atom [])
+                         cached (c/cspin rt :cached 42)
+                         _ (c/observe! rt cached (fn [_]) #(throw %))
+                         parent (c/cspin rt :parent
+                                         (let [source (c/signal rt :owned 0)
+                                               child (c/cspin rt :child (c/await cached))]
+                                           (let [value (+ (iv/get-new (c/track source)) (c/await child))]
+                                      ;; User code can inspect the world as soon
+                                      ;; as the ready continuation is invoked.
+                                             (swap! checkpoints conj (view rt))
+                                             value)))
+                         values (atom [])
+                         cancel (c/observe! rt parent #(swap! values conj %) #(throw %))
+                         source (c/signal rt :owned 0)]
+                     (doseq [value [1 2 3]] (c/set-signal! rt source value))
+                     (when audit? (verify-boundaries! rt))
+                     {:view (view rt) :checkpoints @checkpoints
+                      :values @values
+                      :keep [cached parent source cancel]}))
+        traced (exercise true) fast (exercise false)]
+    (is (= [42 43 44 45] (:values fast) (:values traced)))
+    (is (= (:checkpoints traced) (:checkpoints fast)))
+    (is (= (:view traced) (:view fast)))))
 
 (deftest source-swap-retries-user-code-outside-the-gate
   (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
@@ -710,6 +805,35 @@
       (let [fresh (c/cspin child :fresh 7)]
         (c/observe! child fresh #(swap! values conj %) #(throw %)))
       (is (= [42 7] @values))
+      (verify-boundaries! rt))))
+
+(deftest awaiting-a-dirty-completion-refreshes-the-target
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) source (c/signal rt :source 0)
+          child (c/cspin rt :child (iv/get-new (c/track source)))
+          values (atom [])]
+      (c/observe! rt child (fn [_]) (fn [_]))
+      (c/cancel-spin! rt child)
+      (c/set-signal! rt source 7)
+      (let [parent (c/cspin rt :parent (c/await child))]
+        (c/observe! rt parent #(swap! values conj %) #(throw %))
+        (is (= [7] @values))
+        (when audit? (verify-boundaries! rt))))))
+
+(deftest awaiting-an-inherited-spin-starts-a-fresh-run
+  (let [rt (c/runtime {:audit? true}) ticket (c/ticket :outside)
+        spin (c/cspin rt :spin (c/park ticket)) values (atom []) original (atom [])]
+    (c/observe! rt spin #(swap! original conj %) #(throw %))
+    (let [child (c/fork-parked! rt [:w 1]) old (c/pending-ticket child ticket)
+          parent (c/cspin child :parent (c/await spin))]
+      (c/observe! child parent #(swap! values conj %) #(throw %))
+      (c/resume-ticket! child old :late)
+      (is (empty? @values))
+      (c/resume-ticket! child (c/pending-ticket child ticket) 9)
+      (is (= [9] @values))
+      (is (empty? @original))
+      (c/resume-ticket! rt (c/pending-ticket rt ticket) 10)
+      (is (= [10] @original))
       (verify-boundaries! rt))))
 
 (deftest compact-two-track-sites-survive-run-reuse

@@ -49,6 +49,52 @@
     (is (some #(and (= :resume (:event %)) (= [:o 3] (:o %))) (:events first-value)))
     (is (= :running (get-in later-value [:worlds w :runs [p 2] :status])))))
 
+(defn dirty-await-actions [kind]
+  (let [w [:w 0] p [:spin 0] c [:spin 1] s [:signal 0]]
+    [{:t :t01 :w w :e c :tok :child-handle}
+     {:t :t02 :w w :e s :value 0}
+     {:t :t04 :w w :e c :tok :child-handle :mode :callback}
+     {:t :t05 :w w :r [c 1] :kind :track :debtor [:entity w s]}
+     {:t :t07 :w w :r [c 1] :value 0}
+     {:t :t08 :w w :e c :value 0}
+     {:t :t11 :w w :r [c 1]}
+     {:t :signal-write :w w :e s :value 7}
+     {:t :t08 :w w :e s :value 7}
+     {:t :t01 :w w :e p :tok :parent-handle}
+     {:t :t04 :w w :e p :tok :parent-handle :mode :callback}
+     {:t :t05 :w w :r [p 1] :kind kind :debtor [:entity w c] :tok :child-handle}]))
+
+(defn refreshing-await-actions [kind]
+  (let [actions (dirty-await-actions kind)]
+    (into (conj (subvec actions 0 6)
+                {:t :t09 :w [:w 0] :e [:spin 1] :cause :rerun! :order 0})
+          (subvec actions 9))))
+
+(deftest await-joins-active-refresh-instead-of-reading-old-completion
+  (doseq [kind [:await-once :await-reactive]]
+    (let [actions (refreshing-await-actions kind)
+          states (reductions model/step (model/init-state) actions)
+          final (last states) w [:w 0] p [:spin 0] c [:spin 1]]
+      (doseq [[before action after] (map vector states actions (rest states))]
+        (is (empty? (inv/check after)))
+        (is (empty? (inv/edge-check {:before before :action action :after after}))))
+      (is (= :running (get-in final [:worlds w :runs [c 2] :status])))
+      (is (= :parked (get-in final [:worlds w :runs [p 1] :status])))
+      (is (not-any? #(= :inline-resume (:event %)) (:events final))))))
+
+(deftest dirty-await-starts-a-fresh-owned-run
+  (doseq [kind [:await-once :await-reactive]]
+    (let [actions (dirty-await-actions kind)
+          states (reductions model/step (model/init-state) actions)
+          final (last states) w [:w 0] p [:spin 0] c [:spin 1]]
+      (doseq [[before action after] (map vector states actions (rest states))]
+        (is (empty? (inv/check after)))
+        (is (empty? (inv/edge-check {:before before :action action :after after}))))
+      (is (= :running (get-in final [:worlds w :runs [c 2] :status])))
+      (is (= :parked (get-in final [:worlds w :runs [p 1] :status])))
+      (is (= [p 1] (get-in final [:worlds w :entities c :owner])))
+      (is (not-any? #(= :inline-resume (:event %)) (:events final))))))
+
 (defn cold-child-handoff-actions []
   (let [w [:w 0] p [:spin 0] c [:spin 1] s [:signal 0]]
     [{:t :t02 :w w :e s :value 1}
