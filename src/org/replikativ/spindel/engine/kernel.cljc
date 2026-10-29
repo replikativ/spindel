@@ -579,6 +579,87 @@
     (or (some #(and (= w (:world %)) (= r (:run %))) (vals (:threads env)))
         (some #(and (= [w r] (:owner %)) (not= :joined (:state %))) (vals (:native env))))))
 
+(defn- cleanup-ticket [w r] [:cps-exit w r])
+(defn- cleanup-op? [row] (= :cps-exit (:kind row)))
+
+(defn- retain-cleanup! [ctx w scope]
+  (when (get-in (root-state ctx) [:model :cps-exit?])
+    (let [owners (loop [pending [scope] found #{}]
+                   (if-let [id (peek pending)]
+                     (if (found id) (recur (pop pending) found)
+                         (recur (into (pop pending) (concat (read-row ctx w :runs-by-owner id)
+                                                            (read-row ctx w :scopes-by-parent id)))
+                                (conj found id))) found))]
+      (doseq [r owners :let [row (read-row ctx w :runs r) n (cleanup-ticket w r)]
+              :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
+                         (nil? (get-in (root-state ctx) [:env :native n])))]
+        (root-edit! ctx assoc-in [:env :native n]
+                    {:kind :cps-exit :owner [w r] :state :running :phase :ready
+                     :sequence 0 :retired? true :anchor (owner-chain ctx w r)}))
+      (let [state (root-state ctx)
+            participants (set (for [[n row] (get-in state [:env :native])
+                                    :when (and (cleanup-op? row) (= w (first (:owner row)))
+                                               (some owners (:anchor row)))] n))
+            captured (into {} (for [owner owners e (read-row ctx w :entities-by-owner owner)
+                                    :let [row (read-row ctx w :entities e)]
+                                    :when (#{:signal :atom} (:kind row))]
+                                [[w owner e] {:kind (:kind row) :result (:result row)}]))
+            keys (into (set (keys captured))
+                       (mapcat #(get-in state [:env :native % :cells]) participants))]
+        (when (seq participants)
+          (doseq [key keys]
+            (let [old (get-in (root-state ctx) [:env :cleanup-cells key])
+                  payload (assoc (or old (get captured key))
+                                 :holders (into (:holders old #{}) participants))]
+              (root-edit! ctx assoc-in [:env :cleanup-cells key] payload)
+              (doseq [n participants]
+                (root-edit! ctx update-in [:env :native n :cells] (fnil conj #{}) key)))))))))
+
+(defn- cleanup-claim! [ctx {:keys [n th]}]
+  (let [state (root-state ctx) row (get-in state [:env :native n]) [w r] (:owner row)]
+    (require! (and (cleanup-op? row) (= :ready (:phase row))) ::not-ready {:n n})
+    (require! (nil? (get-in state [:env :threads th :run])) ::thread-busy {:th th})
+    (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
+                        (vals (get-in state [:env :threads]))) ::slice-busy {:w w :r r})
+    (root-edit! ctx assoc-in [:env :native n :phase] :claimed)
+    (root-edit! ctx update-in [:env :threads th] merge
+                {:world w :scope r :run r :executing? true :retired? true
+                 :obligation-world w :anchor (:anchor row) :cleanup-ticket n})))
+
+(defn- cleanup-boundary! [ctx {:keys [th]} phase]
+  (let [n (get-in (root-state ctx) [:env :threads th :cleanup-ticket])
+        row (get-in (root-state ctx) [:env :native n])]
+    (require! (and n (= :claimed (:phase row))) ::not-claimed {:th th})
+    (root-edit! ctx update-in [:env :native n]
+                #(cond-> (-> % (assoc :phase phase) (dissoc :delivery))
+                   (= :waiting phase) (update :sequence inc)))))
+
+(defn- cleanup-deliver! [ctx {:keys [n sequence value]}]
+  (let [row (get-in (root-state ctx) [:env :native n])]
+    (when (and (cleanup-op? row) (= :waiting (:phase row)) (= sequence (:sequence row)))
+      (root-edit! ctx update-in [:env :native n] assoc :phase :ready :delivery value))))
+
+(defn- cleanup-access! [ctx {:keys [th cell value] :as action}]
+  (let [n (get-in (root-state ctx) [:env :threads th :cleanup-ticket])
+        row (get-in (root-state ctx) [:env :native n])]
+    (require! (and n (= :claimed (:phase row)) (contains? (:cells row) cell))
+              ::missing-cleanup-cell {:th th :cell cell})
+    (when (contains? action :value)
+      (root-edit! ctx assoc-in [:env :cleanup-cells cell :result] value))))
+
+(defn- cleanup-exit! [ctx thread]
+  (when-let [n (:cleanup-ticket thread)]
+    (let [row (get-in (root-state ctx) [:env :native n])]
+      (require! (#{:ready :waiting :returning} (:phase row)) ::missing-cleanup-boundary
+                {:n n :phase (:phase row)})
+      (when (= :returning (:phase row))
+        (doseq [key (:cells row)]
+          (let [holders (disj (get-in (root-state ctx) [:env :cleanup-cells key :holders]) n)]
+            (if (seq holders)
+              (root-edit! ctx assoc-in [:env :cleanup-cells key :holders] holders)
+              (root-edit! ctx update-in [:env :cleanup-cells] dissoc key))))
+        (root-edit! ctx update-in [:env :native] dissoc n)))))
+
 (defn- remove-run! [ctx w r]
   (when-let [rr (read-row ctx w :runs r)]
     (index-remove! ctx w :runs-by-spin (:spin rr) r)
@@ -609,6 +690,7 @@
     (release-entity! ctx w e)))
 
 (defn- retire-run! [ctx w r cause effects anchor]
+  (retain-cleanup! ctx w r)
   (let [rr (if (physical? ctx w r) (cells/value (read-row ctx w :runs r)) (read-row ctx w :runs r))
         chain (or anchor (owner-chain ctx w r))
         scopes (loop [parents [r] found #{}]
@@ -627,7 +709,8 @@
     (root-edit! ctx update-in [:env :native]
                 (fn [ops]
                   (into {} (map (fn [[n row]]
-                                  [n (if (and (= [w r] (:owner row)) (not= :joined (:state row)))
+                                  [n (if (and (= [w r] (:owner row)) (not= :joined (:state row))
+                                              (not (cleanup-op? row)))
                                        (assoc row :state :cancel-requested) row)])) ops)))
     (when (:diagnostics? ctx)
       (emit! ctx {:event :run-exit :world w :r r :cause cause
@@ -747,6 +830,7 @@
 (defn- close-scope! [ctx w scope]
   (require! (not= scope (:root (header ctx w))) ::world-release-not-implemented {:w w})
   (when (and (not= :released (:status (header ctx w))) (open? ctx w scope))
+    (retain-cleanup! ctx w scope)
     (doseq [s (read-row ctx w :scopes-by-parent scope)]
       (close-scope! ctx w s))
     (doseq [r (read-row ctx w :runs-by-owner scope)]
@@ -1351,11 +1435,20 @@
          (require! (and (vector? (:fresh-runs action))
                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs action)))
                    ::invalid-run-allocation {:action action}))
-       (when (and slice? (not= :t38 t) (= :released (:status (header ctx (:world thread)))))
+       (when (and slice? (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (header ctx (:world thread)))))
          (require! false ::released {:w w :thread (:th action)}))
        (when (and unwinding? (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
          (require! false ::cancelled {:w w :r (:run thread)}))
+       (when (and (or (:cleanup-ticket thread)
+                      (cleanup-op? (get-in (root-state ctx) [:env :native (cleanup-ticket (:world thread) (:run thread))])))
+                  (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)))
+         (require! false ::cleanup-only {:thread (:th action) :action action}))
        (case t
+         :cleanup-claim (cleanup-claim! ctx action)
+         :cleanup-park (cleanup-boundary! ctx action :waiting)
+         :cleanup-return (cleanup-boundary! ctx action :returning)
+         :cleanup-deliver (cleanup-deliver! ctx action)
+         :cleanup-cell (cleanup-access! ctx action)
          :t01 (create-spin! ctx action)
          :t02
          (create-source! ctx action)
@@ -1433,20 +1526,24 @@
            (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
                                (vals (get-in (root-state ctx) [:env :threads])))
                      ::slice-busy {:w w :r r})
+           (when (get-in (root-state ctx) [:model :cps-exit?])
+             (edit! ctx w :runs r assoc :cps-entered? true))
            (root-edit! ctx update-in [:env :threads th] merge
                        {:world w :scope r :run r :obligation-world w :executing? true}))
          :t38
          (let [th (:th action)
-               {:keys [world run]} (get-in (root-state ctx) [:env :threads th])]
+               {:keys [world run] :as thread} (get-in (root-state ctx) [:env :threads th])]
            (require! run ::no-slice {:th th})
+           (cleanup-exit! ctx thread)
            (root-edit! ctx update-in [:env :threads th]
                        #(-> % (assoc :run nil :scope nil :executing? false)
-                            (dissoc :retired? :obligation-world :anchor)))
+                            (dissoc :retired? :obligation-world :anchor :cleanup-ticket)))
            (when (and (= :unwinding (:status (read-row ctx world :runs run)))
                       (not (physical? ctx world run)))
              (remove-run! ctx world run)))
          :native-progress
-         (let [[world run] (get-in (root-state ctx) [:env :native (:n action) :owner])]
+         (let [row (get-in (root-state ctx) [:env :native (:n action)]) [world run] (:owner row)]
+           (require! (not (cleanup-op? row)) ::protected-cleanup {:n (:n action)})
            (root-edit! ctx update-in [:env :native (:n action)]
                        #(cond-> (merge % (select-keys action [:state :boundary?]))
                           (= :joined (:state action)) (dissoc :anchor)))
@@ -1456,6 +1553,7 @@
          :thread-entry
          (do (require! (nil? (get-in (root-state ctx) [:env :threads (:th action) :run]))
                        ::thread-busy {:th (:th action)})
+             (require! (nil? (get-in action [:thread :cleanup-ticket])) ::protected-cleanup {:th (:th action)})
              (root-edit! ctx assoc-in [:env :threads (:th action)] (:thread action)))
          :waiter-unregister (root-edit! ctx update-in [:env :waiters] dissoc (:token action))
          :t35

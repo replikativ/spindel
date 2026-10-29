@@ -432,3 +432,97 @@
       (let [actual (kernel/snapshot (kernel/restore corrupt {:cells? cells?}))]
         (is (= (get-in corrupt [:worlds w :entities]) (get-in actual [:worlds w :entities])))
         (is (contains? (get-in actual [:worlds w]) :entities))))))
+
+(defn cleanup-fixture-actions []
+  [{:t :t04 :w w :e :cleanup :mode :callback}
+   {:t :slice-enter :w w :r [:cleanup 1] :th :worker}
+   {:t :t02 :w w :scope [:cleanup 1] :e :cell :kind :atom :value :before}])
+
+(deftest protected-cleanup-refines-physical-handoff-and-private-state
+  (let [r [:cleanup 1] n [:cps-exit w r] cell [w r :cell]]
+    (compare-walk!
+     (model/init-state {:cps-exit? true :slices? true})
+     (into (cleanup-fixture-actions)
+           [{:t :t11 :w w :r r}
+            {:t :cleanup-claim :n n :th :foreign}
+            {:t :signal-write :th :worker :e :cell :value :illegal}
+            {:t :native-progress :n n :state :joined}
+            {:t :t38 :th :worker}
+            {:t :cleanup-claim :n n :th :foreign}
+            {:t :cleanup-cell :th :foreign :cell cell :value :cleaned}
+            {:t :cleanup-park :th :foreign}
+            {:t :cleanup-deliver :n n :sequence 1 :value :first}
+            {:t :cleanup-deliver :n n :sequence 1 :value :duplicate}
+            {:t :cleanup-claim :n n :th :worker}
+            {:t :t38 :th :foreign}
+            {:t :t11 :w w :r r}
+            {:t :cleanup-claim :n n :th :worker}
+            {:t :cleanup-return :th :worker}
+            {:t :thread-entry :th :foreign :thread {:world w :run r :cleanup-ticket n}}
+            {:t :t38 :th :worker}
+            {:t :cleanup-deliver :n n :sequence 1 :value :late}]))))
+
+(deftest overlapping-cleanup-refines-shared-payloads-in-both-retirement-orders
+  (doseq [child-first? [false true]]
+    (let [r [:cleanup 1] cr [:cleanup-child 1]
+          n [:cps-exit w r] cn [:cps-exit w cr]]
+      (compare-walk!
+       (model/init-state {:cps-exit? true :slices? true})
+       (into (cleanup-fixture-actions)
+             (concat
+              [{:t :t04 :w w :e :cleanup-child :scope r :mode :callback}
+               {:t :slice-enter :w w :r cr :th :child-worker}
+               {:t :t02 :w w :scope cr :e :child-cell :kind :atom :value :child}
+               {:t :t38 :th :worker} {:t :t38 :th :child-worker}]
+              (when child-first? [{:t :t11 :w w :r cr}])
+              [{:t :t11 :w w :r r}
+               {:t :cleanup-claim :n cn :th :worker}
+               {:t :cleanup-cell :th :worker :cell [w r :cell] :value :from-child}
+               {:t :cleanup-return :th :worker} {:t :t38 :th :worker}
+               {:t :cleanup-claim :n n :th :worker}
+               {:t :cleanup-cell :th :worker :cell [w cr :child-cell]}
+               {:t :cleanup-return :th :worker} {:t :t38 :th :worker}]))))))
+
+(deftest released-world-cleanup-refines-restored-physical-participants
+  (let [r [:cleanup 1] n [:cps-exit w r]
+        initial (reduce model/step (model/init-state {:cps-exit? true :slices? true})
+                        (conj (cleanup-fixture-actions) {:t :t34 :w w}))]
+    (compare-walk!
+     initial
+     [{:t :t38 :th :worker}
+      {:t :cleanup-claim :n n :th :worker}
+      {:t :cleanup-cell :th :worker :cell [w r :cell] :value :after-release}
+      {:t :cleanup-park :th :worker} {:t :t38 :th :worker}
+      {:t :cleanup-deliver :n n :sequence 1 :value :ready}
+      {:t :cleanup-claim :n n :th :foreign}
+      {:t :cleanup-return :th :foreign} {:t :t38 :th :foreign}])))
+
+(deftest cleanup-refines-scope-close-and-bulk-world-cancellation
+  (doseq [scope? [false true]]
+    (let [r [:cleanup 1] n [:cps-exit w r] scope :resource
+          actions (concat
+                   (when scope? [{:t :t12 :w w :scope scope :parent [:root w]}])
+                   [(cond-> (first (cleanup-fixture-actions)) scope? (assoc :scope scope))]
+                   (rest (cleanup-fixture-actions))
+                   [(if scope? {:t :t13 :w w :scope scope} {:t :t15 :w w})
+                    {:t :t38 :th :worker}
+                    {:t :cleanup-claim :n n :th :worker}
+                    {:t :cleanup-return :th :worker} {:t :t38 :th :worker}])]
+      (compare-walk! (model/init-state {:cps-exit? true :slices? true}) actions))))
+
+(deftest late-refusal-rolls-back-cleanup-retention-write-and-release
+  (let [r [:cleanup 1] n [:cps-exit w r]
+        initial (reduce model/step (model/init-state {:cps-exit? true :slices? true})
+                        (cleanup-fixture-actions))
+        claimed (reduce model/step initial [{:t :t11 :w w :r r} {:t :t38 :th :worker}
+                                            {:t :cleanup-claim :n n :th :worker}])
+        returning (model/step claimed {:t :cleanup-return :th :worker})]
+    (doseq [cells? [false true]
+            [state action] [[initial {:t :t11 :w w :r r}]
+                            [claimed {:t :cleanup-cell :th :worker :cell [w r :cell] :value :must-rollback}]
+                            [returning {:t :t38 :th :worker}]]]
+      (let [actual (kernel/restore state {:cells? cells?}) before (kernel/snapshot actual)
+            error (try (kernel/step! actual (assoc action :fresh-runs [[w :unused 99]])) nil
+                       (catch #?(:clj Exception :cljs :default) error (:error (ex-data error))))]
+        (is (= :unused-run-allocation (some-> error name keyword)))
+        (is (= before (kernel/snapshot actual)))))))

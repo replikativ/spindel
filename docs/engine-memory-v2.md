@@ -457,11 +457,16 @@ requires typed cleanup capabilities and generation admission. The L27 scan check
 ticket/frame/cell conservation; TL21 independently derives required retention
 from pre-retirement ownership and detects consistently erased holder links.
 
+The reference kernel implements this retirement profile using its ownership
+indexes. Per-transition comparisons cover immutable rows, owned cells, and owned
+cells without intermediate sealing. World-release T34 itself remains unsupported
+by that kernel; cleanup after release is checked from a restored tombstone.
+
 This is a retirement refinement, not yet the public `await-finalization`
-implementation. The native implementation and reference kernel still need this
-profile, including finalization that starts on the success path before a later
-cancellation, typed scoped application resources, error egress, and real CPS
-continuation handoff. The existing model profiles and native default are unchanged.
+implementation. The native implementation still needs the profile. Finalization
+that starts on the success path before a later cancellation, typed scoped
+application resources, error egress, and real CPS continuation handoff remain
+integration gates. The existing model profiles and native default are unchanged.
 The public backend cannot claim the finalization contract until those integration
 checks pass on both platforms.
 
