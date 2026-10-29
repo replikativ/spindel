@@ -449,8 +449,11 @@ physical slice returns. `cleanup-park` creates a new one-shot callback sequence;
 and post-return deliveries are inert. `cleanup-return` records CPS completion,
 but only T38 physical return releases the ticket and its cell holders. A second
 cancellation and generic native acknowledgements cannot consume that authority.
-Cleanup frames can access existing retained cells and suspend/return; they cannot
-perform ordinary engine effects or notify ordinary observers. The L27 scan checks
+In this restricted retirement profile, cleanup frames can access existing
+retained cells and suspend/return; they cannot perform ordinary engine effects
+or notify ordinary observers. This does not decide whether public finalizers may
+update other live application cells/resources or emit their notifications; that
+requires typed cleanup capabilities and generation admission. The L27 scan checks
 ticket/frame/cell conservation; TL21 independently derives required retention
 from pre-retirement ownership and detects consistently erased holder links.
 
