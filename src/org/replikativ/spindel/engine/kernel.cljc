@@ -59,9 +59,16 @@
     (assoc (get-in view [environment :state :root]) :worlds
            (reduce-kv (fn [worlds w tables]
                         (if (= environment w) worlds
-                            (assoc worlds w
-                                   (merge (get-in tables [:header :world])
-                                          (merge (zipmap world-tables (repeat {})) (select-keys tables world-tables))))))
+                            (let [header (get-in tables [:header :world])]
+                              (assoc worlds w
+                                     (if (= :released (:status header))
+                                       ;; Empty storage tables are not logical
+                                       ;; tombstone fields. Never hide a live
+                                       ;; row if an implementation corrupts it.
+                                       (merge header (into {} (filter (comp seq val))
+                                                           (select-keys tables world-tables)))
+                                       (merge header (merge (zipmap world-tables (repeat {}))
+                                                            (select-keys tables world-tables))))))))
                       {} view))))
 
 (defn create-kernel
@@ -1434,13 +1441,15 @@
            (require! run ::no-slice {:th th})
            (root-edit! ctx update-in [:env :threads th]
                        #(-> % (assoc :run nil :scope nil :executing? false)
-                            (dissoc :retired? :obligation-world)))
+                            (dissoc :retired? :obligation-world :anchor)))
            (when (and (= :unwinding (:status (read-row ctx world :runs run)))
                       (not (physical? ctx world run)))
              (remove-run! ctx world run)))
          :native-progress
          (let [[world run] (get-in (root-state ctx) [:env :native (:n action) :owner])]
-           (root-edit! ctx update-in [:env :native (:n action)] merge (select-keys action [:state :boundary?]))
+           (root-edit! ctx update-in [:env :native (:n action)]
+                       #(cond-> (merge % (select-keys action [:state :boundary?]))
+                          (= :joined (:state action)) (dissoc :anchor)))
            (when (and (= :unwinding (:status (read-row ctx world :runs run)))
                       (not (physical? ctx world run)))
              (remove-run! ctx world run)))
