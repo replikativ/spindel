@@ -1363,32 +1363,30 @@
                   :settled nil))))
     nil))
 
-(defn- complete!
-  ([requested run value] (complete! requested run value false))
-  ([requested run value failed?]
-   (let [rt (execution-runtime requested)]
-     (locked rt
-             (let [node (a run r-node)]
-               (when (and (identical? run (current node)) (= :running (a run r-status)))
-                 (when-not (a node n-complete)
-                   (mark-graph! rt node) (mark-graph! rt (owner-node (a node n-owner))))
+(defn- complete! [requested run value failed?]
+  (let [rt (execution-runtime requested)]
+    (locked rt
+            (let [node (a run r-node)]
+              (when (and (identical? run (current node)) (= :running (a run r-status)))
+                (when-not (a node n-complete)
+                  (mark-graph! rt node) (mark-graph! rt (owner-node (a node n-owner))))
                  ;; Completion and outcome share one slot: false/true/:error.
                  ;; Cache checks need truthiness; delivery reads the error tag.
-                 (put node n-complete (if failed? :error true))
-                 (put node n-dirty (boolean (a run r-validation-lost))) (put node n-value value)
-                 (put run r-status :completed)
-                 (push! (runtime-field rt :events)
-                        (doto (slots 4) (put 0 node) (put 1 value) (put 3 failed?)
-                              (put 2 (put (runtime-field rt :counters) 2
-                                          (inc (max (long (a (runtime-field rt :counters) 1))
-                                                    (long (a (runtime-field rt :counters) 2))))))))
-                 (each-copy! [previous (values (a node n-runs))]
-                             (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
-                               (retire! rt previous)))
-                 (mark! rt node))
-               (boundary! rt (when (runtime-field rt :audit)
-                               {:t :t07 :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)]
-                                :value (diagnostic-value value failed?)})))))))
+                (put node n-complete (if failed? :error true))
+                (put node n-dirty (boolean (a run r-validation-lost))) (put node n-value value)
+                (put run r-status :completed)
+                (push! (runtime-field rt :events)
+                       (doto (slots 4) (put 0 node) (put 1 value) (put 3 failed?)
+                             (put 2 (put (runtime-field rt :counters) 2
+                                         (inc (max (long (a (runtime-field rt :counters) 1))
+                                                   (long (a (runtime-field rt :counters) 2))))))))
+                (each-copy! [previous (values (a node n-runs))]
+                            (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
+                              (retire! rt previous)))
+                (mark! rt node))
+              (boundary! rt (when (runtime-field rt :audit)
+                              {:t :t07 :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)]
+                               :value (diagnostic-value value failed?)}))))))
 
 (defn- reenter! [rt node trigger]
   (let [previous (current node) work? (work-status? (a previous r-status))
@@ -1510,7 +1508,7 @@
                 (await-id-effect! (a (a ob o-debtor) n-id) nil (a activation 6)
                                   (a ob o-resolve) (a ob o-reject) (a ob o-resolve) (a ob o-reject))))))
       ((a activation 4)
-       (fn [value] (complete! rt (a (current-activation) 1) value))
+       (fn [value] (complete! rt (a (current-activation) 1) value false))
        (fn [error] (complete! rt (a (current-activation) 1) error true))))))
 
 (defn- execute! [rt node]
