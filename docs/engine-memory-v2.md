@@ -58,7 +58,8 @@ retention reason absent a semantic row.
 
 The reference prototype uses Clojure's persistent hash maps and their
 transient builders for ID-indexed tables. It establishes a simple refinement
-target but does not make the fast-case performance claim. An ordered structure may serve ready
+target but does not make the fast-case performance claim. An ordered structure
+may serve ready
 queues, topological rank, or range indexes. `persistent-sorted-set` is a
 candidate for those ordered indexes and its editable-node/seal contract is a
 pattern for ownership; it is not assumed to be the entity table. A custom
@@ -166,6 +167,38 @@ for nodes whose internal ownership is provably unique, not a requirement for
 correctness.
 
 ## Forks and reads
+
+The initial owned-table implementation keeps a Clojure transient map across
+transitions. Sealing at a snapshot boundary and immediately making a fresh
+transient gives the edit-token rotation above without implementing another
+hash trie. Access is sequential under the gate, including JVM thread handoff.
+All row values remain immutable. The fixed-bucket Java page experiment is
+only a probe: its first-write bucket copy grows with bucket population, so it
+does not establish a world-size-independent bound for the final table.
+
+The storage contract is:
+
+1. Every row read/write belongs to an active transaction on its executing
+   thread. An escaped transaction becomes unusable when it ends.
+2. A transaction excludes all readers, snapshots and other transactions in
+   its store. Reentrant transactions and snapshots are refused before reading
+   partially changed state. Engine transition code alone holds the gate;
+   arbitrary user code and native calls never execute there.
+3. A refused or thrown transition restores all edited rows, index rows, and
+   newly created tables/worlds before releasing the gate. The first storage
+   implementation journals old values. Proven infallible paths may later
+   omit that journal only with prevalidation and equivalent refusal tests.
+4. A snapshot contains immutable maps and immutable rows, with no references
+   to editable table containers. Subsequent edits in any world cannot change
+   it. Snapshot construction costs the number of sealed table roots rather
+   than the number of entity rows. Fork attachment must seal only its basis
+   tables, not walk the store's entire world registry.
+5. Foreign row changes and their Rule L cascades use one transaction in the
+   same store. A cross-store dependency is not supported by this contract;
+   it requires an explicit coordinator protocol before being admitted.
+6. Completion/cancellation commands become dispatchable only after commit.
+   Their handlers claim an obligation slot in a new transition. Neither
+   physical page ownership nor host reachability supplies a retention reason.
 
 - **Root:** reads under the store gate or from one immutable committed head.
   A transition may edit privately or edit owned mutable pages under the gate;
