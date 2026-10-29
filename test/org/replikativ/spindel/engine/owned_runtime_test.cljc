@@ -131,6 +131,7 @@
              (throw (ex-info "Boundary mismatch" {:action action :world id :difference (vec difference)})))
            (is (= true (= ev actual)))))
        (is (empty? (inv/check expected)))
+       (is (empty? (inv/edge-check {:before state :action action :after expected})))
        expected))
    (model/init-state) @(:audit rt)))
 
@@ -804,6 +805,35 @@
       (let [fresh (c/cspin child :fresh 7)]
         (c/observe! child fresh #(swap! values conj %) #(throw %)))
       (is (= [42 7] @values))
+      (verify-boundaries! rt))))
+
+(deftest awaiting-a-dirty-completion-refreshes-the-target
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) source (c/signal rt :source 0)
+          child (c/cspin rt :child (iv/get-new (c/track source)))
+          values (atom [])]
+      (c/observe! rt child (fn [_]) (fn [_]))
+      (c/cancel-spin! rt child)
+      (c/set-signal! rt source 7)
+      (let [parent (c/cspin rt :parent (c/await child))]
+        (c/observe! rt parent #(swap! values conj %) #(throw %))
+        (is (= [7] @values))
+        (when audit? (verify-boundaries! rt))))))
+
+(deftest awaiting-an-inherited-spin-starts-a-fresh-run
+  (let [rt (c/runtime {:audit? true}) ticket (c/ticket :outside)
+        spin (c/cspin rt :spin (c/park ticket)) values (atom []) original (atom [])]
+    (c/observe! rt spin #(swap! original conj %) #(throw %))
+    (let [child (c/fork-parked! rt [:w 1]) old (c/pending-ticket child ticket)
+          parent (c/cspin child :parent (c/await spin))]
+      (c/observe! child parent #(swap! values conj %) #(throw %))
+      (c/resume-ticket! child old :late)
+      (is (empty? @values))
+      (c/resume-ticket! child (c/pending-ticket child ticket) 9)
+      (is (= [9] @values))
+      (is (empty? @original))
+      (c/resume-ticket! rt (c/pending-ticket rt ticket) 10)
+      (is (= [10] @original))
       (verify-boundaries! rt))))
 
 (deftest compact-two-track-sites-survive-run-reuse

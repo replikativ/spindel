@@ -949,13 +949,17 @@
             (adopt-call-target! ctx w e r))
         er (when (= dk :entity) (read-row ctx dw :entities e))
         await? (and (= dk :entity) (#{:await-once :await-reactive} kind))
+        _ (when (and await? (= w dw) (nil? (:owner er)))
+            (edit-entity! ctx dw e assoc :owner r))
         work? (some #(#{:running :parked} (:status (read-row ctx dw :runs %)))
                     (read-row ctx dw :runs-by-spin e))
+        completed? (and (:completed? er)
+                        (or (not= w dw) (and (not (:dirty? er)) (not work?))))
         foreign-cold? (and await? (not= w dw) (not work?) (not (:completed? er)))]
     (require! (or (not= dk :entity) er foreign-cold?) ::missing-debtor {:debtor debtor})
-    (when (and await? (= w dw) (not work?) (not (:completed? er)))
-      (start-run! ctx w e r :await))
-    (if (and (= kind :await-once) (:completed? er))
+    (when (and await? (= w dw) (not work?) (not completed?))
+      (start-run! ctx w e r (if (:dirty? er) :dirty :await)))
+    (if (and (= kind :await-once) completed?)
       (do (when (:diagnostics? ctx) (emit! ctx {:event :inline-resume :world w :r r}))
           (vreset! (:result ctx) {:inline? true :value (:result er)}))
       (let [o (allocate! ctx :o)
@@ -982,7 +986,7 @@
                         :completed? false :kept? false :result nil :tokens #{}
                         :key nil :order 0})
           (when-not foreign-cold? (touch! ctx dw e tok)))
-        (let [immediate? (and (:immediate-await? ctx) (= kind :await-reactive) (:completed? er))]
+        (let [immediate? (and (:immediate-await? ctx) (= kind :await-reactive) completed?)]
           (when immediate? (resume! ctx {:w w :o o :value (:result er) :direct? true}))
           (vreset! (:result ctx) {:o o :value (:result er) :inline? (boolean immediate?)}))))))
 

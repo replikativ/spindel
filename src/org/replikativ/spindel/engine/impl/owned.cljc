@@ -982,10 +982,13 @@
           (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin run))]
             (put node n-body body)
             (adopt! rt node run)
-            (when (and (not (a node n-complete)) (nil? (current node))) (start! rt node run false))
+            (when-not (a node n-owner) (owner! rt node run))
+            (when (and (not (work-status? (some-> (current node) (a r-status))))
+                       (or (not (a node n-complete)) (a node n-dirty)))
+              (start! rt node run false))
             (let [ob (ob! rt :await-reactive node run order resolve reject)]
               (put run r-status :parked) (touch! rt node token) (rank! run node)
-              (let [ready? (and (a node n-complete)
+              (let [ready? (and (a node n-complete) (not (a node n-dirty))
                                 (not (work-status? (some-> (current node) (a r-status)))))]
                 ;; T5+T6 share the gate and run no user code between them. Both
                 ;; statuses retain the same standing obligation and ownership;

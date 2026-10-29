@@ -524,14 +524,19 @@
         s (if (and await? (= dw w) (nil? (ent s dw e)))
             (do (live! s dw) (assoc-in s [:worlds dw :entities e] (spin-row s dw e r))) s)
         s (if (and await? (= dw w)) (adopt-call-target s w e r) s)
+        s (if (and await? (= dw w) (nil? (:owner (ent s dw e))))
+            (assoc-in s [:worlds dw :entities e :owner] r) s)
         _ (when (and (= :entity dk) (not foreign-cold?))
             (require! (ent s dw e) ::missing-debtor {:debtor debtor}))
-        completed? (and (= dk :entity) (:completed? (ent s dw e)))
+        completed? (and (= dk :entity) (:completed? (ent s dw e))
+                        (or (not= dw w)
+                            (and (not (:dirty? (ent s dw e)))
+                                 (not (work? (run s dw (current s dw e)))))))
         s (update-in s [:uses [:register w r kind debtor]] (fnil inc 0))
         inline? (and (= kind :await-once) completed?)
         s (if (and await? (= dw w) (not completed?)
                    (not (work? (run s dw (current s dw e)))))
-            (first (start-run s dw e r :await)) s)]
+            (first (start-run s dw e r (if (:dirty? (ent s dw e)) :dirty :await))) s)]
     (if inline? (emit s {:event :inline-resume :world w :r r})
         (let [[s o] (allocate s :o) token [:cancel o]
               ob {:kind kind :debtor debtor :creditor [:run w r]
