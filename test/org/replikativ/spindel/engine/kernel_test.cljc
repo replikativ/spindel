@@ -557,3 +557,84 @@
                     {:t :cleanup-cell :th :worker :cell [w r :cell] :value :released}
                     {:t :cleanup-return :th :worker}
                     {:t :t38 :th :worker}])))
+
+(deftest live-finalization-refines-callback-preservation-and-sequence-fencing
+  (let [r [:cleanup 1] n [:cps-exit w r]
+        initial (model/init-state {:cps-exit? true :slices? true})
+        fixture (conj (cleanup-fixture-actions) {:t :finalization-wait :w w :th :worker})]
+    (doseq [before-cancel [[{:t :cleanup-deliver :n n :sequence 1 :value nil}]
+                           [{:t :t38 :th :worker}]]]
+      (compare-walk!
+       initial
+       (into fixture
+             (concat before-cancel
+                     [{:t :t11 :w w :r r}
+                      {:t :t11 :w w :r r}
+                      {:t :native-progress :n n :state :joined}
+                      {:t :cleanup-deliver :n n :sequence 1 :value false}
+                      {:t :cleanup-adopt :n n :th :worker}
+                      {:t :t38 :th :worker}
+                      {:t :thread-entry :th :foreign :thread {:world w :run r :executing? true}}
+                      {:t :cleanup-claim :n n :th :foreign}
+                      {:t :cleanup-cell :th :foreign :cell [w r :cell] :value :cleaned}
+                      {:t :cleanup-return :th :foreign} {:t :t38 :th :foreign}]))))
+    (compare-walk!
+     initial
+     (into fixture
+           [{:t :cleanup-deliver :n n :sequence 1 :value :live}
+            {:t :finalization-resume :w w :n n :th :foreign}
+            {:t :finalization-resume :w [:w :wrong] :n n :th :worker}
+            {:t :t11 :w w :r r}
+            {:t :cleanup-adopt :n n :th :worker}
+            {:t :cleanup-park :th :worker}
+            {:t :cleanup-deliver :n n :sequence 1 :value :stale}
+            {:t :t38 :th :worker}
+            {:t :cleanup-deliver :n n :sequence 2 :value :cleanup}
+            {:t :cleanup-claim :n n :th :foreign}
+            {:t :cleanup-return :th :foreign} {:t :t38 :th :foreign}]))))
+
+(deftest live-finalization-refines-normal-return-and-reactive-retirement
+  (let [r [:cleanup 1] n [:cps-exit w r]
+        initial (model/init-state {:cps-exit? true :slices? true})
+        fixture (conj (cleanup-fixture-actions) {:t :finalization-wait :w w :th :worker})]
+    (doseq [actions [[{:t :t38 :th :worker}
+                      {:t :cleanup-deliver :n n :sequence 1 :value :first}
+                      {:t :finalization-resume :w w :n n :th :foreign}
+                      {:t :finalization-wait :w w :th :foreign}
+                      {:t :cleanup-deliver :n n :sequence 1 :value :stale}
+                      {:t :cleanup-deliver :n n :sequence 2 :value :next}
+                      {:t :finalization-resume :w w :n n :th :foreign}
+                      {:t :t07 :w w :r r :value :done} {:t :t38 :th :foreign}]
+                     [{:t :cleanup-deliver :n n :sequence 1 :value :ready}
+                      {:t :t09 :w w :e :cleanup :cause :track :order 1}
+                      {:t :finalization-resume :w w :n n :th :worker}
+                      {:t :t10 :w w :r r}
+                      {:t :cleanup-adopt :n n :th :worker}
+                      {:t :cleanup-return :th :worker} {:t :t38 :th :worker}]]]
+      (compare-walk! initial (into fixture actions)))))
+
+(deftest released-live-finalization-retains-its-original-callback-slot
+  (let [r [:cleanup 1] n [:cps-exit w r]
+        released (reduce model/step (model/init-state {:cps-exit? true :slices? true})
+                         (into (cleanup-fixture-actions)
+                               [{:t :finalization-wait :w w :th :worker} {:t :t34 :w w}]))]
+    (compare-walk! released
+                   [{:t :cleanup-deliver :n n :sequence 1 :value :after-release}
+                    {:t :cleanup-adopt :n n :th :worker}
+                    {:t :cleanup-return :th :worker} {:t :t38 :th :worker}])))
+
+(deftest live-finalization-refusals-restore-the-exact-input
+  (let [initial (reduce model/step (model/init-state {:cps-exit? true :slices? true})
+                        (cleanup-fixture-actions))
+        wait {:t :finalization-wait :w w :th :worker}
+        n [:cps-exit w [:cleanup 1]]
+        ready (-> initial (model/step wait)
+                  (model/step {:t :cleanup-deliver :n n :sequence 1 :value :ready}))]
+    (doseq [cells? [false true]
+            [state action] [[initial wait]
+                            [ready {:t :finalization-resume :w w :n n :th :worker}]]]
+      (let [actual (kernel/restore state {:cells? cells?}) before (kernel/snapshot actual)
+            error (try (kernel/step! actual (assoc action :fresh-runs [[w :unused 99]])) nil
+                       (catch #?(:clj Exception :cljs :default) e (ex-data e)))]
+        (is (= ::kernel/unused-run-allocation (:error error)))
+        (is (= before (kernel/snapshot actual)))))))

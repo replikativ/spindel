@@ -4,7 +4,9 @@
   (:refer-clojure :exclude [deliver]))
 
 (defn ticket [w r] [:cps-exit w r])
-(defn protected? [row] (= :cps-exit (:kind row)))
+(defn exit? [row] (= :cps-exit (:kind row)))
+(defn finalizing? [row] (= :cps-finalization (:kind row)))
+(defn protected? [row] (or (exit? row) (finalizing? row)))
 (defn active-slice? [s w r]
   (some #(and (= w (:world %)) (= r (:run %))) (vals (get-in s [:env :threads]))))
 
@@ -15,10 +17,12 @@
   (let [rr (get-in s [:worlds w :runs r]) n (ticket w r)]
     (if (and (get-in s [:model :cps-exit?]) (:cps-entered? rr)
              (#{:running :parked :stale} (:status rr))
-             (nil? (get-in s [:env :native n])))
-      (assoc-in s [:env :native n]
-                {:kind :cps-exit :owner [w r] :state :running :phase :ready
-                 :sequence 0 :retired? true :anchor anchor}) s)))
+             (not (exit? (get-in s [:env :native n]))))
+      ;; A finalizer already waiting keeps the same callback slot on retirement.
+      (update-in s [:env :native n]
+                 #(assoc (or % {:owner [w r] :state :running :phase :ready
+                                :sequence (:finalization-sequence rr 0)})
+                         :kind :cps-exit :retired? true :anchor anchor)) s)))
 
 (defn retain-subtree
   "Capture source payloads before ownership teardown. Participants share each
@@ -35,7 +39,7 @@
                 s (reduce (fn [s [r anchor]]
                             (if (owners r) (reserve s w r anchor) s)) s anchors)
                 participants (set (for [[n row] (get-in s [:env :native])
-                                        :when (and (protected? row) (= w (first (:owner row)))
+                                        :when (and (exit? row) (= w (first (:owner row)))
                                                    (some owners (:anchor row)))] n))
                 new-cells (for [[e row] (:entities world)
                                 :when (and (owners (:owner row)) (#{:signal :atom} (:kind row)))]
@@ -60,9 +64,41 @@
 (defn require! [condition error data]
   (when-not condition (throw (ex-info (name error) (assoc data :error error)))))
 
+(defn begin-finalization [s {:keys [th anchor current?]}]
+  (let [{:keys [world run executing?]} (get-in s [:env :threads th])
+        rr (get-in s [:worlds world :runs run]) n (ticket world run)
+        sequence (inc (:finalization-sequence rr 0))]
+    (require! (get-in s [:model :cps-exit?]) ::profile-disabled {})
+    (require! (and executing? (:cps-entered? rr) (= :running (:status rr))
+                   current?)
+              ::not-current-slice {:th th})
+    (require! (nil? (get-in s [:env :native n])) ::already-waiting {:n n})
+    (-> s (assoc-in [:worlds world :runs run :status] :parked)
+        (assoc-in [:worlds world :runs run :finalization-sequence] sequence)
+        (assoc-in [:env :native n]
+                  {:kind :cps-finalization :owner [world run] :state :running
+                   :phase :waiting :sequence sequence :retired? false :anchor anchor}))))
+
+(defn resume-finalization [s {:keys [n th current?] :as action}]
+  (let [{:keys [owner phase] :as row} (get-in s [:env :native n]) [w r] owner
+        rr (get-in s [:worlds w :runs r]) thread (get-in s [:env :threads th])
+        inline? (and (:executing? thread) (= owner [(:world thread) (:run thread)]))]
+    (require! (and (finalizing? row) (= :ready phase)) ::not-ready {:n n})
+    (require! (= w (:w action)) ::wrong-world {:n n :w (:w action)})
+    (require! (and (= :parked (:status rr))
+                   current?)
+              ::not-current-slice {:n n})
+    (require! (or inline? (nil? (:run thread))) ::thread-busy {:th th})
+    (require! (or inline? (not (active-slice? s w r))) ::slice-busy {:w w :r r})
+    (-> s (update-in [:env :native] dissoc n)
+        (assoc-in [:worlds w :runs r :status] :running)
+        (cond-> (not inline?)
+          (assoc-in [:env :threads th]
+                    (merge thread {:world w :scope r :run r :obligation-world w :executing? true}))))))
+
 (defn claim [s {:keys [n th]}]
   (let [{:keys [owner phase] :as row} (get-in s [:env :native n]) [w r] owner]
-    (require! (and (protected? row) (= :ready phase)) ::not-ready {:n n})
+    (require! (and (exit? row) (= :ready phase)) ::not-ready {:n n})
     (require! (nil? (get-in s [:env :threads th :run])) ::thread-busy {:th th})
     ;; A callback can arrive before the suspending slice physically returns.
     (require! (not (active-slice? s w r)) ::slice-busy {:w w :r r})
@@ -78,7 +114,7 @@
   [s {:keys [n th]}]
   (let [{:keys [owner phase] :as row} (get-in s [:env :native n])
         thread (get-in s [:env :threads th])]
-    (require! (and (protected? row) (= :ready phase)) ::not-ready {:n n})
+    (require! (and (exit? row) (= :ready phase)) ::not-ready {:n n})
     (require! (and (:executing? thread) (= owner [(:world thread) (:run thread)])
                    (nil? (:cleanup-ticket thread))) ::wrong-slice {:n n :th th})
     (-> s (assoc-in [:env :native n :phase] :claimed)
@@ -127,7 +163,17 @@
   [s]
   (vec
    (concat
-    (for [[n row] (get-in s [:env :native]) :when (protected? row)
+    (for [[n row] (get-in s [:env :native]) :when (finalizing? row)
+          :let [[w r] (:owner row) rr (get-in s [:worlds w :runs r])]
+          :when (or (not= n (ticket w r)) (not= :running (:state row))
+                    (not= false (:retired? row)) (not (#{:waiting :ready} (:phase row)))
+                    (not (#{:parked :stale} (:status rr)))
+                    (not (and (integer? (:sequence row)) (pos? (:sequence row))))
+                    (not= (:sequence row) (:finalization-sequence rr))
+                    (seq (:cells row)) (not= r (first (:anchor row)))
+                    (not= w (last (:anchor row))))]
+      {:n n :invalid-live-finalization row})
+    (for [[n row] (get-in s [:env :native]) :when (exit? row)
           :let [[w r] (:owner row)
                 frames (filter #(= n (:cleanup-ticket %)) (vals (get-in s [:env :threads])))
                 all-frames (filter #(and (= w (:world %)) (= r (:run %)))
@@ -152,17 +198,29 @@
       {:n n :missing-cell key})
     (for [[th thread] (get-in s [:env :threads])
           :let [n (:cleanup-ticket thread)]
-          :when (and n (not (protected? (get-in s [:env :native n]))))]
+          :when (and n (not (exit? (get-in s [:env :native n]))))]
       {:thread th :orphan-cleanup-ticket n}))))
 
 (defn enabled [s]
   (when (get-in s [:model :cps-exit?])
     (concat
-     (for [[n row] (get-in s [:env :native]) :when (and (protected? row) (= :ready (:phase row)))
+     (for [[th thread] (get-in s [:env :threads])
+           :let [w (:world thread) r (:run thread) rr (get-in s [:worlds w :runs r])]
+           :when (and (:executing? thread) (= :running (:status rr))
+                      (nil? (get-in s [:env :native (ticket w r)])))]
+       {:t :finalization-wait :w w :th th})
+     (for [[n row] (get-in s [:env :native])
+           :when (and (finalizing? row) (= :ready (:phase row)))
+           th (set (concat [:host :foreign] (keys (get-in s [:env :threads]))))
+           :let [[w r] (:owner row) thread (get-in s [:env :threads th])
+                 inline? (and (:executing? thread) (= [w r] [(:world thread) (:run thread)]))]
+           :when (or inline? (and (nil? (:run thread)) (not (active-slice? s w r))))]
+       {:t :finalization-resume :w w :n n :th th})
+     (for [[n row] (get-in s [:env :native]) :when (and (exit? row) (= :ready (:phase row)))
            th [:host :foreign] :when (and (nil? (get-in s [:env :threads th :run]))
                                           (not (apply active-slice? s (:owner row))))]
        {:t :cleanup-claim :n n :th th})
-     (for [[n row] (get-in s [:env :native]) :when (and (protected? row) (= :ready (:phase row)))
+     (for [[n row] (get-in s [:env :native]) :when (and (exit? row) (= :ready (:phase row)))
            [th thread] (get-in s [:env :threads])
            :when (and (:executing? thread) (= (:owner row) [(:world thread) (:run thread)])
                       (nil? (:cleanup-ticket thread)))]

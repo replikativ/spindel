@@ -205,7 +205,7 @@
 
 (deftest refusal-and-canonical-contract
   (is (empty? (inv/check (m/init-state))))
-  (is (= 46 (count m/transitions)))
+  (is (= 48 (count m/transitions)))
   (let [s (:state (execute [following {:t :t04 :w v :e e}])) a (m/attempt s seal)]
     (is (= ::m/not-quiescent (get-in a [:refusal :error]))) (is (= s (:state a))))
   (let [s (m/init-state)] (is (= s (:state (m/attempt s {:t :t35 :th :foreign})))))
@@ -472,11 +472,14 @@
                 [invoke {:t :slice-enter :th :host :w w :r r} {:t :t38 :th :host}]]
         cleanup-actions [invoke {:t :slice-enter :th :host :w w :r r}
                          {:t :t02 :w w :scope r :e :cleanup-cell :kind :atom :value 1}
+                         {:t :finalization-wait :w w :th :host}
+                         {:t :cleanup-deliver :n [:cps-exit w r] :sequence 1 :value :live}
+                         {:t :finalization-resume :w w :n [:cps-exit w r] :th :host}
                          {:t :t11 :w w :r r}
                          {:t :cleanup-adopt :n [:cps-exit w r] :th :host}
                          {:t :cleanup-cell :th :host :cell [w r :cleanup-cell] :value 2}
                          {:t :cleanup-park :th :host} {:t :t38 :th :host}
-                         {:t :cleanup-deliver :n [:cps-exit w r] :sequence 1 :value :done}
+                         {:t :cleanup-deliver :n [:cps-exit w r] :sequence 2 :value :done}
                          {:t :cleanup-claim :n [:cps-exit w r] :th :host}
                          {:t :cleanup-return :th :host} {:t :t38 :th :host}]
         results (conj (mapv execute traces)
