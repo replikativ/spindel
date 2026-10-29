@@ -38,6 +38,25 @@
                                             {:t :t17 :w w :e :child :tok :hc}]))]
       (is (empty? (get-in final [:worlds w :entities]))))))
 
+(deftest normalization-oracle-rejects-an-omitted-local-cleanup
+  (let [before (reduce m/step (m/init-state) (completed-pair-actions))
+        action {:t :unsubscribe :w w :o [:o 0]}
+        ;; Simulate an implementation that commits the host unsubscribe but
+        ;; omits Rule L. Static storage invariants deliberately allow extent.
+        corrupt (m/end-obligation (assoc before :events []) w [:o 0] :creditor-cancelled)
+        correct (m/step before action)]
+    (is (empty? (inv/check corrupt)))
+    (is (= #{:extent} (m/reasons corrupt w :parent)))
+    (is (some #(= :TL20 (:id %))
+              (inv/edge-check {:before before :action action :after corrupt})))
+    (is (empty? (inv/edge-check {:before before :action action :after correct})))
+    ;; A GC notification is not an ordinary cleanup publication. The
+    ;; independent oracle must preserve that distinction too.
+    (let [unreachable (m/step corrupt {:t :t16 :tok :hp})
+          gc-action {:t :t17 :w w :e :parent :tok :hp}
+          notified (m/step unreachable gc-action)]
+      (is (empty? (inv/edge-check {:before unreachable :action gc-action :after notified}))))))
+
 (deftest another-observer-keeps-the-ownership-closure
   (let [state (check-walk! (into (completed-pair-actions)
                                  [{:t :t04 :w w :e :child :tok :hc :mode :callback}
@@ -201,6 +220,22 @@
     (into (conj (subvec actions 0 12)
                 {:t :t02 :w w :e :owned-source :r [:a 2] :value 1})
           (subvec actions 12))))
+
+(deftest normalization-oracle-requires-the-owning-worlds-next-publication
+  (let [before (reduce m/step (m/init-state) (foreign-owned-source-actions))
+        action {:t :t02 :w w :e :unrelated :value 7}
+        mutant (with-redefs [m/rule-l (fn [s _] s)] (m/step before action))
+        correct (m/step before action)
+        foreign-action (assoc action :w v)
+        foreign-publication (m/step before foreign-action)]
+    (is (empty? (inv/check mutant)))
+    (is (some? (m/ent mutant w :owned-source)))
+    (is (some #(= :TL20 (:id %))
+              (inv/edge-check {:before before :action action :after mutant})))
+    (is (nil? (m/ent correct w :owned-source)))
+    (is (empty? (inv/edge-check {:before before :action action :after correct})))
+    (is (some? (m/ent foreign-publication w :owned-source)))
+    (is (empty? (inv/edge-check {:before before :action foreign-action :after foreign-publication})))))
 
 (deftest foreign-root-loss-preserves-only-the-pending-local-cleanup-extent
   (let [actions (foreign-owned-source-actions)

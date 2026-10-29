@@ -15,7 +15,7 @@ boundary noted). Citations are `file:line` against the source tree.
 
 Parts 1–3 describe the engine as implemented. Part 4 is different: it
 is the normative target contract for lifetimes, ownership and
-settlement, with invariants L1–L25 and laws TL1–TL19, and it records
+settlement, with invariants L1–L25 and laws TL1–TL20, and it records
 where main differs.
 
 ---
@@ -994,7 +994,7 @@ Nothing in Part 4 claims that main already behaves this way.
   S\*, H1 and W6.
 
 **Numbering.** `I1–I24` cite the as-is memory model. This part uses
-**L1–L26** (state invariants), **TL1–TL19** (temporal laws), **T1–T38**
+**L1–L26** (state invariants), **TL1–TL20** (temporal laws), **T1–T38**
 (transitions) and **O1–O14** and **F05** (decisions, §4.11). "Review G*n*" cites a gap
 from the dvergr/simmis review.
 
@@ -1748,6 +1748,25 @@ of the same run. A report never changes state.
 | TL17 | **Watchers persist** (R5; between crashes). An invoked run ends only through T7 (non-reactive), T10, T11, T13 or T34. The GC never ends one. | safety |
 | TL18 | **No re-execution through a released handle.** Once T18 has dropped `e`'s cache in `w`, awaiting or dereffing a handle that touched `e` in `w` fails with `::idle-cache-released`. The body is never entered through that handle. | safety |
 | TL19 | **Join.** `join!(x)` (a run, a scope, or a world) completes iff no `busy` run has `x` in its owner chain or `:anchor` (for a released world: no thread has `world(th) = x`). It completes once every such slice has exited (T38) and every native op is `:joined`; if the timeout passes first it refuses `::join-timeout` listing the runs still busy and changes nothing. | progress (conditional on slices returning) |
+| TL20 | **Local execution normalization.** After an ordinary successful publication in world W, no unrooted non-unwinding completed run remains in W. Foreign worlds await their own publication; T16/T17 are retention-only and do not retire execution. Unwinding physical join evidence survives until its return boundary. This postcondition is checked from rows and rooted reachability independently of Rule L. | safety |
+
+The lifetime model treats completion payloads as opaque values. It models
+obligation placement, resumption, cancellation and release; it does not model
+CPS handler stacks, lexical dynamic bindings, or host callback execution. TL15's
+audit world is a logical routing assertion, not independent evidence that actual
+execution restored the right bindings. Public engine refinement tests must
+observe the bound world and user bindings inside bodies, continuations and
+callbacks, including failure paths.
+
+A computation rejection is part of its cached result and follows its own
+obligations. An observer's exception is separate: it must not change that result
+or cancel other observers. The dispatcher claims deliveries under the ownership
+gate, invokes user code outside it, finishes already-committed work (including
+reentrant registrations), and then reports the first observer or native-detach
+error to its caller. JavaScript can throw any value, including null and false;
+error presence must therefore be represented separately from its payload.
+These are concrete dispatcher requirements in addition to the abstract lifetime
+transitions. They do not imply crash-safe exactly-once arbitrary user effects.
 
 ### 4.7 Mapping to dvergr requirements
 
@@ -1852,7 +1871,7 @@ covered:
   point.
 - **Cuts:** one cut with one SCI component. One configuration has two
   concurrent cuts over two shared components (TL14).
-- **Assertions:** L1–L26 after every transition. TL1–TL19 as monitors
+- **Assertions:** L1–L26 after every transition. TL1–TL20 as monitors
   over history variables: resumes per `(w,o)`; body entries per `(w,e)`
   with their cause, reasons and reachable tokens; obligation exits by
   cause; rows written outside the acting world.
@@ -1892,12 +1911,25 @@ ceiling is never reported as exhausted.
   50 spins, at least 1000 steps, 20 handles, and settlement records of
   5 steps with random crash injection.
 - **Properties:**
-  - all of L and TL;
+  - state invariants, temporal safety checks and the TL1 resume monitor;
   - the L13 census with a fitted constant;
   - TL16 under parent churn while a following fork is long-lived;
   - fork cost: T19 and T23 install one persistent view root (a constant number of physical writes; logical inherited rows count in the census). An expanded-value model checks the logical rows only; the constant-cost claim needs the implementation benchmark;
-  - TL4 differential: the same trace with T16/T17 shuffled, duplicated
-    or dropped gives equal non-idle projections.
+  - TL4 differential: generated notification schedules are eager, delayed,
+    duplicated or lost within fixed semantic traces covering foreign ACK cleanup,
+    scope cancellation and physical return/join. Non-idle projections and
+    environment observations are compared at each semantic checkpoint. These
+    profiles do not establish arbitrary-trace GC noninterference;
+  - separate seeded walks enable physical slice actions and begin with a
+    claimed execution slice; ordinary walks alone do not cover those actions.
+
+Finite progress profiles separately enumerate all response/recovery/finish
+orderings for two settlement operations after crashes stop and adapters answer
+successfully, and all release/abort paths of a cut whose boundary or deadline
+is supplied. Every frontier must be terminal; repeated states, refused progress
+actions, and depth cuts fail the profile. Negative controls omit terminal
+transitions or the entire alphabet. This is bounded progress evidence under
+those assumptions, not a fair-SCC analysis of the full alphabet.
 - **Lockstep against spindel:** where the features exist (create,
   invoke, await, track, cancel, fork), compare deliveries and entity
   censuses, and shrink the counterexamples.

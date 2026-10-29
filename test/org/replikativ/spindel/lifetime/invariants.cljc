@@ -775,6 +775,8 @@
                       (not= busy (set (:busy observation))))))
         [{:action action :expected-ready? ready? :busy busy :refusal refusal :observation observation}]))))
 
+(declare normalization-errors)
+
 (defn ordinary-edge-check
   "Finite safety obligations for one transaction; events are independently checked
   against before/after rows as well as audited causes. No violation allowlist here."
@@ -896,7 +898,24 @@
                        (= :live (:status (m/wr before w)))
                        (contains? (get-in before [:env :handles (:tok action) :dropped] #{}) w)
                        (not (and refusal (= ::m/idle-cache-released (:error refusal)) (= before after))))
-              {:id :TL18 :evidence {:action action :refusal refusal}})]))))
+              {:id :TL18 :evidence {:action action :refusal refusal}})
+            (when-let [bad (seq (normalization-errors edge))]
+              {:id :TL20 :evidence (vec bad)})]))))
+
+(defn normalization-errors
+  "TL20: ordinary local publication leaves no unrooted completed execution.
+   Derive this from reachability and rows, independently of Rule L. GC only
+   changes storage; foreign worlds wait for their own publication."
+  [{:keys [before action after refusal observation]}]
+  (when (and (not refusal) (not observation)
+             (not (#{:t16 :t17 :join} (:t action))))
+    (when-let [w (m/acting-world before action)]
+      (when (and (m/wr after w) (not= :released (:status (m/wr after w))))
+        (let [live (m/rooted-liveness after)]
+          (vec (for [[r rr] (:runs (m/wr after w))
+                     :when (and (= :completed (:status rr))
+                                (not (contains? live [:run w r])))]
+                 {:w w :r r :spin (:spin rr) :status (:status rr)})))))))
 
 (defn edge-check [{:keys [before action after refusal] :as edge}]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
