@@ -853,6 +853,51 @@
                      (not= payload (select-keys cell [:kind :result])))]
        {:n n :lost-retirement-cell key :expected payload :actual cell}))))
 
+(defn- finalization-edge-errors [before action after]
+  (concat
+   (when (= :finalization-wait (:t action))
+     (let [{:keys [world run executing?]} (get-in before [:env :threads (:th action)])
+           rr (m/run before world run) n [:cps-exit world run]
+           sequence (inc (:finalization-sequence rr 0))
+           actual (get-in after [:env :native n])]
+       (when-not (and executing? (:cps-entered? rr) (= :running (:status rr))
+                      (= run (m/current before world (:spin rr)))
+                      (nil? (get-in before [:env :native n]))
+                      (= [world run] (:owner actual))
+                      (#{:cps-finalization :cps-exit} (:kind actual))
+                      (= :running (:state actual)) (= :waiting (:phase actual))
+                      (= sequence (:sequence actual))
+                      (= sequence (:finalization-sequence (m/run after world run)))
+                      (= (physical-ancestry before world run) (:anchor actual)))
+         [{:n n :invalid-finalization-registration actual}])))
+   (for [[n row] (get-in before [:env :native]) :when (= :cps-finalization (:kind row))
+         :let [[w r] (:owner row) actual (get-in after [:env :native n])
+               resume? (and (= :finalization-resume (:t action)) (= n (:n action)))
+               delivered? (and (= :cleanup-deliver (:t action)) (= n (:n action))
+                               (= :waiting (:phase row)) (= (:sequence row) (:sequence action)))
+               expected (cond-> row delivered? (assoc :phase :ready :delivery (:value action)))
+               th (:th action) thread (get-in before [:env :threads th])
+               inline? (and (:executing? thread) (= [w r] [(:world thread) (:run thread)]))
+               expected-frame (if inline? thread
+                                  (merge thread {:world w :scope r :run r :obligation-world w :executing? true}))]
+         :when (if resume?
+                 (or actual (not= :ready (:phase row))
+                     (not= w (if (:run thread) (:world thread) (:w action)))
+                     (not= :parked (:status (m/run before w r)))
+                     (not= r (m/current before w (first r)))
+                     (not (or inline? (nil? (:run thread))))
+                     (and (not inline?)
+                          (some #(= [w r] [(:world %) (:run %)])
+                                (vals (get-in before [:env :threads]))))
+                     (not= :running (:status (m/run after w r)))
+                     (not= (:sequence row) (:finalization-sequence (m/run after w r)))
+                     (not= (assoc-in (get-in before [:env :threads]) [th] expected-frame)
+                           (get-in after [:env :threads])))
+                 (or (not (#{:cps-finalization :cps-exit} (:kind actual)))
+                     (not= (select-keys expected [:owner :state :phase :sequence :delivery])
+                           (select-keys actual [:owner :state :phase :sequence :delivery]))))]
+     {:n n :lost-protected-wait {:before row :after actual :resume? resume?}})))
+
 (defn cleanup-edge-errors
   "TL21: derive payload retention from BEFORE ownership, not a manifest.
   Explicit retirement requests and independently visible retirement effects
@@ -884,6 +929,7 @@
                          :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
                                     (= :unwinding (:status (m/run after v r))))] [v r]))]
       (vec (concat
+            (finalization-edge-errors before effective after)
             (when (= :cleanup-adopt (:t effective))
               (let [n (:n effective) th (:th effective)
                     ticket (get-in before [:env :native n])

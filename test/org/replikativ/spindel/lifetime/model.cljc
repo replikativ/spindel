@@ -1690,6 +1690,15 @@
       (refuse ::join-timeout {:w w :x x :busy runs}))
     {:complete? ready? :busy runs}))
 
+(defn finalization-wait [s {:keys [th] :as action}]
+  (let [{:keys [world run]} (get-in s [:env :threads th])]
+    (cleanup/begin-finalization s (assoc action :anchor (owner-chain s world run)
+                                         :current? (= run (current s world (first run)))))))
+
+(defn finalization-resume [s {:keys [n] :as action}]
+  (let [[w r] (get-in s [:env :native n :owner])]
+    (cleanup/resume-finalization s (assoc action :current? (= r (current s w (first r)))))))
+
 (def transitions
   {:t01 t01-create-spin :t02 t02-create-signal :t03 t03-touch-keyed :t04 t04-invoke
    :t05 t05-park :t06 t06-resume :t07 t07-complete :t08 t08-deliver :t09 t09-reenter
@@ -1700,6 +1709,7 @@
    :t25 t25-cut-fail :t26 t26-seal :t27 t27-prepare :t28 t28-settlement-step
    :t29 t29-finish :t30 t30-recover :t31 t31-crash :t32 t32-transfer
    :t33 t33-partition :t34 t34-release-world :t35 t35-host-entry :t36 t36-cleanup :t37 t37-start-for :t38 t38-slice-exit :slice-enter slice-enter
+   :finalization-wait finalization-wait :finalization-resume finalization-resume
    :cleanup-adopt cleanup/adopt :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
    :cleanup-deliver cleanup/deliver :cleanup-return cleanup/returning
    :cleanup-cell cleanup/access})
@@ -1758,7 +1768,7 @@
                        (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
               (refuse ::cancelled {:w w :r (:run thread)}))
           _ (when (and (or (:cleanup-ticket thread)
-                           (cleanup/protected? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
+                           (cleanup/exit? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
                        (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)))
               (refuse ::cleanup-only {:thread (:th a) :action a}))
           before s s (assoc s :events [])]

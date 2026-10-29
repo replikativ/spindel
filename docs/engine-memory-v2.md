@@ -465,11 +465,22 @@ indexes. Per-transition comparisons cover immutable rows, owned cells, and owned
 cells without intermediate sealing. World-release T34 itself remains unsupported
 by that kernel; cleanup after release is checked from a restored tombstone.
 
-This is a retirement refinement, not yet the public `await-finalization`
-implementation. The native implementation still needs the profile. Finalization
-that starts on the success path before a later cancellation, typed scoped
-application resources, error egress, and real CPS continuation handoff remain
-integration gates. The existing model profiles and native default are unchanged.
+The profile also represents a finalizer already waiting on the success path.
+`finalization-wait` records a protected native wait before suspending; normal
+`finalization-resume` consumes its ready authority into one ordinary physical
+frame of the current generation. It can continue inline on the existing frame
+or dispatch after that frame returns, never both. A live wait does not put its
+frame into cleanup-only admission. T11/T10/world release convert the same wait
+to a retired exit ticket without resetting its callback sequence, readiness or
+payload. A stale predecessor cannot use live resumption; retirement first
+converts its authority to cleanup. Sequence numbers increase across successive
+waits in a generation and seed later retirement waits, so an old success-path
+callback cannot wake a new cleanup suspension.
+
+This is a symbolic lifetime refinement, not yet the public `await-finalization`
+implementation. The native implementation still needs the profile. Typed scoped
+application resources (including their fork policy), error egress, and real CPS
+continuation handoff remain integration gates. The existing model profiles and native default are unchanged.
 The public backend cannot claim the finalization contract until those integration
 checks pass on both platforms.
 
