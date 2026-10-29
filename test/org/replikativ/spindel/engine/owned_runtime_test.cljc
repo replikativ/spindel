@@ -1085,13 +1085,13 @@
       ;; materialization yet. Distinct local sources test world authority here.
       (c/signal child :source 20)
       (c/set-signal! rt source 10)
-      (c/resume-ticket! child (c/pending-ticket child ticket) (c/->Failure failure))
+      (c/reject-ticket! child (c/pending-ticket child ticket) failure)
       (is (= [:outer [:inner 20 "rejected ticket"]]
              (get-in (c/snapshot child) [:entities :spin :result])))
       (is (= [] @parent-values))
       (is (= [[:inner 20]] @cleanup))
       (is (= :outside *tag*))
-      (c/resume-ticket! rt (c/pending-ticket rt ticket) (c/->Failure failure))
+      (c/reject-ticket! rt (c/pending-ticket rt ticket) failure)
       (is (= [[:outer [:inner 10 "rejected ticket"]]] @parent-values))
       (is (= [[:inner 20] [:inner 10]] @cleanup))
       (is (= :outside *tag*))

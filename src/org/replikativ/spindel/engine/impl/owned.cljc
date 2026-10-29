@@ -307,7 +307,9 @@
 (def ^:const o-id 0) (def ^:const o-kind 1) (def ^:const o-debtor 2)
 (def ^:const o-run 3) (def ^:const o-standing 4) (def ^:const o-resolve 5)
 (def ^:const o-reject 6) (def ^:const o-order 7) (def ^:const o-slot 8)
-(def ^:const o-success 9) (def ^:const o-failure 10) (def ^:const o-last 11)
+;; Slot 9 is a callback for host creditors and a delivery error bit for run
+;; creditors. These roles are disjoint; ordinary payloads never encode errors.
+(def ^:const o-success 9) (def ^:const o-delivery-error 9) (def ^:const o-failure 10) (def ^:const o-last 11)
 (def ^:const o-live 12) (def ^:const o-value 13) (def ^:const o-host 14)
 (def ^:const o-origin 15) (def ^:const o-source-world 16) (def ^:const o-creditor-generation 17) (def ^:const o-creditor-node 18)
 (def ^:const t-id 0) (def ^:const t-spin 1) (def ^:const t-reachable 2)
@@ -319,6 +321,9 @@
 (defrecord Delivery [family world obligation])
 (defrecord RootOwner [id])
 (defrecord Failure [error])
+
+(defn- diagnostic-value [value failed?]
+  (if failed? (->Failure value) value))
 (defrecord RuntimeFamily [gate worlds host-tokens])
 (declare read-application-state swap-application-state! cas-application-state!)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
@@ -627,9 +632,12 @@
         (put run r-validation-lost true)
         (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
       (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
-        (put run r-status :running) (put ob o-value cancelled)
+        (put run r-status :running)
+        (put ob o-value (ex-info "Cancelled" {:error :cancelled}))
+        (put ob o-delivery-error true)
         (schedule! rt (a run r-node) ob)))
-    (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 cancelled))))
+    (push! (runtime-field rt :hosts)
+           (doto (slots 2) (put 0 (a ob o-failure)) (put 1 (ex-info "Cancelled" {})))))
   (end-ob! rt ob))
 
 (defn- release-owned! [rt run]
@@ -1190,13 +1198,10 @@
    (check-source! (a (current-activation) 0) source)
    (track-id-effect! (:id source) resolve reject resume-resolve resume-reject)))
 
-(defn- deliver-value! [resolve reject value]
-  (cond
-    (= cancelled value) (cps/invoke-continuation reject (ex-info "Cancelled" {:error :cancelled}))
-    (instance? Failure value) (cps/invoke-continuation reject (:error value))
-    :else (cps/invoke-continuation resolve value)))
+(defn- deliver-value! [resolve reject value failed?]
+  (cps/invoke-continuation (if failed? reject resolve) value))
 (defn- deliver-cont! [ob value]
-  (deliver-value! (a ob o-resolve) (a ob o-reject) value))
+  (deliver-value! (a ob o-resolve) (a ob o-reject) value (a ob o-delivery-error)))
 
 (defn- register-await! [rt run order id token body resolve reject]
   (locked rt
@@ -1225,14 +1230,15 @@
                                                                   token (assoc :tok (a token t-id))))))
                 (when ready?
                   (put ob o-slot :consumed) (put run r-status :running) (put ob o-value (a node n-value))
-                  (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (a ob o-id)] :value (a node n-value)}))))
+                  (put ob o-delivery-error (= :error (a node n-complete)))
+                  (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (a ob o-id)] :value (diagnostic-value (a node n-value) (a ob o-delivery-error))}))))
               ob))))
 
 (defn- await-id-effect! [id token body resolve reject resume-resolve resume-reject]
   (let [frame (current-activation) rt (a frame 0) run (a frame 1)
         order (put frame 2 (inc (long (a frame 2))))
         ob (register-await! rt run order id token body resume-resolve resume-reject)]
-    (when (= :consumed (a ob o-slot)) (deliver-value! resolve reject (a ob o-value)))))
+    (when (= :consumed (a ob o-slot)) (deliver-value! resolve reject (a ob o-value) (a ob o-delivery-error)))))
 
 (defn await-effect!
   ([source resolve reject]
@@ -1276,7 +1282,7 @@
               (when-let [ob (first (items waiters))]
                 (->Delivery (runtime-field rt :family-id) (runtime-field rt :world) (a ob o-id)))))))
 
-(defn resume-ticket! [requested delivery value]
+(defn- settle-ticket! [requested delivery value failed?]
   (let [rt (execution-runtime requested)]
     (when-not (and (identical? (runtime-field rt :family-id) (:family delivery)) (= (runtime-field rt :world) (:world delivery)))
       (throw (ex-info "Delivery belongs to a different runtime family or world" {:world (:world delivery)})))
@@ -1285,11 +1291,20 @@
               (let [run (a ob o-run)]
                 (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                   (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
+                  (put ob o-delivery-error failed?)
                   (schedule! rt (a run r-node) ob))))
-            (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (:obligation delivery)] :value value})))
+            (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world)
+                                                         :o [:o (:obligation delivery)]
+                                                         :value (diagnostic-value value failed?)})))
     (drain! rt)))
 
-(defn- deliver-host! [rt delivery value]
+(defn resume-ticket! [requested delivery value]
+  (settle-ticket! requested delivery value false))
+
+(defn reject-ticket! [requested delivery error]
+  (settle-ticket! requested delivery error true))
+
+(defn- deliver-host! [rt delivery value failed?]
   ;; A native callback owns this exact world/registration. In particular, a
   ;; synchronous callback must not redirect through some other active world.
   (locked rt
@@ -1298,8 +1313,11 @@
               (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                 (put ob o-slot :consumed)
                 (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
+                (put ob o-delivery-error failed?)
                 (schedule! rt (a run r-node) ob))))
-          (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (:obligation delivery)] :value value})))
+          (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world)
+                                                       :o [:o (:obligation delivery)]
+                                                       :value (diagnostic-value value failed?)})))
   (drain! rt))
 
 (defn- host-callback [rt delivery failed?]
@@ -1308,7 +1326,7 @@
   (let [weak #?(:clj (java.lang.ref.WeakReference. rt) :cljs (js/WeakRef. rt))]
     (fn [value]
       (when-let [target #?(:clj (.get weak) :cljs (.deref weak))]
-        (deliver-host! target delivery (if failed? (->Failure value) value))))))
+        (deliver-host! target delivery value failed?)))))
 
 (defn await-host-effect!
   "Park on a one-shot callback registration. `start` runs outside the gate with
@@ -1336,7 +1354,7 @@
       (let [cancel (try
                      (start (host-callback rt delivery false) (host-callback rt delivery true))
                      (catch #?(:clj Throwable :cljs :default) error
-                       (deliver-host! rt delivery (->Failure error))
+                       (deliver-host! rt delivery error true)
                        nil))]
         (locked rt
                 (case (a operation 0)
@@ -1345,21 +1363,32 @@
                   :settled nil))))
     nil))
 
-(defn- complete! [requested run value]
-  (let [rt (execution-runtime requested)]
-    (locked rt
-            (let [node (a run r-node)]
-              (when (and (identical? run (current node)) (= :running (a run r-status)))
-                (when-not (a node n-complete)
-                  (mark-graph! rt node) (mark-graph! rt (owner-node (a node n-owner))))
-                (put node n-complete true) (put node n-dirty (boolean (a run r-validation-lost))) (put node n-value value)
-                (put run r-status :completed)
-                (push! (runtime-field rt :events) (doto (slots 3) (put 0 node) (put 1 value) (put 2 (put (runtime-field rt :counters) 2 (inc (max (long (a (runtime-field rt :counters) 1)) (long (a (runtime-field rt :counters) 2))))))))
-                (each-copy! [previous (values (a node n-runs))]
-                            (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
-                              (retire! rt previous)))
-                (mark! rt node))
-              (boundary! rt (when (runtime-field rt :audit) {:t :t07 :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)] :value value}))))))
+(defn- complete!
+  ([requested run value] (complete! requested run value false))
+  ([requested run value failed?]
+   (let [rt (execution-runtime requested)]
+     (locked rt
+             (let [node (a run r-node)]
+               (when (and (identical? run (current node)) (= :running (a run r-status)))
+                 (when-not (a node n-complete)
+                   (mark-graph! rt node) (mark-graph! rt (owner-node (a node n-owner))))
+                 ;; Completion and outcome share one slot: false/true/:error.
+                 ;; Cache checks need truthiness; delivery reads the error tag.
+                 (put node n-complete (if failed? :error true))
+                 (put node n-dirty (boolean (a run r-validation-lost))) (put node n-value value)
+                 (put run r-status :completed)
+                 (push! (runtime-field rt :events)
+                        (doto (slots 4) (put 0 node) (put 1 value) (put 3 failed?)
+                          (put 2 (put (runtime-field rt :counters) 2
+                                      (inc (max (long (a (runtime-field rt :counters) 1))
+                                                (long (a (runtime-field rt :counters) 2))))))))
+                 (each-copy! [previous (values (a node n-runs))]
+                             (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
+                               (retire! rt previous)))
+                 (mark! rt node))
+               (boundary! rt (when (runtime-field rt :audit)
+                               {:t :t07 :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)]
+                                :value (diagnostic-value value failed?)})))))))
 
 (defn- reenter! [rt node trigger]
   (let [previous (current node) work? (work-status? (a previous r-status))
@@ -1396,7 +1425,7 @@
     n))
 
 (defn- process-event! [rt event]
-  (let [node (a event 0) value (a event 1)
+  (let [node (a event 0) value (a event 1) failed? (a event 3)
         n (subscriber-buffer! rt node)
         dependents (a (runtime-field rt :counters) 4)
         order (when (runtime-field rt :audit) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
@@ -1408,11 +1437,12 @@
             (if (= :consumed (a ob o-slot))
               (reenter! rt (a ob o-creditor-node) ob)
               (when (and (a ob o-live) (= :parked (a run r-status)))
-                (put ob o-slot :consumed) (put ob o-value value) (put run r-status :running)
+                (put ob o-slot :consumed) (put ob o-value value) (put ob o-delivery-error failed?) (put run r-status :running)
                 (schedule! rt (a ob o-creditor-node) ob)))
-            (do (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 value)))
+            (do (push! (runtime-field rt :hosts)
+                       (doto (slots 2) (put 0 (a ob (if failed? o-failure o-success))) (put 1 value)))
                 (when (and (a node n-complete) (not (reactive? (current node)))) (end-ob! rt ob))))))
-      (boundary! rt (when (runtime-field rt :audit) {:t :t08 :w (runtime-field rt :world) :e (a node n-id) :value value
+      (boundary! rt (when (runtime-field rt :audit) {:t :t08 :w (runtime-field rt :world) :e (a node n-id) :value (diagnostic-value value failed?)
                                                      :delivery-order order}))
       (finally (dotimes [i n] (put dependents i nil))))))
 
@@ -1481,7 +1511,7 @@
                                   (a ob o-resolve) (a ob o-reject) (a ob o-resolve) (a ob o-reject))))))
       ((a activation 4)
        (fn [value] (complete! rt (a (current-activation) 1) value))
-       (fn [error] (complete! rt (a (current-activation) 1) (->Failure error)))))))
+       (fn [error] (complete! rt (a (current-activation) 1) error true))))))
 
 (defn- execute! [rt node]
   (when-let [activation (claim-slice! rt node)]
@@ -1492,9 +1522,9 @@
                (catch #?(:clj Throwable :cljs :default) error
                  (try
                    (if ob (cps/invoke-continuation (a ob o-reject) error)
-                       (complete! rt run (->Failure error)))
+                       (complete! rt run error true))
                    (catch #?(:clj Throwable :cljs :default) rejected
-                     (complete! rt run (->Failure rejected)))))))
+                     (complete! rt run rejected true))))))
         (finally
           (finish-slice! rt run)
           (dotimes [i 8] (put activation i nil)))))))
@@ -1524,12 +1554,9 @@
                       ;; Host observers own their exceptions. Finish committed
                       ;; deliveries, including reentrant registrations, before
                       ;; reporting the first error to the drain's caller.
-                      (let [ob (a entry 0) value (a entry 1)
+                      (let [callback (a entry 0) value (a entry 1)
                             error (try
-                                    (cond
-                                      (instance? Failure value) ((a ob o-failure) (:error value))
-                                      (= cancelled value) ((a ob o-failure) (ex-info "Cancelled" {}))
-                                      :else ((a ob o-success) value))
+                                    (callback value)
                                     nil
                                     (catch #?(:clj Throwable :cljs :default) error [error]))]
                         (recur (or failure error)))
@@ -1565,7 +1592,8 @@
                      (let [ob (ob! rt :callback node nil 0 nil nil)]
                        (put ob o-success success) (put ob o-failure failure)
                        (when cached?
-                         (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 (a node n-value))))
+                         (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 (a ob (if (= :error (a node n-complete)) o-failure o-success)))
+                                 (put 1 (a node n-value))))
                          (when-not (reactive? (current node)) (end-ob! rt ob)))
                        (boundary! rt (when (runtime-field rt :audit) {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode :callback}))
                        ob)))]
@@ -1743,7 +1771,7 @@
   (when node
     (put node n-value value)
     (let [old (a node n-source-event)
-          event (or old (slots 3))]
+          event (or old (slots 4))]
       ;; These are invalidations of state, rather than a lossless change feed.
       ;; Moving the newest envelope to the tail preserves retained FIFO order.
       (when old
@@ -1849,7 +1877,7 @@
                                 [(a node n-id)
                                  (cond-> {:kind (a node n-kind) :origin (or (a node n-origin) :created) :owner (owner-id (a node n-owner))
                                           :creator (run-id (a node n-creator)) :completed? (boolean (a node n-complete))
-                                          :kept? (boolean (a node n-kept)) :result (a node n-value)
+                                          :kept? (boolean (a node n-kept)) :result (diagnostic-value (a node n-value) (= :error (a node n-complete)))
                                           :tokens (set (map #(a % t-id) (items (a node n-tokens)))) :key nil :order (a node n-order)}
                                    (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
                                    (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
@@ -1874,7 +1902,7 @@
                                       (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
                                       (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                       (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
-           :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world) :value (a event 1) :seq (a event 2)}
+           :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world) :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
                                       (= :signal (a (a event 0) n-kind)) (assoc :source-change? true)))
                         (filter #(identical? rt (a (a % 0) n-runtime))
                                 (items (runtime-field rt :events))))
