@@ -107,7 +107,9 @@
                                         (let [state (counts @holder)]
                                           (when-not (and (zero? (:entities state))
                                                          (zero? (:generation-history state))
-                                                         (zero? (:pooled-references state)))
+                                                         (zero? (:pooled-references state))
+                                                         (zero? (:scratch-references state))
+                                                         (zero? (:stale-queue-references state)))
                                             (throw (ex-info "Reclamation left engine roots" state)))
                                           (prn (assoc state :stage :churn :updates (+ total n)
                                                       :heap-after-gc (heap-used)

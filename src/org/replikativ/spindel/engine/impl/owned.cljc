@@ -39,9 +39,80 @@
      ISeqable
      (-seq [_]
        (when (pos? (.-size m)) (array-seq (js/Array.from (.values m)))))))
+#?(:cljs
+   (deftype OwnedQueue [^:mutable buffer ^:mutable head ^:mutable length]
+     Object
+     (grow [_]
+       (let [old buffer capacity (.-length old) next (doto (make-array (* 2 capacity)) (.fill nil))]
+         (dotimes [i length] (aset next i (aget old (bit-and (+ head i) (dec capacity)))))
+         (set! buffer next) (set! head 0)))
+     (add [this value]
+       (when (= length (.-length buffer)) (.grow this))
+       (aset buffer (bit-and (+ head length) (dec (.-length buffer))) value)
+       (set! length (inc length))
+       this)
+     (resetEmpty [_]
+       (set! head 0)
+       (when (> (.-length buffer) 256)
+         (set! buffer (doto (make-array 16) (.fill nil)))))
+     (poll [this]
+       (when (pos? length)
+         (let [value (aget buffer head)]
+           (aset buffer head nil)
+           (set! length (dec length))
+           (if (zero? length) (.resetEmpty this)
+               (set! head (bit-and (inc head) (dec (.-length buffer)))))
+           value)))
+     (removeAt [this index]
+       (let [mask (dec (.-length buffer))]
+         (loop [i index]
+           (when (< i (dec length))
+             (aset buffer (bit-and (+ head i) mask) (aget buffer (bit-and (+ head i 1) mask)))
+             (recur (inc i))))
+         (aset buffer (bit-and (+ head length -1) mask) nil)
+         (set! length (dec length))
+         (when (zero? length) (.resetEmpty this))))
+     (remove [this value]
+       (loop [i 0]
+         (if (= i length) false
+             (if (identical? value (aget buffer (bit-and (+ head i) (dec (.-length buffer)))))
+               (do (.removeAt this i) true)
+               (recur (inc i))))))
+     (removeWhere [this pred]
+       (let [n length mask (dec (.-length buffer))]
+         (loop [read 0 write 0]
+           (if (< read n)
+             (let [value (aget buffer (bit-and (+ head read) mask))]
+               (if (pred value) (recur (inc read) write)
+                   (do (aset buffer (bit-and (+ head write) mask) value)
+                       (recur (inc read) (inc write)))))
+             (do (dotimes [i (- n write)] (aset buffer (bit-and (+ head write i) mask) nil))
+                 (set! length write)
+                 (when (zero? length) (.resetEmpty this)))))))
+     (clear [this]
+       (.fill buffer nil) (set! length 0) (.resetEmpty this))
+     (toArray [_]
+       (let [result (make-array length) mask (dec (.-length buffer))]
+         (dotimes [i length] (aset result i (aget buffer (bit-and (+ head i) mask))))
+         result))
+     (forEach [_ visit]
+       (dotimes [i length] (visit (aget buffer (bit-and (+ head i) (dec (.-length buffer)))))))
+     (some [_ pred]
+       (loop [i 0]
+         (if (= i length) false
+             (if (pred (aget buffer (bit-and (+ head i) (dec (.-length buffer))))) true
+                 (recur (inc i))))))
+     (capacity [_] (.-length buffer))
+     (staleReferences [_]
+       (let [mask (dec (.-length buffer))]
+         (loop [i 0 n 0]
+           (if (= i (.-length buffer)) n
+               (recur (inc i) (if (and (>= (bit-and (- i head) mask) length)
+                                       (some? (aget buffer i))) (inc n) n))))))))
 (defn- empty-native? [xs]
   #?(:clj (.isEmpty ^java.util.Collection xs)
      :cljs (cond (instance? ValuesView xs) (zero? (.-size (.-m xs)))
+                 (instance? OwnedQueue xs) (zero? (.-length xs))
                  (array? xs) (zero? (.-length xs))
                  :else (zero? (.-size xs)))))
 (defn- dict []
@@ -80,7 +151,79 @@
                            (when (zero? (.-length bucket)) (.delete buckets h)))
                        (recur (+ i 2)))))))
              (.delete m k))))
-(defn- members [] #?(:clj (java.util.HashSet.) :cljs (js/Set.)))
+#?(:cljs
+   (defn- same-set-value? [x y]
+     (or (identical? x y)
+         (and (number? x) (number? y) (js/isNaN x) (js/isNaN y)))))
+
+#?(:cljs
+   (deftype InlineSet [^:mutable one ^:mutable two ^:mutable three ^:mutable size ^:mutable overflow]
+     ;; Internal membership storage, not a public collection. Traversal borrows
+     ;; a stable membership; destructive loops must use each-copy!, as on JVM.
+     Object
+     (has [_ value]
+       (if overflow (.has overflow value)
+           (boolean (or (and (> size 0) (same-set-value? value one))
+                        (and (> size 1) (same-set-value? value two))
+                        (and (> size 2) (same-set-value? value three))))))
+     (add [this value]
+       (if overflow
+         (do (.add overflow value) (set! size (.-size overflow)))
+         (when-not (.has this value)
+           (let [value (if (identical? value 0) 0 value)]
+             (case size
+               0 (set! one value)
+               1 (set! two value)
+               2 (set! three value)
+               3 (do (set! overflow (js/Set. (array one two three value)))
+                     (set! one nil) (set! two nil) (set! three nil))))
+           (set! size (inc size))))
+       this)
+     (delete [_ value]
+       (if overflow
+         (let [removed? (.delete overflow value)]
+           (set! size (.-size overflow))
+           (when (zero? size) (set! overflow nil))
+           removed?)
+         (cond
+           (and (> size 0) (same-set-value? value one))
+           (do (set! one two) (set! two three) (set! three nil) (set! size (dec size)) true)
+           (and (> size 1) (same-set-value? value two))
+           (do (set! two three) (set! three nil) (set! size (dec size)) true)
+           (and (> size 2) (same-set-value? value three))
+           (do (set! three nil) (set! size 2) true)
+           :else false)))
+     (clear [_]
+       (set! one nil) (set! two nil) (set! three nil)
+       (set! size 0) (set! overflow nil))
+     (forEach [_ visit]
+       (if overflow (.forEach overflow visit)
+           (do (when (> size 0) (visit one))
+               (when (> size 1) (visit two))
+               (when (> size 2) (visit three)))))
+     (copyInto [_ target]
+       (if overflow
+         (let [i (volatile! 0)]
+           (.forEach overflow (fn [value] (aset target @i value) (vswap! i inc))))
+         (do (when (> size 0) (aset target 0 one))
+             (when (> size 1) (aset target 1 two))
+             (when (> size 2) (aset target 2 three))))
+       size)
+     (some [_ pred]
+       (if overflow
+         (let [it (.values overflow)]
+           (loop []
+             (let [entry (.next it)]
+               (if (.-done entry) false
+                   (if (pred (.-value entry)) true (recur))))))
+         (boolean (or (and (> size 0) (pred one))
+                      (and (> size 1) (pred two))
+                      (and (> size 2) (pred three))))))
+     (toArray [_]
+       (if overflow (js/Array.from overflow)
+           (case size 0 (array) 1 (array one) 2 (array one two) 3 (array one two three))))))
+
+(defn- members [] #?(:clj (java.util.HashSet.) :cljs (InlineSet. nil nil nil 0 nil)))
 (def ^:private empty-members #?(:clj (java.util.Collections/emptySet) :cljs (js/Set.)))
 (defn- clear-members! [s]
   (when-not (empty-native? s)
@@ -90,7 +233,8 @@
 (defn- has? [s x] #?(:clj (.contains ^java.util.Set s x) :cljs (.has s x)))
 (defn- items [s]
   #?(:clj (seq s)
-     :cljs (if (instance? ValuesView s) (seq s) (array-seq (js/Array.from s)))))
+     :cljs (if (instance? ValuesView s) (seq s)
+               (array-seq (if (or (instance? InlineSet s) (instance? OwnedQueue s)) (.toArray s) (js/Array.from s))))))
 (defn- values [m]
   #?(:clj (.values ^java.util.Map m)
      :cljs (if (instance? IDMap m)
@@ -102,26 +246,28 @@
                result)
              (.-spindelValues m))))
 (defn- count! [s] #?(:clj (.size ^java.util.Collection s) :cljs (.-size s)))
-(defn- queue [] #?(:clj (java.util.ArrayDeque.) :cljs (array)))
-(defn- push! [q x] #?(:clj (.addLast ^java.util.ArrayDeque q x) :cljs (.push q x)))
-(defn- pop! [q] #?(:clj (.pollFirst ^java.util.ArrayDeque q) :cljs (.shift q)))
+(defn- queue [] #?(:clj (java.util.ArrayDeque.) :cljs (OwnedQueue. (doto (make-array 16) (.fill nil)) 0 0)))
+(defn- push! [q x] #?(:clj (.addLast ^java.util.ArrayDeque q x) :cljs (.add q x)))
+(defn- pop! [q] #?(:clj (.pollFirst ^java.util.ArrayDeque q) :cljs (.poll q)))
 (defn- queued? [q] #?(:clj (not (.isEmpty ^java.util.ArrayDeque q)) :cljs (pos? (.-length q))))
 
 (def ^:private empty-array #?(:clj (object-array 0) :cljs (array)))
 (defn- copy-items [xs]
   #?(:clj (.toArray ^java.util.Collection xs ^objects empty-array)
-     :cljs (if (empty-native? xs) empty-array
-               (js/Array.from (if (instance? ValuesView xs) (.values (.-m xs)) xs)))))
+     :cljs (cond (empty-native? xs) empty-array
+                 (or (instance? InlineSet xs) (instance? OwnedQueue xs)) (.toArray xs)
+                 :else (js/Array.from (if (instance? ValuesView xs) (.values (.-m xs)) xs)))))
 (defn- any! [xs pred]
   (when-not (empty-native? xs)
     #?(:clj (let [it (.iterator ^java.lang.Iterable xs)]
               (loop [] (when (.hasNext it)
                          (let [x (.next it)] (if (pred x) true (recur))))))
-       :cljs (let [it (if (instance? ValuesView xs) (.values (.-m xs))
-                          (js* "~{}[Symbol.iterator]()" xs))]
-               (loop [] (let [entry (.next it)]
-                          (when-not (.-done entry)
-                            (if (pred (.-value entry)) true (recur)))))))))
+       :cljs (if (or (instance? InlineSet xs) (instance? OwnedQueue xs)) (.some xs pred)
+                 (let [it (if (instance? ValuesView xs) (.values (.-m xs))
+                              (js* "~{}[Symbol.iterator]()" xs))]
+                   (loop [] (let [entry (.next it)]
+                              (when-not (.-done entry)
+                                (if (pred (.-value entry)) true (recur))))))))))
 
 #?(:clj
    (do
@@ -405,10 +551,7 @@
   #?(:clj (.removeIf ^java.util.Collection (:events rt)
                      (reify java.util.function.Predicate
                        (test [_ event] (identical? node (a event 0)))))
-     :cljs (loop [i (dec (.-length (:events rt)))]
-             (when (>= i 0)
-               (when (identical? node (a (aget (:events rt) i) 0)) (.splice (:events rt) i 1))
-               (recur (dec i))))))
+     :cljs (.removeWhere (:events rt) (fn [event] (identical? node (a event 0))))))
 
 (defn- reclaim! [rt]
   (loop []
@@ -470,7 +613,7 @@
     (audit-derived-state! rt)
     (let [pending (a (:counters rt) 9)
           action (assoc action :fresh-runs (vec (items pending)))]
-      #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (set! (.-length pending) 0))
+      #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
       (swap! (:audit rt) conj [action (snapshot rt) (snapshot-family rt)]))))
 
 (defn- touch! [rt node token]
@@ -543,7 +686,7 @@
                        (push! (:gc rt) (doto (slots 2) (put 0 target) (put 1 token))))))
             (boundary! rt (when (:audit rt) {:t :t16 :tok (a token t-id)
                                              :notification-order (mapv #(-> (a % 0) :world)
-                                                                       #?(:clj (seq (:gc rt)) :cljs (array-seq (:gc rt))))})))
+                                                                       (items (:gc rt)))})))
           (loop []
             (when-let [notification (pop! (:gc rt))]
               (let [target (a notification 0) dead (a notification 1)]
@@ -829,13 +972,19 @@
             (when (and (not (a node n-complete)) (nil? (current node))) (start! rt node run false))
             (let [ob (ob! rt :await-reactive node run order resolve reject)]
               (put run r-status :parked) (touch! rt node token) (rank! run node)
-              (boundary! rt (when (:audit rt) (cond-> {:t :t05 :w (:world rt) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                                       :kind :await-reactive :order order :debtor [:entity (:world rt) id]}
-                                                token (assoc :tok (a token t-id)))))
-              (when (and (a node n-complete)
-                         (not (work-status? (some-> (current node) (a r-status)))))
-                (put ob o-slot :consumed) (put run r-status :running) (put ob o-value (a node n-value))
-                (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (a ob o-id)] :value (a node n-value)})))
+              (let [ready? (and (a node n-complete)
+                                (not (work-status? (some-> (current node) (a r-status)))))]
+                ;; T5+T6 share the gate and run no user code between them. Both
+                ;; statuses retain the same standing obligation and ownership;
+                ;; one final Rule L closure suffices. Audit mode still exposes
+                ;; both model states for the independent transition replay.
+                (when (or (not ready?) (:audit rt))
+                  (boundary! rt (when (:audit rt) (cond-> {:t :t05 :w (:world rt) :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                           :kind :await-reactive :order order :debtor [:entity (:world rt) id]}
+                                                    token (assoc :tok (a token t-id))))))
+                (when ready?
+                  (put ob o-slot :consumed) (put run r-status :running) (put ob o-value (a node n-value))
+                  (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (a ob o-id)] :value (a node n-value)}))))
               ob))))
 
 (defn- await-id-effect! [id token body resolve reject resume-resolve resume-reject]
@@ -999,8 +1148,7 @@
         buffer (if (< (alength ^objects old) n)
                  (put (:counters rt) 4 (slots (max n (* 2 (alength ^objects old))))) old)]
     #?(:clj (.toArray ^java.util.Collection (a node n-dependents) ^objects buffer)
-       :cljs (let [i (volatile! 0)]
-               (.forEach (a node n-dependents) (fn [ob] (put buffer @i ob) (vswap! i inc)))))
+       :cljs (.copyInto (a node n-dependents) buffer))
     n))
 
 (defn- process-event! [rt event]
@@ -1211,7 +1359,7 @@
       ;; Moving the newest envelope to the tail preserves retained FIFO order.
       (when old
         #?(:clj (.remove ^java.util.ArrayDeque (:events rt) old)
-           :cljs (.splice (:events rt) (.indexOf (:events rt) old) 1)))
+           :cljs (.remove (:events rt) old)))
       (put node n-source-event event)
       (put event 0 node) (put event 1 value)
       (put event 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1))
@@ -1339,7 +1487,7 @@
            :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (:world rt) :value (a event 1) :seq (a event 2)}
                                       (= :signal (a (a event 0) n-kind)) (assoc :source-change? true)))
                         (filter #(identical? rt (a (a % 0) n-runtime))
-                                #?(:clj (seq (:events rt)) :cljs (array-seq (:events rt)))))
+                                (items (:events rt))))
            :seq (a (:counters rt) 1)
            :serial (a (:serial rt) 0) :clock (a (:counters rt) 2)
            :threads (let [run (a (:thread rt) 0)]
@@ -1351,7 +1499,7 @@
            :gc (mapv (fn [notification]
                        (let [target (a notification 0) token (a notification 1)]
                          {:t :t17 :w (:world target) :e (a token t-spin) :tok (a token t-id)}))
-                     #?(:clj (seq (:gc rt)) :cljs (array-seq (:gc rt))))
+                     (items (:gc rt)))
            :handles (when (:tokens rt)
                       (into {} (for [token (items (:tokens rt))]
                                  [(a token t-id) {:spin (a token t-spin) :reachable? (a token t-reachable)
@@ -1476,4 +1624,10 @@
              :orphan-creation-links
              (count (for [node (values (:nodes rt)) creator (items (a node n-created-by))
                           :when (not (has? runs creator))] creator))
-             :scratch-references (count (filter some? (seq (a (:counters rt) 4))))})))
+             :scratch-references (count (filter some? (seq (a (:counters rt) 4))))
+             :stale-queue-references
+             #?(:clj 0
+                :cljs (reduce + 0 (map #(.staleReferences %)
+                                       (cond-> [(:events rt) (:hosts rt) (:work rt) (:posts rt) (:gc rt)
+                                                (a (:counters rt) 0)]
+                                         (:audit rt) (conj (a (:counters rt) 9))))))})))
