@@ -2,7 +2,7 @@
   "Experimental owned-object CPS engine. Canonical maps are diagnostic output,
   never the live representation. Supports the local reactive lifetime slice."
   (:refer-clojure :exclude [await assoc! dissoc! pop!])
-  #?(:cljs (:require-macros [org.replikativ.spindel.compact-runtime :refer [locked each! each-copy! with-activation]]))
+  #?(:cljs (:require-macros [org.replikativ.spindel.compact-runtime :refer [locked each! each-copy! fields! with-activation]]))
   (:require [is.simm.partial-cps.async :as cps]
             [org.replikativ.spindel.incremental.interval :as iv]
             #?(:clj [org.replikativ.spindel.spin.cps :as compiler])))
@@ -102,6 +102,8 @@
             (when-not (.isEmpty coll#)
               (let [^java.util.Iterator it# (.iterator coll#)]
                 (while (.hasNext it#) (let [~x (.next it#)] ~@body)))))))
+     (defmacro fields! [[field fields] & body]
+       `(do ~@(map (fn [value] `(let [~field ~value] ~@body)) fields)))
      (defmacro each-copy! [[x xs] & body]
        `(let [items# (copy-items ~xs)]
           (dotimes [i# (alength ^"[Ljava.lang.Object;" items#)]
@@ -291,12 +293,12 @@
     (mark! rt node)
     ;; Dead obligations carry their own creditor node/generation. They never
     ;; interpret a recycled run's identity when dispatching an old trigger.
-    (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
+    (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
       (if (a run r-wide)
         (put run field (members))
         #?(:clj (.clear ^java.util.Set (a run field)) :cljs (.clear (a run field)))))
     (put run r-wide nil)
-    (doseq [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives]]
+    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives]]
       (put run field nil))
     (let [pool (a (:counters rt) 0)]
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
@@ -574,7 +576,7 @@
 (defn- run-slots! [rt]
   (or (pop! (a (:counters rt) 0))
       (let [run (slots 19)]
-        (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
+        (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
           (put run field (members)))
         run)))
 
@@ -1080,7 +1082,7 @@
               (each! [node selected]
                      (let [copy (node! child (a node n-id) (a node n-kind) (:owner-root child))]
                        (assoc! node-map node copy)
-                       (doseq [field [n-complete n-kept n-value n-order n-dirty n-body n-rank]]
+                       (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank]]
                          (put copy field (a node field)))
                        (put copy n-origin :inherited) (put copy n-source-world (:world rt))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
@@ -1091,7 +1093,7 @@
                   (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-origin :inherited) (put copy r-source-world (:world rt))
-                  (doseq [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
+                  (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                     (put copy field (members)))
                   (each! [gen (a run r-ancestors)] (add-run! copy r-ancestors gen))
                   (add! (a (:counters child) 8) node)
@@ -1114,7 +1116,7 @@
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
                          (let [clone (slots 19)]
-                           (doseq [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host]]
+                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host]]
                              (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
