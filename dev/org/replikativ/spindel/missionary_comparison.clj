@@ -225,6 +225,20 @@
          measurement)
        (finally (doseq [cancel cancellations] (cancel)))))))
 
+(defn reclamation-churn
+  "Report retained bookkeeping after n distinct spins have completed and lost
+   their host handles. Generation history is reported separately from live rows."
+  [n]
+  (let [rt (c/runtime)]
+    (dotimes [i n]
+      (let [handle (c/cspin rt [:ephemeral i] 42)]
+        (c/observe! rt handle (fn [_]) #(throw %))
+        (c/notify-unreachable! rt handle)))
+    (let [state (c/snapshot rt)]
+      (assoc (c/storage-stats rt)
+             :entities (count (:entities state))
+             :generation-history (count (get-in state [:global :generation-clock]))))))
+
 (defn- run-kernel-cells [kind n warmup]
   (run-kernel kind n warmup {:cells? true}))
 
