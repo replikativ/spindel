@@ -299,13 +299,26 @@
 (declare t06-resume t09-reenter t10-supersede t11-cancel t13-close-scope
          t26-seal t34-release-world rule-l t08-deliver t36-cleanup t25-cut-fail step)
 
+(def ^:dynamic *fresh-runs* nil)
+
+(defn allocate-generation [s w e dense]
+  (if *fresh-runs*
+    (let [[world entity stamp :as witness] (first @*fresh-runs*)]
+      (require! (and (vector? witness) (= 3 (count witness))
+                     (= w world) (= e entity) (integer? stamp)
+                     (> stamp (reduce max 0 (vals (:generation-clock s)))))
+                ::invalid-run-allocation {:expected [w e] :witness witness})
+      (vswap! *fresh-runs* next)
+      stamp)
+    dense))
+
 (defn start-run [s w e owner cause]
   (let [inherited (for [[r rr] (:runs (wr s w))
                         :when (and (= e (:spin rr)) (= :inherited (:status rr)))] r)
         s (reduce #(t11-cancel %1 {:w w :r %2}) s inherited)
         ;; An unwinding row is physical evidence, never a predecessor index.
         pred (let [r (current s w e)] (when (not= :unwinding (:status (run s w r))) r))
-        n (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0))) r [e n]
+        n (allocate-generation s w e (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0)))) r [e n]
         seqno (inc (max (get-in s [:worlds w :seq] 0) (get-in s [:clocks w] 0)))]
     (require! (= :live (:status (wr s w))) ::sealed {:world w})
     (require! (open? s w owner) ::closed-scope {:world w :scope owner})
@@ -1543,7 +1556,7 @@
     :t09 [:reenter (:w a) (:e a)]
     nil))
 
-(defn step
+(defn- step*
   "One atomic transition. Refusal throws ex-info; its :state is the unchanged input.
   Native progress, arrivals and thread re-entry are explicit environment actions.
   An explicit :th attributes a requested effect to that thread's slice; omitted
@@ -1619,6 +1632,23 @@
            :arrival (enqueue s (:w a) (:event a))
            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
        (acting-world before a)))
+    (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+      (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
+
+(defn step
+  "Apply a transition with optional checked fresh-run allocation evidence.
+   A present empty vector forbids allocation; copies consume no evidence."
+  [s a]
+  (try
+    (if (contains? a :fresh-runs)
+      (do (require! (and (vector? (:fresh-runs a))
+                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs a)))
+                    ::invalid-run-allocation {:action a})
+          (binding [*fresh-runs* (volatile! (:fresh-runs a))]
+            (let [result (step* s a)]
+              (require! (empty? @*fresh-runs*) ::unused-run-allocation {:remaining @*fresh-runs*})
+              result)))
+      (step* s a))
     (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
       (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
 

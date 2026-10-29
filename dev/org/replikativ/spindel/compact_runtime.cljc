@@ -167,9 +167,9 @@
                            (compare [_ x y]
                              (compare (long (a x n-rank)) (long (a y n-rank))))))
                 :cljs (array))
-             (atom false) (doto (slots 9) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 8)) (put 1 0) (put 2 0) (put 3 (id-dict)) (put 6 (members)) (put 7 (id-dict)))
+             (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 8)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
              (when audit? (atom [])) (when audit? (members))
-             (doto (slots 1) (put 0 0)) (doto (slots 4) (put 3 world-id))
+             (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 4) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
              {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
              #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]))]
@@ -231,7 +231,7 @@
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
     (put node n-runs (dict)) (put node n-dependents (members))
-    (put node n-generation (or (find! (a (:counters rt) 3) id) 0)) (put node n-rank 0)
+    (put node n-generation 0) (put node n-rank 0)
     (assoc! (:nodes rt) id node) (owner! rt node owner) node))
 
 (defn- creator! [rt node creator]
@@ -417,7 +417,10 @@
   (prune-ancestry! rt)
   (when (:audit rt)
     (audit-derived-state! rt)
-    (swap! (:audit rt) conj [action (snapshot rt) (snapshot-family rt)])))
+    (let [pending (a (:counters rt) 9)
+          action (assoc action :fresh-runs (vec (items pending)))]
+      #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (set! (.-length pending) 0))
+      (swap! (:audit rt) conj [action (snapshot rt) (snapshot-family rt)]))))
 
 (defn- touch! [rt node token]
   (when token (add! (a node n-tokens) token) (add! (a token t-touched) (:world rt))))
@@ -597,9 +600,11 @@
               (when (= :inherited (a inherited r-status)) (cancel! rt inherited)))
   (let [run (run-slots! rt)
         pred (current node)
-        generation (inc (long (a node n-generation)))]
+        generation (put (:serial rt) 1 (inc (long (a (:serial rt) 1))))]
     (put node n-generation generation)
-    (assoc! (a (:counters rt) 3) (a node n-id) generation)
+    (when (:audit rt)
+      (assoc! (a (:counters rt) 3) (a node n-id) generation)
+      (push! (a (:counters rt) 9) [(:world rt) (a node n-id) generation]))
     (put run r-reactives 0)
     (when (and pred (not= :unwinding (a pred r-status)))
       (each! [gen (a pred r-ancestors)] (add-run! run r-ancestors gen))
@@ -999,7 +1004,7 @@
     {:registry (set (map :world worlds)) :known-worlds (set (map :world worlds))
      :lineages (into {} (map (juxt :world :lineage) worlds))
      :caps (map-value (a (:counters rt) 7))
-     :generation-clock (into {} (for [world worlds [id n] (map-value (a (:counters world) 3))]
+     :generation-clock (into {} (for [world worlds :let [clock (a (:counters world) 3)] :when clock [id n] (map-value clock)]
                                   [[(:world world) id] n]))}))
 
 (defn- all-obligations [rt]
@@ -1118,7 +1123,7 @@
                   (assoc! (a node n-runs) (a copy r-gen) copy)
                   (when (or (nil? (current node)) (> (long (a copy r-gen)) (long (a (current node) r-gen))))
                     (put node n-current copy) (put node n-generation (a copy r-gen)))
-                  (assoc! (a (:counters child) 3) (a node n-id) (a node n-generation))
+                  (when (:audit child) (assoc! (a (:counters child) 3) (a node n-id) (a node n-generation)))
                   (add! (a (:counters child) 6) copy)))
               (each! [node selected]
                      (let [copy (find! node-map node)

@@ -748,6 +748,17 @@
           (when (read-row ctx w :runs scope)
             (edit! ctx w :runs scope update :creations conj e))))))
 
+(defn- allocate-generation! [ctx w e dense]
+  (if-let [pending (:fresh-runs ctx)]
+    (let [[world entity stamp :as witness] (first @pending)]
+      (require! (and (vector? witness) (= 3 (count witness))
+                     (= w world) (= e entity) (integer? stamp)
+                     (> stamp (reduce max 0 (vals (:generation-clock (root-state ctx))))))
+                ::invalid-run-allocation {:expected [w e] :witness witness})
+      (vswap! pending next)
+      stamp)
+    dense))
+
 (defn- start-run! [ctx w e scope cause]
   (require! (= :live (:status (header ctx w))) ::sealed {:world w})
   (require! (open? ctx w scope) ::closed-scope {:world w :scope scope})
@@ -756,8 +767,8 @@
     (cancel-run! ctx w r nil))
   (let [current (current-run ctx w e)
         pred (when-not (= :unwinding (:status (read-row ctx w :runs current))) current)
-        n (inc (max (or (second pred) 0)
-                    (get-in (root-state ctx) [:generation-clock [w e]] 0)))
+        n (allocate-generation! ctx w e (inc (max (or (second pred) 0)
+                                                  (get-in (root-state ctx) [:generation-clock [w e]] 0))))
         r [e n]
         entry-reasons (when (:diagnostics? ctx) (reasons ctx w e))
         seqno (inc (max (get (header ctx w) :seq 0)
@@ -1187,6 +1198,7 @@
      (let [diagnostics? (get (store/options kernel) :diagnostics? true)
            ctx {:tx tx :events (when diagnostics? (volatile! [])) :work (volatile! [])
                 :work-set (volatile! #{}) :commands (volatile! []) :result (volatile! nil)
+                :fresh-runs (when (contains? action :fresh-runs) (volatile! (:fresh-runs action)))
                 :diagnostics? diagnostics? :immediate-await? (= t :await)}
            thread (get-in (root-state ctx) [:env :threads (:th action)])
            slice? (:run thread)
@@ -1194,6 +1206,10 @@
            action (if (and slice? (not (#{:t38 :slice-enter :t35} t)))
                     (assoc action :w (:world thread)) action)
            w (:w action)]
+       (when (contains? action :fresh-runs)
+         (require! (and (vector? (:fresh-runs action))
+                        (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs action)))
+                   ::invalid-run-allocation {:action action}))
        (when (and slice? (not= :t38 t) (= :released (:status (header ctx (:world thread)))))
          (require! false ::released {:w w :thread (:th action)}))
        (when (and unwinding? (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
@@ -1319,6 +1335,9 @@
            (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})
            (end-obligation! ctx w o :creditor-cancelled))
          (throw (ex-info "Unsupported kernel transition" {:action action})))
+       (when (contains? action :fresh-runs)
+         (require! (and (vector? (:fresh-runs action)) (empty? @(:fresh-runs ctx)))
+                   ::unused-run-allocation {:remaining @(:fresh-runs ctx)}))
        (rule-l! ctx)
        (prune-ancestry! ctx)
        (when diagnostics? (root-edit! ctx assoc :events @(:events ctx)))

@@ -159,3 +159,24 @@
     (is (nil? (get-in s [:worlds w :entities c :owner])))
     (is (not (contains? (get-in s [:worlds w :runs [p 3] :ancestors]) [p 1])))
     (is (empty? (inv/check s)))))
+
+(defn fresh-run-allocation-actions []
+  (let [w [:w 0] p [:spin 0]]
+    [{:t :t04 :w w :e p :mode :callback :fresh-runs [[w p 10]]}
+     {:t :t09 :w w :e p :fresh-runs [[w p 20]]}
+     {:t :t07 :w w :r [p 20] :value 42 :fresh-runs []}]))
+
+(deftest explicit-run-allocation-evidence-is-checked
+  (let [w [:w 0] p [:spin 0] initial (model/init-state)
+        action {:t :t04 :w w :e p :mode :callback}
+        good (model/step initial (assoc action :fresh-runs [[w p 10]]))]
+    (is (some? (get-in good [:worlds w :runs [p 10]])))
+    (doseq [evidence [[] nil [42] [[w p 0]] [[w p 1.5]] [[w :wrong 10]]
+                      [[[:w 1] p 10]] [[w p 10] [w p 11]]]]
+      (let [result (model/attempt initial (assoc action :fresh-runs evidence))]
+        (is (some? (:refusal result)) (str evidence))
+        (is (= initial (:state result)))))
+    (let [result (model/attempt good {:t :t09 :w w :e p :fresh-runs [[w p 10]]})]
+      (is (some? (:refusal result)))
+      (is (= good (:state result))))
+    (is (empty? (inv/check (reduce model/step initial (fresh-run-allocation-actions)))))))

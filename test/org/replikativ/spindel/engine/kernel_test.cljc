@@ -351,3 +351,13 @@
 (deftest predecessor-adoption-survives-retired-intermediates
   (compare-walk! (model/init-state) (handoff/burst-child-handoff-actions))
   (compare-walk! (model/init-state) (handoff/retired-creator-adoption-actions)))
+
+(deftest fresh-run-allocation-evidence-refines-the-model
+  (compare-walk! (model/init-state) (handoff/fresh-run-allocation-actions))
+  (doseq [evidence [[] nil [42] [[w parent 0]] [[w parent 1.5]] [[w :wrong 10]]
+                    [[[:w 1] parent 10]] [[w parent 10] [w parent 11]]]]
+    (compare-walk! (model/init-state)
+                   [{:t :t04 :w w :e parent :mode :callback :fresh-runs evidence}]))
+  (compare-walk! (model/init-state)
+                 [{:t :t04 :w w :e parent :mode :callback :fresh-runs [[w parent 10]]}
+                  {:t :t09 :w w :e parent :fresh-runs [[w parent 10]]}]))

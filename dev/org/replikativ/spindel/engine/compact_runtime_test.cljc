@@ -618,3 +618,38 @@
        (is (= 42 (get-in (c/snapshot rt) [:entities :child :result])))
        (is (some? @child-holder))
        (verify-boundaries! rt))))
+
+(deftest compact-reclamation-retains-no-per-entity-generation-history
+  (let [rt (c/runtime)]
+    (dotimes [i 100]
+      (let [handle (c/cspin rt [:ephemeral i] 42)]
+        (c/observe! rt handle (fn [_]) #(throw %))
+        (c/notify-unreachable! rt handle)))
+    (is (empty? (:entities (c/snapshot rt))))
+    (is (empty? (get-in (c/snapshot rt) [:global :generation-clock])))
+    (is (zero? (:live-runs (c/storage-stats rt))))
+    (is (zero? (:pooled-references (c/storage-stats rt))))))
+
+(deftest compact-recreated-entity-cannot-adopt-an-earlier-incarnations-cache
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) source (c/signal rt :source 0) holder (atom nil)
+          original (c/cspin rt :parent
+                            (let [child (c/cspin rt :child 42)]
+                              (reset! holder child)
+                              (c/await child)))
+          cancel (c/observe! rt original (fn [_]) #(throw %))]
+      (cancel)
+      (c/cancel-spin! rt original)
+      (c/notify-unreachable! rt original)
+      (is (nil? (get-in (c/snapshot rt) [:entities :parent])))
+      (let [creator (get-in (c/snapshot rt) [:entities :child :creator])
+            replacement (c/cspin rt :parent
+                                 (c/track source)
+                                 (c/cspin rt :child :different-body)
+                                 :replacement)]
+        (c/observe! rt replacement (fn [_]) #(throw %))
+        (c/set-signal! rt source 1)
+        (is (= creator (get-in (c/snapshot rt) [:entities :child :creator])))
+        (is (= 42 (get-in (c/snapshot rt) [:entities :child :result])))
+        (is (some? @holder))
+        (when audit? (verify-boundaries! rt))))))
