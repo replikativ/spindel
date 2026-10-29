@@ -57,6 +57,35 @@
              (prn {:stage :stale-native-callbacks :callbacks (count @retained) :collected? collected?})
              (when-not collected? (throw (js/Error. "Stale callback retains its world")))))))
 
+(defn- portable-burst! [rt n]
+  (dotimes [i n]
+    (let [target (js-obj) id [:portable i] body (fn [succeed! _] (succeed! 42))]
+      (c/register-computation! rt target id)
+      (c/invoke-computation! rt target id body (fn [_]) #(throw %)))))
+
+(defn- portable-world [target]
+  (let [rt (c/runtime)]
+    (c/register-computation! rt target :portable)
+    (c/invoke-computation! rt target :portable (fn [succeed! _] (succeed! 42)) (fn [_]) #(throw %))
+    (js/WeakRef. rt)))
+
+(defn- probe-portable-retention []
+  (let [target (js-obj) weak (portable-world target)]
+    (.then (wait-for #(nil? (.deref weak)) 20)
+           (fn [collected?]
+             ;; Keep the descriptor alive throughout collection, then use it
+             ;; independently in another family. It must retain neither world.
+             (prn {:stage :portable-descriptor-world :collected? collected?})
+             (when-not collected? (throw (js/Error. "Portable descriptor retains a world")))
+             (let [holder (volatile! (c/runtime))]
+               (c/invoke-computation! @holder target :portable (fn [succeed! _] (succeed! 42)) (fn [_]) #(throw %))
+               (c/release-idle! @holder)
+               (portable-burst! @holder 100)
+               (.then (wait-for #(zero? (:entities (counts @holder))) 20)
+                      (fn [cleaned?]
+                        (prn {:stage :portable-descriptor-finalization :cleaned? cleaned?})
+                        (when-not cleaned? (throw (js/Error. "Portable descriptor tokens were not reclaimed"))))))))))
+
 (defn -main [& _]
   (when-not (aget js/globalThis "gc")
     (throw (js/Error. "Run with node --expose-gc")))
@@ -105,6 +134,7 @@
                  (prn {:stage :world-collection :collected? collected?})
                  (when-not collected? (throw (js/Error. "Runtime remains strongly reachable")))))
         (.then (fn [_] (probe-callback-retention)))
+        (.then (fn [_] (probe-portable-retention)))
         (.catch (fn [error] (js/console.error error) (set! (.-exitCode js/process) 1))))))
 
 (set! *main-cli-fn* -main)

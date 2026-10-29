@@ -6,6 +6,7 @@
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.test-helpers :refer [async]]
+            [org.replikativ.spindel.spin.core :as spin-core]
             [clojure.data :as data]
             [clojure.walk :as walk]))
 
@@ -210,6 +211,103 @@
     (is (= 1 @prefix))
     (verify-boundaries! rt)
     (cancel)))
+
+(deftest portable-computation-targets-keep-family-local-tokens
+  (let [a (c/runtime {:audit? true}) b (c/runtime {:audit? true})
+        body (fn [succeed! _] (succeed! 42))
+        target (spin-core/->Spin :portable body) values (atom [])]
+    (c/register-computation! a target :portable)
+    (c/register-computation! a target :portable)
+    (c/invoke-computation! a target :portable body #(swap! values conj [:a %]) #(throw %))
+    (c/invoke-computation! b target :portable body #(swap! values conj [:b %]) #(throw %))
+    (is (= [[:a 42] [:b 42]] @values))
+    (is (= 1 (count (:handles (c/snapshot a)))))
+    (is (= 1 (count (:handles (c/snapshot b)))))
+    (c/release-idle! a)
+    (let [before (c/snapshot-family a)]
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (c/invoke-computation! a target :portable body (fn [_]) #(throw %))))
+      (is (= before (c/snapshot-family a))))
+    ;; Reuse in B cannot inherit A's dropped capability or mint another token.
+    (c/invoke-computation! b target :portable body #(swap! values conj [:b %]) #(throw %))
+    (is (= [[:a 42] [:b 42] [:b 42]] @values))
+    (verify-boundaries! a) (verify-boundaries! b)))
+
+(deftest portable-first-use-is-not-local-body-construction
+  (let [rt (c/runtime {:audit? true}) body (fn [succeed! _] (succeed! 7))
+        target (spin-core/->Spin :portable body)
+        parent (c/make-spin rt :parent
+                            (fn [succeed! fail!]
+                              (c/await-computation-effect! target :portable body succeed! fail!)))
+        values (atom [])
+        unsubscribe (c/observe! rt parent #(swap! values conj %) #(throw %))]
+    (is (= [7] @values))
+    (is (nil? (get-in (c/snapshot rt) [:entities :portable :creator])))
+    (verify-boundaries! rt)
+    (unsubscribe)))
+
+(deftest portable-explicit-world-invocation-honors-its-target
+  (let [a (c/runtime {:audit? true}) b (c/runtime {:audit? true}) values (atom [])
+        body (fn [succeed! _] (succeed! 42)) target (spin-core/->Spin :portable body)
+        parent (c/cspin a :parent
+                        (c/invoke-computation! b target :portable body #(swap! values conj [:b %]) #(throw %))
+                        :a-done)]
+    (c/observe! a parent #(swap! values conj [:a %]) #(throw %))
+    (is (= [[:b 42] [:a :a-done]] @values))
+    (is (nil? (get-in (c/snapshot a) [:entities :portable])))
+    (is (= 42 (get-in (c/snapshot b) [:entities :portable :result])))
+    (verify-boundaries! a) (verify-boundaries! b)))
+
+(deftest portable-handoff-refuses-an-unwinding-slice-before-editing
+  (let [rt (c/runtime {:audit? true}) other (c/runtime {:audit? true}) holder (atom nil) errors (atom [])
+        body (fn [succeed! _] (succeed! 42)) target (spin-core/->Spin :portable body)
+        _ (c/register-computation! rt target :portable)
+        fresh (spin-core/->Spin :fresh body)
+        attempts [(fn [] (c/register-computation! rt target :portable))
+                  (fn [] (c/register-computation! rt fresh :fresh))
+                  (fn [] (c/invoke-computation! rt target :portable body (fn [_]) #(throw %)))
+                  (fn [] (c/invoke-computation! rt fresh :fresh body (fn [_]) #(throw %)))
+                  (fn [] (c/register-computation! other fresh :fresh))
+                  (fn [] (c/invoke-computation! other fresh :fresh body (fn [_]) #(throw %)))]
+        check (fn []
+                (let [before [(c/snapshot-family rt) (c/snapshot-family other)]]
+                  (doseq [attempt attempts]
+                    (try (attempt) (is false "Unwinding call was admitted")
+                         (catch #?(:clj Exception :cljs :default) error (swap! errors conj error))))
+                  (is (= before [(c/snapshot-family rt) (c/snapshot-family other)]))))
+        parent (c/cspin rt :parent (c/cancel-spin! rt @holder) (check))]
+    (reset! holder parent)
+    (c/observe! rt parent (fn [_]) (fn [_]))
+    (is (= 6 (count @errors)))
+    (verify-boundaries! rt) (verify-boundaries! other)))
+
+#?(:clj
+   (deftest portable-registration-race-mints-one-token
+     (let [rt (c/runtime {:audit? true}) target (spin-core/->Spin :portable (fn [_ _]))
+           start (promise)
+           workers (doall (repeatedly 8 #(future @start (c/register-computation! rt target :portable))))]
+       (deliver start true)
+       (doseq [worker workers] (is (nil? (deref worker 10000 :timeout))))
+       (is (= 1 (count (:handles (c/snapshot rt)))))
+       (verify-boundaries! rt))))
+
+#?(:clj
+   (deftest portable-descriptor-does-not-retain-its-runtime
+     (let [body (fn [succeed! _] (succeed! 42))
+           target (spin-core/->Spin :portable body)
+           weak ((fn []
+                   (let [rt (c/runtime)]
+                     (c/register-computation! rt target :portable)
+                     (c/invoke-computation! rt target :portable body (fn [_]) #(throw %))
+                     (java.lang.ref.WeakReference. rt))))]
+       (try
+         (loop [remaining 50]
+           (when (and (pos? remaining) (.get weak))
+             (System/gc)
+             (Thread/sleep 10)
+             (recur (dec remaining))))
+         (is (nil? (.get weak)))
+         (finally (java.lang.ref.Reference/reachabilityFence target))))))
 
 (deftest source-cas-is-identity-based-and-refusal-is-atomic
   (let [rt (c/runtime {:audit? true}) initial (with-meta [1] {:version 0})

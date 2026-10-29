@@ -170,9 +170,10 @@
 (defrecord Delivery [family world obligation])
 (defrecord RootOwner [id])
 (defrecord Failure [error])
+(defrecord RuntimeFamily [gate worlds host-tokens])
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts])
+                         operations posts home])
 (def w [:w 0])
 (def root [:root w])
 (def cancelled ::cancelled)
@@ -184,9 +185,9 @@
 (defn runtime
   ([] (runtime {}))
   ([{:keys [audit? world-id] :or {world-id w}}]
-   (let [family (id-dict)
+   (let [family (id-dict) gate #?(:clj (Object.) :cljs nil)
          rt (->OwnedRuntime
-             #?(:clj (Object.) :cljs nil) (id-dict) (dict) (queue) (queue) (queue)
+             gate (id-dict) (dict) (queue) (queue) (queue)
              #?(:clj (java.util.PriorityQueue.
                       11 (reify java.util.Comparator
                            (compare [_ x y]
@@ -197,7 +198,8 @@
              (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 4) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
              {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
-             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue))]
+             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue)
+             (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))))]
      (assoc! family world-id rt)
      rt)))
 
@@ -226,7 +228,7 @@
 (defn- reactive? [run] (boolean (and run (pos? (long (or (a run r-reactives) 0))))))
 (defn- reactive-delta! [run delta]
   (put run r-reactives (+ (long (or (a run r-reactives) 0)) (long delta))))
-(declare drain! wanted? retire! cancel! reclaim! snapshot snapshot-family schedule! adopt! collect-token! map-value)
+(declare drain! wanted? retire! cancel! reclaim! snapshot snapshot-family schedule! adopt! collect-token! collect-home-token! map-value)
 
 (defn- wanted? [node]
   (or (and (open-owner? (a node n-owner))
@@ -510,17 +512,26 @@
    :cljs (defonce ^:private handle-cleaner
            (js/FinalizationRegistry.
             (fn [held]
-              (when-let [rt (.deref (aget held 0))]
-                (collect-token! rt (aget held 1)))))))
+              (when-let [home (.deref (aget held 0))]
+                (collect-home-token! home (aget held 1)))))))
 
 (defn- arm-handle! [rt handle token]
-  #?(:clj (let [runtime-ref (java.lang.ref.WeakReference. rt)]
+  #?(:clj (let [home-ref (java.lang.ref.WeakReference. (:home rt))]
             (put token 5 (.register ^java.lang.ref.Cleaner handle-cleaner handle
                                     (reify Runnable
-                                      (run [_] (when-let [runtime (.get runtime-ref)]
-                                                 (collect-token! runtime token)))))))
-     :cljs (.register handle-cleaner handle (array (js/WeakRef. rt) token) token))
+                                      (run [_] (when-let [home (.get home-ref)]
+                                                 (collect-home-token! home token)))))))
+     :cljs (.register handle-cleaner handle (array (js/WeakRef. (:home rt)) token) token))
   handle)
+
+(defn- collect-home-token! [home token]
+  (let [target #?(:clj (locking (:gate home)
+                        ;; WeakHashMap's reference queue otherwise drains only
+                        ;; on the next lookup, retaining stale token metadata.
+                         (.size ^java.util.WeakHashMap (:host-tokens home))
+                         (first (values (:worlds home))))
+                  :cljs (first (values (:worlds home))))]
+    (when target (collect-token! target token))))
 
 (defn- collect-token! [rt token]
   (locked rt
@@ -549,31 +560,76 @@
   #?(:clj (.clean ^java.lang.ref.Cleaner$Cleanable (a (:token handle) 5))
      :cljs (do (.unregister handle-cleaner (:token handle)) (collect-token! rt (:token handle)))))
 
+(defn- new-token [rt id]
+  (doto (slots 7)
+    (put t-family (:family-id rt)) (put t-id (random-uuid))
+    (put t-spin id) (put t-reachable true)
+    (put t-touched (members)) (put t-dropped (members))))
+
+(defn- construct-token! [rt id token run]
+  (check-running! run)
+  (when-let [node (find! (:nodes rt) id)]
+    (when-not (= :spin (a node n-kind))
+      (throw (ex-info "Computation ID collision" {:id id}))))
+  (when (:tokens rt) (add! (:tokens rt) token))
+  (let [order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
+        node (find! (:nodes rt) id)]
+    (when (and run (nil? node))
+      (let [node (node! rt id :spin run)]
+        (creator! rt node run) (put node n-kept (reactive? run)) (put node n-order order)
+        (creation! run node)))
+    (when-let [node (find! (:nodes rt) id)]
+      (when (predecessor-run? (a node n-creator) run)
+        (adopt! rt node run)
+        (owner! rt node run) (creator! rt node run) (put node n-kept (reactive? run))
+        (put node n-order order) (creation! run node))
+      (touch! rt node token))
+    (boundary! rt (when (:audit rt) (cond-> {:t :t01 :w (:world rt) :e id :tok (a token t-id)}
+                                      run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))))
+
 (defn make-spin [requested id body]
-  (let [rt (execution-runtime requested)]
-    (let [token (slots 7)]
-      (put token t-family (:family-id rt))
-      (put token t-id (random-uuid)) (put token t-spin id) (put token t-reachable true)
-      (put token t-touched (members)) (put token t-dropped (members))
-      (locked rt
-              (when (:tokens rt) (add! (:tokens rt) token))
-              (let [run (when (current-activation) (a (current-activation) 1))
-                    order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
-                    node (find! (:nodes rt) id)]
-                (check-running! run)
-                (when (and run (nil? node))
-                  (let [node (node! rt id :spin run)]
-                    (creator! rt node run) (put node n-kept (reactive? run)) (put node n-order order)
-                    (creation! run node)))
-                (when-let [node (find! (:nodes rt) id)]
-                  (when (predecessor-run? (a node n-creator) run)
-                    (adopt! rt node run)
-                    (owner! rt node run) (creator! rt node run) (put node n-kept (reactive? run))
-                    (put node n-order order) (creation! run node))
-                  (touch! rt node token))
-                (boundary! rt (when (:audit rt) (cond-> {:t :t01 :w (:world rt) :e id :tok (a token t-id)}
-                                                  run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))))
-      (arm-handle! rt (->Handle id token body) token))))
+  (let [rt (execution-runtime requested) token (new-token rt id)]
+    (locked rt (construct-token! rt id token (when (current-activation) (a (current-activation) 1))))
+    (arm-handle! rt (->Handle id token body) token)))
+
+(defn- portable-token! [rt target id construction?]
+  ;; Only the engine's identity-equality public Spin objects enter this cache.
+  ;; Values contain no body, public target or strong reference to the family.
+  (locked rt
+          (when (and (current-activation) (identical? rt (a (current-activation) 0)))
+            (check-running! (a (current-activation) 1)))
+          (let [cache (:host-tokens (:home rt))]
+            (or #?(:clj (.get ^java.util.WeakHashMap cache target) :cljs (.get cache target))
+                (let [token (new-token rt id)]
+                  ;; First use in another family is not body construction:
+                  ;; an existing portable host handle must not acquire a creator.
+                  (construct-token! rt id token (when (and construction? (current-activation)
+                                                           (identical? rt (a (current-activation) 0)))
+                                                  (a (current-activation) 1)))
+                  (arm-handle! rt target token)
+                  #?(:clj (.put ^java.util.WeakHashMap cache target token) :cljs (.set cache target token))
+                  token)))))
+
+(defn- admit-world-switch! [rt]
+  ;; An explicit request into another world is a host-root request there.
+  ;; Validate the initiating slice under its OWN gate before acquiring the
+  ;; destination gate. This is its caller-admission point: later cancellation
+  ;; does not retract an already admitted request into an independent world.
+  ;; Never read a foreign run's mutable status under the destination gate.
+  (when-let [frame (current-activation)]
+    (let [caller (a frame 0)]
+      (when-not (identical? caller rt)
+        (locked caller (check-running! (a frame 1)))))))
+
+(defn register-computation!
+  "Record construction of a portable public computation in this family.
+  The target must have Object identity equality (the public Spin deftype)."
+  [requested target id]
+  (try
+    (admit-world-switch! requested)
+    (portable-token! requested target id true)
+    nil
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
 
 (defn track [& _] (throw (ex-info "track requires cspin" {})))
 (defn await [& _] (throw (ex-info "await requires cspin" {})))
@@ -790,9 +846,25 @@
 
 (defn await-effect!
   ([source resolve reject]
-   (await-id-effect! (:id source) (:token source) (:body source) resolve reject resolve reject))
+   (try
+     (await-id-effect! (:id source) (:token source) (:body source) resolve reject resolve reject)
+     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence source) :cljs nil))))
   ([source resolve reject resume-resolve resume-reject]
-   (await-id-effect! (:id source) (:token source) (:body source) resolve reject resume-resolve resume-reject)))
+   (try
+     (await-id-effect! (:id source) (:token source) (:body source) resolve reject resume-resolve resume-reject)
+     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence source) :cljs nil)))))
+
+(defn await-computation-effect!
+  "Typed public await handoff; no family-bound Handle wrapper is allocated."
+  [target id body resolve reject]
+  (try
+    (let [rt (a (current-activation) 0)]
+      (locked rt
+              (check-running! (a (current-activation) 1))
+              (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+                (throw (ex-info "Foreign await is outside this slice" {:id id}))))
+      (await-id-effect! id (portable-token! rt target id false) body resolve reject resolve reject))
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
 
 (defn park-effect! [ticket resolve reject]
   (let [rt (a (current-activation) 0) run (a (current-activation) 1)
@@ -1074,31 +1146,49 @@
           (drain! rt))
         (when failure (throw failure))))))
 
+(defn- observe-token! [rt id token body success failure]
+  (let [ob (locked rt
+                   (when (and (current-activation) (identical? rt (a (current-activation) 0)))
+                     (check-running! (a (current-activation) 1)))
+                   (check-token! rt token)
+                   (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+                     (throw (ex-info "Foreign invocation is outside this slice" {:id id})))
+                   (let [node (or (find! (:nodes rt) id) (node! rt id :spin (:owner-root rt)))
+                         cached? (and (a node n-complete) (not (a node n-dirty)) (not (work-status? (some-> (current node) (a r-status)))))]
+                     (put node n-body body)
+                     (when-not (a node n-owner) (owner! rt node (:owner-root rt)))
+                     (touch! rt node token)
+                     (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node (:owner-root rt) false))
+                     (let [ob (ob! rt :callback node nil 0 nil nil)]
+                       (put ob o-success success) (put ob o-failure failure)
+                       (when cached?
+                         (push! (:hosts rt) (doto (slots 2) (put 0 ob) (put 1 (a node n-value))))
+                         (when-not (reactive? (current node)) (end-ob! rt ob)))
+                       (boundary! rt (when (:audit rt) {:t :t04 :w (:world rt) :e id :tok (a token t-id) :mode :callback}))
+                       ob)))]
+    (drain! rt)
+    (fn []
+      (locked rt
+              (end-ob! rt ob)
+              (boundary! rt (when (:audit rt) {:t :unsubscribe :w (:world rt) :o [:o (a ob o-id)]})))
+      (drain! rt))))
+
 (defn observe! [requested handle success failure]
-  (let [rt (execution-runtime requested)]
-    (let [ob (locked rt
-                     (check-token! rt (:token handle))
-                     (when (and (nil? (find! (:nodes rt) (:id handle))) (parent-node rt (:id handle)))
-                       (throw (ex-info "Foreign invocation is outside this slice" {:id (:id handle)})))
-                     (let [node (or (find! (:nodes rt) (:id handle)) (node! rt (:id handle) :spin (:owner-root rt)))
-                           cached? (and (a node n-complete) (not (a node n-dirty)) (not (work-status? (some-> (current node) (a r-status)))))]
-                       (put node n-body (:body handle))
-                       (when-not (a node n-owner) (owner! rt node (:owner-root rt)))
-                       (touch! rt node (:token handle))
-                       (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node (:owner-root rt) false))
-                       (let [ob (ob! rt :callback node nil 0 nil nil)]
-                         (put ob o-success success) (put ob o-failure failure)
-                         (when cached?
-                           (push! (:hosts rt) (doto (slots 2) (put 0 ob) (put 1 (a node n-value))))
-                           (when-not (reactive? (current node)) (end-ob! rt ob)))
-                         (boundary! rt (when (:audit rt) {:t :t04 :w (:world rt) :e (:id handle) :tok (a (:token handle) t-id) :mode :callback}))
-                         ob)))]
-      (drain! rt)
-      (fn []
-        (locked rt
-                (end-ob! rt ob)
-                (boundary! rt (when (:audit rt) {:t :unsubscribe :w (:world rt) :o [:o (a ob o-id)]})))
-        (drain! rt)))))
+  (try
+    (observe-token! (execution-runtime requested) (:id handle) (:token handle) (:body handle) success failure)
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence handle) :cljs nil))))
+
+(defn invoke-computation!
+  "Typed public invocation; token identity is local to the runtime family."
+  [requested target id body success failure]
+  (try
+    (admit-world-switch! requested)
+    (let [rt requested]
+      (locked rt
+              (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+                (throw (ex-info "Foreign invocation is outside this slice" {:id id}))))
+      (observe-token! rt id (portable-token! rt target id false) body success failure))
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
 
 (defn- source-node! [rt source unwinding?]
   (let [node (find! (:nodes rt) (:id source))]
@@ -1296,7 +1386,7 @@
             (let [child (assoc (runtime {:audit? (boolean (:audit rt)) :world-id world})
                                :gate (:gate rt) :family (:family rt) :family-id (:family-id rt) :parent rt
                                :events (:events rt) :hosts (:hosts rt) :posts (:posts rt) :ready (:ready rt) :draining (:draining rt)
-                               :serial (:serial rt) :thread (:thread rt) :gc (:gc rt)
+                               :serial (:serial rt) :thread (:thread rt) :gc (:gc rt) :home (:home rt)
                                :audit (:audit rt) :tokens (:tokens rt)
                                :lineage {:parent (:world rt) :root (get-in rt [:lineage :root])
                                          :mode :following :cut nil :basis nil})
