@@ -3,7 +3,7 @@
    node --expose-gc. SPINDEL_HEAP_BURSTS sets comma-separated burst sizes.
    This reports retained heap after collection, not total allocated bytes."
   (:require [clojure.string :as str]
-            [org.replikativ.spindel.compact-runtime :as c :include-macros true]))
+            [org.replikativ.spindel.engine.impl.owned :as c :include-macros true]))
 
 (defn- pause [] (js/Promise. (fn [resolve _] (js/setImmediate resolve))))
 

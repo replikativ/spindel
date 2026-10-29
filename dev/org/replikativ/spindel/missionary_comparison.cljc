@@ -25,7 +25,7 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
             [org.replikativ.spindel.kernel-runtime :as k #?@(:cljs [:include-macros true])]
-            [org.replikativ.spindel.compact-runtime :as c #?@(:cljs [:include-macros true])]
+            [org.replikativ.spindel.engine.impl.owned :as c #?@(:cljs [:include-macros true])]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]])

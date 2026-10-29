@@ -1,11 +1,10 @@
-(ns org.replikativ.spindel.compact-runtime
-  "Experimental owned-object CPS engine. Canonical maps are diagnostic output,
+(ns org.replikativ.spindel.engine.impl.owned
+  "Owned-object CPS engine under construction. Canonical maps are diagnostic output,
   never the live representation. Supports the local reactive lifetime slice."
   (:refer-clojure :exclude [await assoc! dissoc! pop!])
-  #?(:cljs (:require-macros [org.replikativ.spindel.compact-runtime :refer [a put locked each! each-copy! fields! with-activation]]))
+  #?(:cljs (:require-macros [org.replikativ.spindel.engine.impl.owned :refer [a put locked each! each-copy! fields! with-activation]]))
   (:require [is.simm.partial-cps.async :as cps]
-            [org.replikativ.spindel.incremental.interval :as iv]
-            #?(:clj [org.replikativ.spindel.spin.cps :as compiler])))
+            [org.replikativ.spindel.incremental.interval :as iv]))
 
 #?(:clj (defonce ^:private activation-local (ThreadLocal.))
    :cljs (def ^:private active-frame nil))
@@ -170,7 +169,7 @@
 (defrecord Delivery [family world obligation])
 (defrecord RootOwner [id])
 (defrecord Failure [error])
-(defrecord CompactRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
+(defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                            serial thread world root family parent tickets lineage gc family-id owner-root])
 (def w [:w 0])
 (def root [:root w])
@@ -184,7 +183,7 @@
   ([] (runtime {}))
   ([{:keys [audit? world-id] :or {world-id w}}]
    (let [family (id-dict)
-         rt (->CompactRuntime
+         rt (->OwnedRuntime
              #?(:clj (Object.) :cljs nil) (id-dict) (dict) (queue) (queue) (queue)
              #?(:clj (java.util.PriorityQueue.
                       11 (reify java.util.Comparator
@@ -600,15 +599,15 @@
      (defn bp-await [ctx r e] (breakpoint `await-effect! true ctx r e))
      (defn bp-park [ctx r e] (breakpoint `park-effect! false ctx r e))
      (defmacro cspin [rt id & body]
-       `(make-spin ~rt ~id ~(compiler/build-cps-fn
+       `(make-spin ~rt ~id ~((requiring-resolve 'org.replikativ.spindel.spin.cps/build-cps-fn)
                              (map #(binding-sites % []) body)
                              (merge cps/breakpoints
-                                    {'org.replikativ.spindel.compact-runtime/track
-                                     'org.replikativ.spindel.compact-runtime/bp-track
-                                     'org.replikativ.spindel.compact-runtime/await
-                                     'org.replikativ.spindel.compact-runtime/bp-await
-                                     'org.replikativ.spindel.compact-runtime/park
-                                     'org.replikativ.spindel.compact-runtime/bp-park}) &env)))))
+                                    {'org.replikativ.spindel.engine.impl.owned/track
+                                     'org.replikativ.spindel.engine.impl.owned/bp-track
+                                     'org.replikativ.spindel.engine.impl.owned/await
+                                     'org.replikativ.spindel.engine.impl.owned/bp-await
+                                     'org.replikativ.spindel.engine.impl.owned/park
+                                     'org.replikativ.spindel.engine.impl.owned/bp-park}) &env)))))
 
 (defn- schedule! [rt node ob]
   (put node n-pending-generation (a (current node) r-gen))
