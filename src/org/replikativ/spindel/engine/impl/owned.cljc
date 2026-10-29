@@ -285,7 +285,7 @@
                             (when-not (or (when-let [live (find! (a node n-runs) gen)] (not= :unwinding (a live r-status)))
                                           (find! (a node n-creator-refs) gen))
                               (remove! (a run r-ancestors) gen)))))
-  #?(:clj (.clear ^java.util.Set (a (:counters rt) 8)) :cljs (.clear (a (:counters rt) 8))))
+  (clear-members! (a (:counters rt) 8)))
 
 (defn- creation! [run node]
   (add-run! run r-created node) (add! (a node n-created-by) run))
@@ -422,12 +422,19 @@
           (creator! rt node nil)
           (dissoc! (:nodes rt) (a node n-id))
           (put node n-body nil) (put node n-value nil) (put node n-resume nil)
-          #?(:clj (.clear ^java.util.Set (a node n-tokens)) :cljs (.clear (a node n-tokens)))))
+          (clear-members! (a node n-tokens))))
       (recur))))
 
 (defn- audit-derived-state! [rt]
   (when-not (zero? (count! empty-members))
     (throw (ex-info "Shared empty membership was mutated" {})))
+  #?(:cljs
+     (let [heap (:ready rt)]
+       (dotimes [index (.-length heap)]
+         (when (pos? index)
+           (let [parent (unsigned-bit-shift-right (dec index) 1)]
+             (when (> (a (aget heap parent) n-rank) (a (aget heap index) n-rank))
+               (throw (ex-info "Ready heap priority changed while queued" {:index index}))))))))
   (let [nodes (vec (values (:nodes rt)))
         sources (members)]
     (doseq [node nodes]
@@ -626,6 +633,19 @@
                                      'org.replikativ.spindel.engine.impl.owned/await-host
                                      'org.replikativ.spindel.engine.impl.owned/bp-await-host}) &env)))))
 
+(defn- ready-add! [rt node]
+  #?(:clj (.add ^java.util.PriorityQueue (:ready rt) node)
+     :cljs (let [heap (:ready rt) index (.-length heap) rank (a node n-rank)]
+             (.push heap node)
+             (loop [index index]
+               (if (pos? index)
+                 (let [parent (unsigned-bit-shift-right (dec index) 1)
+                       above (aget heap parent)]
+                   (if (> (a above n-rank) rank)
+                     (do (aset heap index above) (recur parent))
+                     (aset heap index node)))
+                 (aset heap index node))))))
+
 (defn- schedule! [rt node ob]
   (put node n-pending-generation (a (current node) r-gen))
   (let [previous (a node n-resume)]
@@ -633,8 +653,7 @@
       (put node n-resume ob)))
   (when-not (a node n-ready)
     (put node n-ready true)
-    #?(:clj (.add ^java.util.PriorityQueue (:ready rt) node)
-       :cljs (.push (:ready rt) node))))
+    (ready-add! rt node)))
 
 (defn- run-slots! [rt]
   (or (pop! (a (:counters rt) 0))
@@ -696,8 +715,13 @@
 
 (defn- rank! [run debtor]
   (when debtor
-    (let [node (a run r-node)]
-      (put node n-rank (max (long (a node n-rank)) (inc (long (a debtor n-rank))))))))
+    (let [node (a run r-node) rank (inc (long (a debtor n-rank)))]
+      (when (> rank (long (a node n-rank)))
+        ;; Both platform queues borrow node priorities. Rank is refined only
+        ;; after claiming a slice, never while its node remains queued.
+        (when (and (:audit (a node n-runtime)) (a node n-ready))
+          (throw (ex-info "Queued priority mutation" {:id (a node n-id)})))
+        (put node n-rank rank)))))
 
 (defn- register-track! [rt run order id resolve reject]
   (locked rt
@@ -928,9 +952,22 @@
 
 (defn- poll-ready! [rt]
   #?(:clj (.poll ^java.util.PriorityQueue (:ready rt))
-     :cljs (when (pos? (.-length (:ready rt)))
-             (.sort (:ready rt) (fn [x y] (- (a x n-rank) (a y n-rank))))
-             (.shift (:ready rt)))))
+     :cljs (let [heap (:ready rt) n (.-length heap)]
+             (when (pos? n)
+               (let [head (aget heap 0) tail (.pop heap) n (dec n)]
+                 (when (pos? n)
+                   (loop [index 0]
+                     (let [left (inc (* 2 index))]
+                       (if (< left n)
+                         (let [right (inc left)
+                               child (if (and (< right n) (< (a (aget heap right) n-rank)
+                                                             (a (aget heap left) n-rank))) right left)
+                               below (aget heap child)]
+                           (if (< (a below n-rank) (a tail n-rank))
+                             (do (aset heap index below) (recur child))
+                             (aset heap index tail)))
+                         (aset heap index tail)))))
+                 head)))))
 
 (declare drain!)
 (defn- finish-slice! [rt run]
@@ -1130,7 +1167,7 @@
             (doseq [node (vec (values (:nodes rt)))
                     :when (and (= :spin (a node n-kind)) (a node n-complete) (not (wanted? node)))]
               (doseq [token (items (a node n-tokens))] (add! (a token t-dropped) (:world rt)))
-              #?(:clj (.clear ^java.util.Set (a node n-tokens)) :cljs (.clear (a node n-tokens)))
+              (clear-members! (a node n-tokens))
               (mark! rt node))
             (boundary! rt (when (:audit rt) {:t :t18 :w (:world rt)})))))
 

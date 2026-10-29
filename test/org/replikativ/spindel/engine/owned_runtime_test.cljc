@@ -255,8 +255,8 @@
    (deftest source-release-during-swap-does-not-resurrect-it
      (let [rt (c/runtime {:audit? true}) holder (atom nil) ticket (c/ticket :waiting)
            s (c/cspin rt :owner
-               (reset! holder (c/signal rt :owned-source 0))
-               (c/park ticket))
+                      (reset! holder (c/signal rt :owned-source 0))
+                      (c/park ticket))
            entered (promise) release (promise)]
        (c/observe! rt s (fn [_]) (fn [_]))
        (let [worker (future
@@ -271,6 +271,28 @@
            (is (= "Released source" (deref worker 10000 nil)))
            (is (= before (c/snapshot-family rt))))
          (verify-boundaries! rt)))))
+
+(deftest varied-depth-ready-work-stays-glitch-free
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+        edges [[] [] [0] [1] [0 1] [2 4] [3] [6 1]
+               [5 7] [4 6] [8 9] [2 3] [10 11] [7 11] [12 13] [9 14]]
+        spins (reduce (fn [spins i]
+                        (let [children (mapv spins (nth edges i))]
+                          (conj spins
+                                (c/cspin rt [:node i]
+                                         (loop [children children total (iv/get-new (c/track source))]
+                                           (if-let [child (first children)]
+                                             (recur (next children) (mod (+ total (c/await child)) 100000))
+                                             total)))))) [] (range (count edges)))
+        values (mapv (fn [_] (atom [])) spins)
+        subscriptions (mapv (fn [s values] (c/observe! rt s #(swap! values conj %) #(throw %))) spins values)
+        expected (fn [input]
+                   (reduce (fn [values deps]
+                             (conj values (mod (reduce + input (map values deps)) 100000))) [] edges))]
+    (doseq [input [1 2]] (c/set-signal! rt source input))
+    (is (= (apply mapv vector (map expected [0 1 2])) (mapv deref values)))
+    (verify-boundaries! rt)
+    (doseq [unsubscribe subscriptions] (unsubscribe))))
 
 (deftest compact-diamond
   (let [rt (c/runtime {:audit? true})
