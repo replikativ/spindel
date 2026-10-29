@@ -2,7 +2,7 @@
   "Experimental owned-object CPS engine. Canonical maps are diagnostic output,
   never the live representation. Supports the local reactive lifetime slice."
   (:refer-clojure :exclude [await assoc! dissoc! pop!])
-  #?(:cljs (:require-macros [org.replikativ.spindel.compact-runtime :refer [locked each! each-copy! fields! with-activation]]))
+  #?(:cljs (:require-macros [org.replikativ.spindel.compact-runtime :refer [a put locked each! each-copy! fields! with-activation]]))
   (:require [is.simm.partial-cps.async :as cps]
             [org.replikativ.spindel.incremental.interval :as iv]
             #?(:clj [org.replikativ.spindel.spin.cps :as compiler])))
@@ -20,8 +20,18 @@
        `(let [previous# (.get ^ThreadLocal activation-local)]
           (.set ^ThreadLocal activation-local ~frame)
           (try ~@body (finally (.set ^ThreadLocal activation-local previous#)))))))
-(defn- a [xs i] (aget ^objects xs i))
-(defn- put [xs i value] (aset ^objects xs i value) value)
+#?(:clj
+   (do
+     (defmacro a [xs i]
+       (if (:ns &env)
+         `(cljs.core/aget ~xs ~i)
+         (let [read `(let [^"[Ljava.lang.Object;" array# ~xs] (aget array# (int ~i)))]
+           (if-let [tag (:tag (meta &form))]
+             (let [value (with-meta (gensym "value") {:tag tag})]
+               `(let [~value ~read] ~value))
+             read))))
+     (defmacro put [xs i value]
+       (if (:ns &env) `(cljs.core/aset ~xs ~i ~value) `(let [^"[Ljava.lang.Object;" array# ~xs] (aset array# (int ~i) (clojure.lang.RT/box ~value)))))))
 (defn- slots [n] #?(:clj (object-array n) :cljs (make-array n)))
 #?(:cljs (deftype IDMap [buckets]))
 (defn- dict [] #?(:clj (java.util.HashMap.) :cljs (js/Map.)))
@@ -136,7 +146,7 @@
 (defrecord Delivery [family world obligation])
 (defrecord RootOwner [id])
 (defrecord Failure [error])
-(defrecord CompactRuntime [gate nodes obligations events hosts work ready draining counters audit tokens
+(defrecord CompactRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                            serial thread world root family parent tickets lineage gc family-id owner-root])
 (def w [:w 0])
 (def root [:root w])
@@ -254,7 +264,8 @@
 (defn- end-ob! [rt ob]
   (when (a ob o-live)
     (put ob o-live false)
-    (dissoc! (:obligations rt) (a ob o-id))
+    (when (= :await-once (a ob o-kind))
+      (dissoc! (:deliveries rt) (a ob o-id)))
     (when-let [run (a ob o-run)]
       (remove! (a run r-obs) ob)
       (when (reactive-kind? (a ob o-kind)) (reactive-delta! run -1))
@@ -294,12 +305,12 @@
     ;; Dead obligations carry their own creditor node/generation. They never
     ;; interpret a recycled run's identity when dispatching an old trigger.
     (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
-      (if (a run r-wide)
-        (put run field (members))
-        #?(:clj (.clear ^java.util.Set (a run field)) :cljs (.clear (a run field)))))
+             (if (a run r-wide)
+               (put run field (members))
+               #?(:clj (.clear ^java.util.Set (a run field)) :cljs (.clear (a run field)))))
     (put run r-wide nil)
     (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives]]
-      (put run field nil))
+             (put run field nil))
     (let [pool (a (:counters rt) 0)]
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
         (push! pool run)))))
@@ -577,7 +588,7 @@
   (or (pop! (a (:counters rt) 0))
       (let [run (slots 19)]
         (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
-          (put run field (members)))
+                 (put run field (members)))
         run)))
 
 (defn- start! [rt node owner reentry?]
@@ -613,7 +624,7 @@
     (put ob o-standing (boolean (#{:track :await-reactive :callback} kind)))
     (put ob o-resolve resolve) (put ob o-reject reject) (put ob o-order order)
     (put ob o-slot (if (= kind :track) :consumed :armed)) (put ob o-live true)
-    (assoc! (:obligations rt) id ob)
+    (when (= :await-once kind) (assoc! (:deliveries rt) id ob))
     (when run (add-run! run r-obs ob)
           (when (reactive-kind? kind) (reactive-delta! run 1)))
     (when debtor (add! (a debtor n-dependents) ob) (mark! rt debtor)) ob))
@@ -729,7 +740,7 @@
     (when-not (and (identical? (:family-id rt) (:family delivery)) (= (:world rt) (:world delivery)))
       (throw (ex-info "Delivery belongs to a different runtime family or world" {:world (:world delivery)})))
     (locked rt
-            (when-let [ob (find! (:obligations rt) (:obligation delivery))]
+            (when-let [ob (find! (:deliveries rt) (:obligation delivery))]
               (let [run (a ob o-run)]
                 (when (and (= :armed (a ob o-slot)) (#{:parked :inherited} (a run r-status)))
                   (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
@@ -991,6 +1002,13 @@
      :generation-clock (into {} (for [world worlds [id n] (map-value (a (:counters world) 3))]
                                   [[(:world world) id] n]))}))
 
+(defn- all-obligations [rt]
+  ;; Internal graph links already own reactive registrations. Only ticket
+  ;; deliveries need lookup by a host-visible registration number.
+  (concat (mapcat #(items (a % r-obs)) (items (a (:counters rt) 6)))
+          (for [node (values (:nodes rt)) ob (items (a node n-dependents))
+                :when (nil? (a ob o-run))] ob)))
+
 (defn snapshot [rt]
   (locked rt
           {:global (global-view rt) :lineage (:lineage rt) :root (:root rt) :status :live :admission :open :seal-seq nil
@@ -1013,7 +1031,7 @@
                                                    :spawned (set (map run-id (items (a run r-spawned))))}
                                             (= :unwinding (a run r-status)) (assoc :retired? true :anchor (a run r-anchor))
                                             (a run r-origin) (assoc :origin (a run r-origin) :source-world (a run r-source-world)))]))
-           :obligations (into {} (for [ob (values (:obligations rt))]
+           :obligations (into {} (for [ob (all-obligations rt)]
                                    [[:o (a ob o-id)]
                                     (cond-> {:kind (a ob o-kind) :debtor (if-let [debtor (a ob o-debtor)]
                                                                            [:entity (:world (a debtor n-runtime)) (a debtor n-id)]
@@ -1083,7 +1101,7 @@
                      (let [copy (node! child (a node n-id) (a node n-kind) (:owner-root child))]
                        (assoc! node-map node copy)
                        (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank]]
-                         (put copy field (a node field)))
+                                (put copy field (a node field)))
                        (put copy n-origin :inherited) (put copy n-source-world (:world rt))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
@@ -1094,7 +1112,7 @@
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-origin :inherited) (put copy r-source-world (:world rt))
                   (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
-                    (put copy field (members)))
+                           (put copy field (members)))
                   (each! [gen (a run r-ancestors)] (add-run! copy r-ancestors gen))
                   (add! (a (:counters child) 8) node)
                   (assoc! (a node n-runs) (a copy r-gen) copy)
@@ -1117,13 +1135,13 @@
                   (each! [ob (a run r-obs)]
                          (let [clone (slots 19)]
                            (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host]]
-                             (put clone field (a ob field)))
+                                    (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
                            (put clone o-origin :inherited) (put clone o-source-world (:world rt))
                            (add-run! copy r-obs clone)
                            (when (reactive-kind? (a clone o-kind)) (reactive-delta! copy 1))
-                           (assoc! (:obligations child) (a clone o-id) clone)
+                           (when (= :await-once (a clone o-kind)) (assoc! (:deliveries child) (a clone o-id) clone))
                            (let [waiters (or (find! (:tickets child) (a clone o-host))
                                              (assoc! (:tickets child) (a clone o-host) (members)))]
                              (add! waiters clone))))))
