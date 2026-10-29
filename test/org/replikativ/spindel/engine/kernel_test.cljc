@@ -24,7 +24,8 @@
               (#{"org.replikativ.spindel.engine.kernel"
                  "org.replikativ.spindel.lifetime.model"} (namespace x)))
        (keyword "error" (name x)) x))
-   (select-keys state [:worlds :env :serial :events :generation-clock :clocks :host-delivered])))
+   (select-keys state [:worlds :env :serial :events :generation-clock :clocks :host-delivered
+                       :registry :caps :durable :known-worlds :lineages :cuts :records])))
 
 (defn- compare-walk! [initial actions]
   (doseq [[cells? seal?] [[false true] [true true] [true false]]]
@@ -266,3 +267,83 @@
 
 (deftest prefix-cache-survives-successor-completion
   (compare-walk! (model/init-state) (handoff/prefix-cache-actions)))
+
+(deftest following-fork-and-inherited-activation
+  (let [v [:w 1]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t02 :w w :e signal :value 1}
+      {:t :t01 :w w :e parent :tok [:tok 0]}
+      {:t :t04 :w w :e parent :tok [:tok 0] :mode :callback}
+      {:t :t05 :w w :r [parent 1] :kind :track :debtor [:entity w signal]}
+      {:t :t05 :w w :r [parent 1] :kind :await-once :debtor [:host :outside]}
+      {:t :t19 :w w :v v :k [:k 0] :scope [:root w] :systems #{}}
+      {:t :t06 :w v :o [:o 2] :value 42}
+      {:t :t07 :w v :r [parent 1] :value 42}
+      {:t :t08 :w v :e parent :value 42}
+      {:t :unsubscribe :w v :o [:o 1]}
+      {:t :t36 :w w}])))
+
+(deftest following-fork-preserves-owned-scopes
+  (let [v [:w 1] scope [:scope 0]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t04 :w w :e parent :mode :callback}
+      {:t :t12 :w w :scope scope :parent [parent 1]}
+      {:t :t02 :w w :scope scope :e signal :value 1}
+      {:t :t05 :w w :r [parent 1] :kind :external :debtor [:host :outside]}
+      {:t :t19 :w w :v v :k [:k 0] :scope [:root w] :systems #{:a}}
+      {:t :t06 :w v :o [:o 1] :value 42}
+      {:t :t13 :w v :scope scope}
+      {:t :t07 :w v :r [parent 1] :value 42}
+      {:t :t08 :w v :e parent :value 42}])))
+
+(deftest foreign-cold-request-and-delayed-cleanup
+  (let [v [:w 1]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t19 :w w :v v :k [:k 0] :scope [:root w] :systems #{}}
+      {:t :t04 :w v :e parent :mode :callback}
+      {:t :t05 :w v :r [parent 1] :kind :await-once :debtor [:entity w child]}
+      {:t :t37 :w w}
+      {:t :t07 :w w :r [child 1] :value 42}
+      {:t :t08 :w v :e child :debtor-world w :value 42}
+      {:t :t36 :w w}
+      {:t :t06 :w v :o [:o 1] :value :duplicate}])))
+
+(deftest inherited-run-is-retired-before-a-local-invocation
+  (let [v [:w 1]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t04 :w w :e parent :mode :callback}
+      {:t :t05 :w w :r [parent 1] :kind :await-once :debtor [:host :outside]}
+      {:t :t19 :w w :v v :k [:k 0] :scope [:root w] :systems #{}}
+      {:t :t04 :w v :e parent :mode :callback}
+      {:t :t06 :w v :o [:o 1] :value :late}
+      {:t :t07 :w v :r [parent 2] :value 42}
+      {:t :queued :w v}])))
+
+(deftest foreign-callback-registers-in-the-debtor-world
+  (let [v [:w 1]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t04 :w w :e child :mode :callback}
+      {:t :t19 :w w :v v :k [:k 0] :scope [:root w] :systems #{}}
+      {:t :t04 :w v :e child :mode :callback}
+      {:t :queued :w w}
+      {:t :t07 :w w :r [child 1] :value 42}
+      {:t :queued :w w}
+      {:t :t04 :w v :e child :mode :callback}
+      {:t :queued :w w}])))
+
+(deftest debtor-cancellation-retires-inherited-bundle-members
+  (let [v [:w 1]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t04 :w w :e parent :mode :callback}
+      {:t :t05 :w w :r [parent 1] :kind :await-reactive :debtor [:entity w child]}
+      {:t :t19 :w w :v v :k [:k 0] :scope [:root w] :systems #{}}
+      {:t :t11 :w w :r [child 1]}
+      {:t :queued :w v}
+      {:t :t07 :w v :r [parent 1] :value 42}
+      {:t :queued :w v}])))

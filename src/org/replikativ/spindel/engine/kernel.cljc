@@ -1,7 +1,8 @@
 (ns org.replikativ.spindel.engine.kernel
   "Transition kernel under construction. Owns canonical lifetime rows and
   indexes in an owned store; never invokes user continuations under its gate."
-  (:require [org.replikativ.spindel.engine.owned-store :as store]
+  (:require [clojure.set :as set]
+            [org.replikativ.spindel.engine.owned-store :as store]
             [org.replikativ.spindel.engine.owned-rows :as cells]))
 
 (def ^:private environment ::environment)
@@ -23,7 +24,10 @@
         indexes (reduce-kv (fn [tables o ob]
                              (-> tables
                                  (update (creditor-table (:creditor ob)) (fnil index-add {}) (creditor-id (:creditor ob)) o)
-                                 (update (debtor-table (:id world) (:debtor ob)) (fnil index-add {}) (debtor-id (:id world) (:debtor ob)) o)))
+                                 (update (debtor-table (:id world) (:debtor ob)) (fnil index-add {}) (debtor-id (:id world) (:debtor ob)) o)
+                                 (cond-> (and (= :entity (first (:debtor ob)))
+                                              (not= (:id world) (second (:debtor ob))))
+                                   (update :by-debtor-world (fnil index-add {}) (second (:debtor ob)) o))))
                            {} obs)]
     (merge (select-keys world world-tables)
            indexes
@@ -57,19 +61,20 @@
                         (if (= environment w) worlds
                             (assoc worlds w
                                    (merge (get-in tables [:header :world])
-                                          (select-keys tables world-tables)))))
+                                          (merge (zipmap world-tables (repeat {})) (select-keys tables world-tables))))))
                       {} view))))
 
 (defn create-kernel
   ([] (create-kernel {}))
   ([options]
-   (let [w [:w 0]]
-     (restore {:worlds {w {:id w :lineage {:parent nil :root w :mode :root :cut nil :basis nil}
+   (let [w [:w 0]
+         lineage {:parent nil :root w :mode :root :cut nil :basis nil}]
+     (restore {:worlds {w {:id w :lineage lineage
                            :status :live :admission :open :seal-seq nil :root [:root w]
                            :scopes {[:root w] {:kind :world-root :parent nil :status :open}}
                            :entities {} :runs {} :obligations {} :releasing #{}
                            :fdeps #{} :pins #{} :queue []}}
-               :registry #{w}
+               :registry #{w} :known-worlds #{w} :lineages {w lineage}
                :env {:handles {} :threads {:host {:world w :scope nil :run nil
                                                   :read-permits #{} :excl-permits []}}
                      :native {} :outside []}
@@ -275,13 +280,72 @@
 (defn- add-obligation! [ctx w o ob]
   (put! ctx w :obligations o ob)
   (index-add! ctx w (creditor-table (:creditor ob)) (creditor-id (:creditor ob)) o)
-  (index-add! ctx w (debtor-table w (:debtor ob)) (debtor-id w (:debtor ob)) o))
+  (index-add! ctx w (debtor-table w (:debtor ob)) (debtor-id w (:debtor ob)) o)
+  (when (and (= :entity (first (:debtor ob))) (not= w (second (:debtor ob))))
+    (index-add! ctx w :by-debtor-world (second (:debtor ob)) o)))
+
+(defn- pending-events [ctx w]
+  (concat (:queue (header ctx w))
+          (map :event (filter #(= w (:w %)) (get-in (root-state ctx) [:env :outside])))))
+
+(defn- cancelling? [ctx w o]
+  (some #(= o (:cancelled %)) (pending-events ctx w)))
+
+(defn- pending-start? [ctx v o ob]
+  (let [[kind w e] (:debtor ob)]
+    (and (= :entity kind) (not= w v)
+         (some #(or (and (= e (:start-for %)) (= v (:creditor-world %)) (= o (:o %)))
+                    (and (= v (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
+               (pending-events ctx w)))))
+
+(defn- cleanup-dependency! [ctx dw fd]
+  (when (and (not= :released (:status (header ctx dw)))
+             (not (contains? (:releasing (header ctx dw)) fd)))
+    (header-edit! ctx dw update :fdeps disj fd)
+    (header-edit! ctx dw update :releasing conj fd)
+    (enqueue! ctx dw {:fdep-ended fd})
+    (doseq [e (if (= :bundle (first fd)) (nth fd 2) [(first fd)])]
+      (mark! ctx dw e))))
+
+(defn- sync-bundle! [ctx dw v]
+  (let [fds (:fdeps (header ctx dw))
+        old (first (filter #(and (= :bundle (first %)) (= v (second %))) fds))]
+    ;; Every admitted inherited foreign edge is already covered by a bundle.
+    ;; Without one there is nothing to synchronize or release.
+    (when old
+      (let [debtors (set (for [o (read-row ctx v :by-debtor-world dw)
+                               :let [ob (read-row ctx v :obligations o)]
+                               :when (and (= :run (first (:creditor ob)))
+                                          (not (pending-start? ctx v o ob)) (not (cancelling? ctx v o))
+                                          (= :inherited (:status (read-row ctx v :runs (nth (:creditor ob) 2)))))]
+                           (nth (:debtor ob) 2)))
+            ordinary (set (for [[e target _] fds :when (and (not= :bundle e) (= v target))] e))
+            ended (set/difference (nth old 2) debtors ordinary)]
+        (header-edit! ctx dw update :fdeps disj old)
+        (when (seq debtors) (header-edit! ctx dw update :fdeps conj [:bundle v debtors]))
+        (when (seq ended) (cleanup-dependency! ctx dw [:bundle v ended]))))))
+
+(defn- add-fdep! [ctx w o]
+  (let [ob (read-row ctx w :obligations o)
+        [kind dw e] (:debtor ob)]
+    (when (and (= :entity kind) (not= w dw) (= :run (first (:creditor ob)))
+               (not= :released (:status (header ctx dw)))
+               (not (pending-start? ctx w o ob)) (not (cancelling? ctx w o)))
+      (if (= :inherited (:status (read-row ctx w :runs (nth (:creditor ob) 2))))
+        (let [old (first (filter #(and (= :bundle (first %)) (= w (second %)))
+                                 (:fdeps (header ctx dw))))]
+          (header-edit! ctx dw update :fdeps disj old)
+          (header-edit! ctx dw update :fdeps conj [:bundle w (conj (nth old 2 #{}) e)]))
+        (header-edit! ctx dw update :fdeps conj [e w o]))
+      (mark! ctx dw e))))
 
 (defn- end-obligation! [ctx w o cause]
   (when-let [ob (read-row ctx w :obligations o)]
     (delete! ctx w :obligations o)
     (index-remove! ctx w (creditor-table (:creditor ob)) (creditor-id (:creditor ob)) o)
     (index-remove! ctx w (debtor-table w (:debtor ob)) (debtor-id w (:debtor ob)) o)
+    (when (and (= :entity (first (:debtor ob))) (not= w (second (:debtor ob))))
+      (index-remove! ctx w :by-debtor-world (second (:debtor ob)) o))
     (if (:diagnostics? ctx)
       (emit! ctx {:event :obligation-exit :world w :o o :ob ob :cause cause})
       (command! ctx {:op :release-obligation :world w :o o :cause cause}))
@@ -289,12 +353,11 @@
       (emit! ctx {:event :host-delivery :world w :o o :value ::cancelled}))
     (let [[kind dw e] (:debtor ob)
           fd [e w o]]
-      (when (and (= :entity kind) (not= w dw)
-                 (= :run (first (:creditor ob)))
-                 (contains? (:fdeps (header ctx dw)) fd))
-        (header-edit! ctx dw update :fdeps disj fd)
-        (header-edit! ctx dw update :releasing conj fd)
-        (enqueue! ctx dw {:fdep-ended fd})))
+      (when (and (= :entity kind) (not= w dw) (= :run (first (:creditor ob)))
+                 (not= :released (:status (header ctx dw))))
+        (when (contains? (:fdeps (header ctx dw)) fd)
+          (cleanup-dependency! ctx dw fd))
+        (sync-bundle! ctx dw w)))
     (when (and (= :external (:kind ob)) (:token ob))
       (root-edit! ctx assoc-in [:env :waiters (:token ob) :armed?] true))
     ob))
@@ -494,6 +557,51 @@
               :when (= r (:creator (read-row ctx w :entities e)))]
         (edit! ctx w :entities e assoc :creator nil)))))
 
+(defn- foreign-creditors [ctx w e]
+  (set
+   (concat
+    (mapcat (fn [[tag v payload]]
+              (cond
+                (= tag e) [[v payload]]
+                (and (= :bundle tag) (contains? payload e))
+                (map #(vector v %) (entity-obligations ctx v w e))
+                :else [])) (:fdeps (header ctx w)))
+    (mapcat (fn [event]
+              (cond
+                (= e (:start-for event)) [[(:creditor-world event) (:o event)]]
+                (:join-bundle event)
+                (for [[o member] (:members event) :when (= e (:debtor member))]
+                  [(:join-bundle event) o])
+                :else [])) (pending-events ctx w)))))
+
+(defn- cancel-foreign-debtor! [ctx w v o]
+  (let [e (nth (:debtor (read-row ctx v :obligations o)) 2)
+        remove-request (fn [event]
+                         (cond
+                           (and (= v (:creditor-world event)) (= o (:o event)) (:start-for event)) nil
+                           (= v (:join-bundle event))
+                           (let [members (dissoc (:members event) o)]
+                             (when (seq members)
+                               (assoc event :members members :debtors (set (map :debtor (vals members))))))
+                           :else event))]
+    (header-edit! ctx w update :queue #(vec (keep remove-request %)))
+    (root-edit! ctx update-in [:env :outside]
+                #(vec (keep (fn [held]
+                              (if (= w (:w held))
+                                (when-let [event (remove-request (:event held))] (assoc held :event event)) held)) %)))
+    (header-edit! ctx w update :fdeps disj [e v o])
+    (enqueue! ctx v {:cancelled o})
+    (when-not (some (fn [other]
+                      (let [ob (read-row ctx v :obligations other)]
+                        (and (not= o other) (= :run (first (:creditor ob)))
+                             (= :inherited (:status (read-row ctx v :runs (nth (:creditor ob) 2))))
+                             (not (pending-start? ctx v other ob)) (not (cancelling? ctx v other)))))
+                    (entity-obligations ctx v w e))
+      (header-edit! ctx w update :fdeps
+                    #(set (keep (fn [[tag target debtors :as fd]]
+                                  (if (and (= :bundle tag) (= v target))
+                                    (when (seq (disj debtors e)) [:bundle v (disj debtors e)]) fd)) %))))))
+
 (defn- supersede! [ctx w r]
   (when-let [rr (read-row ctx w :runs r)]
     (require! (#{:completed :stale} (:status rr)) ::not-predecessor {:r r})
@@ -527,9 +635,8 @@
                  (when (= :run (first (:creditor ob)))
                    (resume! ctx {:w w :o o :value ::cancelled}))
                  (end-obligation! ctx w o :cancel-delivered)))
-             (doseq [[x v o :as fd] (:fdeps (header ctx w)) :when (= x e)]
-               (header-edit! ctx w update :fdeps disj fd)
-               (enqueue! ctx v {:cancelled o :value ::cancelled}))
+             (doseq [[v o] (foreign-creditors ctx w e)]
+               (cancel-foreign-debtor! ctx w v o))
              (when (= :stale (:status (read-row ctx w :runs (:pred rr))))
                (supersede! ctx w (:pred rr))))
            (release-owned! ctx w r)
@@ -637,6 +744,9 @@
 (defn- start-run! [ctx w e scope cause]
   (require! (= :live (:status (header ctx w))) ::sealed {:world w})
   (require! (open? ctx w scope) ::closed-scope {:world w :scope scope})
+  (doseq [r (read-row ctx w :runs-by-spin e)
+          :when (= :inherited (:status (read-row ctx w :runs r)))]
+    (cancel-run! ctx w r nil))
   (let [current (current-run ctx w e)
         pred (when-not (= :unwinding (:status (read-row ctx w :runs current))) current)
         n (inc (max (or (second pred) 0)
@@ -645,8 +755,6 @@
         entry-reasons (when (:diagnostics? ctx) (reasons ctx w e))
         seqno (inc (max (get (header ctx w) :seq 0)
                         (get-in (root-state ctx) [:clocks w] 0)))]
-    (require! (not= :inherited (:status (read-row ctx w :runs pred)))
-              ::inherited-retirement-not-implemented {:w w :r pred})
     (root-edit! ctx assoc-in [:generation-clock [w e]] n)
     (header-edit! ctx w assoc :seq seqno)
     (put! ctx w :runs r {:spin e :owner scope :pred pred :status :running
@@ -834,8 +942,7 @@
         (add-obligation! ctx w o ob)
         (if foreign-cold?
           (enqueue! ctx dw {:start-for e :creditor-world w :o o :tok tok})
-          (when (and (= dk :entity) (not= w dw))
-            (header-edit! ctx dw update :fdeps conj [e w o])))
+          (add-fdep! ctx w o))
         (case kind
           :external
           (do (root-edit! ctx assoc-in [:env :waiters token]
@@ -857,12 +964,29 @@
     (let [[ck _ r] (:creditor ob)
           rr (read-row ctx w :runs r)]
       (when (and (= :armed (:slot ob)) (= ck :run) (= :inherited (:status rr)))
-        (require! false ::inherited-activation-not-implemented {:w w :o o}))
-      (when (and (= :armed (:slot ob)) (= ck :run) (= :parked (:status rr)))
+        (require! (= :live (:status (header ctx w))) ::not-live {:world w})
+        (require! (= :open (:admission (header ctx w))) ::not-admitted {:world w}))
+      (when (and (= :armed (:slot ob)) (= ck :run) (#{:parked :inherited} (:status rr)))
         (if (:standing? ob)
           (edit! ctx w :obligations o assoc :slot :consumed)
           (end-obligation! ctx w o :delivered))
         (edit! ctx w :runs r assoc :status :running)
+        (doseq [id (read-row ctx w :by-run-creditor r)
+                :let [other (read-row ctx w :obligations id)
+                      [_ dw _] (:debtor other)
+                      token [:cancel w id]]]
+          (add-fdep! ctx w id)
+          (when (and dw (not= dw w)) (sync-bundle! ctx dw w))
+          (when (:dormant? other) (edit! ctx w :obligations id assoc :dormant? false))
+          (case (:kind other)
+            :timer (edit! ctx w :obligations id assoc :timer-armed? true)
+            :external
+            (do (edit! ctx w :obligations id assoc :token token)
+                (root-edit! ctx assoc-in [:env :waiters token]
+                            {:world w :o id :registered? true :armed? false})
+                (root-edit! ctx assoc-in [:env :native token]
+                            {:owner [w r] :state :running :recovery :retry}))
+            nil))
         (when (:diagnostics? ctx)
           (emit! ctx {:event :resume :world w :r r :o o
                       :one-shot? (not (:standing? ob))
@@ -907,11 +1031,142 @@
                     (and (:completed? (read-row ctx dw :entities e))
                          (not (reactive? ctx dw (current-run ctx dw e)))))
             (end-obligation! ctx w o :delivered)))
-        (if (and (:standing? ob) (= :consumed (:slot ob)))
+        (if (and (:standing? ob) (= :consumed (:slot ob))
+                 (not= :inherited (:status (read-row ctx w :runs (nth (:creditor ob) 2)))))
           (reenter! ctx {:w w :e (first (nth (:creditor ob) 2))
                          :cause (if (= :track (:kind ob)) :track :reactive)
                          :order (:order ob) :resume-o o})
           (resume! ctx {:w w :o o :value value}))))))
+
+(defn- fork-following! [ctx {:keys [w v k scope systems] :or {systems #{:a :b}}}]
+  (require! (= :live (:status (header ctx w))) ::not-live {:world w})
+  (require! (open? ctx w scope) ::closed-scope {:scope scope})
+  (require! (not (contains? (:known-worlds (root-state ctx)) v)) ::world-id-reused {:world v})
+  (let [copy-row #(assoc (cells/value %) :origin :inherited :source-world w)
+        runs (into {} (for [[r rr] (store/table-view (:tx ctx) w :runs)
+                            :when (= :parked (:status rr))]
+                        [r (assoc (copy-row rr) :status :inherited :owner [:root v])]))
+        scopes (loop [parents (set (keys runs)) found {}]
+                 (let [children (into {} (for [[id sr] (store/table-view (:tx ctx) w :scopes)
+                                               :when (contains? parents (:parent sr))]
+                                           [id (copy-row sr)]))]
+                   (if (empty? children) found
+                       (recur (set (keys children)) (merge found children)))))
+        owners (into (set (keys runs)) (keys scopes))
+        es (into (set (map :spin (vals runs)))
+                 (for [[e er] (store/table-view (:tx ctx) w :entities)
+                       :when (or (contains? owners (:owner er)) (contains? runs (:creator er)))] e))
+        runs (into {} (for [[r rr] runs]
+                        [r (-> rr (update :creations set/intersection es)
+                               (update :spawned set/intersection (set (keys runs))))]))
+        entities (into {} (for [e es :let [er (read-row ctx w :entities e)]]
+                            [e (cond-> (assoc (copy-row er) :owner
+                                              (if (contains? owners (:owner er)) (:owner er) [:root v]))
+                                 (= :fork (:kind er)) (assoc :reference? true))]))
+        obligations (into {} (for [[o ob] (store/table-view (:tx ctx) w :obligations)
+                                   :when (or (contains? runs (nth (:creditor ob) 2 nil))
+                                             (and (= :host (first (:creditor ob)))
+                                                  (contains? es (nth (:debtor ob) 2 nil))
+                                                  (= :causal-follow (get-in ob [:filter :mode]))))]
+                               [o (cond-> (copy-row ob)
+                                    (= :run (first (:creditor ob)))
+                                    (assoc :creditor [:run v (nth (:creditor ob) 2)])
+                                    (#{:timer :external} (:kind ob)) (assoc :token nil :dormant? true)
+                                    (= :host (first (:creditor ob)))
+                                    (assoc :cont nil :descriptor? true :debtor [:entity v (nth (:debtor ob) 2)]))]))
+        evidence (into {} (for [[o ob] obligations]
+                            [o {:phase (cond (cancelling? ctx w o) :cancelling
+                                             (pending-start? ctx w o ob) :pending-start
+                                             :else :admitted)
+                                :cancelled (first (filter #(= o (:cancelled %)) (pending-events ctx w)))
+                                :completions (vec (filter #(and (= (nth (:debtor ob) 2 nil) (:completion %))
+                                                                (= (second (:debtor ob)) (get % :debtor-world w)))
+                                                          (pending-events ctx w)))}]))
+        events (distinct (sort-by :seq
+                                  (mapcat (fn [[o ob]]
+                                            (let [{:keys [cancelled completions]} (get evidence o)]
+                                              (concat (when cancelled [cancelled])
+                                                      (map #(assoc % :debtor-world (second (:debtor ob))) completions))))
+                                          obligations)))
+        queue (mapv #(assoc %1 :seq %2) events (range 1 (inc (count events))))
+        child {:id v :lineage {:parent w :root (get-in (header ctx w) [:lineage :root])
+                               :mode :following :cut nil :basis nil}
+               :status :live :admission :open :seal-seq nil :root [:root v]
+               :scopes (assoc scopes [:root v] {:kind :fork :parent nil :status :open})
+               :entities entities :runs runs :obligations obligations
+               :releasing #{} :fdeps #{} :pins #{} :queue queue :seq (get (header ctx w) :seq 0)}
+        last-seq (reduce max (:seq child) (keep :seq queue))
+        durable? (boolean (seq (set/intersection systems (get-in (root-state ctx) [:model :durable-systems]))))
+        cap {:world v :scope systems :holder scope :disposition :open :published? true
+             :op nil :pred nil :successors [] :durable? durable?
+             :bases (into {} (for [system systems] [system [:base v system]]))}]
+    (doseq [[table rows] (encode-world child) [id row] rows]
+      (put! ctx v table id row))
+    (when (> last-seq (:seq child)) (root-edit! ctx assoc-in [:clocks v] last-seq))
+    (root-edit! ctx update :generation-clock #(or % {}))
+    (doseq [[r rr] runs]
+      (root-edit! ctx update-in [:generation-clock [v (:spin rr)]] (fnil max 0) (second r)))
+    (root-edit! ctx update :registry (fnil conj #{}) v)
+    (root-edit! ctx update :known-worlds (fnil conj #{}) v)
+    (root-edit! ctx assoc-in [:lineages v] (:lineage child))
+    (put-entity! ctx w [:fork v] (entity-row :fork scope))
+    (root-edit! ctx update :caps dissoc k)
+    (root-edit! ctx update-in [:durable :caps] dissoc k)
+    (root-edit! ctx assoc-in (if durable? [:durable :caps k] [:caps k]) cap)
+    (doseq [[e er] entities]
+      (when (= :spin (:kind er))
+        (let [covering (set (for [[tok h] (get-in (root-state ctx) [:env :handles])
+                                  :when (and (= e (:spin h)) (:reachable? h)
+                                             (contains? (:touched h) v) (not (contains? (:dropped h) v)))] tok))]
+          (edit! ctx v :entities e update :tokens set/union covering)))
+      (doseq [tok (:tokens er)] (touch! ctx v e tok)))
+    (doseq [[o ob] obligations
+            :let [[kind dw e] (:debtor ob)]
+            :when (and (= :entity kind) (not= dw v) (= :run (first (:creditor ob))))]
+      (case (get-in evidence [o :phase])
+        :cancelling nil
+        :pending-start (enqueue! ctx dw {:start-for e :creditor-world v :o o})
+        (add-fdep! ctx v o)))
+    (vreset! (:result ctx) {:world v :cap k})))
+
+(defn- start-request! [ctx w]
+  (let [{e :start-for v :creditor-world o :o tok :tok :as event} (first (:queue (header ctx w)))
+        ob (read-row ctx v :obligations o)
+        pending? (and ob (= :armed (:slot ob)) (pending-start? ctx v o ob)
+                      (not (cancelling? ctx v o))
+                      (not (contains? (:fdeps (header ctx w)) [e v o]))
+                      (not (some #(and (= :bundle (first %)) (= v (second %)) (contains? (nth % 2) e))
+                                 (:fdeps (header ctx w)))))]
+    (require! e ::not-start-request {:event event})
+    (header-edit! ctx w update :queue #(vec (rest %)))
+    (when pending?
+      (if (not= :live (:status (header ctx w)))
+        (enqueue! ctx v {:cancelled o :value ::released})
+        (let [owner (:root (header ctx w))]
+          (when-not (read-row ctx w :entities e) (put-entity! ctx w e (spin-row ctx w e owner)))
+          (let [er (read-row ctx w :entities e)
+                completed? (:completed? er)
+                value (:result er)]
+            (when-not (or completed? (#{:running :parked} (:status (read-row ctx w :runs (current-run ctx w e)))))
+              (start-run! ctx w e owner :await))
+            (touch! ctx w e tok)
+            (add-fdep! ctx v o)
+            (when completed? (enqueue! ctx v {:completion e :debtor-world w :value value}))))))))
+
+(defn- cleanup! [ctx w]
+  (when-not (= :released (:status (header ctx w)))
+    (let [event (first (:queue (header ctx w)))]
+      (require! event ::empty-queue {:w w})
+      (header-edit! ctx w update :queue #(vec (rest %)))
+      (cond
+        (:fdep-ended event)
+        (let [fd (:fdep-ended event)]
+          (header-edit! ctx w update :releasing disj fd)
+          (doseq [e (if (= :bundle (first fd)) (nth fd 2) [(first fd)])] (mark! ctx w e)))
+        (:cancelled event) (do (resume! ctx {:w w :o (:cancelled event) :value (get event :value ::cancelled)})
+                               (end-obligation! ctx w (:cancelled event) :cancel-delivered))
+        (:fork-released event) (remove-entity! ctx w [:fork (:fork-released event)])
+        :else (require! false ::not-cleanup {:event event})))))
 
 (defn step!
   "Execute a supported transition, returning delivery descriptors after commit.
@@ -965,16 +1220,43 @@
          :queued
          (let [event (first (:queue (header ctx w)))]
            (require! event ::empty-queue {:w w})
-           (require! (:completion event) ::control-delivery-not-implemented {:w w :event event})
-           (deliver! ctx (assoc event :w w :e (:completion event))))
+           (cond
+             (:completion event) (deliver! ctx (assoc event :w w :e (:completion event)))
+             (:start-for event) (start-request! ctx w)
+             (some event [:fdep-ended :cancelled :fork-released]) (cleanup! ctx w)
+             (:register-host event)
+             (let [e (:e event) o (:register-host event) er (read-row ctx w :entities e)]
+               (header-edit! ctx w update :queue #(vec (rest %)))
+               (if (and er (= :live (:status (header ctx w))))
+                 (let [cached? (and (:completed? er)
+                                    (not (#{:running :parked} (:status (read-row ctx w :runs (current-run ctx w e))))))]
+                   (touch! ctx w e (:tok event))
+                   (when cached?
+                     (emit! ctx {:event :host-delivery :world w :o o})
+                     (vswap! (:commands ctx) update (dec (count @(:commands ctx))) assoc :value (:result er)))
+                   (when (or (not cached?) (and (:standing? (:ob event))
+                                                (or (not (:completed? er)) (reactive? ctx w (current-run ctx w e)))))
+                     (add-obligation! ctx w o (:ob event))))
+                 (emit! ctx {:event :host-delivery :world w :o o :value ::released})))
+             :else (require! false ::unsupported-control {:w w :event event})))
          :t09 (reenter! ctx action)
          :t10 (supersede! ctx w (:r action))
          :t11 (cancel-run! ctx w (:r action) (:anchor action))
          :t13 (close-scope! ctx w (:scope action))
+         :t14
+         (let [pin? (:pin? action) e (:e action)]
+           (when pin?
+             (require! (= :live (:status (header ctx w))) ::not-live {:world w})
+             (require! (read-row ctx w :entities e) ::missing-entity {:e e}))
+           (header-edit! ctx w update :pins (if pin? conj disj) e)
+           (mark! ctx w e))
          :t15
          (doseq [[r rr] (store/table-view tx w :runs)
                  :when (#{:running :parked} (:status rr))]
            (cancel-run! ctx w r nil))
+         :t19 (fork-following! ctx action)
+         :t36 (cleanup! ctx w)
+         :t37 (start-request! ctx w)
          :t16 (handle-unreachable! ctx (:tok action))
          :t17 (gc-notify! ctx action)
          :t18 (release-idle! ctx action)
