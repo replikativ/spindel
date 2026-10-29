@@ -34,6 +34,13 @@
 
 (defn- spindel-graph [kind source]
   (case kind
+    :switch-reactive (let [left (spin (* 2 (iv/get-new (track source))))
+                           right (spin (* 3 (iv/get-new (track source))))]
+                       [(spin (let [n (iv/get-new (track source))]
+                                (await (if (even? n) left right))))])
+    :switch (let [left (spin 10) right (spin 20)]
+              [(spin (let [n (iv/get-new (track source))]
+                       (+ n (await (if (even? n) left right)))))])
     :fanout (mapv (fn [_] (spin (iv/get-new (track source)))) (range 100))
     :chain (let [head (spin (iv/get-new (track source)))]
              [(reduce (fn [prev _] (spin (inc (await prev)))) head (range 50))])
@@ -66,6 +73,13 @@
 (defn- missionary-cp-graph [kind source]
   (let [leaf (fn [] (m/signal (m/cp (m/?< source))))]
     (case kind
+      :switch-reactive (let [left (m/signal (m/cp (* 2 (m/?< source))))
+                             right (m/signal (m/cp (* 3 (m/?< source))))]
+                         [(m/signal (m/cp (let [n (m/?< source)]
+                                            (m/?< (if (even? n) left right)))))])
+      :switch (let [left (m/signal (m/cp 10)) right (m/signal (m/cp 20))]
+                [(m/signal (m/cp (let [n (m/?< source)]
+                                   (+ n (m/?< (if (even? n) left right))))))])
       :fanout (mapv (fn [_] (leaf)) (range 100))
       :chain [(reduce (fn [prev _] (m/signal (m/cp (inc (m/?< prev)))))
                       (leaf) (range 50))]
@@ -85,6 +99,8 @@
 
 (defn- expected-values [kind n]
   (case kind
+    :switch-reactive [(* n (if (even? n) 2 3))]
+    :switch [(+ n (if (even? n) 10 20))]
     :fanout (vec (repeat 100 n))
     :chain [(+ n 50)]
     :diamond [(* 5 n) (* 25 n)]
@@ -93,6 +109,13 @@
 (defn- kernel-graph [rt kind source]
   (let [leaf (fn [id] (k/kspin rt id (iv/get-new (k/track source))))]
     (case kind
+      :switch-reactive (let [left (k/kspin rt :left (* 2 (iv/get-new (k/track source))))
+                             right (k/kspin rt :right (* 3 (iv/get-new (k/track source))))]
+                         [(k/kspin rt :root (let [n (iv/get-new (k/track source))]
+                                              (k/await (if (even? n) left right))))])
+      :switch (let [left (k/kspin rt :left 10) right (k/kspin rt :right 20)]
+                [(k/kspin rt :root (let [n (iv/get-new (k/track source))]
+                                     (+ n (k/await (if (even? n) left right)))))])
       :fanout (mapv #(leaf [:leaf %]) (range 100))
       :chain [(reduce (fn [prev i] (k/kspin rt [:chain i] (inc (k/await prev))))
                       (leaf :head) (range 50))]
@@ -113,6 +136,13 @@
 (defn- compact-graph [rt kind source]
   (let [leaf (fn [id] (c/cspin rt id (iv/get-new (c/track source))))]
     (case kind
+      :switch-reactive (let [left (c/cspin rt :left (* 2 (iv/get-new (c/track source))))
+                             right (c/cspin rt :right (* 3 (iv/get-new (c/track source))))]
+                         [(c/cspin rt :root (let [n (iv/get-new (c/track source))]
+                                              (c/await (if (even? n) left right))))])
+      :switch (let [left (c/cspin rt :left 10) right (c/cspin rt :right 20)]
+                [(c/cspin rt :root (let [n (iv/get-new (c/track source))]
+                                     (+ n (c/await (if (even? n) left right)))))])
       :fanout (mapv #(leaf [:leaf %]) (range 100))
       :chain [(reduce (fn [prev i] (c/cspin rt [:chain i] (inc (c/await prev))))
                       (leaf :head) (range 50))]
@@ -325,6 +355,9 @@
 (defn run-case!
   "Run one matched graph, verifying final values and delivery counts."
   [implementation kind n warmup]
+  (when (and (#{:switch :switch-reactive} kind) (= implementation :missionary))
+    (throw (ex-info "Dynamic dependency switching requires missionary-cp; latest has a fixed input graph"
+                    {:kind kind :implementation implementation})))
   (if (= kind :l0)
     #?(:clj ((case implementation :spindel run-spindel-l0 :missionary run-missionary-l0) n warmup)
        :cljs (throw (ex-info "L0 blocking comparison is JVM-only" {})))

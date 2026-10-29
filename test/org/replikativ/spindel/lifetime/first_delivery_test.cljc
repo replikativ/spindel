@@ -49,6 +49,91 @@
     (is (some #(and (= :resume (:event %)) (= [:o 3] (:o %))) (:events first-value)))
     (is (= :running (get-in later-value [:worlds w :runs [p 2] :status])))))
 
+(defn idle-reactive-cache-actions [transitive? cancel-child? source-kind]
+  (let [w [:w 0] leaf [:spin 0] child [:spin 1] source [:signal 0]
+        target (if transitive? child leaf) token (if transitive? :child :leaf)]
+    (into
+     (cond-> [{:t :t01 :w w :e leaf :tok :leaf}
+              {:t :t01 :w w :e child :tok :child}
+              {:t :t02 :w w :e source :value 1 :kind source-kind}
+              {:t :t04 :w w :e leaf :tok :leaf :mode :callback}
+              {:t :t05 :w w :r [leaf 1] :kind :track :debtor [:entity w source]}
+              {:t :t07 :w w :r [leaf 1] :value 1}
+              {:t :t08 :w w :e leaf :value 1}]
+       transitive? (into [{:t :t04 :w w :e child :tok :child :mode :callback}
+                          {:t :t05 :w w :r [child 1] :kind :await-reactive :debtor [:entity w leaf] :tok :leaf}
+                          {:t :t06 :w w :o [:o 3] :value 1}
+                          {:t :t07 :w w :r [child 1] :value 1}
+                          {:t :t08 :w w :e child :value 1}])
+       true (conj {:t :unsubscribe :w w :o [:o 0]})
+       cancel-child? (conj {:t :t11 :w w :r [leaf 1]}))
+     (cond-> []
+       transitive? (conj {:t :unsubscribe :w w :o [:o 2]})
+       true (into [{:t :signal-write :w w :e source :value 2}
+                   {:t :t08 :w w :e source :value 2}
+                   {:t :t04 :w w :e target :tok token :mode :callback}])))))
+
+(deftest idle-reactive-caches-lose-validation-before-edges-disappear
+  (doseq [source-kind [:signal :atom] transitive? [false true] cancel-child? [false true]]
+    (let [actions (idle-reactive-cache-actions transitive? cancel-child? source-kind)
+          states (reductions model/step (model/init-state) actions)
+          target (if transitive? [:spin 1] [:spin 0]) final (last states)]
+      (doseq [[before action after] (map vector states actions (rest states))]
+        (is (empty? (inv/check after)))
+        (is (empty? (inv/edge-check {:before before :action action :after after}))))
+      (is (= :running (get-in final [:worlds [:w 0] :runs [target 2] :status])))
+      (is (= :dirty (:cause (first (filter #(= :body-entry (:event %)) (:events final)))))))))
+
+(defn parked-creditor-validation-actions []
+  (let [w [:w 0] leaf [:spin 0] parent [:spin 1] source [:signal 0]]
+    [{:t :t01 :w w :e leaf :tok :leaf}
+     {:t :t01 :w w :e parent :tok :parent}
+     {:t :t02 :w w :e source :value 1}
+     {:t :t04 :w w :e leaf :tok :leaf :mode :callback}
+     {:t :t05 :w w :r [leaf 1] :kind :track :debtor [:entity w source]}
+     {:t :t07 :w w :r [leaf 1] :value 1}
+     {:t :t08 :w w :e leaf :value 1}
+     {:t :t04 :w w :e parent :tok :parent :mode :callback}
+     {:t :t05 :w w :r [parent 1] :kind :await-reactive :debtor [:entity w leaf] :tok :leaf}
+     {:t :t06 :w w :o [:o 3] :value 1}
+     {:t :t05 :w w :r [parent 1] :kind :timer :debtor [:host :executor]}
+     {:t :unsubscribe :w w :o [:o 0]}
+     {:t :t11 :w w :r [leaf 1]}
+     {:t :signal-write :w w :e source :value 2}
+     {:t :t08 :w w :e source :value 2}
+     {:t :t06 :w w :o [:o 4] :value nil}
+     {:t :t07 :w w :r [parent 1] :value 1}
+     {:t :t08 :w w :e parent :value 1}
+     {:t :t04 :w w :e parent :tok :parent :mode :callback}]))
+
+(deftest parked-creditor-preserves-validation-loss-through-completion
+  (let [actions (parked-creditor-validation-actions)
+        states (reductions model/step (model/init-state) actions)
+        final (last states)]
+    (doseq [[before action after] (map vector states actions (rest states))]
+      (is (empty? (inv/check after)))
+      (is (empty? (inv/edge-check {:before before :action action :after after}))))
+    (is (= :running (get-in final [:worlds [:w 0] :runs [[:spin 1] 2] :status])))
+    (is (= :dirty (:cause (first (filter #(= :body-entry (:event %)) (:events final))))))))
+
+(defn inherited-creditor-validation-actions []
+  (into (subvec (parked-creditor-validation-actions) 0 12)
+        [{:t :t19 :w [:w 0] :v [:w 1] :k [:cap 1] :scope [:root [:w 0]] :systems #{}}
+         {:t :t11 :w [:w 0] :r [[:spin 0] 1]}
+         {:t :t36 :w [:w 1]}
+         {:t :t06 :w [:w 1] :o [:o 4] :value nil}
+         {:t :t07 :w [:w 1] :r [[:spin 1] 1] :value 1}]))
+
+(deftest inherited-creditor-preserves-validation-loss-before-activation
+  (let [actions (inherited-creditor-validation-actions)
+        states (reductions model/step (model/init-state) actions)
+        final (last states)]
+    (doseq [[before action after] (map vector states actions (rest states))]
+      (is (empty? (inv/check after)))
+      (is (empty? (inv/edge-check {:before before :action action :after after}))))
+    (is (= 1 (get-in final [:worlds [:w 1] :entities [:spin 1] :result])))
+    (is (get-in final [:worlds [:w 1] :entities [:spin 1] :dirty?]))))
+
 (defn dirty-await-actions [kind]
   (let [w [:w 0] p [:spin 0] c [:spin 1] s [:signal 0]]
     [{:t :t01 :w w :e c :tok :child-handle}

@@ -11,7 +11,7 @@
         {:entities [:kind :origin :owner :creator :completed? :kept? :result
                     :tokens :key :order :dirty? :reference? :source-world]
          :runs [:spin :owner :pred :ancestors :status :creations :spawned :seq
-                :anchor :retired? :origin :source-world]
+                :anchor :retired? :origin :source-world :validation-lost?]
          :obligations [:kind :debtor :creditor :standing? :cont :token :order
                        :origin :slot :filter :dormant? :timer-armed?]
          :scopes [:kind :parent :status :order]}))

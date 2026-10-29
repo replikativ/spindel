@@ -300,7 +300,7 @@
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
-(def ^:const r-owned 9) (def ^:const r-backlinks 10) (def ^:const r-childruns 11) (def ^:const r-physical 12) (def ^:const r-anchor 13) (def ^:const r-origin 14) (def ^:const r-source-world 15) (def ^:const r-wide 16) (def ^:const r-reactives 17) (def ^:const r-ancestors 18)
+(def ^:const r-owned 9) (def ^:const r-backlinks 10) (def ^:const r-childruns 11) (def ^:const r-physical 12) (def ^:const r-anchor 13) (def ^:const r-origin 14) (def ^:const r-source-world 15) (def ^:const r-wide 16) (def ^:const r-reactives 17) (def ^:const r-ancestors 18) (def ^:const r-validation-lost 19)
 (def ^:const o-id 0) (def ^:const o-kind 1) (def ^:const o-debtor 2)
 (def ^:const o-run 3) (def ^:const o-standing 4) (def ^:const o-resolve 5)
 (def ^:const o-reject 6) (def ^:const o-order 7) (def ^:const o-slot 8)
@@ -477,9 +477,14 @@
 
 (defn- reject-dependent! [rt ob]
   (if-let [run (a ob o-run)]
-    (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
-      (put run r-status :running) (put ob o-value cancelled)
-      (schedule! rt (a run r-node) ob))
+    (do
+      (when (and (= :consumed (a ob o-slot)) (= :await-reactive (a ob o-kind))
+                 (#{:running :parked :inherited :completed} (a run r-status)) (identical? run (current (a run r-node))))
+        (put run r-validation-lost true)
+        (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
+      (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
+        (put run r-status :running) (put ob o-value cancelled)
+        (schedule! rt (a run r-node) ob)))
     (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 cancelled))))
   (end-ob! rt ob))
 
@@ -506,7 +511,7 @@
                (put run field empty-members)
                (clear-members! (a run field))))
     (put run r-wide nil)
-    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives]]
+    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives r-validation-lost]]
              (put run field nil))
     (let [pool (a (runtime-field rt :counters) 0)]
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
@@ -563,8 +568,27 @@
                        (test [_ event] (identical? node (a event 0)))))
      :cljs (.removeWhere (runtime-field rt :events) (fn [event] (identical? node (a event 0))))))
 
+(defn- signal-dependent? [node]
+  ;; Pure one-shot caches have no outgoing reactive registrations. Only idle
+  ;; teardown needs this search; publication and hot reentry stay indexed.
+  (when (reactive? (current node))
+    (loop [todo [node] seen #{}]
+      (if-let [node (peek todo)]
+        (let [todo (pop todo)]
+          (cond
+            (contains? seen node) (recur todo seen)
+            (or (= :signal (a node n-kind)) (a node n-dirty)) true
+            :else
+            (recur (into todo (for [run (values (a node n-runs))
+                                    ob (items (a run r-obs))
+                                    :when (and (reactive-kind? (a ob o-kind)) (a ob o-debtor))]
+                                (a ob o-debtor)))
+                   (conj seen node))))
+        false))))
+
 (defn- reclaim-unwanted! [rt node]
   (when (and (= :spin (a node n-kind)) (a node n-complete))
+    (when (signal-dependent? node) (put node n-dirty true))
     (each-copy! [run (values (a node n-runs))] (retire! rt run))
     (owner! rt node nil))
   (when-not (and (= :spin (a node n-kind)) (a node n-complete)
@@ -870,7 +894,7 @@
 
 (defn- run-slots! [rt]
   (or (pop! (a (runtime-field rt :counters) 0))
-      (let [run (slots 19)]
+      (let [run (slots 20)]
         (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                  (put run field empty-members))
         run)))
@@ -886,7 +910,7 @@
     (when (runtime-field rt :audit)
       (assoc! (a (runtime-field rt :counters) 3) (a node n-id) generation)
       (push! (a (runtime-field rt :counters) 9) [(runtime-field rt :world) (a node n-id) generation]))
-    (put run r-reactives 0)
+    (put run r-reactives 0) (put run r-validation-lost nil)
     (when (and pred (not= :unwinding (a pred r-status)))
       (each! [gen (a pred r-ancestors)] (add-run! run r-ancestors gen))
       (add-run! run r-ancestors (a pred r-gen)))
@@ -1125,7 +1149,7 @@
     (locked rt
             (let [node (a run r-node)]
               (when (and (identical? run (current node)) (= :running (a run r-status)))
-                (put node n-complete true) (put node n-dirty false) (put node n-value value)
+                (put node n-complete true) (put node n-dirty (boolean (a run r-validation-lost))) (put node n-value value)
                 (put run r-status :completed)
                 (push! (runtime-field rt :events) (doto (slots 3) (put 0 node) (put 1 value) (put 2 (put (runtime-field rt :counters) 2 (inc (max (long (a (runtime-field rt :counters) 1)) (long (a (runtime-field rt :counters) 2))))))))
                 (each-copy! [previous (values (a node n-runs))]
@@ -1140,6 +1164,7 @@
     (each-copy! [old (values (a node n-runs))]
                 (when (= :stale (a old r-status)) (retire! rt old)))
     (let [run (start! rt node (a previous r-owner) true)]
+      (when (or (a previous r-validation-lost) (a node n-dirty)) (put run r-validation-lost true))
       (when work?
         (put previous r-status :stale)
         (each-copy! [ob (a previous r-obs)]
@@ -1487,6 +1512,7 @@
                                                    :status (a run r-status) :seq (a run r-seq)
                                                    :creations (set (map #(a % n-id) (items (a run r-created))))
                                                    :spawned (set (map run-id (items (a run r-spawned))))}
+                                            (a run r-validation-lost) (assoc :validation-lost? true)
                                             (= :unwinding (a run r-status)) (assoc :retired? true :anchor (a run r-anchor))
                                             (a run r-origin) (assoc :origin (a run r-origin) :source-world (a run r-source-world)))]))
            :obligations (into {} (for [ob (all-obligations rt)]
@@ -1566,11 +1592,12 @@
                        (put copy n-origin :inherited) (put copy n-source-world (runtime-field rt :world))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
-                (let [copy (slots 19) node (find! node-map (a run r-node))]
+                (let [copy (slots 20) node (find! node-map (a run r-node))]
                   (assoc! run-map run copy)
                   (put copy r-node node) (put copy r-gen (a run r-gen))
                   (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
+                  (put copy r-validation-lost (a run r-validation-lost))
                   (put copy r-origin :inherited) (put copy r-source-world (runtime-field rt :world))
                   (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                            (put copy field empty-members))
