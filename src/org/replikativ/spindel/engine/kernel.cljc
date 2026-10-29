@@ -346,8 +346,19 @@
         (header-edit! ctx dw update :fdeps conj [e w o]))
       (mark! ctx dw e))))
 
+(defn- current-run [ctx w e]
+  (last (sort-by second (read-row ctx w :runs-by-spin e))))
+
 (defn- end-obligation! [ctx w o cause]
   (when-let [ob (read-row ctx w :obligations o)]
+    (let [[ck cw r] (:creditor ob)]
+      (when (and (= :cancel-delivered cause) (= :await-reactive (:kind ob))
+                 (= :consumed (:slot ob)) (= :run ck)
+                 (#{:running :parked :inherited :completed} (:status (read-row ctx cw :runs r)))
+                 (= r (current-run ctx cw (first r))))
+        (edit! ctx cw :runs r assoc :validation-lost? true)
+        (when (:completed? (read-row ctx cw :entities (first r)))
+          (edit! ctx cw :entities (first r) assoc :dirty? true))))
     (delete! ctx w :obligations o)
     (index-remove! ctx w (creditor-table (:creditor ob)) (creditor-id (:creditor ob)) o)
     (index-remove! ctx w (debtor-table w (:debtor ob)) (debtor-id w (:debtor ob)) o)
@@ -373,9 +384,6 @@
   (when (and tok (read-row ctx w :entities e))
     (edit! ctx w :entities e update :tokens (fnil conj #{}) tok)
     (root-edit! ctx update-in [:env :handles tok :touched] (fnil conj #{}) w)))
-
-(defn- current-run [ctx w e]
-  (last (sort-by second (read-row ctx w :runs-by-spin e))))
 
 (defn- open? [ctx w scope]
   (if-let [run (read-row ctx w :runs scope)]
@@ -687,6 +695,23 @@
               :when (not= ancestors (:ancestors row))]
         (edit! ctx w :runs r assoc :ancestors ancestors)))))
 
+(defn- signal-dependent? [ctx w e]
+  (loop [todo [[w e]] seen #{}]
+    (if-let [[w e :as key] (peek todo)]
+      (let [todo (pop todo) er (read-row ctx w :entities e)]
+        (cond
+          (contains? seen key) (recur todo seen)
+          (or (#{:signal :atom} (:kind er)) (:dirty? er)) true
+          :else
+          (recur (into todo (for [r (read-row ctx w :runs-by-spin e)
+                                  o (read-row ctx w :by-run-creditor r)
+                                  :let [ob (read-row ctx w :obligations o)
+                                        [dk dw de] (:debtor ob)]
+                                  :when (and (#{:track :await-reactive} (:kind ob)) (= :entity dk))]
+                              [dw de]))
+                 (conj seen key))))
+      false)))
+
 (defn- rule-l! [ctx]
   (loop [cursor 0]
     (when (< cursor (count @(:work ctx)))
@@ -695,6 +720,8 @@
         (vswap! (:work-set ctx) disj [w e])
         (when (and er (not= :released (:status (header ctx w))) (not (wanted? ctx w e)))
           (when (and (= :spin (:kind er)) (:completed? er))
+            (when (signal-dependent? ctx w e)
+              (edit-entity! ctx w e assoc :dirty? true))
             (doseq [r (read-row ctx w :runs-by-spin e)]
               (when (#{:completed :stale} (:status (read-row ctx w :runs r)))
                 (supersede! ctx w r)))
@@ -857,6 +884,9 @@
     (let [trigger (when resume-o (read-row ctx w :obligations resume-o))
           trigger (if (cells/row? trigger) (select-keys trigger [:kind :debtor :cont :order]) trigger)
           r2 (start-run! ctx w e (:owner rr) cause)]
+      (when (and (#{:track :reactive} cause)
+                 (or (:validation-lost? rr) (:dirty? (read-row ctx w :entities e))))
+        (edit! ctx w :runs r2 assoc :validation-lost? true))
       (when trigger
         (vswap! (:commands ctx) update (dec (count @(:commands ctx)))
                 assoc :op :reactive-resume :o resume-o :obligation trigger))
@@ -1029,7 +1059,7 @@
   (let [rr (read-row ctx w :runs r)
         e (:spin rr)]
     (when (and (= :running (:status rr)) (= r (current-run ctx w e)))
-      (edit! ctx w :entities e assoc :completed? true :dirty? false :result value)
+      (edit! ctx w :entities e assoc :completed? true :dirty? (boolean (:validation-lost? rr)) :result value)
       (edit! ctx w :runs r assoc :status :completed)
       (enqueue! ctx w {:completion e :debtor-world w :value value})
       (doseq [v (set (for [[x v d] (:fdeps (header ctx w))

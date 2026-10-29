@@ -807,6 +807,84 @@
       (is (= [42 7] @values))
       (verify-boundaries! rt))))
 
+(deftest idle-reactive-caches-refresh-after-losing-validation
+  (doseq [audit? [false true] transitive? [false true] cancel-child? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) input (c/signal rt :input 1)
+          control (c/signal rt :control true)
+          leaf (c/cspin rt :leaf (iv/get-new (c/track input)))
+          child (if transitive? (c/cspin rt :child (c/await leaf)) leaf)
+          warm (c/observe! rt child (fn [_]) #(throw %))
+          parent (c/cspin rt :parent
+                          (if (iv/get-new (c/track control)) (c/await child) :off))
+          values (atom [])]
+      (c/observe! rt parent #(swap! values conj %) #(throw %))
+      (warm)
+      (when cancel-child? (c/cancel-spin! rt leaf))
+      (c/set-signal! rt control false)
+      (c/set-signal! rt input 2)
+      (is (= [1 :off] @values))
+      (c/set-signal! rt control true)
+      (is (= [1 :off 2] @values))
+      (when audit? (verify-boundaries! rt)))))
+
+(deftest consumed-debtor-cancellation-survives-a-parked-creditors-completion
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) input (c/signal rt :input 1)
+          child (c/cspin rt :child (iv/get-new (c/track input)))
+          warm (c/observe! rt child (fn [_]) #(throw %))
+          callbacks (atom []) calls (atom 0) values (atom [])
+          parent (c/cspin rt :parent
+                          (swap! calls inc)
+                          (let [value (c/await child)]
+                            (c/await-host (fn [resolve _] (swap! callbacks conj resolve) nil))
+                            value))
+          stop (c/observe! rt parent #(swap! values conj %) #(throw %))]
+      (warm)
+      (c/cancel-spin! rt child)
+      (c/set-signal! rt input 2)
+      ((first @callbacks) nil)
+      (is (= [1] @values))
+      (stop)
+      (is (get-in (c/snapshot rt) [:entities :parent :dirty?]))
+      (let [stop-again (c/observe! rt parent #(swap! values conj %) #(throw %))]
+        (is (= 2 @calls))
+        (is (= 2 (count @callbacks)))
+        ((last @callbacks) nil)
+        (is (= [1 2] @values))
+        (stop-again))
+      (when audit? (verify-boundaries! rt)))))
+
+(deftest forked-parked-creditor-copies-lost-validation
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) input (c/signal rt :input 1)
+          child (c/cspin rt :child (iv/get-new (c/track input)))
+          warm (c/observe! rt child (fn [_]) #(throw %)) ticket (c/ticket :outside)
+          parent (c/cspin rt :parent
+                          (let [value (c/await child)] (c/park ticket) value))]
+      (c/observe! rt parent (fn [_]) #(throw %))
+      (warm)
+      (c/cancel-spin! rt child)
+      (let [fork (c/fork-parked! rt [:w 1])]
+        (c/resume-ticket! fork (c/pending-ticket fork ticket) nil)
+        (is (= 1 (get-in (c/snapshot fork) [:entities :parent :result])))
+        (is (get-in (c/snapshot fork) [:entities :parent :dirty?]))
+        (c/resume-ticket! rt (c/pending-ticket rt ticket) nil)
+        (is (get-in (c/snapshot rt) [:entities :parent :dirty?]))
+        (when audit? (verify-boundaries! rt))))))
+
+(deftest idle-pure-caches-preserve-one-shot-results
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?})
+          calls (atom 0) child (c/cspin rt :child (swap! calls inc))
+          values (atom [])]
+      ((c/observe! rt child #(swap! values conj %) #(throw %)))
+      (is (empty? (:runs (c/snapshot rt))))
+      (is (not (get-in (c/snapshot rt) [:entities :child :dirty?])))
+      ((c/observe! rt child #(swap! values conj %) #(throw %)))
+      (is (= [1 1] @values))
+      (is (= 1 @calls))
+      (when audit? (verify-boundaries! rt)))))
+
 (deftest awaiting-a-dirty-completion-refreshes-the-target
   (doseq [audit? [false true]]
     (let [rt (c/runtime {:audit? audit?}) source (c/signal rt :source 0)

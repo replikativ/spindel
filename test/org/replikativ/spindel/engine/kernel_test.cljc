@@ -48,6 +48,16 @@
                  (into [{:t :t02 :w w :e signal :value 0}]
                        (map #(hash-map :t :signal-write :w w :e signal :value %) (range 1 33)))))
 
+(deftest idle-reactive-caches-refine-validation-loss
+  (doseq [source-kind [:signal :atom] transitive? [false true] cancel-child? [false true]]
+    (compare-walk! (model/init-state) (handoff/idle-reactive-cache-actions transitive? cancel-child? source-kind))))
+
+(deftest parked-creditor-refines-validation-loss-through-completion
+  (compare-walk! (model/init-state) (handoff/parked-creditor-validation-actions)))
+
+(deftest inherited-creditor-refines-validation-loss-before-activation
+  (compare-walk! (model/init-state) (handoff/inherited-creditor-validation-actions)))
+
 (deftest dirty-await-refines-fresh-owned-run
   (doseq [kind [:await-once :await-reactive]]
     (compare-walk! (model/init-state) (handoff/dirty-await-actions kind))))

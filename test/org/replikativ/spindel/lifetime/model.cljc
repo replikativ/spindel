@@ -290,6 +290,14 @@
 (defn end-obligation [s w o cause]
   (if-let [ob (get-in s [:worlds w :obligations o])]
     (let [[kind dw e] (:debtor ob)
+          [ck cw r] (:creditor ob)
+          s (if (and (= :cancel-delivered cause) (= :await-reactive (:kind ob))
+                     (= :consumed (:slot ob)) (= :run ck)
+                     (#{:running :parked :inherited :completed} (:status (run s cw r)))
+                     (= r (current s cw (first r))))
+              (cond-> (assoc-in s [:worlds cw :runs r :validation-lost?] true)
+                (:completed? (ent s cw (first r)))
+                (assoc-in [:worlds cw :entities (first r) :dirty?] true)) s)
           s (-> s
                 (update-in [:worlds w :obligations] dissoc o)
                 (emit {:event :obligation-exit :world w :o o :ob ob :cause cause}))
@@ -355,6 +363,26 @@
 
 (def ^:dynamic *cascading?* false)
 
+(defn signal-dependent?
+  "A detached cache loses validation when it reaches a source or dirty cache.
+  Search before retiring outgoing obligations; cycles alone are not mutable."
+  [s w e]
+  (loop [todo [[w e]] seen #{}]
+    (if-let [[w e :as key] (peek todo)]
+      (let [todo (pop todo) er (ent s w e)]
+        (cond
+          (contains? seen key) (recur todo seen)
+          (or (#{:signal :atom} (:kind er)) (:dirty? er)) true
+          :else
+          (recur (into todo (for [[_ ob] (:obligations (wr s w))
+                                  :let [[ck cw r] (:creditor ob)
+                                        [dk dw de] (:debtor ob)]
+                                  :when (and (= :run ck) (= w cw) (= e (:spin (run s w r)))
+                                             (#{:track :await-reactive} (:kind ob)) (= :entity dk))]
+                              [dw de]))
+                 (conj seen key))))
+      false)))
+
 (defn rule-l
   "§4.3 reclamation fixpoint, including idle completed-row normalization."
   [s w]
@@ -365,7 +393,9 @@
                 idle (for [[e _] (:entities world) :when (idle? s w e)] e)
                 normalized
                 (reduce (fn [s e]
-                          (let [rs (for [[r rr] (:runs (wr s w)) :when (and (= e (:spin rr)) (#{:completed :stale} (:status rr)))] r)]
+                          (let [rs (for [[r rr] (:runs (wr s w)) :when (and (= e (:spin rr)) (#{:completed :stale} (:status rr)))] r)
+                                s (if (signal-dependent? s w e)
+                                    (assoc-in s [:worlds w :entities e :dirty?] true) s)]
                             (-> (reduce #(t10-supersede %1 {:w w :r %2}) s rs)
                                 (assoc-in [:worlds w :entities e :owner] nil)))) s idle)
                 dead (for [[e er] (:entities (wr normalized w))
@@ -594,7 +624,7 @@
   (let [rr (run s w r) e (:spin rr)]
     (if (and (= :running (:status rr)) (= r (current s w e)))
       (let [s (-> s (assoc-in [:worlds w :entities e :completed?] true)
-                  (assoc-in [:worlds w :entities e :dirty?] false)
+                  (assoc-in [:worlds w :entities e :dirty?] (boolean (:validation-lost? rr)))
                   (assoc-in [:worlds w :entities e :result] value)
                   (assoc-in [:worlds w :runs r :status] :completed)
                   (enqueue w {:completion e :debtor-world w :value value}))
@@ -650,6 +680,9 @@
                        :when (and (= e (:spin pr)) (= :stale (:status pr)))] p)
           s (reduce #(t10-supersede %1 {:w w :r %2}) s stales)
           [s r2] (start-run s w e (:owner rr) cause)
+          s (if (and (#{:track :reactive} cause)
+                     (or (:validation-lost? rr) (:dirty? (ent s w e))))
+              (assoc-in s [:worlds w :runs r2 :validation-lost?] true) s)
           s (if (work? rr) (assoc-in s [:worlds w :runs r :status] :stale) s)
           s (reduce (fn [s [o ob]]
                       (if (not= [:run w r] (:creditor ob)) s
