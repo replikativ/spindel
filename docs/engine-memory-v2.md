@@ -470,6 +470,21 @@ integration gates. The existing model profiles and native default are unchanged.
 The public backend cannot claim the finalization contract until those integration
 checks pass on both platforms.
 
+Result arbitration commits and returns the effective Result in one transaction.
+An explicit cancellation fences the current generation's later success/error
+proposals; a fresh generation clears that fence. Callback dispatch uses the
+committed Result, including direct-await child completion, so a finalizer cannot
+restore success after cancellation. Merely caching a propagated child-cancellation
+error does not revoke a reactive owner's authority to recover. Separate reporting
+of cleanup failures remains part of the error-egress integration gate.
+
+Generic lexical user bindings on public effect callbacks remain a compiler
+integration gate. The boundary needs distinct same-stack inline and later resumed
+continuation paths. Resumption restores user scope while preserving the runner's
+selected world/generation; synchronous loops must retain constant stack depth.
+The native handlers already distinguish inline and resumed continuations. A
+wrapper that grows with every synchronous await does not satisfy this contract.
+
 ## Replacement acceptance
 
 The default engine changes only after these gates pass on JVM and CLJS:
