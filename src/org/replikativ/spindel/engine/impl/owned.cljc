@@ -1061,23 +1061,58 @@
                 (boundary! rt (when (:audit rt) {:t :unsubscribe :w (:world rt) :o [:o (a ob o-id)]})))
         (drain! rt)))))
 
+(defn- source-node! [rt source unwinding?]
+  (let [node (find! (:nodes rt) (:id source))]
+    (when-not (or (and unwinding? (nil? node))
+                  (and node (= :signal (a node n-kind)) (or (a node n-owner) unwinding?)))
+      (throw (ex-info "Released source" {:id (:id source)})))
+    node))
+
+(defn read-signal [requested source]
+  (let [rt (execution-runtime requested)]
+    (check-source! rt source)
+    (locked rt (a (source-node! rt source false) n-value))))
+
+(defn- write-source! [rt node source value]
+  (when node
+    (put node n-value value)
+    (push! (:events rt) (doto (slots 3) (put 0 node) (put 1 value)
+                              (put 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1))
+                                                                     (long (a (:counters rt) 2)))))))))
+  (boundary! rt (when (:audit rt) (cond-> {:t :signal-write :w (:world rt) :e (:id source) :value value}
+                                    (current-activation) (assoc :th :engine)))))
+
 (defn set-signal! [requested source value]
   (let [rt (execution-runtime requested)
         _ (check-source! rt source)
         unwinding? (and (current-activation) (= :unwinding (a (a (current-activation) 1) r-status)))]
     (locked rt
-            (let [node (find! (:nodes rt) (:id source))]
-              (when-not (or (and unwinding? (nil? node))
-                            (and node (= :signal (a node n-kind)) (or (a node n-owner) unwinding?)))
-                (throw (ex-info "Released source" {:id (:id source)})))
-              (when node
-                (put node n-value value)
-                (push! (:events rt) (doto (slots 3) (put 0 node) (put 1 value)
-                                          (put 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1))
-                                                                                 (long (a (:counters rt) 2)))))))))
-              (boundary! rt (when (:audit rt) (cond-> {:t :signal-write :w (:world rt) :e (:id source) :value value}
-                                                (current-activation) (assoc :th :engine))))))
+            (write-source! rt (source-node! rt source unwinding?) source value))
     (drain! rt)))
+
+(defn compare-and-set-signal!
+  "Identity CAS, including atom-style ABA semantics. The commit and reactive
+  notification are one gated operation; a failed comparison changes nothing."
+  [requested source old-value new-value]
+  (let [rt (execution-runtime requested)]
+    (check-source! rt source)
+    (let [changed? (locked rt
+                           (let [node (source-node! rt source false)]
+                             (when (identical? old-value (a node n-value))
+                               (write-source! rt node source new-value)
+                               true)))]
+      (when changed? (drain! rt))
+      (boolean changed?))))
+
+(defn swap-signal!
+  "Apply f outside the ownership gate, retrying if its input changed."
+  [requested source f & args]
+  (loop []
+    (let [old-value (read-signal requested source)
+          new-value (if (seq args) (apply f old-value args) (f old-value))]
+      (if (compare-and-set-signal! requested source old-value new-value)
+        new-value
+        (recur)))))
 
 (defn cancel-spin! [requested handle]
   (let [rt (execution-runtime requested)]

@@ -211,6 +211,67 @@
     (verify-boundaries! rt)
     (cancel)))
 
+(deftest source-cas-is-identity-based-and-refusal-is-atomic
+  (let [rt (c/runtime {:audit? true}) initial (with-meta [1] {:version 0})
+        equal-value (with-meta [1] {:version 1}) source (c/signal rt :source initial)
+        before (c/snapshot-family rt)]
+    (is (= initial equal-value))
+    (is (not (identical? initial equal-value)))
+    (is (false? (c/compare-and-set-signal! rt source equal-value [2])))
+    (is (= before (c/snapshot-family rt)))
+    (is (identical? initial (c/read-signal rt source)))
+    (is (true? (c/compare-and-set-signal! rt source initial [2])))
+    (is (= [2] (c/read-signal rt source)))
+    (verify-boundaries! rt)))
+
+(deftest source-swap-retries-user-code-outside-the-gate
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+        calls (atom []) values (atom [])
+        s (c/cspin rt :observer (iv/get-new (c/track source)))
+        unsubscribe (c/observe! rt s #(swap! values conj %) #(throw %))]
+    (is (= 3 (c/swap-signal! rt source
+                             (fn [value]
+                               (is #?(:clj (not (Thread/holdsLock (:gate rt))) :cljs true))
+                               (swap! calls conj value)
+                               (when (zero? value) (c/set-signal! rt source 2))
+                               (inc value)))))
+    (is (= [0 2] @calls))
+    (is (= [0 2 3] @values))
+    (is (= 6 (c/swap-signal! rt source + 1 2)))
+    (verify-boundaries! rt)
+    (unsubscribe)))
+
+#?(:clj
+   (deftest source-swap-concurrent-writers-do-not-lose-updates
+     (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 0)
+           ready (promise)
+           workers (doall (repeatedly 4 #(future @ready (dotimes [_ 25] (c/swap-signal! rt source inc)))))]
+       (deliver ready true)
+       (doseq [worker workers] (is (nil? (deref worker 10000 :timeout))))
+       (is (= 100 (c/read-signal rt source)))
+       (verify-boundaries! rt))))
+
+#?(:clj
+   (deftest source-release-during-swap-does-not-resurrect-it
+     (let [rt (c/runtime {:audit? true}) holder (atom nil) ticket (c/ticket :waiting)
+           s (c/cspin rt :owner
+               (reset! holder (c/signal rt :owned-source 0))
+               (c/park ticket))
+           entered (promise) release (promise)]
+       (c/observe! rt s (fn [_]) (fn [_]))
+       (let [worker (future
+                      (try
+                        (c/swap-signal! rt @holder
+                                        (fn [value] (deliver entered true) @release (inc value)))
+                        (catch Exception error (ex-message error))))]
+         (is (= true (deref entered 10000 nil)))
+         (c/cancel-spin! rt s)
+         (let [before (c/snapshot-family rt)]
+           (deliver release true)
+           (is (= "Released source" (deref worker 10000 nil)))
+           (is (= before (c/snapshot-family rt))))
+         (verify-boundaries! rt)))))
+
 (deftest compact-diamond
   (let [rt (c/runtime {:audit? true})
         source (c/signal rt :source 0)
@@ -676,6 +737,10 @@
     (c/observe! b local-spin #(swap! values conj %) #(throw %))
     (let [before (c/snapshot-family b)]
       (is (thrown? #?(:clj Exception :cljs js/Error) (c/set-signal! b foreign 9)))
+      (is (thrown? #?(:clj Exception :cljs js/Error) (c/read-signal b foreign)))
+      (is (thrown? #?(:clj Exception :cljs js/Error) (c/compare-and-set-signal! b foreign 1 9)))
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (c/swap-signal! b foreign (fn [_] (is false "Foreign swap called user code")))))
       (is (thrown? #?(:clj Exception :cljs js/Error) (c/cancel-spin! b foreign-spin)))
       (is (thrown? #?(:clj Exception :cljs js/Error) (c/notify-unreachable! b foreign-spin)))
       (is (= before (c/snapshot-family b))))
