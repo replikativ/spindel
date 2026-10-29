@@ -596,8 +596,16 @@
     (when-let [node (a ob o-debtor)]
       (remove! (a node n-dependents) ob) (mark! rt node)
       (if-let [creditor (a ob o-creditor-node)]
-        (when-not (any! (a node n-dependents)
-                        #(and (a % o-live) (identical? creditor (a % o-creditor-node))))
+        (when-not
+         ;; Search the smaller adjacency. A shared source can have thousands
+         ;; of dependents while each creditor has only one outgoing edge.
+         (if (and (current creditor)
+                  (< (count! (a (current creditor) r-obs)) (count! (a node n-dependents))))
+           (any! (values (a creditor n-runs))
+                 (fn [run]
+                   (any! (a run r-obs) #(and (a % o-live) (identical? node (a % o-debtor))))))
+           (any! (a node n-dependents)
+                 #(and (a % o-live) (identical? creditor (a % o-creditor-node)))))
           (mark-graph! rt creditor))
         (when-not (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run))))
           (mark-graph! rt node))))))
