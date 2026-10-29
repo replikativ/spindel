@@ -1,12 +1,14 @@
 (ns org.replikativ.spindel.missionary-comparison
-  "Synchronous reactive graph measurements against Missionary b.46.
+  "Synchronous JVM/Node reactive graph measurements against Missionary b.46.
    Both graphs use the same source changes and final observed values. Spindel
    retains forkable runtime state; Missionary's signal graph does not. The L0
    task comparison is a lower-bound lifecycle reference, not equivalent caching.
 
-   Run with a JVM slot:
-   clojure -J-Xmx1g -Sdeps '{:deps {missionary/missionary {:mvn/version \"b.46\"}}}'
-     -M:bench -m org.replikativ.spindel.missionary-comparison
+   JVM: clojure -M:bench -m org.replikativ.spindel.missionary-comparison
+   Node: clojure -M:bench:bench-js && node target/bench/compare.js
+   Node configuration uses SPINDEL_COMPARE_{OPS,WARMUP,REPEATS,ENGINES,KINDS}.
+   Node reports wall time; use dev/scripts/profile-reactive.cjs for allocation
+   attribution, including collected objects. Profiles include setup and warmup.
 
    Use -J-Dspindel.compare.kinds=fanout,chain,diamond,fanin to omit L0.
    With those reactive kinds, compare the experimental bridge and standing
@@ -14,20 +16,21 @@
    Kernel measurements disable model diagnostics.
    The local Missionary checkout can be substituted with :local/root."
   (:refer-clojure :exclude [await])
-  (:require [is.simm.partial-cps.async :as cps]
+  (:require [clojure.string :as str]
+            [is.simm.partial-cps.async :as cps]
             [missionary.core :as m]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]]
             [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.executor :as ex]
-            [org.replikativ.spindel.kernel-runtime :as k]
-            [org.replikativ.spindel.compact-runtime :as c]
+            [org.replikativ.spindel.kernel-runtime :as k #?@(:cljs [:include-macros true])]
+            [org.replikativ.spindel.compact-runtime :as c #?@(:cljs [:include-macros true])]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.signal :as sig]
             [org.replikativ.spindel.spin.cps :refer [spin]])
-  (:import [com.sun.management ThreadMXBean]
-           [java.lang.management ManagementFactory]))
+  #?(:clj (:import [com.sun.management ThreadMXBean]
+                   [java.lang.management ManagementFactory])))
 
 (defn- spindel-graph [kind source]
   (case kind
@@ -129,13 +132,18 @@
 
 (defn- measure-updates [update! warmup n]
   (dotimes [_ warmup] (update!))
-  (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)
-        tid (.getId (Thread/currentThread))
-        before-bytes (.getThreadAllocatedBytes bean tid)
-        start (System/nanoTime)]
-    (dotimes [_ n] (update!))
-    {:ns-per-update (/ (double (- (System/nanoTime) start)) n)
-     :bytes-per-update (/ (double (- (.getThreadAllocatedBytes bean tid) before-bytes)) n)}))
+  #?(:clj
+     (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)
+           tid (.getId (Thread/currentThread))
+           before-bytes (.getThreadAllocatedBytes bean tid)
+           start (System/nanoTime)]
+       (dotimes [_ n] (update!))
+       {:ns-per-update (/ (double (- (System/nanoTime) start)) n)
+        :bytes-per-update (/ (double (- (.getThreadAllocatedBytes bean tid) before-bytes)) n)})
+     :cljs
+     (let [start (js/performance.now)]
+       (dotimes [_ n] (update!))
+       {:ns-per-update (/ (* 1000000 (- (js/performance.now) start)) n)})))
 
 (defn- run-spindel [kind n warmup]
   (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))]
@@ -171,7 +179,7 @@
                            (= (vec (repeat (count roots) (inc (+ n warmup)))) seen))
               (throw (ex-info "Observed Spindel result mismatch"
                               {:kind kind :expected expected :observed observed :seen seen :error @failure})))
-            (java.lang.ref.Reference/reachabilityFence roots)
+            #?(:clj (java.lang.ref.Reference/reachabilityFence roots))
             measurement)))
       (finally (ctx/close-context! rt)))))
 
@@ -276,72 +284,84 @@
 (defn- run-missionary-cp [kind n warmup]
   (run-missionary-graph missionary-cp-graph kind n warmup))
 
-(defn- run-spindel-l0 [n warmup]
-  (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))
-        retained (java.util.ArrayList.)
-        next-input (volatile! 0)
-        last-value (volatile! nil)]
-    (try
-      (binding [ec/*execution-context* rt cps/*in-trampoline* false]
-        (let [step! (fn []
-                      (let [i (vswap! next-input inc)
-                            s (spin i)]
-                        (.add retained s)
-                        (vreset! last-value @s)))
-              measurement (measure-updates step! warmup n)]
-          (when-not (= (+ n warmup) @last-value)
-            (throw (ex-info "Spindel L0 mismatch" {:observed @last-value})))
-          (java.lang.ref.Reference/reachabilityFence retained)
-          measurement))
-      (finally (ctx/close-context! rt)))))
+#?(:clj
+   (defn- run-spindel-l0 [n warmup]
+     (let [rt (ctx/create-execution-context :executor (ex/synchronous-executor))
+           retained (java.util.ArrayList.)
+           next-input (volatile! 0)
+           last-value (volatile! nil)]
+       (try
+         (binding [ec/*execution-context* rt cps/*in-trampoline* false]
+           (let [step! (fn []
+                         (let [i (vswap! next-input inc)
+                               s (spin i)]
+                           (.add retained s)
+                           (vreset! last-value @s)))
+                 measurement (measure-updates step! warmup n)]
+             (when-not (= (+ n warmup) @last-value)
+               (throw (ex-info "Spindel L0 mismatch" {:observed @last-value})))
+             (java.lang.ref.Reference/reachabilityFence retained)
+             measurement))
+         (finally (ctx/close-context! rt))))))
 
-(defn- run-missionary-l0 [n warmup]
-  (let [retained (java.util.ArrayList.)
-        next-input (volatile! 0)
-        last-value (volatile! nil)
-        success (fn [value] (vreset! last-value value))
-        failure (fn [error] (throw error))
-        step! (fn []
-                (let [i (vswap! next-input inc)
-                      task (m/sp i)]
-                  (.add retained task)
-                  (task success failure)))
-        measurement (measure-updates step! warmup n)]
-    (when-not (= (+ n warmup) @last-value)
-      (throw (ex-info "Missionary L0 mismatch" {:observed @last-value})))
-    (java.lang.ref.Reference/reachabilityFence retained)
-    measurement))
+#?(:clj
+   (defn- run-missionary-l0 [n warmup]
+     (let [retained (java.util.ArrayList.)
+           next-input (volatile! 0)
+           last-value (volatile! nil)
+           success (fn [value] (vreset! last-value value))
+           failure (fn [error] (throw error))
+           step! (fn []
+                   (let [i (vswap! next-input inc)
+                         task (m/sp i)]
+                     (.add retained task)
+                     (task success failure)))
+           measurement (measure-updates step! warmup n)]
+       (when-not (= (+ n warmup) @last-value)
+         (throw (ex-info "Missionary L0 mismatch" {:observed @last-value})))
+       (java.lang.ref.Reference/reachabilityFence retained)
+       measurement)))
+
+(defn run-case!
+  "Run one matched graph, verifying final values and delivery counts."
+  [implementation kind n warmup]
+  (if (= kind :l0)
+    #?(:clj ((case implementation :spindel run-spindel-l0 :missionary run-missionary-l0) n warmup)
+       :cljs (throw (ex-info "L0 blocking comparison is JVM-only" {})))
+    ((case implementation
+       :spindel #?(:clj run-spindel :cljs (throw (ex-info "Use spindel-observed on JS" {})))
+       :spindel-observed run-spindel-observed
+       :kernel run-kernel
+       :kernel-cells run-kernel-cells
+       :compact run-compact
+       :missionary-cp run-missionary-cp
+       :missionary run-missionary) kind n warmup)))
+
+(defn- setting [property environment fallback]
+  #?(:clj (System/getProperty property fallback)
+     :cljs (or (aget (.-env js/process) environment) fallback)))
 
 (defn -main [& _]
-  (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)
-        n (Long/parseLong (System/getProperty "spindel.compare.ops" "1000"))
-        warmup (Long/parseLong (System/getProperty "spindel.compare.warmup" "200"))
-        repeats (Long/parseLong (System/getProperty "spindel.compare.repeats" "3"))
-        implementations (mapv keyword (.split (System/getProperty "spindel.compare.engines"
-                                                                  "spindel,missionary") ","))
-        kinds (mapv keyword (.split (System/getProperty "spindel.compare.kinds"
-                                                        "l0,fanout,chain,diamond,fanin") ","))]
-    (.setThreadAllocatedMemoryEnabled bean true)
+  (let [parse #?(:clj #(Long/parseLong %) :cljs #(js/parseInt % 10))
+        n (parse (setting "spindel.compare.ops" "SPINDEL_COMPARE_OPS" "10000"))
+        warmup (parse (setting "spindel.compare.warmup" "SPINDEL_COMPARE_WARMUP" "10000"))
+        repeats (parse (setting "spindel.compare.repeats" "SPINDEL_COMPARE_REPEATS" "3"))
+        implementations (mapv keyword (str/split (setting "spindel.compare.engines" "SPINDEL_COMPARE_ENGINES"
+                                                          "compact,missionary-cp,missionary") #","))
+        kinds (mapv keyword (str/split (setting "spindel.compare.kinds" "SPINDEL_COMPARE_KINDS"
+                                                "fanout,chain,diamond,fanin") #","))]
+    #?(:clj (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)]
+              (.setThreadAllocatedMemoryEnabled bean true)))
     (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :spindel-observed :missionary-cp} implementations))
       (throw (ex-info "Experimental engines require explicit reactive benchmark kinds"
                       {:kinds kinds :engines implementations})))
-    (doseq [kind kinds
-            trial (range repeats)
+    (doseq [kind kinds trial (range repeats)
             implementation (if (even? trial) implementations (reverse implementations))]
-      (let [result (if (= kind :l0)
-                     ((case implementation
-                        :spindel run-spindel-l0
-                        :missionary run-missionary-l0) n warmup)
-                     ((case implementation
-                        :spindel run-spindel
-                        :spindel-observed run-spindel-observed
-                        :kernel run-kernel
-                        :kernel-cells run-kernel-cells
-                        :compact run-compact
-                        :missionary-cp run-missionary-cp
-                        :missionary run-missionary) kind n warmup))]
-        (prn (merge {:kind kind :implementation implementation :trial trial
-                     :operations n :warmup warmup}
-                    result))
-        (flush)))
-    (shutdown-agents)))
+      (prn (merge {:kind kind :implementation implementation :trial trial
+                   :platform #?(:clj :jvm :cljs :node) :operations n :warmup warmup
+                   :profiled? (= "1" (setting "spindel.compare.profiled" "SPINDEL_COMPARE_PROFILED" "0"))}
+                  (run-case! implementation kind n warmup)))
+      #?(:clj (flush)))
+    #?(:clj (shutdown-agents))))
+
+#?(:cljs (set! *main-cli-fn* -main))

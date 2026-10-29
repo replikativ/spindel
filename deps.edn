@@ -92,7 +92,12 @@
   :repl {:extra-deps {nrepl/nrepl {:mvn/version "1.1.2"}
                       cider/cider-nrepl {:mvn/version "0.49.3"}}}
 
-  :bench {:extra-paths ["dev" "test"]}
+  :bench {:extra-paths ["dev" "test"]
+          :extra-deps {missionary/missionary {:mvn/version "b.46"}}}
+
+  :bench-js {:main-opts ["-m" "cljs.main" "-t" "node" "-O" "advanced"
+                         "-d" "target/bench/out" "-o" "target/bench/compare.js"
+                         "-c" "org.replikativ.spindel.missionary-comparison"]}
 
   :dev {:extra-paths ["test"]
         :extra-deps {org.clojure/tools.namespace {:mvn/version "1.5.0"}}}
