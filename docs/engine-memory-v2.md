@@ -391,6 +391,41 @@ handoff is implemented.
    egress dominate afterward; non-parking bodies also need the direct
    execution path described above.
 
+## Public state boundary
+
+Engine graph, run, obligation, admission and scheduler mutations use typed
+operations. Generic `PState` writes cannot replace that state or bypass the
+transition's ownership and generation checks. Its engine reads are immutable
+diagnostic views, not borrowed rows or an emulation of the old mutable node map.
+
+Application extension cells retain get/swap/CAS. A transformation, structural
+equality and key hashing can execute user code, so they run outside the family
+gate. The commit validates the immutable roots read from the whole following
+lineage under the gate and retries if any changed. This preserves reentrant
+updates and observes a concurrent parent change before acquiring a private copy.
+An explicit target context selects its own world, even inside another world's
+native body; an ambient activation must not silently override it.
+
+A following world reads current parent cells until a local write shadows them.
+For map groups the copy unit is `[group cell-id]`, including all nested fields of
+that cell. Replacing a whole group shadows the whole group; vector groups are
+copied whole before nested edits. A local map-cell override still presents a map
+if its parent group is subsequently replaced by a scalar, vector or nil. Direct
+reads and bulk views must agree. Untouched cells do not pin historical parent
+application maps. Immutable diagnostic views remain unchanged after later writes.
+
+The native root-world extension-cell facility does not yet implement scoped
+RuntimeAtom allocation/release, listener egress, component ownership or world
+release. Those require typed lifecycle integration in addition to generic cell
+payload updates; passing extension-cell tests does not close those gates.
+
+Cancellation-shielded `await-finalization` is also an explicit migration gate.
+It must preserve the cancelled cached result while asynchronous cleanup can
+finish and physical joining waits. It cannot be translated into an ordinary
+await on an unwinding run, whose new ordinary registrations are refused by the
+lifetime model. The retirement/cleanup dispatch and join evidence need an
+explicit refinement before the public backend can claim this contract.
+
 ## Replacement acceptance
 
 The default engine changes only after these gates pass on JVM and CLJS:

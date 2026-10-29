@@ -4,6 +4,7 @@
   (:refer-clojure :exclude [await assoc! dissoc! pop!])
   #?(:cljs (:require-macros [org.replikativ.spindel.engine.impl.owned :refer [a put locked each! each-copy! fields! with-activation runtime-field]]))
   (:require [is.simm.partial-cps.async :as cps]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
 #?(:clj (defonce ^:private activation-local (ThreadLocal.))
@@ -319,9 +320,17 @@
 (defrecord RootOwner [id])
 (defrecord Failure [error])
 (defrecord RuntimeFamily [gate worlds host-tokens])
+(declare read-application-state swap-application-state! cas-application-state!)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts home liveness])
+                         operations posts home liveness extension-state]
+  rtp/PWorldIdentity
+  (world-identity [_] owner-root)
+  rtp/PState
+  (get-state [this path] (read-application-state this path))
+  (swap-state! [this path f] (swap-application-state! this path f nil))
+  (swap-state-args! [this path f args] (swap-application-state! this path f args))
+  (cas-state! [this path old-value new-value] (cas-application-state! this path old-value new-value)))
 (def w [:w 0])
 (def root [:root w])
 (def cancelled ::cancelled)
@@ -359,7 +368,7 @@
              #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue)
              (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.)))
              (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
-                   (put 3 (members)) (put 4 (queue)) (put 5 (dict))))]
+                   (put 3 (members)) (put 4 (queue)) (put 5 (dict))) (atom {:values {} :shadowed #{} :map-groups #{}}))]
      (assoc! family world-id rt)
      rt)))
 
@@ -1587,6 +1596,140 @@
                   (and node (= :signal (a node n-kind)) (or (a node n-owner) unwinding?)))
       (throw (ex-info "Released source" {:id (:id source)})))
     node))
+
+(def ^:private engine-state-keys
+  #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
+    :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
+    :seq :serial :clock :handles :threads :gc :global :scopes :pins
+    :fdeps :releasing :cuts :caps :registry})
+
+(defn- engine-path? [path]
+  (let [key (first path)]
+    (or (contains? engine-state-keys key)
+        (and (keyword? key) (#{"engine" "lifetime"} (namespace key))))))
+
+(defn- application-write! [path]
+  (when (or (empty? path) (engine-path? path))
+    (throw (ex-info "Engine state requires a typed operation" {:error :engine-state-read-only :path path}))))
+
+(defn- application-roots [rt]
+  ;; The family gate is held by the caller. Keep immutable roots, never a
+  ;; mutable row alias, and do not retain these borrowed views after the call.
+  (loop [world rt result []]
+    (if world
+      (recur (runtime-field world :parent)
+             (conj result [world @(runtime-field world :extension-state)]))
+      result)))
+
+(defn- application-values [roots]
+  (reduce (fn [parent [_ {:keys [values shadowed]}]]
+            (reduce (fn [result path]
+                      (if (= 1 (count path))
+                        (assoc-in result path (get-in values path))
+                        (let [[group cell] path parent (get result group)]
+                          (assoc result group (assoc (if (map? parent) parent {}) cell (get-in values path))))))
+                    parent shadowed))
+          {} (reverse roots)))
+
+(defn- application-group-base [roots group]
+  ;; Only the shape is needed for a map group; return a vector/scalar base
+  ;; directly so nested vector edits can preserve the complete vector value.
+  (some (fn [[_ {:keys [values shadowed map-groups]}]]
+          (cond (contains? shadowed [group]) [true (get values group)]
+                (contains? map-groups group) [true {}])) roots))
+
+(defn- application-value [roots path]
+  (if (< (count path) 2)
+    (get-in (application-values roots) path)
+    (let [top (first path) group [top] cell (subvec path 0 2)]
+      (loop [roots (seq roots)]
+        (when-let [[_ {:keys [values shadowed map-groups]}] (first roots)]
+          (cond
+            (or (contains? shadowed group) (contains? shadowed cell)) (get-in values path)
+            (and (contains? map-groups top)
+                 (not (map? (second (application-group-base (next roots) top))))) nil
+            :else (recur (next roots))))))))
+
+(defn- application-candidate [roots path value]
+  (let [state (second (first roots))
+        group [(first path)] cell (if (= 1 (count path)) group (subvec path 0 2))
+        base (second (application-group-base roots (first path)))]
+    (if (and (> (count path) 1) (some? base) (not (map? base)))
+      (application-candidate roots group (assoc-in base (subvec path 1) value))
+      (let [values (if (or (= 1 (count path)) (contains? (:shadowed state) group)
+                           (contains? (:shadowed state) cell))
+                     (:values state)
+                     (assoc-in (:values state) cell (application-value roots cell)))
+            shadowed (:shadowed state)
+            shadowed (if (= 1 (count path))
+                       (set (remove #(= (first %) (first path)) shadowed)) shadowed)
+            updated-values (assoc-in values path value)
+            updated-shadowed (if (contains? shadowed group) shadowed (conj shadowed cell))
+            map-groups (if (= 1 (count path)) (disj (:map-groups state) (first path))
+                           (if (contains? shadowed group) (:map-groups state)
+                               (conj (:map-groups state) (first path))))]
+        (if (and (identical? updated-values (:values state)) (= updated-shadowed (:shadowed state))
+                 (= map-groups (:map-groups state)))
+          state
+          {:values updated-values :shadowed updated-shadowed :map-groups map-groups})))))
+
+(defn- application-roots-current? [roots]
+  (every? (fn [[world before]] (identical? before @(runtime-field world :extension-state))) roots))
+
+(defn read-application-state
+  "PState application cells and explicit immutable engine diagnostics. Reads
+   of a cell borrow no mutable engine row. Engine paths cannot be mutated."
+  [requested path]
+  (let [rt requested]
+    (cond
+      (empty? path) (let [[graph roots] (locked rt [(snapshot rt) (application-roots rt)])]
+                      (merge graph (application-values roots)))
+      (engine-path? path) (get-in (snapshot rt) path)
+      :else (application-value (locked rt (application-roots rt)) path))))
+
+(defn- check-application-caller! [rt]
+  ;; Called under the target gate. Related worlds share that gate; unrelated
+  ;; worlds use the explicit admission check before acquiring the target.
+  (when-let [frame (current-activation)]
+    (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
+      (check-running! (a frame 1)))))
+
+(defn swap-application-state!
+  "User transformations run outside the family gate. Commit retries if any
+   application cell changed, and is serialized with fork/capture boundaries."
+  [requested path f args]
+  (application-write! path)
+  (let [rt requested state (runtime-field rt :extension-state)]
+    (admit-world-switch! rt)
+    (loop []
+      (let [roots (locked rt (check-application-caller! rt) (application-roots rt)) before (second (first roots))
+            value (application-value roots path)
+            after (if (seq args) (apply f value args) (f value))
+            candidate (application-candidate roots path after)
+            _ (admit-world-switch! rt)
+            committed? (locked rt
+                               (check-application-caller! rt)
+                               (when (application-roots-current? roots)
+                                 (compare-and-set! state before candidate)))]
+        (if committed? after (recur))))))
+
+(defn cas-application-state! [requested path old-value new-value]
+  (application-write! path)
+  (let [rt requested state (runtime-field rt :extension-state)]
+    (admit-world-switch! rt)
+    (loop []
+      (let [roots (locked rt (check-application-caller! rt) (application-roots rt)) before (second (first roots))]
+        ;; Equality and key hashing may call user code, including a reentrant
+        ;; update. Construct the candidate outside the gate, then compare the
+        ;; complete immutable root by identity so those updates are preserved.
+        (if (= old-value (application-value roots path))
+          (let [candidate (application-candidate roots path new-value)
+                _ (admit-world-switch! rt)]
+            (if (locked rt (check-application-caller! rt)
+                        (when (application-roots-current? roots)
+                          (compare-and-set! state before candidate)))
+              true (recur)))
+          false)))))
 
 (defn read-signal [requested source]
   (let [rt (execution-runtime requested)]
