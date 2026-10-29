@@ -27,6 +27,54 @@ state. Dispatch after publication may be repeated and must claim each
 obligation/event before invoking user code. Retries of an immutable state
 builder cannot perform effects.
 
+## Engine flow and visibility
+
+This is the target flow. The experimental kernel implements the local
+transition path; coordinated cuts, complete public API integration, and a
+modelled committed command outbox remain migration gates.
+
+```mermaid
+flowchart TD
+    H[Host call / source update / native callback] --> G[Acquire store ownership gate]
+    G --> A{Admission and generation valid?}
+    A -->|refused| R[Undo edits; publish nothing]
+    A -->|accepted| W[Resolve world; read local or following parent]
+    W --> M[Edit owned rows and indexes; copy shared rows on first write]
+    M --> L[Rule L worklist: retire runs, close scopes, release obligations]
+    L --> O[Record fenced deliveries and postcommit commands]
+    O --> P[Commit and release gate: state becomes observable]
+    R --> U[Release gate; report refusal]
+    P --> Q{Next command}
+    Q -->|body / continuation| C[Claim generation and slice under gate]
+    C --> B[Run CPS or proven direct body outside gate]
+    B --> E{Effect / return}
+    E -->|ready await| I[Atomic register and consume; continue synchronously]
+    I --> G
+    E -->|track / park / completion / physical return| G
+    Q -->|host callback| D[Claim delivery; invoke host outside gate]
+    Q -->|native start / cancel| N[Perform native action outside gate]
+    N --> H
+    P --> F{Snapshot or fork requested?}
+    F -->|following fork| J[Share only parked ownership bundles; parent reads stay live]
+    F -->|frozen fork| K[Fence, drain to boundary, capture pinned roots, attach, release]
+    J --> G
+    K --> G
+```
+
+A successful ready await can combine T5 and T6 because no user code runs
+between registration and consumption. It still publishes before invoking the
+continuation. A body slice may perform many such transitions; running a body
+never grants it permission to mutate published rows directly. Every public
+read acquires the gate and receives immutable values. Internal row references
+are borrowed only until the next edit; rollback and snapshots must never
+retain an alias to a mutable before-image.
+
+Forking does not require copying an unforked world's rows on every commit.
+It changes the edit ownership of shared roots. A following fork must retain
+only the inherited parked ownership closure, including descendant explicit
+scopes, rather than pinning the entire parent's old heap. A frozen basis may
+retain the whole captured world until its capability is released.
+
 ## Physical layout
 
 ```text

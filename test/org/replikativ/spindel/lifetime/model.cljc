@@ -396,9 +396,11 @@
 
 (defn t03-touch-keyed
   "T3 touch-keyed/cache-row, indexed by spin instance."
-  [s {:keys [w r key kind] :or {kind :cache-row}}]
+  [s {:keys [w r key kind order] :or {kind :cache-row order 0}}]
   (require! (work? (run s w r)) ::not-work {:r r})
-  (assoc-in s [:worlds w :entities [(:spin (run s w r)) key]] (row kind r)))
+  (let [e [(:spin (run s w r)) key]]
+    (-> s (assoc-in [:worlds w :entities e] (assoc (row kind r) :order order))
+        (update-in [:worlds w :runs r :creations] conj e))))
 
 (defn read-source [s w e]
   (loop [v w]
@@ -613,6 +615,10 @@
                             (assoc-in s [:worlds w :obligations o :creditor] [:run w r2])
                             (if (work? rr) (end-obligation s w o :creditor-cancelled) s))))
                     s (:obligations (wr s w)))
+          s (update-in s [:worlds w :scopes]
+                       #(into {} (for [[id sr] %]
+                                   [id (if (and (= r (:parent sr)) (< (get sr :order 0) order))
+                                         (assoc sr :parent r2) sr)])))
           prefix (filter #(< (get-in s [:worlds w :entities % :order] 0) order)
                          (:creations rr))]
       (rule-l
@@ -786,10 +792,12 @@
 
 (defn t12-open-scope
   "T12 open explicit, supervisor, render or SCI scope."
-  [s {:keys [w scope parent kind] :or {kind :explicit}}]
+  [s {:keys [w scope parent kind order] :or {kind :explicit order 0}}]
   (live! s w)
   (require! (open? s w parent) ::closed-scope {:parent parent})
-  (assoc-in s [:worlds w :scopes scope] {:kind kind :parent parent :status :open}))
+  (assoc-in s [:worlds w :scopes scope]
+            (cond-> {:kind kind :parent parent :status :open}
+              (run s w parent) (assoc :order order))))
 
 (defn close-owned [s w scope]
   (rule-l
@@ -944,15 +952,22 @@
   (let [child (assoc (world-row v w :following (get-in s [:worlds w :lineage :root])) :seq (get-in s [:worlds w :seq] 0))
         copies (into {} (for [[r rr] (:runs (wr s w)) :when (= :parked (:status rr))]
                           [r (assoc (copy-row rr w :inherited) :status :inherited :owner (:root child))]))
+        scopes (loop [parents (set (keys copies)) found {}]
+                 (let [children (into {} (for [[id sr] (:scopes (wr s w))
+                                               :when (contains? parents (:parent sr))]
+                                           [id (copy-row sr w :inherited)]))]
+                   (if (empty? children) found
+                       (recur (set (keys children)) (merge found children)))))
+        owners (into (set (keys copies)) (keys scopes))
         es (set (concat (map :spin (vals copies))
                         (for [[e er] (:entities (wr s w))
-                              :when (or (contains? copies (:owner er)) (contains? copies (:creator er)))] e)))
+                              :when (or (contains? owners (:owner er)) (contains? copies (:creator er)))] e)))
         copies (into {} (for [[r rr] copies]
                           [r (-> rr (update :creations set/intersection es)
                                  (update :spawned set/intersection (set (keys copies))))]))
         entities (into {} (for [e es :let [er (ent s w e)]]
                             [e (cond-> (assoc (copy-row er w :inherited) :owner
-                                              (if (contains? copies (:owner er)) (:owner er) (:root child)))
+                                              (if (contains? owners (:owner er)) (:owner er) (:root child)))
                                  (= :fork (:kind er)) (assoc :reference? true))]))
         obs (into {} (for [[o ob] (:obligations (wr s w))
                            :when (or (contains? copies (nth (:creditor ob) 2 nil))
@@ -963,6 +978,7 @@
     (let [evidence (copy-evidence s w)]
       (attach-world s w v scope k systems
                     (assoc child :runs copies :entities entities :obligations obs
+                           :scopes (merge (:scopes child) scopes)
                            :queue (copy-queue evidence obs)) evidence false))))
 
 (defn t20-cut-fence

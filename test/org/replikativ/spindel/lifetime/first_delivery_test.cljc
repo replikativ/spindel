@@ -64,3 +64,59 @@
     (is (nil? (get-in s [:worlds w :entities e :creator])))
     (is (contains? (get-in s [:worlds w :runs [p 2] :creations]) e))
     (is (empty? (inv/check s)))))
+
+(defn prefix-scope-actions []
+  (let [w [:w 0] p [:spin 0] e [:signal 0] scope [:scope 0]]
+    [{:t :t04 :w w :e p :mode :callback}
+     {:t :t12 :w w :scope scope :parent [p 1] :order 0}
+     {:t :t02 :w w :scope scope :e e :value 1}
+     {:t :t05 :w w :r [p 1] :kind :track :debtor [:entity w e] :order 1}
+     {:t :t07 :w w :r [p 1] :value 1}
+     {:t :t08 :w w :e p :value 1}
+     {:t :signal-write :w w :e e :value 2}
+     {:t :t08 :w w :e e :value 2}
+     {:t :t05 :w w :r [p 2] :kind :track :debtor [:entity w e] :order 1}
+     {:t :t07 :w w :r [p 2] :value 2}]))
+
+(deftest prefix-scope-survives-predecessor-retirement
+  (let [w [:w 0] p [:spin 0] e [:signal 0] scope [:scope 0]
+        s (reduce model/step (model/init-state) (prefix-scope-actions))]
+    (is (= [p 2] (get-in s [:worlds w :scopes scope :parent])))
+    (is (= :open (get-in s [:worlds w :scopes scope :status])))
+    (is (= scope (get-in s [:worlds w :entities e :owner])))
+    (is (empty? (inv/check s)))))
+
+(defn prefix-cache-actions []
+  (let [w [:w 0] p [:spin 0] e [:signal 0]]
+    [{:t :t02 :w w :e e :value 1}
+     {:t :t04 :w w :e p :mode :callback}
+     {:t :t03 :w w :r [p 1] :key :cached :order 0}
+     {:t :t05 :w w :r [p 1] :kind :track :debtor [:entity w e] :order 1}
+     {:t :t07 :w w :r [p 1] :value 1}
+     {:t :t08 :w w :e p :value 1}
+     {:t :signal-write :w w :e e :value 2}
+     {:t :t08 :w w :e e :value 2}
+     {:t :t05 :w w :r [p 2] :kind :track :debtor [:entity w e] :order 1}
+     {:t :t07 :w w :r [p 2] :value 2}]))
+
+(deftest prefix-cache-survives-predecessor-retirement
+  (let [w [:w 0] p [:spin 0]
+        s (reduce model/step (model/init-state) (prefix-cache-actions))]
+    (is (= [p 2] (get-in s [:worlds w :entities [p :cached] :owner])))
+    (is (empty? (inv/check s)))))
+
+(deftest following-bundle-includes-descendant-scopes
+  (let [w [:w 0] v [:w 1] p [:spin 0] e [:signal 0]
+        scope [:scope 0] nested [:scope 1]
+        before (reduce model/step (model/init-state)
+                       [{:t :t04 :w w :e p :mode :callback}
+                        {:t :t12 :w w :scope scope :parent [p 1]}
+                        {:t :t12 :w w :scope nested :parent scope}
+                        {:t :t02 :w w :scope nested :e e :value 1}
+                        {:t :t05 :w w :r [p 1] :kind :await-once :debtor [:host :outside]}])
+        after (model/step before {:t :t19 :w w :v v :k [:cap 0] :scope [:root w]})]
+    (is (= [p 1] (get-in after [:worlds v :scopes scope :parent])))
+    (is (= scope (get-in after [:worlds v :scopes nested :parent])))
+    (is (= nested (get-in after [:worlds v :entities e :owner])))
+    (is (= :inherited (get-in after [:worlds v :entities e :origin])))
+    (is (empty? (inv/check after)))))

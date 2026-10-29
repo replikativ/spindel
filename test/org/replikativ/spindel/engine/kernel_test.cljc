@@ -224,3 +224,45 @@
                                    :invocations 2 :host-registrations 2
                                    :filters [:local] :invoke-modes [:callback]})]
     (bounded-walks! initial #{:t04 :t07 :t09 :t10 :t11 :t15} 5)))
+
+(deftest handle-collection-and-idle-release
+  (let [tok [:tok 0]
+        fresh [:tok 1]
+        setup [{:t :t01 :w w :e parent :tok tok}
+               {:t :t04 :w w :e parent :tok tok :mode :callback}
+               {:t :t07 :w w :r [parent 1] :value 42}
+               {:t :t08 :w w :e parent :value 42}]]
+    (testing "delayed and duplicate collection notifications"
+      (compare-walk! (model/init-state)
+                     (into setup [{:t :t16 :tok tok}
+                                  {:t :t17 :w w :e parent :tok tok}
+                                  {:t :t17 :w w :e parent :tok tok}
+                                  {:t :t01 :w w :e parent :tok fresh}
+                                  {:t :t04 :w w :e parent :tok fresh :mode :callback}
+                                  {:t :t17 :w w :e parent :tok tok}])))
+    (testing "explicit release poisons held tokens without resetting generations"
+      (compare-walk! (model/init-state)
+                     (into setup [{:t :t18 :w w}
+                                  {:t :t04 :w w :e parent :tok tok :mode :callback}
+                                  {:t :t01 :w w :e parent :tok fresh}
+                                  {:t :t04 :w w :e parent :tok fresh :mode :callback}
+                                  {:t :t07 :w w :r [parent 1] :value :late}
+                                  {:t :t07 :w w :r [parent 2] :value 43}
+                                  {:t :t08 :w w :e parent :value 43}])))))
+
+(deftest collection-does-not-cancel-wanted-work
+  (compare-walk!
+   (model/init-state)
+   [{:t :t01 :w w :e parent :tok [:tok 0]}
+    {:t :t04 :w w :e parent :tok [:tok 0] :mode :callback}
+    {:t :t18 :w w}
+    {:t :t16 :tok [:tok 0]}
+    {:t :t17 :w w :e parent :tok [:tok 0]}
+    {:t :t07 :w w :r [parent 1] :value 42}
+    {:t :t08 :w w :e parent :value 42}]))
+
+(deftest prefix-scope-survives-successor-completion
+  (compare-walk! (model/init-state) (handoff/prefix-scope-actions)))
+
+(deftest prefix-cache-survives-successor-completion
+  (compare-walk! (model/init-state) (handoff/prefix-cache-actions)))

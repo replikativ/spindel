@@ -69,6 +69,7 @@
                            :scopes {[:root w] {:kind :world-root :parent nil :status :open}}
                            :entities {} :runs {} :obligations {} :releasing #{}
                            :fdeps #{} :pins #{} :queue []}}
+               :registry #{w}
                :env {:handles {} :threads {:host {:world w :scope nil :run nil
                                                   :read-permits #{} :excl-permits []}}
                      :native {} :outside []}
@@ -552,6 +553,7 @@
       (cancel-run! ctx w r nil))
     (index-remove! ctx w :entities-by-owner (:owner er) e)
     (delete! ctx w :entities e)
+    (command! ctx {:op :release-entity :world w :e e})
     (header-edit! ctx w update :pins disj e)
     (header-edit! ctx w update :queue
                   #(vec (remove (fn [event]
@@ -579,6 +581,33 @@
                        (not (and (= :spin (:kind row)) (:completed? row) (seq (:tokens row)))))
               (remove-entity! ctx w e))))
         (recur (inc cursor))))))
+
+(defn- handle-unreachable! [ctx tok]
+  (let [{:keys [reachable? spin touched]} (get-in (root-state ctx) [:env :handles tok])]
+    (require! reachable? ::already-unreachable {:tok tok})
+    (root-edit! ctx assoc-in [:env :handles tok :reachable?] false)
+    (let [notifications (vec (for [w touched
+                                   :when (and (contains? (:registry (root-state ctx)) w)
+                                              (read-row ctx w :entities spin))]
+                               {:t :t17 :w w :e spin :tok tok}))]
+      (root-edit! ctx update-in [:env :gc] (fnil into []) notifications)
+      (vreset! (:result ctx) {:notifications notifications}))))
+
+(defn- gc-notify! [ctx {:keys [w e tok]}]
+  (require! (false? (get-in (root-state ctx) [:env :handles tok :reachable?]))
+            ::reachable-handle {:tok tok})
+  (root-edit! ctx update-in [:env :gc]
+              #(vec (remove (fn [a] (= [w e tok] [(:w a) (:e a) (:tok a)])) %)))
+  (when (contains? (:tokens (read-row ctx w :entities e)) tok)
+    (edit! ctx w :entities e update :tokens disj tok)))
+
+(defn- release-idle! [ctx {:keys [w es]}]
+  (doseq [e (or es (keys (store/table-view (:tx ctx) w :entities)))
+          :let [row (read-row ctx w :entities e)]
+          :when (and (= :spin (:kind row)) (:completed? row) (not (wanted? ctx w e)))]
+    (doseq [tok (:tokens row)]
+      (root-edit! ctx update-in [:env :handles tok :dropped] conj w))
+    (edit! ctx w :entities e assoc :tokens #{})))
 
 (defn- predecessor? [ctx w previous r]
   (loop [p (:pred (read-row ctx w :runs r))]
@@ -705,6 +734,11 @@
               (edit! ctx w :obligations o assoc :creditor [:run w r2])
               (index-add! ctx w :by-run-creditor r2 o))
           (when work? (end-obligation! ctx w o :creditor-cancelled))))
+      (doseq [scope (read-row ctx w :scopes-by-parent r)
+              :when (< (get (read-row ctx w :scopes scope) :order 0) order)]
+        (index-remove! ctx w :scopes-by-parent r scope)
+        (edit! ctx w :scopes scope assoc :parent r2)
+        (index-add! ctx w :scopes-by-parent r2 scope))
       (doseq [child (:creations rr)
               :when (< (get (read-row ctx w :entities child) :order 0) order)]
         (if (:creator (read-row ctx w :entities child))
@@ -909,13 +943,17 @@
          (let [r (:r action)
                rr (read-row ctx w :runs r)]
            (require! (#{:running :parked} (:status rr)) ::not-work {:r r})
-           (put-entity! ctx w [(:spin rr) (:key action)]
-                        (entity-row (get action :kind :cache-row) r)))
+           (let [e [(:spin rr) (:key action)]]
+             (put-entity! ctx w e
+                          (assoc (entity-row (get action :kind :cache-row) r)
+                                 :order (get action :order 0)))
+             (edit! ctx w :runs r update :creations conj e)))
          :t12
          (do (require! (= :live (:status (header ctx w))) ::not-live {:world w})
              (require! (open? ctx w (:parent action)) ::closed-scope {:parent (:parent action)})
              (put! ctx w :scopes (:scope action)
-                   {:kind (get action :kind :explicit) :parent (:parent action) :status :open})
+                   (cond-> {:kind (get action :kind :explicit) :parent (:parent action) :status :open}
+                     (read-row ctx w :runs (:parent action)) (assoc :order (get action :order 0))))
              (index-add! ctx w :scopes-by-parent (:parent action) (:scope action)))
          :t05 (register! ctx action)
          ;; The gate excludes observation between registration and claim.
@@ -937,6 +975,9 @@
          (doseq [[r rr] (store/table-view tx w :runs)
                  :when (#{:running :parked} (:status rr))]
            (cancel-run! ctx w r nil))
+         :t16 (handle-unreachable! ctx (:tok action))
+         :t17 (gc-notify! ctx action)
+         :t18 (release-idle! ctx action)
          :slice-enter
          (let [th (:th action) r (:r action)]
            (require! (= :running (:status (read-row ctx w :runs r))) ::not-running {:w w :r r})
