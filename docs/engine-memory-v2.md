@@ -1,9 +1,9 @@
-# Engine memory v2: versioned world storage
+# Engine memory v2: owned world storage
 
 Status: design candidate. The lifetime semantics in
 [engine-formalism.md](engine-formalism.md) remain authoritative. This file
-specifies a physical representation and its refinement obligations. No runtime
-API is changed by this draft.
+specifies a reference representation, a proposed mutable fast path, and their
+refinement obligations. No runtime API is changed by this draft.
 
 ## Goal and unit of publication
 
@@ -18,11 +18,14 @@ The engine may stage any number of edits within a transition. It may combine
 consecutive model transitions only when no host read, fork, callback, user code,
 foreign world, or model-visible event can observe the intermediate state.
 This is an optimization to prove per path, not the default transaction rule.
+Atomicity does not require a fresh immutable root after every transition:
+exclusive engine-owned memory may change in place while all readers are
+excluded. The visibility boundary is the release of that ownership gate.
 
-A transaction returns a committed outbox of deliveries and commands. The
-outbox is part of the committed version; dispatch after publication may be
-repeated and must claim each obligation/event before invoking user code.
-Retries of the state builder cannot perform effects.
+A transaction records an outbox of deliveries and commands in committed
+state. Dispatch after publication may be repeated and must claim each
+obligation/event before invoking user code. Retries of an immutable state
+builder cannot perform effects.
 
 ## Physical layout
 
@@ -41,10 +44,9 @@ WorldVersion
   derived indexes: by-debtor, by-creditor, ownership children,
                    ready/graph order, token and foreign-dependency links
 
-Versioned table
-  immutable published root -> rows
-  private builder: transient/editable nodes with an edit token; never reachable
-                   from a published WorldVersion
+Table representation
+  reference: immutable published root -> rows; transient private builder
+  fast path: owned mutable pages; shared/pinned pages copied on first write
 ```
 
 Entity, run, obligation and scope rows follow §4.1.2. Source rows own the
@@ -54,8 +56,9 @@ owning world's arena, keyed by row ID; fork copy rules install only the
 descriptors/continuations the model permits. This arena cannot confer a
 retention reason absent a semantic row.
 
-The first implementation uses Clojure's persistent hash maps and their
-transient builders for ID-indexed tables. An ordered structure may serve ready
+The reference prototype uses Clojure's persistent hash maps and their
+transient builders for ID-indexed tables. It establishes a simple refinement
+target but does not make the fast-case performance claim. An ordered structure may serve ready
 queues, topological rank, or range indexes. `persistent-sorted-set` is a
 candidate for those ordered indexes and its editable-node/seal contract is a
 pattern for ownership; it is not assumed to be the entity table. A custom
@@ -63,6 +66,11 @@ hashed or segmented directory must beat the hash-map baseline on the engine's
 actual transitions, including single-row updates and forked reads.
 
 ## Builder, freeze and publication
+
+The immutable `StoreHead` algorithm below is the reference publication path.
+It is easy to compare with the formal model and makes foreign edits atomic,
+but it still allocates persistent paths and performs a CAS on each transition.
+It is not sufficient evidence of competitiveness with a mutable runtime.
 
 1. Read one committed store head. All worlds and following ancestors read by
    the transition come from that revision. Retries rebuild from a new head.
@@ -84,33 +92,71 @@ actual transitions, including single-row updates and forked reads.
    semantic slot in another transition. Native effects use stable IDs and the
    existing durable settlement records where required.
 
+## Exclusive mutable execution path
+
+For the unforked case, use the same semantic rows and transition functions
+with an engine-owned mutable representation. A store gate gives one writer
+exclusive access and excludes engine readers during a transition. All runtime
+access goes through the gate; internal pages and row objects never escape to
+user code. After validating preconditions, the transition edits owned pages
+and derived indexes in place, applies Rule L to completion, records its
+outbox, and releases the gate. Release is its linearization point. The
+mutation phase calls no user code and performs no native effects. Semantic
+refusals occur before the first edit; any action that cannot satisfy that rule
+uses a private draft or undo journal.
+
+An owned page has an edit owner/epoch. A root world with no snapshot or frozen
+fork reuses its owned pages across transitions: no persistent-map path copy,
+`persistent!`, or store-head CAS is needed per signal update. At a fork or
+snapshot boundary, the engine pins the current roots and rotates the writer's
+owner token. Neither branch may subsequently mutate a page stamped with the
+old token. Its first write copies the touched root/path, then newly owned
+pages can be edited in place until the next sharing boundary. Fork attach is
+O(lineage depth), independent of entity count; subsequent write cost follows
+the touched paths. Explicit reference counts could later recover uniqueness
+when a fork dies, but owner tokens suffice for safe copy-on-write.
+
+A following child reads the parent's current pages while holding the store
+gate, and stores only local shadows. A frozen child reads pinned pages.
+Multi-world T5/T6/T19 actions hold the same gate while editing all affected
+worlds, so a reader never sees half of a foreign dependency. A later design
+may split gates only with an atomic cross-world protocol. External threads
+enqueue work or acquire the gate; they cannot retain a mutable internal page.
+JVM lock release/acquire and CLJS event-loop reentry are publication edges.
+
+The fast representation must project to the same model state at every gate
+release as the immutable reference prototype does at every CAS. In-place
+mutation is an implementation detail, not permission to defer Rule L or a
+callback-visible state change.
+
 The reference model has actions that write another world's rows in the same
 transition: T5/T6 foreign dependency admission and release, signal
 notifications to foreign creditors, T19 inherited-debtor bundles, and cut
 coordination. A local commit followed by a message is not equivalent to that
 model: a concurrent release could observe the creditor obligation without its
 debtor-side retention row. The single store root covers this case directly.
-Its cost is an extra registry path per commit and CAS contention among active
-worlds, even when their rows are disjoint. Measure both. If contention is
-material, a later per-world-head design needs an atomic multi-world descriptor
-or a formally revised foreign-action protocol before it can replace this one.
+In the fast path the store gate supplies the same atomicity. Its cost is
+contention among active worlds, even when their rows are disjoint. Measure
+this separately from the single-world hot path. A later per-world-gate design
+needs an atomic multi-world protocol or a formally revised foreign-action
+protocol before it can replace this one.
 
-A storage node may be reused in place only while owned exclusively by the current
-builder and unreachable from any published version. A published node is
-immutable. Reference counts, if used, count *explicit engine ownership* of
+A storage node may be reused in place only while owned exclusively by the
+current world and unreachable from any pinned snapshot or other fork. An
+immutable published root is never edited. Reference counts, if used, count
+*explicit engine ownership* of
 roots/nodes; they never replace the edit-token rule or decide logical entity
 liveness. JVM/JS host aliases are not visible to an engine-owned counter.
 Dropping a count releases physical storage only; Rule L decides semantic
 retention. An epoch or edit-token implementation is the safe baseline, and a
 node-reference-count variant must beat it in paired measurements.
 
-In particular, a thread may have read the old head immediately before another
-thread replaces it. An internal count of world heads can now say "one owner"
-while that reader still holds the old Java/JS object. Destructive reuse of a
-previously published node therefore requires an explicit reader pin/hazard
-protocol (including public snapshots) or is forbidden. The initial design
-forbids it. Counts may help reclaim nodes or select among private builder
-buffers, but do not authorize mutation of a published node.
+In particular, a thread may have read an old immutable head immediately
+before another thread replaces it. An internal count of world heads can now
+say "one owner" while that reader still holds the old Java/JS object. The
+mutable path avoids this ambiguity by never exposing its internal pages and
+by requiring every engine reader to hold the gate. Immutable snapshots are
+explicit pins. Counts alone do not authorize mutation of a pinned node.
 
 This follows the useful part of the local
 `../../persistent-sorted-set/doc/CONCURRENCY.md` contract: editable nodes are
@@ -121,8 +167,9 @@ correctness.
 
 ## Forks and reads
 
-- **Root:** reads one committed store head. A transition may use a mutable builder,
-  but no reader or fork sees it.
+- **Root:** reads under the store gate or from one immutable committed head.
+  A transition may edit privately or edit owned mutable pages under the gate;
+  no reader or fork sees a partial transition.
 - **Frozen fork:** pins one committed basis root and starts an empty local
   shadow table. Its untouched reads use that basis forever. Freezing a
   following child must also pin the versions of its read-through ancestors
@@ -131,11 +178,11 @@ correctness.
   Fork creation and physical attach are independent of parent entity count,
   though pinning a following ancestor chain costs O(lineage depth).
 - **Following fork:** untouched entity reads resolve through the parent's
-  version in the *current committed store head*. Local writes shadow whole
-  entity rows; tombstones hide parent rows. A transaction uses one store head,
-  so its multi-row decision is internally consistent. Later transactions may
-  see a newer parent version, as the contract permits. A foreign action also
-  validates and publishes the debtor-side row in the same store CAS.
+  version in the current store view. Local writes shadow whole entity rows;
+  tombstones hide parent rows. A transaction uses one immutable store head or
+  holds the gate, so its multi-row decision is internally consistent. Later
+  transactions may see a newer parent version, as the contract permits. A
+  foreign action also validates and publishes the debtor-side row atomically.
 - **Inherited parked work:** T19/T23 share one immutable bundle root and
   install world-local execution/obligation descriptors according to the copy
   rule. Physical attach must not enumerate every copied row. Foreign debtor
@@ -171,7 +218,8 @@ while any engine API it calls still enters its own transition.
 
 ## Refinement and performance gates
 
-A representation adapter projects each committed `StoreHead` to the
+A representation adapter projects each committed `StoreHead` or gate-released
+mutable state to the
 reference model's rows. Check L1–L25 after every successful transition and
 unchanged state after refusal. Replay the complete staged lockstep traces;
 do not hide unsupported edges by shortening a trace. In particular:
@@ -187,9 +235,11 @@ do not hide unsupported edges by shortening a trace. In particular:
 Check both JVM and CLJS publication/handoff behavior. Benchmark the same
 matched reactive graphs and the existing lifetime gates: root, following and
 frozen forks, large-parent paths, creation/retirement, world-size scaling,
-allocation and retained heap. Compare a persistent-map builder, an edit-token
-hash-map builder and (only if warranted) a custom table or explicit node-count
-variant. Require semantic parity before judging speed.
+allocation and retained heap. Compare the immutable reference, the owned
+mutable path, and (only if warranted) a custom table or explicit node-count
+variant. Require semantic parity before judging speed. The unforked mutable
+path has to be measured directly against Missionary; a faster persistent
+builder by itself does not establish the desired best-case result.
 
 An exploratory REPL probe put and removed 100 rows per two publications on the
 JVM. Repeated persistent-map updates used about 52 KB and 8 microseconds per
@@ -206,6 +256,23 @@ registry atom on this JVM. That isolates the extra registry path, not the cost
 of an actual engine transition or multi-threaded contention. The decisive
 comparison is a paired end-to-end workload on the replacement engine.
 
+The owned-page probe verifies that an unforked world reuses the same root,
+that a fork shares it without copying entity rows, and that the first write
+in either branch copies the touched page. In one 500,000-update REPL run, a
+locked owned-page write took about 52 ns and 12 bytes/update; a one-row
+immutable-store update took about 134 ns and 376 bytes/update. These numbers
+exercise only row storage, so they cannot predict whole-engine speed. They
+show why the mutable path must be included in the implementation and measured
+with the full scheduler, dependency graph, and callback path.
+
+For the no-fork matched graphs, target performance within roughly 2×
+Missionary in throughput and allocation before calling the engine competitive.
+Report any remaining gap by transition count, allocations, dependency work,
+CPS dispatch and executor handoff. Measure fork frequency separately so its
+copy cost does not hide a slow unforked path. A body proved unable to park may
+run without CPS/Thunk dispatch; bodies with unknown effects retain the general
+path until a sound direct/dynamic handoff is implemented.
+
 ## Implementation sequence
 
 1. Build the semantic transaction kernel against one `StoreHead`, projecting
@@ -215,7 +282,10 @@ comparison is a paired end-to-end workload on the replacement engine.
 2. Implement T5/T6/T19 foreign edits as one store publication. Prove refusal
    leaves the old head intact; check stale callbacks and duplicate deliveries
    against the model. Test following and frozen fork views at every publication.
-3. Attach the kernel to spin execution and callbacks only after the lockstep
-   traces cover its transition set. Run the matched Missionary graphs and
-   concurrent fork workloads before removing the old engine. A faster kernel
-   alone is insufficient if CPS dispatch and host egress dominate afterward.
+3. Implement the owned mutable representation and compare its gate-released
+   projections after each transition with the immutable kernel. Exercise
+   snapshot/fork interleavings and refusal rollback. Run the matched
+   Missionary graphs and concurrent fork workloads before removing the old
+   engine. A faster kernel alone is insufficient if CPS dispatch and host
+   egress dominate afterward; non-parking bodies also need the direct
+   execution path described above.
