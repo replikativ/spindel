@@ -297,6 +297,8 @@
 (def ^:const n-ready 15) (def ^:const n-resume 16) (def ^:const n-work 17) (def ^:const n-current 18) (def ^:const n-pending-generation 19)
 (def ^:const n-runtime 20) (def ^:const n-origin 21) (def ^:const n-source-world 22) (def ^:const n-created-by 23) (def ^:const n-creator-refs 24) (def ^:const n-creator-source 25)
 (def ^:const n-source-event 26)
+(def ^:const n-links 27) (def ^:const n-link-buffer 28) (def ^:const n-supporters 29)
+(def ^:const n-graph-dirty 30) (def ^:const n-external-root 31)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
@@ -319,7 +321,7 @@
 (defrecord RuntimeFamily [gate worlds host-tokens])
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts home])
+                         operations posts home liveness])
 (def w [:w 0])
 (def root [:root w])
 (def cancelled ::cancelled)
@@ -355,7 +357,9 @@
              world-id [:root world-id] family nil (id-dict)
              {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
              #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue)
-             (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))))]
+             (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.)))
+             (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
+                   (put 3 (members)) (put 4 (queue)) (put 5 (dict))))]
      (assoc! family world-id rt)
      rt)))
 
@@ -377,27 +381,134 @@
 
 (defn- current [node] (a node n-current))
 (defn- open-owner? [owner] (or (root-owner? owner) (and owner (not= :unwinding (a owner r-status)))))
+(defn- mark-graph! [rt node]
+  (when (and node (not (a node n-graph-dirty)))
+    (put node n-graph-dirty true) (push! (a (runtime-field rt :liveness) 0) node)))
+
 (defn- mark! [rt node]
   (when (and node (not (a node n-work)))
     (put node n-work true) (push! (runtime-field rt :work) node)))
+
+(defn- owner-node [owner]
+  (when (and owner (not (root-owner? owner))) (a owner r-node)))
+
 (defn- reactive-kind? [kind] (or (= :track kind) (= :await-reactive kind)))
 (defn- reactive? [run] (boolean (and run (pos? (long (or (a run r-reactives) 0))))))
 (defn- reactive-delta! [run delta]
   (put run r-reactives (+ (long (or (a run r-reactives) 0)) (long delta))))
 (declare drain! wanted? retire! cancel! reclaim! snapshot snapshot-family schedule! adopt! collect-token! collect-home-token! map-value)
 
+(defn- clear-live-set! [live slot]
+  (let [before (a live slot)]
+    (if (> (count! before) 64) (put live slot (members)) (clear-members! before))))
+
+(defn- invalidate-liveness! [rt]
+  (let [live (runtime-field rt :liveness)]
+    (clear-live-set! live 1) (clear-live-set! live 2) (clear-live-set! live 3)))
+
+(defn- owns-live-kind? [node]
+  (or (not= :spin (a node n-kind)) (not (a node n-complete)) (a node n-kept)))
+
+(defn- retain-link! [rt links target]
+  (when (and target (identical? target (find! (runtime-field rt :nodes) (a target n-id))))
+    (add! links target)))
+
+(defn- reconcile-retention! [rt]
+  (let [pending (a (runtime-field rt :liveness) 0)]
+    (loop []
+      (when-let [node (pop! pending)]
+        (put node n-graph-dirty false)
+        (let [before (a node n-links) next (a node n-link-buffer)
+              present? (identical? node (find! (runtime-field rt :nodes) (a node n-id)))
+              owner (a node n-owner)
+              external? (boolean
+                         (and present?
+                              (or (and (root-owner? owner) (owns-live-kind? node))
+                                  (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run)))))))]
+          (clear-members! next)
+          (when present?
+            (when (and owner (not (root-owner? owner)))
+              (retain-link! rt next (a owner r-node)))
+            (each! [run (values (a node n-runs))]
+                   (when-not (= :unwinding (a run r-status))
+                     (let [owner (a run r-owner)]
+                       (when (and owner (not (root-owner? owner)))
+                         (retain-link! rt next (a owner r-node))))
+                     (each! [ob (a run r-obs)]
+                            (when (a ob o-live) (retain-link! rt next (a ob o-debtor))))
+                     (each! [child (a run r-owned)]
+                            (when (and (open-owner? (a child n-owner)) (owns-live-kind? child))
+                              (retain-link! rt next child))))))
+          (when-not (= external? (boolean (a node n-external-root)))
+            (put node n-external-root external?) (invalidate-liveness! rt))
+          (if (and (= (count! before) (count! next))
+                   (not (any! before #(not (has? next %)))))
+            (clear-members! next)
+            (do
+              (invalidate-liveness! rt)
+              (each! [target before]
+                     (when-not (has? next target)
+                       (let [supporters (a target n-supporters)]
+                         (remove! supporters node)
+                         ;; Drop backing storage after wide fan-out contracts.
+                         (when (or (zero? (count! supporters)) (= 64 (count! supporters)))
+                           (let [small (members)]
+                             (each! [entry supporters] (add! small entry))
+                             (put target n-supporters small))))))
+              (each! [target next]
+                     (when-not (has? before target) (add! (a target n-supporters) node)))
+              (if (and (> (count! before) 64) (<= (count! next) 64))
+                (let [small (members)]
+                  (each! [target next] (add! small target))
+                  (put node n-links small) (put node n-link-buffer (members)))
+                (do (put node n-links next) (put node n-link-buffer before)
+                    (clear-members! before)))))
+          (when-not present? (put node n-supporters (members))))
+        (recur)))))
+
+(defn- dict-has? [m key]
+  #?(:clj (.containsKey ^java.util.Map m key) :cljs (.has m key)))
+
+(defn- remember-live-path! [cache parents node]
+  (loop [node node]
+    (when node (add! cache node) (recur (find! parents node)))))
+
+(defn- find-live-root! [rt node]
+  (let [live (runtime-field rt :liveness) external (a live 1) work (a live 2) absent (a live 3)
+        pending (a live 4) parents (a live 5)]
+    (push! pending node) (assoc! parents node nil)
+    (try
+      (loop []
+        (if-let [candidate (pop! pending)]
+          (cond
+            (or (a candidate n-external-root) (has? external candidate))
+            (do (remember-live-path! external parents candidate) true)
+            (or (active-status? (some-> (current candidate) (a r-status))) (has? work candidate))
+            (do (remember-live-path! work parents candidate) true)
+            (has? absent candidate) (recur)
+            :else
+            (do (each! [supporter (a candidate n-supporters)]
+                       (when-not (dict-has? parents supporter)
+                         (assoc! parents supporter candidate) (push! pending supporter)))
+                (recur)))
+          (do
+            (doseq [candidate #?(:clj (.keySet ^java.util.Map parents)
+                                 :cljs (array-seq (js/Array.from (.keys parents))))]
+              (add! absent candidate))
+            false)))
+      (finally
+        #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
+        (if (> #?(:clj (.size ^java.util.Map parents) :cljs (.-size parents)) 64)
+          (put live 5 (dict))
+          #?(:clj (.clear ^java.util.Map parents) :cljs (.clear parents)))))))
+
 (defn- wanted? [node]
-  (or (and (open-owner? (a node n-owner))
-           (or (not= :spin (a node n-kind)) (not (a node n-complete)) (a node n-kept)))
-      ;; A current non-work shell cannot hide an older active generation:
-      ;; T7 retires predecessors and T11 retires its stale predecessor.
-      (active-status? (some-> (current node) (a r-status)))
-      (pos? (count! (a node n-dependents)))
-      (any! (values (a node n-runs))
-            (fn [run]
-              (and (= :completed (a run r-status))
-                   (or (pos? (count! (a run r-childruns)))
-                       (any! (a run r-owned) #(and (not (identical? node %)) (wanted? %)))))))))
+  (let [rt (a node n-runtime) live (runtime-field rt :liveness)]
+    (reconcile-retention! rt)
+    (or (a node n-external-root)
+        (active-status? (some-> (current node) (a r-status)))
+        (has? (a live 1) node) (has? (a live 2) node)
+        (and (not (has? (a live 3) node)) (find-live-root! rt node)))))
 
 (defn- add-run! [run field member]
   (let [before (a run field)
@@ -408,21 +519,31 @@
 (defn- owner! [rt node owner]
   (let [old (a node n-owner)]
     (when-not (identical? old owner)
-      (when (and old (not (root-owner? old)))
-        (remove! (a old r-owned) node) (mark! rt (a old r-node)))
+      (when (or (not= (root-owner? old) (root-owner? owner))
+                (not (identical? (owner-node old) (owner-node owner)))
+                (not= (boolean (open-owner? old)) (boolean (open-owner? owner))))
+        (mark-graph! rt node) (mark-graph! rt (owner-node old)) (mark-graph! rt (owner-node owner)))
+      (when-let [parent (owner-node old)]
+        (remove! (a old r-owned) node) (mark! rt parent))
       (put node n-owner owner)
-      (when (and owner (not (root-owner? owner)))
-        (add-run! owner r-owned node) (mark! rt (a owner r-node)))
+      (when-let [parent (owner-node owner)]
+        (add-run! owner r-owned node) (mark! rt parent))
       (mark! rt node))))
 
+(defn- kept! [rt node value]
+  (when-not (= (boolean value) (boolean (a node n-kept)))
+    (mark-graph! rt node) (mark-graph! rt (owner-node (a node n-owner))))
+  (put node n-kept value))
+
 (defn- node! [rt id kind owner]
-  (let [node (slots 27)]
+  (let [node (slots 32)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
     (put node n-runs (dict)) (put node n-dependents (members))
+    (put node n-links (members)) (put node n-link-buffer (members)) (put node n-supporters (members))
     (put node n-generation 0) (put node n-rank 0)
-    (assoc! (runtime-field rt :nodes) id node) (owner! rt node owner) node))
+    (assoc! (runtime-field rt :nodes) id node) (mark-graph! rt node) (owner! rt node owner) node))
 
 (defn- creator! [rt node creator]
   (let [old (a node n-creator)
@@ -473,7 +594,21 @@
           (remove! waiters ob)
           (when (zero? (count! waiters)) (dissoc! (runtime-field rt :tickets) host)))))
     (when-let [node (a ob o-debtor)]
-      (remove! (a node n-dependents) ob) (mark! rt node))))
+      (remove! (a node n-dependents) ob) (mark! rt node)
+      (if-let [creditor (a ob o-creditor-node)]
+        (when-not
+         ;; Search the smaller adjacency. A shared source can have thousands
+         ;; of dependents while each creditor has only one outgoing edge.
+         (if (and (current creditor)
+                  (< (count! (a (current creditor) r-obs)) (count! (a node n-dependents))))
+           (any! (values (a creditor n-runs))
+                 (fn [run]
+                   (any! (a run r-obs) #(and (a % o-live) (identical? node (a % o-debtor))))))
+           (any! (a node n-dependents)
+                 #(and (a % o-live) (identical? creditor (a % o-creditor-node)))))
+          (mark-graph! rt creditor))
+        (when-not (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run))))
+          (mark-graph! rt node))))))
 
 (defn- reject-dependent! [rt ob]
   (if-let [run (a ob o-run)]
@@ -519,7 +654,7 @@
 
 (defn- retire! [rt run]
   (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
-    (let [physical? (a run r-physical)
+    (let [node (a run r-node) physical? (a run r-physical)
           anchor (when physical?
                    (loop [owner run chain []]
                      (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
@@ -538,6 +673,12 @@
                    (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
       (when-let [owner (a run r-owner)]
         (when-not (root-owner? owner)
+          (let [parent (a owner r-node)]
+            (when (and (not (identical? parent (owner-node (a node n-owner))))
+                       (not (any! (values (a node n-runs))
+                                  #(and (not (identical? run %)) (not= :unwinding (a % r-status))
+                                        (identical? parent (owner-node (a % r-owner)))))))
+              (mark-graph! rt node)))
           (remove! (a owner r-childruns) run) (mark! rt (a owner r-node))))
       (if physical?
         (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
@@ -590,7 +731,10 @@
   (when (and (= :spin (a node n-kind)) (a node n-complete))
     (when (signal-dependent? node) (put node n-dirty true))
     (each-copy! [run (values (a node n-runs))] (retire! rt run))
-    (owner! rt node nil))
+    (owner! rt node nil)
+    ;; A live descriptor supplies its body again on invocation. A value-only
+    ;; cache must not keep the body's captured descriptors or resources alive.
+    (put node n-body nil) (put node n-resume nil))
   (when-not (and (= :spin (a node n-kind)) (a node n-complete)
                  (pos? (count! (a node n-tokens))))
     (each-copy! [run (values (a node n-runs))] (retire! rt run))
@@ -599,17 +743,56 @@
     (creator! rt node nil)
     (dissoc! (runtime-field rt :nodes) (a node n-id))
     (put node n-body nil) (put node n-value nil) (put node n-resume nil)
-    (clear-members! (a node n-tokens))))
+    (clear-members! (a node n-tokens))
+    (mark-graph! rt node) (mark! rt node)))
 
 (defn- reclaim! [rt]
-  (loop []
-    (when-let [node (pop! (runtime-field rt :work))]
-      (put node n-work false)
-      (when (and (identical? node (find! (runtime-field rt :nodes) (a node n-id))) (not (wanted? node)))
-        (reclaim-unwanted! rt node))
-      (recur))))
+  (let [live (runtime-field rt :liveness)]
+    ;; Work roots can change at every body boundary; external proofs survive
+    ;; stable logical topology even when physical run generations change.
+    (clear-live-set! live 2) (clear-live-set! live 3)
+    (try
+      (loop []
+        (when-let [node (pop! (runtime-field rt :work))]
+          (put node n-work false)
+          (when (and (identical? node (find! (runtime-field rt :nodes) (a node n-id))) (not (wanted? node)))
+            (reclaim-unwanted! rt node))
+          (recur)))
+      (finally
+        (reconcile-retention! rt)
+        (clear-live-set! live 2) (clear-live-set! live 3)))))
+
+(defn- audit-retention! [rt]
+  (each! [node (values (runtime-field rt :nodes))]
+         (let [owner (a node n-owner)
+               expected (set (filter some?
+                                     (concat [(owner-node owner)]
+                                             (mapcat (fn [run]
+                                                       (when-not (= :unwinding (a run r-status))
+                                                         (concat [(owner-node (a run r-owner))]
+                                                                 (for [ob (items (a run r-obs)) :when (a ob o-live)] (a ob o-debtor))
+                                                                 (filter #(and (open-owner? (a % n-owner)) (owns-live-kind? %))
+                                                                         (items (a run r-owned))))))
+                                                     (values (a node n-runs))))))
+               actual (set (items (a node n-links)))
+               external? (boolean (or (and (root-owner? owner) (owns-live-kind? node))
+                                      (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run))))))]
+           (when-not (and (= expected actual) (= external? (boolean (a node n-external-root))))
+             (throw (ex-info "Retention graph differs from semantic rows"
+                             {:id (a node n-id) :expected (set (map #(a % n-id) expected))
+                              :actual (set (map #(a % n-id) actual))
+                              :root external? :actual-root (a node n-external-root)})))
+           (each! [target (a node n-links)]
+                  (when-not (and (identical? target (find! (runtime-field rt :nodes) (a target n-id)))
+                                 (has? (a target n-supporters) node))
+                    (throw (ex-info "Retention edge has no reverse index" {:id (a node n-id)}))))
+           (each! [source (a node n-supporters)]
+                  (when-not (and (identical? source (find! (runtime-field rt :nodes) (a source n-id)))
+                                 (has? (a source n-links) node))
+                    (throw (ex-info "Retention reverse index has no edge" {:id (a node n-id)})))))))
 
 (defn- audit-derived-state! [rt]
+  (audit-retention! rt)
   (when-not (zero? (count! empty-members))
     (throw (ex-info "Shared empty membership was mutated" {})))
   #?(:cljs
@@ -756,12 +939,12 @@
         node (find! (runtime-field rt :nodes) id)]
     (when (and run (nil? node))
       (let [node (node! rt id :spin run)]
-        (creator! rt node run) (put node n-kept (reactive? run)) (put node n-order order)
+        (creator! rt node run) (kept! rt node (reactive? run)) (put node n-order order)
         (creation! run node)))
     (when-let [node (find! (runtime-field rt :nodes) id)]
       (when (predecessor-run? (a node n-creator) run)
         (adopt! rt node run)
-        (owner! rt node run) (creator! rt node run) (put node n-kept (reactive? run))
+        (owner! rt node run) (creator! rt node run) (kept! rt node (reactive? run))
         (put node n-order order) (creation! run node))
       (touch! rt node token))
     (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t01 :w (runtime-field rt :world) :e id :tok (a token t-id)}
@@ -922,7 +1105,8 @@
     (put node n-current run)
     (when-not (root-owner? owner)
       (add-run! owner r-spawned run) (add-run! run r-backlinks owner)
-      (add-run! owner r-childruns run))
+      (add-run! owner r-childruns run) (mark! rt (a owner r-node))
+      (when-not (has? (a node n-links) (a owner r-node)) (mark-graph! rt node)))
     (schedule! rt node nil)
     (mark! rt node) run))
 
@@ -935,15 +1119,20 @@
     (put ob o-resolve resolve) (put ob o-reject reject) (put ob o-order order)
     (put ob o-slot (if (= kind :track) :consumed :armed)) (put ob o-live true)
     (when (= :await-once kind) (assoc! (runtime-field rt :deliveries) id ob))
-    (when run (add-run! run r-obs ob)
+    (when run (add-run! run r-obs ob) (mark! rt (a run r-node))
+          (when (and debtor (not (has? (a (a run r-node) n-links) debtor)))
+            (mark-graph! rt (a run r-node)))
           (when (reactive-kind? kind) (reactive-delta! run 1)))
-    (when debtor (add! (a debtor n-dependents) ob) (mark! rt debtor)) ob))
+    (when debtor
+      (add! (a debtor n-dependents) ob) (mark! rt debtor)
+      (when (and (nil? run) (not (a debtor n-external-root))) (mark-graph! rt debtor)))
+    ob))
 
 (defn- adopt! [rt node caller]
   (let [previous (a node n-owner)]
     (when (predecessor-run? previous caller)
       (when (identical? previous (a node n-creator))
-        (creator! rt node caller) (put node n-kept (reactive? caller))
+        (creator! rt node caller) (kept! rt node (reactive? caller))
         (creation! caller node))
       (owner! rt node caller)
       (each! [run (values (a node n-runs))]
@@ -1149,6 +1338,8 @@
     (locked rt
             (let [node (a run r-node)]
               (when (and (identical? run (current node)) (= :running (a run r-status)))
+                (when-not (a node n-complete)
+                  (mark-graph! rt node) (mark-graph! rt (owner-node (a node n-owner))))
                 (put node n-complete true) (put node n-dirty (boolean (a run r-validation-lost))) (put node n-value value)
                 (put run r-status :completed)
                 (push! (runtime-field rt :events) (doto (slots 3) (put 0 node) (put 1 value) (put 2 (put (runtime-field rt :counters) 2 (inc (max (long (a (runtime-field rt :counters) 1)) (long (a (runtime-field rt :counters) 2))))))))
@@ -1657,6 +1848,24 @@
           (let [runs (a (runtime-field rt :counters) 6)
                 pool (items (a (runtime-field rt :counters) 0))]
             {:live-runs (count! runs)
+             :idle-body-references
+             (count (for [node (values (runtime-field rt :nodes))
+                          :when (and (= :spin (a node n-kind)) (a node n-complete)
+                                     (nil? (current node)) (a node n-body))] node))
+             :liveness-scratch-references
+             (let [live (runtime-field rt :liveness)]
+               (+ (count! (a live 2)) (count! (a live 3))
+                  #?(:clj (.size ^java.util.ArrayDeque (a live 4))
+                     :cljs (alength (.toArray (a live 4))))
+                  #?(:clj (.size ^java.util.Map (a live 5))
+                     :cljs (.-size (a live 5)))))
+             :stale-liveness-references
+             (let [indexed? #(identical? % (find! (runtime-field rt :nodes) (a % n-id)))]
+               (+ (count (remove indexed? (items (a (runtime-field rt :liveness) 1))))
+                  (reduce + 0 (for [node (values (runtime-field rt :nodes))]
+                                (count (remove indexed? (concat (items (a node n-links))
+                                                                (items (a node n-link-buffer))
+                                                                (items (a node n-supporters)))))))))
              :ancestry-references (reduce + 0 (map #(count! (a % r-ancestors)) (items runs)))
              :pooled-runs (count pool)
              :pooled-references

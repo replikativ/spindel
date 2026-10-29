@@ -23,9 +23,9 @@
         (is (empty? (b/violations result)) (pr-str (b/violations result)))
         (is (= b/r (:owner (m/ent before b/w child))))
         (is (= b/root (:owner (m/run before b/w child-run))))
-        ;; T2's atom is owned state, deliberately absent from creations(r).
+        ;; T2 records sources in creations for continuation-prefix adoption.
         (is (m/ent before b/w atom-id))
-        (is (not (contains? (:creations (m/run before b/w child-run)) atom-id)))
+        (is (contains? (:creations (m/run before b/w child-run)) atom-id))
         (is (nil? (m/ent s b/w atom-id)))
         (is (not-any? #(= child (:spin %)) (vals (:runs (m/wr s b/w)))))
         (is (some #(and (= child-run (:r %)) (= :t10 (:t %))) exits))
@@ -36,17 +36,33 @@
               (is (nil? (:owner (m/ent s b/w child))))
               (is (m/idle? s b/w child))))))))
 
+(deftest owner-release-also-covers-nonlexical-owned-state
+  (let [actions (r9/actions "run11/V03-t11.edn")
+        {:keys [before action]} (peek (:trace (b/execute actions)))
+        ;; Ownership is authoritative even for a nonlexical resource whose
+        ;; constructor has no creation entry in the owning run's CPS prefix.
+        before (update-in before [:worlds b/w :runs child-run :creations] disj atom-id)
+        after (m/step before action)]
+    (is (empty? (inv/check before)))
+    (is (empty? (inv/check after)))
+    (is (nil? (m/ent after b/w atom-id)))
+    (is (nil? (m/run after b/w child-run)))
+    (is (empty? (inv/owner-release-errors before after)))))
+
 (deftest owner-release-check-negative-controls
   (let [actions (r9/actions "run11/V03-t11.edn")
         {:keys [before after] :as edge} (peek (:trace (b/execute actions)))
         run-path [:worlds b/w :runs child-run]
         atom-path [:worlds b/w :entities atom-id]
-        ;; Reinsert the exact old completed scope. L1 must still reject V03.
+        ;; Reinsert the old completed scope. A state-only predicate cannot
+        ;; distinguish this from a legitimate pending foreign cleanup extent;
+        ;; the owner-release transition check must still reject it.
         corrupt (-> after (assoc-in run-path (get-in before run-path))
                     (assoc-in atom-path (get-in before atom-path)))]
-    (is (seq (inv/l01 corrupt)))
+    (is (contains? (m/reasons corrupt b/w child) :extent))
+    (is (not (m/execution-live? corrupt b/w child)))
     (is (some #(= :TL7 (:id %)) (inv/edge-check (assoc edge :after corrupt))))
-    ;; A pin would hide the L1 symptom; the independent rule-3 check still fails.
+    ;; A pin roots the graph; the independent rule-3 check still fails.
     (doseq [status [:completed :stale :running :parked]]
       (let [pinned (-> corrupt (update-in [:worlds b/w :pins] conj child)
                        (assoc-in (conj run-path :status) status))]

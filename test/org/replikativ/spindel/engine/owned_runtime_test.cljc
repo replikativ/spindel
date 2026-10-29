@@ -135,6 +135,48 @@
        expected))
    (model/init-state) @(:audit rt)))
 
+(deftest completed-ownership-island-becomes-value-only-before-gc
+  (doseq [audit? [false true]]
+    (let [rt (c/runtime {:audit? audit?}) calls (atom 0)
+          child (c/cspin rt :child 42)
+          parent (c/cspin rt :parent (swap! calls inc) (c/await child))
+          values (atom []) stop (c/observe! rt parent #(swap! values conj %) #(throw %))]
+      (stop)
+      (let [state (c/snapshot rt)]
+        (is (empty? (:runs state)))
+        (is (empty? (:obligations state)))
+        (is (= {:parent 42 :child 42} (update-vals (:entities state) :result)))
+        (is (= 0 (:idle-body-references (c/storage-stats rt)))))
+      ((c/observe! rt parent #(swap! values conj %) #(throw %)))
+      (is (= [42 42] @values))
+      (is (= 1 @calls))
+      (c/notify-unreachable! rt parent)
+      (c/notify-unreachable! rt child)
+      (is (empty? (:entities (c/snapshot rt))))
+      (is (= 0 (:live-runs (c/storage-stats rt))))
+      (when audit? (verify-boundaries! rt)))))
+
+(deftest an-independent-observer-keeps-the-completed-closure
+  (let [rt (c/runtime {:audit? true}) child (c/cspin rt :child 42)
+        parent (c/cspin rt :parent (c/await child))
+        stop-one (c/observe! rt parent (fn [_]) #(throw %))
+        stop-two (c/observe! rt parent (fn [_]) #(throw %))]
+    (stop-one)
+    (is (= 2 (:live-runs (c/storage-stats rt))))
+    (stop-two)
+    (is (= 0 (:live-runs (c/storage-stats rt))))
+    (is (empty? (:obligations (c/snapshot rt))))
+    (verify-boundaries! rt)))
+
+(deftest completed-source-owner-is-not-its-own-anchor
+  (let [rt (c/runtime {:audit? true})
+        parent (c/cspin rt :parent (c/signal rt :owned 1) 42)]
+    (c/observe! rt parent (fn [_]) #(throw %))
+    (is (nil? (get-in (c/snapshot rt) [:entities :owned])))
+    (is (= 42 (get-in (c/snapshot rt) [:entities :parent :result])))
+    (is (= 0 (:live-runs (c/storage-stats rt))))
+    (verify-boundaries! rt)))
+
 (deftest native-delivery-is-once-only-and-outside-gate
   (let [rt (c/runtime {:audit? true}) callbacks (atom nil) values (atom [])
         cancelled (atom 0)
@@ -750,7 +792,8 @@
       (c/resume-ticket! child child-delivery 10)
       (c/resume-ticket! rt parent-delivery 20)
       (is (= [11 27] @values))
-      (is (= 10 (get-in (c/snapshot child) [:entities :after :result])))
+      (is (= #{:spin} (set (keys (:entities (c/snapshot child))))))
+      (is (= 11 (get-in (c/snapshot child) [:entities :spin :result])))
       (is (= 20 (get-in (c/snapshot rt) [:entities :after :result])))
       (is (nil? (get-in (c/snapshot child) [:entities (:id unused)])))
       (c/resume-ticket! child child-delivery :duplicate)
@@ -957,7 +1000,8 @@
       (c/resume-ticket! child (c/pending-ticket child ticket) 1)
       (is (= [:inside] @values))
       (is (= :outside *tag*))
-      (is (= :inside (get-in (c/snapshot child) [:entities :after :result])))
+      (is (= #{:spin} (set (keys (:entities (c/snapshot child))))))
+      (is (= :inside (get-in (c/snapshot child) [:entities :spin :result])))
       (is (nil? (get-in (c/snapshot rt) [:entities :after])))
       (verify-boundaries! rt))))
 
@@ -1188,3 +1232,23 @@
         (is (= 42 (get-in (c/snapshot rt) [:entities :child :result])))
         (is (some? @holder))
         (when audit? (verify-boundaries! rt))))))
+
+(deftest wide-retention-graph-drops-obsolete-proofs-and-edges
+  (let [rt (c/runtime {:audit? true})
+        source (c/signal rt :wide-source 0)
+        children (mapv (fn [i] (c/cspin rt [:wide-child i] (iv/get-new (c/track source))))
+                       (range 96))
+        stops (mapv #(c/observe! rt % (fn [_]) (fn [e] (throw e))) children)]
+    ;; Populate root proofs, then remove every host root and change the input.
+    (c/set-signal! rt source 1)
+    (doseq [stop stops] (stop))
+    (c/set-signal! rt source 2)
+    (doseq [child children] (c/notify-unreachable! rt child))
+    ;; Structural graph auditing runs at every boundary above; the smaller
+    ;; island tests separately replay the complete semantic model.
+    (let [state (c/snapshot rt) stats (c/storage-stats rt)]
+      (is (= #{:wide-source} (set (keys (:entities state)))))
+      (is (empty? (:runs state)))
+      (is (empty? (:obligations state)))
+      (is (zero? (:liveness-scratch-references stats)))
+      (is (zero? (:stale-liveness-references stats))))))

@@ -105,25 +105,109 @@
         (assoc-in (if d [:durable :caps k] [:caps k]) (assoc c :durable? d)))))
 (defn fdep-targets [world e]
   (set (for [[x v d] (:fdeps world) :when (if (= :bundle x) (contains? d e) (= x e))] v)))
+(def ^:dynamic *liveness-cache* nil)
+(def ^:dynamic *cache-gc-only?* false)
+(declare cancelling? pending-events)
+
+(defn- compute-rooted-liveness [s]
+  (let [edges (volatile! {}) roots (volatile! #{})
+        edge! (fn [from to] (vswap! edges update from (fnil conj #{}) to))
+        root! #(vswap! roots conj %)
+        owner (fn [w id] [(if (run s w id) :run :scope) w id])]
+    (doseq [[w world] (:worlds s) :when (not= :released (:status world))]
+      (root! [:scope w (:root world)])
+      (doseq [[id scope] (:scopes world) :when (= :open (:status scope))
+              :let [parent (:parent scope)] :when parent]
+        (edge! (owner w parent) [:scope w id])
+        (edge! [:scope w id] (owner w parent)))
+      (doseq [[e er] (:entities world) :let [v [:entity w e] p (:owner er)]]
+        (when p
+          (edge! v (owner w p))
+          (when (and (open? s w p)
+                     (or (#{:signal :atom :keyed-entry :cache-row :fork} (:kind er))
+                         (and (= :spin (:kind er)) (or (not (:completed? er)) (:kept? er)))
+                         (and (#{:timer :waiter} (:kind er))
+                              (#{:running :parked :inherited} (:status (run s w p))))))
+            (edge! (owner w p) v)))
+        (when (or (contains? (:pins world) e)
+                  (and (= :fork (:kind er)) (not (:reference? er))
+                       (some #(and (= (second e) (:world %))
+                                   (#{:sealed :settling :incomplete} (:disposition %)))
+                             (vals (all-caps s)))))
+          (root! v)))
+      (doseq [[r rr] (:runs world) :let [v [:run w r] e [:entity w (:spin rr)]]]
+        (when (#{:running :parked :inherited :stale} (:status rr)) (root! v))
+        (when-not (= :unwinding (:status rr))
+          (edge! v e) (edge! e v)
+          (when-let [p (:owner rr)]
+            (edge! v (owner w p)))))
+      (doseq [[o ob] (:obligations world)
+              :let [v [:obligation w o] [ck cw creditor] (:creditor ob)
+                    [dk dw debtor] (:debtor ob)]]
+        (case ck
+          :host (root! v)
+          :run (edge! [:run cw creditor] v)
+          :entity (edge! [:entity cw creditor] v)
+          nil)
+        (when (and (= :entity dk) (not (cancelling? s w o ob)))
+          (edge! v [:entity dw debtor])))
+      (doseq [ev (:queue world) :when (:register-host ev)]
+        (root! [:entity w (:e ev)])))
+    (doseq [{:keys [w event]} (get-in s [:env :outside]) :when (:register-host event)]
+      (root! [:entity w (:e event)]))
+    (loop [todo (vec @roots) seen #{}]
+      (if-let [v (peek todo)]
+        (recur (if (contains? seen v) (pop todo) (into (pop todo) (get @edges v))) (conj seen v))
+        seen))))
+
+(defn rooted-liveness
+  "Least retention closure. Handles and foreign index mirrors are not execution
+  roots; foreign dependencies still retain storage until their local ACK."
+  [s]
+  (if *liveness-cache*
+    (let [[before result] @*liveness-cache*]
+      (if (identical? before s) result
+          (let [result (compute-rooted-liveness s)]
+            (vreset! *liveness-cache* [s result]) result)))
+    (compute-rooted-liveness s)))
+
+(defn execution-live? [s w e]
+  (contains? (rooted-liveness s) [:entity w e]))
+
 (defn reasons [s w e]
   (let [{:keys [kind owner completed? kept? reference?]} (ent s w e)
-        world (wr s w)]
+        world (wr s w) live (rooted-liveness s)
+        entity-live? (contains? live [:entity w e])]
     (cond-> #{}
-      (and owner (open? s w owner)
+      ;; Storage survives until the owner's world publishes its cleanup.
+      ;; This reason never contributes an execution root.
+      (or (and owner (open? s w owner)
+               (not (or (contains? live [:run w owner])
+                        (contains? live [:scope w owner]))))
+          (some (fn [[r rr]]
+                  (and (= e (:spin rr)) (not= :unwinding (:status rr))
+                       (not (contains? live [:run w r]))))
+                (:runs world))) (conj :extent)
+      (and entity-live? owner (open? s w owner)
            (or (#{:signal :atom :keyed-entry :cache-row :fork} kind)
                (and (#{:timer :waiter} kind) (#{:running :parked :inherited} (:status (run s w owner))))
                (and (= :spin kind) (or (not completed?) kept?)))) (conj :own)
       (some #(and (= e (:spin %))
                   (#{:running :parked :inherited :stale} (:status %)))
             (vals (:runs world))) (conj :active)
-      (some #(some #{[:entity w e]} [(:debtor %) (:creditor %)])
-            (vals (:obligations world))) (conj :obl)
+      (or (some (fn [[o ob]] (and (contains? live [:obligation w o])
+                                  (some #{[:entity w e]} [(:debtor ob) (:creditor ob)])))
+                (:obligations world))
+          (some #(and (:register-host %) (= e (:e %))) (pending-events s w))) (conj :obl)
       (seq (fdep-targets (update world :fdeps set/union (:releasing world)) e)) (conj :dep)
       (some (fn [[r rr]]
               (and (= e (:spin rr)) (= :completed (:status rr))
-                   (or (some #(and (= r (:owner %)) (not= :unwinding (:status %))) (vals (:runs world)))
-                       (some (fn [[child er]] (and (= r (:owner er))
-                                                   (not= child e) (seq (reasons s w child))))
+                   (contains? live [:run w r])
+                   (or (some (fn [[child cr]]
+                               (and (= r (:owner cr)) (not= :unwinding (:status cr))
+                                    (contains? live [:run w child]))) (:runs world))
+                       (some (fn [[child er]] (and (= r (:owner er)) (not= child e)
+                                                   (contains? live [:entity w child])))
                              (:entities world))))) (:runs world)) (conj :scope)
       (contains? (:pins world) e) (conj :pin)
       (and (= :fork kind) (not reference?)
@@ -387,10 +471,14 @@
   "§4.3 reclamation fixpoint, including idle completed-row normalization."
   [s w]
   (if (or *cascading?* (= :released (:status (wr s w)))) s
-      (binding [*cascading?* true]
+      (binding [*cascading?* true
+                *liveness-cache* (or *liveness-cache* (volatile! nil))]
         (loop [s s]
           (let [world (wr s w)
-                idle (for [[e _] (:entities world) :when (idle? s w e)] e)
+                idle (for [[e er] (:entities world)
+                           :when (and (= :spin (:kind er)) (:completed? er)
+                                      (not *cache-gc-only?*)
+                                      (not (execution-live? s w e)))] e)
                 normalized
                 (reduce (fn [s e]
                           (let [rs (for [[r rr] (:runs (wr s w)) :when (and (= e (:spin rr)) (#{:completed :stale} (:status rr)))] r)
@@ -642,7 +730,8 @@
 (defn t08-deliver
   "T8 process a completion. Host-filter O12 is explicit data."
   [s {:keys [w e debtor-world value] :as a}]
-  (let [dw (or debtor-world w) obligations (:obligations (wr s w))
+  (let [s (rule-l s w)
+        dw (or debtor-world w) obligations (:obligations (wr s w))
         s (if (:dequeued? a) s
               (update-in s [:worlds w :queue]
                          (fn [queue]
@@ -936,13 +1025,14 @@
 (defn t18-release-idle-caches
   "T18 deterministic idle cache release, poisoning every touched incarnation."
   [s {:keys [w es]}]
-  (rule-l
-   (reduce (fn [s e]
-             (if (idle? s w e)
-               (-> (reduce #(update-in %1 [:env :handles %2 :dropped] conj w)
-                           s (:tokens (ent s w e)))
-                   (assoc-in [:worlds w :entities e :tokens] #{})) s))
-           s (or es (keys (:entities (wr s w))))) w))
+  (let [s (rule-l s w)]
+    (rule-l
+     (reduce (fn [s e]
+               (if (idle? s w e)
+                 (-> (reduce #(update-in %1 [:env :handles %2 :dropped] conj w)
+                             s (:tokens (ent s w e)))
+                     (assoc-in [:worlds w :entities e :tokens] #{})) s))
+             s (or es (keys (:entities (wr s w))))) w)))
 
 (defn copy-evidence
   "Capture phase and value envelopes once, before any copy is installed."
@@ -1694,18 +1784,20 @@
   "Apply a transition with optional checked fresh-run allocation evidence.
    A present empty vector forbids allocation; copies consume no evidence."
   [s a]
-  (try
-    (if (contains? a :fresh-runs)
-      (do (require! (and (vector? (:fresh-runs a))
-                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs a)))
-                    ::invalid-run-allocation {:action a})
-          (binding [*fresh-runs* (volatile! (:fresh-runs a))]
-            (let [result (step* s a)]
-              (require! (empty? @*fresh-runs*) ::unused-run-allocation {:remaining @*fresh-runs*})
-              result)))
-      (step* s a))
-    (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
-      (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
+  (binding [*liveness-cache* (or *liveness-cache* (volatile! nil))
+            *cache-gc-only?* (= :t17 (:t a))]
+    (try
+      (if (contains? a :fresh-runs)
+        (do (require! (and (vector? (:fresh-runs a))
+                           (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs a)))
+                      ::invalid-run-allocation {:action a})
+            (binding [*fresh-runs* (volatile! (:fresh-runs a))]
+              (let [result (step* s a)]
+                (require! (empty? @*fresh-runs*) ::unused-run-allocation {:remaining @*fresh-runs*})
+                result)))
+        (step* s a))
+      (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+        (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a)))))))
 
 (defn attempt [s a]
   (try (if (= :join (:t a))

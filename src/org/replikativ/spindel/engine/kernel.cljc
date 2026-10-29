@@ -437,33 +437,111 @@
   (or (some (fn [[x _ d]] (if (= :bundle x) (contains? d e) (= x e))) (:fdeps h))
       (some (fn [[x _ d]] (if (= :bundle x) (contains? d e) (= x e))) (:releasing h))))
 
-(declare wanted?)
+(defn- rooted-liveness [ctx]
+  ;; Independent fixed-point implementation for the indexed reference store.
+  ;; The native engine maintains an incremental graph instead of sealing tables.
+  (let [state (root-state ctx)
+        worlds (into {} (for [w (set/union (:registry state) (:known-worlds state))
+                              :let [h (header ctx w)]
+                              :when (and h (not= :released (:status h)))]
+                          [w (merge h (into {} (for [table world-tables]
+                                                 [table (store/table-view (:tx ctx) w table)])))]))
+        owner (fn [w id] [(if (read-row ctx w :runs id) :run :scope) w id])
+        caps (merge (:caps state) (get-in state [:durable :caps]))
+        roots (set (mapcat
+                    (fn [[w world]]
+                      (concat [[:scope w (:root world)]]
+                              (for [[r rr] (:runs world)
+                                    :when (#{:running :parked :inherited :stale} (:status rr))] [:run w r])
+                              (for [[o ob] (:obligations world) :when (= :host (first (:creditor ob)))] [:obligation w o])
+                              (for [e (:pins world)] [:entity w e])
+                              (for [[e er] (:entities world)
+                                    :when (and (= :fork (:kind er)) (not (:reference? er))
+                                               (some #(and (= (second e) (:world %))
+                                                           (#{:sealed :settling :incomplete} (:disposition %)))
+                                                     (vals caps)))] [:entity w e])
+                              (for [ev (pending-events ctx w) :when (:register-host ev)] [:entity w (:e ev)])))
+                    worlds))]
+    (loop [live roots]
+      (let [after
+            (reduce-kv
+             (fn [live w world]
+               (let [live (reduce-kv
+                           (fn [live id scope]
+                             (let [v [:scope w id] p (when-let [p (:parent scope)] (owner w p))]
+                               (cond-> live
+                                 (and (= :open (:status scope)) p (contains? live p)) (conj v)
+                                 (and (= :open (:status scope)) p (contains? live v)) (conj p))))
+                           live (:scopes world))
+                     live (reduce-kv
+                           (fn [live e er]
+                             (let [v [:entity w e] p (when-let [p (:owner er)] (owner w p))]
+                               (cond-> live
+                                 (and p (contains? live v)) (conj p)
+                                 (and p (contains? live p) (own-reason? ctx w er)) (conj v))))
+                           live (:entities world))
+                     live (reduce-kv
+                           (fn [live r rr]
+                             (if (= :unwinding (:status rr)) live
+                                 (let [v [:run w r] e [:entity w (:spin rr)] p (when-let [p (:owner rr)] (owner w p))]
+                                   (cond-> live
+                                     (contains? live v) (conj e)
+                                     (contains? live e) (conj v)
+                                     (and p (contains? live v)) (conj p)))))
+                           live (:runs world))]
+                 (reduce-kv
+                  (fn [live o ob]
+                    (let [v [:obligation w o] [ck cw creditor] (:creditor ob) [dk dw debtor] (:debtor ob)
+                          live (if (or (= :host ck) (contains? live [ck cw creditor])) (conj live v) live)]
+                      (cond-> live
+                        (and (contains? live v) (= :entity dk) (not (cancelling? ctx w o)))
+                        (conj [:entity dw debtor]))))
+                  live (:obligations world))))
+             live worlds)]
+        (if (= after live) live (recur after))))))
 
-(defn- scope-reason? [ctx w e]
+(defn- execution-live? [ctx w e]
+  (contains? (rooted-liveness ctx) [:entity w e]))
+
+(defn- scope-reason? [ctx w e live]
   (some (fn [r]
           (and (= :completed (:status (read-row ctx w :runs r)))
-               (or (some #(not= :unwinding (:status (read-row ctx w :runs %)))
+               (contains? live [:run w r])
+               (or (some #(and (not= :unwinding (:status (read-row ctx w :runs %)))
+                               (contains? live [:run w %]))
                          (read-row ctx w :runs-by-owner r))
-                   (some #(and (not= % e) (wanted? ctx w %))
+                   (some #(and (not= % e) (contains? live [:entity w %]))
                          (read-row ctx w :entities-by-owner r)))))
         (read-row ctx w :runs-by-spin e)))
 
+(defn- pending-extent? [ctx w e live]
+  (let [owner (:owner (read-row ctx w :entities e))]
+    (or (and owner (open? ctx w owner)
+             (not (or (contains? live [:run w owner])
+                      (contains? live [:scope w owner]))))
+        (some (fn [r]
+                (and (not= :unwinding (:status (read-row ctx w :runs r)))
+                     (not (contains? live [:run w r]))))
+              (read-row ctx w :runs-by-spin e)))))
+
 (defn- wanted? [ctx w e]
-  (or (own-reason? ctx w (read-row ctx w :entities e))
-      (active-reason? ctx w e)
-      (obligation-reason? ctx w e)
-      (contains? (:pins (header ctx w)) e)
-      (dependency-reason? (header ctx w) e)
-      (scope-reason? ctx w e)))
+  (let [live (rooted-liveness ctx)]
+    (or (contains? live [:entity w e])
+        (pending-extent? ctx w e live)
+        (dependency-reason? (header ctx w) e))))
 
 (defn- reasons [ctx w e]
-  (cond-> #{}
-    (own-reason? ctx w (read-row ctx w :entities e)) (conj :own)
-    (active-reason? ctx w e) (conj :active)
-    (obligation-reason? ctx w e) (conj :obl)
-    (dependency-reason? (header ctx w) e) (conj :dep)
-    (scope-reason? ctx w e) (conj :scope)
-    (contains? (:pins (header ctx w)) e) (conj :pin)))
+  (let [live (rooted-liveness ctx)]
+    (cond-> #{}
+      (pending-extent? ctx w e live) (conj :extent)
+      (and (contains? live [:entity w e]) (own-reason? ctx w (read-row ctx w :entities e))) (conj :own)
+      (active-reason? ctx w e) (conj :active)
+      (or (some #(contains? live [:obligation w %])
+                (concat (read-row ctx w :by-local-debtor e) (read-row ctx w :by-entity-creditor e)))
+          (some #(and (:register-host %) (= e (:e %))) (pending-events ctx w))) (conj :obl)
+      (dependency-reason? (header ctx w) e) (conj :dep)
+      (scope-reason? ctx w e live) (conj :scope)
+      (contains? (:pins (header ctx w)) e) (conj :pin))))
 
 (defn- owner [ctx w action]
   (let [thread (get-in (root-state ctx) [:env :threads (get action :th :host)])]
@@ -713,25 +791,34 @@
       false)))
 
 (defn- rule-l! [ctx]
-  (loop [cursor 0]
-    (when (< cursor (count @(:work ctx)))
-      (let [[w e] (nth @(:work ctx) cursor)
-            er (read-row ctx w :entities e)]
-        (vswap! (:work-set ctx) disj [w e])
-        (when (and er (not= :released (:status (header ctx w))) (not (wanted? ctx w e)))
-          (when (and (= :spin (:kind er)) (:completed? er))
+  ;; The reference sweep is deliberately simple and local. Foreign index
+  ;; releases enqueue their debtor-world acknowledgement; they never sweep it.
+  (let [w (:acting-world ctx)]
+    (when (and w (not= :released (:status (header ctx w))))
+      (loop []
+        (let [changed? (volatile! false)
+              idle (vec (for [[e er] (store/table-view (:tx ctx) w :entities)
+                              :when (and (= :spin (:kind er)) (:completed? er)
+                                         (not (:cache-gc-only? ctx))
+                                         (not (execution-live? ctx w e)))] e))]
+          (doseq [e idle
+                  :let [er (read-row ctx w :entities e)
+                        runs (vec (read-row ctx w :runs-by-spin e))]]
+            (when (or (:owner er)
+                      (some #(#{:completed :stale} (:status (read-row ctx w :runs %))) runs))
+              (vreset! changed? true))
             (when (signal-dependent? ctx w e)
+              (when-not (:dirty? er) (vreset! changed? true))
               (edit-entity! ctx w e assoc :dirty? true))
-            (doseq [r (read-row ctx w :runs-by-spin e)]
-              (when (#{:completed :stale} (:status (read-row ctx w :runs r)))
-                (supersede! ctx w r)))
-            (when-let [row (read-row ctx w :entities e)]
+            (doseq [r runs :when (#{:completed :stale} (:status (read-row ctx w :runs r)))]
+              (supersede! ctx w r))
+            (when (read-row ctx w :entities e)
               (edit-entity! ctx w e assoc :owner nil)))
-          (when-let [row (read-row ctx w :entities e)]
-            (when (and (not (wanted? ctx w e))
-                       (not (and (= :spin (:kind row)) (:completed? row) (seq (:tokens row)))))
-              (remove-entity! ctx w e))))
-        (recur (inc cursor))))))
+          (let [dead (vec (for [[e er] (store/table-view (:tx ctx) w :entities)
+                                :when (and (not (wanted? ctx w e))
+                                           (not (and (= :spin (:kind er)) (:completed? er) (seq (:tokens er)))))] e))]
+            (doseq [e dead] (vreset! changed? true) (remove-entity! ctx w e)))
+          (when @changed? (recur)))))))
 
 (defn- handle-unreachable! [ctx tok]
   (let [{:keys [reachable? spin touched]} (get-in (root-state ctx) [:env :handles tok])]
@@ -753,6 +840,7 @@
     (edit! ctx w :entities e update :tokens disj tok)))
 
 (defn- release-idle! [ctx {:keys [w es]}]
+  (rule-l! ctx)
   (doseq [e (or es (keys (store/table-view (:tx ctx) w :entities)))
           :let [row (read-row ctx w :entities e)]
           :when (and (= :spin (:kind row)) (:completed? row) (not (wanted? ctx w e)))]
@@ -1075,6 +1163,9 @@
         (delete! ctx w :entities child)))))
 
 (defn- deliver! [ctx {:keys [w e debtor-world value]}]
+  ;; A foreign root loss can precede this world's next publication. Retire
+  ;; unreachable completed creditors before a stale envelope can reenter them.
+  (rule-l! ctx)
   (let [dw (or debtor-world w)
         ids (entity-obligations ctx w dw e)]
     (header-edit! ctx w update :queue
@@ -1240,13 +1331,15 @@
            ctx {:tx tx :events (when diagnostics? (volatile! [])) :work (volatile! [])
                 :work-set (volatile! #{}) :commands (volatile! []) :result (volatile! nil)
                 :fresh-runs (when (contains? action :fresh-runs) (volatile! (:fresh-runs action)))
-                :diagnostics? diagnostics? :immediate-await? (= t :await)}
+                :diagnostics? diagnostics? :immediate-await? (= t :await)
+                :cache-gc-only? (= t :t17)}
            thread (get-in (root-state ctx) [:env :threads (:th action)])
            slice? (:run thread)
            unwinding? (= :unwinding (:status (read-row ctx (:world thread) :runs (:run thread))))
            action (if (and slice? (not (#{:t38 :slice-enter :t35} t)))
                     (assoc action :w (:world thread)) action)
-           w (:w action)]
+           w (:w action)
+           ctx (assoc ctx :acting-world w)]
        (when (contains? action :fresh-runs)
          (require! (and (vector? (:fresh-runs action))
                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs action)))

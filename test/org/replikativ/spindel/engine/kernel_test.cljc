@@ -4,6 +4,7 @@
             [org.replikativ.spindel.engine.kernel :as kernel]
             [org.replikativ.spindel.lifetime.model :as model]
             [org.replikativ.spindel.lifetime.first-delivery-test :as handoff]
+            [org.replikativ.spindel.lifetime.rooted-liveness-test :as rooted]
             [clojure.walk :as walk]))
 
 (def w [:w 0])
@@ -42,6 +43,22 @@
             (recur after (next remaining)))
           (when-not seal?
             (is (= (view expected) (view (kernel/snapshot actual))) (str actions))))))))
+
+(deftest completed-island-refines-rooted-normalization
+  (compare-walk! (model/init-state)
+                 (into (rooted/completed-pair-actions)
+                       [{:t :unsubscribe :w w :o [:o 0]}
+                        {:t :t16 :tok :hp} {:t :t17 :w w :e :parent :tok :hp}
+                        {:t :t16 :tok :hc} {:t :t17 :w w :e :child :tok :hc}])))
+
+(deftest queued-host-admission-refines-retention
+  (compare-walk! (model/init-state) (conj (rooted/queued-host-actions) {:t :queued :w w})))
+
+(deftest foreign-completed-cycle-refines-local-release-acknowledgements
+  (compare-walk! (model/init-state)
+                 (into (rooted/foreign-completed-cycle-actions)
+                       [{:t :queued :w w} {:t :queued :w w} {:t :queued :w w}
+                        {:t :queued :w [:w 1]} {:t :queued :w [:w 1]}])))
 
 (deftest source-bursts-refine-latest-notification-storage
   (compare-walk! (model/init-state)
@@ -384,3 +401,18 @@
   (compare-walk! (model/init-state)
                  [{:t :t04 :w w :e parent :mode :callback :fresh-runs [[w parent 10]]}
                   {:t :t09 :w w :e parent :fresh-runs [[w parent 10]]}]))
+
+(deftest foreign-owned-cleanup-extent-refines-world-local-publication
+  (doseq [tail [[{:t :queued :w w} {:t :queued :w w} {:t :queued :w w}
+                 {:t :queued :w [:w 1]} {:t :queued :w [:w 1]}]
+                [{:t :t16 :tok :ha} {:t :t17 :w w :e :a :tok :ha}]
+                [{:t :t18 :w w}]]]
+    (compare-walk! (model/init-state)
+                   (into (into [{:t :t01 :w w :e :a :tok :ha}]
+                               (rooted/foreign-owned-source-actions)) tail))))
+
+(deftest foreign-owned-ancestor-refines-gc-only-storage-retention
+  (compare-walk! (model/init-state)
+                 (into (rooted/foreign-owned-ancestor-actions)
+                       [{:t :t16 :tok :hp} {:t :t17 :w w :e :p :tok :hp}
+                        {:t :t18 :w w}])))

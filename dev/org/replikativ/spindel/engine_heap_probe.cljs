@@ -108,6 +108,8 @@
                                           (when-not (and (zero? (:entities state))
                                                          (zero? (:generation-history state))
                                                          (zero? (:pooled-references state))
+                                                         (zero? (:liveness-scratch-references state))
+                                                         (zero? (:stale-liveness-references state))
                                                          (zero? (:scratch-references state))
                                                          (zero? (:stale-queue-references state)))
                                             (throw (ex-info "Reclamation left engine roots" state)))
