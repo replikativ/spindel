@@ -200,7 +200,7 @@
                              [:D1 [:t34 :t36 :t37 :queued :arrival :native-progress :waiter-unregister :thread-entry]]]
                   t ts]
               [t {:status :not-yet :step step :restrictions (constantly nil) :dispatch nil}]))
-   (into {} (for [t [:cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell]]
+   (into {} (for [t [:cleanup-adopt :cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell]]
               [t {:status :not-yet :step :B4 :reason :requires-protected-cleanup-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
    (update-vals

@@ -280,7 +280,7 @@
            (get-in b5 [:cases :profiles :run-lifecycle :spec])))))
 
 (deftest protected-cleanup-is-explicitly-pending-in-the-legacy-runtime-adapter
-  (doseq [t [:cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell]]
+  (doseq [t [:cleanup-adopt :cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell]]
     (is (= :B4 (manifests/action-stage {:t t})))
     (is (= {:status :not-yet :step :B4 :reason :requires-protected-cleanup-adapter}
            (l/unsupported {:t t})))))

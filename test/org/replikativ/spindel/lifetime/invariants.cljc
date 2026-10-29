@@ -884,6 +884,19 @@
                          :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
                                     (= :unwinding (:status (m/run after v r))))] [v r]))]
       (vec (concat
+            (when (= :cleanup-adopt (:t effective))
+              (let [n (:n effective) th (:th effective)
+                    ticket (get-in before [:env :native n])
+                    frame (get-in before [:env :threads th])
+                    expected-frame (assoc frame :cleanup-ticket n :retired? true :anchor (:anchor ticket))]
+                (when-not (and (= :cps-exit (:kind ticket)) (= :ready (:phase ticket))
+                               (:executing? frame) (nil? (:cleanup-ticket frame))
+                               (= (:owner ticket) [(:world frame) (:run frame)])
+                               (= (assoc-in (get-in before [:env :threads]) [th] expected-frame)
+                                  (get-in after [:env :threads]))
+                               (= (assoc ticket :phase :claimed) (get-in after [:env :native n])))
+                  [{:n n :invalid-cleanup-adoption {:thread th :before frame
+                                                    :after (get-in after [:env :threads th])}}])))
             (mapcat (fn [[v root]] (cleanup-retention-errors before after v root completing))
                     (set (concat requested retired)))
             (for [[n row] (get-in before [:env :native]) :when (= :cps-exit (:kind row))

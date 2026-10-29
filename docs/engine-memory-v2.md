@@ -444,7 +444,10 @@ World release still publishes a lineage-only tombstone; private retained payload
 remain outside it until the last cleanup participant returns.
 
 `cleanup-claim` transfers a ready ticket to a cleanup frame only after the prior
-physical slice returns. `cleanup-park` creates a new one-shot callback sequence;
+physical slice returns. `cleanup-adopt` instead transfers the same authority to
+the exact existing frame of that world/generation, allowing a running body to
+unwind its finalizers without another dispatch or a second physical frame.
+`cleanup-park` creates a new one-shot callback sequence;
 `cleanup-deliver` commits readiness without executing user code. Duplicate, stale
 and post-return deliveries are inert. `cleanup-return` records CPS completion,
 but only T38 physical return releases the ticket and its cell holders. A second
