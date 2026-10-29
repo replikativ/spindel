@@ -41,6 +41,34 @@
                                          (store/transact! s identity)))))
     (is (= {} (store/snapshot s)))))
 
+(deftest owned-cell-fork-copies-only-on-write
+  (let [options {:cell-tables #{:runs}}
+        parent (store/create-store {:w {:runs {:r {:status :running :extra nil}}}} options)
+        old-value (store/transact! parent #(store/read-row % :w :runs :r))
+        basis (store/pin-world parent :w)
+        child (store/create-store {:w basis} (assoc options :pinned? true))]
+    (store/transact! parent #(store/write-field! % :w :runs :r :status :parked))
+    (store/transact! child #(store/write-field! % :w :runs :r :status :completed))
+    (is (= :running (:status old-value)))
+    (is (= :running (get-in basis [:runs :r :status])))
+    (is (= {:status :parked :extra nil} (get-in (store/snapshot parent) [:w :runs :r])))
+    (is (= {:status :completed :extra nil} (get-in (store/snapshot child) [:w :runs :r])))))
+
+(deftest owned-cell-journal-restores-fields-and-row-pointers
+  (let [s (store/create-store {:w {:runs {:r {:status :running :extra nil}}}}
+                              {:cell-tables #{:runs}})
+        before (store/transact! s #(store/read-row % :w :runs :r))]
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (store/transact!
+                  s (fn [tx]
+                      (store/write-field! tx :w :runs :r :status :parked)
+                      (store/write-field! tx :w :runs :r :new-field :new)
+                      (store/put-row! tx :w :runs :r {:status :completed})
+                      (store/write-field! tx :w :runs :r :status :unwinding)
+                      (throw (ex-info "refused" {}))))))
+    (is (= before (store/transact! s #(store/read-row % :w :runs :r))))
+    (is (= before (get-in (store/snapshot s) [:w :runs :r])))))
+
 #?(:clj
    (deftest handoff-and-multiworld-reader-isolation
      (let [s (store/create-store {:a {:rows {:balance 0}}

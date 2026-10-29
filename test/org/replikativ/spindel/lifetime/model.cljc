@@ -375,7 +375,7 @@
 
 (defn t02-create-signal
   "T2 create-signal/create-atom. Keyed lookup follows lineage ancestors."
-  [s {:keys [e kind key value] :or {kind :signal} :as a}]
+  [s {:keys [e kind key value order] :or {kind :signal order 0} :as a}]
   (let [w (selected s a) owner (cs s a w) e (if key (keyid s w key) e)
         source (loop [v w]
                  (cond (ent s v e) v
@@ -387,8 +387,12 @@
       (let [er (ent s source e)]
         (require! (and (= :signal (:kind er)) (= key (:key er))) ::key-collision {:e e})
         (if (and (= source w) (predecessor? s w (:owner er) owner))
-          (assoc-in s [:worlds w :entities e :owner] owner) s))
-      (assoc-in s [:worlds w :entities e] (assoc (row kind owner) :key key :result value)))))
+          (-> s (assoc-in [:worlds w :entities e :owner] owner)
+              (assoc-in [:worlds w :entities e :order] order)
+              (update-in [:worlds w :runs owner :creations] conj e)) s))
+      (cond-> (assoc-in s [:worlds w :entities e]
+                        (assoc (row kind owner) :key key :result value :order order))
+        (run s w owner) (update-in [:worlds w :runs owner :creations] conj e)))))
 
 (defn t03-touch-keyed
   "T3 touch-keyed/cache-row, indexed by spin instance."
@@ -407,6 +411,24 @@
   (live! s w)
   (require! (not-any? #(and (= w (:child %)) (= :attached (:phase %)))
                       (vals (:cuts s))) ::not-admitted {:w w}))
+
+(defn adopt-call-target
+  "A successor that invokes/awaits a predecessor-owned spin adopts its
+  ownership and its runs. Host-created handles have no lexical T1 to repeat."
+  [s w e scope]
+  (let [er (ent s w e) old (:owner er)]
+    (if (and (= :spin (:kind er)) (predecessor? s w old scope))
+      (-> s
+          (assoc-in [:worlds w :entities e :owner] scope)
+          (cond-> (= old (:creator er))
+            (assoc-in [:worlds w :entities e :creator] scope)
+            (= old (:creator er)) (assoc-in [:worlds w :entities e :kept?] (reactive? s w scope))
+            (= old (:creator er)) (update-in [:worlds w :runs scope :creations] conj e))
+          (update-in [:worlds w :runs]
+                     #(into {} (for [[r rr] %]
+                                 [r (if (and (= e (:spin rr)) (= old (:owner rr)))
+                                      (assoc rr :owner scope) rr)]))))
+      s)))
 (defn t04-invoke
   "T4 invoke: join, cached delivery, or fresh body entry."
   [s {:keys [e tok mode host] :or {mode :deref host :caller} :as a}]
@@ -427,6 +449,7 @@
                                               :tokens (covering-tokens s w e)
                                               :origin :copied :source-world source)
                               (spin-row s w e owner))))
+          s (if join? s (adopt-call-target s w e owner))
           s (if (and (not join?) (nil? (:owner (ent s w e))))
               (assoc-in s [:worlds w :entities e :owner] owner) s)
           s (if join? s (touch s dw e tok))
@@ -461,6 +484,7 @@
                            (not (:completed? (ent s dw e))))
         s (if (and await? (= dw w) (nil? (ent s dw e)))
             (do (live! s dw) (assoc-in s [:worlds dw :entities e] (spin-row s dw e r))) s)
+        s (if (and await? (= dw w)) (adopt-call-target s w e r) s)
         _ (when (and (= :entity dk) (not foreign-cold?))
             (require! (ent s dw e) ::missing-debtor {:debtor debtor}))
         completed? (and (= dk :entity) (:completed? (ent s dw e)))
@@ -565,7 +589,8 @@
                 (or (not (:standing? ob)) (final? s dw e)) (end-obligation w o :delivered))
               (if (cancelling? s w o ob)
                 (-> s (t06-resume {:w w :o o :value value}) (end-obligation w o :delivered))
-                (if (and (:standing? ob) (not= :inherited (:status (run s w (nth (:creditor ob) 2)))))
+                (if (and (:standing? ob) (= :consumed (:slot ob))
+                         (not= :inherited (:status (run s w (nth (:creditor ob) 2)))))
                   (t09-reenter s {:w w :e (first (nth (:creditor ob) 2))
                                   :cause (if (= :track (:kind ob)) :track :reactive)
                                   :order (:order ob)})
@@ -593,7 +618,8 @@
       (rule-l
        (reduce (fn [s child]
                  (-> s (assoc-in [:worlds w :entities child :owner] r2)
-                     (assoc-in [:worlds w :entities child :creator] r2)
+                     (cond-> (:creator (ent s w child))
+                       (assoc-in [:worlds w :entities child :creator] r2))
                      (update-in [:worlds w :runs r2 :creations] conj child)
                      (update-in [:worlds w :runs r :creations] disj child)
                      (update-in [:worlds w :runs]

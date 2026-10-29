@@ -200,6 +200,20 @@ The storage contract is:
    Their handlers claim an obligation slot in a new transition. Neither
    physical page ownership nor host reachability supplies a retention reason.
 
+The cell representation uses fixed field layouts for entities, runs,
+obligations and scopes. A table's edit token owns its row cells as well as its
+transient root. A field write copies a shared cell, then journals and changes
+its owned field in place. The journal uses a reusable native buffer and clears
+its references at transaction exit. Ordinary associative operations on a row
+return immutable maps; only the store has a mutating field operation.
+
+`owned-store/pin-world` seals table roots without walking row cells. The
+diagnostic `snapshot` function materializes canonical maps and consequently
+costs the number of exported rows in cell mode. Physical fork/snapshot capture
+must use pinned roots; eager diagnostics are not the fork implementation.
+Borrowed live rows are internal to one transition. Retained before-images,
+host reads and commands that outlive a transition capture immutable values.
+
 - **Root:** reads under the store gate or from one immutable committed head.
   A transition may edit privately or edit owned mutable pages under the gate;
   no reader or fork sees a partial transition.

@@ -3,6 +3,7 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.engine.kernel :as kernel]
             [org.replikativ.spindel.lifetime.model :as model]
+            [org.replikativ.spindel.lifetime.first-delivery-test :as handoff]
             [clojure.walk :as walk]))
 
 (def w [:w 0])
@@ -26,15 +27,20 @@
    (select-keys state [:worlds :env :serial :events :generation-clock :clocks :host-delivered])))
 
 (defn- compare-walk! [initial actions]
-  (let [actual (kernel/restore initial)]
-    (loop [expected initial remaining actions]
-      (when-let [action (first remaining)]
-        (let [{after :state refusal :refusal} (model/attempt expected action)
-              actual-error (try (kernel/step! actual action) nil
-                                (catch #?(:clj Exception :cljs :default) e (ex-data e)))]
-          (is (= (some-> refusal :error name) (some-> actual-error :error name)) (str action))
-          (is (= (view after) (view (kernel/snapshot actual))) (str action))
-          (recur after (next remaining)))))))
+  (doseq [[cells? seal?] [[false true] [true true] [true false]]]
+    (let [actual (kernel/restore initial {:cells? cells?})]
+      (loop [expected initial remaining actions]
+        (if-let [action (first remaining)]
+          (let [{after :state refusal :refusal} (model/attempt expected action)
+                actual-error (try (kernel/step! actual action) nil
+                                  (catch #?(:clj Exception :cljs :default) e
+                                    (merge {:error ::unexpected-exception :message (ex-message e)} (ex-data e))))]
+            (is (= (some-> refusal :error name) (some-> actual-error :error name)) (str action))
+            (when seal?
+              (is (= (view after) (view (kernel/snapshot actual))) (str action)))
+            (recur after (next remaining)))
+          (when-not seal?
+            (is (= (view expected) (view (kernel/snapshot actual))) (str actions))))))))
 
 (deftest obligation-kind-walks
   (doseq [[kind debtor] [[:track [:entity w signal]]
@@ -137,6 +143,44 @@
     {:t :t11 :w w :r [parent 1]}
     {:t :native-progress :n [:cancel [:o 1]] :state :joined}
     {:t :waiter-unregister :token [:cancel [:o 1]]}]))
+
+(deftest reused-await-target-is-adopted
+  (compare-walk! (model/init-state) (handoff/cold-child-handoff-actions)))
+
+(deftest prefix-source-survives-successor-completion
+  (compare-walk!
+   (model/init-state)
+   [{:t :t04 :w w :e parent :mode :callback}
+    {:t :t02 :w w :e signal :r [parent 1] :order 0 :value 1}
+    {:t :t05 :w w :r [parent 1] :kind :track :debtor [:entity w signal] :order 1}
+    {:t :t07 :w w :r [parent 1] :value 1}
+    {:t :t08 :w w :e parent :value 1}
+    {:t :signal-write :w w :e signal :value 2}
+    {:t :t08 :w w :e signal :value 2}
+    {:t :t05 :w w :r [parent 2] :kind :track :debtor [:entity w signal] :order 1}
+    {:t :t07 :w w :r [parent 2] :value 2}
+    {:t :signal-write :w w :e signal :value 3}]))
+
+(deftest reentry-removes-the-predecessors-timer-in-the-same-transition
+  (compare-walk!
+   (model/init-state)
+   [{:t :t04 :w w :e parent :mode :callback}
+    {:t :t05 :w w :r [parent 1] :kind :timer :debtor [:host :executor]}
+    {:t :t09 :w w :e parent :cause :rerun!}
+    {:t :t07 :w w :r [parent 2] :value 1}
+    {:t :t08 :w w :e parent :value 1}]))
+
+(deftest ready-await-refines-registration-and-claim
+  (let [initial (model/step (fixture) {:t :t07 :w w :r [child 1] :value 42})
+        action {:t :t05 :w w :r [parent 1] :kind :await-reactive :debtor [:entity w child]}
+        expected (-> initial (model/step action)
+                     (model/step {:t :t06 :w w :o [:o 2] :value 42}))]
+    (doseq [options [{} {:cells? true}]]
+      (let [actual (kernel/restore initial options)
+            result (kernel/step! actual (assoc action :t :await))]
+        (is (= (view expected) (view (kernel/snapshot actual))))
+        (is (= {:o [:o 2] :value 42 :inline? true} (:result result)))
+        (is (empty? (:commands result)))))))
 
 (deftest foreign-obligation-admission-and-release
   (let [v [:w 1]
