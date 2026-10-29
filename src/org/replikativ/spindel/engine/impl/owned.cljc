@@ -332,7 +332,7 @@
      (if (:ns &env)
        (list (symbol (str ".-" (name field)))
              (with-meta rt (assoc (meta rt) :tag 'org.replikativ.spindel.engine.impl.owned/OwnedRuntime)))
-       (list field rt))))
+       (with-meta (list field rt) (meta &form)))))
 
 #?(:clj
    (defmacro locked [rt & body]
