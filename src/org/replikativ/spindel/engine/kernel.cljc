@@ -1097,17 +1097,18 @@
 (defn- reenter! [ctx {:keys [w e cause order resume-o] :or {cause :dirty order -1}}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
   (let [r (current-run ctx w e)
-        rr (read-row ctx w :runs r)
-        work? (#{:running :parked} (:status rr))]
+        rr (read-row ctx w :runs r)]
     (require! rr ::missing-run {:e e})
     (doseq [p (read-row ctx w :runs-by-spin e)
             :when (= :stale (:status (read-row ctx w :runs p)))]
       (supersede! ctx w p))
     (let [trigger (when resume-o (read-row ctx w :obligations resume-o))
           trigger (if (cells/row? trigger) (select-keys trigger [:kind :debtor :cont :order]) trigger)
-          r2 (start-run! ctx w e (:owner rr) cause)]
+          r2 (start-run! ctx w e (:owner rr) cause)
+          previous (read-row ctx w :runs r)
+          work? (#{:running :parked} (:status previous))]
       (when (and (#{:track :reactive} cause)
-                 (or (:validation-lost? rr) (:dirty? (read-row ctx w :entities e))))
+                 (or (:validation-lost? previous) (:dirty? (read-row ctx w :entities e))))
         (edit! ctx w :runs r2 assoc :validation-lost? true))
       (when trigger
         (vswap! (:commands ctx) update (dec (count @(:commands ctx)))
@@ -1126,7 +1127,7 @@
         (index-remove! ctx w :scopes-by-parent r scope)
         (edit! ctx w :scopes scope assoc :parent r2)
         (index-add! ctx w :scopes-by-parent r2 scope))
-      (doseq [child (:creations rr)
+      (doseq [child (:creations previous)
               :when (< (get (read-row ctx w :entities child) :order 0) order)]
         (if (:creator (read-row ctx w :entities child))
           (edit-entity! ctx w child assoc :owner r2 :creator r2)

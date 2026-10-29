@@ -782,22 +782,25 @@
                        :when (and (= e (:spin pr)) (= :stale (:status pr)))] p)
           s (reduce #(t10-supersede %1 {:w w :r %2}) s stales)
           [s r2] (start-run s w e (:owner rr) cause)
+          ;; Starting retires a dormant inherited run. Only a predecessor
+          ;; still present after that teardown can donate prefix resources.
+          previous (run s w r)
           s (if (and (#{:track :reactive} cause)
-                     (or (:validation-lost? rr) (:dirty? (ent s w e))))
+                     (or (:validation-lost? previous) (:dirty? (ent s w e))))
               (assoc-in s [:worlds w :runs r2 :validation-lost?] true) s)
-          s (if (work? rr) (assoc-in s [:worlds w :runs r :status] :stale) s)
+          s (if (work? previous) (assoc-in s [:worlds w :runs r :status] :stale) s)
           s (reduce (fn [s [o ob]]
                       (if (not= [:run w r] (:creditor ob)) s
-                          (if (and (work? rr) (= :track (:kind ob)) (<= (:order ob) order))
+                          (if (and (work? previous) (= :track (:kind ob)) (<= (:order ob) order))
                             (assoc-in s [:worlds w :obligations o :creditor] [:run w r2])
-                            (if (work? rr) (end-obligation s w o :creditor-cancelled) s))))
+                            (if (work? previous) (end-obligation s w o :creditor-cancelled) s))))
                     s (:obligations (wr s w)))
           s (update-in s [:worlds w :scopes]
                        #(into {} (for [[id sr] %]
                                    [id (if (and (= r (:parent sr)) (< (get sr :order 0) order))
                                          (assoc sr :parent r2) sr)])))
           prefix (filter #(< (get-in s [:worlds w :entities % :order] 0) order)
-                         (:creations rr))]
+                         (:creations previous))]
       (rule-l
        (reduce (fn [s child]
                  (-> s (assoc-in [:worlds w :entities child :owner] r2)

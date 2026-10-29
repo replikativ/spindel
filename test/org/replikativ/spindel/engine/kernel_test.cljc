@@ -3,9 +3,11 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.engine.kernel :as kernel]
             [org.replikativ.spindel.lifetime.model :as model]
+            [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.lifetime.first-delivery-test :as handoff]
             [org.replikativ.spindel.lifetime.rooted-liveness-test :as rooted]
             [org.replikativ.spindel.lifetime.released-join-test :as released]
+            [org.replikativ.spindel.lifetime.dormant-reentry-test :as dormant]
             [clojure.walk :as walk]))
 
 (def w [:w 0])
@@ -34,10 +36,14 @@
     (let [actual (kernel/restore initial {:cells? cells?})]
       (loop [expected initial remaining actions]
         (if-let [action (first remaining)]
-          (let [{after :state refusal :refusal} (model/attempt expected action)
+          (let [{after :state refusal :refusal observation :observation} (model/attempt expected action)
                 actual-error (try (kernel/step! actual action) nil
                                   (catch #?(:clj Exception :cljs :default) e
                                     (merge {:error ::unexpected-exception :message (ex-message e)} (ex-data e))))]
+            ;; Projection agreement alone can reproduce the same model bug.
+            (is (empty? (inv/check after)) (str action))
+            (is (empty? (inv/edge-check {:before expected :action action :after after
+                                         :refusal refusal :observation observation})) (str action))
             (is (= (some-> refusal :error name) (some-> actual-error :error name)) (str action))
             (when seal?
               (is (= (view after) (view (kernel/snapshot actual))) (str action)))
@@ -638,3 +644,8 @@
                        (catch #?(:clj Exception :cljs :default) e (ex-data e)))]
         (is (= ::kernel/unused-run-allocation (:error error)))
         (is (= before (kernel/snapshot actual)))))))
+
+(deftest dormant-reentry-refines-without-reusing-a-dropped-predecessor
+  (doseq [order [-1 0 1 2] cause [:dirty :rerun! :track]]
+    (compare-walk! (dormant/forked)
+                   [{:t :t09 :w dormant/v :e :spin :cause cause :order order}])))
