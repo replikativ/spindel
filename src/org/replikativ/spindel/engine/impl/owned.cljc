@@ -2,7 +2,7 @@
   "Owned-object CPS engine under construction. Canonical maps are diagnostic output,
   never the live representation. Supports the local reactive lifetime slice."
   (:refer-clojure :exclude [await assoc! dissoc! pop!])
-  #?(:cljs (:require-macros [org.replikativ.spindel.engine.impl.owned :refer [a put locked each! each-copy! fields! with-activation]]))
+  #?(:cljs (:require-macros [org.replikativ.spindel.engine.impl.owned :refer [a put locked each! each-copy! fields! with-activation runtime-field]]))
   (:require [is.simm.partial-cps.async :as cps]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
@@ -325,6 +325,16 @@
 (def cancelled ::cancelled)
 
 #?(:clj
+   (defmacro runtime-field [rt field]
+     ;; Fields are private to this implementation. Avoid keyword/protocol
+     ;; lookup on JS while preserving ordinary record access during JVM REPL
+     ;; reloads, where an older runtime can still be finishing a callback.
+     (if (:ns &env)
+       (list (symbol (str ".-" (name field)))
+             (with-meta rt (assoc (meta rt) :tag 'org.replikativ.spindel.engine.impl.owned/OwnedRuntime)))
+       (list field rt))))
+
+#?(:clj
    (defmacro locked [rt & body]
      (if (:ns &env) `(do ~@body) `(locking (:gate ~rt) ~@body))))
 
@@ -351,12 +361,12 @@
 
 (defn- next-number! [rt i]
   (if (zero? i)
-    (put (:serial rt) 0 (inc (long (a (:serial rt) 0))))
-    (put (:counters rt) i (inc (long (a (:counters rt) i))))))
+    (put (runtime-field rt :serial) 0 (inc (long (a (runtime-field rt :serial) 0))))
+    (put (runtime-field rt :counters) i (inc (long (a (runtime-field rt :counters) i))))))
 (defn- root-owner? [owner] (instance? RootOwner owner))
 (defn- execution-runtime [rt] (if (current-activation) (a (current-activation) 0) rt))
 (defn- parent-node [rt id]
-  (loop [parent (:parent rt)]
+  (loop [parent (runtime-field rt :parent)]
     (when parent (or (find! (:nodes parent) id) (recur (:parent parent))))))
 
 (defn- work-status? [status] (case status (:running :parked) true false))
@@ -369,7 +379,7 @@
 (defn- open-owner? [owner] (or (root-owner? owner) (and owner (not= :unwinding (a owner r-status)))))
 (defn- mark! [rt node]
   (when (and node (not (a node n-work)))
-    (put node n-work true) (push! (:work rt) node)))
+    (put node n-work true) (push! (runtime-field rt :work) node)))
 (defn- reactive-kind? [kind] (or (= :track kind) (= :await-reactive kind)))
 (defn- reactive? [run] (boolean (and run (pos? (long (or (a run r-reactives) 0))))))
 (defn- reactive-delta! [run delta]
@@ -412,29 +422,29 @@
     (put node n-created-by (members)) (put node n-creator-refs (dict))
     (put node n-runs (dict)) (put node n-dependents (members))
     (put node n-generation 0) (put node n-rank 0)
-    (assoc! (:nodes rt) id node) (owner! rt node owner) node))
+    (assoc! (runtime-field rt :nodes) id node) (owner! rt node owner) node))
 
 (defn- creator! [rt node creator]
   (let [old (a node n-creator)
-        source (when creator (if (vector? creator) (find! (:nodes rt) (nth creator 0)) (a creator r-node)))]
+        source (when creator (if (vector? creator) (find! (runtime-field rt :nodes) (nth creator 0)) (a creator r-node)))]
     (when-not (identical? old creator)
       (doseq [[value source delta] [[old (a node n-creator-source) -1] [creator source 1]]
               :when (and value source)]
         (let [gen (if (vector? value) (nth value 1) (a value r-gen))
               refs (a source n-creator-refs) n (+ delta (long (or (find! refs gen) 0)))]
           (if (zero? n) (dissoc! refs gen) (assoc! refs gen n))
-          (add! (a (:counters rt) 8) source)))
+          (add! (a (runtime-field rt :counters) 8) source)))
       (put node n-creator creator)
       (put node n-creator-source source))))
 
 (defn- prune-ancestry! [rt]
-  (each! [node (a (:counters rt) 8)]
+  (each! [node (a (runtime-field rt :counters) 8)]
          (each! [run (values (a node n-runs))]
                 (each-copy! [gen (a run r-ancestors)]
                             (when-not (or (when-let [live (find! (a node n-runs) gen)] (not= :unwinding (a live r-status)))
                                           (find! (a node n-creator-refs) gen))
                               (remove! (a run r-ancestors) gen)))))
-  (clear-members! (a (:counters rt) 8)))
+  (clear-members! (a (runtime-field rt :counters) 8)))
 
 (defn- creation! [run node]
   (add-run! run r-created node) (add! (a node n-created-by) run))
@@ -445,13 +455,13 @@
   (when (a ob o-live)
     (put ob o-live false)
     (when (= :await-once (a ob o-kind))
-      (dissoc! (:deliveries rt) (a ob o-id))
-      (when-let [operation (find! (:operations rt) (a ob o-id))]
-        (dissoc! (:operations rt) (a ob o-id))
+      (dissoc! (runtime-field rt :deliveries) (a ob o-id))
+      (when-let [operation (find! (runtime-field rt :operations) (a ob o-id))]
+        (dissoc! (runtime-field rt :operations) (a ob o-id))
         (if (= :consumed (a ob o-slot))
           (put operation 0 :settled)
           (do (put operation 0 :cancelled)
-              (when-let [cancel (a operation 1)] (push! (:posts rt) (doto (slots 1) (put 0 cancel))))))
+              (when-let [cancel (a operation 1)] (push! (runtime-field rt :posts) (doto (slots 1) (put 0 cancel))))))
         (put operation 1 nil)))
     (when-let [run (a ob o-run)]
       (remove! (a run r-obs) ob)
@@ -459,9 +469,9 @@
       (mark! rt (a run r-node)))
     (when (= :await-once (a ob o-kind))
       (let [host (a ob o-host)]
-        (when-let [waiters (find! (:tickets rt) host)]
+        (when-let [waiters (find! (runtime-field rt :tickets) host)]
           (remove! waiters ob)
-          (when (zero? (count! waiters)) (dissoc! (:tickets rt) host)))))
+          (when (zero? (count! waiters)) (dissoc! (runtime-field rt :tickets) host)))))
     (when-let [node (a ob o-debtor)]
       (remove! (a node n-dependents) ob) (mark! rt node))))
 
@@ -470,7 +480,7 @@
     (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
       (put run r-status :running) (put ob o-value cancelled)
       (schedule! rt (a run r-node) ob))
-    (push! (:hosts rt) (doto (slots 2) (put 0 ob) (put 1 cancelled))))
+    (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 cancelled))))
   (end-ob! rt ob))
 
 (defn- release-owned! [rt run]
@@ -484,8 +494,8 @@
 (defn- forget-run! [rt run]
   (let [node (a run r-node)]
     (dissoc! (a node n-runs) (a run r-gen))
-    (add! (a (:counters rt) 8) node)
-    (remove! (a (:counters rt) 6) run)
+    (add! (a (runtime-field rt :counters) 8) node)
+    (remove! (a (runtime-field rt :counters) 6) run)
     (when (identical? run (current node))
       (put node n-current (last (sort-by #(a % r-gen) (values (a node n-runs))))))
     (mark! rt node)
@@ -498,16 +508,16 @@
     (put run r-wide nil)
     (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives]]
              (put run field nil))
-    (let [pool (a (:counters rt) 0)]
+    (let [pool (a (runtime-field rt :counters) 0)]
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
         (push! pool run)))))
 
 (defn- retire! [rt run]
-  (when (and (has? (a (:counters rt) 6) run) (not= :unwinding (a run r-status)))
+  (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
     (let [physical? (a run r-physical)
           anchor (when physical?
                    (loop [owner run chain []]
-                     (if (root-owner? owner) (conj chain (:id owner) (:world rt))
+                     (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
                          (recur (a owner r-owner) (conj chain [(a (a owner r-node) n-id) (a owner r-gen)])))))]
       (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
       (each-copy! [child (a run r-childruns)] (cancel! rt child))
@@ -527,7 +537,7 @@
       (if physical?
         (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
             (put run r-anchor anchor)
-            (add! (a (:counters rt) 8) (a run r-node))
+            (add! (a (runtime-field rt :counters) 8) (a run r-node))
             (each! [successor (values (a (a run r-node) n-runs))]
                    (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
             (clear-members! (a run r-ancestors))
@@ -537,7 +547,7 @@
       (mark! rt (a run r-node)))))
 
 (defn- cancel! [rt run]
-  (when (and (has? (a (:counters rt) 6) run) (not= :unwinding (a run r-status)))
+  (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
     (let [node (a run r-node) current? (identical? run (current node))
           predecessor (find! (a node n-runs) (a run r-pred))]
       (retire! rt run)
@@ -548,41 +558,44 @@
 
 (defn- drop-node-events! [rt node]
   (put node n-source-event nil)
-  #?(:clj (.removeIf ^java.util.Collection (:events rt)
+  #?(:clj (.removeIf ^java.util.Collection (runtime-field rt :events)
                      (reify java.util.function.Predicate
                        (test [_ event] (identical? node (a event 0)))))
-     :cljs (.removeWhere (:events rt) (fn [event] (identical? node (a event 0))))))
+     :cljs (.removeWhere (runtime-field rt :events) (fn [event] (identical? node (a event 0))))))
+
+(defn- reclaim-unwanted! [rt node]
+  (when (and (= :spin (a node n-kind)) (a node n-complete))
+    (each-copy! [run (values (a node n-runs))] (retire! rt run))
+    (owner! rt node nil))
+  (when-not (and (= :spin (a node n-kind)) (a node n-complete)
+                 (pos? (count! (a node n-tokens))))
+    (each-copy! [run (values (a node n-runs))] (retire! rt run))
+    (each-copy! [creator (a node n-created-by)] (uncreate! creator node))
+    (drop-node-events! rt node)
+    (creator! rt node nil)
+    (dissoc! (runtime-field rt :nodes) (a node n-id))
+    (put node n-body nil) (put node n-value nil) (put node n-resume nil)
+    (clear-members! (a node n-tokens))))
 
 (defn- reclaim! [rt]
   (loop []
-    (when-let [node (pop! (:work rt))]
+    (when-let [node (pop! (runtime-field rt :work))]
       (put node n-work false)
-      (when (and (identical? node (find! (:nodes rt) (a node n-id))) (not (wanted? node)))
-        (when (and (= :spin (a node n-kind)) (a node n-complete))
-          (each-copy! [run (values (a node n-runs))] (retire! rt run))
-          (owner! rt node nil))
-        (when-not (and (= :spin (a node n-kind)) (a node n-complete)
-                       (pos? (count! (a node n-tokens))))
-          (each-copy! [run (values (a node n-runs))] (retire! rt run))
-          (each-copy! [creator (a node n-created-by)] (uncreate! creator node))
-          (drop-node-events! rt node)
-          (creator! rt node nil)
-          (dissoc! (:nodes rt) (a node n-id))
-          (put node n-body nil) (put node n-value nil) (put node n-resume nil)
-          (clear-members! (a node n-tokens))))
+      (when (and (identical? node (find! (runtime-field rt :nodes) (a node n-id))) (not (wanted? node)))
+        (reclaim-unwanted! rt node))
       (recur))))
 
 (defn- audit-derived-state! [rt]
   (when-not (zero? (count! empty-members))
     (throw (ex-info "Shared empty membership was mutated" {})))
   #?(:cljs
-     (let [heap (:ready rt)]
+     (let [heap (runtime-field rt :ready)]
        (dotimes [index (.-length heap)]
          (when (pos? index)
            (let [parent (unsigned-bit-shift-right (dec index) 1)]
              (when (> (a (aget heap parent) n-rank) (a (aget heap index) n-rank))
                (throw (ex-info "Ready heap priority changed while queued" {:index index}))))))))
-  (let [nodes (vec (values (:nodes rt)))
+  (let [nodes (vec (values (runtime-field rt :nodes)))
         sources (members)]
     (doseq [node nodes]
       (add! sources node)
@@ -596,12 +609,12 @@
              (when-not (= expected actual)
                (throw (ex-info "Creator-generation count mismatch" {:entity (a source n-id) :expected expected :actual actual}))))))
 
-  (each! [node (values (:nodes rt))]
+  (each! [node (values (runtime-field rt :nodes))]
          (let [current-active (boolean (active-status? (some-> (current node) (a r-status))))
                any-active (boolean (any! (values (a node n-runs)) #(active-status? (a % r-status))))]
            (when-not (= current-active any-active)
              (throw (ex-info "Active-run projection mismatch" {:entity (a node n-id)})))))
-  (each! [run (a (:counters rt) 6)]
+  (each! [run (a (runtime-field rt :counters) 6)]
          (let [actual (count (filter #(reactive-kind? (a % o-kind)) (items (a run r-obs))))]
            (when-not (= actual (or (a run r-reactives) 0))
              (throw (ex-info "Reactive-site count mismatch" {:run (a run r-gen) :expected actual :actual (a run r-reactives)}))))))
@@ -609,19 +622,19 @@
 (defn- boundary! [rt action]
   (reclaim! rt)
   (prune-ancestry! rt)
-  (when (:audit rt)
+  (when (runtime-field rt :audit)
     (audit-derived-state! rt)
-    (let [pending (a (:counters rt) 9)
+    (let [pending (a (runtime-field rt :counters) 9)
           action (assoc action :fresh-runs (vec (items pending)))]
       #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
-      (swap! (:audit rt) conj [action (snapshot rt) (snapshot-family rt)]))))
+      (swap! (runtime-field rt :audit) conj [action (snapshot rt) (snapshot-family rt)]))))
 
 (defn- touch! [rt node token]
-  (when token (add! (a node n-tokens) token) (add! (a token t-touched) (:world rt))))
+  (when token (add! (a node n-tokens) token) (add! (a token t-touched) (runtime-field rt :world))))
 (defn- check-token! [rt token]
-  (when (and token (not (identical? (:family-id rt) (a token t-family))))
+  (when (and token (not (identical? (runtime-field rt :family-id) (a token t-family))))
     (throw (ex-info "Handle belongs to another runtime family" {:error :unknown-handle})))
-  (when (and token (has? (a token t-dropped) (:world rt)))
+  (when (and token (has? (a token t-dropped) (runtime-field rt :world)))
     (throw (ex-info "Idle cache released" {:error :idle-cache-released}))))
 
 (defn- check-running! [run]
@@ -640,16 +653,16 @@
             (let [run (when (current-activation) (a (current-activation) 1))
                   order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
                   _ (check-running! run)
-                  old (find! (:nodes rt) id)
-                  node (or old (node! rt id :signal (or run (:owner-root rt))))]
+                  old (find! (runtime-field rt :nodes) id)
+                  node (or old (node! rt id :signal (or run (runtime-field rt :owner-root))))]
               (when-not (= :signal (a node n-kind)) (throw (ex-info "Source ID collision" {:id id})))
               (when (or (nil? old) (predecessor-run? (a node n-owner) run))
                 (when-not old (put node n-value value))
-                (owner! rt node (or run (:owner-root rt))) (put node n-order order)
+                (owner! rt node (or run (runtime-field rt :owner-root))) (put node n-order order)
                 (when run (creation! run node)))
-              (boundary! rt (when (:audit rt) (cond-> {:t :t02 :w (:world rt) :e id :value value}
-                                                run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))
-              (->Source id (:family-id rt))))))
+              (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t02 :w (runtime-field rt :world) :e id :value value}
+                                                              run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))
+              (->Source id (runtime-field rt :family-id))))))
 
 #?(:clj (defonce ^:private handle-cleaner (java.lang.ref.Cleaner/create))
    :cljs (defonce ^:private handle-cleaner
@@ -659,12 +672,12 @@
                 (collect-home-token! home (aget held 1)))))))
 
 (defn- arm-handle! [rt handle token]
-  #?(:clj (let [home-ref (java.lang.ref.WeakReference. (:home rt))]
+  #?(:clj (let [home-ref (java.lang.ref.WeakReference. (runtime-field rt :home))]
             (put token 5 (.register ^java.lang.ref.Cleaner handle-cleaner handle
                                     (reify Runnable
                                       (run [_] (when-let [home (.get home-ref)]
                                                  (collect-home-token! home token)))))))
-     :cljs (.register handle-cleaner handle (array (js/WeakRef. (:home rt)) token) token))
+     :cljs (.register handle-cleaner handle (array (js/WeakRef. (runtime-field rt :home)) token) token))
   handle)
 
 (defn- collect-home-token! [home token]
@@ -681,14 +694,14 @@
           (when (a token t-reachable)
             (put token t-reachable false)
             (each! [world (a token t-touched)]
-                   (when-let [target (find! (:family rt) world)]
+                   (when-let [target (find! (runtime-field rt :family) world)]
                      (when (find! (:nodes target) (a token t-spin))
-                       (push! (:gc rt) (doto (slots 2) (put 0 target) (put 1 token))))))
-            (boundary! rt (when (:audit rt) {:t :t16 :tok (a token t-id)
-                                             :notification-order (mapv #(-> (a % 0) :world)
-                                                                       (items (:gc rt)))})))
+                       (push! (runtime-field rt :gc) (doto (slots 2) (put 0 target) (put 1 token))))))
+            (boundary! rt (when (runtime-field rt :audit) {:t :t16 :tok (a token t-id)
+                                                           :notification-order (mapv #(-> (a % 0) :world)
+                                                                                     (items (runtime-field rt :gc)))})))
           (loop []
-            (when-let [notification (pop! (:gc rt))]
+            (when-let [notification (pop! (runtime-field rt :gc))]
               (let [target (a notification 0) dead (a notification 1)]
                 (when-let [node (find! (:nodes target) (a dead t-spin))]
                   (remove! (a node n-tokens) dead) (mark! target node))
@@ -698,37 +711,37 @@
 (defn notify-unreachable!
   "Deterministic exercise of the host-finalization handoff for experiments."
   [rt handle]
-  (when-not (identical? (:family-id rt) (a (:token handle) t-family))
+  (when-not (identical? (runtime-field rt :family-id) (a (:token handle) t-family))
     (throw (ex-info "Handle belongs to another runtime family" {:error :unknown-handle})))
   #?(:clj (.clean ^java.lang.ref.Cleaner$Cleanable (a (:token handle) 5))
      :cljs (do (.unregister handle-cleaner (:token handle)) (collect-token! rt (:token handle)))))
 
 (defn- new-token [rt id]
   (doto (slots 7)
-    (put t-family (:family-id rt)) (put t-id (random-uuid))
+    (put t-family (runtime-field rt :family-id)) (put t-id (random-uuid))
     (put t-spin id) (put t-reachable true)
     (put t-touched (members)) (put t-dropped (members))))
 
 (defn- construct-token! [rt id token run]
   (check-running! run)
-  (when-let [node (find! (:nodes rt) id)]
+  (when-let [node (find! (runtime-field rt :nodes) id)]
     (when-not (= :spin (a node n-kind))
       (throw (ex-info "Computation ID collision" {:id id}))))
-  (when (:tokens rt) (add! (:tokens rt) token))
+  (when (runtime-field rt :tokens) (add! (runtime-field rt :tokens) token))
   (let [order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
-        node (find! (:nodes rt) id)]
+        node (find! (runtime-field rt :nodes) id)]
     (when (and run (nil? node))
       (let [node (node! rt id :spin run)]
         (creator! rt node run) (put node n-kept (reactive? run)) (put node n-order order)
         (creation! run node)))
-    (when-let [node (find! (:nodes rt) id)]
+    (when-let [node (find! (runtime-field rt :nodes) id)]
       (when (predecessor-run? (a node n-creator) run)
         (adopt! rt node run)
         (owner! rt node run) (creator! rt node run) (put node n-kept (reactive? run))
         (put node n-order order) (creation! run node))
       (touch! rt node token))
-    (boundary! rt (when (:audit rt) (cond-> {:t :t01 :w (:world rt) :e id :tok (a token t-id)}
-                                      run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))))
+    (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t01 :w (runtime-field rt :world) :e id :tok (a token t-id)}
+                                                    run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))))
 
 (defn make-spin [requested id body]
   (let [rt (execution-runtime requested) token (new-token rt id)]
@@ -741,7 +754,7 @@
   (locked rt
           (when (and (current-activation) (identical? rt (a (current-activation) 0)))
             (check-running! (a (current-activation) 1)))
-          (let [cache (:host-tokens (:home rt))]
+          (let [cache (:host-tokens (runtime-field rt :home))]
             (or #?(:clj (.get ^java.util.WeakHashMap cache target) :cljs (.get cache target))
                 (let [token (new-token rt id)]
                   ;; First use in another family is not body construction:
@@ -834,8 +847,8 @@
                                      'org.replikativ.spindel.engine.impl.owned/bp-await-host}) &env)))))
 
 (defn- ready-add! [rt node]
-  #?(:clj (.add ^java.util.PriorityQueue (:ready rt) node)
-     :cljs (let [heap (:ready rt) index (.-length heap) rank (a node n-rank)]
+  #?(:clj (.add ^java.util.PriorityQueue (runtime-field rt :ready) node)
+     :cljs (let [heap (runtime-field rt :ready) index (.-length heap) rank (a node n-rank)]
              (.push heap node)
              (loop [index index]
                (if (pos? index)
@@ -856,7 +869,7 @@
     (ready-add! rt node)))
 
 (defn- run-slots! [rt]
-  (or (pop! (a (:counters rt) 0))
+  (or (pop! (a (runtime-field rt :counters) 0))
       (let [run (slots 19)]
         (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                  (put run field empty-members))
@@ -868,20 +881,20 @@
               (when (= :inherited (a inherited r-status)) (cancel! rt inherited)))
   (let [run (run-slots! rt)
         pred (current node)
-        generation (put (:serial rt) 1 (inc (long (a (:serial rt) 1))))]
+        generation (put (runtime-field rt :serial) 1 (inc (long (a (runtime-field rt :serial) 1))))]
     (put node n-generation generation)
-    (when (:audit rt)
-      (assoc! (a (:counters rt) 3) (a node n-id) generation)
-      (push! (a (:counters rt) 9) [(:world rt) (a node n-id) generation]))
+    (when (runtime-field rt :audit)
+      (assoc! (a (runtime-field rt :counters) 3) (a node n-id) generation)
+      (push! (a (runtime-field rt :counters) 9) [(runtime-field rt :world) (a node n-id) generation]))
     (put run r-reactives 0)
     (when (and pred (not= :unwinding (a pred r-status)))
       (each! [gen (a pred r-ancestors)] (add-run! run r-ancestors gen))
       (add-run! run r-ancestors (a pred r-gen)))
     (put run r-node node) (put run r-gen generation) (put run r-owner owner)
     (put run r-pred (when (and pred (not= :unwinding (a pred r-status))) (a pred r-gen))) (put run r-status :running)
-    (put run r-seq (put (:counters rt) 1 (inc (max (long (a (:counters rt) 1)) (long (a (:counters rt) 2))))))
+    (put run r-seq (put (runtime-field rt :counters) 1 (inc (max (long (a (runtime-field rt :counters) 1)) (long (a (runtime-field rt :counters) 2))))))
     (assoc! (a node n-runs) generation run)
-    (add! (a (:counters rt) 6) run)
+    (add! (a (runtime-field rt :counters) 6) run)
     (put node n-current run)
     (when-not (root-owner? owner)
       (add-run! owner r-spawned run) (add-run! run r-backlinks owner)
@@ -890,14 +903,14 @@
     (mark! rt node) run))
 
 (defn- ob! [rt kind debtor run order resolve reject]
-  (let [ob (slots 19) id (a (:serial rt) 0)]
+  (let [ob (slots 19) id (a (runtime-field rt :serial) 0)]
     (next-number! rt 0)
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
     (when run (put ob o-creditor-generation (a run r-gen)) (put ob o-creditor-node (a run r-node)))
     (put ob o-standing (case kind (:track :await-reactive :callback) true false))
     (put ob o-resolve resolve) (put ob o-reject reject) (put ob o-order order)
     (put ob o-slot (if (= kind :track) :consumed :armed)) (put ob o-live true)
-    (when (= :await-once kind) (assoc! (:deliveries rt) id ob))
+    (when (= :await-once kind) (assoc! (runtime-field rt :deliveries) id ob))
     (when run (add-run! run r-obs ob)
           (when (reactive-kind? kind) (reactive-delta! run 1)))
     (when debtor (add! (a debtor n-dependents) ob) (mark! rt debtor)) ob))
@@ -926,12 +939,12 @@
 (defn- register-track! [rt run order id resolve reject]
   (locked rt
           (check-running! run)
-          (let [node (or (find! (:nodes rt) id)
+          (let [node (or (find! (runtime-field rt :nodes) id)
                          (throw (ex-info "Foreign or released track is outside this slice" {:id id})))
                 ob (ob! rt :track node run order resolve reject)]
             (put ob o-last (a node n-value)) (rank! run node)
-            (boundary! rt (when (:audit rt) {:t :t05 :w (:world rt) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                             :kind :track :order order :debtor [:entity (:world rt) id]}))
+            (boundary! rt (when (runtime-field rt :audit) {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                           :kind :track :order order :debtor [:entity (runtime-field rt :world) id]}))
             (a node n-value))))
 
 (defn- track-id-effect! [id resolve reject resume-resolve resume-reject]
@@ -941,7 +954,7 @@
     (cps/invoke-continuation resolve (iv/->Interval value value nil))))
 
 (defn- check-source! [rt source]
-  (when-not (identical? (:family-id rt) (:family source))
+  (when-not (identical? (runtime-field rt :family-id) (:family source))
     (throw (ex-info "Source belongs to another runtime family" {:error :unknown-source}))))
 
 (defn track-effect!
@@ -964,9 +977,9 @@
   (locked rt
           (check-running! run)
           (check-token! rt token)
-          (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+          (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
             (throw (ex-info "Foreign await is outside this slice" {:id id})))
-          (let [node (or (find! (:nodes rt) id) (node! rt id :spin run))]
+          (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin run))]
             (put node n-body body)
             (adopt! rt node run)
             (when (and (not (a node n-complete)) (nil? (current node))) (start! rt node run false))
@@ -978,13 +991,13 @@
                 ;; statuses retain the same standing obligation and ownership;
                 ;; one final Rule L closure suffices. Audit mode still exposes
                 ;; both model states for the independent transition replay.
-                (when (or (not ready?) (:audit rt))
-                  (boundary! rt (when (:audit rt) (cond-> {:t :t05 :w (:world rt) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                                           :kind :await-reactive :order order :debtor [:entity (:world rt) id]}
-                                                    token (assoc :tok (a token t-id))))))
+                (when (or (not ready?) (runtime-field rt :audit))
+                  (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                                         :kind :await-reactive :order order :debtor [:entity (runtime-field rt :world) id]}
+                                                                  token (assoc :tok (a token t-id))))))
                 (when ready?
                   (put ob o-slot :consumed) (put run r-status :running) (put ob o-value (a node n-value))
-                  (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (a ob o-id)] :value (a node n-value)}))))
+                  (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (a ob o-id)] :value (a node n-value)}))))
               ob))))
 
 (defn- await-id-effect! [id token body resolve reject resume-resolve resume-reject]
@@ -1010,7 +1023,7 @@
     (let [rt (a (current-activation) 0)]
       (locked rt
               (check-running! (a (current-activation) 1))
-              (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+              (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
                 (throw (ex-info "Foreign await is outside this slice" {:id id}))))
       (await-id-effect! id (portable-token! rt target id false) body resolve reject resolve reject))
     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
@@ -1021,44 +1034,44 @@
     (locked rt
             (check-running! run)
             (let [ob (ob! rt :await-once nil run order resolve reject)
-                  waiters (or (find! (:tickets rt) (:id ticket))
-                              (assoc! (:tickets rt) (:id ticket) (members)))]
+                  waiters (or (find! (runtime-field rt :tickets) (:id ticket))
+                              (assoc! (runtime-field rt :tickets) (:id ticket) (members)))]
               (put ob o-host (:id ticket)) (add! waiters ob)
               (put run r-status :parked)
-              (boundary! rt (when (:audit rt) {:t :t05 :w (:world rt) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                               :kind :await-once :order order :debtor [:host (:id ticket)]}))))))
+              (boundary! rt (when (runtime-field rt :audit) {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                             :kind :await-once :order order :debtor [:host (:id ticket)]}))))))
 
 (defn pending-ticket [requested ticket]
   (let [rt (execution-runtime requested)]
     (locked rt
-            (when-let [waiters (find! (:tickets rt) (:id ticket))]
+            (when-let [waiters (find! (runtime-field rt :tickets) (:id ticket))]
               (when-let [ob (first (items waiters))]
-                (->Delivery (:family-id rt) (:world rt) (a ob o-id)))))))
+                (->Delivery (runtime-field rt :family-id) (runtime-field rt :world) (a ob o-id)))))))
 
 (defn resume-ticket! [requested delivery value]
   (let [rt (execution-runtime requested)]
-    (when-not (and (identical? (:family-id rt) (:family delivery)) (= (:world rt) (:world delivery)))
+    (when-not (and (identical? (runtime-field rt :family-id) (:family delivery)) (= (runtime-field rt :world) (:world delivery)))
       (throw (ex-info "Delivery belongs to a different runtime family or world" {:world (:world delivery)})))
     (locked rt
-            (when-let [ob (find! (:deliveries rt) (:obligation delivery))]
+            (when-let [ob (find! (runtime-field rt :deliveries) (:obligation delivery))]
               (let [run (a ob o-run)]
                 (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                   (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
                   (schedule! rt (a run r-node) ob))))
-            (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (:obligation delivery)] :value value})))
+            (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (:obligation delivery)] :value value})))
     (drain! rt)))
 
 (defn- deliver-host! [rt delivery value]
   ;; A native callback owns this exact world/registration. In particular, a
   ;; synchronous callback must not redirect through some other active world.
   (locked rt
-          (when-let [ob (find! (:deliveries rt) (:obligation delivery))]
+          (when-let [ob (find! (runtime-field rt :deliveries) (:obligation delivery))]
             (let [run (a ob o-run)]
               (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                 (put ob o-slot :consumed)
                 (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
                 (schedule! rt (a run r-node) ob))))
-          (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (:obligation delivery)] :value value})))
+          (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world) :o [:o (:obligation delivery)] :value value})))
   (drain! rt))
 
 (defn- host-callback [rt delivery failed?]
@@ -1085,12 +1098,12 @@
                          (let [ob (ob! rt :await-once nil run order resolve reject)
                                host [:native (a ob o-id)]]
                            (put operation 0 :starting)
-                           (assoc! (:operations rt) (a ob o-id) operation)
+                           (assoc! (runtime-field rt :operations) (a ob o-id) operation)
                            (put ob o-host host) (put run r-status :parked)
-                           (boundary! rt (when (:audit rt) {:t :t05 :w (:world rt)
-                                                            :r [(a (a run r-node) n-id) (a run r-gen)]
-                                                            :kind :await-once :order order :debtor [:host host]}))
-                           (->Delivery (:family-id rt) (:world rt) (a ob o-id))))]
+                           (boundary! rt (when (runtime-field rt :audit) {:t :t05 :w (runtime-field rt :world)
+                                                                          :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                                          :kind :await-once :order order :debtor [:host host]}))
+                           (->Delivery (runtime-field rt :family-id) (runtime-field rt :world) (a ob o-id))))]
     (when (locked rt (= :starting (a operation 0)))
       (let [cancel (try
                      (start (host-callback rt delivery false) (host-callback rt delivery true))
@@ -1100,7 +1113,7 @@
         (locked rt
                 (case (a operation 0)
                   :starting (do (put operation 0 :live) (put operation 1 cancel))
-                  :cancelled (when cancel (push! (:posts rt) (doto (slots 1) (put 0 cancel))))
+                  :cancelled (when cancel (push! (runtime-field rt :posts) (doto (slots 1) (put 0 cancel))))
                   :settled nil))))
     nil))
 
@@ -1111,12 +1124,12 @@
               (when (and (identical? run (current node)) (= :running (a run r-status)))
                 (put node n-complete true) (put node n-dirty false) (put node n-value value)
                 (put run r-status :completed)
-                (push! (:events rt) (doto (slots 3) (put 0 node) (put 1 value) (put 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1)) (long (a (:counters rt) 2))))))))
+                (push! (runtime-field rt :events) (doto (slots 3) (put 0 node) (put 1 value) (put 2 (put (runtime-field rt :counters) 2 (inc (max (long (a (runtime-field rt :counters) 1)) (long (a (runtime-field rt :counters) 2))))))))
                 (each-copy! [previous (values (a node n-runs))]
                             (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
                               (retire! rt previous)))
                 (mark! rt node))
-              (boundary! rt (when (:audit rt) {:t :t07 :w (:world rt) :r [(a node n-id) (a run r-gen)] :value value}))))))
+              (boundary! rt (when (runtime-field rt :audit) {:t :t07 :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)] :value value}))))))
 
 (defn- reenter! [rt node trigger]
   (let [previous (current node) work? (work-status? (a previous r-status))
@@ -1144,9 +1157,9 @@
 
 (defn- subscriber-buffer! [rt node]
   (let [n (count! (a node n-dependents))
-        old (a (:counters rt) 4)
+        old (a (runtime-field rt :counters) 4)
         buffer (if (< (alength ^objects old) n)
-                 (put (:counters rt) 4 (slots (max n (* 2 (alength ^objects old))))) old)]
+                 (put (runtime-field rt :counters) 4 (slots (max n (* 2 (alength ^objects old))))) old)]
     #?(:clj (.toArray ^java.util.Collection (a node n-dependents) ^objects buffer)
        :cljs (.copyInto (a node n-dependents) buffer))
     n))
@@ -1154,8 +1167,8 @@
 (defn- process-event! [rt event]
   (let [node (a event 0) value (a event 1)
         n (subscriber-buffer! rt node)
-        dependents (a (:counters rt) 4)
-        order (when (:audit rt) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
+        dependents (a (runtime-field rt :counters) 4)
+        order (when (runtime-field rt :audit) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
     (when (identical? event (a node n-source-event)) (put node n-source-event nil))
     (try
       (dotimes [index n]
@@ -1166,15 +1179,15 @@
               (when (and (a ob o-live) (= :parked (a run r-status)))
                 (put ob o-slot :consumed) (put ob o-value value) (put run r-status :running)
                 (schedule! rt (a ob o-creditor-node) ob)))
-            (do (push! (:hosts rt) (doto (slots 2) (put 0 ob) (put 1 value)))
+            (do (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 value)))
                 (when (and (a node n-complete) (not (reactive? (current node)))) (end-ob! rt ob))))))
-      (boundary! rt (when (:audit rt) {:t :t08 :w (:world rt) :e (a node n-id) :value value
-                                       :delivery-order order}))
+      (boundary! rt (when (runtime-field rt :audit) {:t :t08 :w (runtime-field rt :world) :e (a node n-id) :value value
+                                                     :delivery-order order}))
       (finally (dotimes [i n] (put dependents i nil))))))
 
 (defn- poll-ready! [rt]
-  #?(:clj (.poll ^java.util.PriorityQueue (:ready rt))
-     :cljs (let [heap (:ready rt) n (.-length heap)]
+  #?(:clj (.poll ^java.util.PriorityQueue (runtime-field rt :ready))
+     :cljs (let [heap (runtime-field rt :ready) n (.-length heap)]
              (when (pos? n)
                (let [head (aget heap 0) tail (.pop heap) n (dec n)]
                  (when (pos? n)
@@ -1195,9 +1208,9 @@
 (defn- finish-slice! [rt run]
   (locked rt
           (put run r-physical false)
-          (put (:thread rt) 0 nil)
+          (put (runtime-field rt :thread) 0 nil)
           (when (= :unwinding (a run r-status)) (forget-run! rt run))
-          (boundary! rt (when (:audit rt) {:t :t38 :th :engine}))))
+          (boundary! rt (when (runtime-field rt :audit) {:t :t38 :th :engine}))))
 
 (defn- claim-slice! [rt node]
   (locked rt
@@ -1206,9 +1219,9 @@
             (when (and run (= :running (a run r-status)) (= (a run r-gen) (a node n-pending-generation)))
               (when ob (rank! run (a ob o-debtor)))
               (put run r-physical true)
-              (put (:thread rt) 0 run) (put (:thread rt) 1 true) (put (:thread rt) 2 (:world rt))
-              (boundary! rt (when (:audit rt) {:t :slice-enter :w (:world rt) :r [(a node n-id) (a run r-gen)] :th :engine}))
-              (let [frame (a (:counters rt) 5) debtor (when ob (a ob o-debtor))]
+              (put (runtime-field rt :thread) 0 run) (put (runtime-field rt :thread) 1 true) (put (runtime-field rt :thread) 2 (runtime-field rt :world))
+              (boundary! rt (when (runtime-field rt :audit) {:t :slice-enter :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)] :th :engine}))
+              (let [frame (a (runtime-field rt :counters) 5) debtor (when ob (a ob o-debtor))]
                 (put frame 0 rt) (put frame 1 run) (put frame 2 (if ob (a ob o-order) -1))
                 (put frame 3 ob) (put frame 4 (a node n-body))
                 (put frame 5 (when debtor (a debtor n-value)))
@@ -1257,14 +1270,14 @@
 
 (defn- next-dispatch! [rt]
   (locked rt
-          (if-let [post (pop! (:posts rt))]
+          (if-let [post (pop! (runtime-field rt :posts))]
             post
-            (if-let [event (pop! (:events rt))]
+            (if-let [event (pop! (runtime-field rt :events))]
               (do (process-event! (a (a event 0) n-runtime) event) :event)
-              (or (poll-ready! rt) (pop! (:hosts rt)))))))
+              (or (poll-ready! rt) (pop! (runtime-field rt :hosts)))))))
 
 (defn drain! [rt]
-  (when (compare-and-set! (:draining rt) false true)
+  (when (compare-and-set! (runtime-field rt :draining) false true)
     (binding [cps/*in-trampoline* false]
       (let [failure
             (try
@@ -1287,10 +1300,10 @@
                           (execute! (a entry n-runtime) entry)))
                       (recur failure)))
                   failure))
-              (finally (reset! (:draining rt) false)))]
-        (when (locked rt (or (queued? (:posts rt)) (queued? (:events rt)) (queued? (:hosts rt))
-                             #?(:clj (not (.isEmpty ^java.util.PriorityQueue (:ready rt)))
-                                :cljs (pos? (.-length (:ready rt))))))
+              (finally (reset! (runtime-field rt :draining) false)))]
+        (when (locked rt (or (queued? (runtime-field rt :posts)) (queued? (runtime-field rt :events)) (queued? (runtime-field rt :hosts))
+                             #?(:clj (not (.isEmpty ^java.util.PriorityQueue (runtime-field rt :ready)))
+                                :cljs (pos? (.-length (runtime-field rt :ready))))))
           (drain! rt))
         (when failure (throw failure))))))
 
@@ -1299,26 +1312,26 @@
                    (when (and (current-activation) (identical? rt (a (current-activation) 0)))
                      (check-running! (a (current-activation) 1)))
                    (check-token! rt token)
-                   (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+                   (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
                      (throw (ex-info "Foreign invocation is outside this slice" {:id id})))
-                   (let [node (or (find! (:nodes rt) id) (node! rt id :spin (:owner-root rt)))
+                   (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin (runtime-field rt :owner-root)))
                          cached? (and (a node n-complete) (not (a node n-dirty)) (not (work-status? (some-> (current node) (a r-status)))))]
                      (put node n-body body)
-                     (when-not (a node n-owner) (owner! rt node (:owner-root rt)))
+                     (when-not (a node n-owner) (owner! rt node (runtime-field rt :owner-root)))
                      (touch! rt node token)
-                     (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node (:owner-root rt) false))
+                     (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node (runtime-field rt :owner-root) false))
                      (let [ob (ob! rt :callback node nil 0 nil nil)]
                        (put ob o-success success) (put ob o-failure failure)
                        (when cached?
-                         (push! (:hosts rt) (doto (slots 2) (put 0 ob) (put 1 (a node n-value))))
+                         (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 ob) (put 1 (a node n-value))))
                          (when-not (reactive? (current node)) (end-ob! rt ob)))
-                       (boundary! rt (when (:audit rt) {:t :t04 :w (:world rt) :e id :tok (a token t-id) :mode :callback}))
+                       (boundary! rt (when (runtime-field rt :audit) {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode :callback}))
                        ob)))]
     (drain! rt)
     (fn []
       (locked rt
               (end-ob! rt ob)
-              (boundary! rt (when (:audit rt) {:t :unsubscribe :w (:world rt) :o [:o (a ob o-id)]})))
+              (boundary! rt (when (runtime-field rt :audit) {:t :unsubscribe :w (runtime-field rt :world) :o [:o (a ob o-id)]})))
       (drain! rt))))
 
 (defn observe! [requested handle success failure]
@@ -1333,13 +1346,13 @@
     (admit-world-switch! requested)
     (let [rt requested]
       (locked rt
-              (when (and (nil? (find! (:nodes rt) id)) (parent-node rt id))
+              (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
                 (throw (ex-info "Foreign invocation is outside this slice" {:id id}))))
       (observe-token! rt id (portable-token! rt target id false) body success failure))
     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
 
 (defn- source-node! [rt source unwinding?]
-  (let [node (find! (:nodes rt) (:id source))]
+  (let [node (find! (runtime-field rt :nodes) (:id source))]
     (when-not (or (and unwinding? (nil? node))
                   (and node (= :signal (a node n-kind)) (or (a node n-owner) unwinding?)))
       (throw (ex-info "Released source" {:id (:id source)})))
@@ -1358,15 +1371,15 @@
       ;; These are invalidations of state, rather than a lossless change feed.
       ;; Moving the newest envelope to the tail preserves retained FIFO order.
       (when old
-        #?(:clj (.remove ^java.util.ArrayDeque (:events rt) old)
-           :cljs (.remove (:events rt) old)))
+        #?(:clj (.remove ^java.util.ArrayDeque (runtime-field rt :events) old)
+           :cljs (.remove (runtime-field rt :events) old)))
       (put node n-source-event event)
       (put event 0 node) (put event 1 value)
-      (put event 2 (put (:counters rt) 2 (inc (max (long (a (:counters rt) 1))
-                                                   (long (a (:counters rt) 2))))))
-      (push! (:events rt) event)))
-  (boundary! rt (when (:audit rt) (cond-> {:t :signal-write :w (:world rt) :e (:id source) :value value}
-                                    (current-activation) (assoc :th :engine)))))
+      (put event 2 (put (runtime-field rt :counters) 2 (inc (max (long (a (runtime-field rt :counters) 1))
+                                                                 (long (a (runtime-field rt :counters) 2))))))
+      (push! (runtime-field rt :events) event)))
+  (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :signal-write :w (runtime-field rt :world) :e (:id source) :value value}
+                                                  (current-activation) (assoc :th :engine)))))
 
 (defn set-signal! [requested source value]
   (let [rt (execution-runtime requested)
@@ -1404,21 +1417,21 @@
   (let [rt (execution-runtime requested)]
     (locked rt
             (check-token! rt (:token handle))
-            (let [node (find! (:nodes rt) (:id handle)) run (when node (current node))
+            (let [node (find! (runtime-field rt :nodes) (:id handle)) run (when node (current node))
                   id (when run [(a node n-id) (a run r-gen)])]
               (when run (cancel! rt run))
-              (boundary! rt (when (:audit rt) {:t :t11 :w (:world rt) :r id}))))
+              (boundary! rt (when (runtime-field rt :audit) {:t :t11 :w (runtime-field rt :world) :r id}))))
     (drain! rt)))
 
 (defn release-idle! [requested]
   (let [rt (execution-runtime requested)]
     (locked rt
-            (doseq [node (vec (values (:nodes rt)))
+            (doseq [node (vec (values (runtime-field rt :nodes)))
                     :when (and (= :spin (a node n-kind)) (a node n-complete) (not (wanted? node)))]
-              (doseq [token (items (a node n-tokens))] (add! (a token t-dropped) (:world rt)))
+              (doseq [token (items (a node n-tokens))] (add! (a token t-dropped) (runtime-field rt :world)))
               (clear-members! (a node n-tokens))
               (mark! rt node))
-            (boundary! rt (when (:audit rt) {:t :t18 :w (:world rt)})))))
+            (boundary! rt (when (runtime-field rt :audit) {:t :t18 :w (runtime-field rt :world)})))))
 
 (defn- run-id [run]
   (when run (if (vector? run) run [(a (a run r-node) n-id) (a run r-gen)])))
@@ -1437,26 +1450,26 @@
              @result)))
 
 (defn- global-view [rt]
-  (let [worlds (values (:family rt))]
+  (let [worlds (values (runtime-field rt :family))]
     {:registry (set (map :world worlds)) :known-worlds (set (map :world worlds))
      :lineages (into {} (map (juxt :world :lineage) worlds))
-     :caps (map-value (a (:counters rt) 7))
+     :caps (map-value (a (runtime-field rt :counters) 7))
      :generation-clock (into {} (for [world worlds :let [clock (a (:counters world) 3)] :when clock [id n] (map-value clock)]
                                   [[(:world world) id] n]))}))
 
 (defn- all-obligations [rt]
   ;; Internal graph links already own reactive registrations. Only ticket
   ;; deliveries need lookup by a host-visible registration number.
-  (concat (mapcat #(items (a % r-obs)) (items (a (:counters rt) 6)))
-          (for [node (values (:nodes rt)) ob (items (a node n-dependents))
+  (concat (mapcat #(items (a % r-obs)) (items (a (runtime-field rt :counters) 6)))
+          (for [node (values (runtime-field rt :nodes)) ob (items (a node n-dependents))
                 :when (nil? (a ob o-run))] ob)))
 
 (defn snapshot [rt]
   (locked rt
-          {:global (global-view rt) :lineage (:lineage rt) :root (:root rt) :status :live :admission :open :seal-seq nil
-           :scopes {(:root rt) {:kind (if (:parent rt) :fork :world-root) :parent nil :status :open}}
+          {:global (global-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status :live :admission :open :seal-seq nil
+           :scopes {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
            :pins #{} :fdeps #{} :releasing #{}
-           :entities (into {} (for [node (values (:nodes rt))]
+           :entities (into {} (for [node (values (runtime-field rt :nodes))]
                                 [(a node n-id)
                                  (cond-> {:kind (a node n-kind) :origin (or (a node n-origin) :created) :owner (owner-id (a node n-owner))
                                           :creator (run-id (a node n-creator)) :completed? (boolean (a node n-complete))
@@ -1464,7 +1477,7 @@
                                           :tokens (set (map #(a % t-id) (items (a node n-tokens)))) :key nil :order (a node n-order)}
                                    (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
                                    (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
-           :runs (into {} (for [run (items (a (:counters rt) 6)) :let [node (a run r-node)]]
+           :runs (into {} (for [run (items (a (runtime-field rt :counters) 6)) :let [node (a run r-node)]]
                             [(run-id run) (cond-> {:spin (a node n-id) :owner (owner-id (a run r-owner))
                                                    :pred (when-let [gen (a run r-pred)] [(a node n-id) gen])
                                                    :ancestors (set (map #(vector (a node n-id) %) (items (a run r-ancestors))))
@@ -1478,30 +1491,30 @@
                                     (cond-> {:kind (a ob o-kind) :debtor (if-let [debtor (a ob o-debtor)]
                                                                            [:entity (:world (a debtor n-runtime)) (a debtor n-id)]
                                                                            [:host (a ob o-host)])
-                                             :creditor (if-let [run (a ob o-run)] [:run (:world rt) (run-id run)] [:host :caller])
+                                             :creditor (if-let [run (a ob o-run)] [:run (runtime-field rt :world) (run-id run)] [:host :caller])
                                              :standing? (a ob o-standing) :cont (when (a ob o-run) [:continuation [:o (a ob o-id)]])
                                              :token nil :order (a ob o-order) :slot (a ob o-slot)}
                                       (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
                                       (a ob o-source-world) (assoc :source-world (a ob o-source-world))
-                                      (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (:world rt)}))]))
-           :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (:world rt) :value (a event 1) :seq (a event 2)}
+                                      (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
+           :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world) :value (a event 1) :seq (a event 2)}
                                       (= :signal (a (a event 0) n-kind)) (assoc :source-change? true)))
                         (filter #(identical? rt (a (a % 0) n-runtime))
-                                (items (:events rt))))
-           :seq (a (:counters rt) 1)
-           :serial (a (:serial rt) 0) :clock (a (:counters rt) 2)
-           :threads (let [run (a (:thread rt) 0)]
-                      (cond-> {:host {:world (a (:thread rt) 3) :scope nil :run nil :read-permits #{} :excl-permits []}}
-                        (a (:thread rt) 1)
-                        (assoc :engine (cond-> {:world (a (:thread rt) 2) :scope (run-id run) :run (run-id run) :executing? (boolean run)}
-                                         run (assoc :obligation-world (a (:thread rt) 2))
+                                (items (runtime-field rt :events))))
+           :seq (a (runtime-field rt :counters) 1)
+           :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
+           :threads (let [run (a (runtime-field rt :thread) 0)]
+                      (cond-> {:host {:world (a (runtime-field rt :thread) 3) :scope nil :run nil :read-permits #{} :excl-permits []}}
+                        (a (runtime-field rt :thread) 1)
+                        (assoc :engine (cond-> {:world (a (runtime-field rt :thread) 2) :scope (run-id run) :run (run-id run) :executing? (boolean run)}
+                                         run (assoc :obligation-world (a (runtime-field rt :thread) 2))
                                          (= :unwinding (some-> run (a r-status))) (assoc :retired? true)))))
            :gc (mapv (fn [notification]
                        (let [target (a notification 0) token (a notification 1)]
                          {:t :t17 :w (:world target) :e (a token t-spin) :tok (a token t-id)}))
-                     (items (:gc rt)))
-           :handles (when (:tokens rt)
-                      (into {} (for [token (items (:tokens rt))]
+                     (items (runtime-field rt :gc)))
+           :handles (when (runtime-field rt :tokens)
+                      (into {} (for [token (items (runtime-field rt :tokens))]
                                  [(a token t-id) {:spin (a token t-spin) :reachable? (a token t-reachable)
                                                   :touched (set (items (a token t-touched))) :dropped (set (items (a token t-dropped)))}])))}))
 
@@ -1511,32 +1524,32 @@
   scopes are refused until their cross-world retention path is implemented."
   [rt world]
   (locked rt
-          (when (find! (:family rt) world)
+          (when (find! (runtime-field rt :family) world)
             (throw (ex-info "World ID already used" {:world world})))
-          (when (or (a (:thread rt) 0) (queued? (:events rt)))
-            (throw (ex-info "Fork requires a parked boundary" {:world (:world rt)})))
-          (let [copies (vec (filter #(= :parked (a % r-status)) (items (a (:counters rt) 6))))
+          (when (or (a (runtime-field rt :thread) 0) (queued? (runtime-field rt :events)))
+            (throw (ex-info "Fork requires a parked boundary" {:world (runtime-field rt :world)})))
+          (let [copies (vec (filter #(= :parked (a % r-status)) (items (a (runtime-field rt :counters) 6))))
                 run-map (dict)
                 selected (members)]
-            (each! [run (a (:counters rt) 6)]
+            (each! [run (a (runtime-field rt :counters) 6)]
                    (when (fork-busy-status? (a run r-status))
-                     (throw (ex-info "Fork requires a parked boundary" {:world (:world rt)}))))
+                     (throw (ex-info "Fork requires a parked boundary" {:world (runtime-field rt :world)}))))
             (doseq [run copies]
               (each! [ob (a run r-obs)]
-                     (when (find! (:operations rt) (a ob o-id))
-                       (throw (ex-info "Native operations require fork recovery" {:world (:world rt)})))
+                     (when (find! (runtime-field rt :operations) (a ob o-id))
+                       (throw (ex-info "Native operations require fork recovery" {:world (runtime-field rt :world)})))
                      (when (or (a ob o-debtor) (not= :await-once (a ob o-kind)))
-                       (throw (ex-info "Entity-debtor bundles are outside this slice" {:world (:world rt)}))))
+                       (throw (ex-info "Entity-debtor bundles are outside this slice" {:world (runtime-field rt :world)}))))
               (add! selected (a run r-node)))
-            (each! [node (values (:nodes rt))]
+            (each! [node (values (runtime-field rt :nodes))]
                    (when (some #(or (identical? % (a node n-owner)) (identical? % (a node n-creator))) copies)
                      (add! selected node)))
-            (let [child (assoc (runtime {:audit? (boolean (:audit rt)) :world-id world})
-                               :gate (:gate rt) :family (:family rt) :family-id (:family-id rt) :parent rt
-                               :events (:events rt) :hosts (:hosts rt) :posts (:posts rt) :ready (:ready rt) :draining (:draining rt)
-                               :serial (:serial rt) :thread (:thread rt) :gc (:gc rt) :home (:home rt)
-                               :audit (:audit rt) :tokens (:tokens rt)
-                               :lineage {:parent (:world rt) :root (get-in rt [:lineage :root])
+            (let [child (assoc (runtime {:audit? (boolean (runtime-field rt :audit)) :world-id world})
+                               :gate (runtime-field rt :gate) :family (runtime-field rt :family) :family-id (runtime-field rt :family-id) :parent rt
+                               :events (runtime-field rt :events) :hosts (runtime-field rt :hosts) :posts (runtime-field rt :posts) :ready (runtime-field rt :ready) :draining (runtime-field rt :draining)
+                               :serial (runtime-field rt :serial) :thread (runtime-field rt :thread) :gc (runtime-field rt :gc) :home (runtime-field rt :home)
+                               :audit (runtime-field rt :audit) :tokens (runtime-field rt :tokens)
+                               :lineage {:parent (runtime-field rt :world) :root (get-in rt [:lineage :root])
                                          :mode :following :cut nil :basis nil})
                   node-map (dict)]
         ;; No old world version is pinned. The following child still retains
@@ -1547,7 +1560,7 @@
                        (assoc! node-map node copy)
                        (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank]]
                                 (put copy field (a node field)))
-                       (put copy n-origin :inherited) (put copy n-source-world (:world rt))
+                       (put copy n-origin :inherited) (put copy n-source-world (runtime-field rt :world))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
                 (let [copy (slots 19) node (find! node-map (a run r-node))]
@@ -1555,7 +1568,7 @@
                   (put copy r-node node) (put copy r-gen (a run r-gen))
                   (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
-                  (put copy r-origin :inherited) (put copy r-source-world (:world rt))
+                  (put copy r-origin :inherited) (put copy r-source-world (runtime-field rt :world))
                   (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                            (put copy field empty-members))
                   (each! [gen (a run r-ancestors)] (add-run! copy r-ancestors gen))
@@ -1583,7 +1596,7 @@
                                     (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
-                           (put clone o-origin :inherited) (put clone o-source-world (:world rt))
+                           (put clone o-origin :inherited) (put clone o-source-world (runtime-field rt :world))
                            (add-run! copy r-obs clone)
                            (when (reactive-kind? (a clone o-kind)) (reactive-delta! copy 1))
                            (when (= :await-once (a clone o-kind)) (assoc! (:deliveries child) (a clone o-id) clone))
@@ -1592,27 +1605,27 @@
                              (add! waiters clone))))))
               (reclaim! child)
               (prune-ancestry! child)
-              (put (:counters child) 1 (a (:counters rt) 1))
-              (put (:counters child) 7 (a (:counters rt) 7))
-              (assoc! (a (:counters rt) 7) [:cap world]
-                      {:world world :scope #{} :holder (:root rt) :disposition :open :published? true
+              (put (:counters child) 1 (a (runtime-field rt :counters) 1))
+              (put (:counters child) 7 (a (runtime-field rt :counters) 7))
+              (assoc! (a (runtime-field rt :counters) 7) [:cap world]
+                      {:world world :scope #{} :holder (runtime-field rt :root) :disposition :open :published? true
                        :op nil :pred nil :successors [] :durable? false :bases {}})
-              (assoc! (:family rt) world child)
-              (node! rt [:fork world] :fork (:owner-root rt))
+              (assoc! (runtime-field rt :family) world child)
+              (node! rt [:fork world] :fork (runtime-field rt :owner-root))
               (each! [node (values (:nodes child))]
                      (each! [token (a node n-tokens)] (add! (a token t-touched) world)))
-              (boundary! rt (when (:audit rt) {:t :t19 :w (:world rt) :v world :k [:cap world]
-                                               :scope (:root rt) :systems #{}}))
+              (boundary! rt (when (runtime-field rt :audit) {:t :t19 :w (runtime-field rt :world) :v world :k [:cap world]
+                                                             :scope (runtime-field rt :root) :systems #{}}))
               child))))
 
 (defn snapshot-family [rt]
   (locked rt
-          (into {} (for [world (values (:family rt))] [(:world world) (snapshot world)]))))
+          (into {} (for [world (values (runtime-field rt :family))] [(:world world) (snapshot world)]))))
 
 (defn storage-stats [rt]
   (locked rt
-          (let [runs (a (:counters rt) 6)
-                pool (items (a (:counters rt) 0))]
+          (let [runs (a (runtime-field rt :counters) 6)
+                pool (items (a (runtime-field rt :counters) 0))]
             {:live-runs (count! runs)
              :ancestry-references (reduce + 0 (map #(count! (a % r-ancestors)) (items runs)))
              :pooled-runs (count pool)
@@ -1622,12 +1635,12 @@
                               (reduce + 0 (map #(count! (a run %))
                                                [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors])))))
              :orphan-creation-links
-             (count (for [node (values (:nodes rt)) creator (items (a node n-created-by))
+             (count (for [node (values (runtime-field rt :nodes)) creator (items (a node n-created-by))
                           :when (not (has? runs creator))] creator))
-             :scratch-references (count (filter some? (seq (a (:counters rt) 4))))
+             :scratch-references (count (filter some? (seq (a (runtime-field rt :counters) 4))))
              :stale-queue-references
              #?(:clj 0
                 :cljs (reduce + 0 (map #(.staleReferences %)
-                                       (cond-> [(:events rt) (:hosts rt) (:work rt) (:posts rt) (:gc rt)
-                                                (a (:counters rt) 0)]
-                                         (:audit rt) (conj (a (:counters rt) 9))))))})))
+                                       (cond-> [(runtime-field rt :events) (runtime-field rt :hosts) (runtime-field rt :work) (runtime-field rt :posts) (runtime-field rt :gc)
+                                                (a (runtime-field rt :counters) 0)]
+                                         (runtime-field rt :audit) (conj (a (runtime-field rt :counters) 9))))))})))
