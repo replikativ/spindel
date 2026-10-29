@@ -35,6 +35,28 @@
            (if (predicate) true
                (if (pos? remaining) (wait-for predicate (dec remaining)) false)))))
 
+(defn- native-callback-world [retained complete?]
+  (let [rt (c/runtime)
+        start (fn [succeed! fail!]
+                (swap! retained into [succeed! fail!])
+                (fn []))
+        handle (c/cspin rt :native (c/await-host start))]
+    (c/observe! rt handle (fn [_]) (fn [_]))
+    (if complete? ((nth @retained (- (count @retained) 2)) :done)
+        (c/cancel-spin! rt handle))
+    (js/WeakRef. rt)))
+
+(defn- probe-callback-retention []
+  (let [retained (atom [])
+        worlds [(native-callback-world retained true) (native-callback-world retained false)]]
+    (.then (wait-for #(and (= 4 (count @retained))
+                           (every? (fn [weak] (nil? (.deref weak))) worlds)) 20)
+           (fn [collected?]
+             ;; Producers deliberately keep and call all stale capabilities.
+             (doseq [callback @retained] (callback :late))
+             (prn {:stage :stale-native-callbacks :callbacks (count @retained) :collected? collected?})
+             (when-not collected? (throw (js/Error. "Stale callback retains its world")))))))
+
 (defn -main [& _]
   (when-not (aget js/globalThis "gc")
     (throw (js/Error. "Run with node --expose-gc")))
@@ -82,6 +104,7 @@
         (.then (fn [collected?]
                  (prn {:stage :world-collection :collected? collected?})
                  (when-not collected? (throw (js/Error. "Runtime remains strongly reachable")))))
+        (.then (fn [_] (probe-callback-retention)))
         (.catch (fn [error] (js/console.error error) (set! (.-exitCode js/process) 1))))))
 
 (set! *main-cli-fn* -main)

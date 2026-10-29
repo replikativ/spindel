@@ -5,6 +5,7 @@
             [org.replikativ.spindel.lifetime.model :as model]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.incremental.interval :as iv]
+            [org.replikativ.spindel.test-helpers :refer [async]]
             [clojure.data :as data]
             [clojure.walk :as walk]))
 
@@ -69,6 +70,132 @@
        (is (empty? (inv/check expected)))
        expected))
    (model/init-state) @(:audit rt)))
+
+(deftest native-delivery-is-once-only-and-outside-gate
+  (let [rt (c/runtime {:audit? true}) callbacks (atom nil) values (atom [])
+        cancelled (atom 0)
+        s (c/cspin rt :native
+                   (inc (c/await-host
+                         (fn [succeed! fail!]
+                           (is #?(:clj (not (Thread/holdsLock (:gate rt))) :cljs true))
+                           (reset! callbacks [succeed! fail!])
+                           #(swap! cancelled inc)))))
+        unsubscribe (c/observe! rt s #(swap! values conj %) #(throw %))]
+    (is (= [] @values))
+    ((first @callbacks) 41)
+    ((first @callbacks) 99)
+    ((second @callbacks) (ex-info "late" {}))
+    (is (= [42] @values))
+    (is (= 0 @cancelled))
+    (verify-boundaries! rt)
+    (unsubscribe)))
+
+(deftest native-cancel-fences-stale-delivery
+  (let [rt (c/runtime {:audit? true}) callbacks (atom []) values (atom [])
+        cancelled (atom 0)
+        s (c/cspin rt :native
+                   (c/await-host (fn [succeed! _]
+                                   (swap! callbacks conj succeed!)
+                                   (fn []
+                                     (is #?(:clj (not (Thread/holdsLock (:gate rt))) :cljs true))
+                                     (swap! cancelled inc)))))
+        un1 (c/observe! rt s #(swap! values conj %) (fn [_]))]
+    (c/cancel-spin! rt s)
+    (is (= 1 @cancelled))
+    (let [un2 (c/observe! rt s #(swap! values conj %) #(throw %))]
+      ((first @callbacks) :obsolete)
+      ((second @callbacks) :fresh)
+      (is (= [:fresh] @values))
+      (is (= 1 @cancelled))
+      (verify-boundaries! rt)
+      (un1) (un2))))
+
+(deftest native-cancel-during-start-and-synchronous-delivery
+  (doseq [deliver? [true false]]
+    (let [rt (c/runtime {:audit? true}) holder (atom nil) cancelled (atom 0) values (atom [])
+          s (c/cspin rt :native
+                     (c/await-host
+                      (fn [succeed! _]
+                        (if deliver? (succeed! :done) (c/cancel-spin! rt @holder))
+                        #(swap! cancelled inc))))]
+      (reset! holder s)
+      (let [unsubscribe (c/observe! rt s #(swap! values conj %) (fn [_]))]
+        (is (= (if deliver? [:done] []) @values))
+        (is (= (if deliver? 0 1) @cancelled))
+        (verify-boundaries! rt)
+        (unsubscribe)))))
+
+(deftest native-start-failure-enters-cps-catch
+  (let [rt (c/runtime {:audit? true}) values (atom [])
+        s (c/cspin rt :native
+                   (try (c/await-host (fn [_ _] (throw (ex-info "start failed" {}))))
+                        (catch #?(:clj Exception :cljs :default) e (ex-message e))))
+        unsubscribe (c/observe! rt s #(swap! values conj %) #(throw %))]
+    (is (= ["start failed"] @values))
+    (verify-boundaries! rt)
+    (unsubscribe)))
+
+(deftest native-throwing-cancel-still-drains-committed-work
+  (let [rt (c/runtime {:audit? true}) failures (atom 0)
+        failure (ex-info "detach failed" {})
+        s (c/cspin rt :native (c/await-host (fn [_ _] (fn [] (throw failure)))))]
+    (c/observe! rt s (fn [_]) (fn [_] (swap! failures inc)))
+    (is (identical? failure (try (c/cancel-spin! rt s) nil
+                                 (catch #?(:clj Exception :cljs :default) e e))))
+    (is (= 1 @failures))
+    (verify-boundaries! rt)))
+
+(deftest native-registration-refuses-fork-atomically
+  (let [rt (c/runtime {:audit? true})
+        s (c/cspin rt :native (c/await-host (fn [_ _] (fn []))))
+        unsubscribe (c/observe! rt s (fn [_]) (fn [_]))
+        before (c/snapshot-family rt)]
+    (is (try (c/fork-parked! rt :child) false (catch #?(:clj Exception :cljs :default) _ true)))
+    (is (= before (c/snapshot-family rt)))
+    (verify-boundaries! rt)
+    (unsubscribe)))
+
+(deftest native-external-thread-delivery
+  (async done
+         (let [rt (c/runtime {:audit? true})
+               s (c/cspin rt :native
+                          (inc (c/await-host
+                                (fn [succeed! _]
+                                  #?(:clj (future (succeed! 41)) :cljs (js/setTimeout #(succeed! 41) 0))
+                                  nil))))]
+           (c/observe! rt s
+                       (fn [value]
+                         (is (= 42 value))
+                         (verify-boundaries! rt)
+                         (done))
+                       (fn [error] (is false (str error)) (done))))))
+
+#?(:clj
+   (deftest native-cancel-races-physical-registration-start
+     (dotimes [_ 20]
+       (let [rt (c/runtime {:audit? true}) entered (promise) release (promise)
+             cancelled (atom 0) failures (atom 0) values (atom [])
+             start (fn [succeed! _]
+                     (deliver entered succeed!)
+                     @release
+                     (fn []
+                       (is (not (Thread/holdsLock (:gate rt))))
+                       (swap! cancelled inc)))
+             s (c/cspin rt :native (c/await-host start))
+             runner (future (c/observe! rt s #(swap! values conj %) (fn [_] (swap! failures inc))))
+             callback (deref entered 10000 nil)]
+         (is (some? callback))
+         (when callback
+           (c/cancel-spin! rt s)
+           (is (= [:unwinding] (mapv :status (vals (:runs (c/snapshot rt))))))
+           (is (= 0 @cancelled))
+           (callback :obsolete))
+         (deliver release true)
+         (is (fn? (deref runner 10000 nil)))
+         (is (= 1 @cancelled))
+         (is (= 1 @failures))
+         (is (= [] @values))
+         (verify-boundaries! rt)))))
 
 (deftest compact-track-and-prefix
   (let [rt (c/runtime {:audit? true})

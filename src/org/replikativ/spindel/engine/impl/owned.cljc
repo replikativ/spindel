@@ -170,7 +170,8 @@
 (defrecord RootOwner [id])
 (defrecord Failure [error])
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
-                           serial thread world root family parent tickets lineage gc family-id owner-root])
+                         serial thread world root family parent tickets lineage gc family-id owner-root
+                         operations posts])
 (def w [:w 0])
 (def root [:root w])
 (def cancelled ::cancelled)
@@ -195,7 +196,7 @@
              (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 4) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
              {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
-             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]))]
+             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue))]
      (assoc! family world-id rt)
      rt)))
 
@@ -295,7 +296,14 @@
   (when (a ob o-live)
     (put ob o-live false)
     (when (= :await-once (a ob o-kind))
-      (dissoc! (:deliveries rt) (a ob o-id)))
+      (dissoc! (:deliveries rt) (a ob o-id))
+      (when-let [operation (find! (:operations rt) (a ob o-id))]
+        (dissoc! (:operations rt) (a ob o-id))
+        (if (= :consumed (a ob o-slot))
+          (put operation 0 :settled)
+          (do (put operation 0 :cancelled)
+              (when-let [cancel (a operation 1)] (push! (:posts rt) (doto (slots 1) (put 0 cancel))))))
+        (put operation 1 nil)))
     (when-let [run (a ob o-run)]
       (remove! (a run r-obs) ob)
       (when (reactive-kind? (a ob o-kind)) (reactive-delta! run -1))
@@ -522,7 +530,8 @@
                 (when-let [node (find! (:nodes target) (a dead t-spin))]
                   (remove! (a node n-tokens) dead) (mark! target node))
                 (boundary! target (when (:audit target) {:t :t17 :w (:world target) :e (a dead t-spin) :tok (a dead t-id)})))
-              (recur)))))
+              (recur))))
+  (drain! rt))
 
 (defn notify-unreachable!
   "Deterministic exercise of the host-finalization handoff for experiments."
@@ -561,6 +570,7 @@
 (defn track [& _] (throw (ex-info "track requires cspin" {})))
 (defn await [& _] (throw (ex-info "await requires cspin" {})))
 (defn park [& _] (throw (ex-info "park requires cspin" {})))
+(defn await-host [& _] (throw (ex-info "await-host requires cspin" {})))
 (defn ticket [id] (->Ticket id))
 #?(:clj
    (do
@@ -574,7 +584,11 @@
              (with-meta (list* op bindings (map #(binding-sites % (vec (distinct (concat vars (take-nth 2 bindings))))) body))
                (meta form))
              :else (with-meta (apply list (map #(binding-sites % vars) form))
-                     (assoc (meta form) ::binding-vars vars))))
+                 ;; CLJS emits runtime metadata on fn expressions. Binding
+                 ;; annotations belong to effect calls, never function values.
+                     (cond-> (meta form)
+                       (and (seq vars) (not (#{'fn 'fn* 'clojure.core/fn 'cljs.core/fn} (first form))))
+                       (assoc ::binding-vars vars)))))
          (vector? form) (with-meta (mapv #(binding-sites % vars) form) (meta form))
          (map? form) (with-meta (into {} (map (fn [[k v]] [(binding-sites k vars) (binding-sites v vars)])) form) (meta form))
          :else form))
@@ -598,6 +612,7 @@
      (defn bp-track [ctx r e] (breakpoint `track-effect! true ctx r e))
      (defn bp-await [ctx r e] (breakpoint `await-effect! true ctx r e))
      (defn bp-park [ctx r e] (breakpoint `park-effect! false ctx r e))
+     (defn bp-await-host [ctx r e] (breakpoint `await-host-effect! false ctx r e))
      (defmacro cspin [rt id & body]
        `(make-spin ~rt ~id ~((requiring-resolve 'org.replikativ.spindel.spin.cps/build-cps-fn)
                              (map #(binding-sites % []) body)
@@ -607,7 +622,9 @@
                                      'org.replikativ.spindel.engine.impl.owned/await
                                      'org.replikativ.spindel.engine.impl.owned/bp-await
                                      'org.replikativ.spindel.engine.impl.owned/park
-                                     'org.replikativ.spindel.engine.impl.owned/bp-park}) &env)))))
+                                     'org.replikativ.spindel.engine.impl.owned/bp-park
+                                     'org.replikativ.spindel.engine.impl.owned/await-host
+                                     'org.replikativ.spindel.engine.impl.owned/bp-await-host}) &env)))))
 
 (defn- schedule! [rt node ob]
   (put node n-pending-generation (a (current node) r-gen))
@@ -785,6 +802,62 @@
             (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (:obligation delivery)] :value value})))
     (drain! rt)))
 
+(defn- deliver-host! [rt delivery value]
+  ;; A native callback owns this exact world/registration. In particular, a
+  ;; synchronous callback must not redirect through some other active world.
+  (locked rt
+          (when-let [ob (find! (:deliveries rt) (:obligation delivery))]
+            (let [run (a ob o-run)]
+              (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
+                (put ob o-slot :consumed)
+                (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
+                (schedule! rt (a run r-node) ob))))
+          (boundary! rt (when (:audit rt) {:t :t06 :w (:world rt) :o [:o (:obligation delivery)] :value value})))
+  (drain! rt))
+
+(defn- host-callback [rt delivery failed?]
+  ;; A producer may keep a callback after cancellation/completion. That stale
+  ;; capability must not keep the entire world and its application heap alive.
+  (let [weak #?(:clj (java.lang.ref.WeakReference. rt) :cljs (js/WeakRef. rt))]
+    (fn [value]
+      (when-let [target #?(:clj (.get weak) :cljs (.deref weak))]
+        (deliver-host! target delivery (if failed? (->Failure value) value))))))
+
+(defn await-host-effect!
+  "Park on a one-shot callback registration. `start` runs outside the gate with
+  success/error callbacks and returns an optional cancellation function.
+  Delivery is once-only and world/run fenced; cancellation is post-commit.
+  Cancellation must synchronously detach the registration. Physical resources
+  requiring asynchronous join need a separate lifetime owner/acknowledgement.
+  Registrations require recovery support before they can be forked."
+  [start resolve reject]
+  (let [frame (current-activation) rt (a frame 0) run (a frame 1)
+        order (put frame 2 (inc (long (a frame 2))))
+        operation (slots 2)
+        delivery (locked rt
+                         (check-running! run)
+                         (let [ob (ob! rt :await-once nil run order resolve reject)
+                               host [:native (a ob o-id)]]
+                           (put operation 0 :starting)
+                           (assoc! (:operations rt) (a ob o-id) operation)
+                           (put ob o-host host) (put run r-status :parked)
+                           (boundary! rt (when (:audit rt) {:t :t05 :w (:world rt)
+                                                            :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                            :kind :await-once :order order :debtor [:host host]}))
+                           (->Delivery (:family-id rt) (:world rt) (a ob o-id))))]
+    (when (locked rt (= :starting (a operation 0)))
+      (let [cancel (try
+                     (start (host-callback rt delivery false) (host-callback rt delivery true))
+                     (catch #?(:clj Throwable :cljs :default) error
+                       (deliver-host! rt delivery (->Failure error))
+                       nil))]
+        (locked rt
+                (case (a operation 0)
+                  :starting (do (put operation 0 :live) (put operation 1 cancel))
+                  :cancelled (when cancel (push! (:posts rt) (doto (slots 1) (put 0 cancel))))
+                  :settled nil))))
+    nil))
+
 (defn- complete! [requested run value]
   (let [rt (execution-runtime requested)]
     (locked rt
@@ -925,31 +998,42 @@
 
 (defn- next-dispatch! [rt]
   (locked rt
-          (if-let [event (pop! (:events rt))]
-            (do (process-event! (a (a event 0) n-runtime) event) :event)
-            (or (poll-ready! rt) (pop! (:hosts rt))))))
+          (if-let [post (pop! (:posts rt))]
+            post
+            (if-let [event (pop! (:events rt))]
+              (do (process-event! (a (a event 0) n-runtime) event) :event)
+              (or (poll-ready! rt) (pop! (:hosts rt)))))))
 
 (defn drain! [rt]
   (when (compare-and-set! (:draining rt) false true)
     (binding [cps/*in-trampoline* false]
-      (try
-        (loop []
-          (let [entry (next-dispatch! rt)]
-            (when entry
-              (when-not (= :event entry)
-                (if (= 2 (alength ^objects entry))
-                  (let [ob (a entry 0) value (a entry 1)]
-                    (cond
-                      (instance? Failure value) ((a ob o-failure) (:error value))
-                      (= cancelled value) ((a ob o-failure) (ex-info "Cancelled" {}))
-                      :else ((a ob o-success) value)))
-                  (execute! (a entry n-runtime) entry)))
-              (recur))))
-        (finally (reset! (:draining rt) false)))
-      (when (locked rt (or (queued? (:events rt)) (queued? (:hosts rt))
-                           #?(:clj (not (.isEmpty ^java.util.PriorityQueue (:ready rt)))
-                              :cljs (pos? (.-length (:ready rt))))))
-        (drain! rt)))))
+      (let [failure
+            (try
+              (loop [failure nil]
+                (if-let [entry (next-dispatch! rt)]
+                  (if (and (not= :event entry) (= 1 (alength ^objects entry)))
+                    ;; Logical cancellation is already committed. A failed
+                    ;; detach must not strand other cancellation/delivery work.
+                    (let [error (try ((a entry 0)) nil
+                                     (catch #?(:clj Throwable :cljs :default) error error))]
+                      (recur (or failure error)))
+                    (do
+                      (when-not (= :event entry)
+                        (if (= 2 (alength ^objects entry))
+                          (let [ob (a entry 0) value (a entry 1)]
+                            (cond
+                              (instance? Failure value) ((a ob o-failure) (:error value))
+                              (= cancelled value) ((a ob o-failure) (ex-info "Cancelled" {}))
+                              :else ((a ob o-success) value)))
+                          (execute! (a entry n-runtime) entry)))
+                      (recur failure)))
+                  failure))
+              (finally (reset! (:draining rt) false)))]
+        (when (locked rt (or (queued? (:posts rt)) (queued? (:events rt)) (queued? (:hosts rt))
+                             #?(:clj (not (.isEmpty ^java.util.PriorityQueue (:ready rt)))
+                                :cljs (pos? (.-length (:ready rt))))))
+          (drain! rt))
+        (when failure (throw failure))))))
 
 (defn observe! [requested handle success failure]
   (let [rt (execution-runtime requested)]
@@ -1117,6 +1201,8 @@
                      (throw (ex-info "Fork requires a parked boundary" {:world (:world rt)}))))
             (doseq [run copies]
               (each! [ob (a run r-obs)]
+                     (when (find! (:operations rt) (a ob o-id))
+                       (throw (ex-info "Native operations require fork recovery" {:world (:world rt)})))
                      (when (or (a ob o-debtor) (not= :await-once (a ob o-kind)))
                        (throw (ex-info "Entity-debtor bundles are outside this slice" {:world (:world rt)}))))
               (add! selected (a run r-node)))
@@ -1125,7 +1211,7 @@
                      (add! selected node)))
             (let [child (assoc (runtime {:audit? (boolean (:audit rt)) :world-id world})
                                :gate (:gate rt) :family (:family rt) :family-id (:family-id rt) :parent rt
-                               :events (:events rt) :hosts (:hosts rt) :ready (:ready rt) :draining (:draining rt)
+                               :events (:events rt) :hosts (:hosts rt) :posts (:posts rt) :ready (:ready rt) :draining (:draining rt)
                                :serial (:serial rt) :thread (:thread rt) :gc (:gc rt)
                                :audit (:audit rt) :tokens (:tokens rt)
                                :lineage {:parent (:world rt) :root (get-in rt [:lineage :root])
