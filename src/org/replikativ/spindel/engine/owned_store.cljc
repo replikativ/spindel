@@ -4,14 +4,14 @@
   A transaction provides exclusive access across all worlds in this store.")
 
 (defprotocol ^:private PTable
-  (-lookup [table id absent])
+  (-read-row [table id absent])
   (-put! [table id value])
   (-delete! [table id])
   (-freeze! [table]))
 
 (deftype Table [#?(:clj ^:unsynchronized-mutable rows :cljs ^:mutable rows)]
   PTable
-  (-lookup [_ id absent] (get rows id absent))
+  (-read-row [_ id absent] (get rows id absent))
   (-put! [_ id value] (set! rows (assoc! rows id value)))
   (-delete! [_ id] (set! rows (dissoc! rows id)))
   (-freeze! [_]
@@ -54,7 +54,7 @@
   ([tx world name id not-found]
    (check-active! tx)
    (if-let [t (lookup-table tx world name)]
-     (-lookup t id not-found)
+     (-read-row t id not-found)
      not-found)))
 
 (defn- writable-table! [tx world name]
@@ -63,17 +63,24 @@
         (vswap! (:worlds (:store tx)) assoc-in [world name] t)
         t)))
 
+(defn table-view
+  "Seal one table for an explicit sweep or diagnostic. Ordinary transitions
+  use row indexes; this view rotates the table's edit token."
+  [tx world name]
+  (check-active! tx)
+  (if-let [t (lookup-table tx world name)] (-freeze! t) {}))
+
 (defn put-row! [tx world name id value]
   (check-active! tx)
   (let [t (writable-table! tx world name)]
-    (vswap! (:undo tx) conj [t id (-lookup t id absent)])
+    (vswap! (:undo tx) conj [t id (-read-row t id absent)])
     (-put! t id value))
   value)
 
 (defn delete-row! [tx world name id]
   (check-active! tx)
   (when-let [t (lookup-table tx world name)]
-    (let [old (-lookup t id absent)]
+    (let [old (-read-row t id absent)]
       (when-not (identical? absent old)
         (vswap! (:undo tx) conj [t id old])
         (-delete! t id))))
