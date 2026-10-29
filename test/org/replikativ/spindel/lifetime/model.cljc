@@ -62,13 +62,20 @@
       (some #(and (= [w r] (:owner %)) (not= :joined (:state %))) (vals (get-in s [:env :native])))))
 (defn join-blockers [s w x]
   (if (= :released (:status (wr s w)))
-    (vec (distinct (keep #(when (= x (:world %)) (:run %)) (vals (get-in s [:env :threads])))))
+    (vec (distinct
+          (concat
+           (for [[_ thread] (get-in s [:env :threads])
+                 :let [r (:run thread)]
+                 :when (and r (= w (:world thread))
+                            (or (= x w) (= x r) (some #{x} (:anchor thread))))] r)
+           (for [[_ native] (get-in s [:env :native])
+                 :let [[world r] (:owner native)]
+                 :when (and (= w world) (not= :joined (:state native))
+                            (or (= x w) (= x r) (some #{x} (:anchor native))))] r))))
     (vec (for [[r rr] (:runs (wr s w))
                :when (and (busy? rr) (some #{x} (owner-chain s w r)))] r))))
 (defn join-ready? [s w x]
-  (if (= :released (:status (wr s w)))
-    (not-any? #(= x (:world %)) (vals (get-in s [:env :threads])))
-    (empty? (join-blockers s w x))))
+  (empty? (join-blockers s w x)))
 
 (defn reactive? [s w r]
   (boolean (some (fn [[_ o]] (and (= [:run w r] (:creditor o))
@@ -1548,7 +1555,19 @@
                                   :else s)) s (:queue (wr s w)))
                 parent (get-in world [:lineage :parent])
                 s (if (and parent (ent s parent [:fork w]))
-                    (enqueue s parent {:fork-released w}) s)]
+                    (enqueue s parent {:fork-released w}) s)
+                ;; The world becomes a value-only tombstone. Physical
+                ;; participants retain just the ancestry needed for joins.
+                s (update-in s [:env :threads]
+                             #(into {} (for [[th thread] %]
+                                         [th (cond-> thread
+                                               (and (= w (:world thread)) (:run thread))
+                                               (assoc :anchor (owner-chain s w (:run thread))))])))
+                s (update-in s [:env :native]
+                             #(into {} (for [[n native] %]
+                                         [n (cond-> native
+                                              (and (= w (first (:owner native))) (not= :joined (:state native)))
+                                              (assoc :anchor (owner-chain s w (second (:owner native)))))])))]
             (-> s (assoc-in [:worlds w] (assoc (select-keys world [:id :lineage]) :status :released))
                 (update :registry disj w)
                 (update-in [:env :outside] #(vec (remove (fn [held] (= w (:w held))) %)))))))))
@@ -1645,7 +1664,7 @@
     (require! run ::no-slice {:th th})
     (-> s (update-in [:env :threads th]
                      #(-> % (assoc :run nil :scope nil :executing? false)
-                          (dissoc :retired? :obligation-world)))
+                          (dissoc :retired? :obligation-world :anchor)))
         (finish-unwinding world run))))
 
 (defn join-observation [s {:keys [w x timeout?]}]
@@ -1752,7 +1771,9 @@
                    :else s))
            :native-progress
            (let [[w r] (get-in s [:env :native (:n a) :owner])]
-             (-> s (update-in [:env :native (:n a)] merge (select-keys a [:state :boundary?]))
+             (-> s (update-in [:env :native (:n a)]
+                              #(cond-> (merge % (select-keys a [:state :boundary?]))
+                                 (= :joined (:state a)) (dissoc :anchor)))
                  (finish-unwinding w r)))
            :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
            :thread-entry
@@ -1935,7 +1956,16 @@
            {:t :slice-enter :th th :w w :r r})
          (for [[th tr] (get-in s [:env :threads]) :when (:run tr)] {:t :t38 :th th})
          (for [[w world] worlds x (distinct (concat [w] (keys (:scopes world))
-                                                    (keys (:runs world)) (mapcat :anchor (vals (:runs world)))))
+                                                    (keys (:runs world)) (mapcat :anchor (vals (:runs world)))
+                                                    (mapcat (fn [[_ thread]]
+                                                              (when (and (= w (:world thread)) (:run thread))
+                                                                (cons (:run thread) (:anchor thread))))
+                                                            (get-in s [:env :threads]))
+                                                    (mapcat (fn [[_ native]]
+                                                              (when (and (= w (first (:owner native)))
+                                                                         (not= :joined (:state native)))
+                                                                (cons (second (:owner native)) (:anchor native))))
+                                                            (get-in s [:env :native]))))
                timeout? [false true]]
            {:t :join :w w :x x :timeout? timeout?})))
       (for [w (conj (set (keys worlds)) nil)

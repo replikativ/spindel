@@ -750,6 +750,42 @@
              :when (and (= e (:spin rr)) (not= :unwinding (:status rr)))]
          {:w w :e e :released-owner (:owner er) :surviving-run r :status (:status rr)})))
 
+(defn- physical-ancestry [s w r]
+  (loop [id r seen #{} result []]
+    (cond
+      (nil? id) (conj result w)
+      (contains? seen id) result
+      (= :unwinding (:status (m/run s w id))) (into result (:anchor (m/run s w id)))
+      :else (recur (or (:owner (m/run s w id)) (get-in s [:worlds w :scopes id :parent]))
+                   (conj seen id) (conj result id)))))
+
+(defn released-join-evidence-errors
+  "Before world rows disappear, physical participants must retain the exact
+   ancestry needed for run/scope/world joins. Do not derive it from their new
+   stamped anchor, or a missing scope would become invisible to the oracle."
+  [{:keys [before after refusal]}]
+  (when-not refusal
+    (vec
+     (mapcat
+      (fn [[w world]]
+        (when (and (not= :released (:status (m/wr before w))) (= :released (:status world)))
+          (concat
+           (for [[th thread] (get-in before [:env :threads])
+                 :let [r (:run thread) current (get-in after [:env :threads th])]
+                 :when (and (= w (:world thread)) r)
+                 :let [expected (physical-ancestry before w r)]
+                 :when (or (not= [w r] [(:world current) (:run current)])
+                           (not= expected (:anchor current)))]
+             {:w w :thread th :r r :expected expected :actual current})
+           (for [[n native] (get-in before [:env :native])
+                 :let [[world r] (:owner native) current (get-in after [:env :native n])]
+                 :when (and (= w world) (not= :joined (:state native)))
+                 :let [expected (physical-ancestry before w r)]
+                 :when (or (not= [w r] (:owner current)) (= :joined (:state current))
+                           (not= expected (:anchor current)))]
+             {:w w :native n :r r :expected expected :actual current}))))
+      (:worlds after)))))
+
 (defn join-errors [{:keys [before action after refusal observation]}]
   (when (= :join (:t action))
     (let [{:keys [w x timeout?]} action
@@ -763,10 +799,17 @@
           busy (set (for [[r rr] (:runs (m/wr before w))
                           :when (and (#{:running :parked :unwinding} (:status rr)) (under? r rr))] r))
           busy (if (= :released (:status (m/wr before w)))
-                 (set (keep #(when (= x (:world %)) (:run %)) (vals (get-in before [:env :threads])))) busy)
-          ready? (if (= :released (:status (m/wr before w)))
-                   (not-any? #(= x (:world %)) (vals (get-in before [:env :threads])))
-                   (empty? busy))
+                 (set (concat
+                       (keep (fn [thread]
+                               (when (and (:run thread) (= w (:world thread))
+                                          (or (= x w) (= x (:run thread)) (some #{x} (:anchor thread))))
+                                 (:run thread))) (vals (get-in before [:env :threads])))
+                       (keep (fn [native]
+                               (let [[world r] (:owner native)]
+                                 (when (and (= w world) (not= :joined (:state native))
+                                            (or (= x w) (= x r) (some #{x} (:anchor native)))) r)))
+                             (vals (get-in before [:env :native]))))) busy)
+          ready? (empty? busy)
           timeout? (and timeout? (not ready?))]
       (when (or (not= before after)
                 (if timeout?
@@ -791,6 +834,7 @@
     (vec
      (keep identity
            [(when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
+            (when-let [bad (seq (released-join-evidence-errors edge))] {:id :TL19 :evidence (vec bad)})
             (when (and (not refusal) (not= t :t31)
                        (seq (set/difference removed exit-ids)))
               {:id :TL2 :evidence {:lost (set/difference removed exit-ids)}})

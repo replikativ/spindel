@@ -210,7 +210,8 @@
                                             :thread {:world nil :scope nil :run nil}}]))]
     (is (nil? (m/run released b/w b/r)))
     (is (false? (get-in (m/attempt released join) [:observation :complete?])))
-    (is (false? (get-in (m/attempt exited join) [:observation :complete?])))
+    ;; Keeping a world selected without an active slice is not physical work.
+    (is (true? (get-in (m/attempt exited join) [:observation :complete?])))
     (is (true? (get-in (m/attempt unbound join) [:observation :complete?])))
     (doseq [t [:t01 :t02 :t03 :t04 :t05 :t07 :t12 :t19 :t20 :signal-write :t06]]
       (is (= ::m/released (get-in (m/attempt released {:t t :th :host :w b/w}) [:refusal :error]))))))

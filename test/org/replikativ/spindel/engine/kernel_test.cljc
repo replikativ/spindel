@@ -5,6 +5,7 @@
             [org.replikativ.spindel.lifetime.model :as model]
             [org.replikativ.spindel.lifetime.first-delivery-test :as handoff]
             [org.replikativ.spindel.lifetime.rooted-liveness-test :as rooted]
+            [org.replikativ.spindel.lifetime.released-join-test :as released]
             [clojure.walk :as walk]))
 
 (def w [:w 0])
@@ -416,3 +417,18 @@
                  (into (rooted/foreign-owned-ancestor-actions)
                        [{:t :t16 :tok :hp} {:t :t17 :w w :e :p :tok :hp}
                         {:t :t18 :w w}])))
+
+(deftest physical-exit-after-world-release-refines-the-anchor-lifetime
+  (doseq [actions [[{:t :t38 :th :worker}
+                    {:t :native-progress :n released/native :state :joined}]
+                   [{:t :native-progress :n released/native :state :joined}
+                    {:t :t38 :th :worker}]]]
+    (compare-walk! (released/released-state true true) actions)))
+
+(deftest released-snapshot-does-not-hide-corrupt-live-rows
+  (let [tombstone (model/step (model/init-state) {:t :t34 :w w})
+        corrupt (assoc-in tombstone [:worlds w :entities :illegal] (model/row :signal nil))]
+    (doseq [cells? [false true]]
+      (let [actual (kernel/snapshot (kernel/restore corrupt {:cells? cells?}))]
+        (is (= (get-in corrupt [:worlds w :entities]) (get-in actual [:worlds w :entities])))
+        (is (contains? (get-in actual [:worlds w]) :entities))))))
