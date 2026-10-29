@@ -1242,20 +1242,62 @@ joined(w)    ≡ ∀n ∈ env.native. world(owner(n)) = w ⇒ state(n) = :joined
 **Reasons** of an entity `e` in world `W`:
 
 ```
-own(e)    ≡ owner(e) ≠ nil ∧ open(owner(e)) ∧
+own(e)    ≡ owner(e) ≠ nil ∧ rooted(owner(e)) ∧ open(owner(e)) ∧
             ( kind(e) ∈ {:signal :atom :keyed-entry :cache-row :fork}
             ∨ kind(e) ∈ {:timer :waiter} ∧ (work(owner(e)) ∨ dormant(owner(e)))
             ∨ kind(e) = :spin ∧ (¬completed?(e) ∨ kept?(e)) )
 active(e) ≡ ∃r ∈ runs_W. spin(r) = e ∧ (work(r) ∨ dormant(r) ∨ status(r) = :stale)
-obl(e)    ≡ ∃o ∈ ob_W. e ∈ ends(o)
+obl(e)    ≡ ∃o ∈ ob_W. rooted(o) ∧ e ∈ ends(o)
+            ∨ a queued or held host registration names e
 dep(e)    ≡ ∃v,o. [e v o] ∈ fdeps_W ∪ releasing_W
             ∨  ∃v,D. [:bundle v D] ∈ fdeps_W ∪ releasing_W ∧ e ∈ D
 pin(e)    ≡ e ∈ pins_W
 settle(e) ≡ e = [:fork v] ∧ ∃k. world(k) = v ∧ disposition(k) ∈ {:sealed :settling :incomplete}
-scope(e)  ≡ the :completed run of e owns a run, or an entity with non-empty reasons
-reasons(e) = the subset of {own active obl dep pin settle scope} that holds
+scope(e)  ≡ a rooted :completed run of e owns a rooted non-unwinding run or rooted entity
+extent(e) ≡ (owner(e) ≠ nil ∧ open(owner(e)) ∧ ¬rooted(owner(e)))
+            ∨ ∃r ∈ runs_W. spin(r) = e ∧ status(r) ≠ :unwinding ∧ ¬rooted(r)
+reasons(e) = the subset of {own active obl dep pin settle scope extent} that holds
 idle(e)   ≡ kind(e) = :spin ∧ completed?(e) ∧ reasons(e) = ∅
 ```
+
+**Rooted execution is a least fixed point.** Start with independently live
+world-root scopes, work/dormant/stale runs, host observations (including queued
+and held registrations), pins and settling fork descriptors. Follow these
+retention edges until no new vertex is reached:
+
+- an entity keeps its non-unwinding runs and the scope owning it;
+- a run keeps its entity and its owning scope;
+- a rooted scope keeps its open child scopes and the owned entities selected
+  by the `own` clauses above; a retained child keeps its enclosing scope;
+- a rooted run or entity creditor keeps its obligations, and those obligations
+  keep their entity debtors, except after debtor-side cancellation has retired
+  the foreign authority and queued the cancellation.
+
+A completed invocation is not rooted merely because its owning scope is open.
+An ownership/dependency cycle without one of the independent roots therefore
+cannot retain itself. `kept?` is conditional on the creating scope remaining
+rooted, rather than an independent root for that scope.
+
+Foreign `fdeps`/`releasing` rows are storage authority, not independent execution
+roots. A live foreign creditor's actual obligation conveys execution liveness.
+After that creditor loses its root, the debtor's value remains stored until its
+own release acknowledgement, but obsolete completed runs may be retired at the
+debtor world's next publication. Before T8 dispatches an envelope it applies
+local reclamation, so an old completion cannot resurrect an unrooted creditor.
+No publication reclaims another world's heap. Until the owning world publishes
+cleanup, entities under an open unrooted owner, and the entities of unrooted
+non-unwinding runs themselves, have the storage-only `extent` reason. It does
+not enter the rooted closure or authorize execution. Local
+normalization retires the obsolete completed owner and releases its extent.
+T17 only collects already-idle caches; it does not perform this execution or
+protocol normalization. T18 first publishes local normalization, then selects
+the eligible idle caches for explicit release.
+
+Unwinding rows retain physical join evidence, not execution ownership. Retained
+snapshots and frozen bases keep their immutable versions; a value-only basis
+does not keep live scheduler registrations. A resumable inherited copy remains
+a dormant execution root until activated or explicitly released. Following
+lineage alone pins no historical computation.
 
 `kept?(e)` is fixed when `e` is created or adopted (T1): it is
 `reactive(r)` for the creating run `r`, i.e. `r` held a standing
@@ -1268,7 +1310,7 @@ The spin clause of `own` is the four-row rule for children of a run R
 |---|---|---|
 | has a work run, or R holds an open obligation on it | any | live (`active`/`obl`) and owned by R. Cancelled with R. |
 | completed; created while R was **not** reactive | any | **idle** at completion (owner cleared by rule L) |
-| completed; created while R was reactive (`kept?`) | present (running, parked, stale or completed) | kept by R |
+| completed; created while R was reactive (`kept?`) | rooted (running, parked, stale or completed) | kept by R |
 | kept; not re-created by R's completed successor | removed (superseded or cancelled) | released. Idle if a token remains. |
 
 Why reactive runs keep their children: a reactive run re-runs from its
@@ -1352,8 +1394,16 @@ its denominator.
 reasons(e) ≠ ∅   ∨   (idle(e) ∧ tokens(e) ≠ ∅)
 ```
 
-A transaction that falsifies this for `e` does three things in the same
-transaction:
+At an ordinary publication in its own world, an unrooted completed spin is
+first normalized to a value-only row: retire its completed/stale runs and outgoing registrations, close their lexical scopes,
+clear its owner and drop runtime-held body/resume closures. A descriptor can
+supply its body again on a later invocation. Keep the eligible cached result
+while tokens remain, or while a foreign storage acknowledgement is outstanding;
+neither keeps its completed execution machinery alive. Cache validity is
+classified before those outgoing edges are removed.
+
+A transaction that falsifies the retention condition for `e` does three things
+in the same transaction:
 - it removes `e`, every index row that names `e`, and every queued event
   that names `e` or its runs;
 - it retires the runs of `e` (rule 3, run retirement; an idle spin's
@@ -1364,8 +1414,12 @@ transaction:
   removed: creations, spawned runs, owned entities, and the other ends
   of ended obligations.
 
-The cascade visits only rows reachable from the changed rows through
-owner, creator and obligation edges. It never scans other worlds.
+The native cascade visits the affected component through indexed retention
+edges. Reachability proofs from external roots survive physical run replacement
+when logical topology is unchanged; root/edge changes invalidate those proofs.
+Work-root proofs are confined to one publication. The reference implementation
+may compute the complete least fixed point. Reclamation remains local to the
+acting world even when the proof follows a foreign obligation.
 
 1. Host reachability of a handle is not a reason. The host is consulted
    only for idle caches, and only through tokens (T16–T18).
@@ -1516,8 +1570,8 @@ must survive retirement of the predecessor that originally created it.
 | T | Transition | Pre | Effect | Re-establishes |
 |---|---|---|---|---|
 | T16 | `handle-unreachable(tok)` (env) | `reachable?(tok)` | Set `reachable? := false`. Enqueue `gc-notify(w, e, tok)` for every live `w ∈ touched(tok)` that caches `e`. This affects memory only (TL4). | — |
-| T17 | `gc-notify(w, e, tok)` | `¬reachable?(tok)` (provenance: only T16 clears it, so T17 is enabled only after T16 produced the notification; duplicates and reorderings stay enabled) | If `tok ∈ tokens_w(e)`, remove it; otherwise no-op (a stale or duplicate notification). Rule L: `e` is reclaimed if it is idle with no tokens left. | L3 L8 TL4 |
-| T18 | `release-idle-caches!(w, es?)` | — | For every idle `e` (in `es`, or all of them), add `w` to `dropped(tok)` for each `tok ∈ tokens(e)`, then set `tokens(e) := ∅`, so `e` is reclaimed. Held handles then fail loudly (TL18). This is the deterministic stand-in for the GC in tests. | L3 |
+| T17 | `gc-notify(w, e, tok)` | `¬reachable?(tok)` (provenance: only T16 clears it, so T17 is enabled only after T16 produced the notification; duplicates and reorderings stay enabled) | If `tok ∈ tokens_w(e)`, remove it; otherwise no-op (a stale or duplicate notification). Retention-only Rule L: `e` is reclaimed if it is idle with no tokens left; pending execution/foreign protocol normalization is deferred to an ordinary local publication. | L3 L8 TL4 |
+| T18 | `release-idle-caches!(w, es?)` | — | First normalize unrooted completed execution locally. For every resulting idle `e` (in `es`, or all of them), add `w` to `dropped(tok)` for each `tok ∈ tokens(e)`, then set `tokens(e) := ∅`, so `e` is reclaimed. Held handles then fail loudly (TL18). This is the deterministic stand-in for the GC in tests. | L3 |
 
 **E. Forks, cross-world dependencies, capabilities**
 

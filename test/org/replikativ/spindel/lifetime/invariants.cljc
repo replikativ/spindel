@@ -627,7 +627,8 @@
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
    [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
-  (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates)))
+  (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
+    (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates))))
 
 (defn writes [a b]
   (for [k (set/union (set (keys a)) (set (keys b))) :when (not= (get a k) (get b k))] k))
@@ -898,26 +899,27 @@
               {:id :TL18 :evidence {:action action :refusal refusal}})]))))
 
 (defn edge-check [{:keys [before action after refusal] :as edge}]
-  (let [aborted (for [[c cut] (:cuts before)
-                      :when (and (not= :t25 (:t action)) (m/active-cuts (:phase cut))
-                                 (= :failed (get-in after [:cuts c :phase])))] c)]
-    (cond
-      refusal (ordinary-edge-check edge)
-      (seq aborted)
-      (let [parts (reductions (fn [s c] (m/t25-cut-fail s {:c c})) before aborted)]
-        (vec (concat
-              (mapcat (fn [[a b c]]
-                        (concat (check b) (ordinary-edge-check {:before a :action {:t :t25 :c c} :after b})))
-                      (map vector parts (rest parts) aborted))
-              (edge-check (assoc edge :before (last parts))))))
-      (= :t21 (:t action))
-      (let [w (first (get-in before [:cuts (:c action) :participants :worlds]))
-            sub (or (:body action) (when (seq (:queue (m/wr before w))) {:t :queued :w w}))
-            intermediate (if sub (m/step before sub) before)]
-        (vec (concat (when sub (concat (check intermediate)
-                                       (edge-check {:before before :action sub :after intermediate})))
-                     (ordinary-edge-check (assoc edge :before intermediate)))))
-      :else (ordinary-edge-check edge))))
+  (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
+    (let [aborted (for [[c cut] (:cuts before)
+                        :when (and (not= :t25 (:t action)) (m/active-cuts (:phase cut))
+                                   (= :failed (get-in after [:cuts c :phase])))] c)]
+      (cond
+        refusal (ordinary-edge-check edge)
+        (seq aborted)
+        (let [parts (reductions (fn [s c] (m/t25-cut-fail s {:c c})) before aborted)]
+          (vec (concat
+                (mapcat (fn [[a b c]]
+                          (concat (check b) (ordinary-edge-check {:before a :action {:t :t25 :c c} :after b})))
+                        (map vector parts (rest parts) aborted))
+                (edge-check (assoc edge :before (last parts))))))
+        (= :t21 (:t action))
+        (let [w (first (get-in before [:cuts (:c action) :participants :worlds]))
+              sub (or (:body action) (when (seq (:queue (m/wr before w))) {:t :queued :w w}))
+              intermediate (if sub (m/step before sub) before)]
+          (vec (concat (when sub (concat (check intermediate)
+                                         (edge-check {:before before :action sub :after intermediate})))
+                       (ordinary-edge-check (assoc edge :before intermediate)))))
+        :else (ordinary-edge-check edge)))))
 
 (defn check-trace
   "§4.6. Trace is [{:before s :action a :after s' :refusal optional} ...].

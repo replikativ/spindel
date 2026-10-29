@@ -4,6 +4,7 @@
             [org.replikativ.spindel.lifetime.check-io :as io]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.lifetime.model :as m]
+            [org.replikativ.spindel.lifetime.rooted-liveness-test :as rooted]
             [org.replikativ.spindel.lifetime.run9-check :as r9]
             [org.replikativ.spindel.lifetime.run10-check :as r10]
             [org.replikativ.spindel.lifetime.run11-check :as r11]
@@ -183,6 +184,22 @@
                       {:alphabet owned-child-alphabet :seconds 1800 :max-states 300000
                        :compact-keys? true})]
     (b/report! :owned-child report)
+    (is (= :exhausted (:status report)))
+    (is (zero? (:pending report)))
+    (is (zero? (:depth-cuts report)))
+    (is (empty? (:findings report)) (pr-str (:findings report)))))
+
+(deftest rooted-foreign-extent-gc-interleavings
+  (let [w rooted/w v rooted/v
+        initial (reduce m/step (m/init-state)
+                        (subvec (rooted/foreign-owned-ancestor-actions) 0 14))
+        actions [{:t :unsubscribe :w w :o [:o 0]}
+                 {:t :unsubscribe :w v :o [:o 2]}
+                 {:t :t16 :tok :hp} {:t :t16 :tok :ha}
+                 {:t :t17 :w w :e :p :tok :hp} {:t :t17 :w w :e :a :tok :ha}
+                 {:t :t18 :w w} {:t :t18 :w v}]
+        report (b/bfs initial {:alphabet (constantly actions) :seconds 45 :max-states 10000})]
+    (b/report! :rooted-foreign-extent-gc report)
     (is (= :exhausted (:status report)))
     (is (zero? (:pending report)))
     (is (zero? (:depth-cuts report)))
