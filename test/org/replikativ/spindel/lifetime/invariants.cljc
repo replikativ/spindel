@@ -3,7 +3,8 @@
   Predicates return evidence vectors: empty means satisfied, never suppressed."
   (:refer-clojure :exclude [bound?])
   (:require [clojure.set :as set]
-            [org.replikativ.spindel.lifetime.model :as m]))
+            [org.replikativ.spindel.lifetime.model :as m]
+            [org.replikativ.spindel.lifetime.cleanup :as cleanup]))
 
 (defn entities [s] (for [[w world] (:worlds s) [e er] (:entities world)] [w e er]))
 (defn runs [s] (for [[w world] (:worlds s) [r rr] (:runs world)] [w r rr]))
@@ -625,7 +626,7 @@
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates))))
@@ -818,6 +819,79 @@
                       (not= busy (set (:busy observation))))))
         [{:action action :expected-ready? ready? :busy busy :refusal refusal :observation observation}]))))
 
+(defn cleanup-retention-errors [before after w root completing]
+  (let [under? (fn [id]
+                 (loop [id id seen #{}]
+                   (cond (= id root) true
+                         (or (nil? id) (seen id)) false
+                         :else (recur (or (:owner (m/run before w id))
+                                          (get-in before [:worlds w :scopes id :parent])) (conj seen id)))))
+        eligible (set (for [[r row] (:runs (m/wr before w))
+                            :when (and (not= [w r] completing) (under? r) (:cps-entered? row)
+                                       (#{:running :parked :stale} (:status row)))] [:cps-exit w r]))
+        old-participants (set (for [[n row] (get-in before [:env :native])
+                                    :when (and (= :cps-exit (:kind row)) (= w (first (:owner row)))
+                                               (some #{root} (:anchor row)))] n))
+        participants (set/union eligible old-participants)
+        captures (into {} (for [[e row] (:entities (m/wr before w))
+                                :when (and (under? (:owner row)) (#{:atom :signal} (:kind row)))]
+                            [[w (:owner row) e] (select-keys row [:kind :result])]))
+        shared (set (concat (keys captures)
+                            (mapcat #(get-in before [:env :native % :cells]) old-participants)))]
+    (concat
+     (for [n eligible :when (not= :cps-exit (get-in after [:env :native n :kind]))]
+       {:missing-exit-ticket n})
+     (for [n participants key shared
+           :let [cell (get-in after [:env :cleanup-cells key])
+                 old-cell (get-in before [:env :cleanup-cells key])
+                 payload (or (some-> old-cell (select-keys [:kind :result])) (get captures key))]
+           :when (or (not (contains? (get-in after [:env :native n :cells] #{}) key))
+                     (not (contains? (:holders cell #{}) n))
+                     (not= payload (select-keys cell [:kind :result])))]
+       {:n n :lost-retirement-cell key :expected payload :actual cell}))))
+
+(defn cleanup-edge-errors
+  "TL21: derive payload retention from BEFORE ownership, not a manifest.
+  Explicit retirement requests and independently visible retirement effects
+  cover nested cancellation and normalization. Conserve issued tickets until
+  their own physical return."
+  [{:keys [before action after refusal observation]}]
+  (when (and (get-in before [:model :cps-exit?]) (not refusal) (not observation)
+             (not= :t31 (:t action)))
+    (let [w (:w action)
+          effective (loop [a action]
+                      (case (:t a)
+                        :t21 (if-let [body (:body a)] (recur body) a)
+                        :queued (if-let [body (:action (first (:queue (m/wr before (:w a)))))] (recur body) a)
+                        a))
+          completing (when (and (= :t07 (:t effective))
+                                (= :running (:status (m/run before (:w effective) (:r effective))))
+                                (= (:r effective) (m/current before (:w effective) (first (:r effective)))))
+                       [(:w effective) (:r effective)])
+          requested (case (:t action)
+                      (:t10 :t11) [[w (:r action)]]
+                      :t13 [[w (:scope action)]]
+                      :t34 [[w (:root (m/wr before w))]]
+                      :t15 (for [[r rr] (:runs (m/wr before w))
+                                 :when (#{:running :parked} (:status rr))] [w r])
+                      [])
+          retired (concat
+                   (for [ev (:events after) :when (= :run-exit (:event ev))] [(:world ev) (:r ev)])
+                   (for [[v r row] (runs before)
+                         :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
+                                    (= :unwinding (:status (m/run after v r))))] [v r]))]
+      (vec (concat
+            (mapcat (fn [[v root]] (cleanup-retention-errors before after v root completing))
+                    (set (concat requested retired)))
+            (for [[n row] (get-in before [:env :native]) :when (= :cps-exit (:kind row))
+                  :let [return? (and (= :t38 (:t action)) (= :returning (:phase row))
+                                     (= n (get-in before [:env :threads (:th action) :cleanup-ticket])))
+                        current (get-in after [:env :native n])]
+                  :when (if return? current
+                            (or (not= (:owner row) (:owner current))
+                                (not (set/subset? (:cells row #{}) (:cells current #{})))))]
+              {:n n :ticket-conservation {:before row :after current :physical-return? return?}}))))))
+
 (declare normalization-errors)
 
 (defn ordinary-edge-check
@@ -833,7 +907,8 @@
         body-entries (filter #(= :body-entry (:event %)) events)]
     (vec
      (keep identity
-           [(when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
+           [(when-let [bad (seq (cleanup-edge-errors edge))] {:id :TL21 :evidence (vec bad)})
+            (when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
             (when-let [bad (seq (released-join-evidence-errors edge))] {:id :TL19 :evidence (vec bad)})
             (when (and (not refusal) (not= t :t31)
                        (seq (set/difference removed exit-ids)))

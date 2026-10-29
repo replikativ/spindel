@@ -2,7 +2,8 @@
   "Executable Part 4, independent of src/. Actions are maps with :t and arguments.
   Expanded logical rows; physical attach cost is outside this model."
   (:require [clojure.set :as set]
-            [clojure.walk :as walk]))
+            [clojure.walk :as walk]
+            [org.replikativ.spindel.lifetime.cleanup :as cleanup]))
 
 (def terminal #{:merged :discarded :transferred :partitioned})
 (def standing #{:track :await-reactive :callback})
@@ -813,16 +814,23 @@
     (-> s (update-in [:worlds w :runs] #(into {} (for [[id rr] %] [id (update rr :spawned disj r)])))
         (update-in [:env :native]
                    #(into {} (for [[n nr] %]
-                               [n (if (and (= [w r] (:owner nr)) (not= :joined (:state nr)))
+                               [n (if (and (= [w r] (:owner nr)) (not= :joined (:state nr))
+                                           (not (cleanup/protected? nr)))
                                     (assoc nr :state :cancel-requested) nr)])))
         (emit {:event :run-exit :world w :r r :cause cause
                :t (if (= cause :superseded) :t10 :t11)}))))
+
+(defn retain-cleanup-subtree [s w root]
+  (if (get-in s [:model :cps-exit?])
+    (cleanup/retain-subtree s w root
+                            (into {} (for [[r _] (:runs (wr s w))] [r (owner-chain s w r)]))) s))
 
 (defn retire-run
   "§4.3 run retirement: close child scopes before logical teardown, then retain
   only physical evidence. Nested teardown reaches rule L at the outer boundary."
   [s w r cause logical-effects anchor]
-  (let [rr (run s w r) chain (or anchor (owner-chain s w r))]
+  (let [rr (run s w r) chain (or anchor (owner-chain s w r))
+        s (retain-cleanup-subtree s w r)]
     (binding [*cascading?* true]
       (let [scopes (loop [parents #{r} found #{}]
                      (let [children (set (for [[id row] (:scopes (wr s w))
@@ -973,7 +981,8 @@
 (defn close-owned [s w scope]
   (rule-l
    (binding [*cascading?* true]
-     (let [children (for [[c cr] (:scopes (wr s w))
+     (let [s (retain-cleanup-subtree s w scope)
+           children (for [[c cr] (:scopes (wr s w))
                           :when (and (= scope (:parent cr)) (= :open (:status cr)))] c)
            s (reduce #(close-owned %1 w %2) s children)
            runs (for [[r rr] (:runs (wr s w)) :when (= scope (:owner rr))] r)
@@ -1655,16 +1664,19 @@
   (require! (nil? (get-in s [:env :threads th :run])) ::thread-busy {:th th})
   (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
                       (vals (get-in s [:env :threads]))) ::slice-busy {:w w :r r})
-  (assoc-in s [:env :threads th]
+  (assoc-in (cond-> s (get-in s [:model :cps-exit?])
+                    (assoc-in [:worlds w :runs r :cps-entered?] true))
+            [:env :threads th]
             (merge (get-in s [:env :threads th])
                    {:world w :scope r :run r :obligation-world w :executing? true})))
 
 (defn t38-slice-exit [s {:keys [th]}]
-  (let [{:keys [world run]} (get-in s [:env :threads th])]
+  (let [{:keys [world run] :as thread} (get-in s [:env :threads th])]
     (require! run ::no-slice {:th th})
-    (-> s (update-in [:env :threads th]
-                     #(-> % (assoc :run nil :scope nil :executing? false)
-                          (dissoc :retired? :obligation-world :anchor)))
+    (-> (cleanup/slice-exit s thread)
+        (update-in [:env :threads th]
+                   #(-> % (assoc :run nil :scope nil :executing? false)
+                        (dissoc :retired? :obligation-world :anchor :cleanup-ticket)))
         (finish-unwinding world run))))
 
 (defn join-observation [s {:keys [w x timeout?]}]
@@ -1682,7 +1694,10 @@
    :t21 t21-cut-drain :t22 t22-cut-capture :t23 t23-cut-attach :t24 t24-cut-release
    :t25 t25-cut-fail :t26 t26-seal :t27 t27-prepare :t28 t28-settlement-step
    :t29 t29-finish :t30 t30-recover :t31 t31-crash :t32 t32-transfer
-   :t33 t33-partition :t34 t34-release-world :t35 t35-host-entry :t36 t36-cleanup :t37 t37-start-for :t38 t38-slice-exit :slice-enter slice-enter})
+   :t33 t33-partition :t34 t34-release-world :t35 t35-host-entry :t36 t36-cleanup :t37 t37-start-for :t38 t38-slice-exit :slice-enter slice-enter
+   :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
+   :cleanup-deliver cleanup/deliver :cleanup-return cleanup/returning
+   :cleanup-cell cleanup/access})
 
 (defn changed-worlds [before after]
   (set (for [w (set/union (set (keys (:worlds before))) (set (keys (:worlds after))))
@@ -1732,11 +1747,15 @@
           unwinding? (= :unwinding (:status (run s (:world thread) (:run thread))))
           a (if (and slice? (not (#{:t38 :slice-enter :t35} t))) (assoc a :w (:world thread)) a)
           w (acting-world s a)
-          _ (when (and slice? (not= :t38 t) (= :released (:status (wr s (:world thread)))))
+          _ (when (and slice? (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (wr s (:world thread)))))
               (refuse ::released {:w w :thread (:th a)}))
           _ (when (and unwinding?
                        (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
               (refuse ::cancelled {:w w :r (:run thread)}))
+          _ (when (and (or (:cleanup-ticket thread)
+                           (cleanup/protected? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
+                       (not (#{:t38 :cleanup-park :cleanup-return :cleanup-cell} t)))
+              (refuse ::cleanup-only {:thread (:th a) :action a}))
           before s s (assoc s :events [])]
       (when (and (quiescent-cut? s (acting-world s a))
                  (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11
@@ -1770,7 +1789,9 @@
                    (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
                    :else s))
            :native-progress
-           (let [[w r] (get-in s [:env :native (:n a) :owner])]
+           (let [native (get-in s [:env :native (:n a)])
+                 [w r] (:owner native)]
+             (require! (not (cleanup/protected? native)) ::protected-cleanup {:n (:n a)})
              (-> s (update-in [:env :native (:n a)]
                               #(cond-> (merge % (select-keys a [:state :boundary?]))
                                  (= :joined (:state a)) (dissoc :anchor)))
@@ -1778,6 +1799,7 @@
            :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
            :thread-entry
            (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
+               (require! (nil? (get-in a [:thread :cleanup-ticket])) ::protected-cleanup {:th (:th a)})
                (assoc-in s [:env :threads (:th a)] (:thread a)))
            :unsubscribe
            (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
@@ -1977,10 +1999,11 @@
         {:t :t35 :th :foreign :op {:kind :resume :w w :o o :th :foreign}})
       (for [[tok h] (get-in s [:env :handles]) :when (:reachable? h)] {:t :t16 :tok tok})
       (get-in s [:env :gc])
-      (for [[n nr] (get-in s [:env :native]) :when (not= :joined (:state nr))]
+      (cleanup/enabled s)
+      (for [[n nr] (get-in s [:env :native]) :when (and (not= :joined (:state nr)) (not (cleanup/protected? nr)))]
         {:t :native-progress :n n :state :joined})
       (for [[n nr] (get-in s [:env :native])
-            :when (and (not= :joined (:state nr)) (not (:boundary? nr)))]
+            :when (and (not= :joined (:state nr)) (not (:boundary? nr)) (not (cleanup/protected? nr)))]
         {:t :native-progress :n n :state (:state nr) :boundary? true})
       (for [[token waiter] (get-in s [:env :waiters]) :when (:armed? waiter)]
         {:t :waiter-unregister :token token})

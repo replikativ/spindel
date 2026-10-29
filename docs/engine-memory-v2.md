@@ -423,8 +423,47 @@ Cancellation-shielded `await-finalization` is also an explicit migration gate.
 It must preserve the cancelled cached result while asynchronous cleanup can
 finish and physical joining waits. It cannot be translated into an ordinary
 await on an unwinding run, whose new ordinary registrations are refused by the
-lifetime model. The retirement/cleanup dispatch and join evidence need an
-explicit refinement before the public backend can claim this contract.
+lifetime model.
+
+The opt-in executable `:cps-exit?` / `:slices?` profile now refines retirement
+with a protected exit ticket for each entered, unfinished CPS generation.
+Cancellation of a body that never entered creates no cleanup work; a completed
+body has already returned from its finalizers. Logical retirement still removes
+ordinary ownership and obligations. Cleanup tickets are physical evidence in the
+environment, never ordinary execution roots or permission to create new work.
+
+Cleanup retains existing owned source/atom payloads until its participants have
+physically returned. Each retained cell is stored once, keyed by world, original
+owner and entity, with explicit participant holders. Overlapping parent/child
+retirement merges the retained views in either cancellation order. Cleanup writes
+are shared among those participants. A source adopted by a successor before
+retirement belongs to the successor and is absent from the old cleanup view.
+Retention metadata copies no engine graph, body closures or historical world;
+application payloads remain opaque.
+World release still publishes a lineage-only tombstone; private retained payloads
+remain outside it until the last cleanup participant returns.
+
+`cleanup-claim` transfers a ready ticket to a cleanup frame only after the prior
+physical slice returns. `cleanup-park` creates a new one-shot callback sequence;
+`cleanup-deliver` commits readiness without executing user code. Duplicate, stale
+and post-return deliveries are inert. `cleanup-return` records CPS completion,
+but only T38 physical return releases the ticket and its cell holders. A second
+cancellation and generic native acknowledgements cannot consume that authority.
+In this restricted retirement profile, cleanup frames can access existing
+retained cells and suspend/return; they cannot perform ordinary engine effects
+or notify ordinary observers. This does not decide whether public finalizers may
+update other live application cells/resources or emit their notifications; that
+requires typed cleanup capabilities and generation admission. The L27 scan checks
+ticket/frame/cell conservation; TL21 independently derives required retention
+from pre-retirement ownership and detects consistently erased holder links.
+
+This is a retirement refinement, not yet the public `await-finalization`
+implementation. The native implementation and reference kernel still need this
+profile, including finalization that starts on the success path before a later
+cancellation, typed scoped application resources, error egress, and real CPS
+continuation handoff. The existing model profiles and native default are unchanged.
+The public backend cannot claim the finalization contract until those integration
+checks pass on both platforms.
 
 ## Replacement acceptance
 
