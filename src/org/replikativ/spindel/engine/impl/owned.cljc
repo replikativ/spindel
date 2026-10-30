@@ -7,10 +7,12 @@
             [is.simm.partial-cps.runtime :as cps-runtime]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.cell-handles :as cell-handles]
-            [org.replikativ.spindel.incremental.interval :as iv]))
+            [org.replikativ.spindel.incremental.interval :as iv]
+            [org.replikativ.spindel.incremental.deltaable :as delta]))
 
 #?(:clj (defonce ^:private activation-local (ThreadLocal.))
    :cljs (def ^:private active-frame nil))
@@ -307,6 +309,7 @@
 (def ^:const n-graph-dirty 30) (def ^:const n-external-root 31)
 (def ^:const n-descriptor 32)
 (def ^:const n-cancelled 33)
+(def ^:const n-public-signal 34)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
@@ -334,6 +337,7 @@
 (def ^:const o-live 12) (def ^:const o-value 13) (def ^:const o-host 14)
 (def ^:const o-address 19)
 (def ^:const o-body 20)
+(def ^:const o-signal-generation 21)
 (def ^:const o-origin 15) (def ^:const o-source-world 16) (def ^:const o-creditor-generation 17) (def ^:const o-creditor-node 18)
 (def ^:const t-id 0) (def ^:const t-spin 1) (def ^:const t-reachable 2)
 (def ^:const t-touched 3) (def ^:const t-dropped 4) (def ^:const t-family 6)
@@ -359,10 +363,28 @@
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
          register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
+         public-signal-view! register-public-signal! public-signal-value public-signal-state swap-public-signal! cas-public-signal!
+         clear-public-signal-deltas! public-signal-watches edit-public-signal-watch! publish-public-signals! track-public-signal!
          await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
                          operations posts home liveness extension-state finalization managed-cells trace-address]
+  rtp/PSignals
+  (register-public-signal! [this ref] (register-public-signal! this ref))
+  (public-signal-value [this ref] (public-signal-value this ref))
+  (public-signal-state [this ref] (public-signal-state this ref))
+  (swap-public-signal! [this ref f args publish? committed observe-change?]
+    (swap-public-signal! this ref f args publish? committed observe-change?))
+  (cas-public-signal! [this ref old-value new-value publish?]
+    (cas-public-signal! this ref old-value new-value publish?))
+  (clear-public-signal-deltas! [this ref] (clear-public-signal-deltas! this ref))
+  (public-signal-watches [this ref] (public-signal-watches this ref))
+  (add-public-signal-watch! [this ref key f] (edit-public-signal-watch! this ref key f true))
+  (remove-public-signal-watch! [this ref key] (edit-public-signal-watch! this ref key nil false))
+  (publish-public-signals! [this ids] (publish-public-signals! this ids))
+  rtp/PSignalTracking
+  (track-public-signal! [this ref caller-id source-loc resolve reject]
+    (track-public-signal! this ref caller-id source-loc resolve reject))
   rtp/PComputations
   (register-computation! [this target id body] (register-computation! this target id body))
   (invoke-computation! [this target id body resolve reject mode]
@@ -424,7 +446,7 @@
                            (compare [_ x y]
                              (compare (long (a x n-rank)) (long (a y n-rank))))))
                 :cljs (array))
-             (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 9)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
+             (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 10)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
              (when audit? (atom (when record-audit? []))) (when audit? (members))
              (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 5) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
@@ -664,7 +686,7 @@
   (put node n-kept value))
 
 (defn- node! [rt id kind owner]
-  (let [node (slots 34)]
+  (let [node (slots 35)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
@@ -1180,26 +1202,28 @@
           gen (if (vector? previous) (nth previous 1) (a previous r-gen))]
       (and (= id (a (a caller r-node) n-id)) (has? (a caller r-ancestors) gen)))))
 
+(defn- allocate-source! [rt id value]
+  (locked rt
+          (let [run (when (current-activation) (a (current-activation) 1))
+                order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
+                _ (check-running! run)
+                old (find! (runtime-field rt :nodes) id)
+                node (or old (node! rt id :signal (or run (runtime-field rt :owner-root))))]
+            (when-not (= :signal (a node n-kind)) (throw (ex-info "Source ID collision" {:id id})))
+            (when (or (nil? old) (predecessor-run? (a node n-owner) run))
+              (when-not old (put node n-value value))
+              (owner! rt node (or run (runtime-field rt :owner-root))) (put node n-order order)
+              (when run (creation! run node)))
+            (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t02 :w (runtime-field rt :world) :e id :value value}
+                                                            run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))
+            (->Source id (runtime-field rt :family-id)
+                      (when-let [profile (runtime-field rt :finalization)]
+                        (or (find! (a profile 3) id)
+                            (let [allocation #?(:clj (Object.) :cljs (js-obj))]
+                              (assoc! (a profile 3) id allocation) allocation)))))))
+
 (defn signal [requested id value]
-  (let [rt (execution-runtime requested)]
-    (locked rt
-            (let [run (when (current-activation) (a (current-activation) 1))
-                  order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
-                  _ (check-running! run)
-                  old (find! (runtime-field rt :nodes) id)
-                  node (or old (node! rt id :signal (or run (runtime-field rt :owner-root))))]
-              (when-not (= :signal (a node n-kind)) (throw (ex-info "Source ID collision" {:id id})))
-              (when (or (nil? old) (predecessor-run? (a node n-owner) run))
-                (when-not old (put node n-value value))
-                (owner! rt node (or run (runtime-field rt :owner-root))) (put node n-order order)
-                (when run (creation! run node)))
-              (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t02 :w (runtime-field rt :world) :e id :value value}
-                                                              run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))
-              (->Source id (runtime-field rt :family-id)
-                        (when-let [profile (runtime-field rt :finalization)]
-                          (or (find! (a profile 3) id)
-                              (let [allocation #?(:clj (Object.) :cljs (js-obj))]
-                                (assoc! (a profile 3) id allocation) allocation))))))))
+  (allocate-source! (execution-runtime requested) id value))
 
 #?(:clj (defonce ^:private handle-cleaner (java.lang.ref.Cleaner/create))
    :cljs (defonce ^:private handle-cleaner
@@ -1461,7 +1485,7 @@
     (mark! rt node) run))
 
 (defn- ob! [rt kind debtor run order resolve reject]
-  (let [ob (slots 21) id (a (runtime-field rt :serial) 0)]
+  (let [ob (slots 22) id (a (runtime-field rt :serial) 0)]
     (next-number! rt 0)
     (put ob o-address (when run (a run r-address)))
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
@@ -1500,22 +1524,41 @@
           (throw (ex-info "Queued priority mutation" {:id (a node n-id)})))
         (put node n-rank rank)))))
 
-(defn- register-track! [rt run order id resolve reject]
-  (locked rt
-          (check-running! run)
-          (let [node (or (find! (runtime-field rt :nodes) id)
-                         (throw (ex-info "Foreign or released track is outside this slice" {:id id})))
-                ob (ob! rt :track node run order resolve reject)]
-            (put ob o-last (a node n-value)) (rank! run node)
-            (boundary! rt (when (runtime-field rt :audit) {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                                           :kind :track :order order :debtor [:entity (runtime-field rt :world) id]}))
-            (a node n-value))))
+(defn- public-track-interval! [node ob first?]
+  (when-let [aux (a node n-public-signal)]
+    (let [packet (a aux 0) generation (:generation packet)
+          consumed (a ob o-signal-generation)
+          value (a node n-value)]
+      (put ob o-signal-generation generation)
+      (if (or first? (nil? consumed) (> generation consumed))
+        (iv/->Interval (:old-snapshot packet) value (:deltas packet))
+        (iv/->Interval value value nil)))))
 
-(defn- track-id-effect! [id resolve reject resume-resolve resume-reject]
-  (let [frame (current-activation) rt (a frame 0) run (a frame 1)
-        order (put frame 2 (inc (long (a frame 2))))
-        value (register-track! rt run order id resume-resolve resume-reject)]
-    (cps/invoke-continuation resolve (iv/->Interval value value nil))))
+(defn- register-track!
+  ([rt run order id resolve reject] (register-track! rt run order id resolve reject nil))
+  ([rt run order id resolve reject expected-source]
+   (locked rt
+           (check-running! run)
+           (let [node (or (find! (runtime-field rt :nodes) id)
+                          (throw (ex-info "Foreign or released track is outside this slice" {:id id})))
+                 _ (when expected-source (public-signal-view! rt expected-source))
+                 ob (ob! rt :track node run order resolve reject)]
+             (put ob o-last (a node n-value)) (rank! run node)
+             (put (current-activation) 9 nil)
+             (when (a node n-public-signal)
+               (put (current-activation) 9 (public-track-interval! node ob true)))
+             (boundary! rt (when (runtime-field rt :audit) {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
+                                                            :kind :track :order order :debtor [:entity (runtime-field rt :world) id]}))
+             (a node n-value)))))
+
+(defn- track-id-effect!
+  ([id resolve reject resume-resolve resume-reject]
+   (track-id-effect! id resolve reject resume-resolve resume-reject nil))
+  ([id resolve reject resume-resolve resume-reject expected-source]
+   (let [frame (current-activation) rt (a frame 0) run (a frame 1)
+         order (put frame 2 (inc (long (a frame 2))))
+         value (register-track! rt run order id resume-resolve resume-reject expected-source)]
+     (cps/invoke-continuation resolve (or (a frame 9) (iv/->Interval value value nil))))))
 
 (defn- check-source! [rt source]
   (when-not (identical? (runtime-field rt :family-id) (:family source))
@@ -1824,7 +1867,7 @@
                                     (complete! rt run error true))))))
         (finally
           (finish-slice! rt run frame)
-          (dotimes [i 9] (put frame i nil)))))))
+          (dotimes [i 10] (put frame i nil)))))))
 
 (defn- complete! [requested run value failed?]
   (let [rt (execution-runtime requested)]
@@ -1977,7 +2020,8 @@
                 (put frame 7 (when ob (a ob o-last)))
                 (when (and ob (= :track (a ob o-kind)) (identical? run (a ob o-run))
                            (= (a run r-gen) (a ob o-creditor-generation)))
-                  (put ob o-last (a frame 5)))
+                  (put ob o-last (a frame 5))
+                  (put frame 9 (when debtor (public-track-interval! debtor ob false))))
                 frame)))))
 
 (defn- invoke-slice! [rt activation]
@@ -1986,11 +2030,11 @@
       (let [moved? (and (identical? run (a ob o-run)) (= (a run r-gen) (a ob o-creditor-generation)))]
         (if (= :track (a ob o-kind))
           (if moved?
-            (cps/invoke-continuation (a ob o-resolve) (iv/->Interval (a activation 7) (a activation 5) nil))
+            (cps/invoke-continuation (a ob o-resolve) (or (a activation 9) (iv/->Interval (a activation 7) (a activation 5) nil)))
             (let [order (a ob o-order)
                   value (register-track! rt run order (a (a ob o-debtor) n-id) (a ob o-resolve) (a ob o-reject))]
               (put activation 2 order)
-              (cps/invoke-continuation (a ob o-resolve) (iv/->Interval (a activation 7) value nil))))
+              (cps/invoke-continuation (a ob o-resolve) (or (a activation 9) (iv/->Interval (a activation 7) value nil)))))
           (if moved?
             (deliver-cont! ob (a ob o-value))
             (do (put activation 2 (dec (long (a ob o-order))))
@@ -2015,7 +2059,7 @@
                                            (complete! rt run rejected true))))))))
         (finally
           (finish-slice! rt run activation)
-          (dotimes [i 9] (put activation i nil)))))))
+          (dotimes [i 10] (put activation i nil)))))))
 
 (defn- next-dispatch! [rt]
   (locked rt
@@ -2283,26 +2327,33 @@
               (do (boundary! rt (when (runtime-field rt :audit) {:t :cleanup-cell :th :engine :cell key})) (a cell 1))
               (a (source-node! rt source false) n-value)))))
 
-(defn- write-source! [rt node source value]
-  (when node
-    (put node n-value value)
-    (let [old (a node n-source-event)
-          event (or old (slots 4))]
-      ;; These are invalidations of state, rather than a lossless change feed.
-      ;; Moving the newest envelope to the tail preserves retained FIFO order.
-      (when old
-        #?(:clj (.remove ^java.util.ArrayDeque (runtime-field rt :events) old)
-           :cljs (.remove (runtime-field rt :events) old)))
-      (put node n-source-event event)
-      (put event 0 node) (put event 1 value)
-      (put event 2 (put (runtime-field rt :counters) 2 (inc (max (long (a (runtime-field rt :counters) 1))
-                                                                 (long (a (runtime-field rt :counters) 2))))))
-      (push! (runtime-field rt :events) event)))
-  (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :signal-write :w (runtime-field rt :world) :e (:id source) :value value}
-                                                  (when-let [frame (current-activation)]
-                                                    (identical? (runtime-field rt :owner-root)
-                                                                (runtime-field (a frame 0) :owner-root)))
-                                                  (assoc :th :engine)))))
+(defn- enqueue-source! [rt node value]
+  (let [old (a node n-source-event)
+        event (or old (slots 4))]
+    ;; Source events invalidate cached observations; they are not a lossless log.
+    (when old
+      #?(:clj (.remove ^java.util.ArrayDeque (runtime-field rt :events) old)
+         :cljs (.remove (runtime-field rt :events) old)))
+    (put node n-source-event event)
+    (put event 0 node) (put event 1 value)
+    (put event 2 (put (runtime-field rt :counters) 2
+                      (inc (max (long (a (runtime-field rt :counters) 1))
+                                (long (a (runtime-field rt :counters) 2))))))
+    (push! (runtime-field rt :events) event)))
+
+(defn- write-source!
+  ([rt node source value] (write-source! rt node source value true))
+  ([rt node source value publish?]
+   (when node
+     (put node n-value value)
+     (when publish? (enqueue-source! rt node value)))
+   (boundary! rt (when (runtime-field rt :audit)
+                   (cond-> {:t :signal-write :w (runtime-field rt :world) :e (:id source) :value value}
+                     (not publish?) (assoc :publish? false)
+                     (when-let [frame (current-activation)]
+                       (identical? (runtime-field rt :owner-root)
+                                   (runtime-field (a frame 0) :owner-root)))
+                     (assoc :th :engine))))))
 
 (defn set-signal! [requested source value]
   (let [rt (execution-runtime requested)
@@ -2916,6 +2967,8 @@
                        (assoc! node-map node copy)
                        (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank n-descriptor n-cancelled]]
                                 (put copy field (a node field)))
+                       (when-let [aux (a node n-public-signal)]
+                         (put copy n-public-signal (doto (slots 3) (put 0 (a aux 0)) (put 1 {}) (put 2 (a aux 2)))))
                        (when (= :atom (a node n-kind))
                          (assoc! (a (runtime-field child :managed-cells) 0) (a node n-id)
                                  (doto (slots 3) (put 0 (source-allocation rt (a node n-id))) (put 1 {}) (put 2 0))))
@@ -2956,8 +3009,8 @@
                          (when-let [descendant (find! run-map spawned)]
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
-                         (let [clone (slots 21)]
-                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body]]
+                         (let [clone (slots 22)]
+                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body o-signal-generation]]
                                     (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
@@ -3374,3 +3427,203 @@
                                                'org.replikativ.spindel.engine.core/*execution-context*
                                                [capture-public-scope restore-public-scope bind-public-scope])]
       (f))))
+
+;; Public signal values use the ordinary lifetime source row. Only interval
+;; receipts and egress listeners are additional representation state:
+;; aux = [immutable value packet, immutable watches, allocation capability].
+;; Neither the public reference nor this capability retains a runtime.
+(defn register-public-signal! [requested ref]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested)
+        value (delta/wrap-deltaable (:initial-value ref))
+        packet {:snapshot value :old-snapshot nil :deltas nil
+                :deltaable? (delta/deltaable? value) :generation 0}
+        source (locked rt
+                       (check-computation-caller! rt)
+                       (let [frame (current-activation)
+                             source (if (and frame (not (same-cell-world? rt (a frame 0))))
+                                      (with-activation nil (allocate-source! rt (:id ref) value))
+                                      (allocate-source! rt (:id ref) value))
+                             node (source-node! rt source false)
+                             aux (or (a node n-public-signal)
+                                     (put node n-public-signal
+                                          (doto (slots 3) (put 0 packet) (put 1 {}) (put 2 source))))]
+                         (a aux 2)))]
+    (with-meta ref (assoc (meta ref) ::rtp/signal-source source))))
+
+(defn- public-signal-source! [rt ref]
+  (let [source (::rtp/signal-source (meta ref))]
+    (when-not (and source (= (:id ref) (:id source)))
+      (throw (ex-info "Signal has no allocation in the selected native engine"
+                      {:error :unknown-source :id (:id ref)})))
+    (check-source! rt source)
+    source))
+
+(defn- public-signal-view! [rt source]
+  (if-let [[key cell] (cleanup-cell! rt source)]
+    {:cleanup key :cell cell :value (a cell 1)}
+    (do (check-computation-caller! rt)
+        (let [node (source-node! rt source false)
+              aux (a node n-public-signal)]
+          (when-not (and aux (identical? source (a aux 2)))
+            (throw (ex-info "Released public signal allocation" {:error :released-source :id (:id source)})))
+          {:node node :aux aux :packet (a aux 0) :value (a node n-value)}))))
+
+(defn- same-public-signal-view? [before current]
+  (if (:cleanup before)
+    (and (= (:cleanup before) (:cleanup current))
+         (identical? (:cell before) (:cell current))
+         (identical? (:value before) (:value current)))
+    (and (nil? (:cleanup current))
+         (identical? (:node before) (:node current))
+         (identical? (:packet before) (:packet current)))))
+
+(defn public-signal-value [requested ref]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (locked rt
+            (let [view (public-signal-view! rt source)]
+              (when (:cleanup view)
+                (boundary! rt (when (runtime-field rt :audit)
+                                {:t :cleanup-cell :th :engine :cell (:cleanup view)})))
+              (:value view)))))
+
+(defn public-signal-state [requested ref]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (locked rt
+            (let [view (public-signal-view! rt source)]
+              (if (:cleanup view)
+                (do (boundary! rt (when (runtime-field rt :audit)
+                                    {:t :cleanup-cell :th :engine :cell (:cleanup view)}))
+                    (nodes/->signal-node (:value view) nil nil false #{} 0))
+                (let [packet (:packet view)
+                      observers (set (keep #(when-let [run (a % o-run)] (a (a run r-node) n-id))
+                                           (items (a (:node view) n-dependents))))]
+                  (nodes/->signal-node (:snapshot packet) (:old-snapshot packet) (:deltas packet)
+                                       (:deltaable? packet) observers (:generation packet))))))))
+
+(defn- signal-packet [view new-value]
+  ;; Delta extraction, clearing and equality may dispatch into application code.
+  ;; Prepare the entire immutable receipt outside the ownership gate.
+  (let [deltas (delta/get-deltas new-value)
+        clean (delta/clear-deltas new-value)]
+    {:snapshot clean :old-snapshot (:value view) :deltas deltas
+     :deltaable? (:deltaable? (:packet view))
+     :generation (inc (long (or (:generation (:packet view)) 0)))}))
+
+(defn- commit-public-signal! [rt source current packet publish?]
+  (if (:cleanup current)
+    (do (put (:cell current) 1 (:snapshot packet))
+        (boundary! rt (when (runtime-field rt :audit)
+                        {:t :cleanup-cell :th :engine :cell (:cleanup current) :value (:snapshot packet)}))
+        nil)
+    (let [aux (:aux current) watches (a aux 1)]
+      (put aux 0 packet)
+      (write-source! rt (:node current) source (:snapshot packet) publish?)
+      watches)))
+
+(defn swap-public-signal! [requested ref f args publish? committed-hook observe-change?]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (loop []
+      (let [before (locked rt (public-signal-view! rt source))
+            packet (signal-packet before (apply f (:value before) args))
+            changed? (when observe-change? (not= (:value before) (:snapshot packet)))
+            _ (admit-world-switch! rt)
+            committed (locked rt
+                              (let [current (public-signal-view! rt source)]
+                                (when (same-public-signal-view? before current)
+                                  [(commit-public-signal! rt source current packet publish?)])))]
+        (if committed
+          (do (when committed-hook (committed-hook))
+              (binding [ec/*execution-context* requested]
+                (ec/notify-listeners! ref (:id source) (:value before) (:snapshot packet) (first committed)))
+              (when publish? (drain! rt))
+              {:value (:snapshot packet) :changed? changed?})
+          (recur))))))
+
+(defn cas-public-signal! [requested ref old-value new-value publish?]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (loop []
+      (let [before (locked rt (public-signal-view! rt source))]
+        (if-not (identical? old-value (:value before))
+          false
+          (let [packet (signal-packet before new-value)
+                _ (admit-world-switch! rt)
+                committed (locked rt
+                                  (let [current (public-signal-view! rt source)]
+                                    (when (same-public-signal-view? before current)
+                                      [(commit-public-signal! rt source current packet publish?)])))]
+            (if committed
+              (do (binding [ec/*execution-context* requested]
+                    (ec/notify-listeners! ref (:id source) old-value (:snapshot packet) (first committed)))
+                  (when publish? (drain! rt))
+                  true)
+              (recur))))))))
+
+(defn clear-public-signal-deltas! [requested ref]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (locked rt
+            (check-computation-caller! rt)
+            (let [view (public-signal-view! rt source) aux (:aux view)]
+              (put aux 0 (assoc (:packet view) :deltas nil)))))
+  nil)
+
+(defn public-signal-watches [requested ref]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (locked rt
+            (check-computation-caller! rt)
+            (a (:aux (public-signal-view! rt source)) 1))))
+
+(defn edit-public-signal-watch! [requested ref key f add?]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)]
+    (loop []
+      (let [[before watches] (locked rt
+                                     (check-computation-caller! rt)
+                                     (let [view (public-signal-view! rt source)] [view (a (:aux view) 1)]))
+            candidate (if add? (assoc watches key f) (dissoc watches key))
+            _ (admit-world-switch! rt)
+            committed? (locked rt
+                               (check-computation-caller! rt)
+                               (let [current (public-signal-view! rt source)]
+                                 (when (and (same-public-signal-view? before current)
+                                            (identical? watches (a (:aux current) 1)))
+                                   (put (:aux current) 1 candidate)
+                                   true)))]
+        (when-not committed? (recur)))))
+  ref)
+
+(defn publish-public-signals! [requested ids]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ids (vec (distinct ids))]
+    (locked rt
+            (check-computation-caller! rt)
+            ;; Preflight the whole publication before the first event is seated.
+            (let [nodes (mapv (fn [id]
+                                (let [node (find! (runtime-field rt :nodes) id)]
+                                  (when-not (and node (a node n-owner) (a node n-public-signal))
+                                    (throw (ex-info "Released public signal" {:error :released-source :id id})))
+                                  node)) ids)]
+              (doseq [node nodes]
+                (enqueue-source! rt node (a node n-value))
+                (boundary! rt (when (runtime-field rt :audit)
+                                (cond-> {:t :signal-publish :w (runtime-field rt :world) :e (a node n-id)}
+                                  (current-activation) (assoc :th :engine)))))))
+    (drain! rt))
+  nil)
+
+(defn track-public-signal! [requested ref _caller-id _source-loc resolve reject]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) source (public-signal-source! rt ref)
+        frame (current-activation)]
+    (when-not (and frame (same-cell-world? rt (a frame 0)))
+      (throw (ex-info "Signal tracking requires the selected native activation"
+                      {:error :unsupported-operation :operation :track-outside-activation})))
+    (track-id-effect! (:id source) resolve reject
+                      (cps-runtime/scope-continuation resolve)
+                      (cps-runtime/scope-continuation reject) source)))

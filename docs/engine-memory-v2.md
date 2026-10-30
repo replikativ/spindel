@@ -566,9 +566,20 @@ payload. Cold restart seats that body and its descriptor together; joining
 active work or a valid cache replaces neither.
 
 Protected waits still refuse native forks until their recovery is implemented.
-Public Signal intervals/deltas, Deferred/Mailbox and resource adapters, typed
-cleanup capabilities, component ownership, complete forks/cuts/world release,
-physical callback joining and recovery remain replacement gates. Separate
+Public Signal construction, value reads, swap/CAS, watches and `track` now use
+typed operations on the selected native world. A signal reference carries an
+allocation capability, not a world reference; reading or tracking an obsolete
+allocation cannot recreate it. Ordinary value reads avoid constructing a graph
+view. Immutable interval receipts retain only the last write's old value, deltas
+and generation. Track checkpoints carry their consumed generation: a same-version
+replay returns current/current/nil, and observers consume independently. Source
+notifications coalesce and do not promise an accumulated delta history across
+multiple writes. A batch defers publication while watches still receive each
+committed write; publication queues the latest values together.
+
+Deferred/Mailbox and resource adapters, broader typed cleanup capabilities,
+component ownership, complete forks/cuts/world release, physical callback joining
+and recovery remain replacement gates. Separate
 reporting of actual cleanup failures also needs compiler provenance; a terminal
 body rejection cannot by itself identify a new finalizer failure.
 

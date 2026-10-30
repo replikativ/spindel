@@ -259,3 +259,30 @@
   (await-computation! [ctx target id body caller-id source-loc resolve reject])
   (await-computation-finalization! [ctx operation caller-id source-loc resolve reject]
     "Protected finalizer wait; retirement must preserve its physical return."))
+
+(defprotocol PSignals
+  "Public signal ingress. References retain engine allocation metadata unchanged.
+   State reads return an immutable SignalNode-shaped value with :snapshot,
+   :old-snapshot, :deltas, :deltaable?, :observers and :generation. Reads must
+   not recreate a retired native allocation. Mutations publish after commit;
+   publish? false defers reactive publication, but still notifies watches."
+  (register-public-signal! [ctx ref])
+  (public-signal-state [ctx ref])
+  (public-signal-value [ctx ref]
+    "Read the raw current value without constructing a diagnostic state view.")
+  (swap-public-signal! [ctx ref f args publish? committed observe-change?]
+    "Return {:value clean-value :changed? boolean-or-nil}. Compute value equality
+     only when observe-change? is true. If non-nil, invoke the
+     zero-argument committed callback once after successful commit, outside
+     mutation gates and before publication or watch delivery.")
+  (cas-public-signal! [ctx ref old-value new-value publish?])
+  (clear-public-signal-deltas! [ctx ref])
+  (public-signal-watches [ctx ref])
+  (add-public-signal-watch! [ctx ref key f])
+  (remove-public-signal-watch! [ctx ref key])
+  (publish-public-signals! [ctx ids]
+    "Publish committed values for distinct IDs in order as one batch."))
+
+(defprotocol PSignalTracking
+  "Signal checkpoint ingress, before engine-specific cancellation/state access."
+  (track-public-signal! [ctx ref spin-id source-loc resolve reject]))
