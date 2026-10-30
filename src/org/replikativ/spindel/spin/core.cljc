@@ -304,29 +304,21 @@
         (when (ok? proposed) (:payload proposed)))
       (finally (reset! executing? false)))))
 
-(deftype Spin [spin-id spin-fn]
-  PSpin
-  (spin-id [_] spin-id)
-
-  PSpinBody
-  (spin-body [_] spin-fn)
-
-  #?(:clj clojure.lang.IFn :cljs IFn)
-  (#?(:clj invoke :cljs -invoke) [this resolve reject]
+(defn- invoke-legacy-spin [this spin-id spin-fn resolve reject]
     ;; Standard CPS signature: (spin resolve reject)
     ;; Runtime and spin-id obtained from dynamic bindings
-    (let [runtime (ec/current-execution-context)
-          local-cached (ec/spin-current-result spin-id)
+  (let [runtime (ec/current-execution-context)
+        local-cached (ec/spin-current-result spin-id)
           ;; Check if we're in rebuild mode
-          rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
-                             (ctx/rebuild-mode? runtime))]
-      (cond
+        rebuild-mode? (and (instance? org.replikativ.spindel.engine.context.ExecutionContext runtime)
+                           (ctx/rebuild-mode? runtime))]
+    (cond
           ;; Case 1a: Cache hit + rebuild mode - execute body for side effects, return cached value
           ;; Rebuild mode is used after deserialization to re-create nested spins and
           ;; re-register continuations, while returning the previously cached values.
-        (and local-cached (ec/spin-result-clean? spin-id) rebuild-mode?)
-        (do
-          (log/debug :cache/rebuild-mode {:spin-id spin-id})
+      (and local-cached (ec/spin-result-clean? spin-id) rebuild-mode?)
+      (do
+        (log/debug :cache/rebuild-mode {:spin-id spin-id})
             ;; Execute spin body for side effects (nested spin creation, continuation registration).
             ;; Fresh per-spin chain-head slot = nested spin minting reproduces the same id
             ;; sequence as the original run (rebuild's whole purpose).
@@ -336,131 +328,131 @@
             ;; clear, an :await-once cont from the original run survives,
             ;; fires on the next :spin-completion, and re-invokes the prior
             ;; body's CPS chain. See simple/enter-body!.
-          (simple/enter-body! runtime spin-id {:rebuild? true})
-          (binding [ec/*execution-context* runtime
-                    ec/*spin-id* spin-id
-                    ec/*lifetime-run* (lifetime/body-run-seq runtime spin-id)
-                    ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
+        (simple/enter-body! runtime spin-id {:rebuild? true})
+        (binding [ec/*execution-context* runtime
+                  ec/*spin-id* spin-id
+                  ec/*lifetime-run* (lifetime/body-run-seq runtime spin-id)
+                  ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
                     ;; The body's return is discarded: it must force its own
                     ;; Thunks (see Case 2).
-                    pcps-async/*in-trampoline* false]
+                  pcps-async/*in-trampoline* false]
               ;; Execute with dummy callbacks - we'll use cached value anyway
-            (spin-fn (fn [_] nil) (fn [_] nil)))
+          (spin-fn (fn [_] nil) (fn [_] nil)))
             ;; Return cached value (or the caller's Thunk, see Case 1b)
-          (match local-cached
-            (fn [value]
-              (resolved-value (resume resolve value) value))
-            (fn [error]
-              (rejected-value (resume reject error) error))))
+        (match local-cached
+          (fn [value]
+            (resolved-value (resume resolve value) value))
+          (fn [error]
+            (rejected-value (resume reject error) error))))
 
           ;; Case 1b: Local cache hit (normal mode) - resolve from local cache.
           ;; SpinNode :result is the single-slot cache for "deps unchanged since last run."
           ;; Dirty propagation + topological re-execution handle invalidation.
-        (and local-cached (ec/spin-result-clean? spin-id))
-        (do
-          (log/trace :cache/local-hit {:spin-id spin-id})
+      (and local-cached (ec/spin-result-clean? spin-id))
+      (do
+        (log/trace :cache/local-hit {:spin-id spin-id})
             ;; CRITICAL: Enqueue completion event even for cache hits
             ;; This ensures awaiting spins' continuations are resumed
-          (simple/enqueue-completion-event! runtime spin-id)
-          (match local-cached
+        (simple/enqueue-completion-event! runtime spin-id)
+        (match local-cached
               ;; Success case
-            (fn [value]
+          (fn [value]
                 ;; Call resolve via resume to handle Thunk returns. Return
                 ;; the spin's value, unless the callback handed back the
                 ;; Thunk of a caller's loop: that goes to the caller's
                 ;; trampoline (resume only returns it when one is running).
-              (resolved-value (resume resolve value) value))
+            (resolved-value (resume resolve value) value))
               ;; Error case
-            (fn [error]
+          (fn [error]
                 ;; Call reject via resume to handle Thunk returns
-              (rejected-value (resume reject error) error))))
+            (rejected-value (resume reject error) error))))
 
-        (and (not= spin-id simple/*execution-claim*)
-             (let [node (simple/get-node runtime spin-id)]
-               (and (:running? node)
-                    (not (nodes/dirty? node))
-                    (not (simple/stale-run? node)))))
-        (if (simple/try-join-spin! runtime spin-id
-                                   {:fork-id (:fork-id runtime)
-                                    :egress-policy ec/*callback-egress-policy*
-                                    :resolve resolve :reject reject})
-          :org.replikativ.spindel.spin/incomplete
-          (this resolve reject))
+      (and (not= spin-id simple/*execution-claim*)
+           (let [node (simple/get-node runtime spin-id)]
+             (and (:running? node)
+                  (not (nodes/dirty? node))
+                  (not (simple/stale-run? node)))))
+      (if (simple/try-join-spin! runtime spin-id
+                                 {:fork-id (:fork-id runtime)
+                                  :egress-policy ec/*callback-egress-policy*
+                                  :resolve resolve :reject reject})
+        :org.replikativ.spindel.spin/incomplete
+        (this resolve reject))
 
           ;; Case 2: Cache miss - execute spin
-        :else
-        (let [;; Local execution state (ephemeral, not in runtime)
+      :else
+      (let [;; Local execution state (ephemeral, not in runtime)
               ;; A continuation can be copied into a child world. The initiating
               ;; callback is process-local egress owned by the world that called
               ;; this Spin; completing the copied child must cache its child
               ;; result without firing the parent's callback.
-              callbacks-atom (atom [{:fork-id (:fork-id runtime)
-                                     :egress-policy ec/*callback-egress-policy*
-                                     :resolve resolve
-                                     :reject reject}])
-              executing? (atom true)
+            callbacks-atom (atom [{:fork-id (:fork-id runtime)
+                                   :egress-policy ec/*callback-egress-policy*
+                                   :resolve resolve
+                                   :reject reject}])
+            executing? (atom true)
               ;; A callback resumed while the body runs synchronously, on
               ;; this thread, runs inside the body's own trampoline: the
               ;; Thunk it returns (a caller looping over this spin) has
               ;; nobody to force it there. Keep it for the caller.
-              caller-in-trampoline? (pcps-async/in-trampoline?)
-              sync-thread #?(:clj (Thread/currentThread) :cljs nil)
-              in-body (volatile! true)
-              caller-thunk (volatile! nil)
+            caller-in-trampoline? (pcps-async/in-trampoline?)
+            sync-thread #?(:clj (Thread/currentThread) :cljs nil)
+            in-body (volatile! true)
+            caller-thunk (volatile! nil)
               ;; The run generation enter-body! starts (below): completions
               ;; certify the result only for this, uninvalidated, run.
-              run-gen (volatile! nil)
-              body-fn (fn [r j]
-                        (try (spin-fn r j)
-                             (finally (vreset! in-body false))))
+            run-gen (volatile! nil)
+            body-fn (fn [r j]
+                      (try (spin-fn r j)
+                           (finally (vreset! in-body false))))
               ;; Any other resume of a callback (a reactive re-run, a forked
               ;; world's thread) forces its Thunks in a trampoline of its own:
               ;; nothing here returns them to anybody.
-              resume-callback! (fn [k x rt]
-                                 (binding [ec/*spin-id* nil
-                                           ec/*lifetime-run* nil
-                                           ec/*run-gen* nil
-                                           ec/*owner-scope* nil]
-                                   (if (and @in-body
+            resume-callback! (fn [k x rt]
+                               (binding [ec/*spin-id* nil
+                                         ec/*lifetime-run* nil
+                                         ec/*run-gen* nil
+                                         ec/*owner-scope* nil]
+                                 (if (and @in-body
                                           ;; only a caller that is a running
                                           ;; trampoline takes a Thunk back;
                                           ;; plain callbacks force their own
-                                            caller-in-trampoline?
-                                            (nil? @caller-thunk)
+                                          caller-in-trampoline?
+                                          (nil? @caller-thunk)
                                           ;; this world: a fork completed on
                                           ;; this stack continues in the fork
-                                            (= (:fork-id rt) (:fork-id runtime))
-                                            #?(:clj (identical? sync-thread (Thread/currentThread))
-                                               :cljs true))
+                                          (= (:fork-id rt) (:fork-id runtime))
+                                          #?(:clj (identical? sync-thread (Thread/currentThread))
+                                             :cljs true))
                                    ;; Resume it as a trampoline activation
                                    ;; that does not force: whatever body runs
                                    ;; here (a hand-written one starts no
                                    ;; trampoline), the callback's Thunk comes
                                    ;; back instead of running the caller's
                                    ;; next iteration nested in this one.
-                                     (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
-                                                (fn [token]
-                                                  (binding [pcps-async/*in-trampoline* token]
-                                                    (resume k x))))]
-                                       (when (is.simm.partial-cps.runtime/thunk? ret)
-                                         (vreset! caller-thunk ret))
-                                       ret)
-                                     (binding [pcps-async/*in-trampoline* false]
-                                       (resume k x)))))]
+                                   (let [ret (is.simm.partial-cps.runtime/call-in-trampoline
+                                              (fn [token]
+                                                (binding [pcps-async/*in-trampoline* token]
+                                                  (resume k x))))]
+                                     (when (is.simm.partial-cps.runtime/thunk? ret)
+                                       (vreset! caller-thunk ret))
+                                     ret)
+                                   (binding [pcps-async/*in-trampoline* false]
+                                     (resume k x)))))]
 
-          (log/debug :spin/start {:spin-id spin-id})
+        (log/debug :spin/start {:spin-id spin-id})
 
             ;; THE body re-entry prologue (mark-running! +
             ;; clear-created-spins! + clear-prior-body-conts! +
             ;; seed-body-chain-head!) — shared with the await slow path
             ;; via simple/enter-body! so the contract cannot drift; see
             ;; its docstring for the invariant it maintains.
-          (let [run (simple/enter-body! runtime spin-id)]
+        (let [run (simple/enter-body! runtime spin-id)]
             ;; This run's invoker callbacks, reachable for a fresh entry
             ;; that supersedes the run before it completes (hand-off).
-            (simple/register-run-callbacks! runtime spin-id run @callbacks-atom)
-            (vreset! run-gen run))
-          (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
+          (simple/register-run-callbacks! runtime spin-id run @callbacks-atom)
+          (vreset! run-gen run))
+        (log/trace :spin/executing-body {:spin-id spin-id :thread #?(:clj (.getName (Thread/currentThread)) :cljs "js")})
           ;; The body runs in a trampoline of its own. -invoke is called
           ;; from inside other bodies (spawn! in a spin, a SynchronousExecutor
           ;; running a parallel/race/work child inline, the rebuild path of
@@ -471,21 +463,21 @@
           ;; The await slow path binds the same for the same reason. (The
           ;; body starts the trampoline itself, inside its own try: every
           ;; iteration's exception reaches its reject.)
-          (binding [ec/*execution-context* runtime
-                    ec/*spin-id* spin-id
-                    ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
-                    pcps-async/*in-trampoline* false]
-            (let [result (body-fn
-                          (fn [value]
-                            (finish-run! spin-id
-                                         (if (= (first ec/*run-gen*) spin-id)
-                                           (second ec/*run-gen*) @run-gen)
-                                         (ok value) callbacks-atom resume-callback! executing?))
-                          (fn [err]
-                            (finish-run! spin-id
-                                         (if (= (first ec/*run-gen*) spin-id)
-                                           (second ec/*run-gen*) @run-gen)
-                                         (error err) callbacks-atom resume-callback! executing?)))]
+        (binding [ec/*execution-context* runtime
+                  ec/*spin-id* spin-id
+                  ec/*owner-scope* (lifetime/body-run-id runtime spin-id)
+                  pcps-async/*in-trampoline* false]
+          (let [result (body-fn
+                        (fn [value]
+                          (finish-run! spin-id
+                                       (if (= (first ec/*run-gen*) spin-id)
+                                         (second ec/*run-gen*) @run-gen)
+                                       (ok value) callbacks-atom resume-callback! executing?))
+                        (fn [err]
+                          (finish-run! spin-id
+                                       (if (= (first ec/*run-gen*) spin-id)
+                                         (second ec/*run-gen*) @run-gen)
+                                       (error err) callbacks-atom resume-callback! executing?)))]
 
                 ;; Body suspended (returned ::incomplete). We do NOT clear
                 ;; :running? here — the body is still in-flight, just waiting
@@ -495,7 +487,18 @@
 
               ;; Return result (could be value or ::incomplete from nested
               ;; await), or the kept Thunk, for the caller's trampoline.
-              (or @caller-thunk result)))))))
+            (or @caller-thunk result)))))))
+
+(deftype Spin [spin-id spin-fn]
+  PSpin
+  (spin-id [_] spin-id)
+
+  PSpinBody
+  (spin-body [_] spin-fn)
+
+  #?(:clj clojure.lang.IFn :cljs IFn)
+  (#?(:clj invoke :cljs -invoke) [this resolve reject]
+    (invoke-legacy-spin this spin-id spin-fn resolve reject))
 
   #?(:clj clojure.lang.IDeref :cljs IDeref)
   (#?(:clj deref :cljs -deref) [this]
