@@ -16,7 +16,9 @@
         ;; including failed native construction and cleanup.
         ;; 0.1.70 carries registered context scope through thunk and callback
         ;; dispatch without replacing the runner-selected world.
-        org.replikativ/partial-cps {:mvn/version "0.1.70"}
+        ;; 0.1.71 captures binding restoration data at lexical entry, preserving
+        ;; qualified execution owners across suspension and nested binding exit.
+        org.replikativ/partial-cps {:mvn/version "0.1.71"}
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.

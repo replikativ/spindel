@@ -732,9 +732,46 @@ by this operation.
 
 The first executable release profile is restricted to isolated root worlds;
 unsupported fork/cut authority is refused before mutation. General fork release,
-explicit execution scopes and protected/raw waits on foreign lifecycle receipts
+composed scope cleanup and protected/raw waits on foreign lifecycle receipts
 remain replacement gates. The legacy stop/close APIs are distinct from the new
 asynchronous completion, and the default engine has not changed.
+
+## Native execution owners
+
+The opt-in native runtime supports explicit local execution scopes through
+`engine.lifetime/open-scope!` and `with-owner`. Root owners and ordinary pooled
+Runs keep their existing representations. Explicit scopes use a lazily allocated
+world-local table and mutable ownership memberships. Public owner capabilities
+contain opaque world identity and immutable coordinates, never mutable Run,
+ScopeOwner or runtime storage. Equal diagnostic coordinates in independent
+worlds do not grant the same authority.
+
+Lexical owner bindings use the CPS binding-scope hooks. Outer owner data is
+qualified when the binding is entered, before its initializers run; suspension
+and binding exit restore that data onto the actual runner. A genuine contextual
+Run binding advances with its computation. A stale or foreign capability passed
+as a fresh owner argument stays invalid. Copied-computation provenance records
+only immutable world identities and does not retain historical Runs or runtimes.
+The engine model checks transitions with their selected owners; public program
+tests separately check that compiler binding transport selects the intended
+owner on JVM and CLJS.
+
+`engine.lifetime/close-scope!` commits local logical closure and returns `nil`.
+Closed scope rows and their reverse memberships disappear immediately. Existing
+asynchronous finally participants share retained source cells until actual
+return; their physical ancestry contains immutable IDs. A resumed reactive
+prefix adopts earlier scopes before retiring its predecessor, while suffix
+scopes close. The supported following-fork profile copies scope ownership and
+rebinds captured execution owners through the actual copy provenance; it does
+not copy affine custody.
+
+`PExecutionScopes/execution-owner-joined?` is a local boolean observation of
+logical work and physical participants. It does not certify settlement or
+cleanup in another world. Scope operations requiring unsupported affine cleanup
+refuse before mutation. Authenticated affine custody, composed close completion
+and general fork/cut integration remain separate replacement gates. The legacy
+engine retains its existing scope metadata operations; the new close and local
+join operations require the native runtime.
 
 ## Replacement acceptance
 

@@ -48,6 +48,12 @@
 ;; Cross-Platform Async Macro
 ;; =============================================================================
 
+(defn complete-test!
+  "Let the current bindings and trampoline unwind before starting the next test."
+  [done]
+  #?(:clj (done)
+     :cljs (js/setTimeout done 0)))
+
 #?(:clj
    (defmacro js-async
      "cljs.test/async as it was before ClojureScript 1.12: the body runs directly in
@@ -60,7 +66,9 @@
      `(reify
         cljs.test/IAsyncTest
         cljs.core/IFn
-        (~'-invoke [_# ~done] ~@body))))
+        (~'-invoke [_# raw-done#]
+          (let [~done (fn [] (complete-test! raw-done#))]
+            ~@body)))))
 
 #?(:clj
    (defmacro async

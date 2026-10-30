@@ -122,7 +122,8 @@
        (doseq [[id actual] family]
          (let [world (get-in expected [:worlds id])
                ev (assoc (select-keys world [:entities :runs :obligations :queue :lineage :root :status
-                                             :admission :seal-seq :scopes :pins :fdeps :releasing])
+                                             :admission :seal-seq :scopes :next-scope :scope-balance
+                                             :pins :fdeps :releasing])
                          :seq (get world :seq 0) :serial (get-in expected [:serial :o] 0)
                          :clock (get-in expected [:clocks id] 0)
                          :handles (get-in expected [:env :handles])
