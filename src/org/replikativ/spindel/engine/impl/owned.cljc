@@ -8,6 +8,7 @@
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.cell-handles :as cell-handles]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
@@ -310,6 +311,7 @@
 (def ^:const r-owned 9) (def ^:const r-backlinks 10) (def ^:const r-childruns 11) (def ^:const r-physical 12) (def ^:const r-anchor 13) (def ^:const r-origin 14) (def ^:const r-source-world 15) (def ^:const r-wide 16) (def ^:const r-reactives 17) (def ^:const r-ancestors 18) (def ^:const r-validation-lost 19)
 (def ^:const r-entered 20) (def ^:const r-finalization-seq 21)
 (def ^:const r-exit 22) (def ^:const r-cancel-cont 23)
+(def ^:const r-address 24)
 
 ;; Protected tickets contain identity, continuations and opaque retained payloads.
 ;; They never retain a retired logical run or its ownership graph.
@@ -318,6 +320,7 @@
 (def ^:const x-reject 6) (def ^:const x-value 7) (def ^:const x-failed 8)
 (def ^:const x-cells 9) (def ^:const x-run 10) (def ^:const x-physical 11)
 (def ^:const x-queued 12) (def ^:const x-delivered 13)
+(def ^:const x-address 15)
 
 (def ^:const o-id 0) (def ^:const o-kind 1) (def ^:const o-debtor 2)
 (def ^:const o-run 3) (def ^:const o-standing 4) (def ^:const o-resolve 5)
@@ -326,6 +329,7 @@
 ;; creditors. These roles are disjoint; ordinary payloads never encode errors.
 (def ^:const o-success 9) (def ^:const o-delivery-error 9) (def ^:const o-failure 10) (def ^:const o-last 11)
 (def ^:const o-live 12) (def ^:const o-value 13) (def ^:const o-host 14)
+(def ^:const o-address 19)
 (def ^:const o-origin 15) (def ^:const o-source-world 16) (def ^:const o-creditor-generation 17) (def ^:const o-creditor-node 18)
 (def ^:const t-id 0) (def ^:const t-spin 1) (def ^:const t-reachable 2)
 (def ^:const t-touched 3) (def ^:const t-dropped 4) (def ^:const t-family 6)
@@ -342,10 +346,12 @@
 (defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
 (declare read-application-state swap-application-state! cas-application-state!
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
-         swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc!)
+         swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts home liveness extension-state finalization managed-cells]
+                         operations posts home liveness extension-state finalization managed-cells trace-address]
+  rtp/PTraceAddressing
+  (next-trace-address! [this prefix source-loc] (next-trace-address! this prefix source-loc))
   rtp/PWorldIdentity
   (world-identity [_] owner-root)
   rtp/PRuntimeCells
@@ -406,7 +412,7 @@
              (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
                    (put 3 (members)) (put 4 (queue)) (put 5 (dict))) (atom {:values {} :shadowed #{} :map-groups #{}})
              (when cps-exit? (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict)) (put 4 on-finalization-result)))
-             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)))]
+             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1))]
      (assoc! family world-id rt)
      rt)))
 
@@ -685,10 +691,11 @@
 (defn- reserve-exit! [rt run]
   (when (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
     (let [ticket (or (a run r-exit)
-                     (doto (slots 15)
+                     (doto (slots 16)
                        (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
                        (put x-phase :ready) (put x-seq (or (a run r-finalization-seq) 0))
                        (put x-reject (a run r-cancel-cont)) (put x-run run)
+                       (put x-address (a run r-address))
                        (put x-cells (id-dict))
                        (put 14 (ex-info "Cancelled" {:error :cancelled}))))]
       (put run r-exit ticket)
@@ -772,7 +779,7 @@
       (when (zero? (count! (a cell 2))) (dissoc! (a profile 1) key)))
     (dissoc! (a profile 0) (a ticket x-id))
     (doseq [key (keys (map-value (a ticket x-cells)))] (dissoc! (a ticket x-cells) key))
-    (put ticket x-run nil) (put ticket 14 nil)))
+    (put ticket x-run nil) (put ticket 14 nil) (put ticket x-address nil)))
 
 (defn- cleanup-cell! [rt source]
   (let [frame (current-activation)
@@ -884,7 +891,7 @@
                (put run field empty-members)
                (clear-members! (a run field))))
     (put run r-wide nil)
-    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives r-validation-lost r-entered r-finalization-seq r-exit r-cancel-cont]]
+    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives r-validation-lost r-entered r-finalization-seq r-exit r-cancel-cont r-address]]
              (put run field nil))
     (let [pool (a (runtime-field rt :counters) 0)]
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
@@ -1359,7 +1366,7 @@
 
 (defn- run-slots! [rt]
   (or (pop! (a (runtime-field rt :counters) 0))
-      (let [run (slots 24)]
+      (let [run (slots 25)]
         (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                  (put run field empty-members))
         run)))
@@ -1393,8 +1400,9 @@
     (mark! rt node) run))
 
 (defn- ob! [rt kind debtor run order resolve reject]
-  (let [ob (slots 19) id (a (runtime-field rt :serial) 0)]
+  (let [ob (slots 20) id (a (runtime-field rt :serial) 0)]
     (next-number! rt 0)
+    (put ob o-address (when run (a run r-address)))
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
     (when run (put ob o-creditor-generation (a run r-gen)) (put ob o-creditor-node (a run r-node)))
     (put ob o-standing (case kind (:track :await-reactive :callback) true false))
@@ -1671,7 +1679,7 @@
                                              (when-not (and run (identical? run (current (a run r-node)))
                                                             (nil? (a run r-exit)))
                                                (throw (ex-info "Finalization wait requires the current physical slice" {})))
-                                             (doto (slots 15)
+                                             (doto (slots 16)
                                                (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
                                                (put x-kind :cps-finalization) (put x-cells (id-dict))
                                                (put x-run run))))
@@ -1679,6 +1687,7 @@
                           (when (and cleanup (not= :claimed (a ticket x-phase)))
                             (throw (ex-info "Cleanup wait requires a claimed ticket" {})))
                           (put ticket x-phase :waiting) (put ticket x-seq sequence)
+                          (put ticket x-address (if run (a run r-address) (a ticket x-address)))
                           (put ticket x-resolve resume-resolve) (put ticket x-reject resume-reject)
                           (put ticket x-value nil) (put ticket x-delivered false) (put ticket x-physical true)
                           (when-not cleanup
@@ -1721,6 +1730,7 @@
                 (when run (put run r-physical true))
                 (put (runtime-field rt :thread) 0 run) (put (runtime-field rt :thread) 1 true)
                 (put (runtime-field rt :thread) 2 (runtime-field rt :world))
+                (when run (put run r-address (a ticket x-address)))
                 (put frame 0 rt) (put frame 1 run) (put frame 2 -1)
                 (when-not live? (put frame 8 ticket) (put (runtime-field rt :thread) 4 ticket) (put ticket x-phase :claimed))
                 (if live? (resume-finalization! rt ticket)
@@ -1781,14 +1791,15 @@
                 (when (= :stale (a old r-status)) (retire! rt old)))
     (let [run (start! rt node (a previous r-owner) true)]
       (when (or (a previous r-validation-lost) (a node n-dirty)) (put run r-validation-lost true))
-      (when work?
-        (put previous r-status :stale)
-        (each-copy! [ob (a previous r-obs)]
-                    (if (and (= :track (a ob o-kind)) (<= (long (a ob o-order)) (long order)))
-                      (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
-                          (put ob o-creditor-generation (a run r-gen))
-                          (put ob o-creditor-node node) (add-run! run r-obs ob))
-                      (end-ob! rt ob))))
+      (when work? (put previous r-status :stale))
+      ;; A completed predecessor still supplies the continuation's prefix.
+      ;; Transfer those tracks before successor completion retires its basis.
+      (each-copy! [ob (a previous r-obs)]
+                  (if (and (= :track (a ob o-kind)) (<= (long (a ob o-order)) (long order)))
+                    (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
+                        (put ob o-creditor-generation (a run r-gen))
+                        (put ob o-creditor-node node) (add-run! run r-obs ob))
+                    (when work? (end-ob! rt ob))))
       (each-copy! [child (a previous r-created)]
                   (when (< (long (a child n-order)) (long order))
                     (owner! rt child run)
@@ -1877,6 +1888,7 @@
               (put (runtime-field rt :thread) 0 run) (put (runtime-field rt :thread) 1 true) (put (runtime-field rt :thread) 2 (runtime-field rt :world))
               (boundary! rt (when (runtime-field rt :audit) {:t :slice-enter :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)] :th :engine}))
               (let [frame (a (runtime-field rt :counters) 5) debtor (when ob (a ob o-debtor))]
+                (put run r-address (when ob (a ob o-address)))
                 (put frame 0 rt) (put frame 1 run) (put frame 2 (if ob (a ob o-order) -1))
                 (put frame 3 ob) (put frame 4 (a node n-body))
                 (put frame 5 (when debtor (a debtor n-value)))
@@ -2039,7 +2051,7 @@
   #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
     :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
     :seq :serial :clock :handles :threads :gc :global :scopes :pins
-    :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc})
+    :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc :addressing})
 
 (defn- engine-path? [path]
   (let [key (first path)]
@@ -2227,15 +2239,56 @@
 (defn- same-cell-world? [left right]
   (identical? (runtime-field left :owner-root) (runtime-field right :owner-root)))
 
-(defn- canonical-cell-runtime [requested]
+(defn- canonical-runtime [requested]
   ;; Lexical scope restoration decorates a context record. Engine objects and
   ;; queues must always name the canonical world registered in the family;
   ;; the requested record is retained separately only for listener bindings.
   (locked requested
           (let [rt (find! (runtime-field requested :family) (runtime-field requested :world))]
             (when-not (and rt (same-cell-world? requested rt))
-              (throw (ex-info "Unknown managed-cell world" {:error :unknown-world})))
+              (throw (ex-info "Unknown execution world" {:error :unknown-world})))
             rt)))
+
+(defn- check-address-slice! [frame]
+  (when frame
+    (let [run (a frame 1) node (when run (a run r-node))]
+      (when (or (a frame 8) (= :unwinding (when run (a run r-status))))
+        (throw (ex-info "Cleanup cannot construct ordinary computations" {:error :cleanup-only})))
+      (when-not (and node (identical? run (current node)) (= :running (a run r-status)))
+        (throw (ex-info "Addressing requires the current ordinary slice" {:error :stale-addressing-slice}))))))
+
+(defn next-trace-address!
+  "Advance an owned root/run cursor, hashing outside the engine gate."
+  [requested prefix source-loc]
+  (let [rt (canonical-runtime requested)
+        frame (current-activation)
+        caller (when frame (a frame 0))
+        local? (and caller (same-cell-world? rt caller))]
+    ;; A foreign explicit target has root authority, after admission at the
+    ;; initiating slice's own gate. No foreign run is read under this gate.
+    (when (and frame (not local?))
+      (locked caller (check-address-slice! frame)))
+    (loop []
+      (let [[receipt run seed]
+            (locked rt
+                    (when local? (check-address-slice! frame))
+                    (let [run (when local? (a frame 1))
+                          receipt (if run (a run r-address) (a (runtime-field rt :trace-address) 0))]
+                      [receipt run (when run (a (a run r-node) n-id))]))
+            previous (if receipt (first receipt)
+                         (when run (addressing/body-start-chain-head seed)))
+            id (keyword (str prefix "-" (addressing/chain-hash source-loc previous)))
+            committed?
+            (locked rt
+                    (when local? (check-address-slice! frame))
+                    (let [current (if run (a run r-address) (a (runtime-field rt :trace-address) 0))]
+                      (when (identical? receipt current)
+                        ;; A fresh immutable receipt is the revision witness,
+                        ;; even if two hashes happen to produce equal heads.
+                        (if run (put run r-address [id])
+                            (put (runtime-field rt :trace-address) 0 [id]))
+                        true)))]
+        (if committed? id (recur))))))
 
 (defn- cell-backing [rt id]
   (loop [world rt]
@@ -2338,7 +2391,7 @@
 
 (defn allocate-cell! [requested value options]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)
+  (let [rt (canonical-runtime requested)
         id (keyword (str "atom-" (random-uuid)))
         payload {:value value :meta (:meta options)}]
     (locked rt
@@ -2359,7 +2412,7 @@
 
 (defn cell-present? [requested id]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)]
+  (let [rt (canonical-runtime requested)]
     (locked rt
           ;; Admission errors must propagate. An absent ordinary row alone
           ;; answers false, while cleanup access resolves its protected view.
@@ -2370,7 +2423,7 @@
 
 (defn- read-cell-field [requested id field]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)]
+  (let [rt (canonical-runtime requested)]
     (locked rt
             (if (cleanup-cell-access? rt)
               (let [view (cell-view! rt id)]
@@ -2385,7 +2438,7 @@
 (defn read-cell-meta [rt id] (read-cell-field rt id :meta))
 (defn read-cell-watches [requested id]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)]
+  (let [rt (canonical-runtime requested)]
     (locked rt
             (let [view (cell-view! rt id)]
             ;; Listener registration never shadows a following source payload.
@@ -2404,7 +2457,7 @@
 
 (defn swap-cell! [requested ref id f args]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)]
+  (let [rt (canonical-runtime requested)]
     (loop []
       (let [before (retain-cell-operation! rt id)
             result
@@ -2429,7 +2482,7 @@
 
 (defn cas-cell! [requested ref id old-value new-value]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)]
+  (let [rt (canonical-runtime requested)]
     (loop []
       (let [before (retain-cell-operation! rt id)
             result
@@ -2452,7 +2505,7 @@
 
 (defn- edit-cell-watch! [requested id key f add?]
   (admit-world-switch! requested)
-  (let [rt (canonical-cell-runtime requested)]
+  (let [rt (canonical-runtime requested)]
     (loop []
       (let [before (retain-cell-operation! rt id)
             result
@@ -2787,10 +2840,11 @@
                        (put copy n-origin :inherited) (put copy n-source-world (runtime-field rt :world))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
-                (let [copy (slots 24) node (find! node-map (a run r-node))]
+                (let [copy (slots 25) node (find! node-map (a run r-node))]
                   (assoc! run-map run copy)
                   (put copy r-node node) (put copy r-gen (a run r-gen))
                   (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
+                  (put copy r-address (a run r-address))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-validation-lost (a run r-validation-lost))
                   (put copy r-origin :inherited) (put copy r-source-world (runtime-field rt :world))
@@ -2816,8 +2870,8 @@
                          (when-let [descendant (find! run-map spawned)]
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
-                         (let [clone (slots 19)]
-                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host]]
+                         (let [clone (slots 20)]
+                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address]]
                                     (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
@@ -2828,6 +2882,7 @@
                            (let [waiters (or (find! (:tickets child) (a clone o-host))
                                              (assoc! (:tickets child) (a clone o-host) (members)))]
                              (add! waiters clone))))))
+              (put (runtime-field child :trace-address) 0 (a (runtime-field rt :trace-address) 0))
               (reclaim! child)
               (prune-ancestry! child)
               (put (:counters child) 1 (a (runtime-field rt :counters) 1))
@@ -2893,7 +2948,7 @@
              :pooled-runs (count pool)
              :pooled-references
              (reduce + 0 (for [run pool]
-                           (+ (count (filter some? (map #(a run %) [r-node r-owner r-pred r-anchor r-exit r-cancel-cont])))
+                           (+ (count (filter some? (map #(a run %) [r-node r-owner r-pred r-anchor r-exit r-cancel-cont r-address])))
                               (reduce + 0 (map #(count! (a run %))
                                                [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors])))))
              :orphan-creation-links

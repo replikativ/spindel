@@ -116,6 +116,10 @@
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
 
+  rtp/PTraceAddressing
+  (next-trace-address! [this prefix source-loc]
+    (addressing/legacy-next-address! this prefix source-loc))
+
   rtp/PRuntimeCells
   (allocate-runtime-cell! [this value options] (cells/allocate! this value options))
   (runtime-cell-present? [this id] (cells/present? this id))

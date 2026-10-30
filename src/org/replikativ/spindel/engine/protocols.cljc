@@ -230,3 +230,9 @@
   (cas-runtime-cell! [ctx ref id old-value new-value])
   (add-runtime-cell-watch! [ctx id key f])
   (remove-runtime-cell-watch! [ctx id key]))
+
+(defprotocol PTraceAddressing
+  "Atomic deterministic construction addressing owned by the selected engine.
+   A matching ordinary activation advances its run cursor; otherwise the
+   requested world's root cursor is used after caller admission."
+  (next-trace-address! [ctx prefix source-loc]))

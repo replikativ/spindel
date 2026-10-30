@@ -649,3 +649,75 @@
   (doseq [order [-1 0 1 2] cause [:dirty :rerun! :track]]
     (compare-walk! (dormant/forked)
                    [{:t :t09 :w dormant/v :e :spin :cause cause :order order}])))
+
+(deftest completed-later-track-replay-preserves-an-earlier-distinct-dependency
+  (let [early [:signal :early] late [:signal :late] suffix [:signal :suffix]
+        initial-actions
+        [{:t :t02 :w w :e early :value 0}
+         {:t :t02 :w w :e late :value 0}
+         {:t :t02 :w w :e suffix :value 0}
+         {:t :t04 :w w :e parent :mode :callback}
+         {:t :t05 :w w :r [parent 1] :kind :track :debtor [:entity w early] :order 0}
+         {:t :t05 :w w :r [parent 1] :kind :track :debtor [:entity w late] :order 1}
+         {:t :t05 :w w :r [parent 1] :kind :track :debtor [:entity w suffix] :order 2}
+         {:t :t07 :w w :r [parent 1] :value :initial}
+         {:t :t08 :w w :e parent :value :initial}]
+        reentry-actions [{:t :signal-write :w w :e late :value 1}
+                         {:t :t08 :w w :e late :value 1}]
+        finish-later
+        [{:t :t07 :w w :r [parent 1] :value :obsolete}
+         ;; The new suffix skips the third track site. Its old registration
+         ;; validates the completed basis until this completion retires it.
+         {:t :t07 :w w :r [parent 2] :value :later-refreshed}
+         {:t :t08 :w w :e parent :value :later-refreshed}]
+        earlier-change [{:t :signal-write :w w :e early :value 1}
+                        {:t :t08 :w w :e early :value 1}]
+        completion [{:t :t05 :w w :r [parent 3] :kind :track :debtor [:entity w late] :order 1}
+                    {:t :t07 :w w :r [parent 3] :value :earlier-refreshed}
+                    {:t :t08 :w w :e parent :value :earlier-refreshed}]
+        actions (vec (concat initial-actions reentry-actions finish-later earlier-change completion))
+        initial (reduce model/step (model/init-state) initial-actions)
+        reentered (reduce model/step initial reentry-actions)
+        after-later (reduce model/step reentered finish-later)
+        after-earlier (reduce model/step after-later earlier-change)
+        assert-handoff!
+        (fn [state]
+          (is (= :completed (:status (model/run state w [parent 1]))))
+          (is (= :running (:status (model/run state w [parent 2]))))
+          (is (= #{[:o 0] [:o 1] [:o 2] [:o 3]}
+                 (set (keys (get-in state [:worlds w :obligations])))))
+          (doseq [o [[:o 1] [:o 2]]]
+            (is (= (assoc (get-in initial [:worlds w :obligations o]) :creditor [:run w [parent 2]])
+                   (get-in state [:worlds w :obligations o]))))
+          (is (= (get-in initial [:worlds w :obligations [:o 3]])
+                 (get-in state [:worlds w :obligations [:o 3]]))))
+        assert-prefix!
+        (fn [state]
+          (let [tracks (filter #(= :track (:kind %))
+                               (vals (get-in state [:worlds w :obligations])))]
+            (is (nil? (model/run state w [parent 1])))
+            (is (nil? (get-in state [:worlds w :obligations [:o 3]])))
+            (is (= 2 (count tracks)))
+            (is (= #{[:entity w early] [:entity w late]} (set (map :debtor tracks))))
+            (is (= #{[:run w [parent 2]]} (set (map :creditor tracks))))))]
+    ;; Literal semantic assertions detect a bug shared by model and kernel.
+    (assert-handoff! reentered)
+    (let [after-stale (model/step reentered (first finish-later))]
+      (is (= :initial (:result (model/ent after-stale w parent))))
+      (is (= :running (:status (model/run after-stale w [parent 2])))))
+    (assert-prefix! after-later)
+    (is (= [parent 3] (model/current after-earlier w parent))
+        "Changing the earlier signal still starts a third generation")
+    (is (= :running (:status (model/run after-earlier w [parent 3]))))
+    (doseq [cells? [false true]]
+      (let [actual (kernel/restore (model/init-state) {:cells? cells?})]
+        (doseq [action (concat initial-actions reentry-actions)] (kernel/step! actual action))
+        (assert-handoff! (kernel/snapshot actual))
+        (kernel/step! actual (first finish-later))
+        (is (= :initial (:result (model/ent (kernel/snapshot actual) w parent))))
+        (is (= :running (:status (model/run (kernel/snapshot actual) w [parent 2]))))
+        (doseq [action (rest finish-later)] (kernel/step! actual action))
+        (assert-prefix! (kernel/snapshot actual))
+        (doseq [action earlier-change] (kernel/step! actual action))
+        (is (= [parent 3] (model/current (kernel/snapshot actual) w parent)))))
+    (compare-walk! (model/init-state) actions)))

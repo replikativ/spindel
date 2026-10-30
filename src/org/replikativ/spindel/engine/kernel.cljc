@@ -1169,7 +1169,7 @@
         (edit! ctx w :runs r assoc :status :stale))
       (doseq [o (read-row ctx w :by-run-creditor r)
               :let [ob (read-row ctx w :obligations o)]]
-        (if (and work? (= :track (:kind ob)) (<= (:order ob) order))
+        (if (and previous (= :track (:kind ob)) (<= (:order ob) order))
           (do (index-remove! ctx w :by-run-creditor r o)
               (edit! ctx w :obligations o assoc :creditor [:run w r2])
               (index-add! ctx w :by-run-creditor r2 o))

@@ -158,7 +158,7 @@
   sequence produces the same hash chain).
 
   Args:
-    ctx: Execution context (must satisfy PState)
+    ctx: Execution context (must satisfy PTraceAddressing)
     prefix: String prefix for the address (e.g. 'spin', 'rv', 'signal')
     source-loc: Map with :file, :line, :column (or any identifying data)
 
@@ -174,6 +174,11 @@
   concurrent local write still retries the swap).
 
   Returns: Keyword like :spin-550e8400-e29b-41d4-a716-446655440000"
+  [ctx prefix source-loc]
+  (rtp/next-trace-address! ctx prefix source-loc))
+
+(defn legacy-next-address!
+  "Legacy runtime implementation; preserves per-spin path and fork read-through."
   [ctx prefix source-loc]
   (let [path (chain-head-path)]
     (rtp/swap-state! ctx path
