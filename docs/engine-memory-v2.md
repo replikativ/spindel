@@ -577,7 +577,33 @@ notifications coalesce and do not promise an accumulated delta history across
 multiple writes. A batch defers publication while watches still receive each
 committed write; publication queues the latest values together.
 
-Deferred/Mailbox and resource adapters, broader typed cleanup capabilities,
+Deferred allocation, claim/delivery, direct readers and public `await` also use
+typed native operations. A Deferred is a private managed source, not an
+application RuntimeAtom: its fixed control array stores claim, assignment,
+value and protected registrations, while ordinary readers use the existing
+one-shot obligations. Callable claim and queued assignment are distinct; an
+unclaimed assignment can win before a later successful callable claim. Values,
+including nil, false and exception objects, remain successful data. Assigned
+awaits return directly to the current trampoline without registration.
+
+Retirement removes ordinary readers immediately. A protected Deferred wait
+retains the named allocation's control state, including when its owner is a
+different computation. Reactive ownership migration can create several retained
+keys for that one allocation; they share the same single-assignment control and
+release holders independently. Producer delivery can settle an exact retained
+allocation, but an old handle grants no ordinary observation or new consumer
+authority after retirement. A cleanup consumer needs an already held retained
+capability, or must attach its protected wait while the allocation is live.
+This retains a resource payload, not the former owner's execution graph.
+
+Deferred assignment acknowledges delivery of a value; it does not itself prove
+that an external thread or resource has physically stopped. Actual shutdown
+acknowledgements still require protected cleanup to return. Deferred fork/cut
+copying refuses explicitly until its assignment, reader and protected-capability
+recovery is implemented. The symbolic model covers retained assignment after
+world release; the native world-release adapter is still a replacement gate.
+
+Mailbox and external resource adapters, broader typed cleanup capabilities,
 component ownership, complete forks/cuts/world release, physical callback joining
 and recovery remain replacement gates. Separate
 reporting of actual cleanup failures also needs compiler provenance; a terminal

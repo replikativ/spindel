@@ -310,6 +310,7 @@
 (def ^:const n-descriptor 32)
 (def ^:const n-cancelled 33)
 (def ^:const n-public-signal 34)
+(def ^:const n-deferred 35)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
@@ -344,6 +345,7 @@
 
 (defrecord Handle [id token body])
 (defrecord Source [id family allocation])
+(defrecord DeferredRef [id family anchor])
 (defrecord Ticket [id])
 (defrecord Delivery [family world obligation])
 (deftype RootOwner [id]
@@ -363,12 +365,28 @@
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
          register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
+         create-public-deferred! claim-public-deferred! deliver-public-deferred! read-public-deferred invoke-public-deferred!
+         assign-deferred! await-public-deferred! deferred-view! deferred-metadata end-deferred-protection! release-ticket-cells!
          public-signal-view! register-public-signal! public-signal-value public-signal-state swap-public-signal! cas-public-signal!
          clear-public-signal-deltas! public-signal-watches edit-public-signal-watch! publish-public-signals! track-public-signal!
          await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
                          operations posts home liveness extension-state finalization managed-cells trace-address]
+  rtp/PSynchronization
+  (create-public-deferred! [this id] (create-public-deferred! this id))
+  (claim-public-deferred! [this ref value]
+    (try (claim-public-deferred! this ref value)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence ref) :cljs nil))))
+  (deliver-public-deferred! [this ref value]
+    (try (deliver-public-deferred! this ref value)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence ref) :cljs nil))))
+  (read-public-deferred [this ref]
+    (try (read-public-deferred this ref)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence ref) :cljs nil))))
+  (invoke-public-deferred! [this ref resolve reject]
+    (try (invoke-public-deferred! this ref resolve reject)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence ref) :cljs nil))))
   rtp/PSignals
   (register-public-signal! [this ref] (register-public-signal! this ref))
   (public-signal-value [this ref] (public-signal-value this ref))
@@ -395,7 +413,8 @@
     (deref-computation! this target id body timeout-ms timeout-val))
   rtp/PComputationAwait
   (await-computation! [this target id body caller-id source-loc resolve reject]
-    (await-public-computation! this target id body caller-id source-loc resolve reject))
+    (try (await-public-computation! this target id body caller-id source-loc resolve reject)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
   (await-computation-finalization! [this operation caller-id source-loc resolve reject]
     (await-public-finalization! this operation caller-id source-loc resolve reject))
   rtp/PTraceAddressing
@@ -686,7 +705,7 @@
   (put node n-kept value))
 
 (defn- node! [rt id kind owner]
-  (let [node (slots 35)]
+  (let [node (slots 36)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
@@ -747,7 +766,7 @@
   ([rt run cancellation]
    (when (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
      (let [ticket (or (a run r-exit)
-                      (doto (slots 17)
+                      (doto (slots 18)
                         (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
                         (put x-phase :ready) (put x-seq (or (a run r-finalization-seq) 0))
                         (put x-reject (a run r-cancel-cont)) (put x-run run)
@@ -798,11 +817,14 @@
                cells (id-dict)]
            (each! [run owners]
                   (each! [node (a run r-owned)]
-                         (when (#{:signal :atom} (a node n-kind))
+                         (when (#{:signal :atom :deferred} (a node n-kind))
                            (let [key [(runtime-field rt :world) (run-id run) (a node n-id)]
                                  cell (or (find! (a profile 1) key)
-                                          (doto (slots 4) (put 0 (a node n-kind)) (put 1 (a node n-value))
-                                                (put 2 (members)) (put 3 (source-allocation rt (a node n-id)))))]
+                                          (let [cell (doto (slots (if (= :deferred (a node n-kind)) 5 4))
+                                                       (put 0 (a node n-kind)) (put 1 (a node n-value))
+                                                       (put 2 (members)) (put 3 (source-allocation rt (a node n-id))))]
+                                            (when (= :deferred (a node n-kind)) (put cell 4 (a node n-deferred)))
+                                            cell))]
                              (assoc! cells key cell)))))
            (doseq [ticket participants]
              (doseq [[key cell] (map-value (a ticket x-cells))] (assoc! cells key cell)))
@@ -837,14 +859,18 @@
   (put ticket x-resolve nil) (put ticket x-reject nil)
   (boundary! rt (when (runtime-field rt :audit) {:t :cleanup-return :th :engine})))
 
-(defn- release-cleanup! [rt ticket]
+(defn- release-ticket-cells! [rt ticket]
+  (end-deferred-protection! rt ticket)
   (let [profile (runtime-field rt :finalization)]
     (doseq [[key cell] (map-value (a ticket x-cells))]
       (remove! (a cell 2) ticket)
       (when (zero? (count! (a cell 2))) (dissoc! (a profile 1) key)))
-    (dissoc! (a profile 0) (a ticket x-id))
-    (doseq [key (keys (map-value (a ticket x-cells)))] (dissoc! (a ticket x-cells) key))
-    (put ticket x-run nil) (put ticket 14 nil) (put ticket x-address nil) (put ticket x-cancel-value nil)))
+    (doseq [key (keys (map-value (a ticket x-cells)))] (dissoc! (a ticket x-cells) key))))
+
+(defn- release-cleanup! [rt ticket]
+  (release-ticket-cells! rt ticket)
+  (dissoc! (a (runtime-field rt :finalization) 0) (a ticket x-id))
+  (put ticket x-run nil) (put ticket 14 nil) (put ticket x-address nil) (put ticket x-cancel-value nil))
 
 (defn- cleanup-cell! [rt source]
   (let [frame (current-activation)
@@ -855,7 +881,7 @@
       (when-not (= :claimed (a ticket x-phase)) (throw (ex-info "Cleanup is not executing" {})))
       (or (first (for [[key cell] (map-value (a ticket x-cells))
                        :when (and (= (:id source) (nth key 2))
-                                  (if (= :atom (a cell 0))
+                                  (if (#{:atom :deferred} (a cell 0))
                                     (= (:allocation source) (a cell 3))
                                     (identical? (:allocation source) (a cell 3))))] [key cell]))
           (throw (ex-info "Source is outside the retained cleanup view" {:error :missing-cleanup-cell :id (:id source)}))))))
@@ -869,10 +895,17 @@
                                   :retired? (= :cps-exit (a ticket x-kind)) :anchor (a ticket x-anchor)}
                            (seq (map-value (a ticket x-cells))) (assoc :cells (set (keys (map-value (a ticket x-cells)))))
                            (a ticket x-cancel-value) (assoc :cancel-value (diagnostic-value (first (a ticket x-cancel-value)) true))
+                           (a ticket 17) (assoc :deferred-wait
+                                                (cond-> {:w (runtime-field rt :world) :e (a (a ticket 17) 2)
+                                                         :allocation (a (a ticket 17) 2) :sequence (a (a ticket 17) 1)}
+                                                  (a (a ticket 17) 3) (assoc :cell (a (a ticket 17) 3))))
                            (a ticket x-delivered) (assoc :delivery (diagnostic-value (a ticket x-value) (a ticket x-failed))))]))
      :cleanup-cells (into {} (for [[key cell] (map-value (a profile 1))]
-                               [key {:kind (a cell 0) :result (a cell 1)
-                                     :holders (set (map #(a % x-id) (items (a cell 2))))}]))}))
+                               [key (cond-> {:kind (a cell 0) :result (if (= :deferred (a cell 0)) (a (a cell 4) 2) (a cell 1))
+                                             :holders (set (map #(a % x-id) (items (a cell 2))))}
+                                      (= :deferred (a cell 0))
+                                      (assoc :allocation (a cell 3) :deferred (assoc (deferred-metadata (a cell 4))
+                                                                                     :assigned? (boolean (a (a cell 4) 1)))))]))}))
 
 (defn- end-ob! [rt ob]
   (when (a ob o-live)
@@ -897,7 +930,7 @@
           (when (zero? (count! waiters)) (dissoc! (runtime-field rt :tickets) host)))))
     (when-let [node (a ob o-debtor)]
       (remove! (a node n-dependents) ob) (mark! rt node)
-      (when (= :atom (a node n-kind))
+      (when (#{:atom :deferred} (a node n-kind))
         (note-cell-gc-blocker-change! rt (a node n-id)))
       (if-let [creditor (a ob o-creditor-node)]
         (when-not
@@ -1025,7 +1058,7 @@
 
 (defn- drop-node-events! [rt node]
   (put node n-source-event nil)
-  (when (= :atom (a node n-kind))
+  (when (#{:atom :deferred} (a node n-kind))
     (note-cell-gc-blocker-change! rt (a node n-id)))
   #?(:clj (.removeIf ^java.util.Collection (runtime-field rt :events)
                      (reify java.util.function.Predicate
@@ -1041,7 +1074,7 @@
         (let [todo (pop todo)]
           (cond
             (contains? seen node) (recur todo seen)
-            (or (#{:signal :atom} (a node n-kind)) (a node n-dirty)) true
+            (or (#{:signal :atom :deferred} (a node n-kind)) (a node n-dirty)) true
             :else
             (recur (into todo (for [run (values (a node n-runs))
                                     ob (items (a run r-obs))
@@ -1066,7 +1099,7 @@
     (creator! rt node nil)
     (dissoc! (runtime-field rt :nodes) (a node n-id))
     (dissoc! (a (runtime-field rt :managed-cells) 0) (a node n-id))
-    (when (= :atom (a node n-kind))
+    (when (#{:atom :deferred} (a node n-kind))
       (note-cell-removal! rt (a node n-id)))
     (when-let [profile (runtime-field rt :finalization)] (dissoc! (a profile 3) (a node n-id)))
     (put node n-body nil) (put node n-value nil) (put node n-resume nil)
@@ -1456,6 +1489,8 @@
         run)))
 
 (defn- start! [rt node owner reentry?]
+  (when-not (= :spin (a node n-kind))
+    (throw (ex-info "Only computations have executable runs" {:error :not-computation :id (a node n-id)})))
   (when-not reentry? (put node n-resume nil))
   (each-copy! [inherited (values (a node n-runs))]
               (when (= :inherited (a inherited r-status)) (cancel! rt inherited)))
@@ -1541,6 +1576,8 @@
            (check-running! run)
            (let [node (or (find! (runtime-field rt :nodes) id)
                           (throw (ex-info "Foreign or released track is outside this slice" {:id id})))
+                 _ (when (= :deferred (a node n-kind))
+                     (throw (ex-info "Deferred permits one-shot await only" {:error :unsupported-deferred-obligation})))
                  _ (when expected-source (public-signal-view! rt expected-source))
                  ob (ob! rt :track node run order resolve reject)]
              (put ob o-last (a node n-value)) (rank! run node)
@@ -1584,6 +1621,8 @@
           (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
             (throw (ex-info "Foreign await is outside this slice" {:id id})))
           (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin run))]
+            (when-not (= :spin (a node n-kind))
+              (throw (ex-info "Computation await target has another kind" {:error :not-computation :id id})))
             (adopt! rt node run)
             (when-not (a node n-owner) (owner! rt node run))
             (when (and (not (work-status? (some-> (current node) (a r-status))))
@@ -1756,6 +1795,7 @@
         (locked target
                 (when-let [ticket (find! (a (runtime-field target :finalization) 0) id)]
                   (when (and (= :waiting (a ticket x-phase)) (= sequence (a ticket x-seq)))
+                    (end-deferred-protection! target ticket)
                     (put ticket x-phase :ready) (put ticket x-value value)
                     (put ticket x-failed failed?) (put ticket x-delivered true)
                     (queue-cleanup! target ticket)))
@@ -1768,6 +1808,7 @@
   (let [run (a ticket x-run)]
     (when (and run (identical? run (current (a run r-node))) (= :parked (a run r-status))
                (= :cps-finalization (a ticket x-kind)) (= :ready (a ticket x-phase)))
+      (release-ticket-cells! rt ticket)
       (dissoc! (a (runtime-field rt :finalization) 0) (a ticket x-id))
       (put run r-exit nil) (put run r-status :running)
       (boundary! rt (when (runtime-field rt :audit)
@@ -1793,7 +1834,7 @@
                                              (when-not (and run (identical? run (current (a run r-node)))
                                                             (nil? (a run r-exit)))
                                                (throw (ex-info "Finalization wait requires the current physical slice" {})))
-                                             (doto (slots 17)
+                                             (doto (slots 18)
                                                (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
                                                (put x-kind :cps-finalization) (put x-cells (id-dict))
                                                (put x-run run))))
@@ -1947,7 +1988,7 @@
         dependents (a (runtime-field rt :counters) 4)
         order (when (runtime-field rt :audit) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
     (when (identical? event (a node n-source-event)) (put node n-source-event nil))
-    (when (= :atom (a node n-kind))
+    (when (#{:atom :deferred} (a node n-kind))
       (note-cell-gc-blocker-change! rt (a node n-id)))
     (try
       (dotimes [index n]
@@ -1956,7 +1997,9 @@
             (if (= :consumed (a ob o-slot))
               (reenter! rt (a ob o-creditor-node) ob)
               (when (and (a ob o-live) (= :parked (a run r-status)))
-                (put ob o-slot :consumed) (put ob o-value value) (put ob o-delivery-error failed?) (put run r-status :running)
+                (put ob o-slot :consumed) (put ob o-value value) (put ob o-delivery-error failed?)
+                (when-not (a ob o-standing) (end-ob! rt ob))
+                (put run r-status :running)
                 (schedule! rt (a ob o-creditor-node) ob)))
             (do (push! (runtime-field rt :hosts)
                        (doto (slots 2) (put 0 (a ob (if failed? o-failure o-success))) (put 1 value)))
@@ -2066,7 +2109,10 @@
           (if-let [post (pop! (runtime-field rt :posts))]
             post
             (if-let [event (pop! (runtime-field rt :events))]
-              (do (process-event! (a (a event 0) n-runtime) event) :event)
+              (do (if (= 7 (alength ^objects event))
+                    (assign-deferred! (a event 0) event)
+                    (process-event! (a (a event 0) n-runtime) event))
+                  :event)
               (or (when-let [profile (runtime-field rt :finalization)]
                     (when-let [ticket (pop! (a profile 2))]
                       (doto (slots 3) (put 0 :cleanup) (put 1 ticket) (put 2 rt))))
@@ -2523,26 +2569,32 @@
                            :e id :allocation collected})))
         {:backing rt :node node :aux aux :owner (a node n-owner) :payload payload})))
 
-(defn allocate-cell! [requested value options]
+(defn- allocate-managed-source! [requested value options kind]
   (admit-world-switch! requested)
   (let [rt (canonical-runtime requested)
         id (keyword (str "atom-" (random-uuid)))
-        payload {:value value :meta (:meta options)}]
+        payload (when (= :atom kind) {:value value :meta (:meta options)})]
     (locked rt
             (check-cell-caller! rt)
             (let [frame (current-activation)
                   run (when (and frame (same-cell-world? rt (a frame 0))) (a frame 1))
                   order (if run (put frame 2 (inc (long (a frame 2)))) 0)
-                  node (node! rt id :atom (or run (runtime-field rt :owner-root)))
+                  node (node! rt id kind (or run (runtime-field rt :owner-root)))
                   aux (doto (slots 3) (put 0 id) (put 1 {}) (put 2 0))]
               (put node n-value payload) (put node n-order order)
+              (when (= :deferred kind)
+                (put node n-deferred (doto (slots 4) (put 0 false) (put 1 false) (put 3 (dict)))))
               (assoc! (a (runtime-field rt :managed-cells) 0) id aux)
               (when run (creation! run node))
               (boundary! rt (when (runtime-field rt :audit)
-                              (cond-> {:t :t02 :w (runtime-field rt :world) :e id :kind :atom
+                              (cond-> {:t (if (= :deferred kind) :deferred-create :t02)
+                                       :w (runtime-field rt :world) :e id :kind kind
                                        :allocation id :value payload :order order}
                                 run (assoc :r (run-id run)))))))
     {:id id :anchor (cell-handles/allocate! id (runtime-field rt :home) collect-home-cell!)}))
+
+(defn allocate-cell! [requested value options]
+  (allocate-managed-source! requested value options :atom))
 
 (defn cell-present? [requested id]
   (admit-world-switch! requested)
@@ -2673,6 +2725,7 @@
 (defn- cell-in-use? [rt node aux]
   (let [id (a node n-id)]
     (or (pos? (long (a aux 2)))
+        (when-let [state (a node n-deferred)] (not (empty-dict? (a state 3))))
         (any! (a node n-dependents) #(a % o-live))
         (any! (runtime-field rt :events) #(identical? node (a % 0)))
         ;; A live following world with no local row still needs this backing.
@@ -2695,7 +2748,7 @@
     (when-let [allocation (find! (a state 1) id)]
       (let [node (find! (runtime-field rt :nodes) id)
             aux (find! (a state 0) id)
-            current? (and node aux (= :atom (a node n-kind)) (= allocation (a aux 0)))]
+            current? (and node aux (#{:atom :deferred} (a node n-kind)) (= allocation (a aux 0)))]
         (when (or (not current?)
                   (and (not (ancestor-cell-gc-pending? rt id allocation))
                        (not (cell-in-use? rt node aux))))
@@ -2749,7 +2802,7 @@
                       (doseq [rt worlds
                               :let [aux (find! (a (runtime-field rt :managed-cells) 0) id)
                                     node (find! (runtime-field rt :nodes) id)]
-                              :when (and aux node (= :atom (a node n-kind)) (= id (a aux 0)))]
+                              :when (and aux node (#{:atom :deferred} (a node n-kind)) (= id (a aux 0)))]
                         (put-cell-gc-receipt! rt id id)
                         (boundary! rt (when (runtime-field rt :audit)
                                         {:t :source-unreachable :w (runtime-field rt :world) :e id :allocation id})))
@@ -2871,7 +2924,8 @@
                                           (a node n-cancelled)
                                           (assoc :cancelled-completion {:run (first (a node n-cancelled))
                                                                         :result (diagnostic-value (a node n-value) true)})
-                                          (= :atom (a node n-kind)) (assoc :allocation (source-allocation rt (a node n-id)))
+                                          (#{:atom :deferred} (a node n-kind)) (assoc :allocation (source-allocation rt (a node n-id)))
+                                          (= :deferred (a node n-kind)) (assoc :deferred (deferred-metadata (a node n-deferred)))
                                           (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
                                           (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
                   :runs (into {} (for [run (items (a (runtime-field rt :counters) 6)) :let [node (a run r-node)]]
@@ -2897,9 +2951,18 @@
                                              (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
                                              (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                              (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
-                  :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world) :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
-                                             (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true)))
-                               (filter #(identical? rt (a (a % 0) n-runtime))
+                  :queue (mapv (fn [event]
+                                 (if (= 7 (alength ^objects event))
+                                   (cond-> {:deferred-assignment (:id (a event 1)) :allocation (:id (a event 1))
+                                            :value (a event 3) :seq (a event 2)}
+                                     (a event 5) (assoc :cell (a event 5)))
+                                   (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world)
+                                            :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
+                                     (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true))))
+                               (filter (fn [event]
+                                         (identical? rt (if (= 7 (alength ^objects event))
+                                                          (a event 0)
+                                                          (a (a event 0) n-runtime))))
                                        (items (runtime-field rt :events))))
                   :seq (a (runtime-field rt :counters) 1)
                   :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
@@ -2928,6 +2991,8 @@
   [rt world]
   (admit-native-effect!)
   (locked rt
+          (when (some #(= :deferred (a % n-kind)) (values (runtime-field rt :nodes)))
+            (throw (ex-info "Deferred fork recovery is not implemented" {:error :unsupported-operation :operation :fork-deferred})))
           (when (runtime-field rt :finalization)
             (throw (ex-info "Protected CPS profile requires fork recovery" {:error :unsupported-finalization-fork})))
           (when (find! (runtime-field rt :family) world)
@@ -3360,38 +3425,41 @@
        (finally (java.lang.ref.Reference/reachabilityFence target)))))
 
 (defn await-public-computation! [requested target id body _caller-id _source-loc resolve reject]
-  (when-not (and id body)
-    (throw (ex-info "Native await requires a typed computation target"
-                    {:error :unsupported-operation :operation :await-resource})))
-  (try
-    (admit-world-switch! requested)
-    (let [rt (canonical-runtime requested) frame (current-activation)]
-      (when-not (and frame (same-cell-world? rt (a frame 0)))
-        (throw (ex-info "Computation await requires the selected native activation"
-                        {:error :unsupported-operation :operation :await-outside-activation})))
-      (let [token (portable-token! rt target id false)
-            resume-resolve (cps-runtime/scope-continuation resolve)
-            resume-reject (cps-runtime/scope-continuation reject)]
-        (loop []
-          (let [witness (prepare-computation! rt id body false token)
-                committed?
-                (locked rt
-                        (check-computation-caller! rt)
-                        (check-public-token! rt token id)
-                        (when (computation-current? rt id witness)
-                          (enter-public-computation! rt id body)
-                          (let [run (a frame 1)
-                                order (put frame 2 (inc (long (a frame 2))))
-                                ob (register-await! rt run order id token body resume-resolve resume-reject
-                                                    (:prepared-reference witness))]
-                            (when-let [node (find! (runtime-field rt :nodes) id)]
-                              (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness))))
-                            ob)))]
-            (if committed?
-              (when (= :consumed (a committed? o-slot))
-                (deliver-value! resolve reject (a committed? o-value) (a committed? o-delivery-error)))
-              (recur))))))
-    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  (if (satisfies? rtp/PDeferred target)
+    (await-public-deferred! requested target resolve reject)
+    (do
+      (when-not (and id body)
+        (throw (ex-info "Native await requires a typed computation target"
+                        {:error :unsupported-operation :operation :await-resource})))
+      (try
+        (admit-world-switch! requested)
+        (let [rt (canonical-runtime requested) frame (current-activation)]
+          (when-not (and frame (same-cell-world? rt (a frame 0)))
+            (throw (ex-info "Computation await requires the selected native activation"
+                            {:error :unsupported-operation :operation :await-outside-activation})))
+          (let [token (portable-token! rt target id false)
+                resume-resolve (cps-runtime/scope-continuation resolve)
+                resume-reject (cps-runtime/scope-continuation reject)]
+            (loop []
+              (let [witness (prepare-computation! rt id body false token)
+                    committed?
+                    (locked rt
+                            (check-computation-caller! rt)
+                            (check-public-token! rt token id)
+                            (when (computation-current? rt id witness)
+                              (enter-public-computation! rt id body)
+                              (let [run (a frame 1)
+                                    order (put frame 2 (inc (long (a frame 2))))
+                                    ob (register-await! rt run order id token body resume-resolve resume-reject
+                                                        (:prepared-reference witness))]
+                                (when-let [node (find! (runtime-field rt :nodes) id)]
+                                  (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness))))
+                                ob)))]
+                (if committed?
+                  (when (= :consumed (a committed? o-slot))
+                    (deliver-value! resolve reject (a committed? o-value) (a committed? o-delivery-error)))
+                  (recur))))))
+        (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))))
 
 (defn await-public-finalization! [requested operation _caller-id _source-loc resolve reject]
   (when-not (ifn? operation)
@@ -3627,3 +3695,236 @@
     (track-id-effect! (:id source) resolve reject
                       (cps-runtime/scope-continuation resolve)
                       (cps-runtime/scope-continuation reject) source)))
+
+;; Deferred synchronization uses a managed source allocation and the engine's
+;; ordinary one-shot obligations. Its private control array is
+;; [claimed?, assigned?, value, protected registrations]. No pending closure
+;; collection lives in an application RuntimeAtom.
+(defn- deferred-metadata [control]
+  {:claimed? (boolean (a control 0))
+   :protected (into {} (for [registration (values (a control 3))]
+                         [(a (a registration 0) x-id) (a registration 1)]))})
+
+(defn create-public-deferred! [requested _public-id]
+  (let [rt (canonical-runtime requested)
+        allocation (allocate-managed-source! requested nil {} :deferred)]
+    (->DeferredRef (:id allocation) (runtime-field rt :family-id) (:anchor allocation))))
+
+(defn- deferred-reference! [rt target]
+  (let [ref (rtp/deferred-payload target)]
+    (when-not (and (instance? DeferredRef ref)
+                   (identical? (runtime-field rt :family-id) (:family ref)))
+      (throw (ex-info "Deferred belongs to another engine or family" {:error :unknown-deferred})))
+    ref))
+
+(defn- deferred-retained [rt id ticket]
+  (when-let [profile (runtime-field rt :finalization)]
+    (first (for [[key cell] (map-value (if ticket (a ticket x-cells) (a profile 1)))
+                 :when (and (= id (nth key 2)) (= :deferred (a cell 0))
+                            (= id (a cell 3)) (pos? (count! (a cell 2))))]
+             {:cell cell :key key :control (a cell 4)}))))
+
+(defn- deferred-ticket [rt]
+  (when-let [frame (current-activation)]
+    (when (same-cell-world? rt (a frame 0))
+      (or (a frame 8) (some-> (a frame 1) (a r-exit))))))
+
+(defn- deferred-view! [rt ref purpose]
+  (let [id (:id ref) frame (current-activation)
+        cleanup? (cleanup-cell-access? rt)
+        ticket (when cleanup? (deferred-ticket rt))
+        node (find! (runtime-field rt :nodes) id)
+        aux (find! (a (runtime-field rt :managed-cells) 0) id)
+        live? (and node aux (= :deferred (a node n-kind))
+                   (a node n-owner) (= id (a aux 0)))
+        retained (when (or cleanup? (not live?)) (deferred-retained rt id ticket))]
+    (when-not (= :assign purpose)
+      (when-not (or (= :protect purpose) cleanup?) (check-cell-caller! rt)))
+    (when (and cleanup? (not= :protect purpose))
+      (when-not (and ticket (= :claimed (a ticket x-phase)) retained)
+        (throw (ex-info "Deferred is outside the retained cleanup capability"
+                        {:error :missing-cleanup-cell :id id}))))
+    (when (and retained (not live?) frame (same-cell-world? rt (a frame 0))
+               (not cleanup?) (not (#{:assign :protect} purpose)))
+      (let [ticket (deferred-ticket rt)]
+        (when-not (and ticket (has? (a (:cell retained) 2) ticket))
+          (throw (ex-info "Ordinary execution has no retained Deferred authority"
+                          {:error :cleanup-only :id id})))))
+    (cond
+      (and retained (or cleanup? (not live?))
+           (or cleanup? (#{:request :assign :protect} purpose))) (assoc retained :node nil :aux nil)
+      live? {:node node :aux aux :control (a node n-deferred)}
+      (and retained (#{:request :assign :protect} purpose)) retained
+      (= :assign purpose) nil
+      :else (throw (ex-info "Released Deferred allocation" {:error :missing-deferred :id id})))))
+
+(defn- deferred-action [rt ref view operation]
+  (cond-> {:t operation :w (runtime-field rt :world) :e (:id ref) :allocation (:id ref)}
+    (:key view) (assoc :cell (:key view))
+    (when-let [frame (current-activation)] (same-cell-world? rt (a frame 0))) (assoc :th :engine)))
+
+(defn read-public-deferred [requested target]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ref (deferred-reference! rt target)]
+    (locked rt
+            (let [view (deferred-view! rt ref :read) control (:control view)]
+              (when (:key view)
+                (boundary! rt (when (runtime-field rt :audit)
+                                {:t :cleanup-cell :th :engine :cell (:key view)})))
+              {:assigned? (boolean (a control 1)) :value (a control 2)}))))
+
+(defn- request-deferred! [requested target value claim?]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ref (deferred-reference! rt target)
+        accepted? (locked rt
+                          (let [view (deferred-view! rt ref :request) control (:control view)
+                                accepted? (or (not claim?) (not (a control 0)))]
+                            (when accepted?
+                              (when claim? (put control 0 true))
+                              (let [aux (:aux view)
+                                    sequence (put (runtime-field rt :counters) 2
+                                                  (inc (max (long (a (runtime-field rt :counters) 1))
+                                                            (long (a (runtime-field rt :counters) 2)))))
+                                    event (doto (slots 7)
+                                            (put 0 rt) (put 1 ref) (put 2 sequence) (put 3 value)
+                                            (put 4 :deferred-assignment) (put 5 (:key view)) (put 6 aux))]
+                                (when aux (put aux 2 (inc (long (a aux 2)))))
+                                (push! (runtime-field rt :events) event)))
+                            (boundary! rt (when (runtime-field rt :audit)
+                                            (assoc (deferred-action rt ref view :deferred-request)
+                                                   :value value :claim? claim?)))
+                            accepted?))]
+    (drain! rt)
+    accepted?))
+
+(defn claim-public-deferred! [requested target value]
+  (boolean (request-deferred! requested target value true)))
+(defn deliver-public-deferred! [requested target value]
+  (request-deferred! requested target value false)
+  value)
+
+(defn- end-deferred-protection! [rt ticket]
+  (when-let [link (a ticket 17)]
+    (let [control (a link 0) id (a ticket x-id)
+          registration (find! (a control 3) id)]
+      (when (and registration (= (a link 1) (a registration 1)))
+        (dissoc! (a control 3) id)
+        (note-cell-gc-blocker-change! rt (a link 2)))
+      (put ticket 17 nil))))
+
+(defn- settle-deferred-protection! [rt ticket sequence value]
+  (when (and (= :waiting (a ticket x-phase)) (= sequence (a ticket x-seq)))
+    (end-deferred-protection! rt ticket)
+    (put ticket x-phase :ready) (put ticket x-value value)
+    (put ticket x-failed false) (put ticket x-delivered true)
+    (queue-cleanup! rt ticket)))
+
+(defn- assign-deferred! [rt event]
+  ;; The dispatcher has claimed this exact envelope. Its source may have moved
+  ;; into a retained cleanup cell since admission; the allocation stays fixed.
+  (let [ref (a event 1) value (a event 3) aux (a event 6)]
+    (when aux
+      (put aux 2 (dec (long (a aux 2))))
+      (note-cell-gc-blocker-change! rt (:id ref)))
+    (when-let [view (deferred-view! rt ref :assign)]
+      (let [control (:control view)]
+        (when-not (a control 1)
+          (put control 1 true) (put control 2 value)
+          (when-let [node (:node view)]
+            (put node n-complete true) (put node n-value value)
+            (enqueue-source! rt node value))
+          (when-let [cell (:cell view)] (put cell 1 value))
+          (doseq [registration (vec (values (a control 3)))]
+            (settle-deferred-protection! rt (a registration 0) (a registration 1) value)))))
+    (boundary! rt (when (runtime-field rt :audit)
+                    (cond-> {:t :deferred-assign :w (runtime-field rt :world)
+                             :e (:id ref) :allocation (:id ref) :seq (a event 2) :value value}
+                      (a event 5) (assoc :cell (a event 5)))))))
+
+(defn- await-public-deferred!
+  ([requested target resolve reject] (await-public-deferred! requested target resolve reject nil))
+  ([requested target resolve reject pending]
+   (admit-world-switch! requested)
+   (let [rt (canonical-runtime requested) ref (deferred-reference! rt target)
+         frame (current-activation)
+         resume-resolve (cps-runtime/scope-continuation resolve)
+         resume-reject (cps-runtime/scope-continuation reject)]
+     (when-not (and frame (same-cell-world? rt (a frame 0)))
+       (throw (ex-info "Deferred await requires the selected activation" {:error :await-outside-activation})))
+     (let [outcome (locked rt
+                           (check-running! (a frame 1))
+                           (let [view (deferred-view! rt ref :await) node (:node view)
+                                 run (a frame 1) control (:control view)
+                                 order (put frame 2 (inc (long (a frame 2))))
+                                 ready? (boolean (a control 1)) value (a control 2)]
+                             (when-not ready?
+                               (ob! rt :await-once node run order resume-resolve resume-reject)
+                               (put run r-status :parked)
+                               (when (runtime-field rt :finalization) (put run r-cancel-cont resume-reject))
+                               (note-cell-gc-blocker-change! rt (:id ref)))
+                             (boundary! rt (when (runtime-field rt :audit)
+                                             {:t :t05 :w (runtime-field rt :world) :r (run-id run)
+                                              :kind :await-once :order order
+                                              :debtor [:entity (runtime-field rt :world) (:id ref)]}))
+                             [ready? value]))]
+       (if (first outcome) (cps/invoke-continuation resolve (second outcome)) pending)))))
+
+(defn- protect-deferred! [requested rt ref ticket]
+  (locked rt
+          (let [view (deferred-view! rt ref :protect) control (:control view)
+                sequence (a ticket x-seq)]
+            (when-not (and (identical? ticket (deferred-ticket rt)) (= :waiting (a ticket x-phase)))
+              (throw (ex-info "Protected Deferred requires a waiting cleanup frame" {:error :not-waiting})))
+            (end-deferred-protection! rt ticket)
+            (if (a control 1)
+              (settle-deferred-protection! rt ticket sequence (a control 2))
+              (let [key (or (:key view) [(runtime-field rt :world) (owner-id (a (:node view) n-owner)) (:id ref)])
+                    profile (runtime-field rt :finalization)
+                    cell (or (:cell view) (find! (a profile 1) key)
+                             (doto (slots 5) (put 0 :deferred) (put 1 (a control 2))
+                                   (put 2 (members)) (put 3 (:id ref)) (put 4 control)))]
+                (assoc! (a profile 1) key cell)
+                (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell)
+                (assoc! (a control 3) (a ticket x-id) (doto (slots 2) (put 0 ticket) (put 1 sequence)))
+                (put ticket 17 (doto (slots 4) (put 0 control) (put 1 sequence) (put 2 (:id ref)) (put 3 key)))
+                (note-cell-gc-blocker-change! rt (:id ref))))
+            (boundary! rt (when (runtime-field rt :audit)
+                            (assoc (deferred-action rt ref view :deferred-protect)
+                                   :n (a ticket x-id) :sequence sequence :th :engine)))))
+  :org.replikativ.spindel.spin/incomplete)
+
+(defn invoke-public-deferred! [requested target resolve reject]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ref (deferred-reference! rt target)
+        frame (current-activation)
+        protected? (locked rt
+                           (when-let [ticket (deferred-ticket rt)]
+                             (when (= :waiting (a ticket x-phase))
+                               (protect-deferred! requested rt ref ticket)
+                               true)))]
+    (cond
+      protected? :org.replikativ.spindel.spin/incomplete
+      (and frame (same-cell-world? rt (a frame 0)))
+      (binding [cps/*in-trampoline* false]
+        (await-public-deferred! requested target resolve reject :org.replikativ.spindel.spin/incomplete))
+      :else
+      (let [ready (locked rt
+                          (let [view (deferred-view! rt ref :observe) control (:control view)]
+                            (when-not (a control 1)
+                              (let [ob (ob! rt :deref (:node view) nil 0 nil nil)]
+                                (put ob o-success (fn [value]
+                                                    (host-callback-scope requested
+                                                                         #(binding [cps/*in-trampoline* false]
+                                                                            (cps/invoke-continuation resolve %)) value)))
+                                (put ob o-failure (fn [error]
+                                                    (host-callback-scope requested
+                                                                         #(binding [cps/*in-trampoline* false]
+                                                                            (cps/invoke-continuation reject %)) error)))))
+                            (boundary! rt (when (runtime-field rt :audit)
+                                            (deferred-action rt ref view :deferred-observe)))
+                            [(boolean (a control 1)) (a control 2)]))]
+        (if (first ready)
+          (host-callback-scope requested
+                               #(binding [cps/*in-trampoline* false] (cps/invoke-continuation resolve %))
+                               (second ready))
+          :org.replikativ.spindel.spin/incomplete)))))

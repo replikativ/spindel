@@ -1,6 +1,8 @@
 (ns org.replikativ.spindel.spin.sync
   "Synchronization primitives - Deferred, Mailbox, never"
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.spin.core :as spin-core]
             [org.replikativ.spindel.atom :as ratom]
             [is.simm.partial-cps.async :as pcps-async]
@@ -11,13 +13,17 @@
 ;; ============================================================================
 
 (deftype Deferred [id state-atom]
-  #?(:clj clojure.lang.IFn :cljs IFn)
+  rtp/PDeferred
+  (deferred-payload [_this] state-atom)
 
-  ;; 1-arity: Assign value via event queue (SAFE)
-  ;; Returns true if this call won delivery rights, false if already claimed.
-  ;; The returned state identifies the winner even when swap! retries.
-  ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
-  (#?(:clj invoke :cljs -invoke) [_this value]
+  #?(:clj clojure.lang.IFn :cljs IFn)
+  (#?(:clj invoke :cljs -invoke) [this value]
+    (rtp/claim-public-deferred! (ec/current-execution-context) this value))
+  (#?(:clj invoke :cljs -invoke) [this resolve reject]
+    (rtp/invoke-public-deferred! (ec/current-execution-context) this resolve reject)))
+
+(defn- claim-legacy-deferred! [_this value]
+  (let [state-atom (rtp/deferred-payload _this)]
     (let [claim-id (random-uuid)
           claimed-state (swap! state-atom
                                (fn [state]
@@ -33,10 +39,10 @@
                               :value value})
           true)
        ;; Someone else already claimed delivery
-        false)))
+        false))))
 
-  ;; 2-arity: Read as spin (resolve, reject) - standard CPS signature
-  (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
+(defn- invoke-legacy-deferred! [_this resolve _reject]
+  (let [state-atom (rtp/deferred-payload _this)]
    ;; ATOMIC check-and-add: Use swap! to check assigned? and add to pending atomically
    ;; This prevents race where assignment happens between check and add-to-pending
     (let [current-spin-id ec/*spin-id*
@@ -79,65 +85,33 @@
         spin-core/incomplete))))
 
 (defn create-deferred
-  "Create a deferred with explicit execution-context.
+  "Create a world-selected single-assignment Deferred in execution-context.
 
-   State is stored in a fork-safe execution-context atom.
-   Fork-safe - state is copied when execution-context is forked.
-
-   Example:
-     (def d (create-deferred execution-context))
-     (d :value)  ; Assign
-     (spin/spin (await d))  ; Read"
+   Bind the intended context when delivering or reading it. The handle carries
+   allocation identity; it does not select its creation world. The selected
+   engine determines storage, lifetime and fork support. Native Deferred world
+   copying currently refuses until registration recovery is implemented."
   [execution-context]
-  (let [dfv-id (keyword (gensym "deferred-"))
-        ;; Use fork-safe atom to store deferred state
-        ;; Note: create-atom uses *execution-context* dynamically, so we bind it
-        state-atom (binding [ec/*execution-context* execution-context]
-                     (ratom/create-atom {:assigned? false
-                                         :value nil
-                                         :pending []}))
-        dfv-obj (->Deferred dfv-id state-atom)]
-
-    ;; TODO: Auto-cleanup on GC (remove state-atom from execution-context when deferred is GC'd)
-
-    dfv-obj))
+  (let [dfv-id (keyword (gensym "deferred-"))]
+    (->Deferred dfv-id (rtp/create-public-deferred! execution-context dfv-id))))
 
 (defn deliver!
-  "Assign a value to deferred from EXTERNAL context (futures, threads, callbacks).
+  "Queue a single-assignment attempt in the bound execution context.
 
-   This is the SAFE way to deliver from external threads/contexts. It enqueues
-   a delivery event to prevent circular waits.
+   Returns value. The first processed attempt assigns the Deferred; later
+   attempts preserve that assignment. Callable `(d value)` separately claims
+   delivery rights and returns a winner boolean. Readers resume after the
+   assignment commits. Ready work may drain before this function returns.
 
-   Usage:
-     ;; From future (external thread)
-     (future
-       (Thread/sleep 100)
-       (deliver! d :value))  ; Safe - enqueues event, returns immediately
-
-     ;; From callback
-     (http-get url
-       (fn [response]
-         (deliver! d response)))  ; Safe - enqueues event
-
-   Contrast with internal delivery:
-     ;; Inside gen-aseq or spin context (SAME execution-context context)
-     (d :value)  ; Fast inline delivery - OK because same context
-
-   When to use which:
-   - Use (d value) when: Inside gen-aseq yield handlers, inside spins
-   - Use deliver! when: From futures, threads, async callbacks, external code
-
-   Why the distinction:
-   - Internal: Inline resume is safe (no circular waits)
-   - External: Must enqueue to prevent caller waiting for itself
-
-   See ENGINE_AND_EXECUTION_MODEL.md for details."
+   External producers must bind their intended execution context."
   [deferred value]
+  (rtp/deliver-public-deferred! (ec/current-execution-context) deferred value))
+
+(defn- deliver-legacy-deferred! [deferred value]
   ;; The delivery is processed in the BOUND context. A deferred created in
   ;; another world (a sibling, or a fork of this context) has no state here:
   ;; its readers would never wake. Say so at the call site.
-  (ratom/check-present! (ratom/atom-id #?(:clj (.-state-atom ^Deferred deferred)
-                                          :cljs (.-state-atom ^js deferred)))
+  (ratom/check-present! (ratom/atom-id (rtp/deferred-payload deferred))
                         :deliver)
   ;; Get execution-context from dynamic binding (*execution-context* is available via with-context or binding propagation)
   ;; Enqueue delivery event - caller returns before continuations execute
@@ -146,33 +120,36 @@
                       :value value})
   value)
 
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PSynchronization
+  (create-public-deferred! [context _id]
+    (binding [ec/*execution-context* context]
+      (ratom/create-atom {:assigned? false :value nil :pending []})))
+  (claim-public-deferred! [context deferred value]
+    (binding [ec/*execution-context* context]
+      (claim-legacy-deferred! deferred value)))
+  (deliver-public-deferred! [context deferred value]
+    (binding [ec/*execution-context* context]
+      (deliver-legacy-deferred! deferred value)))
+  (read-public-deferred [context deferred]
+    (binding [ec/*execution-context* context]
+      (let [state @(rtp/deferred-payload deferred)]
+        {:assigned? (boolean (:assigned? state)) :value (:value state)})))
+  (invoke-public-deferred! [context deferred resolve reject]
+    (binding [ec/*execution-context* context]
+      (invoke-legacy-deferred! deferred resolve reject))))
+
 (defn deferred
-  "Create a single-assignment deferred value using *execution-context*.
+  "Create a single-assignment Deferred using the current execution context.
 
-   A deferred is a synchronization primitive that can be assigned exactly once
-   and read multiple times. Readers block until a value is assigned.
+   `(d value)` returns true for its first callable delivery claim and false
+   thereafter. `(deliver! d value)` queues an unclaimed assignment attempt and
+   returns value. Assignment is decided by the first processed attempt.
 
-   Usage:
-     (def d (deferred))
-     (d :value)              ; Assign :value, returns :value (INTERNAL delivery)
-     (deliver! d :value)     ; Assign from external context (EXTERNAL delivery)
-
-     ;; Inside a spin, use await (not @) to wait for the deferred
-     (require '[org.replikativ.spindel.effects.reactive :refer [await]])
-     (spin/spin
-       (let [value (await d)]  ; Awaits until d is assigned
-         (process value)))
-
-   Properties:
-   - Single assignment: First call assigns value, subsequent calls return same value
-   - Multiple readers: All readers receive the same assigned value
-   - Blocking reads: Reading blocks until value is assigned
-   - Fork-safe: State stored in execution-context atom for distributed execution
-
-   Use cases:
-   - Coordination between concurrent spins
-   - Lazy initialization of shared resources
-   - One-time event notification"
+   Inside a spin, `(await d)` suspends until assignment and returns the assigned
+   value to every reader. Nil, false and exception objects are successful data.
+   Delivery and reads select the bound world; fork support follows that engine."
   []
   (if-let [execution-context (try (ec/current-execution-context) (catch #?(:clj Throwable :cljs :default) _ nil))]
     (create-deferred execution-context)
@@ -309,7 +286,7 @@
   [x spin-id]
   (cond
     (instance? Deferred x)
-    (let [s @(.-state-atom ^Deferred x)]
+    (let [s (rtp/read-public-deferred (ec/current-execution-context) x)]
       (if (:assigned? s) (:value s) nothing))
 
     (instance? Mailbox x)

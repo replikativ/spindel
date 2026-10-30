@@ -10,6 +10,43 @@
 (defn active-slice? [s w r]
   (some #(and (= w (:world %)) (= r (:run %))) (vals (get-in s [:env :threads]))))
 
+(defn update-deferred-resource
+  "Live and retained views name one world-local single-assignment resource."
+  [s w e allocation f]
+  (let [source (get-in s [:worlds w :entities e])
+        source? (and (= :deferred (:kind source)) (= allocation (:allocation source)))
+        cells (for [[key row] (get-in s [:env :cleanup-cells])
+                    :when (and (= w (first key)) (= e (nth key 2 nil))
+                               (= :deferred (:kind row)) (= allocation (:allocation row)))] key)
+        row (if source? source (get-in s [:env :cleanup-cells (first cells)]))
+        resource (cond-> (assoc (:deferred row) :value (:result row))
+                   source? (assoc :assigned? (boolean (:completed? source))))
+        resource (f resource)
+        s (if source?
+            (-> s (assoc-in [:worlds w :entities e :result] (:value resource))
+                (assoc-in [:worlds w :entities e :completed?] (:assigned? resource))
+                (assoc-in [:worlds w :entities e :deferred] (dissoc resource :value :assigned?))) s)]
+    (reduce (fn [s key]
+              (-> s (assoc-in [:env :cleanup-cells key :result] (:value resource))
+                  (assoc-in [:env :cleanup-cells key :deferred] (dissoc resource :value)))) s cells)))
+
+(defn clear-deferred-wait
+  "Remove the exact registration owned by this ticket before its slot changes."
+  [s n]
+  (if-let [{:keys [w e allocation cell sequence]} (get-in s [:env :native n :deferred-wait])]
+    (let [source (get-in s [:worlds w :entities e])
+          live? (and (= :deferred (:kind source)) (= allocation (:allocation source)) (:owner source))
+          cell (or cell (first (filter (fn [key]
+                                         (and (= w (first key)) (= e (nth key 2 nil))
+                                              (= allocation (get-in s [:env :cleanup-cells key :allocation]))))
+                                       (get-in s [:env :native n :cells]))))
+          retained? (and cell (= sequence (get-in s [:env :cleanup-cells cell :deferred :protected n])))
+          path (cond retained? [:env :cleanup-cells cell]
+                     live? [:worlds w :entities e])
+          s (if (and path (= sequence (get-in s (conj path :deferred :protected n))))
+              (update-deferred-resource s w e allocation #(update % :protected dissoc n)) s)]
+      (update-in s [:env :native n] dissoc :deferred-wait)) s))
+
 (defn reserve
   "Reserve before logical teardown. A body that never entered has no CPS exit.
   Completion means finally already returned, so completed caches add no ticket."
@@ -42,8 +79,12 @@
                                         :when (and (exit? row) (= w (first (:owner row)))
                                                    (some owners (:anchor row)))] n))
                 new-cells (for [[e row] (:entities world)
-                                :when (and (owners (:owner row)) (#{:signal :atom} (:kind row)))]
-                            [[w (:owner row) e] (select-keys row [:kind :result])])
+                                :when (and (owners (:owner row)) (#{:signal :atom :deferred} (:kind row)))]
+                            [[w (:owner row) e]
+                             (cond-> (select-keys row [:kind :result])
+                               (= :deferred (:kind row))
+                               (assoc :allocation (:allocation row)
+                                      :deferred (assoc (:deferred row) :assigned? (boolean (:completed? row)))))])
                 old-cells (for [key (set (mapcat #(get-in s [:env :native % :cells]) participants))]
                             [key (get-in s [:env :cleanup-cells key])])
                 cells (concat new-cells old-cells)]
@@ -55,7 +96,7 @@
                                     (assoc-in s [:env :cleanup-cells key] row) participants))) s cells)))))
 
 (defn release-cells [s n]
-  (let [keys (get-in s [:env :native n :cells])]
+  (let [s (clear-deferred-wait s n) keys (get-in s [:env :native n :cells])]
     (reduce (fn [s key]
               (let [holders (disj (get-in s [:env :cleanup-cells key :holders]) n)]
                 (if (seq holders) (assoc-in s [:env :cleanup-cells key :holders] holders)
@@ -90,7 +131,7 @@
               ::not-current-slice {:n n})
     (require! (or inline? (nil? (:run thread))) ::thread-busy {:th th})
     (require! (or inline? (not (active-slice? s w r))) ::slice-busy {:w w :r r})
-    (-> s (update-in [:env :native] dissoc n)
+    (-> (release-cells s n) (update-in [:env :native] dissoc n)
         (assoc-in [:worlds w :runs r :status] :running)
         (cond-> (not inline?)
           (assoc-in [:env :threads th]
@@ -124,7 +165,7 @@
 (defn suspend [s {:keys [th]}]
   (let [n (get-in s [:env :threads th :cleanup-ticket]) row (get-in s [:env :native n])]
     (require! (and n (= :claimed (:phase row))) ::not-claimed {:th th})
-    (update-in s [:env :native n]
+    (update-in (clear-deferred-wait s n) [:env :native n]
                #(-> % (assoc :phase :waiting) (update :sequence inc) (dissoc :delivery)))))
 
 (defn deliver
@@ -132,12 +173,12 @@
   [s {:keys [n sequence value]}]
   (let [row (get-in s [:env :native n])]
     (if (and (protected? row) (= :waiting (:phase row)) (= sequence (:sequence row)))
-      (update-in s [:env :native n] assoc :phase :ready :delivery value) s)))
+      (update-in (clear-deferred-wait s n) [:env :native n] assoc :phase :ready :delivery value) s)))
 
 (defn returning [s {:keys [th]}]
   (let [n (get-in s [:env :threads th :cleanup-ticket]) row (get-in s [:env :native n])]
     (require! (and n (= :claimed (:phase row))) ::not-claimed {:th th})
-    (update-in s [:env :native n] #(-> % (assoc :phase :returning) (dissoc :delivery)))))
+    (update-in (clear-deferred-wait s n) [:env :native n] #(-> % (assoc :phase :returning) (dissoc :delivery)))))
 
 (defn slice-exit
   "A returning cleanup ticket is released only at actual physical return."
@@ -154,6 +195,9 @@
   (let [n (get-in s [:env :threads th :cleanup-ticket]) row (get-in s [:env :native n])]
     (require! (and n (= :claimed (:phase row)) (contains? (:cells row) cell))
               ::missing-cleanup-cell {:th th :cell cell})
+    (require! (not (and (contains? action :value)
+                        (= :deferred (get-in s [:env :cleanup-cells cell :kind]))))
+              ::not-mutable-cleanup-cell {:th th :cell cell})
     (if (contains? action :value) (assoc-in s [:env :cleanup-cells cell :result] value) s)))
 
 (defn errors
@@ -163,6 +207,51 @@
   [s]
   (vec
    (concat
+    (for [[w world] (:worlds s) [e row] (:entities world) :when (= :deferred (:kind row))
+          :when (or (not= e (:allocation row)) (not (boolean? (:completed? row)))
+                    (not (boolean? (get-in row [:deferred :claimed?])))
+                    (not (map? (get-in row [:deferred :protected])))
+                    (seq (remove #{:claimed? :protected} (keys (:deferred row)))))]
+      {:w w :e e :invalid-deferred-source row})
+    (for [[w e allocation key row assigned?]
+          (concat (for [[w world] (:worlds s) [e row] (:entities world) :when (= :deferred (:kind row))]
+                    [w e (:allocation row) nil row (:completed? row)])
+                  (for [[key row] (get-in s [:env :cleanup-cells]) :when (= :deferred (:kind row))]
+                    [(first key) (nth key 2) (:allocation row) key row (get-in row [:deferred :assigned?])]))
+          [n sequence] (get-in row [:deferred :protected])
+          :let [ticket (get-in s [:env :native n]) link (:deferred-wait ticket)
+                linked (get-in s [:env :cleanup-cells (:cell link)])]
+          :when (or assigned? (not (protected? ticket)) (not= :waiting (:phase ticket))
+                    (not= sequence (:sequence ticket)) (not= [w e allocation sequence]
+                                                             [(:w link) (:e link) (:allocation link) (:sequence link)])
+                    (not (contains? (:cells ticket #{}) (:cell link)))
+                    (not (contains? (:holders linked #{}) n))
+                    (not= allocation (:allocation linked))
+                    (not= sequence (get-in linked [:deferred :protected n])))]
+      {:n n :orphan-deferred-registration {:w w :e e :cell key :sequence sequence}})
+    (for [[key cell] (get-in s [:env :cleanup-cells]) :when (= :deferred (:kind cell))
+          :let [w (first key) e (nth key 2 nil) allocation (:allocation cell)
+                source (get-in s [:worlds w :entities e])
+                canonical (if (and (= :deferred (:kind source)) (= allocation (:allocation source)))
+                            {:result (:result source) :deferred (assoc (:deferred source) :assigned? (:completed? source))}
+                            (select-keys
+                             (some (fn [[other-key row]]
+                                     (when (and (= w (first other-key)) (= e (nth other-key 2 nil))
+                                                (= :deferred (:kind row)) (= allocation (:allocation row))) row))
+                                   (get-in s [:env :cleanup-cells])) [:result :deferred]))]
+          :when (not= canonical (select-keys cell [:result :deferred]))]
+      {:cell key :inconsistent-deferred-resource {:expected canonical :actual cell}})
+    (for [[n ticket] (get-in s [:env :native]) :let [link (:deferred-wait ticket)] :when link
+          :let [{:keys [w e allocation cell sequence]} link
+                source (get-in s [:worlds w :entities e])
+                retained (get-in s [:env :cleanup-cells cell])
+                target (if (and (= :deferred (:kind retained)) (= allocation (:allocation retained))
+                                (= sequence (get-in retained [:deferred :protected n]))) retained source)]
+          :when (or (not (protected? ticket)) (not= :waiting (:phase ticket))
+                    (not= w (first (:owner ticket))) (not= sequence (:sequence ticket))
+                    (not= :deferred (:kind target)) (not= allocation (:allocation target))
+                    (not= sequence (get-in target [:deferred :protected n])))]
+      {:n n :invalid-deferred-wait link})
     (for [[n row] (get-in s [:env :native]) :when (finalizing? row)
           :let [[w r] (:owner row) rr (get-in s [:worlds w :runs r])]
           :when (or (not= n (ticket w r)) (not= :running (:state row))
@@ -170,7 +259,8 @@
                     (not (#{:parked :stale} (:status rr)))
                     (not (and (integer? (:sequence row)) (pos? (:sequence row))))
                     (not= (:sequence row) (:finalization-sequence rr))
-                    (seq (:cells row)) (not= r (first (:anchor row)))
+                    (some #(not= :deferred (get-in s [:env :cleanup-cells % :kind])) (:cells row))
+                    (not= r (first (:anchor row)))
                     (not= w (last (:anchor row))))]
       {:n n :invalid-live-finalization row})
     (for [[n row] (get-in s [:env :native]) :when (exit? row)
@@ -190,8 +280,16 @@
           :let [expected (set (for [[n row] (get-in s [:env :native])
                                     :when (contains? (:cells row) key)] n))]
           :when (or (empty? expected) (not= expected (:holders cell))
-                    (not (#{:signal :atom} (:kind cell)))
-                    (seq (remove #{:kind :result :holders} (keys cell))))]
+                    (not (#{:signal :atom :deferred} (:kind cell)))
+                    (and (= :deferred (:kind cell))
+                         (or (not= (:allocation cell) (nth key 2 nil))
+                             (not (boolean? (get-in cell [:deferred :assigned?])))
+                             (not (boolean? (get-in cell [:deferred :claimed?])))
+                             (not (map? (get-in cell [:deferred :protected])))
+                             (seq (remove #{:assigned? :claimed? :protected} (keys (:deferred cell))))))
+                    (seq (remove (if (= :deferred (:kind cell))
+                                   #{:kind :result :holders :allocation :deferred}
+                                   #{:kind :result :holders}) (keys cell))))]
       {:cell key :payload cell :expected-holders expected})
     (for [[n row] (get-in s [:env :native]) key (:cells row)
           :when (not (contains? (get-in s [:env :cleanup-cells key :holders] #{}) n))]

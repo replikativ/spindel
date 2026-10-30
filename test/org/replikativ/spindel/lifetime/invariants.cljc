@@ -837,8 +837,12 @@
                                                (some #{root} (:anchor row)))] n))
         participants (set/union eligible old-participants)
         captures (into {} (for [[e row] (:entities (m/wr before w))
-                                :when (and (under? (:owner row)) (#{:atom :signal} (:kind row)))]
-                            [[w (:owner row) e] (select-keys row [:kind :result])]))
+                                :when (and (under? (:owner row)) (#{:atom :signal :deferred} (:kind row)))]
+                            [[w (:owner row) e]
+                             (cond-> (select-keys row [:kind :result])
+                               (= :deferred (:kind row))
+                               (assoc :allocation (:allocation row)
+                                      :deferred (assoc (:deferred row) :assigned? (boolean (:completed? row)))))]))
         shared (set (concat (keys captures)
                             (mapcat #(get-in before [:env :native % :cells]) old-participants)))]
     (concat
@@ -847,11 +851,52 @@
      (for [n participants key shared
            :let [cell (get-in after [:env :cleanup-cells key])
                  old-cell (get-in before [:env :cleanup-cells key])
-                 payload (or (some-> old-cell (select-keys [:kind :result])) (get captures key))]
+                 fields (if (= :deferred (:kind cell)) [:kind :result :allocation :deferred] [:kind :result])
+                 payload (or (some-> old-cell (select-keys fields)) (get captures key))]
            :when (or (not (contains? (get-in after [:env :native n :cells] #{}) key))
                      (not (contains? (:holders cell #{}) n))
-                     (not= payload (select-keys cell [:kind :result])))]
+                     (not= payload (select-keys cell fields)))]
        {:n n :lost-retirement-cell key :expected payload :actual cell}))))
+
+(defn- deferred-ready-value [before action n]
+  (let [w (:w action)
+        event (or (first (:queue (m/wr before w)))
+                  (:event (first (filter #(= w (:w %)) (get-in before [:env :outside])))))
+        request (case (:t action)
+                  :deferred-assign action
+                  :arrival (when (:deferred-assignment (:event action))
+                             (assoc (:event action) :e (:deferred-assignment (:event action))))
+                  :queued (when (:deferred-assignment event) (assoc event :e (:deferred-assignment event)))
+                  nil)
+        assignment? (and request (:deferred-assignment event)
+                         (= [(:deferred-assignment event) (:allocation event) (:seq event) (:cell event)]
+                            [(:e request) (:allocation request) (:seq request) (:cell request)]))
+        e (if assignment? (:deferred-assignment event) (:e action))
+        allocation (if assignment? (:allocation event) (:allocation action))
+        key (if assignment? (:cell event) (:cell action))
+        source (m/ent before w e)
+        key (or key (when-not (and (= :deferred (:kind source)) (:owner source))
+                      (first (for [[key row] (get-in before [:env :cleanup-cells])
+                                   :when (and (= w (first key)) (= e (nth key 2 nil))
+                                              (= allocation (:allocation row)))] key))))
+        target (if key (get-in before [:env :cleanup-cells key]) source)
+        assigned? (if key (get-in target [:deferred :assigned?]) (:completed? target))
+        ticket (get-in before [:env :native n])
+        link (:deferred-wait ticket)
+        linked (get-in before [:env :cleanup-cells (:cell link)])
+        source? (and target (= :deferred (:kind target)) (= e allocation (:allocation target)))
+        registration? (and (= [w e allocation (:sequence ticket)]
+                              [(:w link) (:e link) (:allocation link) (:sequence link)])
+                           (contains? (:cells ticket #{}) (:cell link))
+                           (contains? (:holders linked #{}) n)
+                           (= w (first (:cell link))) (= e (nth (:cell link) 2 nil))
+                           (= allocation (:allocation linked))
+                           (= (:sequence ticket) (get-in linked [:deferred :protected n])))]
+    (cond
+      (and (= :deferred-protect (:t action)) (= n (:n action)) source? assigned?
+           (= :waiting (:phase ticket)) (= (:sequence action) (:sequence ticket))) {:value (:result target)}
+      (and assignment? source? registration? (not assigned?) (= :waiting (:phase ticket))
+           (= (:sequence ticket) (get-in target [:deferred :protected n]))) {:value (:value event)})))
 
 (defn- finalization-edge-errors [before action after]
   (concat
@@ -875,7 +920,10 @@
                resume? (and (= :finalization-resume (:t action)) (= n (:n action)))
                delivered? (and (= :cleanup-deliver (:t action)) (= n (:n action))
                                (= :waiting (:phase row)) (= (:sequence row) (:sequence action)))
-               expected (cond-> row delivered? (assoc :phase :ready :delivery (:value action)))
+               deferred-ready (deferred-ready-value before action n)
+               expected (cond-> row
+                          delivered? (assoc :phase :ready :delivery (:value action))
+                          deferred-ready (assoc :phase :ready :delivery (:value deferred-ready)))
                th (:th action) thread (get-in before [:env :threads th])
                inline? (and (:executing? thread) (= [w r] [(:world thread) (:run thread)]))
                expected-frame (if inline? thread
@@ -929,6 +977,23 @@
                          :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
                                     (= :unwinding (:status (m/run after v r))))] [v r]))]
       (vec (concat
+            (when (= :deferred-protect (:t action))
+              (let [{:keys [w e allocation cell n sequence]} action
+                    source (m/ent before w e)
+                    original (if cell (get-in before [:env :cleanup-cells cell]) source)
+                    assigned? (if cell (get-in original [:deferred :assigned?]) (:completed? original))
+                    key (or cell [w (:owner source) e])
+                    retained (get-in after [:env :cleanup-cells key])
+                    expected (when original
+                               {:kind :deferred :allocation allocation :result (:result original)
+                                :deferred (-> (:deferred original)
+                                              (assoc :assigned? (boolean assigned?))
+                                              (assoc-in [:protected n] sequence))})]
+                (when (and (not assigned?)
+                           (or (not= expected (select-keys retained [:kind :allocation :result :deferred]))
+                               (not (contains? (:holders retained #{}) n))
+                               (not (contains? (get-in after [:env :native n :cells] #{}) key))))
+                  [{:n n :lost-protected-deferred {:key key :expected expected :actual retained}}])))
             (finalization-edge-errors before effective after)
             (when (= :cleanup-adopt (:t effective))
               (let [n (:n effective) th (:th effective)
@@ -995,7 +1060,7 @@
                              (some #(and (= v (first %)) (= r (:owner (nth % 2)))
                                          (not= :unwinding (:status (nth % 2)))) (runs after))
                              (some #(= [:run v r] (:creditor (nth % 2))) (obligations after))
-                             (and (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t)
+                             (and (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q :deferred-create :deferred-observe} t)
                                   (not (and refusal (= before after)
                                             (= (if (= :released (:status (m/wr before v)))
                                                  ::m/released ::m/cancelled) (:error refusal)))))))
