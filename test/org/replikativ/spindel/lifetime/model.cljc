@@ -723,12 +723,18 @@
                  (cond-> {:deferred-assignment e :allocation allocation :seq seq}
                    cell (assoc :cell cell)))
               ::not-deferred-assignment {:w w :e e :front front})
+    (require! (or (not (contains? action :value)) (= value (:value front)))
+              ::not-deferred-assignment {:w w :e e :front front})
     (let [value (:value front)
           s (if queued (update-in s [:worlds w :queue] #(vec (rest %)))
                 (update-in s [:env :outside]
                            #(let [[a b] (split-with (fn [held] (not= held outside)) %)]
                               (into (vec a) (rest b)))))
-          {:keys [path row assigned? cell] :as view} (deferred-view s action true)]
+          ;; The original cohort is authenticated above. Its holder may have
+          ;; returned since acceptance; resolve only this same allocation.
+          {:keys [path row assigned? cell] :as view}
+          (or (deferred-view s action true)
+              (deferred-view s (dissoc action :cell) true))]
       (if (or (nil? view) assigned?) s
           (let [protected (get-in row [:deferred :protected])
                 s (cleanup/update-deferred-resource s w e allocation

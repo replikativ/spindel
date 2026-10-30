@@ -1778,13 +1778,17 @@
         outside (when outside? (first (filter #(= w (:w %)) (get-in (root-state ctx) [:env :outside]))))
         event (or queued (:event outside))]
     (require! (and (= e (:deferred-assignment event)) (= allocation (:allocation event))
-                   (= seq (:seq event)) (= cell (:cell event)))
+                   (= seq (:seq event)) (= cell (:cell event))
+                   (or (not (contains? action :value)) (= (:value action) (:value event))))
               ::not-deferred-assignment {:w w :event event})
     (if outside?
       (root-edit! ctx update-in [:env :outside]
                   #(vec (remove (fn [held] (and (= w (:w held)) (= seq (get-in held [:event :seq])))) %)))
       (header-edit! ctx w update :queue #(vec (rest %))))
-    (let [view (deferred-view ctx action true)
+    ;; A committed envelope keeps its original cell evidence even if that
+    ;; cohort ended. No caller admission is inferred from this resolution.
+    (let [view (or (deferred-view ctx action true)
+                   (deferred-view ctx (dissoc action :cell) true))
           row (:row view)
           assigned? (if (:cell view) (get-in row [:deferred :assigned?]) (:completed? row))]
       (when (and row (not assigned?))
