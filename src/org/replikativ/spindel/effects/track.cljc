@@ -16,6 +16,7 @@
       (let [todos-iv (track todos)]
         (->> todos-iv (ifilter :active) (imap :hours) (ireduce + 0))))"
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.addressing :as addressing]
@@ -203,7 +204,7 @@
     ;; On first call, we return full deltas (initial render needs them)
     (spin-core/resume resolve (get-track-value signal-ref))))
 
-(defn track-handler
+(defn- legacy-track-handler
   "Unified direct track handler - dispatches based on type.
 
   This is the entry point called from CPS-transformed code.
@@ -223,6 +224,21 @@
 
     (catch #?(:clj Throwable :cljs js/Error) t
       (reject t))))
+
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PSignalTracking
+  (track-public-signal! [context signal-ref spin-id source-loc resolve reject]
+    (binding [ec/*execution-context* context]
+      (legacy-track-handler signal-ref spin-id source-loc resolve reject))))
+
+(defn track-handler
+  "Dispatch a public track checkpoint to the selected runtime."
+  [trackable spin-id source-loc resolve reject]
+  (if (signal-ref? trackable)
+    (rtp/track-public-signal! (ec/current-execution-context)
+                              trackable spin-id source-loc resolve reject)
+    (reject (eff/type-error 'track "SignalRef (not spins)" trackable))))
 
 ;; =============================================================================
 ;; Registration

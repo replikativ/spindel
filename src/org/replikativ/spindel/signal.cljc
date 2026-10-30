@@ -2,6 +2,7 @@
   "Signal creation and manipulation"
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.context :as ctx]
             [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.nodes :as nodes]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -64,8 +65,9 @@
           (let [result# (do ~@body)
                 ids# @*batched-signal-ids*]
             ;; Enqueue one event per distinct signal (preserve order)
-            (doseq [id# (distinct ids#)]
-              (ec/enqueue-event! {:type :signal-change :id id#}))
+            (when (seq ids#)
+              (rtp/publish-public-signals! (ec/current-execution-context)
+                                           (vec (distinct ids#))))
             result#)))))
 
 ;; CLJS version - function since macros not available cross-platform
@@ -82,8 +84,9 @@
          (let [result (thunk)
                ids @*batched-signal-ids*]
            ;; Enqueue one event per distinct signal (preserve order)
-           (doseq [id (distinct ids)]
-             (ec/enqueue-event! {:type :signal-change :id id}))
+           (when (seq ids)
+             (rtp/publish-public-signals! (ec/current-execution-context)
+                                          (vec (distinct ids))))
            result)))))
 
 ;; =============================================================================
@@ -138,12 +141,13 @@
        (setValidator [_ _]
                      (throw (UnsupportedOperationException. "Validators not supported on signals")))
        (getValidator [_] nil)
-       (getWatches [_] (ec/get-state [:listeners id]))
+       (getWatches [this]
+                   (rtp/public-signal-watches (ec/current-execution-context) this))
        (addWatch [this k f]
-                 (ec/swap-state! [:listeners id] (fn [w] (assoc w k f)))
+                 (rtp/add-public-signal-watch! (ec/current-execution-context) this k f)
                  this)
        (removeWatch [this k]
-                    (ec/swap-state! [:listeners id] (fn [w] (dissoc w k)))
+                    (rtp/remove-public-signal-watch! (ec/current-execution-context) this k)
                     this)]
 
       :cljs
@@ -170,13 +174,15 @@
        IWatchable
        ;; See the :clj IRef note — fork-local egress listeners, fired at the commit site.
        (-add-watch [this k f]
-                   (ec/swap-state! [:listeners id] (fn [w] (assoc w k f)))
+                   (rtp/add-public-signal-watch! (ec/current-execution-context) this k f)
                    this)
        (-remove-watch [this k]
-                      (ec/swap-state! [:listeners id] (fn [w] (dissoc w k)))
+                      (rtp/remove-public-signal-watch! (ec/current-execution-context) this k)
                       this)
        (-notify-watches [this old new]
-                        (ec/notify-listeners! this id old new)
+                        (ec/notify-listeners! this id old new
+                                              (rtp/public-signal-watches
+                                               (ec/current-execution-context) this))
                         this)]))
 
 ;; Resolve print-method dispatch ambiguity. SignalRef is a defrecord —
@@ -194,7 +200,7 @@
 #?(:clj (prefer-method print-method clojure.lang.IPersistentMap clojure.lang.IDeref))
 
 ;; Ensure a signal has an initialized entry in the runtime state
-(defn ensure-signal-initialized!
+(defn- ensure-legacy-signal-initialized!
   [^SignalRef signal-ref]
   (let [id (:id signal-ref)
         context (ec/current-execution-context)
@@ -211,26 +217,23 @@
         (lifetime/record-owned-source! context (ec/get-state [:nodes id :lifetime/owner]) id)))
     nil))
 
-;; Simple value read helper (non-reactive)
+(defn ensure-signal-initialized!
+  "Ensure a legacy signal exists, or validate an existing native allocation."
+  [signal-ref]
+  (rtp/public-signal-state (ec/current-execution-context) signal-ref)
+  nil)
+
 (defn get-signal-value
-  [^SignalRef signal-ref]
-  (ensure-signal-initialized! signal-ref)
-  ;; NEW: Read from :nodes using protocol (Phase 1B read migration)
-  (let [id (:id signal-ref)
-        node (ec/get-state [:nodes id])]
-    (when node
-      (nodes/get-value node))))
+  "Read the raw, deltaable-wrapped current value without tracking."
+  [signal-ref]
+  (rtp/public-signal-value (ec/current-execution-context) signal-ref))
 
 (defn get-signal-state
-  "Get full signal state from runtime.
-
-  Returns SignalNode record from :nodes structure."
+  "Read the immutable SignalNode-shaped view from the selected runtime."
   [signal-ref]
-  (ensure-signal-initialized! signal-ref)
-  ;; NEW: Read from :nodes (Phase 1B read migration)
-  (ec/get-state [:nodes (:id signal-ref)]))
+  (rtp/public-signal-state (ec/current-execution-context) signal-ref))
 
-(defn clear-signal-deltas!
+(defn- clear-legacy-signal-deltas!
   "Clear deltas from signal node after they've been consumed.
 
   This prevents stale deltas from being re-processed on subsequent
@@ -250,6 +253,11 @@
                                 (:deltaable? node)
                                 (nodes/get-observers node))
                                :lifetime/owner (:lifetime/owner node)))))))
+
+(defn clear-signal-deltas!
+  "Clear the current signal packet's deltas, preserving its old snapshot."
+  [signal-ref]
+  (rtp/clear-public-signal-deltas! (ec/current-execution-context) signal-ref))
 
 ;; =============================================================================
 ;; Signal Interval Helper (replaces SignalDeltaView)
@@ -280,11 +288,11 @@
 ;; Signal Creation and Manipulation
 ;; =============================================================================
 
-(defn register-signal! [context signal-ref]
+(defn- register-legacy-signal! [context signal-ref]
   (let [id (:id signal-ref)
         owner (lifetime/current-scope context)]
     (binding [ec/*execution-context* context]
-      (ensure-signal-initialized! signal-ref))
+      (ensure-legacy-signal-initialized! signal-ref))
     (when (lifetime/successor-run? (rtp/get-state context [:nodes id :lifetime/owner]) owner)
       (rtp/swap-state! context [:nodes id]
                        (fn [node]
@@ -294,6 +302,9 @@
       (when (= owner (rtp/get-state context [:nodes id :lifetime/owner]))
         (lifetime/record-owned-source! context owner id))))
   signal-ref)
+
+(defn register-signal! [context signal-ref]
+  (rtp/register-public-signal! context signal-ref))
 
 #?(:clj
    (defmacro signal
@@ -336,52 +347,21 @@
             ctx# (->SignalRef id# (d/clear-deltas ~initial-value))))))))
 
 (defn- swap-signal*-explicit
-  "Internal worker for swap-signal! using PState protocol."
   [signal-ref f & args]
-  (ensure-signal-initialized! signal-ref)
-  (let [id (:id signal-ref)]
+  (let [deferred? (and *batching?* *batched-signal-ids*)
+        committed (when deferred?
+                    (let [ids *batched-signal-ids*
+                          id (:id signal-ref)]
+                      (fn [] (swap! ids conj id))))]
+    (:value (rtp/swap-public-signal! (ec/current-execution-context)
+                                     signal-ref f args (not deferred?) committed false))))
 
-    ;; Update signal value in [:nodes id] using SignalNode (Phase 1B)
-    (let [new-node (ec/swap-state! [:nodes id]
-                                   (fn [old-node]
-                                     (when old-node
-                                       (let [old-value (nodes/get-value old-node)
-                                             new-value (apply f old-value args)
-                                             deltas (d/get-deltas new-value)
-                                             clean-value (d/clear-deltas new-value)
-                               ;; Increment generation for O(1) identity-based caching
-                                             old-generation (or (:generation old-node) 0)]
-                                         (assoc (nodes/->signal-node clean-value
-                                                                     old-value
-                                                                     deltas
-                                                                     (:deltaable? old-node)
-                                                                     (nodes/get-observers old-node)
-                                                                     (inc old-generation))
-                                                :lifetime/owner (:lifetime/owner old-node))))))]
-
-      ;; Either collect for batch or enqueue immediately
-      (if (and *batching?* *batched-signal-ids*)
-        ;; Batching: collect signal ID for later
-        (swap! *batched-signal-ids* conj id)
-        ;; Normal: enqueue engine event for reactive propagation
-        (ec/enqueue-event! {:type :signal-change :id id}))
-
-      ;; Fire outward-egress listeners (add-watch) AFTER the commit. Per-swap even
-      ;; under batching (atom-watch contract). No-op when there are no listeners.
-      (when new-node
-        (ec/notify-listeners! signal-ref id (:old-snapshot new-node) (nodes/get-value new-node)))
-
-      ;; Return new snapshot
-      (nodes/get-value new-node))))
-
-(defn- swap-signal-changed?-explicit
-  "Like swap-signal*-explicit, but returns a boolean indicating if the value changed.
-
-  Ensures change detection is computed atomically within the update."
-  [signal-ref f & args]
-  (ensure-signal-initialized! signal-ref)
+(defn- swap-legacy-signal!
+  "Commit a legacy update and return its clean value and atomic change flag."
+  [signal-ref f args publish? committed observe-change?]
+  (ensure-legacy-signal-initialized! signal-ref)
   (let [id (:id signal-ref)
-        changed? (volatile! false)]
+        changed? (volatile! nil)]
 
     ;; Update signal value in [:nodes id] using SignalNode (Phase 1B)
     (let [new-node (ec/swap-state! [:nodes id]
@@ -393,7 +373,8 @@
                                              clean-value (d/clear-deltas new-value)
                 ;; Increment generation for O(1) identity-based caching
                                              old-generation (or (:generation old-node) 0)]
-                                         (vreset! changed? (not= old-value clean-value))
+                                         (when observe-change?
+                                           (vreset! changed? (not= old-value clean-value)))
                                          (assoc (nodes/->signal-node clean-value
                                                                      old-value
                                                                      deltas
@@ -402,15 +383,26 @@
                                                                      (inc old-generation))
                                                 :lifetime/owner (:lifetime/owner old-node))))))]
 
+      ;; Record commit order before a watch can perform a reentrant write.
+      (when (and new-node committed)
+        (committed))
+
       ;; Enqueue engine event
-      (ec/enqueue-event! {:type :signal-change :id id})
+      (when publish?
+        (ec/enqueue-event! {:type :signal-change :id id}))
 
       ;; Fire outward-egress listeners after the commit
       (when new-node
         (ec/notify-listeners! signal-ref id (:old-snapshot new-node) (nodes/get-value new-node)))
 
-      ;; Return changed flag
-      @changed?)))
+      ;; Return both observations of the committed update
+      {:value (nodes/get-value new-node) :changed? @changed?})))
+
+(defn- swap-signal-changed?-explicit
+  [signal-ref f & args]
+  ;; This API historically publishes immediately, including inside batch.
+  (:changed? (rtp/swap-public-signal! (ec/current-execution-context)
+                                      signal-ref f args true nil true)))
 
 (defn swap-signal-changed?
   "Like swap! but returns boolean indicating if the signal value changed.
@@ -433,7 +425,7 @@
   [signal-ref]
   (get-signal-value signal-ref))
 
-(defn compare-and-set-signal!
+(defn- cas-legacy-signal!
   "Atomically install `newval` iff the signal's current value is `identical?` to
    `oldval` — atom-CAS semantics, where `oldval` is the exact object the caller just
    read. Returns true on success, false if the value changed under it.
@@ -444,8 +436,8 @@
    the runtime's own atomicity. On success it bumps the generation and enqueues a
    reactive change like any `swap!`. This is the primitive a race-free
    read→await→commit uses (`swap-await!`): a false return means re-read and re-merge."
-  [signal-ref oldval newval]
-  (ensure-signal-initialized! signal-ref)
+  [signal-ref oldval newval publish?]
+  (ensure-legacy-signal-initialized! signal-ref)
   (let [id (:id signal-ref)]
     (loop []
       (let [old-node (ec/get-state [:nodes id])]
@@ -466,10 +458,18 @@
             ;; with an =-value) re-checks the value identity above and retries — a
             ;; bounded sync loop (no await inside ⇒ no partial-cps loop/recur hazard).
             (if (ec/cas-state! [:nodes id] old-node new-node)
-              (do (ec/enqueue-event! {:type :signal-change :id id})
+              (do (when publish?
+                    (ec/enqueue-event! {:type :signal-change :id id}))
                   (ec/notify-listeners! signal-ref id oldval clean-value)
                   true)
               (recur))))))))
+
+(defn compare-and-set-signal!
+  "Install newval iff the raw current value is identical to oldval.
+   Like the historical CAS operation, success publishes even inside batch."
+  [signal-ref oldval newval]
+  (rtp/cas-public-signal! (ec/current-execution-context)
+                          signal-ref oldval newval true))
 
 (defn signal-ref?
   "True if `x` is a spindel SignalRef (runtime-backed signal) vs a plain atom."
@@ -551,10 +551,44 @@
   - [] if the value is deltaable but no changes yet
   - [delta...] if there are deltas"
   [signal-ref]
-  (ensure-signal-initialized! signal-ref)
   (let [signal-state (get-signal-state signal-ref)
         snapshot (:snapshot signal-state)]
     (signal-interval (:old-snapshot signal-state)
                      snapshot
                      (:deltas signal-state))))
 
+;; Generic state authority is confined to the legacy implementation.
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PSignals
+  (register-public-signal! [context signal-ref]
+    (register-legacy-signal! context signal-ref))
+  (public-signal-state [context signal-ref]
+    (binding [ec/*execution-context* context]
+      (ensure-legacy-signal-initialized! signal-ref)
+      (rtp/get-state context [:nodes (:id signal-ref)])))
+  (public-signal-value [context signal-ref]
+    (binding [ec/*execution-context* context]
+      (ensure-legacy-signal-initialized! signal-ref)
+      (when-let [node (rtp/get-state context [:nodes (:id signal-ref)])]
+        (nodes/get-value node))))
+  (swap-public-signal! [context signal-ref f args publish? committed observe-change?]
+    (binding [ec/*execution-context* context]
+      (swap-legacy-signal! signal-ref f args publish? committed observe-change?)))
+  (cas-public-signal! [context signal-ref old-value new-value publish?]
+    (binding [ec/*execution-context* context]
+      (cas-legacy-signal! signal-ref old-value new-value publish?)))
+  (clear-public-signal-deltas! [context signal-ref]
+    (binding [ec/*execution-context* context]
+      (clear-legacy-signal-deltas! signal-ref)))
+  (public-signal-watches [context signal-ref]
+    (rtp/get-state context [:listeners (:id signal-ref)]))
+  (add-public-signal-watch! [context signal-ref key f]
+    (rtp/swap-state! context [:listeners (:id signal-ref)] #(assoc % key f))
+    signal-ref)
+  (remove-public-signal-watch! [context signal-ref key]
+    (rtp/swap-state! context [:listeners (:id signal-ref)] #(dissoc % key))
+    signal-ref)
+  (publish-public-signals! [context ids]
+    (doseq [id (distinct ids)]
+      (rtp/enqueue! context {:type :signal-change :id id}))))

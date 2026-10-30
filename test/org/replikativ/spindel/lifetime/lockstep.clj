@@ -212,6 +212,9 @@
    {:withdraw-deref
     {:status :not-yet :step :B2 :reason :requires-deref-withdrawal-adapter
      :restrictions (constantly nil) :dispatch nil}}
+   {:signal-publish
+    {:status :not-yet :step :B2 :reason :requires-deferred-publication-adapter
+     :restrictions (constantly nil) :dispatch nil}}
    {:cancel-computation
     {:status :not-yet :step :B3 :reason :requires-public-cancellation-adapter
      :restrictions (constantly nil) :dispatch nil}}
@@ -263,7 +266,9 @@
      :t07 {:dispatch (fn [driver {:keys [w r] :as a}] (send-command! driver w (first r) a))}
      :t11 {:dispatch (fn [driver {:keys [r]}]
                        (when-let [s (get-in @driver [:handles (first r)])] (sc/cancel-spin! s)))}
-     :signal-write {:dispatch (fn [driver {:keys [e value]}] (reset! (get-in @driver [:handles e]) value))}
+     :signal-write {:restrictions (fn [a] (when (false? (:publish? a))
+                                            {:step :B2 :reason :requires-deferred-publication-adapter}))
+                    :dispatch (fn [driver {:keys [e value]}] (reset! (get-in @driver [:handles e]) value))}
      :t19 {:dispatch (fn [driver {:keys [w v k]}]
                        (let [h (ygg/fork! {:systems :none :sync? true})]
                          (swap! driver assoc-in [:contexts v] (:child-ctx h))

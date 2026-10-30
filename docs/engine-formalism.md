@@ -1595,6 +1595,15 @@ These operations obey the ordinary admission and cut boundaries. Public
 cancellation retains raw T11's invalidation of an already-consumed reactive
 parent; it does not install an explicit-cancellation fence on that parent.
 
+**Source mutation and publication.** `signal-write(w, e, value)` commits a
+source value and normally queues its invalidation locally and for foreign
+followers. With `:publish? false`, it commits only the value: existing queued
+envelopes remain valid, but this write queues no new one. `signal-publish(w, e)`
+requires ordinary admitted authority and an owned live source, then queues its
+current value without changing it. Repeated source invalidations coalesce; this
+is a current-state notification, not a lossless history. Protected cleanup may
+update its retained payload, but cannot publish ordinary work.
+
 **D. Host GC (idle caches only)**
 
 | T | Transition | Pre | Effect | Re-establishes |

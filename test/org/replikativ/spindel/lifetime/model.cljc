@@ -598,6 +598,16 @@
     (cond-> (assoc-in s [:worlds w :entities e :dirty?] true)
       (run s w r) (assoc-in [:worlds w :runs r :validation-lost?] true))))
 
+(defn publish-signal
+  "Publish a source's committed value without writing it again."
+  [s {:keys [w e]}]
+  (executable! s w)
+  (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})
+  (let [source (ent s w e)]
+    (require! (and (#{:signal :atom} (:kind source)) (:owner source)) ::released {:w w :e e})
+    (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:result source) :source-change? true})
+            s (conj (fdep-targets (wr s w) e) w))))
+
 (defn withdraw-deref
   "Withdraw one local host deref observer without cancelling its computation."
   [s {:keys [w o]}]
@@ -1807,7 +1817,7 @@
    :cleanup-cell cleanup/access
    :source-unreachable managed-cells/unreachable :reap-source managed-cells/reap
    :invalidate-computation invalidate-computation :withdraw-deref withdraw-deref
-   :cancel-computation cancel-computation})
+   :cancel-computation cancel-computation :signal-publish publish-signal})
 
 (defn changed-worlds [before after]
   (set (for [w (set/union (set (keys (:worlds before))) (set (keys (:worlds after))))
@@ -1861,7 +1871,7 @@
               (refuse ::released {:w w :thread (:th a)}))
           _ (when (and unwinding?
                        (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
-                          :invalidate-computation :withdraw-deref :cancel-computation} t))
+                          :invalidate-computation :withdraw-deref :cancel-computation :signal-publish} t))
               (refuse ::cancelled {:w w :r (:run thread)}))
           _ (when (and (or (:cleanup-ticket thread)
                            (cleanup/exit? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
@@ -1871,7 +1881,7 @@
       (when (and (quiescent-cut? s (acting-world s a))
                  (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11
                     :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37
-                    :invalidate-computation :withdraw-deref :cancel-computation} t))
+                    :invalidate-computation :withdraw-deref :cancel-computation :signal-publish} t))
         (refuse ::not-admitted {:action a}))
       (release-fixpoint
        before
@@ -1929,10 +1939,13 @@
                (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
              (if (and unwinding? (nil? er)) s
                  (if (= :fenced (:admission (wr s w)))
-                   (update-in s [:env :outside] conj {:w w :event {:signal-write e :value (:value a)}})
-                   (let [targets (conj (fdep-targets (wr s w) e) w)]
-                     (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
-                             (assoc-in s [:worlds w :entities e :result] (:value a)) targets)))))
+                   (update-in s [:env :outside] conj
+                              {:w w :event (cond-> {:signal-write e :value (:value a)}
+                                             (false? (:publish? a)) (assoc :publish? false))})
+                   (let [s (assoc-in s [:worlds w :entities e :result] (:value a))]
+                     (if (false? (:publish? a)) s
+                         (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
+                                 s (conj (fdep-targets (wr s w) e) w)))))))
            :arrival (enqueue s (:w a) (:event a))
            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
        (acting-world before a)))

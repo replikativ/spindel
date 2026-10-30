@@ -1194,6 +1194,17 @@
               ::not-host-deref {:w w :o o})
     (end-obligation! ctx w o :creditor-cancelled)))
 
+(defn- publish-signal! [ctx {:keys [w e]}]
+  (require! (= :live (:status (header ctx w))) ::not-live {:world w})
+  (require! (and (= :open (:admission (header ctx w)))
+                 (not-any? #(and (= w (:child %)) (= :attached (:phase %)))
+                           (vals (:cuts (root-state ctx))))) ::not-admitted {:world w})
+  (let [source (read-row ctx w :entities e)]
+    (require! (and (#{:signal :atom} (:kind source)) (:owner source)) ::released {:w w :e e})
+    (doseq [v (conj (set (for [[x v d] (:fdeps (header ctx w))
+                               :when (if (= :bundle x) (contains? d e) (= x e))] v)) w)]
+      (enqueue! ctx v {:completion e :debtor-world w :value (:result source) :source-change? true}))))
+
 (defn- cancel-computation! [ctx {:keys [w e tok value]}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
   (require! (and (= :open (:admission (header ctx w)))
@@ -1630,7 +1641,7 @@
        (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (header ctx (:world thread)))))
          (require! false ::released {:w w :thread (:th action)}))
        (when (and unwinding? (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
-                                :invalidate-computation :withdraw-deref :cancel-computation} t))
+                                :invalidate-computation :withdraw-deref :cancel-computation :signal-publish} t))
          (require! false ::cancelled {:w w :r (:run thread)}))
        (when (and (or (:cleanup-ticket thread)
                       (cleanup-op? (get-in (root-state ctx) [:env :native (cleanup-ticket (:world thread) (:run thread))])))
@@ -1650,6 +1661,7 @@
          :invalidate-computation (invalidate-computation! ctx action)
          :withdraw-deref (withdraw-deref! ctx action)
          :cancel-computation (cancel-computation! ctx action)
+         :signal-publish (publish-signal! ctx action)
          :t01 (create-spin! ctx action)
          :t02
          (create-source! ctx action)
@@ -1773,10 +1785,11 @@
              (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
            (when er
              (edit! ctx w :entities e assoc :result (:value action))
-             (enqueue! ctx w {:completion e :debtor-world w :value (:value action) :source-change? true})
-             (doseq [v (set (for [[x v d] (:fdeps (header ctx w))
-                                  :when (if (= :bundle x) (contains? d e) (= x e))] v))]
-               (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true}))))
+             (when-not (false? (:publish? action))
+               (enqueue! ctx w {:completion e :debtor-world w :value (:value action) :source-change? true})
+               (doseq [v (set (for [[x v d] (:fdeps (header ctx w))
+                                    :when (if (= :bundle x) (contains? d e) (= x e))] v))]
+                 (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true})))))
          :unsubscribe
          (let [ob (read-row ctx w :obligations o)]
            (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})
