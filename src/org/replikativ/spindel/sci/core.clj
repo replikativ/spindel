@@ -85,7 +85,7 @@
   ;; only needs `call-in-trampoline`, which is balanced.
   (sci/add-namespace! sci-ctx 'is.simm.partial-cps.runtime
                       (-> (update-vals (ns-publics 'is.simm.partial-cps.runtime) deref)
-                          (dissoc 'enter-trampoline! 'leave-trampoline!)
+                          (dissoc 'enter-trampoline! 'leave-trampoline! '*scope-frame*)
                           (assoc 'bound-fn world-bound-fn)))
   (let [ioc-src (slurp (clojure.java.io/resource "is/simm/partial_cps/ioc.clj"))
         async-src (slurp (clojure.java.io/resource "is/simm/partial_cps/async.cljc"))]

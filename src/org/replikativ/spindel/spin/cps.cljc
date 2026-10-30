@@ -93,7 +93,8 @@
                            breakpoint-fn (if direct-handler-sym
                                            (make-direct-breakpoint direct-handler-sym)
                                            (make-symbol-call-breakpoint sym))
-                           _ (intern *ns* vname breakpoint-fn)
+                           _ (alter-meta! (intern *ns* vname breakpoint-fn)
+                                          assoc :is.simm.partial-cps.ioc/eager-arguments true)
                            var-sym (symbol (str *ns*) (name vname))]
                        [sym var-sym]))]
        (merge async/breakpoints

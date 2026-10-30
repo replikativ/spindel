@@ -45,3 +45,15 @@
     (reset! home parent)
     (is (identical? parent (ec/home-context (assoc parent :bindings {:scope :inner}))))
     (is (identical? child (ec/home-context child)))))
+
+(deftest trampoline-scope-data-excludes-the-runtime-and-keeps-the-runner-world
+  (let [store (token)
+        parent (->SharedStoreWorld store (token) {:scope :inner :nil-value nil :false-value false} nil)
+        child (->SharedStoreWorld store (token) {:scope :runner :absent-in-capture true} nil)
+        captured (ec/capture-context-scope parent)
+        restored (ec/restore-context-scope captured child)]
+    (is (= (:bindings parent) captured))
+    (is (ec/same-world? child restored))
+    (is (= captured (:bindings restored)))
+    (is (not (contains? (:bindings restored) :absent-in-capture)))
+    (is (nil? (ec/restore-context-scope captured nil)))))
