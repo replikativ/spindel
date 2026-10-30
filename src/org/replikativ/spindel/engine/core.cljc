@@ -76,7 +76,11 @@
 (defn restore-context-scope
   "Restore scope data onto the context selected by the runner."
   [captured current]
-  (when current (assoc current :bindings captured)))
+  (when current
+    (if (and (contains? current :bindings)
+             (identical? captured (:bindings current)))
+      current
+      (assoc current :bindings captured))))
 
 #?(:clj
    (do

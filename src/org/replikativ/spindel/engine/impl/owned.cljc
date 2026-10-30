@@ -3925,17 +3925,43 @@
 (defn- restore-public-scope [captured] (ec/restore-context-scope captured ec/*execution-context*))
 (defn- bind-public-scope [value f] (binding [ec/*execution-context* value] (f)))
 
+(def ^:private public-context-descriptor
+  [capture-public-scope restore-public-scope bind-public-scope])
+(def ^:private public-context-frame
+  {'org.replikativ.spindel.engine.core/*execution-context* public-context-descriptor})
+
+(defn- public-scope-frame []
+  (let [frame cps-runtime/*scope-frame*]
+    (cond
+      (identical? public-context-descriptor
+                  (get frame 'org.replikativ.spindel.engine.core/*execution-context*)) frame
+      (empty? frame) public-context-frame
+      :else (assoc frame 'org.replikativ.spindel.engine.core/*execution-context* public-context-descriptor))))
+
 (defn- public-slice! [rt run ticket cold-body f]
   (let [[id generation] (if run (run-id run) (some-> ticket (a x-id) (nth 2)))
         scope (:spin-scope (::rtp/computation (meta cold-body)))
-        context (if (seq scope) (update rt :bindings merge scope) rt)]
-    (binding [ec/*execution-context* context ec/*spin-id* id
-              ec/*run-gen* (when id [id generation]) ec/*lifetime-run* generation
-              ec/*owner-scope* (when id [:run (runtime-field rt :world) id generation])
-              cps-runtime/*scope-frame* (assoc cps-runtime/*scope-frame*
-                                               'org.replikativ.spindel.engine.core/*execution-context*
-                                               [capture-public-scope restore-public-scope bind-public-scope])]
-      (f))))
+        context (if (seq scope) (update rt :bindings merge scope) rt)
+        run-gen (when id [id generation])
+        owner-scope (when id [:run (runtime-field rt :world) id generation])
+        scope-frame (public-scope-frame)]
+    #?(:clj
+       (let [values (object-array 12)]
+         ;; This input map is private and immutable after construction. Official
+         ;; push/pop still creates six fresh binding boxes on every entry.
+         (aset values 0 #'ec/*execution-context*) (aset values 1 context)
+         (aset values 2 #'ec/*spin-id*) (aset values 3 id)
+         (aset values 4 #'ec/*run-gen*) (aset values 5 run-gen)
+         (aset values 6 #'ec/*lifetime-run*) (aset values 7 generation)
+         (aset values 8 #'ec/*owner-scope*) (aset values 9 owner-scope)
+         (aset values 10 #'cps-runtime/*scope-frame*) (aset values 11 scope-frame)
+         (push-thread-bindings (clojure.lang.PersistentArrayMap. values))
+         (try (f) (finally (pop-thread-bindings))))
+       :cljs
+       (binding [ec/*execution-context* context ec/*spin-id* id
+                 ec/*run-gen* run-gen ec/*lifetime-run* generation
+                 ec/*owner-scope* owner-scope cps-runtime/*scope-frame* scope-frame]
+         (f)))))
 
 ;; Public signal values use the ordinary lifetime source row. Only interval
 ;; receipts and egress listeners are additional representation state:
