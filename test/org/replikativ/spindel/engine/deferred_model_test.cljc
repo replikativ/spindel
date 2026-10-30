@@ -513,11 +513,11 @@
                     {:t :t11 :w w :r successor}
                     (assoc (request value false) :cell old-key)]))
         returned (peek (checked-walk! accepted
-                                     [{:t :t11 :w w :r b}
-                                      (terminal nb :old-operation-ended)
-                                      {:t :cleanup-claim :n nb :th :cleaner-b}
-                                      {:t :cleanup-return :th :cleaner-b}
-                                      {:t :t38 :th :cleaner-b}]))]
+                                      [{:t :t11 :w w :r b}
+                                       (terminal nb :old-operation-ended)
+                                       {:t :cleanup-claim :n nb :th :cleaner-b}
+                                       {:t :cleanup-return :th :cleaner-b}
+                                       {:t :t38 :th :cleaner-b}]))]
     (is (= old-key (:cell (first (:queue (m/wr accepted w))))))
     (is (nil? (get-in returned [:env :cleanup-cells old-key])))
     (is (= #{nc} (get-in returned [:env :cleanup-cells new-key :holders])))
@@ -586,11 +586,11 @@
   (let [{:keys [state old-key new-key new-ticket reader]} (accepted-before-original-cohort-return 41)
         action (assign-front state)
         no-holders (peek (checked-walk! state
-                                       [{:t :t11 :w w :r reader}
-                                        (terminal new-ticket :no-input)
-                                        {:t :cleanup-claim :n new-ticket :th :cleaner-c}
-                                        {:t :cleanup-return :th :cleaner-c}
-                                        {:t :t38 :th :cleaner-c}]))
+                                        [{:t :t11 :w w :r reader}
+                                         (terminal new-ticket :no-input)
+                                         {:t :cleanup-claim :n new-ticket :th :cleaner-c}
+                                         {:t :cleanup-return :th :cleaner-c}
+                                         {:t :t38 :th :cleaner-c}]))
         discarded (peek (checked-walk! no-holders [action]))]
     (is (nil? (get-in no-holders [:env :cleanup-cells old-key])))
     (is (nil? (get-in no-holders [:env :cleanup-cells new-key])))

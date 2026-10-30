@@ -15,8 +15,9 @@ boundary noted). Citations are `file:line` against the source tree.
 
 Parts 1–3 describe the engine as implemented. Part 4 is different: it
 is the normative target contract for lifetimes, ownership and
-settlement, with invariants L1–L25 and laws TL1–TL20, and it records
-where main differs.
+settlement. Its core invariants and laws are supplemented by the typed
+resource and explicit-release profiles below; it records where the baseline
+engine differs from that contract.
 
 ---
 
@@ -1693,9 +1694,13 @@ source writes and computation transitions cannot mutate these controls.
   retains its one entry across cancellation; it cannot acquire a new frame.
 - `mailbox-return` releases the exact physical receipt. Raw callbacks have their
   own receipts and immutable owner ancestry, not invented computation runs.
-  Pending callback ownership is captured at first physical claim. Queued source
-  rejection retains a named capability until its error callback physically
-  returns; success data and rejection disposition remain distinct.
+  A pending success captures its owner and ancestry at first physical claim.
+  Queued source rejection captures the closing owner and ancestry when its
+  rejection receipt is created, and retains a named capability until its error
+  callback physically returns. Once a raw receipt exists, its ancestry is
+  immutable, including across allocation adoption and T34 after the original
+  owner row has disappeared. Success data and rejection disposition remain
+  distinct.
 
 A live raw Mailbox callback can forward to another live Mailbox after its origin
 entry is authenticated. This does not grant unrelated Atom, Signal or Deferred
@@ -1842,11 +1847,89 @@ never merged, and results return as values.
 
 | T | Transition | Pre | Effect | Re-establishes |
 |---|---|---|---|---|
-| T34 | `release-world(w)` | No capability of `w` is `:settling` or `:incomplete`. And one of: (root) the host releases `w` or its root handle becomes unreachable (R8); or (fork) every capability of `w` is terminal. | If `w` participates in an active cut, the coordinator first applies T25 to that cut (aborting it, releasing permits and any partial child). Then one local transaction of `w`. Run T13 on `root(w)`, with the full cascade. Drop the inherited copies without rejecting into the parent or a sibling; the census (`scope-census`) counts the copies dropped without ever being resumed. Host creditors of `w`'s obligations receive `::released`. **Cleanup events:** for every obligation `o` in another world `V` whose debtor is in `w`, enqueue `{:cancelled o}` in `V`; for `w`'s own obligations into another world `W` and its `[:bundle w _]` rows, move the row to `releasing_W` and enqueue `{:fdep-ended …}` in `W`; enqueue `{:fork-released w}` in the parent for a fork. Requests still queued in `w` (`{:start-for}`, `{:register-host}`) fail their requesters with `::released`. Snapshot pure-ID join ancestry on the remaining physical thread/native participants. Remove `w` from the registry, drop its state except the tombstone (including `:unwinding` rows; their slices continue and every engine effect they request refuses `::released`), and set `status := :released`. `join!(w)` waits for actual claimed slices and unjoined native participants; selected idle threads do not block. Descendants' lineage is untouched. | L18–L21 TL6 TL7 |
+| T34 | `release-world(w)` | No capability of `w` is `:settling` or `:incomplete`. And one of: (root) the host releases `w` or its root handle becomes unreachable (R8); or (fork) every capability of `w` is terminal. | If `w` participates in an active cut, the coordinator first applies T25 to that cut (aborting it, releasing permits and any partial child). Then one local transaction of `w`. Run T13 on `root(w)`, with the full cascade. Drop the inherited copies without rejecting into the parent or a sibling; the census (`scope-census`) counts the copies dropped without ever being resumed. Host creditors of `w`'s obligations receive `::released`. **Cleanup events:** for every obligation `o` in another world `V` whose debtor is in `w`, enqueue `{:cancelled o}` in `V`; for `w`'s own obligations into another world `W` and its `[:bundle w _]` rows, move the row to `releasing_W` and enqueue `{:fdep-ended …}` in `W`; enqueue `{:fork-released w}` in the parent for a fork. Requests still queued in `w` (`{:start-for}`, `{:register-host}`) fail their requesters with `::released`. Snapshot current pure-ID join ancestry on remaining ordinary thread, CPS-exit and timer participants; preserve raw Mailbox receipts' already immutable ancestry, even if their original owner rows are gone. Before replacing the world row, preserve `max(world :seq, clocks[w])` in the existing external clock `clocks[w]`; retained Deferred/Mailbox producer attempts continue above that high-water mark, including when run creation preceded every enqueue. Remove `w` from the registry, drop its state except the tombstone (including `:unwinding` rows; their slices continue, ordinary effects refuse `::released`, and retained cleanup uses only its explicit typed capabilities), and set `status := :released`. `join!(w)` waits for actual claimed slices and unjoined native participants; selected idle threads do not block. Descendants' lineage is untouched. | L18–L21 TL6 TL7 |
 | T35 | `host-entry(th, op)` | — | Any engine entry from a host thread (deref, invoke, Deferred or Mailbox delivery, SCI-conveyed fn) with no conveyed world refuses `::no-world`. Deliveries resume waiting continuations via T6 in the world holding the obligation. | L15 |
 | T36 | `cleanup(event)` in world `W` | the event is at the head of `W`'s queue | Local to `W`. `{:fdep-ended row}`: delete the row from `releasing_W` and apply rule L. `{:cancelled o}`: if `o` exists, fail it (one-shot) or end it (standing) as in T11 for a debtor-side cancellation; otherwise no-op. `{:fork-released v}`: remove `[:fork v]` and apply rule L. `{:join-bundle v D}`: admit or cancel each member (copy rule 4). An event whose row is already gone is a no-op (so cancelling `o` before its `{:cancelled o}` arrives is harmless). | L3 L4 L5 L13 L20 TL6 TL7 |
 | T37 | `start-for(e, v, o)` in world `W` | the event is at the head of `W`'s queue | If `o` is not pending-start (already cancelling, consumed or gone), nothing happens: a request never admits or restarts a cancelled obligation. Else, if `W` is sealed or `o` no longer exists in `v`: enqueue `{:cancelled o}` in `v` if `o` exists (`o` becomes cancelling; its creditor fails with `::released`); otherwise nothing. Else insert `e` if absent (owner `root(W)`, covering tokens), start its run owned by `root(W)` unless it now has a work run or a completed result (retiring a dormant inherited run first, copy rule 5), and admit `o`: add `[e v o]` to `fdeps_W` for an active creditor, or add `e` to `[:bundle v D]` (creating the row) for an inherited one. A completed result is sent as a completion envelope to `v`. | L5 L8 L10 L11 TL6 |
 | T38 | `slice-exit(th)` (env) | `run(th) = r` | Clear `run(th)` (and `scope(th)`) and discard its saved join anchor. If `r` is `:unwinding` and no other thread executes a slice of `r` and every native op of `r` is `:joined`, remove `r`; rule L. Native-op progress to `:joined` discards that participant's saved anchor and performs the same run-removal check. For a non-unwinding `r` nothing else changes (a slice that suspended or completed already ran T5/T7). | L15 L25 TL19 |
+
+**Explicit asynchronous root release (additive typed profile).**
+
+`release-context!` requests logical release immediately and returns an awaitable
+physical completion. It composes T34 with a release ledger outside the world's
+ordinary graph; it does not change the meaning of bare T34 or make the legacy
+stop/close APIs physical completion certificates. The bounded local-root adapter
+preflights unsupported following/fork ownership, active cuts, nonterminal
+capabilities and cross-world obligations before mutation. The full normative
+T34 above retains its broader teardown semantics.
+
+The symbolic ledger is `env.releases[w]`, with diagnostic identity
+`[:world-release w]`, the first reason, phase `:releasing` or `:joined`, an
+observer ordinal and observer rows. A joined ledger also contains result nil.
+The native receipt is opaque: the symbolic ID is not a caller capability or an
+ordinary owned Deferred. Observer IDs are receipt-local ordinals.
+
+| Action | Contract |
+|---|---|
+| `release-request` | Authenticate the caller and target, perform the bounded preflight, record the first reason and apply T34 in one transaction. Repeated requests return the same release identity and preserve that reason. There is no second teardown. |
+| `release-observe` | Authenticate the receipt and caller evidence, reject a same-world physical self-join, and register the next observer atomically with the readiness check. Before join it waits; after join it is immediately ready. Registration and the last physical return can occur in either order without losing a notification. |
+| `release-detach` | Detach an issued observer, whether waiting or ready. Repeated detach is inert. A foreign or never-issued observer is refused. Detaching does not cancel release or its cleanup. |
+| `release-notify` | Claim one ready observer once, remove its registration and deliver successful nil outside the gate. It cannot manufacture joined state or be used as an owned execution frame. |
+
+Readiness is refreshed after successful transitions, rather than accepted through
+a caller-supplied completion action. A released world becomes `:joined` only when
+no actual ordinary slice or unjoined native participant remains.
+Selected idle contexts do not block it. Retained protected operations, raw
+Mailbox success/error receipts and timer installation/disposal/callback evidence
+continue to count after ordinary world rows disappear. Retained cleanup and
+exact producer acknowledgements must continue draining until those participants
+finish; logical release does not stop the drain or close a borrowed executor.
+
+The first request's reason is also the cause of rejections produced by that
+release, including ordinary and raw Mailbox rejection callbacks. Native callbacks
+receive the supplied reason itself, including nil or false; audit projections
+carry its diagnostic value. Repeated requests cannot replace it. A previously
+selected result or earlier cancellation is not overwritten. Bare T34 retains its
+existing default release/cancellation markers; an explicit request does not
+silently change that separate transition's default contract.
+
+Before publishing `:joined` or making its observers ready, explicit release
+removes accepted Deferred-assignment and Mailbox-post envelopes that can no
+longer affect their allocation. Disposal requires all of the following: the
+packet targets this released world, identifies one of those typed producer
+operations and an explicit allocation, and neither an owned live resource of
+that exact kind/ID/allocation nor any matching retained cohort with a nonempty
+holder set remains. The original retained key disappearing is insufficient:
+another held cohort of the same allocation keeps the attempt valid. This rule
+preserves other worlds' packets, nonproducer packets and committed host
+notifications. It does not eagerly discard held input, count queue length as
+physical work, or change direct T34 without an explicit release ledger. Thus a
+second unused producer payload cannot remain pinned behind a blocking release
+observer after the final holder and physical participant have returned.
+
+Release observers are external notifications, not participants in the released
+world's physical domain. Completion does not depend on having an observer, on an
+observer remaining registered, or on the observer callback returning. A callback
+failure is reported separately and cannot revise joined state or the application
+result. Completed bookkeeping retains no old graph snapshot; detached and
+claimed observer registrations are removed. T31 remains true process loss: the
+volatile ledger and observers disappear without a fabricated successful join;
+restart does not recover them.
+
+The current release checker adds L30 (receipt/phase/readiness and observer state)
+and TL24 (first-reason, observer, join-event and outside-envelope conservation).
+Its stale-input oracle derives expected removals from prior accepted packets,
+the independently checked physical barrier and surviving allocation holders.
+[Focused release traces](../test/org/replikativ/spindel/lifetime/release_model_test.cljc)
+compare the symbolic model with both map and cell kernel stores;
+[native audit replay and literal tests](../test/org/replikativ/spindel/engine/native_release_test.cljc)
+exercise native execution. Coverage includes
+both observation/last-return orders, detach and self-join refusals, retained
+operation/raw/timer lifetimes, and two accepted producer attempts whose second
+payload becomes disposable before observer delivery. These are explicit finite
+traces, not exhaustive enumeration of the lifecycle × resource × fork/cut
+cross-product or proof of the full engine replacement. Unsupported local-root
+profiles have unchanged-state refusal checks.
 
 **API mapping.**
 
@@ -1858,6 +1941,7 @@ never merged, and results return as values.
 | `cancel-world-work!` | T15 |
 | `pin!` / `unpin!` | T14 |
 | `release-idle-caches!` | T18 |
+| `release-context!` (typed local-root profile) | `release-request`, followed by external `release-observe` / `release-detach` / `release-notify`; successful completion is nil |
 | `join!` (run, scope or world; timeout) | observation: completes when `subtree(x)` has no `join-busy` run (TL19); on timeout refuses `::join-timeout` listing the runs still busy |
 | `scope-census` | the L13 census |
 | merge / discard / transfer / partition | the ygg settlement API |
@@ -1933,7 +2017,7 @@ of the same run. A report never changes state.
 | TL16 | **Bounded memory.** L13 holds after every transaction. The retention that a following fork `v` adds to its parent is at most the number of `v`'s open obligations into the parent plus its ended ones whose cleanup is still queued in the parent (logical members, L13), independent of `v`'s age and the parent's churn. | safety |
 | TL17 | **Watchers persist** (R5; between crashes). An invoked run ends only through T7 (non-reactive), T10, T11, T13 or T34. The GC never ends one. | safety |
 | TL18 | **No re-execution through a released handle.** Once T18 has dropped `e`'s cache in `w`, awaiting or dereffing a handle that touched `e` in `w` fails with `::idle-cache-released`. The body is never entered through that handle. | safety |
-| TL19 | **Join.** `join!(x)` (a run, a scope, or a world) completes iff no logical `busy` run and no actual thread slice/unjoined native participant has `x` in its owner chain or `:anchor`. Physical participants count even when their run is `:completed` or `:stale`; joining does not wait for a later delivery or reclamation to mark that run `:unwinding`. After world release only physical participants count; a selected idle context is not physical work. T34 snapshots their run/scope ancestry as pure IDs before dropping world rows; the release-edge oracle checks that ancestry independently. It completes once every such slice has exited (T38) and every native op is `:joined`; if the timeout passes first it refuses `::join-timeout` listing the runs still busy and changes nothing. | progress (conditional on slices returning) |
+| TL19 | **Join.** `join!(x)` (a run, a scope, or a world) completes iff no logical `busy` run and no actual thread slice/unjoined native participant has `x` in its owner chain or `:anchor`. Physical participants count even when their run is `:completed` or `:stale`; joining does not wait for a later delivery or reclamation to mark that run `:unwinding`. After world release only physical participants count; a selected idle context is not physical work. T34 snapshots current ordinary/CPS/timer run/scope ancestry as pure IDs before dropping world rows, and preserves raw Mailbox receipts' already immutable anchors; the release-edge oracle checks these participant-specific rules independently. It completes once every such slice has exited (T38) and every native op is `:joined`; if the timeout passes first it refuses `::join-timeout` listing the runs still busy and changes nothing. | progress (conditional on slices returning) |
 | TL20 | **Local execution normalization.** After an ordinary successful publication in world W, no unrooted non-unwinding completed run remains in W. Foreign worlds await their own publication; T16/T17 are retention-only and do not retire execution. Unwinding physical join evidence survives until its return boundary. This postcondition is checked from rows and rooted reachability independently of Rule L. | safety |
 
 The lifetime model treats completion payloads as opaque values. It models

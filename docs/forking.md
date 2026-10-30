@@ -556,7 +556,7 @@ Track fork lineage for distributed systems testing:
 ;; Fork (shares the executor and running flag with its parent)
 (def fork (ctx/fork-context ctx))
 
-;; Stop root context (no drain mutates state after it returns)
+;; Stop the legacy root's drain admission
 (ctx/stop-context! ctx)
 ;; Safe no-op on forks — they share the parent's running flag
 
@@ -565,8 +565,12 @@ Track fork lineage for distributed systems testing:
 ;; Only use when certain no async work remains
 ```
 
-A context holds no global registration: once you drop every reference to a
-stopped context (and its forks), it is garbage — with its state, its
+The JVM stop path waits up to five seconds for active legacy drains. Work
+already dispatched to external callbacks can outlive it; its `nil` return is
+not a physical join certificate.
+
+Legacy contexts hold no global registration: once you drop every reference to a
+stopped context (and its forks), it is garbage — with their state, their
 continuations and whatever they close over (DOM containers, discharges).
 The GC cleanup of runtime atoms and spins holds only ids and weak
 references. Each root, fork, materialized fork and restored snapshot is
@@ -580,6 +584,37 @@ reachable. `stop-context!` has nothing to
 unregister for this: a stopped context can be revived (e.g. by
 `restore-snapshot`), and the registrations it leaves are released when
 their targets are collected.
+
+The opt-in native engine (`:engine :owned`) has an explicit asynchronous
+lifecycle:
+
+```clojure
+(def completion (ctx/release-context! native-context))
+;; Ordinary admission is closed. Physical cleanup may still be running.
+(completion (fn [_] (println "Cleanup joined"))
+            (fn [error] (println "Join failed" error)))
+;; A computation in another native world may also use (await completion).
+```
+
+Repeated release requests return the same completion and preserve the first
+reason. Cleanup retains its existing state until it returns, including when it
+waits asynchronously for a supported resource acknowledgement. Completion
+success is `nil` and means the admitted physical participants have returned.
+Detaching an observer does not cancel cleanup. A participant cannot await the
+release that still needs its own return. Shared executors remain open.
+
+Ordinary native worlds are not globally pinned. An explicit unfinished release
+has a temporary coordinator so cleanup remains owned even if the caller drops
+its context and completion. Joining removes that coordinator and revokes the
+world's engine storage. Application fields or metadata that explicitly capture
+other objects remain application-owned references; diagnostic audit traces also
+retain their recorded history when requested.
+
+The current native release profile accepts isolated root worlds. Fork/cut
+settlement and protected callbacks awaiting another world's release still need
+integration and refuse before mutation. Use `release-context!` for this profile;
+the legacy `stop-context!` and `close-context!` return values are not physical
+join certificates.
 
 ## See Also
 

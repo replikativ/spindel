@@ -583,7 +583,7 @@
              (and (:standing? ob) (#{:track :await-reactive} (:kind ob)))))
          (read-row ctx w :by-run-creditor r))))
 
-(declare cancel-run! supersede! close-scope! resume! rule-l! detach-deferred-wait!
+(declare release-world! cancel-run! supersede! close-scope! resume! rule-l! detach-deferred-wait!
          operation-row operation-barrier? operation-deliver! unlink-operation-registration!)
 
 (defn- owner-chain [ctx w r]
@@ -791,7 +791,9 @@
       (doseq [o (entity-obligations ctx w w e)
               :let [ob (read-row ctx w :obligations o)]
               :when (= :host (first (:creditor ob)))]
-        (queue-mailbox-rejection! ctx w e [:host o] :org.replikativ.spindel.engine.protocols/cancelled)))
+        (queue-mailbox-rejection! ctx w e [:host o]
+                                  (if-let [cancellation (:release-cancellation ctx)] (:value cancellation)
+                                          :org.replikativ.spindel.engine.protocols/cancelled))))
     (if (= :spin (:kind er))
       (edit-entity! ctx w e assoc :owner nil :dirty? true)
       (edit-entity! ctx w e assoc :owner nil))
@@ -816,8 +818,9 @@
             (when-not (#{:claimed :entered} (:state reservation))
               (when (and (= :reserved (:state reservation)) (= :running (:status (read-row ctx w :runs r))))
                 (edit! ctx w :runs r assoc :status :parked))
-              (resume! ctx {:w w :o o :value ::cancelled}))))
-        (end-obligation! ctx w o :cancel-delivered)))))
+              (resume! ctx {:w w :o o :value (if-let [cancellation (:release-cancellation ctx)]
+                                               (:value cancellation) ::cancelled)}))))
+        (end-obligation! ctx w o :cancel-delivered (:release-cancellation ctx))))))
 
 (defn- release-owned! [ctx w scope]
   (doseq [e (read-row ctx w :entities-by-owner scope)]
@@ -942,7 +945,7 @@
        chain))))
 
 (defn- cancel-run!
-  ([ctx w r anchor] (cancel-run! ctx w r anchor nil))
+  ([ctx w r anchor] (cancel-run! ctx w r anchor (:release-cancellation ctx)))
   ([ctx w r anchor cancellation]
    (when-let [rr (read-row ctx w :runs r)]
      (when-not (= :unwinding (:status rr))
@@ -983,15 +986,16 @@
           chain))))))
 
 (defn- close-scope! [ctx w scope]
-  (require! (not= scope (:root (header ctx w))) ::world-release-not-implemented {:w w})
-  (when (and (not= :released (:status (header ctx w))) (open? ctx w scope))
-    (retain-cleanup! ctx w scope)
-    (doseq [s (read-row ctx w :scopes-by-parent scope)]
-      (close-scope! ctx w s))
-    (doseq [r (read-row ctx w :runs-by-owner scope)]
-      (cancel-run! ctx w r nil))
-    (release-owned! ctx w scope)
-    (edit! ctx w :scopes scope assoc :status :closed)))
+  (if (= scope (:root (header ctx w)))
+    (release-world! ctx {:w w})
+    (when (and (not= :released (:status (header ctx w))) (open? ctx w scope))
+      (retain-cleanup! ctx w scope)
+      (doseq [s (read-row ctx w :scopes-by-parent scope)]
+        (close-scope! ctx w s))
+      (doseq [r (read-row ctx w :runs-by-owner scope)]
+        (cancel-run! ctx w r nil))
+      (release-owned! ctx w scope)
+      (edit! ctx w :scopes scope assoc :status :closed))))
 
 (defn- remove-entity! [ctx w e]
   (when-let [er (read-row ctx w :entities e)]
@@ -2474,6 +2478,206 @@
         (:fork-released event) (remove-entity! ctx w [:fork (:fork-released event)])
         :else (require! false ::not-cleanup {:event event})))))
 
+(defn- release-id [w] [:world-release w])
+
+(defn- local-release-profile! [ctx w]
+  (let [world (header ctx w) state (root-state ctx)
+        owners (conj (into (set (keys (store/table-view (:tx ctx) w :runs)))
+                           (keys (store/table-view (:tx ctx) w :scopes))) (or (:root world) [:root w]))
+        caps (merge (:caps state) (get-in state [:durable :caps]))
+        local? (fn [endpoint] (or (not= :entity (first endpoint)) (= w (second endpoint))))]
+    (require! world ::unknown-world {:w w})
+    (require! (and (nil? (get-in world [:lineage :parent]))
+                   (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
+                                   (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts state)))
+                   (not-any? (fn [[_ cap]] (and (not (#{:merged :discarded :transferred :partitioned} (:disposition cap)))
+                                                (or (= w (:world cap)) (contains? owners (:holder cap))))) caps)
+                   (not-any? #(= :fork (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
+                   (empty? (:fdeps world)) (empty? (:releasing world))
+                   (every? #(and (local? (:debtor %)) (local? (:creditor %)))
+                           (vals (store/table-view (:tx ctx) w :obligations)))
+                   (not-any? #(some % [:start-for :register-host :join-bundle :discard :fork-released])
+                             (pending-events ctx w))
+                   (not-any? (fn [v]
+                               (and (not= v w)
+                                    (some #(= [:entity w] (subvec (vec (:debtor %)) 0 2))
+                                          (vals (store/table-view (:tx ctx) v :obligations)))))
+                             (:known-worlds state)))
+              ::unsupported-world-release {:w w})))
+
+(def ^:private world-index-tables
+  [:by-run-creditor :by-host-creditor :by-entity-creditor :by-local-debtor :by-foreign-debtor
+   :by-debtor-world :runs-by-spin :runs-by-owner :spawned-by :created-by :entities-by-owner :scopes-by-parent])
+
+(defn- release-world! [ctx {:keys [w]}]
+  (when-let [world (header ctx w)]
+    (when-not (= :released (:status world))
+      (local-release-profile! ctx w)
+      (let [root (:root world) cancellation (:release-cancellation ctx)
+            released-value (if cancellation (:value cancellation) ::released)
+            raw-reason (if cancellation (:value cancellation) :org.replikativ.spindel.engine.protocols/released)]
+        (retain-cleanup! ctx w root)
+        (when cancellation
+          (root-edit! ctx update-in [:env :native]
+                      #(into {} (for [[id row] %]
+                                  [id (if (and (= w (first (:owner row))) (cleanup-op? row)
+                                               (not (contains? row :cancel-value)))
+                                        (assoc row :cancel-value (:value cancellation)) row)]))))
+        ;; Host results close before ordinary cancellation can replace release
+        ;; with a debtor-cancel result. Raw errors retain a real callback lease.
+        (doseq [[o ob] (store/table-view (:tx ctx) w :obligations)
+                :when (= :host (first (:creditor ob)))]
+          (let [[_ dw e] (:debtor ob) mailbox? (boolean (mailbox-control ctx dw e))]
+            (when mailbox? (queue-mailbox-rejection! ctx w e [:host o] raw-reason))
+            (end-obligation! ctx w o :creditor-cancelled)
+            (when-not mailbox? (emit! ctx {:event :host-delivery :world w :o o :value released-value}))))
+        (doseq [scope (read-row ctx w :scopes-by-parent root)] (close-scope! ctx w scope))
+        (doseq [r (read-row ctx w :runs-by-owner root)] (cancel-run! ctx w r nil))
+        (release-owned! ctx w root)
+        (doseq [o (keys (store/table-view (:tx ctx) w :obligations))]
+          (end-obligation! ctx w o :creditor-cancelled))
+        (root-edit! ctx update-in [:env :threads]
+                    #(into {} (for [[th row] %]
+                                [th (cond-> row
+                                      (and (= w (:world row)) (:run row))
+                                      (assoc :anchor (owner-chain ctx w (:run row))))])))
+        (root-edit! ctx update-in [:env :native]
+                    #(into {} (for [[n row] %]
+                                [n (cond-> row
+                                     (and (= w (first (:owner row))) (not= :joined (:state row))
+                                          (not= :mailbox-callback (:kind row)))
+                                     (assoc :anchor (owner-chain ctx w (second (:owner row))))
+                                     (and (= w (first (:owner row))) (= :mailbox-callback (:kind row)))
+                                     (assoc :retired? true))])))
+        ;; Keep authenticated producer attempts in original world sequence;
+        ;; preserve all other worlds' relative slots in the outside lane.
+        (let [attempt? #(and (= w (:w %)) (or (:deferred-assignment (:event %)) (:mailbox-post (:event %))))
+              held (into (vec (remove #(and (= w (:w %)) (not (attempt? %)))
+                                      (get-in (root-state ctx) [:env :outside])))
+                         (for [event (:queue (header ctx w)) :when (or (:deferred-assignment event) (:mailbox-post event))]
+                           {:w w :event event}))
+              attempts (sort-by #(get-in % [:event :seq]) (filter attempt? held))
+              ordered (loop [remaining held attempts attempts result []]
+                        (if-let [next (first remaining)]
+                          (if (attempt? next)
+                            (recur (rest remaining) (rest attempts) (conj result (first attempts)))
+                            (recur (rest remaining) attempts (conj result next))) result))]
+          (root-edit! ctx assoc-in [:env :outside] ordered))
+        (doseq [table (concat world-tables world-index-tables)
+                id (keys (store/table-view (:tx ctx) w table))]
+          (store/delete-row! (:tx ctx) w table id))
+        ;; The header's run-creation clock disappears with the tombstone;
+        ;; retained producer attempts must still advance past every old ID.
+        (root-edit! ctx assoc-in [:clocks w]
+                    (max (get (header ctx w) :seq 0) (get-in (root-state ctx) [:clocks w] 0)))
+        (put! ctx w :header :world (assoc (select-keys world [:id :lineage]) :status :released))
+        (root-edit! ctx update :registry disj w)))))
+
+(defn- release-row! [ctx {:keys [w release] :as action}]
+  (let [row (get-in (root-state ctx) [:env :releases w])]
+    (require! (and (= release (release-id w)) (= release (:id row)))
+              ::invalid-release-receipt {:action action}) row))
+
+(defn- release-caller-worlds! [ctx {:keys [caller-th th op frame callback] :as action}]
+  (require! (nil? th) ::invalid-release-caller {:action action})
+  (let [state (root-state ctx) thread (get-in state [:env :threads caller-th])
+        operation (when (some? op) (operation-row ctx op)) ticket (when (vector? op) (get-in state [:env :native (first op)]))
+        raw (get-in state [:env :native callback])
+        control (when (some? callback) (mailbox-control ctx (first (:owner raw)) (:allocation raw)))
+        reservation (get-in control [:reservations (:consumer raw)])]
+    (when (some? caller-th)
+      (require! (and thread (:world thread) (or (nil? (:run thread)) (:executing? thread)))
+                ::invalid-release-caller {:action action}))
+    (when (some? op)
+      (require! (and operation (protected-native? ticket) (= (second op) (:sequence ticket))
+                     (contains? (:frames operation) frame)) ::invalid-release-caller {:action action}))
+    (when (some? callback)
+      (require! (and (= :mailbox-callback (:kind raw)) (= frame (:frame raw))
+                     (= :executing (:phase raw)) (:physical? raw)
+                     (or (= :error (:variant raw))
+                         (and (= :ok (:variant raw)) (= :entered (:state reservation))
+                              (= frame (:frame reservation)))))
+                ::invalid-release-caller {:action action}))
+    (require! (or (nil? frame) op callback) ::invalid-release-caller {:action action})
+    (set (concat (when (:run thread) [(:world thread)])
+                 (when (some? op) [(first (:owner ticket))]) (when (some? callback) [(first (:owner raw))])))))
+
+(defn- request-release! [ctx {:keys [w release caller-th op callback] :as action}]
+  (release-caller-worlds! ctx action)
+  (require! (and (nil? op) (nil? callback)) ::cleanup-only {:action action})
+  (let [thread (get-in (root-state ctx) [:env :threads caller-th])]
+    (when-let [r (:run thread)]
+      (require! (and (nil? (:cleanup-ticket thread)) (not (:retired? thread))
+                     (not= :unwinding (:status (read-row ctx (:world thread) :runs r))))
+                ::cleanup-only {:action action})))
+  (local-release-profile! ctx w)
+  (require! (= release (release-id w)) ::invalid-release-receipt {:action action})
+  (if (get-in (root-state ctx) [:env :releases w])
+    (release-row! ctx action)
+    (let [reason (get action :reason :org.replikativ.spindel.engine.protocols/released)]
+      (root-edit! ctx assoc-in [:env :releases w]
+                  {:id release :reason reason :phase :releasing :next-observer 0 :observers {}})
+      (release-world! (assoc ctx :release-cancellation {:value reason}) action)))
+  (vreset! (:result ctx) {:release release}))
+
+(defn- observe-release! [ctx {:keys [w release observer] :as action}]
+  (let [row (release-row! ctx action) callers (release-caller-worlds! ctx action)]
+    (require! (not (contains? callers w)) ::release-self-join {:action action})
+    (require! (= observer [release (inc (:next-observer row))]) ::not-release-observer {:action action})
+    (root-edit! ctx update-in [:env :releases w :next-observer] inc)
+    (root-edit! ctx assoc-in [:env :releases w :observers observer]
+                {:state (if (= :joined (:phase row)) :ready :waiting)})
+    (when (= :joined (:phase row)) (command! ctx {:op :release-ready :world w :release release :observer observer}))
+    (vreset! (:result ctx) {:observer observer})))
+
+(defn- detach-release! [ctx {:keys [w observer] :as action}]
+  (let [row (release-row! ctx action)]
+    (release-caller-worlds! ctx action)
+    (require! (and (vector? observer) (= 2 (count observer)) (= (:id row) (first observer))
+                   (integer? (second observer)) (<= 1 (second observer) (:next-observer row)))
+              ::not-release-observer {:action action})
+    (root-edit! ctx update-in [:env :releases w :observers] dissoc observer)))
+
+(defn- notify-release! [ctx {:keys [w release observer] :as action}]
+  (let [row (release-row! ctx action)]
+    (require! (not-any? #(some? (get action %)) [:th :caller-th :op :frame :callback])
+              ::invalid-release-caller {:action action})
+    (require! (and (= :joined (:phase row)) (= :ready (get-in row [:observers observer :state])))
+              ::not-release-ready {:action action})
+    (root-edit! ctx update-in [:env :releases w :observers] dissoc observer)
+    (emit! ctx {:event :release-delivery :world w :release release :observer observer :variant :ok :value nil})
+    (command! ctx {:op :release-delivery :world w :release release :observer observer :variant :ok :value nil})))
+
+(defn- stale-release-producer? [ctx w {:keys [event] :as packet}]
+  (let [kind (cond (contains? event :deferred-assignment) :deferred
+                   (contains? event :mailbox-post) :mailbox)
+        e (get event (case kind :deferred :deferred-assignment :mailbox :mailbox-post nil))
+        allocation (:allocation event) source (read-row ctx w :entities e)]
+    (and (= w (:w packet)) kind (contains? event :allocation)
+         (= :released (:status (header ctx w)))
+         (not (and (= kind (:kind source)) (= allocation (:allocation source)) (:owner source)))
+         (not-any? (fn [[key cell]]
+                     (and (= w (first key)) (= e (nth key 2 nil))
+                          (= kind (:kind cell)) (= allocation (:allocation cell)) (seq (:holders cell))))
+                   (get-in (root-state ctx) [:env :cleanup-cells])))))
+
+(defn- refresh-releases! [ctx]
+  (doseq [[w row] (get-in (root-state ctx) [:env :releases])
+          :when (and (= :releasing (:phase row)) (= :released (:status (header ctx w)))
+                     (not-any? #(and (= w (:world %)) (:run %))
+                               (vals (get-in (root-state ctx) [:env :threads])))
+                     (not-any? #(and (= w (first (:owner %))) (not= :joined (:state %)))
+                               (vals (get-in (root-state ctx) [:env :native]))))]
+    (root-edit! ctx update-in [:env :outside]
+                #(vec (remove (partial stale-release-producer? ctx w) %)))
+    (root-edit! ctx update-in [:env :releases w]
+                #(-> % (assoc :phase :joined :result nil)
+                     (update :observers (fn [observers]
+                                          (into {} (for [[id observer] observers] [id (assoc observer :state :ready)]))))))
+    (emit! ctx {:event :release-joined :world w :release (:id row)})
+    (doseq [observer (keys (:observers row))]
+      (command! ctx {:op :release-ready :world w :release (:id row) :observer observer}))))
+
 (defn- admit-action!
   "Check actor/resource admission before any transition mutates the store."
   [ctx {:keys [t w] :as action} thread slice? unwinding?]
@@ -2505,7 +2709,7 @@
     (require! false ::cleanup-only {:thread (:th action) :action action}))
   (when (and (protected-operation-id? (:op action))
              (not (#{:operation-start :operation-await :operation-deliver :operation-claim
-                     :operation-terminal :operation-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :signal-write} t)))
+                     :operation-terminal :operation-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :signal-write :release-observe :release-detach} t)))
     (require! false ::cleanup-only {:action action}))
   (when (:callback action)
     (let [receipt (get-in (root-state ctx) [:env :native (:callback action)])
@@ -2522,7 +2726,7 @@
                                   (and (= :ok (:variant receipt)) (= :entered (:state reservation))
                                        (= (:frame receipt) (:frame reservation))))))
                      (#{:cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now
-                        :mailbox-take :mailbox-claim :mailbox-return} t))
+                        :mailbox-take :mailbox-claim :mailbox-return :release-observe :release-detach} t))
                 ::cleanup-only {:action action})))
   (let [resume (case t :t06 action :t35 (when (= :resume (get-in action [:op :kind])) (:op action)) nil)
         ob (when resume (read-row ctx (:w resume) :obligations (:o resume)))
@@ -2659,6 +2863,11 @@
          :t10 (supersede! ctx w (:r action))
          :t11 (cancel-run! ctx w (:r action) (:anchor action))
          :t13 (close-scope! ctx w (:scope action))
+         :t34 (release-world! ctx action)
+         :release-request (request-release! ctx action)
+         :release-observe (observe-release! ctx action)
+         :release-detach (detach-release! ctx action)
+         :release-notify (notify-release! ctx action)
          :t14
          (let [pin? (:pin? action) e (:e action)]
            (when pin?
@@ -2762,6 +2971,7 @@
        (rule-l! ctx)
        (prune-ancestry! ctx)
        (refresh-timer-anchors! ctx)
+       (refresh-releases! ctx)
        (when diagnostics? (root-edit! ctx assoc :events @(:events ctx)))
        {:events (if diagnostics? @(:events ctx) [])
         :commands @(:commands ctx) :result @(:result ctx)}))))

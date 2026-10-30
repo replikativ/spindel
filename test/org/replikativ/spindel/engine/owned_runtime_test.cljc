@@ -137,6 +137,10 @@
                     (assoc ev :source-gc
                            (into {} (filter (fn [[[world _ _] _]] (= world id))
                                             (get-in expected [:env :source-gc] {})))) ev)
+               ev (if (= :released (:status world))
+                    (assoc (select-keys ev [:lineage :status :global :threads :native :cleanup-cells :gc :handles])
+                           :id id :release (get-in expected [:env :releases id])
+                           :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))) ev)
                difference (take 2 (data/diff ev actual))]
            (when-not (= ev actual)
              (throw (ex-info "Boundary mismatch" {:action action :world id :difference (vec difference)})))

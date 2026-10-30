@@ -157,6 +157,10 @@
   "Stop a context's background drain thread."
   ctx/stop-context!)
 
+(def release-context!
+  "Request logical world release and return its asynchronous physical join."
+  ctx/release-context!)
+
 (def serialize-context
   "Serialize context to EDN for checkpointing/distribution."
   ctx/serialize-context)

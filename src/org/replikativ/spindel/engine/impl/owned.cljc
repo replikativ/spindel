@@ -13,6 +13,7 @@
             [org.replikativ.spindel.engine.cell-handles :as cell-handles]
             [org.replikativ.spindel.engine.timer-transport :as timer-transport]
             [org.replikativ.spindel.engine.fault :as fault]
+            [org.replikativ.spindel.engine.lifecycle :as lifecycle]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as delta]))
 
@@ -402,12 +403,15 @@
 (def ^:const z-order 3) (def ^:const z-delay 4) (def ^:const z-value 5)
 (def ^:const z-phase 6) (def ^:const z-install 7) (def ^:const z-handle-state 8)
 (def ^:const z-handle 9) (def ^:const z-frames 10)
+(deftype ^:private NativeReleaseReceipt [owner token])
+(defonce ^:private pending-releases (atom {}))
 (defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
 (declare read-application-state swap-application-state! cas-application-state!
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
          register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
          await-public-timer! timer-revoke! timer-profile-view prune-timer-queue! same-cell-world?
+         request-world-release! observe-world-release! refresh-release! world-open! release-view lifecycle-await!
          create-public-deferred! claim-public-deferred! deliver-public-deferred! read-public-deferred invoke-public-deferred!
          operation-deliver! protect-deferred! start-protected-operation! invoke-operation-ready! operation-terminal! operation-check!
          create-public-mailbox! post-public-mailbox! take-public-mailbox-now! invoke-public-mailbox! invoke-public-mailbox-next!
@@ -421,8 +425,11 @@
 ;; fields live on the facade; borrowed family services never become view aliases.
 (defrecord ^:private ArenaState [nodes deliveries events hosts work ready draining counters audit tokens
                                  serial thread family parent tickets lineage gc operations posts home liveness
-                                 extension-state finalization managed-cells trace-address timers])
+                                 extension-state finalization managed-cells trace-address timers lifecycle])
 (defrecord OwnedRuntime [gate world root family-id owner-root arena-cell]
+  rtp/PWorldLifecycle
+  (request-world-release! [this reason] (request-world-release! this reason))
+  (observe-world-release! [this receipt resolve reject] (observe-world-release! this receipt resolve reject))
   rtp/PTimers
   (await-public-timer! [this delay-ms value resolve reject]
     (await-public-timer! this delay-ms value resolve reject))
@@ -563,13 +570,24 @@
                         (put 3 (id-dict)) (put 4 on-finalization-result)))
                 (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1)
                 (doto (slots 3) (put 0 (id-dict))
-                      (put 1 (or timer-transport timer-transport/default-transport)) (put 2 (queue))))
+                      (put 1 (or timer-transport timer-transport/default-transport)) (put 2 (queue)))
+                (doto (slots 7) (put 0 :live) (put 4 0) (put 5 (id-dict))))
          rt (->OwnedRuntime gate world-id [:root world-id]
                             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id])
                             (volatile! arena))
          rt (cond-> rt bindings (assoc :bindings bindings) metadata (assoc :metadata metadata))]
      (assoc! family world-id rt)
      rt)))
+
+(defn- world-open! [rt]
+  (when-not (= :live (a (runtime-field rt :lifecycle) 0))
+    (throw (ex-info "Execution world is released" {:error :world-released}))))
+
+(defn release-context-backend [rt]
+  (->OwnedRuntime (runtime-field rt :gate) (runtime-field rt :world) (runtime-field rt :root)
+                  (runtime-field rt :family-id) (runtime-field rt :owner-root) (runtime-field rt :arena-cell)))
+
+(defn pending-release-count [] (count @pending-releases))
 
 (defn auditing? [rt]
   (boolean (runtime-field rt :audit)))
@@ -798,6 +816,7 @@
   (put node n-kept value))
 
 (defn- node! [rt id kind owner]
+  (world-open! rt)
   (let [node (slots 37)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
@@ -1351,6 +1370,7 @@
   (reclaim! rt)
   (when (prune-timer-queue! rt) (reclaim! rt))
   (prune-ancestry! rt)
+  (refresh-release! rt)
   (when-let [audit (runtime-field rt :audit)]
     (audit-derived-state! rt)
     (let [pending (a (runtime-field rt :counters) 9)
@@ -1375,6 +1395,7 @@
 (defn- touch! [rt node token]
   (when token (add! (a node n-tokens) token) (add! (a token t-touched) (runtime-field rt :world))))
 (defn- check-token! [rt token]
+  (world-open! rt)
   (when (and token (not (identical? (runtime-field rt :family-id) (a token t-family))))
     (throw (ex-info "Handle belongs to another runtime family" {:error :unknown-handle})))
   (when (and token (has? (a token t-dropped) (runtime-field rt :world)))
@@ -1400,6 +1421,7 @@
         (locked caller (check-running! (a frame 1)))))))
 
 (defn- check-native-caller! [rt]
+  (world-open! rt)
   ;; The target gate is held. Related worlds share it; an independent target
   ;; uses the explicit admission point before acquiring its separate gate.
   (when-let [frame (current-activation)]
@@ -1498,6 +1520,7 @@
     (put t-touched (members)) (put t-dropped (members))))
 
 (defn- construct-token! [rt id token run]
+  (world-open! rt)
   (check-running! run)
   (when-let [node (find! (runtime-field rt :nodes) id)]
     (when-not (= :spin (a node n-kind))
@@ -1519,14 +1542,19 @@
                                                     run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))))
 
 (defn make-spin [requested id body]
-  (let [rt (execution-runtime requested) token (new-token rt id)]
-    (locked rt (construct-token! rt id token (when (current-activation) (a (current-activation) 1))))
+  (let [rt (execution-runtime requested)
+        token (locked rt
+                      (world-open! rt)
+                      (let [token (new-token rt id)]
+                        (construct-token! rt id token (when (current-activation) (a (current-activation) 1)))
+                        token))]
     (arm-handle! rt (->Handle id token body) token)))
 
 (defn- portable-token! [rt target id construction?]
   ;; Only the engine's identity-equality public Spin objects enter this cache.
   ;; Values contain no body, public target or strong reference to the family.
   (locked rt
+          (world-open! rt)
           (when (and (current-activation) (identical? (runtime-field rt :owner-root)
                                                       (runtime-field (a (current-activation) 0) :owner-root)))
             (check-running! (a (current-activation) 1)))
@@ -2707,6 +2735,7 @@
       :else (application-value (locked rt (check-native-caller! rt) (application-roots rt)) path))))
 
 (defn- check-application-caller! [rt]
+  (world-open! rt)
   ;; Called under the target gate. Related worlds share that gate; unrelated
   ;; worlds use the explicit admission check before acquiring the target.
   (when-let [frame (current-activation)]
@@ -2885,6 +2914,7 @@
              (= :unwinding (some-> (a frame 1) (a r-status)))))))
 
 (defn- check-cell-caller! [rt]
+  (when-not (cleanup-cell-access? rt) (world-open! rt))
   (if-let [receipt (active-mailbox-callback)]
     (mailbox-callback-check! rt receipt)
     (if-let [operation (active-operation)]
@@ -3296,7 +3326,8 @@
 
 (defn- global-view [rt]
   (let [worlds (values (runtime-field rt :family))]
-    {:registry (set (map :world worlds)) :known-worlds (set (map :world worlds))
+    {:registry (set (for [world worlds :when (= :live (a (runtime-field world :lifecycle) 0))]
+                      (runtime-field world :world))) :known-worlds (set (map :world worlds))
      :lineages (into {} (for [world worlds] [(runtime-field world :world) (runtime-field world :lineage)]))
      :caps (map-value (a (runtime-field rt :counters) 7))
      :generation-clock (into {} (for [world worlds :let [clock (a (runtime-field world :counters) 3)] :when clock [id n] (map-value clock)]
@@ -3309,7 +3340,7 @@
           (for [node (values (runtime-field rt :nodes)) ob (items (a node n-dependents))
                 :when (nil? (a ob o-run))] ob)))
 
-(defn snapshot [rt]
+(defn- snapshot-live [rt]
   (locked rt
           (merge (timer-profile-view rt)
                  (when (a (runtime-field rt :managed-cells) 2)
@@ -3381,6 +3412,9 @@
                                (assoc :engine (cond-> {:world (a (runtime-field rt :thread) 2) :scope id :run id :executing? (boolean id)}
                                                 id (assoc :obligation-world (a (runtime-field rt :thread) 2))
                                                 (= :unwinding (some-> run (a r-status))) (assoc :retired? true)
+                                                (and (= :unwinding (some-> run (a r-status)))
+                                                     (not= :live (a (runtime-field rt :lifecycle) 0)))
+                                                (assoc :anchor (a run r-anchor))
                                                 ticket (assoc :retired? true :anchor (a ticket x-anchor) :cleanup-ticket (a ticket x-id))))))
                   :gc (mapv (fn [notification]
                               (let [target (a notification 0) token (a notification 1)]
@@ -3390,6 +3424,12 @@
                              (into {} (for [token (items (runtime-field rt :tokens))]
                                         [(a token t-id) {:spin (a token t-spin) :reachable? (a token t-reachable)
                                                          :touched (set (items (a token t-touched))) :dropped (set (items (a token t-dropped)))}])))})))
+
+(defn snapshot [rt]
+  (locked rt
+          (let [live (snapshot-live rt)]
+            (if (= :live (a (runtime-field rt :lifecycle) 0)) live
+                (release-view rt live)))))
 
 (defn fork-parked!
   "Prototype T19 for quiescent host-ticket bundles. Copies the ownership
@@ -3624,6 +3664,7 @@
       (boolean (some (fn [[k value]] (not (same-public-capture? value (get old k)))) new))))
 
 (defn- check-computation-caller! [rt]
+  (world-open! rt)
   (when-let [frame (current-activation)]
     (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
       (check-running! (a frame 1)))))
@@ -3863,6 +3904,8 @@
 
 (defn await-public-computation! [requested target id body _caller-id _source-loc resolve reject]
   (cond
+    (satisfies? rtp/PWorldRelease target)
+    (lifecycle-await! requested target resolve reject)
     (satisfies? rtp/PMailbox target)
     (await-public-mailbox! requested target resolve reject false)
     (satisfies? rtp/PMailboxNext target)
@@ -4209,7 +4252,9 @@
                    (a node n-owner) (= id (a aux 0)))
         retained (when (or cleanup? (not live?)) (deferred-retained rt id ticket))]
     (when-not (= :assign purpose)
-      (when-not (or (= :protect purpose) cleanup?) (check-cell-caller! rt)))
+      (when-not (or (= :protect purpose) cleanup?
+                    (and (= :request purpose) (nil? frame) retained (not live?)))
+        (check-cell-caller! rt)))
     (when (and cleanup? (not= :protect purpose))
       (when-not (and ticket (or (active-operation) (= :claimed (a ticket x-phase))) retained)
         (throw (ex-info "Deferred is outside the retained cleanup capability"
@@ -4638,7 +4683,9 @@
     (when-not (= :assign purpose)
       (when operation (operation-check! rt operation))
       (when raw (mailbox-callback-check! rt raw))
-      (when-not (or (= :protect purpose) cleanup?) (check-cell-caller! rt)))
+      (when-not (or (= :protect purpose) cleanup?
+                    (and (= :post purpose) (nil? frame) retained (not live?)))
+        (check-cell-caller! rt)))
     (when (and cleanup? (not= :protect purpose) (not retained))
       (throw (ex-info "Mailbox is outside the retained callback capability" {:error :missing-cleanup-cell :id id})))
     (when (and cleanup? (not operation) (not raw)
@@ -5089,3 +5136,271 @@
       ;; That frame pumps the whole CPS callback, including any returned Thunks;
       ;; later buffered next calls can reuse it through the branch above.
       :else (await-public-mailbox! requested target next-resolve reject true))))
+
+;; Explicit release owns unfinished cleanup. Ordinary pending worlds never
+;; enter this registry, and joined receipts retain only their revoked facade.
+(defn- release-id [rt] [:world-release (runtime-field rt :world)])
+
+(defn- release-observer-row [rt]
+  (let [state (runtime-field rt :lifecycle)]
+    (cond-> {:id (release-id rt) :reason (diagnostic-value (a state 1) true)
+             :phase (if (= :joined (a state 0)) :joined :releasing)
+             :next-observer (a state 4)
+             :observers (into {} (for [[id observer] (map-value (a state 5))]
+                                   [id {:state (a observer 0)}]))}
+      (= :joined (a state 0)) (assoc :result nil))))
+
+(defn- release-view [rt live]
+  (let [world (runtime-field rt :world)
+        outside (mapv (fn [event] {:w world :event event})
+                      (filter #(or (:deferred-assignment %) (:mailbox-post %)) (:queue live)))]
+    (merge (select-keys live [:global :threads :native :cleanup-cells :gc :handles])
+           {:id world :lineage (runtime-field rt :lineage) :status :released
+            :release (release-observer-row rt) :outside outside})))
+
+(defn- release-notify! [rt id]
+  (let [callback (locked rt
+                         (let [state (runtime-field rt :lifecycle)
+                               observer (find! (a state 5) id)]
+                           (when (and observer (= :ready (a observer 0)))
+                             (dissoc! (a state 5) id)
+                             (let [callback [(a observer 1) (a observer 3)]]
+                               (put observer 1 nil) (put observer 2 nil) (put observer 3 nil)
+                               (boundary! rt (when (runtime-field rt :audit)
+                                               {:t :release-notify :w (runtime-field rt :world)
+                                                :release (release-id rt) :observer id}))
+                               callback))))]
+    (when callback
+      (host-callback-scope (second callback)
+                           #(binding [cps/*in-trampoline* false]
+                              (cps/with-trampoline (cps/invoke-continuation (first callback) %))) nil))))
+
+(defn- queue-release-observer! [rt id observer]
+  (when (= :waiting (a observer 0))
+    (put observer 0 :ready)
+    (push! (runtime-field rt :posts) (doto (slots 1) (put 0 #(release-notify! rt id))))))
+
+(defn- revoke-release-arena! [rt]
+  (let [old @(runtime-field rt :arena-cell)
+        family (id-dict) counters (doto (slots 10)
+                                    (put 0 (queue)) (put 1 (a (:counters old) 1)) (put 2 (a (:counters old) 2))
+                                    (put 3 (a (:counters old) 3)) (put 4 (slots 32)) (put 5 (slots 14))
+                                    (put 6 (members)) (put 7 (id-dict)) (put 8 (members))
+                                    (put 9 (when (:audit old) (queue))))
+        empty-profile (when (:finalization old)
+                        (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict))))
+        state (map->ArenaState
+               {:nodes (id-dict) :deliveries (dict) :events (:events old) :hosts (:hosts old) :posts (:posts old)
+                :work (queue) :ready #?(:clj (java.util.PriorityQueue. 11 (reify java.util.Comparator
+                                                                            (compare [_ x y] (compare (long (a x n-rank)) (long (a y n-rank))))))
+                                        :cljs (array))
+                :draining (:draining old) :counters counters :audit (:audit old) :tokens (:tokens old)
+                :serial (:serial old)
+                :thread (doto (slots 5)
+                          ;; Keep only value-only thread history, never an old
+                          ;; physical run or cleanup ticket after joining.
+                          (put 1 (a (:thread old) 1)) (put 2 (a (:thread old) 2))
+                          (put 3 (a (:thread old) 3)))
+                :family family :parent nil :tickets (id-dict) :lineage (:lineage old) :gc (queue)
+                :operations (dict)
+                :home (->RuntimeFamily (runtime-field rt :gate) family
+                                       #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))
+                                       (doto (slots 5) (put 0 (queue)) (put 1 (id-dict)) (put 2 false) (put 3 0) (put 4 0)))
+                :liveness (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
+                                (put 3 (members)) (put 4 (queue)) (put 5 (dict)))
+                :extension-state (atom {:values {} :shadowed #{} :map-groups #{}})
+                :finalization empty-profile
+                :managed-cells (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false))
+                :trace-address (slots 1)
+                :timers (doto (slots 3) (put 0 (id-dict)) (put 1 timer-transport/default-transport) (put 2 (queue)))
+                :lifecycle (:lifecycle old)})]
+    (vreset! (runtime-field rt :arena-cell) state)
+    (assoc! family (runtime-field rt :world) (release-context-backend rt))))
+
+(defn- stale-release-packet? [rt event]
+  (let [size (alength ^objects event)
+        kind (cond (and (= 7 size) (= :deferred-assignment (a event 4))) :deferred
+                   (and (= 9 size) (= :mailbox-post (a event 4))) :mailbox)]
+    (when (and kind (same-cell-world? rt (a event 0)))
+      (let [id (:id (a event 1))
+            node (find! (runtime-field rt :nodes) id)
+            aux (find! (a (runtime-field rt :managed-cells) 0) id)
+            live? (and node aux (= kind (a node n-kind)) (a node n-owner) (= id (a aux 0)))
+            held? (when-let [profile (runtime-field rt :finalization)]
+                    (some (fn [[key cell]]
+                            (and (= (runtime-field rt :world) (nth key 0)) (= id (nth key 2))
+                                 (= kind (a cell 0)) (= id (a cell 3)) (pos? (count! (a cell 2)))))
+                          (map-value (a profile 1))))]
+        (not (or live? held?))))))
+
+(defn- prune-release-packets! [rt]
+  ;; Only admitted producer attempts whose exact allocation has lost every
+  ;; owner/cohort can disappear. Notifications and other worlds retain order.
+  (let [events (runtime-field rt :events) copied (copy-items events)]
+    #?(:clj (.clear ^java.util.ArrayDeque events) :cljs (.clear events))
+    (dotimes [i (alength ^objects copied)]
+      (let [event (a copied i)]
+        (put copied i nil)
+        (when-not (stale-release-packet? rt event) (push! events event))))))
+
+(defn- refresh-release! [rt]
+  (let [state (runtime-field rt :lifecycle)]
+    (when (and (= :releasing (a state 0))
+               (not-any? #(a % r-physical) (items (a (runtime-field rt :counters) 6)))
+               (empty-dict? (a (runtime-field rt :timers) 0))
+               (or (nil? (runtime-field rt :finalization))
+                   (empty-dict? (a (runtime-field rt :finalization) 0))))
+      (prune-release-packets! rt)
+      (put state 0 :joined)
+      (revoke-release-arena! rt)
+      (swap! pending-releases dissoc (runtime-field rt :owner-root))
+      (doseq [[id observer] (map-value (a state 5))] (queue-release-observer! rt id observer)))))
+
+(defn- release-authenticate! [rt receipt]
+  (when-not (and (instance? NativeReleaseReceipt receipt)
+                 (identical? receipt (a (runtime-field rt :lifecycle) 2)))
+    (throw (ex-info "Release receipt belongs to another lifetime" {:error :foreign-release-receipt}))))
+
+(defn- release-wait-admission! [rt]
+  (when-let [frame (current-activation)]
+    (when (same-cell-world? rt (a frame 0))
+      (throw (ex-info "Release cannot wait for its own physical frame" {:error :self-release-join})))
+    (when (or (active-operation) (active-mailbox-callback))
+      (throw (ex-info "Protected resource lifecycle waits require typed integration"
+                      {:error :unsupported-operation :operation :protected-release-wait})))
+    (locked (a frame 0) (check-running! (a frame 1)))))
+
+(defn observe-world-release! [requested receipt resolve reject]
+  (let [rt (release-context-backend (canonical-runtime requested))]
+    (release-wait-admission! rt)
+    (let [resolve (cps-runtime/scope-continuation resolve)
+          reject (cps-runtime/scope-continuation reject)
+          id (locked rt
+                     (release-authenticate! rt receipt)
+                     (let [state (runtime-field rt :lifecycle)
+                           ordinal (put state 4 (inc (long (a state 4))))
+                           id [(release-id rt) ordinal]
+                           observer (doto (slots 4) (put 0 :waiting) (put 1 resolve) (put 2 reject)
+                                          (put 3 ec/*execution-context*))]
+                       (assoc! (a state 5) id observer)
+                       (when (= :joined (a state 0)) (queue-release-observer! rt id observer))
+                       (boundary! rt (when (runtime-field rt :audit)
+                                       {:t :release-observe :w (runtime-field rt :world)
+                                        :release (release-id rt) :observer id}))
+                       id))]
+      (drain! rt)
+      (fn []
+        (locked rt
+                (release-authenticate! rt receipt)
+                (when-let [observer (find! (a (runtime-field rt :lifecycle) 5) id)]
+                  (put observer 1 nil) (put observer 2 nil) (put observer 3 nil)
+                  (dissoc! (a (runtime-field rt :lifecycle) 5) id))
+                (boundary! rt (when (runtime-field rt :audit)
+                                {:t :release-detach :w (runtime-field rt :world)
+                                 :release (release-id rt) :observer id})))))))
+
+(defn- retain-world-cleanup! [rt reason]
+  (when-let [profile (runtime-field rt :finalization)]
+    (doseq [run (vec (items (a (runtime-field rt :counters) 6)))]
+      (retain-cleanup! rt run {:reason reason :node (a run r-node)}))
+    (let [participants (filter #(= :cps-exit (a % x-kind)) (values (a profile 0)))]
+      (doseq [node (values (runtime-field rt :nodes))
+              :when (and (a node n-owner) (#{:atom :signal :deferred :mailbox} (a node n-kind)))]
+        (let [key [(runtime-field rt :world) (owner-id (a node n-owner)) (a node n-id)]
+              cell (or (find! (a profile 1) key)
+                       (doto (slots 5) (put 0 (a node n-kind)) (put 1 (a node n-value))
+                             (put 2 (members)) (put 3 (source-allocation rt (a node n-id)))
+                             (put 4 (case (a node n-kind) :deferred (a node n-deferred) :mailbox (a node n-mailbox) nil))))]
+          (when (seq participants)
+            (assoc! (a profile 1) key cell)
+            (doseq [ticket participants]
+              (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell))))))
+    (doseq [ticket (values (a profile 0)) :when (= :mailbox-callback (a ticket x-kind))]
+      (put ticket 20 true))))
+
+(defn request-world-release! [requested reason]
+  (when (or (active-operation) (active-mailbox-callback))
+    (throw (ex-info "Resource callbacks cannot release worlds" {:error :cleanup-only})))
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested)
+        completion (locked rt
+                           (let [state (runtime-field rt :lifecycle)]
+                             (if (not= :live (a state 0)) (a state 3)
+                                 (do
+                                   (when-let [frame (current-activation)]
+                                     ;; Foreign caller admission occurred before this
+                                     ;; gate; never acquire its independent gate here.
+                                     (when (identical? (runtime-field rt :gate)
+                                                       (runtime-field (a frame 0) :gate))
+                                       (check-running! (a frame 1))))
+                                   (when (or (runtime-field rt :parent)
+                                             (> (count (map-value (runtime-field rt :family))) 1)
+                                             (not (empty-dict? (a (runtime-field rt :counters) 7))))
+                                     (throw (ex-info "World release requires an isolated local root"
+                                                     {:error :unsupported-operation :operation :world-release-lineage})))
+                                   (let [receipt (NativeReleaseReceipt. (runtime-field rt :owner-root) #?(:clj (Object.) :cljs (js-obj)))
+                                         backend (release-context-backend rt)
+                                         completion (lifecycle/completion backend receipt)]
+                                     (put state 1 reason) (put state 2 receipt) (put state 3 completion)
+                                     (swap! pending-releases assoc (runtime-field rt :owner-root) backend)
+                                     ;; Retain before any ownership mutation; raw witnesses keep
+                                     ;; their immutable first-claim ancestry.
+                                     (retain-world-cleanup! rt reason)
+                                     (put state 0 :releasing)
+                                     (doseq [ob (vec (all-obligations rt)) :when (nil? (a ob o-run))]
+                                       (reject-dependent! rt ob {:reason reason}))
+                                     (doseq [run (sort-by #(a % r-gen) > (vec (items (a (runtime-field rt :counters) 6))))]
+                                       (retire! rt run {:reason reason :node (a run r-node)}))
+                                     (doseq [node (vec (values (runtime-field rt :nodes)))]
+                                       (when-let [control (a node n-mailbox)]
+                                         (doseq [consumer (vec (concat (values (a control m-pending))
+                                                                       (values (a control m-reservations))))]
+                                           (refresh-mailbox-owner! rt consumer (a node n-owner))
+                                           (when (and (= :host (a consumer b-kind)) (#{:pending :reserved} (a consumer b-state)))
+                                             (queue-mailbox-rejection! rt consumer reason :explicit))))
+                                       (owner! rt node nil)
+                                       (doseq [ob (vec (items (a node n-dependents)))]
+                                         (reject-dependent! rt ob {:reason reason}))
+                                       ;; Minimal physical run witnesses may still point here.
+                                       ;; Ordinary source/body/cache captures do not survive.
+                                       (fields! [field [n-body n-descriptor n-value n-public-signal n-deferred n-mailbox
+                                                        n-creator n-creator-source n-resume]] (put node field nil))
+                                       (clear-members! (a node n-tokens)))
+                                     (doseq [id (keys (map-value (a (runtime-field rt :managed-cells) 1)))]
+                                       (clear-cell-gc-receipt! rt id))
+                                     #?(:clj (.clear ^java.util.Map (runtime-field rt :nodes))
+                                        :cljs (.clear (.-buckets (runtime-field rt :nodes))))
+                                     #?(:clj (.clear ^java.util.Map (a (runtime-field rt :managed-cells) 0))
+                                        :cljs (.clear (.-buckets (a (runtime-field rt :managed-cells) 0))))
+                                     (let [events (runtime-field rt :events)
+                                           retained (vec (filter #(#{7 9} (alength ^objects %)) (items events)))]
+                                       #?(:clj (.clear ^java.util.ArrayDeque events) :cljs (.clear events))
+                                       (doseq [event retained] (push! events event)))
+                                     #?(:clj (do (.clear ^java.util.ArrayDeque (runtime-field rt :work))
+                                                 (.clear ^java.util.PriorityQueue (runtime-field rt :ready))
+                                                 (.clear ^java.util.ArrayDeque (runtime-field rt :gc)))
+                                        :cljs (do (.clear (runtime-field rt :work))
+                                                  (set! (.-length (runtime-field rt :ready)) 0)
+                                                  (.clear (runtime-field rt :gc))))
+                                     (let [live (runtime-field rt :liveness)]
+                                       #?(:clj (.clear ^java.util.ArrayDeque (a live 0)) :cljs (.clear (a live 0)))
+                                       (fields! [slot [1 2 3]] (clear-members! (a live slot))))
+                                     (reset! (runtime-field rt :extension-state) {:values {} :shadowed #{} :map-groups #{}})
+                                     (boundary! rt (when (runtime-field rt :audit)
+                                                     {:t :release-request :w (runtime-field rt :world)
+                                                      :release (release-id rt) :reason (diagnostic-value reason true)}))
+                                     completion)))))]
+    (drain! rt)
+    completion))
+
+(defn- lifecycle-await! [requested completion resolve reject]
+  (let [rt (canonical-runtime requested) target (rtp/release-runtime completion)]
+    (when-not (instance? OwnedRuntime target)
+      (throw (ex-info "Lifecycle await requires a native completion" {:error :unsupported-operation})))
+    (when-not (and (current-activation) (same-cell-world? rt (a (current-activation) 0)))
+      (throw (ex-info "Lifecycle await requires ordinary execution" {:error :unsupported-operation})))
+    (release-wait-admission! target)
+    (locked rt (check-running! (a (current-activation) 1)))
+    (let [resolve (cps-runtime/scope-continuation resolve) reject (cps-runtime/scope-continuation reject)]
+      (await-host-effect! (fn [ready failed] (lifecycle/observe! completion ready failed)) resolve reject)
+      :org.replikativ.spindel.spin/incomplete)))

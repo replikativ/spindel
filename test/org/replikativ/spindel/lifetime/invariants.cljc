@@ -865,11 +865,118 @@
                                    (= :armed (:phase row)) (empty? (:frames row)))))]
           {:timer id :unregistered-resource row}))))))
 
+(defn- released-physical? [s w]
+  (or (some #(and (= w (:world %)) (:run %)) (vals (get-in s [:env :threads])))
+      (some #(and (= w (first (:owner %))) (not= :joined (:state %))) (vals (get-in s [:env :native])))))
+
+(defn- obsolete-release-attempt? [s w packet]
+  ;; Independent oracle: identify the allocation from the accepted envelope,
+  ;; then inspect every surviving cohort rather than trusting its original key.
+  (let [event (:event packet)
+        [kind e] (cond (contains? event :deferred-assignment) [:deferred (:deferred-assignment event)]
+                       (contains? event :mailbox-post) [:mailbox (:mailbox-post event)])
+        allocation (:allocation event) live (get-in s [:worlds w :entities e])]
+    (and (= w (:w packet)) kind (contains? event :allocation)
+         (= :released (:status (m/wr s w)))
+         (not (and (:owner live) (= [kind allocation] [(:kind live) (:allocation live)])))
+         (empty? (for [[[world _ resource] cell] (get-in s [:env :cleanup-cells])
+                       :when (and (= [w e kind allocation] [world resource (:kind cell) (:allocation cell)])
+                                  (seq (:holders cell)))] cell)))))
+
+(defn release-errors [s]
+  (vec
+   (for [[w row] (get-in s [:env :releases])
+         :let [joined? (= :joined (:phase row)) physical? (boolean (released-physical? s w))]
+         :when (or (not= (:id row) [:world-release w])
+                   (not= :released (:status (m/wr s w)))
+                   (not (contains? row :reason))
+                   (not (#{:releasing :joined} (:phase row)))
+                   (not (and (integer? (:next-observer row)) (not (neg? (:next-observer row)))))
+                   (not= joined? (contains? row :result)) (and joined? (some? (:result row)))
+                   (= joined? physical?)
+                   (and joined? (some #(obsolete-release-attempt? s w %) (get-in s [:env :outside])))
+                   (not= (set (keys row)) (cond-> #{:id :reason :phase :next-observer :observers} joined? (conj :result)))
+                   (some (fn [[id observer]]
+                           (or (not (and (vector? id) (= 2 (count id)) (= (:id row) (first id))
+                                         (integer? (second id)) (<= 1 (second id) (:next-observer row))))
+                               (not= {:state (if joined? :ready :waiting)} observer))) (:observers row)))]
+     {:w w :release row :physical? physical?})))
+
+(defn release-edge-errors [{:keys [before action after refusal observation]}]
+  (when (and (not refusal) (not observation) (not (process-loss? action)))
+    (let [t (:t action) w (:w action) old (get-in before [:env :releases w])
+          deliveries (filter #(= :release-delivery (:event %)) (:events after))
+          joins (filter #(= :release-joined (:event %)) (:events after))
+          notifying? (= :release-notify t)
+          expected-delivery (when notifying?
+                              {:event :release-delivery :world w :release (:release action)
+                               :observer (:observer action) :variant :ok :value nil})
+          first-request? (and (= :release-request t) (nil? old))
+          newly-joined (set (for [[world row] (get-in after [:env :releases])
+                                  :when (and (= :joined (:phase row))
+                                             (not= :joined (get-in before [:env :releases world :phase])))] world))]
+      (vec
+       (concat
+        (when (not= (if notifying? [expected-delivery] []) (vec deliveries))
+          [{:unexpected-release-deliveries (vec deliveries) :action action}])
+        (for [[world row] (get-in before [:env :releases])
+              :let [current (get-in after [:env :releases world])
+                    observe? (and (= :release-observe t) (= world w))
+                    removed (set/difference (set (keys (:observers row))) (set (keys (:observers current))))
+                    added (set/difference (set (keys (:observers current))) (set (keys (:observers row))))]
+              :when (or (nil? current) (not= (select-keys row [:id :reason]) (select-keys current [:id :reason]))
+                        (not= (+ (:next-observer row) (if observe? 1 0)) (:next-observer current))
+                        (not= (if observe? #{(:observer action)} #{}) added)
+                        (and (seq removed) (not (and (= world w) (#{:release-detach :release-notify} t)
+                                                     (= #{(:observer action)} removed))))
+                        (and (= :joined (:phase row)) (not= :joined (:phase current)))
+                        (not= (= :joined (:phase current)) (not (boolean (released-physical? after world)))))]
+          {:w world :release-conservation {:before row :after current :action action}})
+        (for [[world row] (get-in after [:env :releases])
+              :when (nil? (get-in before [:env :releases world]))
+              :when (or (not (and first-request? (= world w) (= (:release action) (:id row))))
+                        (not= (get action :reason :org.replikativ.spindel.engine.protocols/released) (:reason row))
+                        (not= 0 (:next-observer row)) (seq (:observers row)))]
+          {:w world :unissued-release row})
+        (let [expected (set (for [[world row] (get-in after [:env :releases])
+                                  :when (and (= :joined (:phase row))
+                                             (not= :joined (get-in before [:env :releases world :phase])))]
+                              {:event :release-joined :world world :release (:id row)}))]
+          (when (or (not= expected (set joins)) (not= (count expected) (count joins)))
+            [{:expected-release-joins expected :actual (vec joins)}]))
+        (when (and (seq newly-joined) (not first-request?))
+          (let [outside (get-in before [:env :outside])
+                consumed (when (and (#{:deferred-assign :mailbox-post} t)
+                                    (empty? (:queue (m/wr before w))))
+                           (first (filter #(= w (:w %)) outside)))
+                ;; Only the authenticated front attempt can be processed by
+                ;; this action. All other prior packets survive unless the
+                ;; independently checked post-return allocation is now dead.
+                expected (vec (remove (fn [packet]
+                                        (or (and consumed (= consumed packet))
+                                            (some #(and (not (released-physical? after %))
+                                                        (obsolete-release-attempt? after % packet)) newly-joined)))
+                                      outside))]
+            (when (not= expected (get-in after [:env :outside]))
+              [{:release-outside-conservation {:before outside :expected expected
+                                               :actual (get-in after [:env :outside]) :action action}}])))
+        (when first-request?
+          (let [reason (get action :reason :org.replikativ.spindel.engine.protocols/released)]
+            (concat
+             (for [[id row] (get-in after [:env :native])
+                   :when (and (cleanup/mailbox-callback? row) (= :error (:variant row))
+                              (= w (first (:owner row))) (nil? (get-in before [:env :native id]))
+                              (not= reason (:delivery row)))]
+               {:receipt id :lost-release-reason {:expected reason :actual (:delivery row)}})
+             (for [event (:events after) :when (and (= :host-delivery (:event event)) (= w (:world event))
+                                                    (not= reason (:value event)))]
+               {:host-result-lost-release-reason event})))))))))
+
 (def predicates
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors] [:L30 release-errors]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates))))
@@ -1296,7 +1403,8 @@
         body-entries (filter #(= :body-entry (:event %)) events)]
     (vec
      (keep identity
-           [(when-let [bad (seq (timer-edge-errors edge))] {:id :TL23 :evidence (vec bad)})
+           [(when-let [bad (seq (release-edge-errors edge))] {:id :TL24 :evidence (vec bad)})
+            (when-let [bad (seq (timer-edge-errors edge))] {:id :TL23 :evidence (vec bad)})
             (when-let [bad (seq (mailbox-edge-errors edge))] {:id :TL22 :evidence (vec bad)})
             (when-let [bad (seq (cleanup-edge-errors edge))] {:id :TL21 :evidence (vec bad)})
             (when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
