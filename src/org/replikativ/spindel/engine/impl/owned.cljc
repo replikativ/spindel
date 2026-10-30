@@ -1781,14 +1781,15 @@
                 (when (= :stale (a old r-status)) (retire! rt old)))
     (let [run (start! rt node (a previous r-owner) true)]
       (when (or (a previous r-validation-lost) (a node n-dirty)) (put run r-validation-lost true))
-      (when work?
-        (put previous r-status :stale)
-        (each-copy! [ob (a previous r-obs)]
-                    (if (and (= :track (a ob o-kind)) (<= (long (a ob o-order)) (long order)))
-                      (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
-                          (put ob o-creditor-generation (a run r-gen))
-                          (put ob o-creditor-node node) (add-run! run r-obs ob))
-                      (end-ob! rt ob))))
+      (when work? (put previous r-status :stale))
+      ;; A completed predecessor still supplies the continuation's prefix.
+      ;; Transfer those tracks before successor completion retires its basis.
+      (each-copy! [ob (a previous r-obs)]
+                  (if (and (= :track (a ob o-kind)) (<= (long (a ob o-order)) (long order)))
+                    (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
+                        (put ob o-creditor-generation (a run r-gen))
+                        (put ob o-creditor-node node) (add-run! run r-obs ob))
+                    (when work? (end-ob! rt ob))))
       (each-copy! [child (a previous r-created)]
                   (when (< (long (a child n-order)) (long order))
                     (owner! rt child run)

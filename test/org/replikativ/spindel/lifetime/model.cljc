@@ -793,7 +793,7 @@
           s (if (work? previous) (assoc-in s [:worlds w :runs r :status] :stale) s)
           s (reduce (fn [s [o ob]]
                       (if (not= [:run w r] (:creditor ob)) s
-                          (if (and (work? previous) (= :track (:kind ob)) (<= (:order ob) order))
+                          (if (and previous (= :track (:kind ob)) (<= (:order ob) order))
                             (assoc-in s [:worlds w :obligations o :creditor] [:run w r2])
                             (if (work? previous) (end-obligation s w o :creditor-cancelled) s))))
                     s (:obligations (wr s w)))

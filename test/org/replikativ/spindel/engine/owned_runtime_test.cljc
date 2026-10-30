@@ -1419,3 +1419,39 @@
          #(is (identical? checked
                           (try (c/set-signal! rt source 1) nil
                                (catch Throwable error error))))))))
+
+(deftest completed-later-track-replay-keeps-earlier-source-reactive
+  (let [rt (c/runtime {:audit? true}) early (c/signal rt :early 0)
+        late (c/signal rt :late 0) values (atom [])
+        spin (c/cspin rt :parent
+                      [(iv/get-new (c/track early)) (iv/get-new (c/track late))])]
+    (c/observe! rt spin #(swap! values conj %) #(throw %))
+    (c/set-signal! rt late 1)
+    (c/set-signal! rt early 1)
+    (is (= [[0 0] [0 1] [1 1]] @values))
+    (verify-boundaries! rt)))
+
+(deftest completed-prefix-survives-a-working-successor-and-stale-delivery
+  (let [rt (c/runtime {:audit? true}) early (c/signal rt :early 0)
+        late (c/signal rt :late 0) gate (c/ticket :suffix) values (atom [])
+        spin (c/cspin rt :parent
+                      (let [a (iv/get-new (c/track early))
+                            b (iv/get-new (c/track late))]
+                        (when (pos? b) (c/park gate))
+                        [a b]))]
+    (c/observe! rt spin #(swap! values conj %) #(throw %))
+    (c/set-signal! rt late 1)
+    (let [obsolete (c/pending-ticket rt gate)]
+      (is (some? obsolete))
+      (c/set-signal! rt early 1)
+      (let [current (c/pending-ticket rt gate)]
+        (is (some? current))
+        (is (not= obsolete current))
+        (c/resume-ticket! rt obsolete :obsolete)
+        (is (= [[0 0]] @values))
+        (c/resume-ticket! rt current :ready)))
+    (is (= [[0 0] [1 1]] @values))
+    (c/set-signal! rt late 2)
+    (c/resume-ticket! rt (c/pending-ticket rt gate) :ready)
+    (is (= [[0 0] [1 1] [1 2]] @values))
+    (verify-boundaries! rt)))
