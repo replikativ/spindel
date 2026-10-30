@@ -4,9 +4,12 @@
   (:require [clojure.set :as set]
             [clojure.walk :as walk]
             [org.replikativ.spindel.lifetime.cleanup :as cleanup]
+            [org.replikativ.spindel.lifetime.lifecycle :as lifecycle]
             [org.replikativ.spindel.lifetime.managed-cells :as managed-cells]))
 
 (def terminal #{:merged :discarded :transferred :partitioned})
+(def ^:dynamic *release-cancellation* nil)
+
 (def standing #{:track :await-reactive :callback})
 (def work-status #{:running :parked})
 (def active-cuts #{:fenced :ready :captured :attached})
@@ -411,7 +414,8 @@
   ([s w o cause] (end-obligation s w o cause nil))
   ([s w o cause cancellation]
    (if-let [ob (get-in s [:worlds w :obligations o])]
-     (let [[kind dw e] (:debtor ob)
+     (let [cancellation (or cancellation *release-cancellation*)
+           [kind dw e] (:debtor ob)
            [ck cw r] (:creditor ob)
            s (if (and (= :cancel-delivered cause) (= :await-reactive (:kind ob))
                       (= :consumed (:slot ob)) (= :run ck)
@@ -723,12 +727,18 @@
                  (cond-> {:deferred-assignment e :allocation allocation :seq seq}
                    cell (assoc :cell cell)))
               ::not-deferred-assignment {:w w :e e :front front})
+    (require! (or (not (contains? action :value)) (= value (:value front)))
+              ::not-deferred-assignment {:w w :e e :front front})
     (let [value (:value front)
           s (if queued (update-in s [:worlds w :queue] #(vec (rest %)))
                 (update-in s [:env :outside]
                            #(let [[a b] (split-with (fn [held] (not= held outside)) %)]
                               (into (vec a) (rest b)))))
-          {:keys [path row assigned? cell] :as view} (deferred-view s action true)]
+          ;; The original cohort is authenticated above. Its holder may have
+          ;; returned since acceptance; resolve only this same allocation.
+          {:keys [path row assigned? cell] :as view}
+          (or (deferred-view s action true)
+              (deferred-view s (dissoc action :cell) true))]
       (if (or (nil? view) assigned?) s
           (let [protected (get-in row [:deferred :protected])
                 s (cleanup/update-deferred-resource s w e allocation
@@ -1536,7 +1546,9 @@
           s (if (= :mailbox (:kind (ent s w e)))
               (reduce (fn [s [o ob]]
                         (if (and (= [:entity w e] (:debtor ob)) (= :host (first (:creditor ob))))
-                          (queue-mailbox-rejection s w e o :org.replikativ.spindel.engine.protocols/cancelled) s))
+                          (queue-mailbox-rejection s w e o
+                                                   (if *release-cancellation* (:value *release-cancellation*)
+                                                       :org.replikativ.spindel.engine.protocols/cancelled)) s))
                       s (:obligations (wr s w))) s)
           s (cond-> (assoc-in s [:worlds w :entities e :owner] nil)
               (= :spin (:kind (ent s w e))) (assoc-in [:worlds w :entities e :dirty?] true))
@@ -1558,7 +1570,8 @@
                             (= :running (:status (run s w r)))
                             (assoc-in [:worlds w :runs r :status] :parked)) s)
                       s (if (= :run (first (:creditor ob)))
-                          (t06-resume s {:w w :o o :value ::cancelled}) s)]
+                          (t06-resume s {:w w :o o :value (if *release-cancellation*
+                                                            (:value *release-cancellation*) ::cancelled)}) s)]
                   (end-obligation s w o :cancel-delivered)))
               s (filter #(= [:entity w e] (:debtor (val %))) (:obligations (wr s w))))) s))
 
@@ -1630,7 +1643,8 @@
   (if-let [rr (when (not= :unwinding (:status (run s w r))) (run s w r))]
     (let [chain (or anchor (owner-chain s w r))
           e (:spin rr) current? (= r (current s w e))
-          cancellation (when (contains? action :cancel-value) {:value (:cancel-value action)})]
+          cancellation (or (when (contains? action :cancel-value) {:value (:cancel-value action)})
+                           *release-cancellation*)]
       (rule-l
        (retire-run
         s w r :cancelled
@@ -2279,6 +2293,12 @@
                         (every? #(terminal (:disposition (val %))) caps)) ::capability-open {:w w})
           (let [s (cleanup/retain-subtree s w (:root world)
                                           (into {} (for [[r _] (:runs world)] [r (owner-chain s w r)])))
+                s (if *release-cancellation*
+                    (update-in s [:env :native]
+                               #(into {} (for [[id row] %]
+                                           [id (if (and (= w (first (:owner row))) (cleanup/exit? row)
+                                                        (not (contains? row :cancel-value)))
+                                                 (assoc row :cancel-value (:value *release-cancellation*)) row)]))) s)
                 s (reduce (fn [s [c cut]]
                             (if (and (active-cuts (:phase cut))
                                      (contains? (get-in cut [:participants :worlds]) w))
@@ -2288,10 +2308,12 @@
                             (if (= :host (first (:creditor ob)))
                               (let [[_ dw e] (:debtor ob)]
                                 (if (cleanup/mailbox-control s dw e e)
-                                  (-> (queue-mailbox-rejection s dw e o :org.replikativ.spindel.engine.protocols/released)
+                                  (-> (queue-mailbox-rejection s dw e o
+                                                               (if *release-cancellation* (:value *release-cancellation*)
+                                                                   :org.replikativ.spindel.engine.protocols/released))
                                       (end-obligation w o :creditor-cancelled))
                                   (-> s (end-obligation w o :creditor-cancelled)
-                                      (emit {:event :host-delivery :world w :o o :value ::released})))) s))
+                                      (emit {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))) s))
                           s (:obligations world))
               ;; Drop dormant copies without rejecting into any other copy.
                 s (reduce (fn [s [r rr]]
@@ -2308,12 +2330,12 @@
                 s (reduce (fn [s [o ob]]
                             (cond-> (end-obligation s w o :creditor-cancelled)
                               (= :host (first (:creditor ob)))
-                              (emit {:event :host-delivery :world w :o o :value ::released})))
+                              (emit {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))
                           s (:obligations (wr s w)))
                 s (reduce (fn [s ev]
-                            (cond (:start-for ev) (enqueue s (:creditor-world ev) {:cancelled (:o ev) :value ::released})
+                            (cond (:start-for ev) (enqueue s (:creditor-world ev) {:cancelled (:o ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
                                   (:register-host ev) (emit s {:event :host-delivery :world w
-                                                               :o (:register-host ev) :value ::released})
+                                                               :o (:register-host ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
                                   :else s)) s (:queue (wr s w)))
                 parent (get-in world [:lineage :parent])
                 s (if (and parent (ent s parent [:fork w]))
@@ -2328,11 +2350,19 @@
                 s (update-in s [:env :native]
                              #(into {} (for [[n native] %]
                                          [n (cond-> native
-                                              (and (= w (first (:owner native))) (not= :joined (:state native)))
+                                              ;; Raw receipts froze their ancestry at first
+                                              ;; physical claim (or queued rejection). Their
+                                              ;; ordinary owner row may already be gone.
+                                              (and (= w (first (:owner native))) (not= :joined (:state native))
+                                                   (not (cleanup/mailbox-callback? native)))
                                               (assoc :anchor (owner-chain s w (second (:owner native))))
                                               (and (= w (first (:owner native))) (cleanup/mailbox-callback? native))
                                               (assoc :retired? true))])))]
-            (-> s (assoc-in [:worlds w] (assoc (select-keys world [:id :lineage]) :status :released))
+            (-> s
+                ;; Run creation and enqueue share an order. Preserve its high
+                ;; water mark before the value-only tombstone drops :seq.
+                (assoc-in [:clocks w] (max (:seq (wr s w) 0) (get-in s [:clocks w] 0)))
+                (assoc-in [:worlds w] (assoc (select-keys world [:id :lineage]) :status :released))
                 (update :registry disj w)
                 (update-in [:env :outside]
                            (fn [outside]
@@ -2349,6 +2379,44 @@
                                      (recur (rest remaining) (rest attempts) (conj result (first attempts)))
                                      (recur (rest remaining) attempts (conj result next)))
                                    result)))))))))))
+
+(defn- local-release-profile! [s w]
+  (let [world (wr s w) owners (conj (into (set (keys (:runs world))) (keys (:scopes world))) (or (:root world) [:root w]))
+        events (pending-events s w)
+        local? (fn [endpoint] (or (not= :entity (first endpoint)) (= w (second endpoint))))]
+    (require! world ::unknown-world {:w w})
+    (require! (and (nil? (get-in world [:lineage :parent]))
+                   (not-any? #(and (active-cuts (:phase %))
+                                   (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s)))
+                   (not-any? (fn [[_ cap]] (and (not (terminal (:disposition cap)))
+                                                (or (= w (:world cap)) (contains? owners (:holder cap)))))
+                             (all-caps s))
+                   (not-any? #(= :fork (:kind %)) (vals (:entities world)))
+                   (empty? (:fdeps world)) (empty? (:releasing world))
+                   (every? #(and (local? (:debtor %)) (local? (:creditor %))) (vals (:obligations world)))
+                   (not-any? #(some % [:start-for :register-host :join-bundle :discard :fork-released]) events)
+                   (not-any? (fn [[v other]]
+                               (and (not= v w) (some #(= [:entity w] (subvec (vec (:debtor %)) 0 2))
+                                                     (vals (:obligations other))))) (:worlds s)))
+              ::unsupported-world-release {:w w})))
+
+(defn release-request [s {:keys [w caller-th op callback] :as action}]
+  (lifecycle/caller-worlds! s action)
+  (require! (and (nil? op) (nil? callback)) ::cleanup-only {:action action})
+  (when-let [thread (get-in s [:env :threads caller-th])]
+    (when-let [r (:run thread)]
+      (require! (and (nil? (:cleanup-ticket thread)) (not (:retired? thread))
+                     (not= :unwinding (:status (run s (:world thread) r))))
+                ::cleanup-only {:action action})))
+  (local-release-profile! s w)
+  (let [existing (get-in s [:env :releases w]) s (lifecycle/request s action)
+        reason (get-in s [:env :releases w :reason])]
+    (if existing s
+        (binding [*release-cancellation* {:value reason}]
+          (t34-release-world s {:w w})))))
+
+(defn release-ready? [s w]
+  (and (= :released (:status (wr s w))) (join-ready? s w w)))
 
 (defn admit-join-bundle [s w event]
   (let [v (:join-bundle event)]
@@ -2491,6 +2559,8 @@
    :operation-start cleanup/operation-start :operation-await operation-await
    :operation-deliver operation-deliver :operation-claim cleanup/operation-claim
    :operation-terminal cleanup/operation-terminal :operation-return cleanup/operation-return
+   :release-request release-request :release-observe lifecycle/observe
+   :release-detach lifecycle/detach :release-notify lifecycle/notify
    :source-unreachable managed-cells/unreachable :reap-source managed-cells/reap
    :invalidate-computation invalidate-computation :withdraw-deref withdraw-deref
    :cancel-computation cancel-computation :signal-publish publish-signal
@@ -2565,7 +2635,7 @@
               (refuse ::cleanup-only {:thread (:th a) :action a}))
           _ (when (and (cleanup/protected-operation-id? (:op a))
                        (not (#{:operation-start :operation-await :operation-deliver :operation-claim
-                               :operation-terminal :operation-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :signal-write} t)))
+                               :operation-terminal :operation-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :signal-write :release-observe :release-detach} t)))
               (refuse ::cleanup-only {:action a}))
           _ (when (:callback a)
               (let [receipt (get-in s [:env :native (:callback a)])]
@@ -2575,7 +2645,7 @@
                                         (= (:frame a) [:mailbox-frame (:consumer receipt)])))
                                (= w (first (:owner receipt)))
                                (or (= :mailbox-claim t) (cleanup/mailbox-callback-entered? s receipt))
-                               (#{:cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :mailbox-take :mailbox-claim :mailbox-return} t))
+                               (#{:cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :mailbox-take :mailbox-claim :mailbox-return :release-observe :release-detach} t))
                           ::cleanup-only {:action a})))
           _ (when (and (= :signal-write t) (:op a))
               (let [participant (cleanup/operation s (:op a))
@@ -2605,87 +2675,88 @@
                     :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37
                     :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe :mailbox-create :mailbox-take :timer-register} t))
         (refuse ::not-admitted {:action a}))
-      (refresh-timer-anchors
-       (release-fixpoint
-        before
-        (let [s (if-let [key (budget-key a)]
-                  (update-in s [:uses key] (fnil inc 0)) s)]
-          (case t
-            :t02 (do (require! (not (#{:deferred :mailbox} (:kind a))) ::reserved-source-kind {:kind (:kind a)})
-                     (t02-create-signal s a))
-            :queued
-            (let [w (:w a) ev (first (:queue (wr s w)))
-                  _ (require! ev ::empty-queue {:w w})
-                  s (update-in s [:worlds w :queue] #(vec (rest %)))]
-              (cond (:mailbox-post ev)
-                    (mailbox-post (update-in s [:worlds w :queue] #(into [ev] %))
-                                  (assoc (dissoc ev :mailbox-post) :w w :e (:mailbox-post ev)))
-                    (:deferred-assignment ev)
-                    (deferred-assign (update-in s [:worlds w :queue] #(into [ev] %))
-                                     (assoc (dissoc ev :deferred-assignment) :w w :e (:deferred-assignment ev)))
-                    (:action ev) (step s (:action ev))
-                    (some ev [:fdep-ended :cancelled :fork-released :join-bundle]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
-                    (:start-for ev) (t37-start-for (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
-                    (:register-host ev)
-                    (let [e (:e ev) o (:register-host ev)]
-                      (if (and (ent s w e) (= :live (:status (wr s w))))
-                        (let [s (touch s w e (:tok ev))
-                              cached? (and (:completed? (ent s w e))
-                                           (not (work? (run s w (current s w e)))))
-                              s (if cached? (emit s {:event :host-delivery :world w :o o}) s)]
-                          (if (or (not cached?) (and (:standing? (:ob ev)) (not (final? s w e))))
-                            (assoc-in s [:worlds w :obligations o] (:ob ev)) s))
-                        (emit s {:event :host-delivery :world w :o o :value ::released})))
-                    (:discard ev) (let [k (:discard ev)]
-                                    (if (= :open (:disposition (cap s k)))
-                                      (t26-seal s {:k k :caller (:holder (cap s k)) :op [:implicit k] :kind :discard}) s))
-                    (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
-                    :else s))
-            :native-progress
-            (let [native (get-in s [:env :native (:n a)])
-                  [w r] (:owner native)]
-              (require! (not (or (cleanup/protected? native) (cleanup/mailbox-callback? native) (cleanup/timer-resource? native))) ::protected-cleanup {:n (:n a)})
-              (-> s (update-in [:env :native (:n a)]
-                               #(cond-> (merge % (select-keys a [:state :boundary?]))
-                                  (= :joined (:state a)) (dissoc :anchor)))
-                  (finish-unwinding w r)))
-            :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
-            :thread-entry
-            (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
-                (require! (and (nil? (get-in a [:thread :cleanup-ticket]))
-                               (not (cleanup/protected?
-                                     (get-in s [:env :native (cleanup/ticket (get-in a [:thread :world])
-                                                                             (get-in a [:thread :run]))]))))
-                          ::protected-cleanup {:th (:th a)})
-                (assoc-in s [:env :threads (:th a)] (:thread a)))
-            :unsubscribe
-            (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
-                  [_ dw _] (:debtor ob)]
-              (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o (:o a)})
-              (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
-            :signal-write
-            (let [w (:w a) e (:e a) er (ent s w e)]
-              (require! (not= :released (:status (wr s w))) ::released {:w w})
-              (when-not (and unwinding? (nil? er))
-                (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
-              (if (and unwinding? (nil? er)) s
-                  (if (= :fenced (:admission (wr s w)))
-                    (update-in s [:env :outside] conj
-                               {:w w :event (cond-> {:signal-write e :value (:value a)}
-                                              (false? (:publish? a)) (assoc :publish? false))})
-                    (let [s (assoc-in s [:worlds w :entities e :result] (:value a))]
-                      (if (false? (:publish? a)) s
-                          (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
-                                  s (conj (fdep-targets (wr s w) e) w)))))))
-            :arrival (cond (:mailbox-post (:event a))
-                           (mailbox-post s (assoc (dissoc (:event a) :mailbox-post)
-                                                  :w (:w a) :e (:mailbox-post (:event a))))
-                           (:deferred-assignment (:event a))
-                           (deferred-assign s (assoc (dissoc (:event a) :deferred-assignment)
-                                                     :w (:w a) :e (:deferred-assignment (:event a))))
-                           :else (enqueue s (:w a) (:event a)))
-            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
-        (acting-world before a))))
+      (lifecycle/refresh
+       (refresh-timer-anchors
+        (release-fixpoint
+         before
+         (let [s (if-let [key (budget-key a)]
+                   (update-in s [:uses key] (fnil inc 0)) s)]
+           (case t
+             :t02 (do (require! (not (#{:deferred :mailbox} (:kind a))) ::reserved-source-kind {:kind (:kind a)})
+                      (t02-create-signal s a))
+             :queued
+             (let [w (:w a) ev (first (:queue (wr s w)))
+                   _ (require! ev ::empty-queue {:w w})
+                   s (update-in s [:worlds w :queue] #(vec (rest %)))]
+               (cond (:mailbox-post ev)
+                     (mailbox-post (update-in s [:worlds w :queue] #(into [ev] %))
+                                   (assoc (dissoc ev :mailbox-post) :w w :e (:mailbox-post ev)))
+                     (:deferred-assignment ev)
+                     (deferred-assign (update-in s [:worlds w :queue] #(into [ev] %))
+                                      (assoc (dissoc ev :deferred-assignment) :w w :e (:deferred-assignment ev)))
+                     (:action ev) (step s (:action ev))
+                     (some ev [:fdep-ended :cancelled :fork-released :join-bundle]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
+                     (:start-for ev) (t37-start-for (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
+                     (:register-host ev)
+                     (let [e (:e ev) o (:register-host ev)]
+                       (if (and (ent s w e) (= :live (:status (wr s w))))
+                         (let [s (touch s w e (:tok ev))
+                               cached? (and (:completed? (ent s w e))
+                                            (not (work? (run s w (current s w e)))))
+                               s (if cached? (emit s {:event :host-delivery :world w :o o}) s)]
+                           (if (or (not cached?) (and (:standing? (:ob ev)) (not (final? s w e))))
+                             (assoc-in s [:worlds w :obligations o] (:ob ev)) s))
+                         (emit s {:event :host-delivery :world w :o o :value ::released})))
+                     (:discard ev) (let [k (:discard ev)]
+                                     (if (= :open (:disposition (cap s k)))
+                                       (t26-seal s {:k k :caller (:holder (cap s k)) :op [:implicit k] :kind :discard}) s))
+                     (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
+                     :else s))
+             :native-progress
+             (let [native (get-in s [:env :native (:n a)])
+                   [w r] (:owner native)]
+               (require! (not (or (cleanup/protected? native) (cleanup/mailbox-callback? native) (cleanup/timer-resource? native))) ::protected-cleanup {:n (:n a)})
+               (-> s (update-in [:env :native (:n a)]
+                                #(cond-> (merge % (select-keys a [:state :boundary?]))
+                                   (= :joined (:state a)) (dissoc :anchor)))
+                   (finish-unwinding w r)))
+             :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
+             :thread-entry
+             (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
+                 (require! (and (nil? (get-in a [:thread :cleanup-ticket]))
+                                (not (cleanup/protected?
+                                      (get-in s [:env :native (cleanup/ticket (get-in a [:thread :world])
+                                                                              (get-in a [:thread :run]))]))))
+                           ::protected-cleanup {:th (:th a)})
+                 (assoc-in s [:env :threads (:th a)] (:thread a)))
+             :unsubscribe
+             (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
+                   [_ dw _] (:debtor ob)]
+               (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o (:o a)})
+               (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
+             :signal-write
+             (let [w (:w a) e (:e a) er (ent s w e)]
+               (require! (not= :released (:status (wr s w))) ::released {:w w})
+               (when-not (and unwinding? (nil? er))
+                 (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
+               (if (and unwinding? (nil? er)) s
+                   (if (= :fenced (:admission (wr s w)))
+                     (update-in s [:env :outside] conj
+                                {:w w :event (cond-> {:signal-write e :value (:value a)}
+                                               (false? (:publish? a)) (assoc :publish? false))})
+                     (let [s (assoc-in s [:worlds w :entities e :result] (:value a))]
+                       (if (false? (:publish? a)) s
+                           (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
+                                   s (conj (fdep-targets (wr s w) e) w)))))))
+             :arrival (cond (:mailbox-post (:event a))
+                            (mailbox-post s (assoc (dissoc (:event a) :mailbox-post)
+                                                   :w (:w a) :e (:mailbox-post (:event a))))
+                            (:deferred-assignment (:event a))
+                            (deferred-assign s (assoc (dissoc (:event a) :deferred-assignment)
+                                                      :w (:w a) :e (:deferred-assignment (:event a))))
+                            :else (enqueue s (:w a) (:event a)))
+             (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
+         (acting-world before a))) release-ready?))
     (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
       (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
 

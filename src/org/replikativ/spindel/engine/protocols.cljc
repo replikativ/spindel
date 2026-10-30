@@ -333,3 +333,19 @@
   (await-public-timer! [ctx delay-ms value resolve reject]
     "Park the current computation until its timer fires with successful value.
      Registration and callback admission use the selected world and generation."))
+
+(defprotocol PWorldLifecycle
+  "Logical world release and asynchronous observation of physical completion.
+   Releasing a world does not close borrowed executors."
+  (request-world-release! [ctx reason]
+    "Close ordinary admission immediately and return the world's stable typed
+     completion. Repeated requests preserve the first reason and completion.")
+  (observe-world-release! [ctx receipt resolve reject]
+    "Observe an authenticated release receipt. Return an idempotent detach
+     function; detaching never cancels cleanup. Callbacks run outside the gate.
+     Success is nil and certifies actual physical return, not a timeout."))
+
+(defprotocol PWorldRelease
+  "Typed release completion, outside the released world's source graph."
+  (release-runtime [completion])
+  (release-receipt [completion]))

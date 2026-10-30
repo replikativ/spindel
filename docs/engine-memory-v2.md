@@ -696,6 +696,46 @@ the same selected-world/generation contract, including suspension under a
 foreign host context and repeated loop/recur bounces. A wrapper that grows with
 every synchronous await does not satisfy it.
 
+## Explicit native world release
+
+The opt-in native public runtime exposes `context/release-context!`. It requests
+logical release immediately and returns the same typed completion on repeated
+requests, preserving the first reason. The completion is outside the released
+world's source graph: observing it does not allocate a Deferred in that world.
+Callbacks receive `nil` after physical joining; a computation in another native
+world can await it. Detaching an observer leaves cleanup owned and running.
+
+Release fences ordinary construction, registration and mutation under the
+world's gate. Existing cleanup participants retain their exact state and resource
+capabilities until their asynchronous finally paths return. Deferred/Mailbox
+producer acknowledgements continue through the retained lane. Readiness still
+invokes the registered continuation; it does not substitute for the protected
+operation's terminal result or physical return. Timer installation, revocation,
+handle disposition, and already-entered callbacks retain their own evidence.
+
+Observer enrollment and readiness checks use the same gate. A world may publish
+logical release before the physical barrier clears. Its admitted participants
+cannot wait on a barrier that includes their own return. Lifecycle notifications
+are external observations, not additional owned frames that recursively block
+their own notification. They run outside the gate with the observer's selected
+context. Outstanding external registrations retain their callbacks until claim
+or detach; they are not proof that application notification stacks have returned.
+
+An explicit incomplete release has a temporary strong coordinator. Ordinary live
+worlds remain collectable when callers drop them. At joining, the coordinator is
+removed and official views observe the revoked world arena. Unobservable stale
+accepted producer payloads are discarded before join publication, while valid
+held allocation cohorts and committed notifications retain their required data.
+User-authored fields/bindings/metadata and explicitly requested audit history are
+outside engine storage reclamation claims. Borrowed executors are never closed
+by this operation.
+
+The first executable release profile is restricted to isolated root worlds;
+unsupported fork/cut authority is refused before mutation. General fork release,
+explicit execution scopes and protected/raw waits on foreign lifecycle receipts
+remain replacement gates. The legacy stop/close APIs are distinct from the new
+asynchronous completion, and the default engine has not changed.
+
 ## Replacement acceptance
 
 The default engine changes only after these gates pass on JVM and CLJS:

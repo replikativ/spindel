@@ -417,6 +417,20 @@
                (recur)))))))
   nil)
 
+(defn release-context!
+  "Request logical release of the selected context and return an awaitable
+   completion for physical joining. Repeated requests return the same
+   completion and preserve the first reason. Existing cleanup retains its
+   owned state until it returns; ordinary admission closes immediately.
+
+   The completion also accepts success/error callbacks. Detaching an observer
+   never cancels cleanup. Releasing a world leaves shared executors open.
+   Currently supported by the native owned engine."
+  ([context]
+   (release-context! context (ex-info "Execution context released" {:type ::released})))
+  ([context reason]
+   (rtp/request-world-release! context reason)))
+
 (defn close-context!
   "Fully shut down an execution context: stop it (`stop-context!`) and close
   its executor.

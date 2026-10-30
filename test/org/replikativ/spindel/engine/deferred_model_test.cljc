@@ -483,3 +483,117 @@
         premature {:t :operation-return :w w :n n :op op :sequence 1 :frame frame}]
     (is (= ::cleanup/not-operation-return (get-in (m/attempt before premature) [:refusal :error])))
     (is (= before (peek (checked-walk! before [premature]))))))
+
+(defn- accepted-before-original-cohort-return [value]
+  (let [owner [:owner 1] successor [:owner 2]
+        b [:reader-b 1] c [:reader-c 1]
+        nb (cleanup/ticket w b) nc (cleanup/ticket w c)
+        old-key [w owner :d] new-key [w successor :d]
+        accepted (peek
+                  (checked-walk!
+                   (m/init-state {:slices? true :cps-exit? true})
+                   [{:t :t02 :w w :e :trigger :value 0}
+                    {:t :t04 :w w :e :owner :mode :callback}
+                    (assoc create :scope owner :order 0)
+                    {:t :t05 :w w :r owner :kind :track :debtor [:entity w :trigger] :order 1}
+                    {:t :t07 :w w :r owner :value :owner}
+                    {:t :t08 :w w :e :owner :value :owner}
+                    {:t :t04 :w w :e :reader-b :mode :callback}
+                    {:t :slice-enter :w w :r b :th :thread-b}
+                    {:t :finalization-wait :w w :th :thread-b}
+                    (protect nb :thread-b)
+                    {:t :t38 :th :thread-b}
+                    {:t :signal-write :w w :e :trigger :value 1}
+                    {:t :t08 :w w :e :trigger :value 1}
+                    {:t :t04 :w w :e :reader-c :mode :callback}
+                    {:t :slice-enter :w w :r c :th :thread-c}
+                    {:t :finalization-wait :w w :th :thread-c}
+                    (protect nc :thread-c)
+                    {:t :t38 :th :thread-c}
+                    {:t :t11 :w w :r successor}
+                    (assoc (request value false) :cell old-key)]))
+        returned (peek (checked-walk! accepted
+                                      [{:t :t11 :w w :r b}
+                                       (terminal nb :old-operation-ended)
+                                       {:t :cleanup-claim :n nb :th :cleaner-b}
+                                       {:t :cleanup-return :th :cleaner-b}
+                                       {:t :t38 :th :cleaner-b}]))]
+    (is (= old-key (:cell (first (:queue (m/wr accepted w))))))
+    (is (nil? (get-in returned [:env :cleanup-cells old-key])))
+    (is (= #{nc} (get-in returned [:env :cleanup-cells new-key :holders])))
+    (is (= old-key (:cell (first (:queue (m/wr returned w))))))
+    {:state returned :old-key old-key :new-key new-key :old-ticket nb :new-ticket nc :reader c}))
+
+(deftest accepted-assignment-resolves-the-surviving-cohort-with-its-original-envelope
+  (doseq [[value value-witness?] [[41 true] [41 false] [nil true] [false true]]]
+    (let [{:keys [state old-key new-key new-ticket]} (accepted-before-original-cohort-return value)
+          action (cond-> (assign-front state) (not value-witness?) (dissoc :value))
+          assigned (peek (checked-walk! state [action]))
+          transformed (if (= 41 value) 42 [:transformed value])
+          finished (peek (checked-walk! assigned [(consume-registration new-ticket transformed)]))]
+      ;; This literal state used to consume and lose the accepted request:
+      ;; old-key is gone, but new-key still names the same held allocation.
+      (is (= old-key (:cell action)))
+      (is (= :d (:allocation action)))
+      (is (true? (get-in assigned [:env :cleanup-cells new-key :deferred :assigned?])))
+      (is (= value (get-in assigned [:env :cleanup-cells new-key :result])))
+      (ready? assigned new-ticket value)
+      (is (= transformed (get-in finished [:env :native new-ticket :delivery])))
+      (is (nil? (get-in finished [:env :cleanup-cells old-key])))
+      (is (empty? (:queue (m/wr assigned w)))))))
+
+(deftest surviving-cohort-resolution-does-not-accept-counterfeit-envelope-or-frame-evidence
+  (let [{:keys [state old-key new-key old-ticket new-ticket]} (accepted-before-original-cohort-return 41)
+        action (assign-front state)
+        op [new-ticket 1]
+        cases [[(assoc action :allocation :other-allocation) ::m/not-deferred-assignment]
+               [(update action :seq inc) ::m/not-deferred-assignment]
+               [(assoc action :cell new-key) ::m/not-deferred-assignment]
+               [(dissoc action :cell) ::m/not-deferred-assignment]
+               [(assoc action :value :counterfeit) ::m/not-deferred-assignment]
+               [(assoc action :value nil) ::m/not-deferred-assignment]
+               [(assoc action :op op :frame [op 99]) ::m/cleanup-only]
+               [(assoc action :op [old-ticket 1] :frame [[old-ticket 1] 99]) ::m/cleanup-only]
+               [(assoc (request :new-request false) :cell old-key) ::m/released-deferred]]]
+    (doseq [[attempt expected] cases]
+      (is (= expected (get-in (m/attempt state attempt) [:refusal :error])))
+      (is (= state (peek (checked-walk! state [attempt])))))
+    (let [assigned (peek (checked-walk! state [action]))]
+      (is (= ::m/not-deferred-assignment (get-in (m/attempt assigned action) [:refusal :error])))
+      (is (= assigned (peek (checked-walk! assigned [action])))))))
+
+(deftest accepted-assignment-keeps-original-cohort-evidence-after-world-release
+  (let [{:keys [state old-key new-key new-ticket]} (accepted-before-original-cohort-return 41)
+        action (assign-front state)
+        released (m/step state {:t :t34 :w w})
+        assigned (peek (checked-walk! released [action]))
+        finished (peek (checked-walk! assigned [(consume-registration new-ticket 42)]))]
+    ;; Kernel root release remains unsupported; restore the model's tombstone
+    ;; into both kernel stores to verify the retained delivery transition.
+    (is (empty? (inv/check released)))
+    (is (empty? (inv/edge-check {:before state :action {:t :t34 :w w} :after released})))
+    (is (= old-key (get-in released [:env :outside 0 :event :cell])))
+    (is (= (:seq action) (get-in released [:env :outside 0 :event :seq])))
+    (is (= :released (:status (m/wr assigned w))))
+    (is (nil? (m/ent assigned w :d)))
+    (is (= 41 (get-in assigned [:env :cleanup-cells new-key :result])))
+    (is (nil? (get-in assigned [:env :cleanup-cells old-key])))
+    (is (empty? (get-in assigned [:env :outside])))
+    (ready? assigned new-ticket 41)
+    (is (= 42 (get-in finished [:env :native new-ticket :delivery])))))
+
+(deftest accepted-assignment-cannot-revive-an-allocation-after-its-final-holder-returns
+  (let [{:keys [state old-key new-key new-ticket reader]} (accepted-before-original-cohort-return 41)
+        action (assign-front state)
+        no-holders (peek (checked-walk! state
+                                        [{:t :t11 :w w :r reader}
+                                         (terminal new-ticket :no-input)
+                                         {:t :cleanup-claim :n new-ticket :th :cleaner-c}
+                                         {:t :cleanup-return :th :cleaner-c}
+                                         {:t :t38 :th :cleaner-c}]))
+        discarded (peek (checked-walk! no-holders [action]))]
+    (is (nil? (get-in no-holders [:env :cleanup-cells old-key])))
+    (is (nil? (get-in no-holders [:env :cleanup-cells new-key])))
+    (is (nil? (m/ent discarded w :d)))
+    (is (empty? (get-in discarded [:env :cleanup-cells])))
+    (is (empty? (:queue (m/wr discarded w))))))

@@ -74,6 +74,12 @@
    :main org.replikativ.spindel.engine.native-timer-gc-probe/-main
    :compiler-options {:optimizations :advanced}}
 
+  :native-release-gc
+  {:target :node-script
+   :output-to "out/native-release-gc.js"
+   :main org.replikativ.spindel.engine.native-release-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"

@@ -219,6 +219,9 @@
    (into {} (for [t [:deferred-create :deferred-request :deferred-assign :deferred-observe :deferred-protect]]
               [t {:status :not-yet :step :B2 :reason :requires-typed-deferred-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
+   (into {} (for [t [:release-request :release-observe :release-detach :release-notify]]
+              [t {:status :not-yet :step :B4 :reason :requires-typed-lifecycle-adapter
+                  :restrictions (constantly nil) :dispatch nil}]))
    (into {} (for [t [:timer-register :timer-install-result :timer-fire :timer-return :timer-handle-release]]
               [t {:status :not-yet :step :B2 :reason :requires-typed-timer-adapter
                   :restrictions (constantly nil) :dispatch nil}]))

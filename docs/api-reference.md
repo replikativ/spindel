@@ -50,7 +50,8 @@ Convenience re-export namespace. All functions below are also available from the
 | `(fork-context parent & opts)` | Create O(1) forked context |
 | `(snapshot-context ctx & opts)` | Create immutable snapshot |
 | `(restore-snapshot ctx & opts)` | Restore snapshot to live context |
-| `(stop-context! ctx)` | Quiesce: no drain mutates state after it returns |
+| `(stop-context! ctx)` | Stop the legacy drain; does not certify physical joining |
+| `(release-context! ctx)` | Native engine: request logical release and return an awaitable physical join |
 | `(serialize-context ctx)` | Serialize to EDN |
 | `(deserialize-context edn executor)` | Deserialize from EDN |
 | `(with-context ctx & body)` | Bind `*execution-context*` for body (CLJ macro) |
@@ -220,8 +221,9 @@ Execution context lifecycle management. See [Forking](forking.md) for usage guid
 
 | Function | Description |
 |----------|-------------|
-| `(stop-context! ctx)` | Quiesce the context (no-op on forks) |
-| `(close-context! ctx)` | Stop drain + close executor |
+| `(stop-context! ctx)` | Stop the legacy drain (no-op on legacy forks); no physical join guarantee |
+| `(close-context! ctx)` | Legacy drain stop + root executor close |
+| `(release-context! ctx)` / `(release-context! ctx reason)` | Native engine: close ordinary admission; return the stable asynchronous physical join |
 
 ### Accessors
 
