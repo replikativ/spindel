@@ -14,6 +14,8 @@
    With those reactive kinds, compare the experimental bridge and standing
    observers using -J-Dspindel.compare.engines=kernel-cells,spindel-observed,missionary.
    Kernel measurements disable model diagnostics.
+   `owned-public` uses the native public Signal/Spin APIs and context defaults;
+   `compact` retains the lower-level experimental entry points for comparison.
    The local Missionary checkout can be substituted with :local/root."
   (:refer-clojure :exclude [await])
   (:require [clojure.string :as str]
@@ -52,7 +54,10 @@
                    g (spin (+ (await e) (await f)))]
                [d g])
     :fanin (let [children (mapv (fn [_] (spin (iv/get-new (track source)))) (range 50))]
-             [(spin (reduce + (mapv (fn [child] (await child)) children)))])))
+             [(spin (loop [children children total 0]
+                      (if-let [child (first children)]
+                        (recur (next children) (+ total (await child)))
+                        total)))])))
 
 (defn- missionary-graph [kind source]
   (let [leaf (fn [] (m/signal (m/latest identity source)))]
@@ -213,6 +218,30 @@
             measurement)))
       (finally (ctx/close-context! rt)))))
 
+(defn- run-owned-public [kind n warmup]
+  (let [rt (ctx/create-execution-context {:engine :owned :audit? false})]
+    (binding [ec/*execution-context* rt cps/*in-trampoline* false]
+      (let [source (sig/signal 0)
+            roots (spindel-graph kind source)
+            values (mapv (fn [_] (volatile! nil)) roots)
+            counts (mapv (fn [_] (volatile! 0)) roots)
+            failure (volatile! nil)]
+        (try
+          (doseq [[root value seen] (map vector roots values counts)]
+            (root #(do (vreset! value %) (vswap! seen inc)) #(vreset! failure %)))
+          (let [measurement (measure-updates #(swap! source inc) warmup n)
+                observed (mapv deref values)
+                seen (mapv deref counts)
+                expected (expected-values kind (+ n warmup))]
+            (when-not (and (nil? @failure) (= expected observed)
+                           (= (vec (repeat (count roots) (inc (+ n warmup)))) seen))
+              (throw (ex-info "Native public Spindel result mismatch"
+                              {:kind kind :expected expected :observed observed :seen seen :error @failure})))
+            #?(:clj (java.lang.ref.Reference/reachabilityFence roots))
+            measurement)
+          ;; Teardown is outside the measured source updates.
+          (finally (ctx/release-context! rt)))))))
+
 (defn- run-kernel
   ([kind n warmup] (run-kernel kind n warmup {}))
   ([kind n warmup options]
@@ -364,6 +393,7 @@
     ((case implementation
        :spindel #?(:clj run-spindel :cljs (throw (ex-info "Use spindel-observed on JS" {})))
        :spindel-observed run-spindel-observed
+       :owned-public run-owned-public
        :kernel run-kernel
        :kernel-cells run-kernel-cells
        :compact run-compact
@@ -385,7 +415,7 @@
                                                 "fanout,chain,diamond,fanin") #","))]
     #?(:clj (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)]
               (.setThreadAllocatedMemoryEnabled bean true)))
-    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :spindel-observed :missionary-cp} implementations))
+    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :owned-public :spindel-observed :missionary-cp} implementations))
       (throw (ex-info "Experimental engines require explicit reactive benchmark kinds"
                       {:kinds kinds :engines implementations})))
     (doseq [kind kinds trial (range repeats)

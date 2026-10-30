@@ -3773,9 +3773,17 @@
         (if observation observation (recur))))))
 
 (defn- host-callback-scope [requested f value]
-  (binding [ec/*execution-context* requested ec/*spin-id* nil ec/*run-gen* nil
-            ec/*lifetime-run* nil ec/*owner-scope* nil]
-    (with-activation nil (f value))))
+  #?(:clj
+     (let [values (object-array 10)]
+       (aset values 0 #'ec/*execution-context*) (aset values 1 requested)
+       (aset values 2 #'ec/*spin-id*) (aset values 4 #'ec/*run-gen*)
+       (aset values 6 #'ec/*lifetime-run*) (aset values 8 #'ec/*owner-scope*)
+       (push-thread-bindings (clojure.lang.PersistentArrayMap. values))
+       (try (with-activation nil (f value)) (finally (pop-thread-bindings))))
+     :cljs
+     (binding [ec/*execution-context* requested ec/*spin-id* nil ec/*run-gen* nil
+               ec/*lifetime-run* nil ec/*owner-scope* nil]
+       (with-activation nil (f value)))))
 
 (defn- invoke-public-computation! [requested target id body resolve reject mode]
   (try
@@ -3903,50 +3911,49 @@
        (finally (java.lang.ref.Reference/reachabilityFence target)))))
 
 (defn await-public-computation! [requested target id body _caller-id _source-loc resolve reject]
-  (cond
-    (satisfies? rtp/PWorldRelease target)
-    (lifecycle-await! requested target resolve reject)
-    (satisfies? rtp/PMailbox target)
-    (await-public-mailbox! requested target resolve reject false)
-    (satisfies? rtp/PMailboxNext target)
-    (let [mailbox (rtp/mailbox-next-target target)]
-      (await-public-mailbox! requested mailbox (fn [value] (cps/invoke-continuation resolve [value mailbox])) reject false))
-    (satisfies? rtp/PDeferred target)
-    (await-public-deferred! requested target resolve reject)
-    :else
-    (do
-      (when-not (and id body)
-        (throw (ex-info "Native await requires a typed computation target"
-                        {:error :unsupported-operation :operation :await-resource})))
-      (try
-        (admit-world-switch! requested)
-        (let [rt (canonical-runtime requested) frame (current-activation)]
-          (when-not (and frame (same-cell-world? rt (a frame 0)))
-            (throw (ex-info "Computation await requires the selected native activation"
-                            {:error :unsupported-operation :operation :await-outside-activation})))
-          (let [token (portable-token! rt target id false)
-                resume-resolve (cps-runtime/scope-continuation resolve)
-                resume-reject (cps-runtime/scope-continuation reject)]
-            (loop []
-              (let [witness (prepare-computation! rt id body false token)
-                    committed?
-                    (locked rt
-                            (check-computation-caller! rt)
-                            (check-public-token! rt token id)
-                            (when (computation-current? rt id witness)
-                              (enter-public-computation! rt id body)
-                              (let [run (a frame 1)
-                                    order (put frame 2 (inc (long (a frame 2))))
-                                    ob (register-await! rt run order id token body resume-resolve resume-reject
-                                                        (:prepared-reference witness))]
-                                (when-let [node (find! (runtime-field rt :nodes) id)]
-                                  (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness))))
-                                ob)))]
-                (if committed?
-                  (when (= :consumed (a committed? o-slot))
-                    (deliver-value! resolve reject (a committed? o-value) (a committed? o-delivery-error)))
-                  (recur))))))
-        (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))))
+  (if (and id body)
+    (try
+      (admit-world-switch! requested)
+      (let [rt (canonical-runtime requested) frame (current-activation)]
+        (when-not (and frame (same-cell-world? rt (a frame 0)))
+          (throw (ex-info "Computation await requires the selected native activation"
+                          {:error :unsupported-operation :operation :await-outside-activation})))
+        (let [token (portable-token! rt target id false)
+              resume-resolve (cps-runtime/scope-continuation resolve)
+              resume-reject (cps-runtime/scope-continuation reject)]
+          (loop []
+            (let [witness (prepare-computation! rt id body false token)
+                  committed?
+                  (locked rt
+                          (check-computation-caller! rt)
+                          (check-public-token! rt token id)
+                          (when (computation-current? rt id witness)
+                            (enter-public-computation! rt id body)
+                            (let [run (a frame 1)
+                                  order (put frame 2 (inc (long (a frame 2))))
+                                  ob (register-await! rt run order id token body resume-resolve resume-reject
+                                                      (:prepared-reference witness))]
+                              (when-let [node (find! (runtime-field rt :nodes) id)]
+                                (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness))))
+                              ob)))]
+              (if committed?
+                (when (= :consumed (a committed? o-slot))
+                  (deliver-value! resolve reject (a committed? o-value) (a committed? o-delivery-error)))
+                (recur))))))
+      (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil)))
+    (cond
+      (satisfies? rtp/PWorldRelease target)
+      (lifecycle-await! requested target resolve reject)
+      (satisfies? rtp/PMailbox target)
+      (await-public-mailbox! requested target resolve reject false)
+      (satisfies? rtp/PMailboxNext target)
+      (let [mailbox (rtp/mailbox-next-target target)]
+        (await-public-mailbox! requested mailbox (fn [value] (cps/invoke-continuation resolve [value mailbox])) reject false))
+      (satisfies? rtp/PDeferred target)
+      (await-public-deferred! requested target resolve reject)
+      :else
+      (throw (ex-info "Native await requires a typed computation target"
+                      {:error :unsupported-operation :operation :await-resource})))))
 
 (defn await-public-finalization! [requested operation _caller-id _source-loc resolve reject]
   (when-not (ifn? operation)
@@ -3966,7 +3973,13 @@
 ;; lexical bindings; the selected runner supplies world and generation authority.
 (defn- capture-public-scope [] (ec/capture-context-scope ec/*execution-context*))
 (defn- restore-public-scope [captured] (ec/restore-context-scope captured ec/*execution-context*))
-(defn- bind-public-scope [value f] (binding [ec/*execution-context* value] (f)))
+(defn- bind-public-scope [value f]
+  #?(:clj
+     (let [values (object-array 2)]
+       (aset values 0 #'ec/*execution-context*) (aset values 1 value)
+       (push-thread-bindings (clojure.lang.PersistentArrayMap. values))
+       (try (f) (finally (pop-thread-bindings))))
+     :cljs (binding [ec/*execution-context* value] (f))))
 
 (def ^:private public-context-descriptor
   [capture-public-scope restore-public-scope bind-public-scope])
