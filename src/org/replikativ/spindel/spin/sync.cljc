@@ -187,33 +187,22 @@
      :cljs #queue []))
 
 (deftype Mailbox [id state-atom]
+  rtp/PMailbox
+  (mailbox-payload [_] state-atom)
+
   #?(:clj clojure.lang.IFn :cljs IFn)
+  (#?(:clj invoke :cljs -invoke) [this message]
+    (rtp/post-public-mailbox! (ec/current-execution-context) this message))
+  (#?(:clj invoke :cljs -invoke) [this succeed fail]
+    (rtp/invoke-public-mailbox! (ec/current-execution-context) this succeed fail)))
 
-  ;; 1-arity: Post message via event queue (SAFE)
-  ;; Always enqueues post event to prevent:
-  ;; - Stack overflow from long chains (nested trampolines)
-  ;; - Circular waits from external contexts
-  ;; Safe to call from anywhere: inside spins, futures, threads, callbacks, REPL
-  (#?(:clj invoke :cljs -invoke) [_this msg]
-    ;; The post is processed in the BOUND context: say so here, at the call
-    ;; site, when that world has no state for this mailbox.
-    (ratom/check-present! (ratom/atom-id state-atom) :post)
-   ;; Enqueue post event - breaks call stack, ensures proper trampoline handling
-    (ec/enqueue-event! {:type :mailbox-post
-                        :mailbox _this
-                        :msg msg})
-    nil)
+(defn- post-legacy-mailbox! [mailbox message]
+  (ratom/check-present! (ratom/atom-id (rtp/mailbox-payload mailbox)) :post)
+  (ec/enqueue-event! {:type :mailbox-post :mailbox mailbox :msg message})
+  nil)
 
-  ;; 2-arity: Take message (CONSUMER - blocking until available)
-  ;; Works like Deferred: call spin-core/resume if value available, always return incomplete.
-  ;; Stores spin-id and (optional) :cancel-token with waiter so cancelled
-  ;; spins / cancelled await-conts can be skipped by post-inline! WITHOUT
-  ;; consuming the message. The cancel-token is set by
-  ;; effects/await.cljc::await-handler's Mailbox dispatch branch via the
-  ;; `ec/*external-await-cancel-token*` dynamic var; outside that branch
-  ;; the var is nil and the waiter is checked only by :spin-id cancellation.
-  (#?(:clj invoke :cljs -invoke) [_this resolve _reject]
-   ;; ATOMIC check-and-take or add-to-waiters
+(defn- invoke-legacy-mailbox! [mailbox resolve _reject]
+  (let [state-atom (rtp/mailbox-payload mailbox)]
     (let [current-spin-id ec/*spin-id*
           current-cancel-token ec/*external-await-cancel-token*
           ;; Prune already-cancelled waiters whenever we add a new one. A
@@ -290,129 +279,108 @@
       (if (:assigned? s) (:value s) nothing))
 
     (instance? Mailbox x)
-    (let [state-atom (.-state-atom ^Mailbox x)]
-      (if (seq (:queue @state-atom))
-        (let [taken (volatile! nothing)]
-          (swap! state-atom
-                 (fn [state]
-                   (vreset! taken nothing)
-                   (if (and (seq (:queue state))
-                            (not (and spin-id (ec/spin-is-cancelled? spin-id))))
-                     (do (vreset! taken (peek (:queue state)))
-                         (update state :queue pop))
-                     state)))
-          @taken)
-        nothing))
+    (let [result (rtp/take-public-mailbox-now! (ec/current-execution-context) x spin-id)]
+      (if (:available? result) (:value result) nothing))
 
     :else nothing))
 
+(defn- take-legacy-mailbox-now! [mailbox spin-id]
+  (let [state-atom (rtp/mailbox-payload mailbox)]
+    (if (seq (:queue @state-atom))
+      (let [taken (volatile! nothing)]
+        (swap! state-atom
+               (fn [state]
+                 (vreset! taken nothing)
+                 (if (and (seq (:queue state))
+                          (not (and spin-id (ec/spin-is-cancelled? spin-id))))
+                   (do (vreset! taken (peek (:queue state)))
+                       (update state :queue pop))
+                   state)))
+        @taken)
+      nothing)))
+
+(declare invoke-legacy-mailbox-next!)
+
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PMailboxSynchronization
+  (create-public-mailbox! [context _id]
+    (binding [ec/*execution-context* context]
+      (ratom/create-atom {:queue empty-queue :waiters []})))
+  (post-public-mailbox! [context mailbox message]
+    (binding [ec/*execution-context* context]
+      (post-legacy-mailbox! mailbox message)))
+  (take-public-mailbox-now! [context mailbox spin-id]
+    (binding [ec/*execution-context* context]
+      (let [value (take-legacy-mailbox-now! mailbox spin-id)]
+        {:available? (not (identical? nothing value)) :value value})))
+  (invoke-public-mailbox! [context mailbox succeed fail]
+    (binding [ec/*execution-context* context]
+      (invoke-legacy-mailbox! mailbox succeed fail)))
+  (invoke-public-mailbox-next! [context mailbox succeed fail]
+    (binding [ec/*execution-context* context]
+      (invoke-legacy-mailbox-next! mailbox succeed fail))))
+
 (defn create-mailbox
-  "Create a mailbox with explicit execution-context.
+  "Create a world-selected FIFO Mailbox with explicit execution context.
 
-   A mailbox is a queue where producers post messages (non-blocking)
-   and consumers take messages (blocking until available).
-
-   State is stored in fork-safe execution-context atom.
-   Fork-safe - state is copied when execution-context is forked.
-
-   NOTE for health checks / monitoring: because the state atom is
-   ctx-backed (copy-on-write), dereffing it under a DIFFERENT execution
-   context returns that context's copy — e.g. `queue: 0` while the
-   owning ctx holds `queue: 10`. Probe under the owning ctx:
-   `(binding [ec/*execution-context* owning-ctx] @state-atom)`.
-   See engine.md §Threading contract.
-
-   Example:
-     (def mbx (create-mailbox execution-context))
-     (mbx :msg)              ; Post message (returns nil)
-     (spin/spin (await mbx)) ; Take message (blocks until available)"
+   Producers queue messages and return nil. Consumers receive one message each.
+   Storage and fork support follow the selected engine; the handle does not
+   select its creation world. Native copying requires resource recovery."
   [execution-context]
-  (let [mbx-id (keyword (gensym "mailbox-"))
-        ;; Use fork-safe atom to store mailbox state
-        ;; Note: create-atom uses *execution-context* dynamically, so we bind it
-        ;; Queue is PersistentQueue for proper FIFO semantics
-        state-atom (binding [ec/*execution-context* execution-context]
-                     (ratom/create-atom {:queue empty-queue  ; PersistentQueue - FIFO
-                                         :waiters []}))      ; Consumers waiting for messages
-        mbx-obj (->Mailbox mbx-id state-atom)]
-
-    ;; TODO: Auto-cleanup on GC
-
-    mbx-obj))
+  (let [id (keyword (gensym "mailbox-"))]
+    (->Mailbox id (rtp/create-public-mailbox! execution-context id))))
 
 ;; ============================================================================
 ;; AsyncSeq Extension - Mailbox as Lazy Pull Stream
 ;; ============================================================================
 
-(extend-type Mailbox
-  aseq/PAsyncSeq
-  (anext [mbx]
-    ;; Return a CPS function (NOT a Spin) for partial-cps compatibility
-    ;; The function yields [msg mbx] when a message is available
-    ;; The "rest" is the same mailbox (infinite stream)
-    (fn [resolve reject]
+(defn- invoke-legacy-mailbox-next! [mbx resolve reject]
       ;; Capture execution context to rebind when mailbox calls continuation
-      (let [exec-ctx (try (ec/current-execution-context)
-                          (catch #?(:clj Throwable :cljs :default) _ nil))
-            now (take-now! mbx ec/*spin-id*)]
-        (if-not (identical? nothing now)
+  (let [exec-ctx (try (ec/current-execution-context)
+                      (catch #?(:clj Throwable :cljs :default) _ nil))
+        now (take-now! mbx ec/*spin-id*)]
+    (if-not (identical? nothing now)
         ;; Immediately available: resolve on this stack and RETURN the
         ;; resolve's value (cps-fn contract) so a looping consumer's
         ;; trampoline forces its recur Thunk instead of nesting.
-          (resolve [now mbx])
+      (resolve [now mbx])
         ;; Use the mailbox's 2-arity (consumer) to get next message
         ;; Wrap resolve to:
         ;; 1. Rebind execution context (for nested spindel operations)
         ;; 2. Transform msg -> [msg mbx]
-          (mbx
-           (fn [msg]
-             (if exec-ctx
-               (binding [ec/*execution-context* exec-ctx]
-                 (resolve [msg mbx]))
-               (resolve [msg mbx])))
-           (fn [error]
-             (if exec-ctx
-               (binding [ec/*execution-context* exec-ctx]
-                 (reject error))
-               (reject error)))))))))
+      (mbx
+       (fn [msg]
+         (if exec-ctx
+           (binding [ec/*execution-context* exec-ctx]
+             (resolve [msg mbx]))
+           (resolve [msg mbx])))
+       (fn [error]
+         (if exec-ctx
+           (binding [ec/*execution-context* exec-ctx]
+             (reject error))
+           (reject error)))))))
+
+(deftype MailboxNext [mailbox]
+  rtp/PMailboxNext
+  (mailbox-next-target [_] mailbox)
+  #?(:clj clojure.lang.IFn :cljs IFn)
+  #?@(:clj [(applyTo [this args] (clojure.lang.AFn/applyToHelper this args))])
+  (#?(:clj invoke :cljs -invoke) [_ succeed fail]
+    (rtp/invoke-public-mailbox-next! (ec/current-execution-context) mailbox succeed fail)))
+
+(extend-type Mailbox
+  aseq/PAsyncSeq
+  (anext [mailbox] (->MailboxNext mailbox)))
 
 (defn post!
-  "Post a message to mailbox from EXTERNAL context (futures, threads, callbacks).
+  "Queue a message in the bound world and return nil.
 
-   This is the SAFE way to post from external threads/contexts. It enqueues
-   a post event to prevent blocking the caller.
-
-   Usage:
-     ;; From future (external thread)
-     (future
-       (Thread/sleep 100)
-       (post! mbx :msg))  ; Safe - enqueues event, returns immediately
-
-     ;; From callback
-     (on-websocket-message
-       (fn [msg]
-         (post! mbx msg)))  ; Safe - enqueues event
-
-   Contrast with internal posting:
-     ;; Inside spin context (SAME execution-context context)
-     (mbx :msg)  ; Fast inline posting - OK because same context
-
-   When to use which:
-   - Use (mbx msg) when: Inside spins, inside gen-aseq
-   - Use post! when: From futures, threads, async callbacks, external code
-
-   Why the distinction:
-   - Internal: Inline resume is safe (no circular waits)
-   - External: Must enqueue to prevent caller waiting for itself"
-  [mailbox msg]
-  (ratom/check-present! (ratom/atom-id #?(:clj (.-state-atom ^Mailbox mailbox)
-                                          :cljs (.-state-atom ^js mailbox)))
-                        :post)
-  ;; Enqueue post event - caller returns before waiter resumes
-  (ec/enqueue-event! {:type :mailbox-post
-                      :mailbox mailbox
-                      :msg msg})
-  nil)
+   Both post! and callable posting enqueue delivery. Consumer code runs outside
+   the mutation boundary; ready work may drain before this call returns.
+   External producers must bind the intended execution context."
+  [mailbox message]
+  (rtp/post-public-mailbox! (ec/current-execution-context) mailbox message))
 
 (defn mailbox
   "Create a mailbox using *execution-context*.
@@ -437,8 +405,8 @@
    - FIFO: Messages consumed in order posted
    - Multiple consumers: Each message goes to one consumer
    - Blocking take: Taking blocks until message available
-   - Non-blocking post: Posting always returns immediately
-   - Fork-safe: State stored in execution-context atom
+   - Posting does not wait for a consumer; both post forms return nil
+   - Storage and fork support follow the selected execution engine
 
    Use cases:
    - Message passing between concurrent spins

@@ -622,7 +622,30 @@ copying refuses explicitly until its assignment, reader and protected-capability
 recovery is implemented. The symbolic model covers retained assignment after
 world release; the native world-release adapter is still a replacement gate.
 
-Mailbox and external resource adapters, broader typed cleanup capabilities,
+The native Mailbox uses mutable FIFO queues for messages and consumers, with
+separate indices for pending takes, reservations, protected registrations and
+physical callbacks. Consuming a message removes its queue slot; a long-lived
+nonempty queue does not retain consumed prefixes. Immutable control projections
+are produced for audit boundaries rather than for each queue operation.
+Unentered cancelled reservations return their message once to the tail; entered
+callbacks consume it even if they throw. Nil and false are ordinary messages.
+
+Raw callbacks have explicit physical receipts and retained named capabilities.
+The first raw `anext` invocation acquires such a receipt; buffered iteration on
+an existing CPS frame returns to its trampoline without a nested pump or a new
+participant per item. Live callbacks can forward to another live Mailbox, while
+retired callbacks are limited to their retained allocation. This permission does
+not broaden access to unrelated application cells or graph operations.
+Protected Mailbox callbacks use the existing operation lane and retain their
+source across intermediate Deferred or Mailbox waits. Posting remains nil
+returning, queues are unbounded, and no close/EOF protocol is introduced.
+
+Mailbox handles and `anext` descriptors retain allocation anchors without
+retaining the world. Buffered data alone does not root an unreachable Mailbox;
+pending takes, reservations, queued posts and physical callbacks do. Fork/cut
+copying and recovery of these controls remain explicit refusal boundaries.
+
+External resource adapters, broader typed cleanup capabilities,
 component ownership, complete forks/cuts/world release, physical callback joining
 and recovery remain replacement gates. Separate
 reporting of actual cleanup failures also needs compiler provenance; a terminal
