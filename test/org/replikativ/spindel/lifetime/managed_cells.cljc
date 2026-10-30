@@ -23,9 +23,12 @@
 (defn in-use? [s w e allocation]
   (or (contains? (get-in s [:worlds w :pins]) e)
       (seq (get-in s [:env :cell-claims [w e allocation]]))
-      (some (fn [[n sequence]]
-              (let [ticket (get-in s [:env :native n])]
-                (and (= :waiting (:phase ticket)) (= sequence (:sequence ticket)))))
+      (some (fn [[reg {:keys [operation sequence]}]]
+              (let [ticket (get-in s [:env :native (first operation)])
+                    participant (:operation ticket)]
+                (and (= operation (:id participant)) (= :open (:state participant))
+                     (= sequence (:sequence ticket))
+                     (= :pending (get-in participant [:registrations reg :state])))))
             (get-in s [:worlds w :entities e :deferred :protected]))
       (some (fn [[v world]]
               (or (some #(= [:entity w e] (:debtor %)) (vals (:obligations world)))

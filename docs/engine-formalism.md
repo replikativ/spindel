@@ -1606,7 +1606,7 @@ update its retained payload, but cannot publish ordinary work.
 
 **Typed Deferred sources.** A `:deferred` entity has one allocation identity,
 `:completed?` as its assigned flag, an opaque successful `:result`, and
-`:deferred {:claimed? boolean :protected {ticket sequence}}`. Its state is
+`:deferred {:claimed? boolean :protected {registration {:operation op :sequence sequence}}}`. Its state is
 engine-owned; generic source mutation and computation creation/invocation cannot
 modify it. A pending T5 `:await-once` names this source without starting a body;
 an assigned source resumes inline. Other reader kinds refuse.
@@ -1618,20 +1618,50 @@ an assigned source resumes inline. Other reader kinds refuse.
   request does not set it. Assignment does not imply a callable claim.
 - `deferred-assign(w, e, allocation, seq, value)` consumes the exact queued
   attempt. Only the first assignment changes the value. It atomically queues
-  ordinary reader delivery and records readiness for matching protected wait
-  sequences. An exception-shaped value is still successful data. A posted
+  ordinary reader delivery and records readiness for matching operation
+  registrations. It does not settle the enclosing protected wait. An
+  exception-shaped value is still successful data. A posted
   attempt follows its exact allocation into retained cleanup; a stale allocation
   cannot acquire a new source. Released-world retained attempts use environment
   envelopes, with original sequence order preserved across T34.
 - `deferred-observe(w, e, allocation)` registers a one-shot host reader, or
   returns an already assigned value without an obligation.
-- `deferred-protect(w, e, allocation, n, sequence)` attaches only the named
-  allocation to the exact waiting protected ticket. A live allocation can be
-  retained across another owner's retirement; a retired source requires an
-  already held cleanup capability. The ticket links back to its registration;
-  settlement, replacement and physical return remove that link. Live and
-  retained aliases in one world share claim, assignment and registration state,
-  including after T9 moves the source to a successor owner.
+- `operation-await` attaches the named allocation to an operation's exact
+  executing frame. A live allocation can be retained across another owner's
+  retirement; a retired source requires an already held cleanup capability.
+  Live and retained aliases in one world share claim, assignment and registration
+  state, including after T9 moves the source to a successor owner. The former
+  `deferred-protect` shortcut refuses explicitly.
+
+**Protected operation participants.** A ticket names the outer suspended
+continuation. Its operation has identity `[ticket sequence]`; each resource
+registration has a fresh operation-local ordinal. Neither resource assignment
+nor a callback's return value selects the operation's terminal result.
+
+| Transition | Effect |
+|---|---|
+| `operation-start` | Install a participant and startup physical frame on the exact waiting ticket before invoking the thunk outside the gate. |
+| `operation-await` | Acquire an allowed Deferred capability and save the supplied scoped continuation under a fresh registration. Assigned data claims inline work on the existing operation frame; pending data installs a source edge. |
+| `operation-deliver` | Move a pending registration to ready, preserving successful data. Deferred assignment performs all its registration deliveries atomically; this profile refuses standalone delivery ingress. |
+| `operation-claim` | Enter the exact saved continuation once, outside the gate. External claims require an idle operation lane; assigned inline entry uses its existing physical frame. |
+| `operation-terminal` | The first terminal capability selects an explicit `:ok` or `:error` outcome. Invalidate unclaimed work; preserve claimed work and its physical evidence. |
+| `operation-return` | Remove the exact physical frame and consumed registrations. Returning without terminal selection leaves the operation open. |
+
+An assigned registration is already claimed before inline entry. Terminal
+selection in that interval preserves its right to enter once; `:entered?`
+prevents duplicate entry. Terminal selection does not permit new registrations.
+Parent dispatch waits for operation frames and the previous parent slice to
+return. Exact same-frame parent continuation handoff remains permitted once
+operation frames return, with existing live admission or cleanup adoption.
+Acquired cell holders survive intermediate callbacks and are released by the
+parent's existing lifetime protocol, not by consuming a resource registration.
+Raw callback-only tickets without an operation retain their one-shot
+`cleanup-deliver` protocol; it cannot bypass an operation-backed ticket.
+
+Independent continuation-entry and terminal observations distinguish
+`assignment 41 -> callback entry 41 -> terminal 42` from the former shortcut.
+Current operation coverage comprises explicit traces and public audit replay;
+the bounded search generator does not yet enumerate these new actions.
 
 Retained Deferred cells preserve the assignment flag and allocation identity in
 addition to their opaque value. They may be read by an authorized cleanup frame,

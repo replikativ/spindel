@@ -29,20 +29,47 @@
   ([actions] (checked-walk! (m/init-state) actions))
   ([initial actions]
    (let [actuals (mapv #(kernel/restore initial {:cells? %}) [false true])]
-     (vec
-      (reductions
-       (fn [before action]
-         (let [action (if (fn? action) (action before) action)
-               {after :state :keys [refusal observation]} (m/attempt before action)]
-           (is (empty? (inv/check after)) (pr-str [action (inv/check after)]))
-           (is (empty? (inv/edge-check {:before before :action action :after after
-                                        :refusal refusal :observation observation})) (pr-str action))
-           (doseq [actual actuals]
-             (let [error (try (kernel/step! actual action) nil
-                              (catch #?(:clj Exception :cljs :default) e (ex-data e)))]
-               (is (= (some-> refusal :error name) (some-> error :error name)) (pr-str [action refusal error]))
-               (is (= (view after) (view (kernel/snapshot actual))) (pr-str action))))
-           after)) initial actions)))))
+     (letfn [(advance [before item]
+               (let [action (if (fn? item) (item before) item)]
+                 (if (vector? action)
+                   (reduce advance before action)
+                   (let [{after :state :keys [refusal observation]} (m/attempt before action)]
+                     (is (empty? (inv/check after)) (pr-str [action (inv/check after)]))
+                     (is (empty? (inv/edge-check {:before before :action action :after after
+                                                  :refusal refusal :observation observation})) (pr-str action))
+                     (doseq [actual actuals]
+                       (let [error (try (kernel/step! actual action) nil
+                                        (catch #?(:clj Exception :cljs :default) e (ex-data e)))]
+                         (is (= (some-> refusal :error name) (some-> error :error name)) (pr-str [action refusal error]))
+                         (is (= (view after) (view (kernel/snapshot actual))) (pr-str action))))
+                     after))))]
+       (vec (reductions advance initial actions))))))
+
+(defn- protect [ticket thread & {:keys [cell]}]
+  (let [op [ticket 1] frame [op 1] reg [op 1]]
+    [{:t :operation-start :w w :n ticket :op op :sequence 1 :frame frame :th thread}
+     (cond-> {:t :operation-await :w w :e :d :allocation :d :n ticket :op op :sequence 1
+              :reg reg :continuation reg :frame frame :th thread}
+       cell (assoc :cell cell))
+     {:t :operation-return :w w :n ticket :op op :sequence 1 :frame frame :th thread}]))
+
+(defn- terminal [ticket value]
+  {:t :operation-terminal :w w :n ticket :op [ticket 1] :sequence 1 :variant :ok :value value})
+
+(defn- consume-registration [ticket value]
+  (let [op [ticket 1] reg [op 1] frame [op 2]]
+    [{:t :operation-claim :w w :n ticket :op op :sequence 1 :reg reg :frame frame}
+     (terminal ticket value)
+     {:t :operation-return :w w :n ticket :op op :sequence 1 :reg reg :frame frame}]))
+
+(defn- registration [state ticket]
+  (get-in state [:env :native ticket :operation :registrations [[ticket 1] 1]]))
+
+(defn- ready? [state ticket value]
+  (is (= :waiting (get-in state [:env :native ticket :phase])))
+  (is (not (contains? (get-in state [:env :native ticket]) :delivery)))
+  (is (= :ready (:state (registration state ticket))))
+  (is (= value (:delivery (registration state ticket)))))
 
 (deftest claim-is-independent-of-assignment-and-first-queued-attempt-wins
   (doseq [value [nil false {:throwable-as-data :ordinary-value}]]
@@ -99,12 +126,16 @@
     (is (= [:inline-resume] (mapv :event (:events final))))
     (is (nil? (m/current final w :d)))))
 
+(defn- model-step [state item]
+  (let [action (if (fn? item) (item state) item)]
+    (if (vector? action) (reduce model-step state action) (m/step state action))))
+
 (defn- protected-actions []
   [{:t :t04 :w w :e :worker :mode :callback}
    {:t :slice-enter :w w :r r :th :thread}
    (assoc create :scope r)
    {:t :finalization-wait :w w :th :thread}
-   {:t :deferred-protect :w w :e :d :allocation :d :n n :sequence 1 :th :thread}
+   (protect n :thread)
    {:t :t38 :th :thread}
    {:t :t11 :w w :r r}])
 
@@ -115,25 +146,24 @@
         retired (nth states 7) final (peek states)]
     (is (nil? (m/ent retired w :d)))
     (is (= {:kind :deferred :result nil :allocation :d
-            :deferred {:assigned? false :claimed? false :protected {n 1}} :holders #{n}}
+            :deferred {:assigned? false :claimed? false :protected {[[n 1] 1] {:operation [n 1] :sequence 1}}} :holders #{n}}
            (get-in retired [:env :cleanup-cells cell])))
-    (is (= :ready (get-in final [:env :native n :phase])))
-    (is (= :ack (get-in final [:env :native n :delivery])))
+    (ready? final n :ack)
     (is (= {:assigned? true :claimed? true :protected {}}
            (get-in final [:env :cleanup-cells cell :deferred])))
     (is (= :ack (get-in final [:env :cleanup-cells cell :result])))
     (is (empty? (:queue (m/wr final w))))))
 
 (deftest stale-deliveries-are-inert-and-unrelated-readiness-clears-the-registration
-  (let [initial (reduce m/step (m/init-state {:slices? true :cps-exit? true}) (protected-actions))
+  (let [initial (reduce model-step (m/init-state {:slices? true :cps-exit? true}) (protected-actions))
         states (checked-walk! initial
                               [{:t :cleanup-deliver :n n :sequence 0 :value :obsolete}
-                               {:t :cleanup-deliver :n n :sequence 1 :value {:external-error :rejected}}
+                               (terminal n {:external-error :rejected})
                                (assoc (request :ack false) :cell cell) assign-front])
         stale (nth states 1) ready (nth states 2) final (peek states)]
     (is (= (dissoc initial :events) (dissoc stale :events)))
     (is (= {} (get-in ready [:env :cleanup-cells cell :deferred :protected])))
-    (is (nil? (get-in ready [:env :native n :deferred-wait])))
+    (is (empty? (get-in ready [:env :native n :operation :registrations])))
     (is (= {:external-error :rejected} (get-in final [:env :native n :delivery])))
     (is (true? (get-in final [:env :cleanup-cells cell :deferred :assigned?])))))
 
@@ -146,7 +176,7 @@
     (is (= 1 (count (:queue (m/wr retired w)))))
     (is (nil? (:cell (first (:queue (m/wr retired w))))))
     (is (= :ack (get-in final [:env :cleanup-cells cell :result])))
-    (is (= :ready (get-in final [:env :native n :phase])))))
+    (ready? final n :ack)))
 
 (deftest queued-attempts-block-host-gc-until-assignment-publication-is-served
   (let [states (checked-walk! [create (request :value false)
@@ -168,16 +198,16 @@
         states (checked-walk! before
                               [{:t :source-unreachable :w w :e :d :allocation :d}
                                {:t :reap-source :w w :e :d :allocation :d}
-                               {:t :cleanup-deliver :n n :sequence 1 :value :external-error}
+                               (terminal n :external-error)
                                {:t :reap-source :w w :e :d :allocation :d}])
         waiting (nth states 1) rejected (nth states 3) final (peek states)]
     (is (= ::m/source-in-use
            (get-in (m/attempt waiting {:t :reap-source :w w :e :d :allocation :d}) [:refusal :error])))
     (is (= {} (get-in rejected [:worlds w :entities :d :deferred :protected])))
-    (is (nil? (get-in rejected [:env :native n :deferred-wait])))
+    (is (empty? (get-in rejected [:env :native n :operation :registrations])))
     (is (nil? (m/ent final w :d)))
     (is (some? (get-in final [:env :cleanup-cells cell])))
-    (is (seq (inv/check (assoc-in waiting [:env :native n :deferred-wait :sequence] 99))))))
+    (is (seq (inv/check (assoc-in waiting [:env :native n :operation :id] [n 99]))))))
 
 (deftest a-protected-ticket-retains-another-owners-deferred-until-resume
   (let [a [:owner 1] b [:reader 1] ticket (cleanup/ticket w b) key [w a :d]
@@ -186,11 +216,12 @@
                  {:t :t04 :w w :e :reader :mode :callback}
                  {:t :slice-enter :w w :r b :th :reader-thread}
                  {:t :finalization-wait :w w :th :reader-thread}
-                 {:t :deferred-protect :w w :e :d :allocation :d :n ticket :sequence 1 :th :reader-thread}
+                 (protect ticket :reader-thread)
                  {:t :t38 :th :reader-thread}
                  {:t :t11 :w w :r a}
                  (assoc (request false true) :cell key) assign-front
-                 {:t :finalization-resume :w w :n ticket :th :reader-thread}
+                 (into (consume-registration ticket false)
+                       [{:t :finalization-resume :w w :n ticket :th :reader-thread}])
                  {:t :t07 :w w :r b :value :done}
                  {:t :t38 :th :reader-thread}]
         states (checked-walk! (m/init-state {:slices? true :cps-exit? true}) actions)
@@ -198,10 +229,9 @@
         resumed (nth states 11)]
     (is (= #{ticket} (get-in protected [:env :cleanup-cells key :holders])))
     (is (= #{key} (get-in protected [:env :native ticket :cells])))
-    (is (= {:claimed? false :protected {ticket 1}} (:deferred (m/ent protected w :d))))
+    (is (= {:claimed? false :protected {[[ticket 1] 1] {:operation [ticket 1] :sequence 1}}} (:deferred (m/ent protected w :d))))
     (is (nil? (m/ent closed w :d)))
-    (is (= false (get-in ready [:env :native ticket :delivery])))
-    (is (= :ready (get-in ready [:env :native ticket :phase])))
+    (ready? ready ticket false)
     (is (nil? (get-in resumed [:env :cleanup-cells key])))
     (is (nil? (get-in resumed [:env :native ticket])))))
 
@@ -217,34 +247,34 @@
     (is (nil? (:queue (m/wr released w))))
     (is (= 1 (count (get-in released [:env :outside]))))
     (let [assigned (peek (checked-walk! released [assign-front]))]
-      (is (= :ack (get-in assigned [:env :native n :delivery])))
+      (ready? assigned n :ack)
       (is (empty? (get-in assigned [:env :outside]))))
     (let [empty-queue (assoc-in released [:env :outside] [])
           states (checked-walk! empty-queue [(assoc (request :second true) :cell cell) assign-front])
           queued (nth states 1) final (peek states)]
       (is (nil? (:queue (m/wr queued w))))
       (is (= 1 (count (get-in queued [:env :outside]))))
-      (is (= :second (get-in final [:env :native n :delivery]))))))
+      (ready? final n :second))))
 
 (deftest retained-deferred-payload-cannot-be-mutated-through-generic-cleanup-access
-  (let [initial (reduce m/step (m/init-state {:slices? true :cps-exit? true}) (protected-actions))
-        ready (m/step initial {:t :cleanup-deliver :n n :sequence 1 :value :other})
+  (let [initial (reduce model-step (m/init-state {:slices? true :cps-exit? true}) (protected-actions))
+        ready (m/step initial (terminal n :other))
         claimed (m/step ready {:t :cleanup-claim :n n :th :cleaner})
         action {:t :cleanup-cell :th :cleaner :cell cell :value :bypass}]
     (is (= ::cleanup/not-mutable-cleanup-cell (get-in (m/attempt claimed action) [:refusal :error])))
     (is (= claimed (peek (checked-walk! claimed [action]))))))
 
 (deftest typed-assignment-readiness-needs-the-exact-receipt-and-delivered-value
-  (let [before (reduce m/step (m/init-state {:slices? true :cps-exit? true})
+  (let [before (reduce model-step (m/init-state {:slices? true :cps-exit? true})
                        (concat (take 6 (protected-actions)) [(request false false)]))
         action (assign-front before) after (m/step before action)]
     (is (empty? (inv/edge-check {:before before :action action :after after})))
     (is (seq (inv/edge-check {:before before :action (update action :seq inc) :after after})))
     (is (seq (inv/edge-check {:before before :action action
-                              :after (assoc-in after [:env :native n :delivery] :counterfeit)})))))
+                              :after (assoc-in after [:env :native n :operation :registrations [[n 1] 1] :delivery] :counterfeit)})))))
 
 (deftest world-release-keeps-original-attempt-order-across-queued-and-held-envelopes
-  (let [initial (reduce m/step (m/init-state {:slices? true :cps-exit? true})
+  (let [initial (reduce model-step (m/init-state {:slices? true :cps-exit? true})
                         (concat (take 6 (protected-actions)) [(request :first false)]))
         first-event (first (:queue (m/wr initial w)))
         first-seq (:seq first-event)
@@ -269,7 +299,7 @@
     (is (= expected (get-in released [:env :outside])))
     (let [final (peek (checked-walk! released [assign-front assign-front assign-front]))]
       (is (= :first (get-in final [:env :cleanup-cells cell :result])))
-      (is (= :first (get-in final [:env :native n :delivery])))
+      (ready? final n :first)
       (is (= [other-before other-middle other-after] (get-in final [:env :outside]))))))
 
 (deftest retired-cleanup-can-protect-an-existing-root-acknowledgement-without-starting-work
@@ -279,10 +309,10 @@
                  {:t :t11 :w w :r r}
                  {:t :cleanup-adopt :n n :th :thread}
                  {:t :cleanup-park :th :thread}
-                 {:t :deferred-protect :w w :e :d :allocation :d :n n :sequence 1 :th :thread}
+                 (protect n :thread)
                  {:t :t38 :th :thread}
                  (request :ack false) assign-front
-                 {:t :cleanup-claim :n n :th :cleaner}
+                 (into (consume-registration n :ack) [{:t :cleanup-claim :n n :th :cleaner}])
                  {:t :cleanup-return :th :cleaner}
                  {:t :t38 :th :cleaner}]
         states (checked-walk! (m/init-state {:slices? true :cps-exit? true}) actions)
@@ -295,7 +325,7 @@
     (is (= :unwinding (:status (m/run protected w r))))
     (is (= ::m/cancelled (get-in (m/attempt protected forbidden) [:refusal :error])))
     (checked-walk! protected [forbidden])
-    (is (= :ack (get-in ready [:env :native n :delivery])))
+    (ready? ready n :ack)
     (is (nil? (get-in final [:env :cleanup-cells key])))
     (is (= :ack (:result (m/ent final w :d))))))
 
@@ -379,23 +409,23 @@
                  {:t :t04 :w w :e :reader-b :mode :callback}
                  {:t :slice-enter :w w :r b :th :thread-b}
                  {:t :finalization-wait :w w :th :thread-b}
-                 {:t :deferred-protect :w w :e :d :allocation :d :n nb :sequence 1 :th :thread-b}
+                 (protect nb :thread-b)
                  {:t :t38 :th :thread-b}
                  {:t :signal-write :w w :e :trigger :value 1}
                  {:t :t08 :w w :e :trigger :value 1}
                  {:t :t04 :w w :e :reader-c :mode :callback}
                  {:t :slice-enter :w w :r c :th :thread-c}
                  {:t :finalization-wait :w w :th :thread-c}
-                 {:t :deferred-protect :w w :e :d :allocation :d :n nc :sequence 1 :th :thread-c}
+                 (protect nc :thread-c)
                  {:t :t38 :th :thread-c}
                  (request :ack true)
                  {:t :t11 :w w :r successor} assign-front
                  {:t :t11 :w w :r b}
-                 {:t :cleanup-claim :n nb :th :cleaner-b}
+                 (into (consume-registration nb :ack) [{:t :cleanup-claim :n nb :th :cleaner-b}])
                  {:t :cleanup-return :th :cleaner-b}
                  {:t :t38 :th :cleaner-b}
                  {:t :t11 :w w :r c}
-                 {:t :cleanup-claim :n nc :th :cleaner-c}
+                 (into (consume-registration nc :ack) [{:t :cleanup-claim :n nc :th :cleaner-c}])
                  {:t :cleanup-return :th :cleaner-c}
                  {:t :t38 :th :cleaner-c}]
         states (checked-walk! (m/init-state {:slices? true :cps-exit? true}) actions)
@@ -403,14 +433,47 @@
         one-returned (nth states 25) final (peek states)]
     (is (= successor (:owner (m/ent migrated w :d))))
     (doseq [key [old-key new-key]]
-      (is (= {nb 1 nc 1} (get-in registered [:env :cleanup-cells key :deferred :protected])))
+      (is (= {[[nb 1] 1] {:operation [nb 1] :sequence 1}
+              [[nc 1] 1] {:operation [nc 1] :sequence 1}}
+             (get-in registered [:env :cleanup-cells key :deferred :protected])))
       (is (= {:assigned? true :claimed? true :protected {}}
              (get-in assigned [:env :cleanup-cells key :deferred])))
       (is (= :ack (get-in assigned [:env :cleanup-cells key :result]))))
     (doseq [ticket [nb nc]]
-      (is (= :ready (get-in assigned [:env :native ticket :phase])))
-      (is (= :ack (get-in assigned [:env :native ticket :delivery]))))
+      (ready? assigned ticket :ack))
     (is (nil? (get-in one-returned [:env :cleanup-cells old-key])))
     (is (some? (get-in one-returned [:env :cleanup-cells new-key])))
     (is (nil? (m/ent final w :d)))
     (is (empty? (get-in final [:env :cleanup-cells])))))
+
+(deftest stale-protected-operation-identities-cannot-fall-back-to-root-construction
+  (let [initial (m/init-state {:slices? true :cps-exit? true})
+        op [n 1] frame [op 1]
+        actions [{:t :t02 :w w :e :forged-source :value 41 :op op :frame frame}
+                 {:t :t04 :w w :e :forged-spin :mode :callback :op op :frame frame}]]
+    (doseq [action actions]
+      (let [result (m/attempt initial action)]
+        (is (= ::m/cleanup-only (get-in result [:refusal :error])))
+        (is (= initial (:state result)))
+        (is (= initial (peek (checked-walk! initial [action]))))))))
+
+(deftest operation-ingress-cannot-forge-delivery-or-drop-an-inline-physical-claim
+  (let [initial (m/init-state {:slices? true :cps-exit? true})
+        pending (peek (checked-walk! initial (protected-actions)))
+        delivery {:t :operation-deliver :w w :n n :op [n 1] :sequence 1
+                  :reg [[n 1] 1] :value :forged}
+        result (m/attempt pending delivery)]
+    (is (= ::m/unsupported-operation-delivery (get-in result [:refusal :error])))
+    (is (= pending (peek (checked-walk! pending [delivery])))))
+  (let [op [n 1] frame [op 1] reg [op 1]
+        actions [create (request 41 false) assign-front {:t :t08 :w w :e :d :value 41}
+                 {:t :t04 :w w :e :worker :mode :callback}
+                 {:t :slice-enter :w w :r r :th :thread}
+                 {:t :finalization-wait :w w :th :thread}
+                 {:t :operation-start :w w :n n :op op :sequence 1 :frame frame}
+                 {:t :operation-await :w w :n n :op op :sequence 1 :frame frame
+                  :e :d :allocation :d :reg reg :continuation reg}]
+        before (peek (checked-walk! (m/init-state {:slices? true :cps-exit? true}) actions))
+        premature {:t :operation-return :w w :n n :op op :sequence 1 :frame frame}]
+    (is (= ::cleanup/not-operation-return (get-in (m/attempt before premature) [:refusal :error])))
+    (is (= before (peek (checked-walk! before [premature]))))))

@@ -564,7 +564,8 @@
              (and (:standing? ob) (#{:track :await-reactive} (:kind ob)))))
          (read-row ctx w :by-run-creditor r))))
 
-(declare cancel-run! supersede! close-scope! resume! rule-l! detach-deferred-wait!)
+(declare cancel-run! supersede! close-scope! resume! rule-l! detach-deferred-wait!
+         operation-row operation-barrier? operation-deliver! unlink-operation-registration!)
 
 (defn- owner-chain [ctx w r]
   (loop [id r chain [] seen #{}]
@@ -638,6 +639,8 @@
                  :phase :waiting :sequence sequence :retired? false :anchor (owner-chain ctx world run)})))
 
 (defn- release-cleanup-cells! [ctx n]
+  (require! (operation-barrier? (get-in (root-state ctx) [:env :native n]))
+            ::operation-still-physical {:n n})
   (doseq [key (get-in (root-state ctx) [:env :native n :cells])]
     (let [holders (disj (get-in (root-state ctx) [:env :cleanup-cells key :holders]) n)]
       (if (seq holders)
@@ -648,7 +651,7 @@
   (let [state (root-state ctx) row (get-in state [:env :native n]) [w r] (:owner row)
         rr (read-row ctx w :runs r) thread (get-in state [:env :threads th])
         inline? (and (:executing? thread) (= [w r] [(:world thread) (:run thread)]))]
-    (require! (and (= :cps-finalization (:kind row)) (= :ready (:phase row))) ::not-ready {:n n})
+    (require! (and (= :cps-finalization (:kind row)) (= :ready (:phase row)) (operation-barrier? row)) ::not-ready {:n n})
     (require! (= w (:w action)) ::wrong-world {:n n :w (:w action)})
     (require! (and (= :parked (:status rr)) (= r (current-run ctx w (:spin rr))))
               ::not-current-slice {:n n})
@@ -665,10 +668,11 @@
 
 (defn- cleanup-claim! [ctx {:keys [n th]}]
   (let [state (root-state ctx) row (get-in state [:env :native n]) [w r] (:owner row)]
-    (require! (and (cleanup-op? row) (= :ready (:phase row))) ::not-ready {:n n})
+    (require! (and (cleanup-op? row) (= :ready (:phase row)) (operation-barrier? row)) ::not-ready {:n n})
     (require! (nil? (get-in state [:env :threads th :run])) ::thread-busy {:th th})
     (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
                         (vals (get-in state [:env :threads]))) ::slice-busy {:w w :r r})
+    (detach-deferred-wait! ctx n)
     (root-edit! ctx assoc-in [:env :native n :phase] :claimed)
     (root-edit! ctx update-in [:env :threads th] merge
                 {:world w :scope r :run r :executing? true :retired? true
@@ -677,9 +681,10 @@
 (defn- cleanup-adopt! [ctx {:keys [n th]}]
   (let [state (root-state ctx) row (get-in state [:env :native n])
         thread (get-in state [:env :threads th])]
-    (require! (and (cleanup-op? row) (= :ready (:phase row))) ::not-ready {:n n})
+    (require! (and (cleanup-op? row) (= :ready (:phase row)) (operation-barrier? row)) ::not-ready {:n n})
     (require! (and (:executing? thread) (= (:owner row) [(:world thread) (:run thread)])
                    (nil? (:cleanup-ticket thread))) ::wrong-slice {:n n :th th})
+    (detach-deferred-wait! ctx n)
     (root-edit! ctx assoc-in [:env :native n :phase] :claimed)
     (root-edit! ctx update-in [:env :threads th] assoc :cleanup-ticket n
                 :retired? true :anchor (:anchor row))))
@@ -695,15 +700,18 @@
 
 (defn- cleanup-deliver! [ctx {:keys [n sequence value]}]
   (let [row (get-in (root-state ctx) [:env :native n])]
-    (when (and (protected-native? row) (= :waiting (:phase row)) (= sequence (:sequence row)))
+    (when (and (protected-native? row) (nil? (:operation row))
+               (= :waiting (:phase row)) (= sequence (:sequence row)))
       (detach-deferred-wait! ctx n)
       (root-edit! ctx update-in [:env :native n] assoc :phase :ready :delivery value))))
 
-(defn- cleanup-access! [ctx {:keys [th cell value] :as action}]
-  (let [n (get-in (root-state ctx) [:env :threads th :cleanup-ticket])
-        row (get-in (root-state ctx) [:env :native n])]
-    (require! (and n (= :claimed (:phase row)) (contains? (:cells row) cell))
-              ::missing-cleanup-cell {:th th :cell cell})
+(defn- cleanup-access! [ctx {:keys [th cell value op frame] :as action}]
+  (let [n (or (when op (first op)) (get-in (root-state ctx) [:env :threads th :cleanup-ticket]))
+        row (get-in (root-state ctx) [:env :native n]) participant (operation-row ctx op)
+        admitted? (if op (and participant (contains? (:frames participant) frame)) (= :claimed (:phase row)))]
+    (require! (and n admitted? (contains? (:cells row #{}) cell)
+                   (contains? (get-in (root-state ctx) [:env :cleanup-cells cell :holders] #{}) n))
+              ::missing-cleanup-cell {:th th :cell cell :op op :frame frame})
     (when (contains? action :value)
       (require! (not= :deferred (get-in (root-state ctx) [:env :cleanup-cells cell :kind]))
                 ::not-mutable-cleanup-cell {:cell cell})
@@ -1057,10 +1065,10 @@
 
 (defn- source-in-use? [ctx w e allocation]
   (or (contains? (:pins (header ctx w)) e)
-      (some (fn [[n sequence]]
-              (let [ticket (get-in (root-state ctx) [:env :native n])]
-                (and (protected-native? ticket) (= :waiting (:phase ticket))
-                     (= sequence (:sequence ticket)))))
+      (some (fn [[reg edge]]
+              (let [participant (operation-row ctx (:operation edge))]
+                (and (= :open (:state participant))
+                     (= :pending (get-in participant [:registrations reg :state])))))
             (get-in (read-row ctx w :entities e) [:deferred :protected]))
       (seq (get-in (root-state ctx) [:env :cell-claims [w e allocation]]))
       (some
@@ -1124,7 +1132,15 @@
       {:row source}
       fallback? (deferred-retained ctx w e allocation nil))))
 
-(defn- admit-deferred-view! [ctx {:keys [w th cell]} view]
+(defn- admit-deferred-view! [ctx {:keys [w th cell op frame]} view]
+  (when op
+    (let [participant (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native (first op)])]
+      (require! (and participant (= w (first (:owner ticket))) (contains? (:frames participant) frame)
+                     (or (not (cleanup-op? ticket)) (:cell view))
+                     (or (nil? (:cell view))
+                         (and (contains? (:cells ticket #{}) (:cell view))
+                              (contains? (:holders (:row view) #{}) (first op)))))
+                ::released-deferred {:w w :op op :cell cell})))
   (require! view ::released-deferred {:w w :cell cell})
   (let [thread (get-in (root-state ctx) [:env :threads th]) r (:run thread)
         retired? (= :unwinding (:status (read-row ctx (:world thread) :runs r)))]
@@ -1179,18 +1195,130 @@
     key))
 
 (defn- detach-deferred-wait! [ctx n]
-  (when-let [{:keys [w e allocation cell sequence]}
-             (get-in (root-state ctx) [:env :native n :deferred-wait])]
-    (let [source (read-row ctx w :entities e)
-          retained (when cell (get-in (root-state ctx) [:env :cleanup-cells cell]))
-          retained? (and (= :deferred (:kind retained)) (= allocation (:allocation retained))
-                         (= sequence (get-in retained [:deferred :protected n])))
-          live? (and (= :deferred (:kind source)) (= allocation (:allocation source))
-                     (= sequence (get-in source [:deferred :protected n])))]
-      (cond
-        retained? (deferred-edit! ctx w e {:cell cell :row retained} update-in [:deferred :protected] dissoc n)
-        live? (deferred-edit! ctx w e {:row source} update-in [:deferred :protected] dissoc n))
-      (root-edit! ctx update-in [:env :native n] dissoc :deferred-wait))))
+  (when-let [participant (get-in (root-state ctx) [:env :native n :operation])]
+    (require! (operation-barrier? (get-in (root-state ctx) [:env :native n]))
+              ::operation-still-physical {:n n})
+    (doseq [reg (keys (:registrations participant))]
+      (unlink-operation-registration! ctx (:id participant) reg))
+    (root-edit! ctx update-in [:env :native n] dissoc :operation)))
+
+(defn- protected-operation-id? [op]
+  (and (vector? op) (= 2 (count op)) (vector? (first op))
+       (= 3 (count (first op))) (= :cps-exit (ffirst op))))
+
+(defn- operation-row [ctx op]
+  (let [row (when (vector? op) (get-in (root-state ctx) [:env :native (first op) :operation]))]
+    (when (= op (:id row)) row)))
+
+(defn- operation-barrier? [ticket]
+  (let [op (:operation ticket)]
+    (or (nil? op) (and (= :terminal (:state op)) (zero? (:physical op)) (empty? (:frames op))))))
+
+(defn- operation-frame! [ctx {:keys [op n sequence frame]}]
+  (let [row (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native n])]
+    (require! (and row (= n (first op)) (= sequence (second op) (:sequence ticket))
+                   (protected-native? ticket) (= :open (:state row)) (contains? (:frames row) frame))
+              ::not-operation-frame {:op op :frame frame})
+    row))
+
+(defn- unlink-operation-registration! [ctx op reg]
+  (when-let [{:keys [w e allocation cell]} (get-in (operation-row ctx op) [:registrations reg])]
+    (when-let [view (or (deferred-retained ctx w e allocation cell)
+                        (deferred-view ctx {:w w :e e :allocation allocation} false))]
+      (deferred-edit! ctx w e view update-in [:deferred :protected] dissoc reg))
+    (root-edit! ctx update-in [:env :native (first op) :operation :registrations] dissoc reg)))
+
+(defn- operation-start! [ctx {:keys [op n sequence frame]}]
+  (let [ticket (get-in (root-state ctx) [:env :native n]) [w r] (:owner ticket)]
+    (require! (and (protected-native? ticket) (= :waiting (:phase ticket))
+                   (= sequence (:sequence ticket)) (= op [n sequence]) (nil? (:operation ticket))
+                   (= frame [op 1])
+                   (some #(and (= w (:world %)) (= r (:run %)))
+                         (vals (get-in (root-state ctx) [:env :threads]))))
+              ::not-operation-start {:n n :op op})
+    (root-edit! ctx assoc-in [:env :native n :operation]
+                {:id op :state :open :parent r :physical 1 :frames #{frame}
+                 :next-registration 0 :next-frame 1 :registrations {}})))
+
+(defn- operation-await! [ctx {:keys [w op n sequence reg frame allocation e] :as action}]
+  (let [participant (operation-frame! ctx action)
+        ticket (get-in (root-state ctx) [:env :native n])
+        source (read-row ctx w :entities e)
+        live? (and (= :deferred (:kind source)) (= allocation (:allocation source)) (:owner source))
+        view (deferred-view ctx (if live? (dissoc action :cell) action) false) row (:row view)
+        key (or (:cell view) [w (:owner row) e])
+        assigned? (if (:cell view) (get-in row [:deferred :assigned?]) (:completed? row))]
+    (require! (and view (= w (first (:owner ticket)))
+                   (or (nil? (:cell action)) (= key (:cell action)))
+                   (= reg [op (inc (:next-registration participant))]))
+              ::not-operation-registration {:op op :reg reg})
+    (if (:cell view)
+      (require! (and (contains? (:cells ticket #{}) (:cell view)) (contains? (:holders row #{}) n))
+                ::released-deferred {:cell (:cell view)})
+      (deferred-admitted! ctx w))
+    (let [key (retain-deferred-for-ticket! ctx w e view n)]
+      (root-edit! ctx update-in [:env :native n :operation :next-registration] inc)
+      (root-edit! ctx assoc-in [:env :native n :operation :registrations reg]
+                  (cond-> {:w w :e e :allocation allocation :cell key
+                           :state (if assigned? :claimed :pending) :continuation reg :entered? false}
+                    assigned? (assoc :delivery (:result row))))
+      (when-not assigned?
+        (deferred-edit! ctx w e view assoc-in [:deferred :protected reg]
+                        {:operation op :sequence sequence})))))
+
+(defn- operation-deliver! [ctx {:keys [op reg value]}]
+  (let [participant (operation-row ctx op) registration (get-in participant [:registrations reg])]
+    (when (and (= :open (:state participant)) (= :pending (:state registration)))
+      (let [{:keys [w e allocation cell]} registration]
+        (when-let [view (or (deferred-retained ctx w e allocation cell)
+                            (deferred-view ctx {:w w :e e :allocation allocation} false))]
+          (deferred-edit! ctx w e view update-in [:deferred :protected] dissoc reg))
+        (root-edit! ctx update-in [:env :native (first op) :operation :registrations reg]
+                    assoc :state :ready :delivery value)))))
+
+(defn- operation-claim! [ctx {:keys [op reg frame inline?]}]
+  (let [participant (operation-row ctx op) registration (get-in participant [:registrations reg])
+        ready (sort-by second (for [[id row] (:registrations participant) :when (= :ready (:state row))] id))]
+    (require! (and (or (= :open (:state participant)) (and inline? (= :terminal (:state participant))))
+                   registration (false? (:entered? registration))
+                   (if inline?
+                     (and (= :claimed (:state registration)) (contains? (:frames participant) frame))
+                     (and (= :ready (:state registration)) (zero? (:physical participant))
+                          (= reg (first ready)) (= frame [op (inc (:next-frame participant))]))))
+              ::not-operation-ready {:op op :reg reg :frame frame})
+    (when-not inline?
+      (root-edit! ctx update-in [:env :native (first op) :operation]
+                  #(-> % (assoc :physical 1 :frames #{frame}) (update :next-frame inc))))
+    (root-edit! ctx update-in [:env :native (first op) :operation :registrations reg]
+                assoc :state :claimed :entered? true)
+    (emit! ctx {:event :continuation-entry :op op :reg reg :continuation reg
+                :variant :ok :value (:delivery registration)})))
+
+(defn- operation-terminal! [ctx {:keys [op n sequence value variant]}]
+  (require! (#{:ok :error} variant) ::invalid-operation-variant {:op op :variant variant})
+  (let [participant (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native n])]
+    (when (and (= n (first op)) (= sequence (second op) (:sequence ticket))
+               (= :open (:state participant)))
+      (doseq [[reg row] (:registrations participant) :when (not= :claimed (:state row))]
+        (unlink-operation-registration! ctx op reg))
+      (root-edit! ctx update-in [:env :native n :operation] assoc :state :terminal :variant variant)
+      (root-edit! ctx update-in [:env :native n] assoc :phase :ready :delivery value)
+      (emit! ctx {:event :operation-terminal :op op :variant variant :value value}))))
+
+(defn- operation-return! [ctx {:keys [op frame reg inline?]}]
+  (let [participant (operation-row ctx op)]
+    (require! (and participant (contains? (:frames participant) frame)
+                   (if reg (and (= :claimed (get-in participant [:registrations reg :state]))
+                                (true? (get-in participant [:registrations reg :entered?])))
+                       (and (not inline?) (= frame [op 1])))
+                   (= 1 (:physical participant))
+                   (or inline?
+                       (not-any? (fn [[id row]] (and (not= id reg) (= :claimed (:state row))))
+                                 (:registrations participant))))
+              ::not-operation-return {:op op :frame frame :reg reg})
+    (when reg (unlink-operation-registration! ctx op reg))
+    (when-not inline?
+      (root-edit! ctx update-in [:env :native (first op) :operation] assoc :physical 0 :frames #{}))))
 
 (defn- create-deferred! [ctx {:keys [w e allocation] :as action}]
   (deferred-admitted! ctx w)
@@ -1234,8 +1362,8 @@
                             (if (:cell view)
                               (assoc row :result (:value event) :deferred (assoc metadata :assigned? true))
                               (assoc row :result (:value event) :completed? true :deferred metadata))))
-          (doseq [[n sequence] protected]
-            (cleanup-deliver! ctx {:n n :sequence sequence :value (:value event)}))
+          (doseq [[reg edge] protected]
+            (operation-deliver! ctx {:op (:operation edge) :reg reg :value (:value event)}))
           (when-not (:cell view)
             (doseq [v (conj (set (for [[x v d] (:fdeps (header ctx w))
                                        :when (if (= :bundle x) (contains? d e) (= x e))] v)) w)]
@@ -1255,29 +1383,8 @@
         (add-obligation! ctx w o ob)
         (vreset! (:result ctx) {:o o :world w :cached? false :value nil})))))
 
-(defn- protect-deferred! [ctx {:keys [w e n sequence th] :as action}]
-  (let [view (deferred-view ctx action false)
-        row (:row view)
-        ticket (get-in (root-state ctx) [:env :native n])
-        thread (get-in (root-state ctx) [:env :threads th])
-        assigned? (if (:cell view) (get-in row [:deferred :assigned?]) (:completed? row))]
-    (require! view ::released-deferred {:w w :cell (:cell action)})
-    (require! (and (protected-native? ticket) (= :waiting (:phase ticket))
-                   (= sequence (:sequence ticket)) (= w (first (:owner ticket)))
-                   (= (:owner ticket) [(:world thread) (:run thread)])
-                   (or (and (= :cps-finalization (:kind ticket)) (:executing? thread))
-                       (= n (:cleanup-ticket thread))))
-              ::not-deferred-ticket {:w w :n n :th th})
-    (if (:cell view)
-      (admit-deferred-view! ctx action view)
-      (deferred-admitted! ctx w))
-    (detach-deferred-wait! ctx n)
-    (if assigned?
-      (cleanup-deliver! ctx {:n n :sequence sequence :value (:result row)})
-      (let [key (retain-deferred-for-ticket! ctx w e view n)]
-        (deferred-edit! ctx w e view assoc-in [:deferred :protected n] sequence)
-        (root-edit! ctx assoc-in [:env :native n :deferred-wait]
-                    {:w w :e e :allocation (:allocation action) :sequence sequence :cell key})))))
+(defn- protect-deferred! [_ctx action]
+  (require! false ::obsolete-deferred-protection {:action action}))
 
 (defn- allocate-generation! [ctx w e dense]
   (if-let [pending (:fresh-runs ctx)]
@@ -1703,7 +1810,9 @@
   (require! (not (contains? (:known-worlds (root-state ctx)) v)) ::world-id-reused {:world v})
   (require! (not (or (some #(= :deferred (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
                      (some (fn [[key row]] (and (= w (first key)) (= :deferred (:kind row))))
-                           (get-in (root-state ctx) [:env :cleanup-cells]))))
+                           (get-in (root-state ctx) [:env :cleanup-cells]))
+                     (some (fn [[_ ticket]] (and (= w (first (:owner ticket))) (:operation ticket)))
+                           (get-in (root-state ctx) [:env :native]))))
             ::unsupported-deferred-fork {:w w})
   (let [copy-row #(assoc (cells/value %) :origin :inherited :source-world w)
         runs (into {} (for [[r rr] (store/table-view (:tx ctx) w :runs)
@@ -1857,15 +1966,19 @@
          (require! (and (vector? (:fresh-runs action))
                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs action)))
                    ::invalid-run-allocation {:action action}))
-       (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :deferred-protect} t)) (= :released (:status (header ctx (:world thread)))))
+       (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)) (= :released (:status (header ctx (:world thread)))))
          (require! false ::released {:w w :thread (:th action)}))
        (when (and unwinding? (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
                                 :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe} t))
          (require! false ::cancelled {:w w :r (:run thread)}))
        (when (and (or (:cleanup-ticket thread)
                       (cleanup-op? (get-in (root-state ctx) [:env :native (cleanup-ticket (:world thread) (:run thread))])))
-                  (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :deferred-protect} t)))
+                  (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)))
          (require! false ::cleanup-only {:thread (:th action) :action action}))
+       (when (and (protected-operation-id? (:op action))
+                  (not (#{:operation-start :operation-await :operation-deliver :operation-claim
+                          :operation-terminal :operation-return :cleanup-cell :deferred-request :signal-write} t)))
+         (require! false ::cleanup-only {:action action}))
        (case t
          :finalization-wait (finalization-wait! ctx action)
          :finalization-resume (finalization-resume! ctx action)
@@ -1886,6 +1999,13 @@
          :deferred-assign (assign-deferred! ctx action)
          :deferred-observe (observe-deferred! ctx action)
          :deferred-protect (protect-deferred! ctx action)
+         :operation-start (operation-start! ctx action)
+         :operation-await (operation-await! ctx action)
+         :operation-deliver
+         (require! false ::unsupported-operation-delivery {:action action})
+         :operation-claim (operation-claim! ctx action)
+         :operation-terminal (operation-terminal! ctx action)
+         :operation-return (operation-return! ctx action)
          :arrival
          (let [event (:event action)]
            (if (:deferred-assignment event)
@@ -2014,6 +2134,13 @@
            (when (= :resume (:kind op)) (resume! ctx op)))
          :signal-write
          (let [e (:e action) er (read-row ctx w :entities e)]
+           (when-let [op (:op action)]
+             (let [participant (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native (first op)])]
+               (require! (and participant (= :cps-finalization (:kind ticket))
+                              (= w (first (:owner ticket))) (= (second op) (:sequence ticket))
+                              (contains? (:frames participant) (:frame action))
+                              (= (:parent participant) (current-run ctx w (first (:parent participant)))))
+                         ::cleanup-only {:action action})))
            (require! (not= :released (:status (header ctx w))) ::released {:w w})
            (when-not (and unwinding? (nil? er))
              (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))

@@ -596,6 +596,25 @@ authority after retirement. A cleanup consumer needs an already held retained
 capability, or must attach its protected wait while the allocation is live.
 This retains a resource payload, not the former owner's execution graph.
 
+Public protected thunks use a separate operation participant, identified by
+ticket and wait sequence. Each Deferred invocation retains its actual scoped
+callback under a distinct registration. Assignment makes those callbacks ready;
+only the thunk's terminal resolve/reject selects the outer result, with explicit
+success/error disposition. Startup and callbacks execute outside the gate on
+private operation frames, in a serialized lane. Their physical return fences
+parent dispatch and retained release, including when terminal selection occurs
+halfway through a callback. Exact same-parent-frame handoff remains possible
+after operation frames return. Consumed registrations release closures promptly;
+acquired capabilities remain held across intermediate waits.
+
+Live payload access borrows the exact parent generation; retired callbacks use
+the ticket's retained cells. This does not grant ordinary root authority.
+Ordinary graph effects and source construction inside operation participants
+remain explicit unsupported operations pending typed child-execution admission.
+That admission is a replacement gate, not a permanent narrowing of public thunk
+semantics. Operation model coverage currently uses explicit traces and native
+audit replay rather than enumeration by the bounded search generator.
+
 Deferred assignment acknowledges delivery of a value; it does not itself prove
 that an external thread or resource has physically stopped. Actual shutdown
 acknowledgements still require protected cleanup to return. Deferred fork/cut

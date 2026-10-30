@@ -322,14 +322,441 @@
     (binding [ec/*execution-context* rt]
       (let [d (sync/deferred)
             task (spin (await-finalization
-                        (fn [resolve reject]
+                        (fn [succeed fail]
                           (d (fn [value]
                                (swap! steps conj :transform)
-                               (resolve (inc value)))
-                             reject))))]
+                               (succeed (inc value)))
+                             fail))))]
         (observe! task values)
         (is (empty? @values))
         (d 41)
         (is (= [:transform] @steps))
         (is (= [42] @values))))
     (verify-boundaries! rt)))
+
+;; These literal public observations independently test continuation semantics.
+;; The symbolic operation participant still needs its own refinement coverage.
+(defn- operation-runtime []
+  (context/create-execution-context {:engine :owned :audit? false}))
+
+(deftest protected-assigned-deferred-runs-the-callback-before-the-outer-continuation
+  (let [rt (operation-runtime) steps (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (let [value (await-finalization
+                               (fn [succeed fail]
+                                 (d (fn [value]
+                                      (swap! steps conj :transform)
+                                      (succeed (inc value))
+                                      (swap! steps conj :callback-return))
+                                    fail)
+                                 (swap! steps conj :startup-return)))]
+                    (swap! steps conj :outer)
+                    value))]
+        (d 41)
+        (observe! task values)
+        (is (= [42] @values))
+        (is (= [:transform :callback-return :startup-return :outer] @steps))
+        (is (empty? (:native (owned/snapshot rt))))))))
+
+(deftest protected-operation-can-wait-again-without-completing-the-parent
+  (let [rt (operation-runtime) steps (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [first (sync/deferred) second (sync/deferred)
+            task (spin
+                  (await-finalization
+                   (fn [succeed fail]
+                     (first (fn [a]
+                              (swap! steps conj [:first a])
+                              (second (fn [b]
+                                        (swap! steps conj [:second b])
+                                        (succeed (+ a b)))
+                                      fail))
+                            fail))))]
+        (observe! task values)
+        (first 19)
+        (is (= [[:first 19]] @steps))
+        (is (empty? @values))
+        (second 23)
+        (is (= [[:first 19] [:second 23]] @steps))
+        (is (= [42] @values))
+        (is (empty? (:native (owned/snapshot rt))))
+        (is (empty? (:cleanup-cells (owned/snapshot rt))))))))
+
+(deftest protected-operation-keeps-each-registration-on-the-same-source
+  (let [rt (operation-runtime) entered (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (await-finalization
+                   (fn [succeed fail]
+                     (d (fn [v] (swap! entered conj [:a v])) fail)
+                     (d (fn [v]
+                          (swap! entered conj [:b v])
+                          (succeed @entered))
+                        fail))))]
+        (observe! task values)
+        (d false)
+        (is (= [[:a false] [:b false]] @entered))
+        (is (= [[[:a false] [:b false]]] @values))
+        (is (empty? (:native (owned/snapshot rt))))))))
+
+(deftest protected-operation-keeps-independent-registrations-in-either-delivery-order
+  (doseq [order [[:left :right] [:right :left]]]
+    (let [rt (operation-runtime) entered (atom []) values (atom [])]
+      (binding [ec/*execution-context* rt]
+        (let [left (sync/deferred) right (sync/deferred)
+              receive (fn [succeed side value]
+                        (swap! entered conj [side value])
+                        (when (= 2 (count @entered)) (succeed @entered)))
+              task (spin
+                    (await-finalization
+                     (fn [succeed fail]
+                       (left #(receive succeed :left %) fail)
+                       (right #(receive succeed :right %) fail))))]
+          (observe! task values)
+          (({:left left :right right} (first order)) nil)
+          (is (empty? @values))
+          (({:left left :right right} (second order)) nil)
+          (is (= (mapv #(vector % nil) order) @entered))
+          (is (= [@entered] @values))
+          (is (empty? (:native (owned/snapshot rt)))))))))
+
+(deftest protected-terminal-invalidates-other-unclaimed-registrations
+  (let [rt (operation-runtime) entered (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [left (sync/deferred) right (sync/deferred)
+            task (spin
+                  (await-finalization
+                   (fn [succeed fail]
+                     (left (fn [v] (swap! entered conj :left) (succeed v)) fail)
+                     (right (fn [v] (swap! entered conj :right) (succeed v)) fail))))]
+        (observe! task values)
+        (left 42)
+        (right :obsolete)
+        (is (= [:left] @entered))
+        (is (= [42] @values))
+        (is (empty? (:native (owned/snapshot rt))))))))
+
+(deftest protected-operation-callback-return-precedes-parent-resumption
+  (let [rt (operation-runtime) steps (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (let [value (await-finalization
+                               (fn [succeed fail]
+                                 (d (fn [v]
+                                      (swap! steps conj :entered)
+                                      (succeed v)
+                                      (is (empty? @values))
+                                      (swap! steps conj :returning))
+                                    fail)))]
+                    (swap! steps conj :outer)
+                    value))]
+        (observe! task values)
+        (d 42)
+        (is (= [:entered :returning :outer] @steps))
+        (is (= [42] @values))))))
+
+(deftest protected-delivery-during-startup-waits-for-startup-return
+  (let [rt (operation-runtime) steps (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (await-finalization
+                   (fn [succeed fail]
+                     (d (fn [v]
+                          (swap! steps conj :callback)
+                          (succeed (inc v)))
+                        fail)
+                     (d 41)
+                     (is (empty? @values))
+                     (is (empty? @steps))
+                     (swap! steps conj :startup-return))))]
+        (observe! task values)
+        (is (= [:startup-return :callback] @steps))
+        (is (= [42] @values))))))
+
+(deftest protected-deferred-callback-values-do-not-encode-error-disposition
+  (doseq [assigned? [false true]
+          value [nil false (ex-info "callback data" {})
+                 {:type spin-core/spin-cancelled :variant :error :payload false}]]
+    (let [rt (operation-runtime) values (atom []) entered (atom 0)]
+      (binding [ec/*execution-context* rt]
+        (let [d (sync/deferred)
+              task (spin
+                    (await-finalization
+                     (fn [succeed fail]
+                       (d (fn [v] (swap! entered inc) (succeed [:wrapped v])) fail))))]
+          (when assigned? (d value))
+          (observe! task values)
+          (when-not assigned? (d value))
+          (is (= 1 @entered))
+          (is (= 1 (count @values)))
+          (is (= :wrapped (ffirst @values)))
+          (is (identical? value (second (first @values)))))))))
+
+(deftest cancelled-protected-operation-keeps-owned-state-through-sequential-waits
+  (let [rt (operation-runtime) steps (atom []) values (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [first (sync/deferred) second (sync/deferred)
+            task (spin
+                  (let [state (signal/signal 7)]
+                    (try
+                      (await-finalization
+                       (fn [succeed fail]
+                         (first (fn [a]
+                                  (swap! steps conj [:first a @state])
+                                  (second (fn [b]
+                                            (swap! steps conj [:second b @state])
+                                            (succeed (+ a b)))
+                                          fail))
+                                fail)))
+                      (finally (swap! steps conj [:finally @state])))))
+            reason (ex-info "retire operation parent" {})]
+        (task #(swap! values conj [:ok %]) #(swap! values conj [:error %]))
+        (cancel! rt task reason)
+        (is (= [[:error reason]] @values))
+        (is (seq (:cleanup-cells (owned/snapshot rt))))
+        (first 19)
+        (is (= [[:first 19 7]] @steps))
+        (is (seq (:cleanup-cells (owned/snapshot rt))))
+        (second 23)
+        (is (= [[:first 19 7] [:second 23 7] [:finally 7]] @steps))
+        (is (= [[:error reason]] @values))
+        (is (empty? (:native (owned/snapshot rt))))
+        (is (empty? (:cleanup-cells (owned/snapshot rt))))))))
+
+(deftest protected-callback-restores-its-lexical-context-in-the-selected-world
+  (let [rt (operation-runtime) d (sync/create-deferred rt) values (atom [])
+        world (rtp/world-identity rt)
+        task (binding [ec/*execution-context* (assoc rt :bindings {:deferred-test/scope :operation})]
+               (spin
+                (address/with-key :protected
+                  (await-finalization
+                   (fn [succeed fail]
+                     (d (fn [v]
+                          (succeed [v
+                                    (get-in (ec/current-execution-context) [:bindings :deferred-test/scope])
+                                    (address/current-key (ec/current-execution-context))
+                                    (identical? world (rtp/world-identity (ec/current-execution-context)))]))
+                        fail))))))]
+    (binding [ec/*execution-context* (assoc rt :bindings {:deferred-test/scope :observer})]
+      (observe! task values))
+    (binding [ec/*execution-context* (assoc rt :bindings {:deferred-test/scope :producer})]
+      (d false)
+      (is (= :producer (get-in (ec/current-execution-context) [:bindings :deferred-test/scope]))))
+    (is (= [[false :operation :protected true]] @values))))
+
+(deftest live-protected-callback-can-use-its-existing-signal-payload
+  (let [rt (runtime) values (atom []) reads (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (let [state (signal/signal 7)]
+                    (await-finalization
+                     (fn [succeed fail]
+                       (d (fn [_]
+                            (swap! reads conj @state)
+                            (swap! state inc)
+                            (succeed @state))
+                          fail)))))]
+        (observe! task values)
+        (d :ready)
+        (is (= [7] @reads))
+        (is (= [8] @values))))
+    (verify-boundaries! rt)))
+
+(deftest live-protected-callback-can-read-an-acquired-deferred-after-its-owner-retires
+  (let [rt (runtime) shared (atom nil) owner-terminal (atom nil) values (atom []) reads (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [owner (spin
+                   (reset! shared (sync/deferred))
+                   (await-finalization (fn [succeed _] (reset! owner-terminal succeed))))]
+        (owner (fn [_]) (fn [_]))
+        (let [reader (spin
+                      (await-finalization
+                       (fn [succeed fail]
+                         (@shared (fn [v]
+                                    (swap! reads conj (rtp/read-public-deferred (ec/current-execution-context) @shared))
+                                    (succeed (inc v)))
+                                  fail))))]
+          (observe! reader values)
+          (cancel! rt owner (ex-info "retire resource owner" {}))
+          (@owner-terminal :returned)
+          (is (nil? (get-in (owned/snapshot rt) [:entities (entity-id @shared)])))
+          (@shared 41)
+          (is (= [{:assigned? true :value 41}] @reads))
+          (is (= [42] @values))
+          (is (empty? (:cleanup-cells (owned/snapshot rt)))))))
+    (verify-boundaries! rt)))
+
+(deftest protected-callback-failure-rejects-the-operation-before-terminal
+  (let [rt (runtime) values (atom []) failure (ex-info "operation callback failed" {})]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin (await-finalization
+                        (fn [_ fail]
+                          (d (fn [_] (throw failure)) fail))))]
+        (task #(swap! values conj [:ok %]) #(swap! values conj [:error %]))
+        (d 41)
+        (is (= [[:error failure]] @values))
+        (is (empty? (:native (owned/snapshot rt))))))
+    (verify-boundaries! rt)))
+
+(deftest returning-from-a-protected-callback-does-not-select-the-outer-result
+  (let [rt (operation-runtime) values (atom []) terminal (atom nil) entered (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (await-finalization
+                   (fn [succeed fail]
+                     (reset! terminal succeed)
+                     (d (fn [v] (swap! entered conj v) :callback-return-value) fail))))]
+        (observe! task values)
+        (d 41)
+        (is (= [41] @entered))
+        (is (empty? @values))
+        (is (= :waiting (:phase (first (vals (:native (owned/snapshot rt)))))))
+        (@terminal 42)
+        (is (= [42] @values))
+        (@terminal :duplicate)
+        (is (= [42] @values))
+        (is (empty? (:native (owned/snapshot rt))))))))
+
+(deftest late-protected-callback-errors-preserve-the-selected-result
+  (doseq [startup? [true false]]
+    (let [rt (runtime) values (atom []) failure (ex-info "after terminal" {})]
+      (binding [ec/*execution-context* rt]
+        (let [d (sync/deferred)
+              task (spin
+                    (await-finalization
+                     (fn [succeed fail]
+                       (let [finish (fn [v] (succeed v) (throw failure))]
+                         (if startup? (finish 42) (d finish fail))))))
+              error (try
+                      (observe! task values)
+                      (when-not startup? (d 42))
+                      nil
+                      (catch #?(:clj Throwable :cljs :default) error error))]
+          (is (identical? failure error))
+          (is (= [42] @values))
+          (is (empty? (:native (owned/snapshot rt))))))
+      (verify-boundaries! rt))))
+
+(deftest cleanup-can-start-another-protected-operation-on-the-same-ticket
+  (let [rt (operation-runtime) values (atom []) cleaned (atom [])]
+    (binding [ec/*execution-context* rt]
+      (let [body (sync/deferred) first (sync/deferred) second (sync/deferred)
+            task (spin
+                  (let [state (signal/signal 7)]
+                    (try (await body)
+                         (finally
+                           (let [a (await-finalization
+                                    (fn [succeed fail] (first #(succeed (inc %)) fail)))
+                                 b (await-finalization
+                                    (fn [succeed fail] (second #(succeed (inc %)) fail)))]
+                             (swap! cleaned conj [a b @state]))))))
+            reason (ex-info "sequential cleanup operations" {})]
+        (task #(swap! values conj [:ok %]) #(swap! values conj [:error %]))
+        (cancel! rt task reason)
+        (first 19)
+        (is (empty? @cleaned))
+        (is (seq (:cleanup-cells (owned/snapshot rt))))
+        (second 21)
+        (is (= [[20 22 7]] @cleaned))
+        (is (= [[:error reason]] @values))
+        (is (empty? (:native (owned/snapshot rt))))))))
+
+(deftest assigned-protected-callback-chain-releases-consumed-registrations
+  (let [rt (operation-runtime) values (atom []) samples (atom []) entered (atom 0)]
+    (binding [ec/*execution-context* rt]
+      (let [d (sync/deferred)
+            task (spin
+                  (await-finalization
+                   (fn [succeed fail]
+                     (dotimes [i 5000]
+                       (when (zero? (mod i 1000))
+                         (swap! samples conj (owned/storage-stats rt)))
+                       (d (fn [_] (swap! entered inc)) fail))
+                     (swap! samples conj (owned/storage-stats rt))
+                     (succeed @entered))))]
+        (d :ready)
+        (observe! task values)
+        (is (= [5000] @values))
+        (is (= 6 (count @samples)))
+        (is (every? #(= 1 (:protected-operations %)) @samples))
+        (is (every? #(<= (:operation-registrations %) 1) @samples))
+        (is (every? #(<= (:operation-callback-references %) 2) @samples))
+        (is (every? #(= 1 (:operation-frames %)) @samples))
+        (is (= [0 0 0 0]
+               ((juxt :protected-operations :operation-registrations :operation-frames :operation-callback-references)
+                (owned/storage-stats rt))))))))
+
+#?(:clj
+   (defn- completed-operation-with-escaped-terminal []
+     (let [rt (operation-runtime) terminal (atom nil) values (atom [])]
+       (binding [ec/*execution-context* rt]
+         (let [d (sync/deferred)
+               task (spin
+                     (await-finalization
+                      (fn [succeed fail]
+                        (reset! terminal succeed)
+                        (d (fn [v] (succeed (inc v))) fail))))]
+           (observe! task values)
+           (d 41)
+           (is (= [42] @values))))
+       {:world (java.lang.ref.WeakReference. rt) :terminal @terminal})))
+
+#?(:clj
+   (deftest escaped-completed-operation-terminal-does-not-retain-its-world
+     (let [{:keys [world terminal]} (completed-operation-with-escaped-terminal)]
+       (loop [remaining 100]
+         (System/gc)
+         (when (and (pos? remaining) (.get ^java.lang.ref.WeakReference world))
+           (Thread/sleep 10)
+           (recur (dec remaining))))
+       (is (nil? (.get ^java.lang.ref.WeakReference world)))
+       (terminal :obsolete)
+       (java.lang.ref.Reference/reachabilityFence terminal))))
+
+#?(:clj
+   (deftest protected-callback-terminal-does-not-release-a-physically-executing-frame
+     (doseq [startup? [true false]]
+       (let [rt (operation-runtime) values (atom []) steps (atom [])
+             entered (promise) leave (promise) reason (ex-info "cancel physical callback" {})]
+         (binding [ec/*execution-context* rt]
+           (let [d (sync/deferred)
+                 task (spin
+                       (let [state (signal/signal 7)]
+                         (try
+                           (await-finalization
+                            (fn [succeed fail]
+                              (let [finish (fn [v]
+                                             (succeed v)
+                                             (deliver entered true)
+                                             @leave
+                                             (swap! steps conj [:callback @state]))]
+                                (if startup? (finish 42) (d finish fail)))))
+                           (finally (swap! steps conj [:finally @state])))))
+                 start! #(task (fn [v] (swap! values conj [:ok v]))
+                               (fn [e] (swap! values conj [:error e])))
+                 worker (if startup?
+                          (future (start!))
+                          (do (start!) (future (d 42))))]
+             (try
+               (is (= true (deref entered 10000 ::timeout)))
+               (is (empty? @values))
+               (is (empty? @steps))
+               (cancel! rt task reason)
+               (is (= :error (:variant (rtp/computation-result rt task (spin-core/spin-id task)))))
+               (is (identical? reason (:payload (rtp/computation-result rt task (spin-core/spin-id task)))))
+               (is (seq (:cleanup-cells (owned/snapshot rt))))
+               (is (empty? @steps))
+               (finally (deliver leave true)))
+             (is (not= ::timeout (deref worker 10000 ::timeout)))
+             (is (= [[:callback 7] [:finally 7]] @steps))
+             (is (= [[:error reason]] @values))
+             (is (empty? (:native (owned/snapshot rt))))
+             (is (empty? (:cleanup-cells (owned/snapshot rt))))))))))

@@ -641,7 +641,16 @@
       live?
       {:path [:worlds w :entities e] :row source :assigned? (:completed? source)})))
 
-(defn- admit-deferred-view! [s {:keys [w th cell]} view]
+(defn- admit-deferred-view! [s {:keys [w th cell op frame]} view]
+  (when op
+    (let [participant (cleanup/operation s op) ticket (get-in s [:env :native (first op)])]
+      (require! (and participant (= w (first (:owner ticket)))
+                     (contains? (:frames participant) frame)
+                     (or (not (cleanup/exit? ticket)) (:cell view))
+                     (or (nil? (:cell view))
+                         (and (contains? (:cells ticket #{}) (:cell view))
+                              (contains? (:holders (:row view) #{}) (first op)))))
+                ::released-deferred {:w w :op op :cell cell})))
   (require! view ::released-deferred {:w w :cell cell})
   (let [thread (get-in s [:env :threads th]) r (:run thread)
         retired? (= :unwinding (:status (run s (:world thread) r)))]
@@ -685,7 +694,7 @@
           (let [protected (get-in row [:deferred :protected])
                 s (cleanup/update-deferred-resource s w e allocation
                                                     #(assoc % :value value :assigned? true :protected {}))
-                s (reduce (fn [s [n sequence]] (cleanup/deliver s {:n n :sequence sequence :value value}))
+                s (reduce (fn [s [reg edge]] (cleanup/operation-deliver s {:op (:operation edge) :reg reg :value value}))
                           s protected)]
             (if cell s
                 (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value value})
@@ -703,38 +712,43 @@
                    :standing? false :cont nil :token nil :order 0 :slot :armed
                    :filter {:mode :local :origin w}})))))
 
-(defn deferred-protect [s {:keys [w n sequence th] :as action}]
-  (let [{:keys [path row assigned?] :as view} (deferred-view s action false)
-        ticket (get-in s [:env :native n]) thread (get-in s [:env :threads th])]
-    (require! view ::released-deferred {:w w :cell (:cell action)})
-    (require! (and (cleanup/protected? ticket) (= :waiting (:phase ticket))
-                   (= sequence (:sequence ticket)) (= w (first (:owner ticket)))
-                   (= (:owner ticket) [(:world thread) (:run thread)])
-                   (or (and (cleanup/finalizing? ticket) (:executing? thread))
-                       (= n (:cleanup-ticket thread))))
-              ::not-deferred-ticket {:w w :n n :th th})
+(defn operation-await [s {:keys [w op n sequence reg frame allocation e] :as action}]
+  (let [operation (cleanup/operation-frame! s action)
+        ticket (get-in s [:env :native n])
+        {:keys [row assigned?] :as view}
+        (deferred-view s (if (get-in s [:env :cleanup-cells (:cell action)])
+                           action (dissoc action :cell)) false)
+        key (or (:cell view) [w (:owner row) e])]
+    (require! (and view (= w (first (:owner ticket)))
+                   (or (nil? (:cell action)) (= key (:cell action)))
+                   (= reg [op (inc (:next-registration operation))]))
+              ::not-operation-registration {:op op :reg reg})
     (if (:cell view)
-      (admit-deferred-view! s action view)
-      ;; The matching protected ticket grants this existing resource only.
-      ;; A retired cleanup frame may acquire a live root-owned acknowledgement
-      ;; without obtaining ordinary computation/source-construction authority.
+      (require! (and (contains? (:cells ticket #{}) key)
+                     (contains? (:holders row #{}) n)) ::released-deferred {:cell key})
       (do (executable! s w)
           (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})))
-    (let [s (cleanup/clear-deferred-wait s n)
-          key (or (:cell view) [w (:owner row) (:e action)])]
-      (if assigned? (cleanup/deliver s {:n n :sequence sequence :value (:result row)})
-          (-> s
-              (update-in [:env :cleanup-cells key]
-                         (fn [old]
-                           (assoc (or old {:kind :deferred :allocation (:allocation action) :result (:result row)
-                                           :deferred (assoc (:deferred row) :assigned? false)})
-                                  :holders (conj (:holders old #{}) n))))
-              (update-in [:env :native n :cells] (fnil conj #{}) key)
-              (cleanup/update-deferred-resource w (:e action) (:allocation action)
-                                                #(assoc-in % [:protected n] sequence))
-              (assoc-in [:env :native n :deferred-wait]
-                        {:w w :e (:e action) :allocation (:allocation action) :sequence sequence
-                         :cell key}))))))
+    (let [s (-> s
+                (update-in [:env :cleanup-cells key]
+                           (fn [old]
+                             (assoc (or old {:kind :deferred :allocation allocation :result (:result row)
+                                             :deferred (assoc (:deferred row) :assigned? (boolean assigned?))})
+                                    :holders (conj (:holders old #{}) n))))
+                (update-in [:env :native n :cells] (fnil conj #{}) key)
+                (update-in [:env :native n :operation :next-registration] inc)
+                (assoc-in [:env :native n :operation :registrations reg]
+                          (cond-> {:w w :e e :allocation allocation :cell key
+                                   :state (if assigned? :claimed :pending) :continuation reg :entered? false}
+                            assigned? (assoc :delivery (:result row)))))]
+      (if assigned? s
+          (cleanup/update-deferred-resource s w e allocation
+                                            #(assoc-in % [:protected reg] {:operation op :sequence sequence}))))))
+
+(defn operation-deliver [_s action]
+  (refuse ::unsupported-operation-delivery {:action action}))
+
+(defn deferred-protect [_s action]
+  (refuse ::obsolete-deferred-protection {:action action}))
 
 (defn withdraw-deref
   "Withdraw one local host deref observer without cancelling its computation."
@@ -1368,7 +1382,8 @@
 (defn- deferred-world? [s w world]
   (or (some #(= :deferred (:kind %)) (vals (:entities world)))
       (some (fn [[key cell]] (and (= w (first key)) (= :deferred (:kind cell))))
-            (get-in s [:env :cleanup-cells]))))
+            (get-in s [:env :cleanup-cells]))
+      (some #(and (= w (first (:owner %))) (:operation %)) (vals (get-in s [:env :native])))))
 
 (defn t19-fork-following
   "T19 persistent inherited bundles, expanded here for logical-row checking."
@@ -1974,6 +1989,9 @@
    :cleanup-adopt cleanup/adopt :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
    :cleanup-deliver cleanup/deliver :cleanup-return cleanup/returning
    :cleanup-cell cleanup/access
+   :operation-start cleanup/operation-start :operation-await operation-await
+   :operation-deliver operation-deliver :operation-claim cleanup/operation-claim
+   :operation-terminal cleanup/operation-terminal :operation-return cleanup/operation-return
    :source-unreachable managed-cells/unreachable :reap-source managed-cells/reap
    :invalidate-computation invalidate-computation :withdraw-deref withdraw-deref
    :cancel-computation cancel-computation :signal-publish publish-signal
@@ -1993,7 +2011,7 @@
   (or (when (and (not (#{:slice-enter :t35} (:t a)))
                  (get-in s [:env :threads (:th a) :run]))
         (get-in s [:env :threads (:th a) :world]))
-      (:w a) (get-in a [:op :w])
+      (:w a) (first (get-in s [:env :native (:n a) :owner])) (get-in a [:op :w])
       (when (#{:t38 :slice-enter :native-progress} (:t a))
         (or (get-in s [:env :threads (:th a) :world])
             (first (get-in s [:env :native (:n a) :owner]))))
@@ -2028,7 +2046,7 @@
           unwinding? (= :unwinding (:status (run s (:world thread) (:run thread))))
           a (if (and slice? (not (#{:t38 :slice-enter :t35} t))) (assoc a :w (:world thread)) a)
           w (acting-world s a)
-          _ (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :deferred-protect} t)) (= :released (:status (wr s (:world thread)))))
+          _ (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)) (= :released (:status (wr s (:world thread)))))
               (refuse ::released {:w w :thread (:th a)}))
           _ (when (and unwinding?
                        (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
@@ -2036,8 +2054,20 @@
               (refuse ::cancelled {:w w :r (:run thread)}))
           _ (when (and (or (:cleanup-ticket thread)
                            (cleanup/exit? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
-                       (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :deferred-protect} t)))
+                       (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)))
               (refuse ::cleanup-only {:thread (:th a) :action a}))
+          _ (when (and (cleanup/protected-operation-id? (:op a))
+                       (not (#{:operation-start :operation-await :operation-deliver :operation-claim
+                               :operation-terminal :operation-return :cleanup-cell :deferred-request :signal-write} t)))
+              (refuse ::cleanup-only {:action a}))
+          _ (when (and (= :signal-write t) (:op a))
+              (let [participant (cleanup/operation s (:op a))
+                    ticket (get-in s [:env :native (first (:op a))])]
+                (require! (and participant (cleanup/finalizing? ticket)
+                               (= w (first (:owner ticket)))
+                               (contains? (:frames participant) (:frame a))
+                               (= (:parent participant) (current s w (first (:parent participant)))))
+                          ::cleanup-only {:action a})))
           before s s (assoc s :events [])]
       (when (and (quiescent-cut? s (acting-world s a))
                  (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11

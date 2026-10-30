@@ -329,6 +329,24 @@
 (def ^:const x-address 15)
 (def ^:const x-cancel-value 16)
 
+(def ^:const x-operation 17)
+;; A protected operation owns callback registrations, separately from its
+;; enclosing ticket's parent continuation and physical slice.
+(def ^:const p-id 0) (def ^:const p-ticket 1) (def ^:const p-parent 2)
+(def ^:const p-state 3) (def ^:const p-registrations 4) (def ^:const p-next 5)
+(def ^:const p-physical 6) (def ^:const p-queued 7) (def ^:const p-frame-next 8)
+(def ^:const p-terminal 9) (def ^:const p-frames 10)
+(def ^:const g-id 0) (def ^:const g-operation 1) (def ^:const g-allocation 2)
+(def ^:const g-control 3) (def ^:const g-key 4) (def ^:const g-state 5)
+(def ^:const g-resolve 6) (def ^:const g-reject 7) (def ^:const g-value 8)
+(def ^:const g-entered 9)
+
+(defn- active-operation []
+  (when-let [frame (current-activation)]
+    (when (> (alength ^objects frame) 10) (a frame 10))))
+(defn- operation-retired? [operation]
+  (= :cps-exit (a (a operation p-ticket) x-kind)))
+
 (def ^:const o-id 0) (def ^:const o-kind 1) (def ^:const o-debtor 2)
 (def ^:const o-run 3) (def ^:const o-standing 4) (def ^:const o-resolve 5)
 (def ^:const o-reject 6) (def ^:const o-order 7) (def ^:const o-slot 8)
@@ -366,6 +384,7 @@
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
          register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
          create-public-deferred! claim-public-deferred! deliver-public-deferred! read-public-deferred invoke-public-deferred!
+         operation-deliver! protect-deferred! start-protected-operation! invoke-operation-ready! operation-terminal! operation-check!
          assign-deferred! await-public-deferred! deferred-view! deferred-metadata end-deferred-protection! release-ticket-cells!
          public-signal-view! register-public-signal! public-signal-value public-signal-state swap-public-signal! cas-public-signal!
          clear-public-signal-deltas! public-signal-watches edit-public-signal-watch! publish-public-signals! track-public-signal!
@@ -752,7 +771,9 @@
      :cljs (zero? (.-size (if (instance? IDMap m) (.-buckets m) m)))))
 
 (defn- queue-cleanup! [rt ticket]
-  (when (and (= :ready (a ticket x-phase)) (not (a ticket x-physical)) (not (a ticket x-queued)))
+  (when (and (= :ready (a ticket x-phase)) (not (a ticket x-physical))
+             (or (nil? (a ticket x-operation)) (zero? (long (a (a ticket x-operation) p-physical))))
+             (not (a ticket x-queued)))
     (put ticket x-queued true)
     (push! (a (runtime-field rt :finalization) 2) ticket)))
 
@@ -840,6 +861,7 @@
         (when-not (and frame (identical? rt (a frame 0)) (identical? run (a frame 1))
                        (a run r-physical) (nil? (a frame 8)))
           (throw (ex-info "Cleanup adoption requires the exact physical slice" {})))
+        (end-deferred-protection! rt ticket)
         (put ticket x-phase :claimed) (put frame 8 ticket) (put (runtime-field rt :thread) 4 ticket)
         (boundary! rt (when (runtime-field rt :audit) {:t :cleanup-adopt :n (a ticket x-id) :th :engine}))))
     ticket))
@@ -874,11 +896,15 @@
 
 (defn- cleanup-cell! [rt source]
   (let [frame (current-activation)
-        ticket (when (and frame (identical? rt (a frame 0)))
+        ticket (when (and frame (not (active-operation)) (identical? rt (a frame 0)))
                  (or (a frame 8) (when-let [run (a frame 1)]
                                    (when (= :unwinding (a run r-status)) (cleanup-adopt! rt run)))))]
-    (when ticket
-      (when-not (= :claimed (a ticket x-phase)) (throw (ex-info "Cleanup is not executing" {})))
+    (when-let [ticket (or (when-let [operation (active-operation)]
+                            (when (operation-retired? operation)
+                              (operation-check! rt operation) (a operation p-ticket)))
+                          ticket)]
+      (when-not (or (active-operation) (= :claimed (a ticket x-phase)))
+        (throw (ex-info "Cleanup is not executing" {})))
       (or (first (for [[key cell] (map-value (a ticket x-cells))
                        :when (and (= (:id source) (nth key 2))
                                   (if (#{:atom :deferred} (a cell 0))
@@ -895,10 +921,24 @@
                                   :retired? (= :cps-exit (a ticket x-kind)) :anchor (a ticket x-anchor)}
                            (seq (map-value (a ticket x-cells))) (assoc :cells (set (keys (map-value (a ticket x-cells)))))
                            (a ticket x-cancel-value) (assoc :cancel-value (diagnostic-value (first (a ticket x-cancel-value)) true))
-                           (a ticket 17) (assoc :deferred-wait
-                                                (cond-> {:w (runtime-field rt :world) :e (a (a ticket 17) 2)
-                                                         :allocation (a (a ticket 17) 2) :sequence (a (a ticket 17) 1)}
-                                                  (a (a ticket 17) 3) (assoc :cell (a (a ticket 17) 3))))
+                           (a ticket x-operation)
+                           (assoc :operation
+                                  (let [operation (a ticket x-operation)]
+                                    (cond-> {:id (a operation p-id) :state (a operation p-state)
+                                             :parent (a operation p-parent) :physical (a operation p-physical)
+                                             :frames (a operation p-frames)
+                                             :next-registration (a operation p-next) :next-frame (a operation p-frame-next)
+                                             :registrations (into {} (for [registration (values (a operation p-registrations))]
+                                                                       [(a registration g-id)
+                                                                        (cond-> {:w (runtime-field rt :world)
+                                                                                 :e (a registration g-allocation)
+                                                                                 :allocation (a registration g-allocation)
+                                                                                 :cell (a registration g-key)
+                                                                                 :state (a registration g-state) :entered? (boolean (a registration g-entered))
+                                                                                 :continuation (a registration g-id)}
+                                                                          (#{:ready :claimed} (a registration g-state))
+                                                                          (assoc :delivery (diagnostic-value (a registration g-value) false)))]))}
+                                      (= :terminal (a operation p-state)) (assoc :variant (a operation p-terminal)))))
                            (a ticket x-delivered) (assoc :delivery (diagnostic-value (a ticket x-value) (a ticket x-failed))))]))
      :cleanup-cells (into {} (for [[key cell] (map-value (a profile 1))]
                                [key (cond-> {:kind (a cell 0) :result (if (= :deferred (a cell 0)) (a (a cell 4) 2) (a cell 1))
@@ -1194,7 +1234,13 @@
     (let [pending (a (runtime-field rt :counters) 9)
           ;; A nil trace keeps structural auditing without retaining worlds.
           recording? (some? @audit)
-          action (when recording? (assoc action :fresh-runs (vec (items pending))))]
+          action (when recording?
+                   (let [action (assoc action :fresh-runs (vec (items pending)))]
+                     (if-let [operation (when (#{:cleanup-cell :deferred-request :signal-write} (:t action))
+                                          (active-operation))]
+                       (assoc (dissoc action :th) :op (a operation p-id)
+                              :frame (a (current-activation) 11))
+                       action)))]
       #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
       (when recording?
         (swap! audit conj [action (snapshot rt) (snapshot-family rt)]))))
@@ -1209,6 +1255,9 @@
     (throw (ex-info "Idle cache released" {:error :idle-cache-released}))))
 
 (defn- check-running! [run]
+  (when (active-operation)
+    (throw (ex-info "Protected operation graph effects require typed parent admission"
+                    {:error :unsupported-operation :operation :protected-graph-effect})))
   (when (and run (= :unwinding (a run r-status)))
     (throw (or (when-let [ticket (a run r-exit)] (a ticket 14))
                (ex-info "Cancelled execution slice" {:error :cancelled}))))
@@ -1373,6 +1422,9 @@
   ;; Never read a foreign run's mutable status under the destination gate.
   (when-let [frame (current-activation)]
     (let [caller (a frame 0)]
+      (when (and (active-operation)
+                 (not (identical? (runtime-field caller :owner-root) (runtime-field rt :owner-root))))
+        (throw (ex-info "Protected operation cannot switch worlds" {:error :cleanup-only})))
       (when-not (identical? (runtime-field caller :owner-root) (runtime-field rt :owner-root))
         (locked caller (check-running! (a frame 1)))))))
 
@@ -1794,7 +1846,8 @@
       (when-let [target #?(:clj (.get weak) :cljs (.deref weak))]
         (locked target
                 (when-let [ticket (find! (a (runtime-field target :finalization) 0) id)]
-                  (when (and (= :waiting (a ticket x-phase)) (= sequence (a ticket x-seq)))
+                  (when (and (nil? (a ticket x-operation))
+                             (= :waiting (a ticket x-phase)) (= sequence (a ticket x-seq)))
                     (end-deferred-protection! target ticket)
                     (put ticket x-phase :ready) (put ticket x-value value)
                     (put ticket x-failed failed?) (put ticket x-delivered true)
@@ -1887,7 +1940,9 @@
                 (put (runtime-field rt :thread) 2 (runtime-field rt :world))
                 (when run (put run r-address (a ticket x-address)))
                 (put frame 0 rt) (put frame 1 run) (put frame 2 -1)
-                (when-not live? (put frame 8 ticket) (put (runtime-field rt :thread) 4 ticket) (put ticket x-phase :claimed))
+                (when-not live?
+                  (end-deferred-protection! rt ticket)
+                  (put frame 8 ticket) (put (runtime-field rt :thread) 4 ticket) (put ticket x-phase :claimed))
                 (if live? (resume-finalization! rt ticket)
                     (boundary! rt (when (runtime-field rt :audit) {:t :cleanup-claim :n (a ticket x-id) :th :engine})))
                 frame)))))
@@ -2494,13 +2549,16 @@
 (defn- cleanup-cell-access? [rt]
   (when-let [frame (current-activation)]
     (and (same-cell-world? rt (a frame 0))
-         (or (a frame 8)
+         (or (when-let [operation (active-operation)] (operation-retired? operation))
+             (a frame 8)
              (= :unwinding (some-> (a frame 1) (a r-status)))))))
 
 (defn- check-cell-caller! [rt]
-  (when-let [frame (current-activation)]
-    (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
-      (check-running! (a frame 1)))))
+  (if-let [operation (active-operation)]
+    (operation-check! rt operation)
+    (when-let [frame (current-activation)]
+      (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
+        (check-running! (a frame 1))))))
 
 (defn- cell-view! [rt id]
   (let [frame (current-activation)
@@ -2574,6 +2632,8 @@
   (let [rt (canonical-runtime requested)
         id (keyword (str "atom-" (random-uuid)))
         payload (when (= :atom kind) {:value value :meta (:meta options)})]
+    (when (active-operation)
+      (throw (ex-info "Protected operation cannot allocate sources" {:error :cleanup-only})))
     (locked rt
             (check-cell-caller! rt)
             (let [frame (current-activation)
@@ -3120,8 +3180,17 @@
 (defn storage-stats [rt]
   (locked rt
           (let [runs (a (runtime-field rt :counters) 6)
-                pool (items (a (runtime-field rt :counters) 0))]
+                pool (items (a (runtime-field rt :counters) 0))
+                protected-operations (keep #(a % x-operation)
+                                           (when-let [profile (runtime-field rt :finalization)] (values (a profile 0))))]
             {:live-runs (count! runs)
+             :protected-operations (count protected-operations)
+             :operation-registrations (reduce + 0 (map #(count (map-value (a % p-registrations))) protected-operations))
+             :operation-frames (reduce + 0 (map #(count (a % p-frames)) protected-operations))
+             :operation-callback-references (reduce + 0 (for [operation protected-operations
+                                                              registration (values (a operation p-registrations))]
+                                                          (+ (if (a registration g-resolve) 1 0)
+                                                             (if (a registration g-reject) 1 0))))
              :protected-tickets (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 0))) 0)
              :retained-cleanup-cells (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 1))) 0)
              :source-allocation-identities (+ (count (map-value (a (runtime-field rt :managed-cells) 0)))
@@ -3470,11 +3539,8 @@
       (throw (ex-info "Protected finalization requires the selected native activation"
                       {:error :unsupported-operation :operation :finalization-outside-activation})))
     (await-finalization-effect!
-     (fn [r j]
-       ;; Registration may itself be CPS code. Pump its Thunks independently;
-       ;; protected settlement records readiness until this exact slice parks.
-       (binding [cps/*in-trampoline* false]
-         (cps/with-trampoline (operation r j))))
+     (fn [_r _j]
+       (start-protected-operation! rt operation))
      resolve reject
      (cps-runtime/scope-continuation resolve) (cps-runtime/scope-continuation reject))))
 
@@ -3530,7 +3596,7 @@
 (defn- public-signal-view! [rt source]
   (if-let [[key cell] (cleanup-cell! rt source)]
     {:cleanup key :cell cell :value (a cell 1)}
-    (do (check-computation-caller! rt)
+    (do (check-cell-caller! rt)
         (let [node (source-node! rt source false)
               aux (a node n-public-signal)]
           (when-not (and aux (identical? source (a aux 2)))
@@ -3703,7 +3769,9 @@
 (defn- deferred-metadata [control]
   {:claimed? (boolean (a control 0))
    :protected (into {} (for [registration (values (a control 3))]
-                         [(a (a registration 0) x-id) (a registration 1)]))})
+                         [(a registration g-id)
+                          {:operation (a (a registration g-operation) p-id)
+                           :sequence (second (a (a registration g-operation) p-id))}]))})
 
 (defn create-public-deferred! [requested _public-id]
   (let [rt (canonical-runtime requested)
@@ -3727,12 +3795,13 @@
 (defn- deferred-ticket [rt]
   (when-let [frame (current-activation)]
     (when (same-cell-world? rt (a frame 0))
-      (or (a frame 8) (some-> (a frame 1) (a r-exit))))))
+      (or (some-> (active-operation) (a p-ticket))
+          (a frame 8) (some-> (a frame 1) (a r-exit))))))
 
 (defn- deferred-view! [rt ref purpose]
   (let [id (:id ref) frame (current-activation)
         cleanup? (cleanup-cell-access? rt)
-        ticket (when cleanup? (deferred-ticket rt))
+        ticket (when (or cleanup? (active-operation)) (deferred-ticket rt))
         node (find! (runtime-field rt :nodes) id)
         aux (find! (a (runtime-field rt :managed-cells) 0) id)
         live? (and node aux (= :deferred (a node n-kind))
@@ -3741,7 +3810,7 @@
     (when-not (= :assign purpose)
       (when-not (or (= :protect purpose) cleanup?) (check-cell-caller! rt)))
     (when (and cleanup? (not= :protect purpose))
-      (when-not (and ticket (= :claimed (a ticket x-phase)) retained)
+      (when-not (and ticket (or (active-operation) (= :claimed (a ticket x-phase))) retained)
         (throw (ex-info "Deferred is outside the retained cleanup capability"
                         {:error :missing-cleanup-cell :id id}))))
     (when (and retained (not live?) frame (same-cell-world? rt (a frame 0))
@@ -3752,7 +3821,7 @@
                           {:error :cleanup-only :id id})))))
     (cond
       (and retained (or cleanup? (not live?))
-           (or cleanup? (#{:request :assign :protect} purpose))) (assoc retained :node nil :aux nil)
+           (or cleanup? (active-operation) (#{:request :assign :protect} purpose))) (assoc retained :node nil :aux nil)
       live? {:node node :aux aux :control (a node n-deferred)}
       (and retained (#{:request :assign :protect} purpose)) retained
       (= :assign purpose) nil
@@ -3803,21 +3872,236 @@
   (request-deferred! requested target value false)
   value)
 
-(defn- end-deferred-protection! [rt ticket]
-  (when-let [link (a ticket 17)]
-    (let [control (a link 0) id (a ticket x-id)
-          registration (find! (a control 3) id)]
-      (when (and registration (= (a link 1) (a registration 1)))
-        (dissoc! (a control 3) id)
-        (note-cell-gc-blocker-change! rt (a link 2)))
-      (put ticket 17 nil))))
+;; Protected operations are participants of an outer wait, not computations.
+;; Only their terminal capabilities settle the outer ticket. Deferred callbacks
+;; execute on a serial lane with their supplied lexical scope and payload rights.
+(defn- operation-action [rt operation kind]
+  {:t kind :w (runtime-field rt :world) :op (a operation p-id)
+   :n (a (a operation p-ticket) x-id) :sequence (second (a operation p-id))})
 
-(defn- settle-deferred-protection! [rt ticket sequence value]
-  (when (and (= :waiting (a ticket x-phase)) (= sequence (a ticket x-seq)))
-    (end-deferred-protection! rt ticket)
-    (put ticket x-phase :ready) (put ticket x-value value)
-    (put ticket x-failed false) (put ticket x-delivered true)
-    (queue-cleanup! rt ticket)))
+(defn- operation-check! [rt operation]
+  (let [frame (current-activation) ticket (a operation p-ticket)]
+    (when-not (and frame (same-cell-world? rt (a frame 0))
+                   (identical? operation (active-operation)) ticket
+                   (identical? operation (a ticket x-operation))
+                   (identical? ticket (find! (a (runtime-field rt :finalization) 0) (a ticket x-id)))
+                   (= (second (a operation p-id)) (a ticket x-seq))
+                   (not= :closed (a operation p-state))
+                   (contains? (a operation p-frames) (a frame 11))
+                   (pos? (long (a operation p-physical))))
+      (throw (ex-info "Protected operation frame is no longer admitted" {:error :cleanup-only})))
+    (when-not (operation-retired? operation)
+      (let [run (a ticket x-run)]
+        (when-not (and run (= (a operation p-parent) (run-id run))
+                       (identical? run (current (a run r-node))))
+          (throw (ex-info "Protected operation lost its exact parent generation" {:error :cleanup-only})))))))
+
+(defn- clear-operation-registration! [rt operation registration]
+  (dissoc! (a (a registration g-control) 3) (a registration g-id))
+  (note-cell-gc-blocker-change! rt (a registration g-allocation))
+  (dissoc! (a operation p-registrations) (a registration g-id))
+  (put registration g-resolve nil) (put registration g-reject nil)
+  (put registration g-value nil) (put registration g-state :invalid))
+
+(defn- queue-operation! [rt operation]
+  (when (and (= :open (a operation p-state)) (zero? (long (a operation p-physical)))
+             (not (a operation p-queued))
+             (some #(= :ready (a % g-state)) (values (a operation p-registrations))))
+    (put operation p-queued true)
+    (push! (runtime-field rt :posts)
+           (doto (slots 1) (put 0 #(invoke-operation-ready! rt operation))))))
+
+(defn- operation-terminal! [rt operation value failed?]
+  (locked rt
+          (let [ticket (a operation p-ticket)]
+            (when (and ticket (identical? operation (a ticket x-operation))
+                       (= (second (a operation p-id)) (a ticket x-seq))
+                       (= :open (a operation p-state)))
+              (put operation p-state :terminal)
+              (put operation p-terminal (if failed? :error :ok))
+              (doseq [registration (vec (values (a operation p-registrations)))
+                      :when (not= :claimed (a registration g-state))]
+                (clear-operation-registration! rt operation registration))
+              (put ticket x-phase :ready) (put ticket x-value value)
+              (put ticket x-failed failed?) (put ticket x-delivered true)
+              (boundary! rt (when (runtime-field rt :audit)
+                              (assoc (operation-action rt operation :operation-terminal)
+                                     :value (diagnostic-value value failed?) :variant (if failed? :error :ok))))
+              (queue-cleanup! rt ticket)
+              true))))
+
+(defn- operation-terminal-callback [rt operation failed?]
+  (let [weak #?(:clj (java.lang.ref.WeakReference. rt) :cljs (js/WeakRef. rt))
+        id (a operation p-id)]
+    (fn [value]
+      (when-let [target #?(:clj (.get weak) :cljs (.deref weak))]
+        (when-let [current (locked target
+                                   (some-> (find! (a (runtime-field target :finalization) 0) (first id))
+                                           (a x-operation)))]
+          (when (= id (a current p-id))
+            (operation-terminal! target current value failed?)
+            (drain! target)))))))
+
+(defn- return-operation-frame! [rt operation frame-id registration]
+  (locked rt
+          (when registration (clear-operation-registration! rt operation registration))
+          (put operation p-physical (dec (long (a operation p-physical))))
+          (put operation p-frames (disj (a operation p-frames) frame-id))
+          (boundary! rt (when (runtime-field rt :audit)
+                          (cond-> (assoc (operation-action rt operation :operation-return) :frame frame-id)
+                            registration (assoc :reg (a registration g-id)))))
+          (if (= :terminal (a operation p-state))
+            (queue-cleanup! rt (a operation p-ticket))
+            (queue-operation! rt operation))))
+
+(defn- operation-frame [rt operation frame-id run]
+  (doto (slots 12) (put 0 rt) (put 1 run) (put 2 -1)
+        (put 10 operation) (put 11 frame-id)))
+
+(defn- start-protected-operation! [rt start]
+  (let [parent (current-activation)
+        operation (locked rt
+                          (let [ticket (deferred-ticket rt)]
+                            (when-not (and ticket (= :waiting (a ticket x-phase))
+                                           (nil? (a ticket x-operation)))
+                              (throw (ex-info "Protected operation needs a fresh outer wait" {:error :not-waiting})))
+                            (let [operation (doto (slots 11)
+                                              (put p-id [(a ticket x-id) (a ticket x-seq)])
+                                              (put p-ticket ticket) (put p-parent (nth (a ticket x-id) 2))
+                                              (put p-state :open) (put p-registrations (dict))
+                                              (put p-next 0) (put p-physical 1) (put p-frame-next 1)
+                                              (put p-frames #{[[(a ticket x-id) (a ticket x-seq)] 1]}))]
+                              (put ticket x-operation operation)
+                              (boundary! rt (when (runtime-field rt :audit)
+                                              (assoc (operation-action rt operation :operation-start)
+                                                     :frame [(a operation p-id) 1])))
+                              operation)))
+        frame-id [(a operation p-id) 1]
+        frame (operation-frame rt operation frame-id (a parent 1))]
+    (try
+      (with-activation frame
+        (binding [cps/*in-trampoline* false]
+          (cps/with-trampoline
+            (start (operation-terminal-callback rt operation false)
+                   (operation-terminal-callback rt operation true)))))
+      (catch #?(:clj Throwable :cljs :default) error
+        (when-not (operation-terminal! rt operation error true)
+          (locked rt
+                  (push! (runtime-field rt :posts) (doto (slots 1) (put 0 #(throw error)))))))
+      (finally (return-operation-frame! rt operation frame-id nil)))))
+
+(defn- operation-deliver! [rt registration value]
+  (let [operation (a registration g-operation)]
+    (when (and (= :open (a operation p-state)) (= :pending (a registration g-state))
+               (identical? registration (find! (a operation p-registrations) (a registration g-id))))
+      (dissoc! (a (a registration g-control) 3) (a registration g-id))
+      (put registration g-state :ready) (put registration g-value value)
+      (note-cell-gc-blocker-change! rt (a registration g-allocation))
+      ;; Assignment and every readiness handoff share its deferred-assign
+      ;; receipt; no intermediate refinement snapshot may consume half of it.
+      (queue-operation! rt operation))))
+
+(defn- invoke-operation-ready! [rt operation]
+  (let [claim (locked rt
+                      (put operation p-queued false)
+                      (when (and (= :open (a operation p-state)) (zero? (long (a operation p-physical))))
+                        (when-let [registration (first (sort-by #(last (a % g-id))
+                                                                (filter #(= :ready (a % g-state))
+                                                                        (values (a operation p-registrations)))))]
+                          (when (a registration g-entered)
+                            (throw (ex-info "Protected registration already entered" {:error :already-entered})))
+                          (let [ordinal (put operation p-frame-next (inc (long (a operation p-frame-next))))
+                                frame-id [(a operation p-id) ordinal]]
+                            (put operation p-physical 1) (put operation p-frames #{frame-id})
+                            (put registration g-state :claimed) (put registration g-entered true)
+                            (boundary! rt (when (runtime-field rt :audit)
+                                            (assoc (operation-action rt operation :operation-claim)
+                                                   :reg (a registration g-id) :frame frame-id
+                                                   :continuation (a registration g-id))))
+                            [registration frame-id]))))]
+    (when claim
+      (let [[registration frame-id] claim
+            frame (operation-frame rt operation frame-id nil)
+            callback (a registration g-resolve) value (a registration g-value)]
+        (try
+          (public-slice! rt nil (a operation p-ticket) nil
+                         (fn [] (with-activation frame
+                                  (locked rt (operation-check! rt operation))
+                                  (binding [cps/*in-trampoline* false]
+                                    (cps/with-trampoline (cps/invoke-continuation callback value))))))
+          (catch #?(:clj Throwable :cljs :default) error
+            (when-not (operation-terminal! rt operation error true) (throw error)))
+          (finally (return-operation-frame! rt operation frame-id registration)))))))
+
+(defn- protect-deferred! [requested rt ref operation resolve reject]
+  (let [resolve (cps-runtime/scope-continuation resolve)
+        reject (cps-runtime/scope-continuation reject)
+        registration (locked rt
+                             (operation-check! rt operation)
+                             (when-not (= :open (a operation p-state))
+                               (throw (ex-info "Protected operation already settled" {:error :operation-settled})))
+                             (let [ticket (a operation p-ticket)
+                                   view (deferred-view! rt ref :protect) control (:control view)
+                                   key (or (:key view) [(runtime-field rt :world) (owner-id (a (:node view) n-owner)) (:id ref)])
+                                   profile (runtime-field rt :finalization)
+                                   cell (or (:cell view) (find! (a profile 1) key)
+                                            (doto (slots 5) (put 0 :deferred) (put 1 (a control 2))
+                                                  (put 2 (members)) (put 3 (:id ref)) (put 4 control)))
+                                   ordinal (put operation p-next (inc (long (a operation p-next))))
+                                   registration (doto (slots 10)
+                                                  (put g-entered false)
+                                                  (put g-id [(a operation p-id) ordinal])
+                                                  (put g-operation operation) (put g-allocation (:id ref))
+                                                  (put g-control control) (put g-key key)
+                                                  (put g-state (if (a control 1) :claimed :pending))
+                                                  (put g-resolve resolve) (put g-reject reject)
+                                                  (put g-value (a control 2)))]
+                               (assoc! (a profile 1) key cell)
+                               (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell)
+                               (assoc! (a operation p-registrations) (a registration g-id) registration)
+                               (when-not (a control 1) (assoc! (a control 3) (a registration g-id) registration))
+                               (note-cell-gc-blocker-change! rt (:id ref))
+                               (boundary! rt (when (runtime-field rt :audit)
+                                               (assoc (operation-action rt operation :operation-await)
+                                                      :reg (a registration g-id) :e (:id ref) :allocation (:id ref)
+                                                      :cell key :assigned? (boolean (a control 1))
+                                                      :frame (a (current-activation) 11)
+                                                      :continuation (a registration g-id)
+                                                      :value (diagnostic-value (a control 2) false))))
+                               registration))]
+    (if (= :claimed (a registration g-state))
+      (try
+        (locked rt
+                (when (a registration g-entered)
+                  (throw (ex-info "Protected registration already entered" {:error :already-entered})))
+                (put registration g-entered true)
+                (boundary! rt (when (runtime-field rt :audit)
+                                (assoc (operation-action rt operation :operation-claim)
+                                       :reg (a registration g-id) :frame (a (current-activation) 11) :inline? true
+                                       :continuation (a registration g-id)))))
+        ;; Direct Deferred invocation owns its callback trampoline even when
+        ;; the operation ignores its return value. The same physical frame
+        ;; covers all registration-side Thunks.
+        (binding [cps/*in-trampoline* false]
+          (cps/with-trampoline (cps/invoke-continuation resolve (a registration g-value))))
+        (finally
+          (locked rt
+                  (clear-operation-registration! rt operation registration)
+                  (boundary! rt (when (runtime-field rt :audit)
+                                  (assoc (operation-action rt operation :operation-return)
+                                         :inline? true :reg (a registration g-id)
+                                         :frame (a (current-activation) 11)))))))
+      :org.replikativ.spindel.spin/incomplete)))
+
+(defn- end-deferred-protection! [rt ticket]
+  (when-let [operation (a ticket x-operation)]
+    (doseq [registration (vec (values (a operation p-registrations)))]
+      (dissoc! (a (a registration g-control) 3) (a registration g-id))
+      (put registration g-resolve nil) (put registration g-reject nil)
+      (put registration g-value nil) (put registration g-state :invalid)
+      (dissoc! (a operation p-registrations) (a registration g-id)))
+    (put operation p-state :closed) (put operation p-ticket nil)
+    (put ticket x-operation nil)))
 
 (defn- assign-deferred! [rt event]
   ;; The dispatcher has claimed this exact envelope. Its source may have moved
@@ -3834,8 +4118,8 @@
             (put node n-complete true) (put node n-value value)
             (enqueue-source! rt node value))
           (when-let [cell (:cell view)] (put cell 1 value))
-          (doseq [registration (vec (values (a control 3)))]
-            (settle-deferred-protection! rt (a registration 0) (a registration 1) value)))))
+          (doseq [registration (sort-by #(last (a % g-id)) (vec (values (a control 3))))]
+            (operation-deliver! rt registration value)))))
     (boundary! rt (when (runtime-field rt :audit)
                     (cond-> {:t :deferred-assign :w (runtime-field rt :world)
                              :e (:id ref) :allocation (:id ref) :seq (a event 2) :value value}
@@ -3869,41 +4153,13 @@
                              [ready? value]))]
        (if (first outcome) (cps/invoke-continuation resolve (second outcome)) pending)))))
 
-(defn- protect-deferred! [requested rt ref ticket]
-  (locked rt
-          (let [view (deferred-view! rt ref :protect) control (:control view)
-                sequence (a ticket x-seq)]
-            (when-not (and (identical? ticket (deferred-ticket rt)) (= :waiting (a ticket x-phase)))
-              (throw (ex-info "Protected Deferred requires a waiting cleanup frame" {:error :not-waiting})))
-            (end-deferred-protection! rt ticket)
-            (if (a control 1)
-              (settle-deferred-protection! rt ticket sequence (a control 2))
-              (let [key (or (:key view) [(runtime-field rt :world) (owner-id (a (:node view) n-owner)) (:id ref)])
-                    profile (runtime-field rt :finalization)
-                    cell (or (:cell view) (find! (a profile 1) key)
-                             (doto (slots 5) (put 0 :deferred) (put 1 (a control 2))
-                                   (put 2 (members)) (put 3 (:id ref)) (put 4 control)))]
-                (assoc! (a profile 1) key cell)
-                (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell)
-                (assoc! (a control 3) (a ticket x-id) (doto (slots 2) (put 0 ticket) (put 1 sequence)))
-                (put ticket 17 (doto (slots 4) (put 0 control) (put 1 sequence) (put 2 (:id ref)) (put 3 key)))
-                (note-cell-gc-blocker-change! rt (:id ref))))
-            (boundary! rt (when (runtime-field rt :audit)
-                            (assoc (deferred-action rt ref view :deferred-protect)
-                                   :n (a ticket x-id) :sequence sequence :th :engine)))))
-  :org.replikativ.spindel.spin/incomplete)
-
 (defn invoke-public-deferred! [requested target resolve reject]
   (admit-world-switch! requested)
   (let [rt (canonical-runtime requested) ref (deferred-reference! rt target)
         frame (current-activation)
-        protected? (locked rt
-                           (when-let [ticket (deferred-ticket rt)]
-                             (when (= :waiting (a ticket x-phase))
-                               (protect-deferred! requested rt ref ticket)
-                               true)))]
+        operation (active-operation)]
     (cond
-      protected? :org.replikativ.spindel.spin/incomplete
+      operation (protect-deferred! requested rt ref operation resolve reject)
       (and frame (same-cell-world? rt (a frame 0)))
       (binding [cps/*in-trampoline* false]
         (await-public-deferred! requested target resolve reject :org.replikativ.spindel.spin/incomplete))

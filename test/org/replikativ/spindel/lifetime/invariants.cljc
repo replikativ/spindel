@@ -858,46 +858,6 @@
                      (not= payload (select-keys cell fields)))]
        {:n n :lost-retirement-cell key :expected payload :actual cell}))))
 
-(defn- deferred-ready-value [before action n]
-  (let [w (:w action)
-        event (or (first (:queue (m/wr before w)))
-                  (:event (first (filter #(= w (:w %)) (get-in before [:env :outside])))))
-        request (case (:t action)
-                  :deferred-assign action
-                  :arrival (when (:deferred-assignment (:event action))
-                             (assoc (:event action) :e (:deferred-assignment (:event action))))
-                  :queued (when (:deferred-assignment event) (assoc event :e (:deferred-assignment event)))
-                  nil)
-        assignment? (and request (:deferred-assignment event)
-                         (= [(:deferred-assignment event) (:allocation event) (:seq event) (:cell event)]
-                            [(:e request) (:allocation request) (:seq request) (:cell request)]))
-        e (if assignment? (:deferred-assignment event) (:e action))
-        allocation (if assignment? (:allocation event) (:allocation action))
-        key (if assignment? (:cell event) (:cell action))
-        source (m/ent before w e)
-        key (or key (when-not (and (= :deferred (:kind source)) (:owner source))
-                      (first (for [[key row] (get-in before [:env :cleanup-cells])
-                                   :when (and (= w (first key)) (= e (nth key 2 nil))
-                                              (= allocation (:allocation row)))] key))))
-        target (if key (get-in before [:env :cleanup-cells key]) source)
-        assigned? (if key (get-in target [:deferred :assigned?]) (:completed? target))
-        ticket (get-in before [:env :native n])
-        link (:deferred-wait ticket)
-        linked (get-in before [:env :cleanup-cells (:cell link)])
-        source? (and target (= :deferred (:kind target)) (= e allocation (:allocation target)))
-        registration? (and (= [w e allocation (:sequence ticket)]
-                              [(:w link) (:e link) (:allocation link) (:sequence link)])
-                           (contains? (:cells ticket #{}) (:cell link))
-                           (contains? (:holders linked #{}) n)
-                           (= w (first (:cell link))) (= e (nth (:cell link) 2 nil))
-                           (= allocation (:allocation linked))
-                           (= (:sequence ticket) (get-in linked [:deferred :protected n])))]
-    (cond
-      (and (= :deferred-protect (:t action)) (= n (:n action)) source? assigned?
-           (= :waiting (:phase ticket)) (= (:sequence action) (:sequence ticket))) {:value (:result target)}
-      (and assignment? source? registration? (not assigned?) (= :waiting (:phase ticket))
-           (= (:sequence ticket) (get-in target [:deferred :protected n]))) {:value (:value event)})))
-
 (defn- finalization-edge-errors [before action after]
   (concat
    (when (= :finalization-wait (:t action))
@@ -918,18 +878,21 @@
    (for [[n row] (get-in before [:env :native]) :when (= :cps-finalization (:kind row))
          :let [[w r] (:owner row) actual (get-in after [:env :native n])
                resume? (and (= :finalization-resume (:t action)) (= n (:n action)))
-               delivered? (and (= :cleanup-deliver (:t action)) (= n (:n action))
+               delivered? (and (nil? (:operation row)) (= :cleanup-deliver (:t action)) (= n (:n action))
                                (= :waiting (:phase row)) (= (:sequence row) (:sequence action)))
-               deferred-ready (deferred-ready-value before action n)
+               terminal? (and (= :operation-terminal (:t action)) (= n (:n action))
+                              (= :open (get-in row [:operation :state]))
+                              (= (:op action) (get-in row [:operation :id])))
                expected (cond-> row
                           delivered? (assoc :phase :ready :delivery (:value action))
-                          deferred-ready (assoc :phase :ready :delivery (:value deferred-ready)))
+                          terminal? (assoc :phase :ready :delivery (:value action)))
                th (:th action) thread (get-in before [:env :threads th])
                inline? (and (:executing? thread) (= [w r] [(:world thread) (:run thread)]))
                expected-frame (if inline? thread
                                   (merge thread {:world w :scope r :run r :obligation-world w :executing? true}))]
          :when (if resume?
                  (or actual (not= :ready (:phase row))
+                     (not (cleanup/operation-barrier? row))
                      (not= w (if (:run thread) (:world thread) (:w action)))
                      (not= :parked (:status (m/run before w r)))
                      (not= r (m/current before w (first r)))
@@ -945,6 +908,63 @@
                      (not= (select-keys expected [:owner :state :phase :sequence :delivery])
                            (select-keys actual [:owner :state :phase :sequence :delivery]))))]
      {:n n :lost-protected-wait {:before row :after actual :resume? resume?}})))
+
+(defn operation-edge-errors
+  "Independently conserve callback input, terminal selection and physical receipts.
+  Deferred assignment may publish registration readiness but never the outer result."
+  [{:keys [before action after refusal]}]
+  (when-not refusal
+    (vec
+     (concat
+      (for [[n ticket] (get-in before [:env :native]) :let [op (:operation ticket)] :when op
+            :let [actual (get-in after [:env :native n])
+                  terminal? (and (= :operation-terminal (:t action)) (= (:id op) (:op action))
+                                 (= :open (:state op)) (= (:sequence ticket) (:sequence action)))
+                  consume? (and (#{:finalization-resume :t38} (:t action)) (nil? actual))]
+            :when (or (and (= :waiting (:phase ticket))
+                           (= :ready (:phase actual)) (not terminal?))
+                      (and (= :open (:state op)) (contains? actual :delivery) (not terminal?))
+                      (and (pos? (:physical op))
+                           (or (nil? actual) (not (set/subset? (:cells ticket #{}) (:cells actual #{})))))
+                      (and consume? (or (not= :terminal (:state op)) (pos? (:physical op)))))]
+        {:n n :operation-bypassed {:before ticket :after actual :action action}})
+      (for [[n ticket] (get-in before [:env :native])
+            :let [op (:operation ticket)] [reg row] (:registrations op)
+            :let [actual (get-in after [:env :native n :operation :registrations reg])]
+            :when (and (= :pending (:state row)) (= :ready (:state actual)))
+            :let [[w _ e] (:cell row)
+                  source (m/ent before w e)
+                  cell (get-in before [:env :cleanup-cells (:cell row)])
+                  resource (if (and source (= (:allocation row) (:allocation source))) source cell)
+                  event (or (first (:queue (m/wr before w)))
+                            (:event (first (filter #(= w (:w %)) (get-in before [:env :outside])))))
+                  explicit? (= :operation-deliver (:t action))
+                  value (if explicit? (:value action) (:value event))]
+            :when (or (not= {:operation (:id op) :sequence (:sequence ticket)}
+                            (get-in resource [:deferred :protected reg]))
+                      (not= value (:delivery actual))
+                      (not= (dissoc row :state) (dissoc actual :state :delivery))
+                      (if explicit?
+                        (not= [(:id op) reg] [(:op action) (:reg action)])
+                        (or (not= [e (:allocation row)] [(:deferred-assignment event) (:allocation event)])
+                            (and (= :deferred-assign (:t action))
+                                 (not= (:seq event) (:seq action))))))]
+        {:reg reg :invalid-operation-readiness {:before row :after actual}})
+      (when (= :operation-claim (:t action))
+        (let [op (:op action) reg (:reg action)
+              row (get-in before [:env :native (first op) :operation :registrations reg])
+              expected {:event :continuation-entry :op op :reg reg :continuation reg
+                        :variant :ok :value (:delivery row)}
+              entries (filter #(= :continuation-entry (:event %)) (:events after))]
+          (when-not (= [expected] (vec entries))
+            [{:reg reg :missing-supplied-continuation {:expected expected :actual (vec entries)}}])))
+      (when (and (= :operation-terminal (:t action))
+                 (= :open (get-in before [:env :native (:n action) :operation :state]))
+                 (= (:op action) (get-in before [:env :native (:n action) :operation :id]))
+                 (= (:sequence action) (get-in before [:env :native (:n action) :sequence])))
+        (let [expected {:event :operation-terminal :op (:op action) :variant (:variant action) :value (:value action)}]
+          (when-not (some #{expected} (:events after))
+            [{:op (:op action) :missing-operation-terminal expected}])))))))
 
 (defn cleanup-edge-errors
   "TL21: derive payload retention from BEFORE ownership, not a manifest.
@@ -977,23 +997,7 @@
                          :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
                                     (= :unwinding (:status (m/run after v r))))] [v r]))]
       (vec (concat
-            (when (= :deferred-protect (:t action))
-              (let [{:keys [w e allocation cell n sequence]} action
-                    source (m/ent before w e)
-                    original (if cell (get-in before [:env :cleanup-cells cell]) source)
-                    assigned? (if cell (get-in original [:deferred :assigned?]) (:completed? original))
-                    key (or cell [w (:owner source) e])
-                    retained (get-in after [:env :cleanup-cells key])
-                    expected (when original
-                               {:kind :deferred :allocation allocation :result (:result original)
-                                :deferred (-> (:deferred original)
-                                              (assoc :assigned? (boolean assigned?))
-                                              (assoc-in [:protected n] sequence))})]
-                (when (and (not assigned?)
-                           (or (not= expected (select-keys retained [:kind :allocation :result :deferred]))
-                               (not (contains? (:holders retained #{}) n))
-                               (not (contains? (get-in after [:env :native n :cells] #{}) key))))
-                  [{:n n :lost-protected-deferred {:key key :expected expected :actual retained}}])))
+            (operation-edge-errors {:before before :action effective :after after})
             (finalization-edge-errors before effective after)
             (when (= :cleanup-adopt (:t effective))
               (let [n (:n effective) th (:th effective)
@@ -1005,7 +1009,7 @@
                                (= (:owner ticket) [(:world frame) (:run frame)])
                                (= (assoc-in (get-in before [:env :threads]) [th] expected-frame)
                                   (get-in after [:env :threads]))
-                               (= (assoc ticket :phase :claimed) (get-in after [:env :native n])))
+                               (= (assoc (dissoc ticket :operation) :phase :claimed) (get-in after [:env :native n])))
                   [{:n n :invalid-cleanup-adoption {:thread th :before frame
                                                     :after (get-in after [:env :threads th])}}])))
             (mapcat (fn [[v root]] (cleanup-retention-errors before after v root completing))
@@ -1210,6 +1214,11 @@
      (vec (concat
            (mapcat edge-check trace)
            (when (seq duplicates) [{:id :TL1 :evidence (vec duplicates)}])
+           (let [entries (for [edge trace :when (not (:refusal edge))
+                               ev (:events (:after edge)) :when (= :continuation-entry (:event ev))]
+                           [(:op ev) (:reg ev) (:continuation ev)])
+                 repeated (filter #(> (val %) 1) (frequencies entries))]
+             (when (seq repeated) [{:id :TL1 :evidence {:duplicate-continuation-entries (vec repeated)}}]))
            (when (and maximal? adapters-answer? crashes-stop? (seq incomplete)
                       (not-any? #(some :permanent? (:steps %)) (vals (m/all-records last-state))))
              [{:id :TL12 :evidence {:nonterminal (into {} incomplete)}}])
