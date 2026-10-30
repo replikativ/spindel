@@ -1234,7 +1234,7 @@
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-track [ctx r e] (breakpoint `track-effect! true ctx r e))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await [ctx r e] (breakpoint `await-effect! true ctx r e))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-park [ctx r e] (breakpoint `park-effect! false ctx r e))
-     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-finalization [ctx r e] (breakpoint `await-finalization-effect! false ctx r e))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-finalization [ctx r e] (breakpoint `await-finalization-effect! true ctx r e))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-host [ctx r e] (breakpoint `await-host-effect! false ctx r e))
      (defmacro cspin [rt id & body]
        `(make-spin ~rt ~id ~((requiring-resolve 'org.replikativ.spindel.spin.cps/build-cps-fn)
@@ -1572,49 +1572,51 @@
 (defn await-finalization-effect!
   "Protected one-shot callback wait for the opt-in native CPS exit profile.
   Retirement preserves this wait; its producer is never cancelled by retirement."
-  [start resolve reject]
-  (let [frame (current-activation) rt (a frame 0) run (a frame 1)
-        ticket (locked rt
-                       (when-not (runtime-field rt :finalization)
-                         (throw (ex-info "Protected CPS exit profile is disabled" {:error :profile-disabled})))
-                       (let [cleanup (or (a frame 8)
-                                         (when (and run (= :unwinding (a run r-status)))
-                                           (cleanup-adopt! rt run)))
-                             ticket (or cleanup
-                                        (do (check-running! run)
-                                            (when-not (and run (identical? run (current (a run r-node)))
-                                                           (nil? (a run r-exit)))
-                                              (throw (ex-info "Finalization wait requires the current physical slice" {})))
-                                            (doto (slots 15)
-                                              (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
-                                              (put x-kind :cps-finalization) (put x-cells (id-dict))
-                                              (put x-run run))))
-                             sequence (inc (long (or (a ticket x-seq) (when run (a run r-finalization-seq)) 0)))]
-                         (when (and cleanup (not= :claimed (a ticket x-phase)))
-                           (throw (ex-info "Cleanup wait requires a claimed ticket" {})))
-                         (put ticket x-phase :waiting) (put ticket x-seq sequence)
-                         (put ticket x-resolve resolve) (put ticket x-reject reject)
-                         (put ticket x-value nil) (put ticket x-delivered false) (put ticket x-physical true)
-                         (when-not cleanup
-                           (put run r-status :parked) (put run r-finalization-seq sequence) (put run r-exit ticket))
-                         (assoc! (a (runtime-field rt :finalization) 0) (a ticket x-id) ticket)
-                         (boundary! rt (when (runtime-field rt :audit)
-                                         (if cleanup {:t :cleanup-park :th :engine}
-                                             {:t :finalization-wait :w (runtime-field rt :world) :th :engine})))
-                         ticket))
-        id (a ticket x-id) sequence (a ticket x-seq)]
-    (try (start (protected-callback rt id sequence false) (protected-callback rt id sequence true))
-         (catch #?(:clj Throwable :cljs :default) error
-           ((protected-callback rt id sequence true) error)))
+  ([start resolve reject]
+   (await-finalization-effect! start resolve reject resolve reject))
+  ([start resolve reject resume-resolve resume-reject]
+   (let [frame (current-activation) rt (a frame 0) run (a frame 1)
+         ticket (locked rt
+                        (when-not (runtime-field rt :finalization)
+                          (throw (ex-info "Protected CPS exit profile is disabled" {:error :profile-disabled})))
+                        (let [cleanup (or (a frame 8)
+                                          (when (and run (= :unwinding (a run r-status)))
+                                            (cleanup-adopt! rt run)))
+                              ticket (or cleanup
+                                         (do (check-running! run)
+                                             (when-not (and run (identical? run (current (a run r-node)))
+                                                            (nil? (a run r-exit)))
+                                               (throw (ex-info "Finalization wait requires the current physical slice" {})))
+                                             (doto (slots 15)
+                                               (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
+                                               (put x-kind :cps-finalization) (put x-cells (id-dict))
+                                               (put x-run run))))
+                              sequence (inc (long (or (a ticket x-seq) (when run (a run r-finalization-seq)) 0)))]
+                          (when (and cleanup (not= :claimed (a ticket x-phase)))
+                            (throw (ex-info "Cleanup wait requires a claimed ticket" {})))
+                          (put ticket x-phase :waiting) (put ticket x-seq sequence)
+                          (put ticket x-resolve resume-resolve) (put ticket x-reject resume-reject)
+                          (put ticket x-value nil) (put ticket x-delivered false) (put ticket x-physical true)
+                          (when-not cleanup
+                            (put run r-status :parked) (put run r-finalization-seq sequence) (put run r-exit ticket))
+                          (assoc! (a (runtime-field rt :finalization) 0) (a ticket x-id) ticket)
+                          (boundary! rt (when (runtime-field rt :audit)
+                                          (if cleanup {:t :cleanup-park :th :engine}
+                                              {:t :finalization-wait :w (runtime-field rt :world) :th :engine})))
+                          ticket))
+         id (a ticket x-id) sequence (a ticket x-seq)]
+     (try (start (protected-callback rt id sequence false) (protected-callback rt id sequence true))
+          (catch #?(:clj Throwable :cljs :default) error
+            ((protected-callback rt id sequence true) error)))
     ;; Synchronous settlement consumes readiness on this exact frame. External
     ;; delivery only records readiness until the suspending slice returns.
-    (let [resume? (locked rt
-                          (when (= :ready (a ticket x-phase))
-                            (if (= :cps-finalization (a ticket x-kind))
-                              (resume-finalization! rt ticket)
-                              (when-not (a frame 8) (cleanup-adopt! rt run) true))))]
-      (when resume?
-        (deliver-value! resolve reject (a ticket x-value) (a ticket x-failed))))))
+     (let [resume? (locked rt
+                           (when (= :ready (a ticket x-phase))
+                             (if (= :cps-finalization (a ticket x-kind))
+                               (resume-finalization! rt ticket)
+                               (when-not (a frame 8) (cleanup-adopt! rt run) true))))]
+       (when resume?
+         (deliver-value! resolve reject (a ticket x-value) (a ticket x-failed)))))))
 
 (defn- finish-cleanup-slice! [rt ticket]
   (put ticket x-physical false)

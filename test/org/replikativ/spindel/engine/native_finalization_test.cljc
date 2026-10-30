@@ -1,6 +1,8 @@
 (ns org.replikativ.spindel.engine.native-finalization-test
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.test-helpers :refer [async with-ctx]]
             [org.replikativ.spindel.engine.impl.owned :as c #?@(:cljs [:include-macros true])]
             [org.replikativ.spindel.engine.owned-runtime-test :refer [verify-boundaries!]]))
 
@@ -379,3 +381,28 @@
     (is (empty-cleanup? rt))
     (is (zero? (:retired-ordinary-references (c/storage-stats rt))))
     (verify-boundaries! rt)))
+
+(deftest inline-finalization-loops-preserve-context-scope-without-nested-pumps
+  (async done
+         (with-ctx [ctx]
+           (let [rt (c/runtime {:cps-exit? true :audit? true :record-audit? false})
+                 wrong (atom []) depths (atom [])
+                 s (c/cspin rt :spin
+                            (binding [ec/*execution-context* (assoc ctx :bindings {:key :inside})]
+                              (loop [i 0]
+                                (if (< i 3000)
+                                  (do
+                                    (c/await-finalization (fn [r _] (r :ready)))
+                                    (when-not (= :inside (get-in ec/*execution-context* [:bindings :key]))
+                                      (swap! wrong conj i))
+                                    #?(:clj (when (zero? (mod i 500))
+                                              (swap! depths conj (count (.getStackTrace (Thread/currentThread))))))
+                                    (recur (inc i)))
+                                  :done))))]
+             (c/observe! rt s
+                         (fn [value]
+                           (is (= :done value))
+                           (is (empty? @wrong))
+                           #?(:clj (is (< (- (apply max @depths) (apply min @depths)) 20)))
+                           (done))
+                         (fn [error] (is false (str error)) (done)))))))
