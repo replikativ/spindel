@@ -129,6 +129,10 @@
                ev (if (contains? actual :native)
                     (assoc ev :native (get-in expected [:env :native])
                            :cleanup-cells (get-in expected [:env :cleanup-cells] {})) ev)
+               ev (if (contains? actual :source-gc)
+                    (assoc ev :source-gc
+                           (into {} (filter (fn [[[world _ _] _]] (= world id))
+                                            (get-in expected [:env :source-gc] {})))) ev)
                difference (take 2 (data/diff ev actual))]
            (when-not (= ev actual)
              (throw (ex-info "Boundary mismatch" {:action action :world id :difference (vec difference)})))

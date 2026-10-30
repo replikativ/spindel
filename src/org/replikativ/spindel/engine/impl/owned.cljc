@@ -4,7 +4,11 @@
   (:refer-clojure :exclude [await assoc! dissoc! pop!])
   #?(:cljs (:require-macros [org.replikativ.spindel.engine.impl.owned :refer [a put locked each! each-copy! fields! with-activation runtime-field]]))
   (:require [is.simm.partial-cps.async :as cps]
+            [is.simm.partial-cps.runtime :as cps-runtime]
+            #?(:clj [is.simm.partial-cps.ioc :as ioc])
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.cell-handles :as cell-handles]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
 #?(:clj (defonce ^:private activation-local (ThreadLocal.))
@@ -335,13 +339,25 @@
 
 (defn- diagnostic-value [value failed?]
   (if failed? (->Failure value) value))
-(defrecord RuntimeFamily [gate worlds host-tokens])
-(declare read-application-state swap-application-state! cas-application-state!)
+(defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
+(declare read-application-state swap-application-state! cas-application-state!
+         allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
+         swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc!)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts home liveness extension-state finalization]
+                         operations posts home liveness extension-state finalization managed-cells]
   rtp/PWorldIdentity
   (world-identity [_] owner-root)
+  rtp/PRuntimeCells
+  (allocate-runtime-cell! [this value options] (allocate-cell! this value options))
+  (runtime-cell-present? [this id] (cell-present? this id))
+  (runtime-cell-value [this id] (read-cell-value this id))
+  (runtime-cell-meta [this id] (read-cell-meta this id))
+  (runtime-cell-watches [this id] (read-cell-watches this id))
+  (swap-runtime-cell! [this ref id f args] (swap-cell! this ref id f args))
+  (cas-runtime-cell! [this ref id old-value new-value] (cas-cell! this ref id old-value new-value))
+  (add-runtime-cell-watch! [this id key f] (add-cell-watch! this id key f))
+  (remove-runtime-cell-watch! [this id key] (remove-cell-watch! this id key))
   rtp/PState
   (get-state [this path] (read-application-state this path))
   (swap-state! [this path f] (swap-application-state! this path f nil))
@@ -382,12 +398,63 @@
              world-id [:root world-id] family nil (id-dict)
              {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
              #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue)
-             (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.)))
+             (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))
+                              ;; Shared dirty-ID queue, value-keyed dedup,
+                              ;; sweeping flag, publication pause depth, receipt count.
+                              (doto (slots 5) (put 0 (queue)) (put 1 (id-dict))
+                                    (put 2 false) (put 3 0) (put 4 0)))
              (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
                    (put 3 (members)) (put 4 (queue)) (put 5 (dict))) (atom {:values {} :shadowed #{} :map-groups #{}})
-             (when cps-exit? (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict)) (put 4 on-finalization-result))))]
+             (when cps-exit? (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict)) (put 4 on-finalization-result)))
+             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)))]
      (assoc! family world-id rt)
      rt)))
+
+(defn- enqueue-cell-gc! [rt id]
+  (let [gc (:cell-gc (runtime-field rt :home))]
+    (when-not (find! (a gc 1) id)
+      ;; IDs are values on CLJS too: distinct keyword objects can identify the
+      ;; same allocation, so the queue must not use an identity-members set.
+      (assoc! (a gc 1) id true)
+      (push! (a gc 0) id))))
+
+(defn- note-cell-gc-blocker-change! [rt id]
+  ;; Future world-release or lineage-visibility transitions must enqueue their
+  ;; affected pending IDs here; ordinary boundaries never rediscover them by scan.
+  (when (pos? (long (a (:cell-gc (runtime-field rt :home)) 4)))
+    (enqueue-cell-gc! rt id)))
+
+(defn- put-cell-gc-receipt! [rt id allocation]
+  (let [state (runtime-field rt :managed-cells)
+        gc (:cell-gc (runtime-field rt :home))]
+    (when-not (find! (a state 1) id)
+      (put gc 4 (inc (long (a gc 4)))))
+    (assoc! (a state 1) id allocation)
+    (put state 2 true)
+    (enqueue-cell-gc! rt id)))
+
+(defn- clear-cell-gc-receipt! [rt id]
+  (let [state (runtime-field rt :managed-cells)
+        gc (:cell-gc (runtime-field rt :home))]
+    (when (find! (a state 1) id)
+      (dissoc! (a state 1) id)
+      (put gc 4 (dec (long (a gc 4))))
+      ;; Clearing even a stale ancestor receipt can unblock a descendant.
+      (enqueue-cell-gc! rt id))))
+
+(defn- multiple-cell-worlds? [rt]
+  (let [worlds (runtime-field rt :family)]
+    #?(:clj (> (.size ^java.util.Map worlds) 1)
+       :cljs (let [buckets (.-buckets worlds)]
+               (or (> (.-size buckets) 1)
+                   ;; If all world IDs hash alike, the sole bucket still
+                   ;; records its entries as alternating ID/value pairs.
+                   (> (.-length (.get buckets (hash (runtime-field rt :world)))) 2))))))
+
+(defn- note-cell-removal! [rt id]
+  (when (or (pos? (long (a (:cell-gc (runtime-field rt :home)) 4)))
+            (multiple-cell-worlds? rt))
+    (enqueue-cell-gc! rt id)))
 
 (defn- next-number! [rt i]
   (if (zero? i)
@@ -637,6 +704,11 @@
   (or (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
       (any! (a run r-childruns) unfinished-cps-subtree?)))
 
+(defn- source-allocation [rt id]
+  (if-let [aux (find! (a (runtime-field rt :managed-cells) 0) id)]
+    (a aux 0)
+    (when-let [profile (runtime-field rt :finalization)] (find! (a profile 3) id))))
+
 (defn- retain-cleanup! [rt root-run]
   (when-let [profile (runtime-field rt :finalization)]
     (when (or (not (empty-dict? (a profile 0))) (unfinished-cps-subtree? root-run))
@@ -654,11 +726,11 @@
               cells (id-dict)]
           (each! [run owners]
                  (each! [node (a run r-owned)]
-                        (when (= :signal (a node n-kind))
+                        (when (#{:signal :atom} (a node n-kind))
                           (let [key [(runtime-field rt :world) (run-id run) (a node n-id)]
                                 cell (or (find! (a profile 1) key)
-                                         (doto (slots 4) (put 0 :signal) (put 1 (a node n-value))
-                                               (put 2 (members)) (put 3 (find! (a profile 3) (a node n-id)))))]
+                                         (doto (slots 4) (put 0 (a node n-kind)) (put 1 (a node n-value))
+                                               (put 2 (members)) (put 3 (source-allocation rt (a node n-id)))))]
                             (assoc! cells key cell)))))
           (doseq [ticket participants]
             (doseq [[key cell] (map-value (a ticket x-cells))] (assoc! cells key cell)))
@@ -711,7 +783,9 @@
       (when-not (= :claimed (a ticket x-phase)) (throw (ex-info "Cleanup is not executing" {})))
       (or (first (for [[key cell] (map-value (a ticket x-cells))
                        :when (and (= (:id source) (nth key 2))
-                                  (identical? (:allocation source) (a cell 3)))] [key cell]))
+                                  (if (= :atom (a cell 0))
+                                    (= (:allocation source) (a cell 3))
+                                    (identical? (:allocation source) (a cell 3))))] [key cell]))
           (throw (ex-info "Source is outside the retained cleanup view" {:error :missing-cleanup-cell :id (:id source)}))))))
 
 (defn- profile-view [rt]
@@ -750,6 +824,8 @@
           (when (zero? (count! waiters)) (dissoc! (runtime-field rt :tickets) host)))))
     (when-let [node (a ob o-debtor)]
       (remove! (a node n-dependents) ob) (mark! rt node)
+      (when (= :atom (a node n-kind))
+        (note-cell-gc-blocker-change! rt (a node n-id)))
       (if-let [creditor (a ob o-creditor-node)]
         (when-not
          ;; Search the smaller adjacency. A shared source can have thousands
@@ -870,6 +946,8 @@
 
 (defn- drop-node-events! [rt node]
   (put node n-source-event nil)
+  (when (= :atom (a node n-kind))
+    (note-cell-gc-blocker-change! rt (a node n-id)))
   #?(:clj (.removeIf ^java.util.Collection (runtime-field rt :events)
                      (reify java.util.function.Predicate
                        (test [_ event] (identical? node (a event 0)))))
@@ -884,7 +962,7 @@
         (let [todo (pop todo)]
           (cond
             (contains? seen node) (recur todo seen)
-            (or (= :signal (a node n-kind)) (a node n-dirty)) true
+            (or (#{:signal :atom} (a node n-kind)) (a node n-dirty)) true
             :else
             (recur (into todo (for [run (values (a node n-runs))
                                     ob (items (a run r-obs))
@@ -908,6 +986,9 @@
     (drop-node-events! rt node)
     (creator! rt node nil)
     (dissoc! (runtime-field rt :nodes) (a node n-id))
+    (dissoc! (a (runtime-field rt :managed-cells) 0) (a node n-id))
+    (when (= :atom (a node n-kind))
+      (note-cell-removal! rt (a node n-id)))
     (when-let [profile (runtime-field rt :finalization)] (dissoc! (a profile 3) (a node n-id)))
     (put node n-body nil) (put node n-value nil) (put node n-resume nil)
     (clear-members! (a node n-tokens))
@@ -1004,7 +1085,8 @@
           action (when recording? (assoc action :fresh-runs (vec (items pending))))]
       #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
       (when recording?
-        (swap! audit conj [action (snapshot rt) (snapshot-family rt)])))))
+        (swap! audit conj [action (snapshot rt) (snapshot-family rt)]))))
+  (retry-cell-gc! rt))
 
 (defn- touch! [rt node token]
   (when token (add! (a node n-tokens) token) (add! (a token t-touched) (runtime-field rt :world))))
@@ -1175,7 +1257,7 @@
   ;; Never read a foreign run's mutable status under the destination gate.
   (when-let [frame (current-activation)]
     (let [caller (a frame 0)]
-      (when-not (identical? caller rt)
+      (when-not (identical? (runtime-field caller :owner-root) (runtime-field rt :owner-root))
         (locked caller (check-running! (a frame 1)))))))
 
 (defn register-computation!
@@ -1214,22 +1296,24 @@
          (vector? form) (with-meta (mapv #(binding-sites % vars) form) (meta form))
          (map? form) (with-meta (into {} (map (fn [[k v]] [(binding-sites k vars) (binding-sites v vars)])) form) (meta form))
          :else form))
-     (defn- bound-resume-form [vars k]
-       (let [saved (mapv #(gensym (str (name %) "-saved")) vars)]
-         `(let [~@(interleave saved vars)]
+     (defn- bound-resume-form [vars k env]
+       (let [ordinary (vec (remove #(contains? @ioc/binding-scopes (ioc/var-name env %)) vars))
+             saved (mapv #(gensym (str (name %) "-saved")) ordinary)]
+         `(let [~@(interleave saved ordinary)
+                scoped-k# (cps-runtime/scope-continuation ~k)]
             (fn [value#]
-              (binding [~@(interleave vars saved)]
+              (binding [~@(interleave ordinary saved)]
                 ;; The pump must stay inside the restored user scope. Direct
                 ;; inline returns use raw continuations, so this is one frame
                 ;; per resumed slice, never one nested frame per loop bounce.
-                (cps/with-trampoline (cps/invoke-continuation ~k value#)))))))
+                (cps/with-trampoline (cps/invoke-continuation scoped-k# value#)))))))
      (defn- breakpoint [handler inline? ctx r e]
        (fn [args]
          (let [vars (::binding-vars (meta (:form ctx)))]
            (if (seq vars)
              (if inline?
-               `(~handler ~@args ~r ~e ~(bound-resume-form vars r) ~(bound-resume-form vars e))
-               `(~handler ~@args ~(bound-resume-form vars r) ~(bound-resume-form vars e)))
+               `(~handler ~@args ~r ~e ~(bound-resume-form vars r (:env ctx)) ~(bound-resume-form vars e (:env ctx)))
+               `(~handler ~@args ~(bound-resume-form vars r (:env ctx)) ~(bound-resume-form vars e (:env ctx))))
              `(~handler ~@args ~r ~e)))))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-track [ctx r e] (breakpoint `track-effect! true ctx r e))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await [ctx r e] (breakpoint `await-effect! true ctx r e))
@@ -1651,11 +1735,12 @@
                      (a ticket x-reject))
           value (if (a ticket x-delivered) (a ticket x-value) (a ticket 14))]
       (try
-        (with-activation frame
-          (try
-            (cps/invoke-continuation callback value)
-            (catch #?(:clj Throwable :cljs :default) error
-              (complete! rt run error true))))
+        (binding [ec/*execution-context* rt]
+          (with-activation frame
+            (try
+              (cps/invoke-continuation callback value)
+              (catch #?(:clj Throwable :cljs :default) error
+                (complete! rt run error true)))))
         (finally
           (finish-slice! rt run frame)
           (dotimes [i 9] (put frame i nil)))))))
@@ -1729,6 +1814,8 @@
         dependents (a (runtime-field rt :counters) 4)
         order (when (runtime-field rt :audit) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
     (when (identical? event (a node n-source-event)) (put node n-source-event nil))
+    (when (= :atom (a node n-kind))
+      (note-cell-gc-blocker-change! rt (a node n-id)))
     (try
       (dotimes [index n]
         (let [ob (a dependents index)]
@@ -1824,14 +1911,15 @@
   (when-let [activation (claim-slice! rt node)]
     (let [run (a activation 1) ob (a activation 3)]
       (try
-        (with-activation activation
-          (try (invoke-slice! rt activation)
-               (catch #?(:clj Throwable :cljs :default) error
-                 (try
-                   (if ob (cps/invoke-continuation (a ob o-reject) error)
-                       (complete! rt run error true))
-                   (catch #?(:clj Throwable :cljs :default) rejected
-                     (complete! rt run rejected true))))))
+        (binding [ec/*execution-context* rt]
+          (with-activation activation
+            (try (invoke-slice! rt activation)
+                 (catch #?(:clj Throwable :cljs :default) error
+                   (try
+                     (if ob (cps/invoke-continuation (a ob o-reject) error)
+                         (complete! rt run error true))
+                     (catch #?(:clj Throwable :cljs :default) rejected
+                       (complete! rt run rejected true)))))))
         (finally
           (finish-slice! rt run activation)
           (dotimes [i 9] (put activation i nil)))))))
@@ -1951,7 +2039,7 @@
   #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
     :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
     :seq :serial :clock :handles :threads :gc :global :scopes :pins
-    :fdeps :releasing :cuts :caps :registry :native :cleanup-cells})
+    :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc})
 
 (defn- engine-path? [path]
   (let [key (first path)]
@@ -2035,6 +2123,16 @@
     (cond
       (empty? path) (let [[graph roots] (locked rt (check-native-caller! rt) [(snapshot rt) (application-roots rt)])]
                       (merge graph (application-values roots)))
+      (#{:atoms :listeners} (first path))
+      (locked rt
+              (get-in (case (first path)
+                        :atoms (into {} (for [node (values (runtime-field rt :nodes))
+                                              :when (= :atom (a node n-kind))]
+                                          [(a node n-id) (a node n-value)]))
+                        :listeners (into {} (for [[id aux] (map-value (a (runtime-field rt :managed-cells) 0))
+                                                  :when (seq (a aux 1))]
+                                              [id (a aux 1)])))
+                      (subvec path 1)))
       (engine-path? path) (get-in (snapshot rt) path)
       :else (application-value (locked rt (check-native-caller! rt) (application-roots rt)) path))))
 
@@ -2106,7 +2204,10 @@
                                                                  (long (a (runtime-field rt :counters) 2))))))
       (push! (runtime-field rt :events) event)))
   (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :signal-write :w (runtime-field rt :world) :e (:id source) :value value}
-                                                  (current-activation) (assoc :th :engine)))))
+                                                  (when-let [frame (current-activation)]
+                                                    (identical? (runtime-field rt :owner-root)
+                                                                (runtime-field (a frame 0) :owner-root)))
+                                                  (assoc :th :engine)))))
 
 (defn set-signal! [requested source value]
   (let [rt (execution-runtime requested)
@@ -2119,6 +2220,356 @@
                   (boundary! rt (when (runtime-field rt :audit) {:t :cleanup-cell :th :engine :cell key :value value})))
               (write-source! rt (source-node! rt source unwinding?) source value)))
     (drain! rt)))
+
+;; Managed atom payloads are immutable. Aux slots are [allocation watches claims];
+;; world slots are [aux-by-id pending-receipts receipt-seen?]. Neither
+;; contains a wrapper/anchor, and host cleanup retains the family home weakly.
+(defn- same-cell-world? [left right]
+  (identical? (runtime-field left :owner-root) (runtime-field right :owner-root)))
+
+(defn- canonical-cell-runtime [requested]
+  ;; Lexical scope restoration decorates a context record. Engine objects and
+  ;; queues must always name the canonical world registered in the family;
+  ;; the requested record is retained separately only for listener bindings.
+  (locked requested
+          (let [rt (find! (runtime-field requested :family) (runtime-field requested :world))]
+            (when-not (and rt (same-cell-world? requested rt))
+              (throw (ex-info "Unknown managed-cell world" {:error :unknown-world})))
+            rt)))
+
+(defn- cell-backing [rt id]
+  (loop [world rt]
+    (when world
+      (if-let [node (find! (runtime-field world :nodes) id)]
+        [world node (find! (a (runtime-field world :managed-cells) 0) id)]
+        (when (= :following (get-in world [:lineage :mode]))
+          (recur (runtime-field world :parent)))))))
+
+(defn- ordinary-cell-node [rt id]
+  ;; Called only under the family gate. Reads consume the immutable payload
+  ;; before releasing that gate, so no backing vector or mutation view escapes.
+  (loop [world rt]
+    (when world
+      (if-let [node (find! (runtime-field world :nodes) id)]
+        (let [aux (find! (a (runtime-field world :managed-cells) 0) id)]
+          (when (and aux (= :atom (a node n-kind)) (a node n-owner)
+                     (= id (a aux 0)))
+            node))
+        (when (= :following (:mode (runtime-field world :lineage)))
+          (recur (runtime-field world :parent)))))))
+
+(defn- cleanup-cell-access? [rt]
+  (when-let [frame (current-activation)]
+    (and (same-cell-world? rt (a frame 0))
+         (or (a frame 8)
+             (= :unwinding (some-> (a frame 1) (a r-status)))))))
+
+(defn- check-cell-caller! [rt]
+  (when-let [frame (current-activation)]
+    (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
+      (check-running! (a frame 1)))))
+
+(defn- cell-view! [rt id]
+  (let [frame (current-activation)
+        active (when (and frame (same-cell-world? rt (a frame 0))) (a frame 0))]
+    (if-let [[key retained] (when active (cleanup-cell! active {:id id :allocation id}))]
+      (do (when-not (= :atom (a retained 0))
+            (throw (ex-info "Not a retained atom" {:error :missing-cell :id id})))
+          {:cleanup key :retained retained :payload (a retained 1)})
+      (do
+        (check-cell-caller! rt)
+        (let [[backing node aux] (cell-backing rt id)
+              watch-aux (find! (a (runtime-field rt :managed-cells) 0) id)]
+          (when-not (and node aux (= :atom (a node n-kind)) (a node n-owner)
+                         (= id (a aux 0)))
+            (throw (ex-info "Released managed atom" {:error :missing-cell :id id})))
+          {:backing backing :node node :aux aux :owner (a node n-owner)
+           :owner-stamp (owner-id (a node n-owner))
+           :payload (a node n-value) :watch-aux watch-aux
+           :watches (if watch-aux (a watch-aux 1) {})})))))
+
+(defn- same-cell-view? [before after]
+  (and (identical? (:retained before) (:retained after))
+       (identical? (:node before) (:node after))
+       (identical? (:aux before) (:aux after))
+       (identical? (:owner before) (:owner after))
+       (= (:owner-stamp before) (:owner-stamp after))
+       (identical? (:payload before) (:payload after))))
+
+(defn- retain-cell-operation! [rt id]
+  (locked rt
+          (let [view (cell-view! rt id)]
+            (when-let [aux (:aux view)] (put aux 2 (inc (long (a aux 2)))))
+            (assoc view :claims (volatile! (if-let [aux (:aux view)] [aux] []))))))
+
+(defn- release-cell-operation! [rt view]
+  (locked rt
+          (doseq [aux @(:claims view)]
+            (put aux 2 (dec (long (a aux 2))))
+            (note-cell-gc-blocker-change! rt (a aux 0)))
+          (vreset! (:claims view) [])
+          (retry-cell-gc! rt)))
+
+(defn- localize-cell! [rt id view claims]
+  (if (same-cell-world? rt (:backing view)) view
+      (let [payload (:payload view) node (node! rt id :atom (runtime-field rt :owner-root))
+            aux (or (:watch-aux view)
+                    (doto (slots 3) (put 0 id) (put 1 {}) (put 2 0)))
+            collected (find! (a (runtime-field (:backing view) :managed-cells) 1) id)]
+        (put node n-value payload)
+        (assoc! (a (runtime-field rt :managed-cells) 0) id aux)
+        (note-cell-gc-blocker-change! rt id)
+        ;; A raw-ID operation can outlive the final wrapper and its Cleaner
+        ;; notification. Protect its new local storage through publication,
+        ;; listener dispatch and drain, in addition to its original backing.
+        (put aux 2 (inc (long (a aux 2))))
+        (vswap! claims conj aux)
+        (boundary! rt (when (runtime-field rt :audit)
+                        {:t :t02 :w (runtime-field rt :world) :scope (runtime-field rt :root)
+                         :e id :kind :atom :allocation id :value payload}))
+        (when (= collected (a aux 0))
+          ;; The trusted allocation-wide host fact also applies to this copy.
+          ;; Keep it only on extant cells; no global collection history grows.
+          (put-cell-gc-receipt! rt id collected)
+          (boundary! rt (when (runtime-field rt :audit)
+                          {:t :source-unreachable :w (runtime-field rt :world)
+                           :e id :allocation collected})))
+        {:backing rt :node node :aux aux :owner (a node n-owner) :payload payload})))
+
+(defn allocate-cell! [requested value options]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)
+        id (keyword (str "atom-" (random-uuid)))
+        payload {:value value :meta (:meta options)}]
+    (locked rt
+            (check-cell-caller! rt)
+            (let [frame (current-activation)
+                  run (when (and frame (same-cell-world? rt (a frame 0))) (a frame 1))
+                  order (if run (put frame 2 (inc (long (a frame 2)))) 0)
+                  node (node! rt id :atom (or run (runtime-field rt :owner-root)))
+                  aux (doto (slots 3) (put 0 id) (put 1 {}) (put 2 0))]
+              (put node n-value payload) (put node n-order order)
+              (assoc! (a (runtime-field rt :managed-cells) 0) id aux)
+              (when run (creation! run node))
+              (boundary! rt (when (runtime-field rt :audit)
+                              (cond-> {:t :t02 :w (runtime-field rt :world) :e id :kind :atom
+                                       :allocation id :value payload :order order}
+                                run (assoc :r (run-id run)))))))
+    {:id id :anchor (cell-handles/allocate! id (runtime-field rt :home) collect-home-cell!)}))
+
+(defn cell-present? [requested id]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)]
+    (locked rt
+          ;; Admission errors must propagate. An absent ordinary row alone
+          ;; answers false, while cleanup access resolves its protected view.
+            (if (cleanup-cell-access? rt)
+              (boolean (cell-view! rt id))
+              (do (check-cell-caller! rt)
+                  (boolean (ordinary-cell-node rt id)))))))
+
+(defn- read-cell-field [requested id field]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)]
+    (locked rt
+            (if (cleanup-cell-access? rt)
+              (let [view (cell-view! rt id)]
+                (when-let [key (:cleanup view)]
+                  (boundary! rt (when (runtime-field rt :audit) {:t :cleanup-cell :th :engine :cell key})))
+                (get (:payload view) field))
+              (do (check-cell-caller! rt)
+                  (if-let [node (ordinary-cell-node rt id)]
+                    (get (a node n-value) field)
+                    (throw (ex-info "Released managed atom" {:error :missing-cell :id id}))))))))
+(defn read-cell-value [rt id] (read-cell-field rt id :value))
+(defn read-cell-meta [rt id] (read-cell-field rt id :meta))
+(defn read-cell-watches [requested id]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)]
+    (locked rt
+            (let [view (cell-view! rt id)]
+            ;; Listener registration never shadows a following source payload.
+              (when (:watch-aux view) (:watches view))))))
+
+(defn- commit-cell-payload! [rt id view payload claims]
+  (if-let [key (:cleanup view)]
+    (do (put (:retained view) 1 payload)
+        (boundary! rt (when (runtime-field rt :audit)
+                        {:t :cleanup-cell :th :engine :cell key :value payload}))
+        nil)
+    (let [local (localize-cell! rt id view claims)
+          listeners (a (:aux local) 1)]
+      (write-source! rt (:node local) {:id id} payload)
+      listeners)))
+
+(defn swap-cell! [requested ref id f args]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)]
+    (loop []
+      (let [before (retain-cell-operation! rt id)
+            result
+            (try
+              (let [old (:value (:payload before))
+                    value (apply f old args)
+                    payload (assoc (:payload before) :value value)
+                    _ (admit-world-switch! rt)
+                    committed (locked rt
+                                      (let [current (cell-view! rt id)]
+                                        (when (same-cell-view? before current)
+                                          [value (commit-cell-payload! rt id current payload (:claims before))])))]
+                (when committed
+                ;; This is a committed delivery, not a physical resource lease:
+                ;; later cancellation/removal does not revoke captured watches.
+                  (binding [ec/*execution-context* requested]
+                    (ec/notify-listeners! ref id old value (second committed)))
+                  (drain! rt))
+                committed)
+              (finally (release-cell-operation! rt before)))]
+        (if result (first result) (recur))))))
+
+(defn cas-cell! [requested ref id old-value new-value]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)]
+    (loop []
+      (let [before (retain-cell-operation! rt id)
+            result
+            (try
+              (if-not (identical? old-value (:value (:payload before)))
+                :mismatch
+                (let [payload (assoc (:payload before) :value new-value)
+                      _ (admit-world-switch! rt)
+                      committed (locked rt
+                                        (let [current (cell-view! rt id)]
+                                          (when (same-cell-view? before current)
+                                            [(commit-cell-payload! rt id current payload (:claims before))])))]
+                  (when committed
+                    (binding [ec/*execution-context* requested]
+                      (ec/notify-listeners! ref id old-value new-value (first committed)))
+                    (drain! rt))
+                  committed))
+              (finally (release-cell-operation! rt before)))]
+        (cond (= :mismatch result) false result true :else (recur))))))
+
+(defn- edit-cell-watch! [requested id key f add?]
+  (admit-world-switch! requested)
+  (let [rt (canonical-cell-runtime requested)]
+    (loop []
+      (let [before (retain-cell-operation! rt id)
+            result
+            (try
+              (when (:cleanup before)
+                (throw (ex-info "Cleanup cannot register ordinary watches" {:error :cleanup-only :id id})))
+              (let [watches (:watches before)
+                  ;; Both hashing and key equality can invoke arbitrary code.
+                    candidate (if add? (assoc watches key f) (dissoc watches key))
+                    _ (admit-world-switch! rt)]
+                (locked rt
+                        (let [current (cell-view! rt id)]
+                          (when (and (same-cell-view? before current)
+                                     (identical? (:watch-aux before) (:watch-aux current))
+                                     (identical? watches (:watches current)))
+                          ;; Watches are selected-world egress, independent of
+                          ;; payload COW. Removing an absent watch creates no
+                          ;; registration state in a borrowed world.
+                            (when (or add? (:watch-aux current))
+                              (let [aux (or (:watch-aux current)
+                                            (doto (slots 3) (put 0 id) (put 2 0)))]
+                                (put aux 1 candidate)
+                                (assoc! (a (runtime-field rt :managed-cells) 0) id aux)))
+                            true))))
+              (finally (release-cell-operation! rt before)))]
+        (when-not result (recur))))
+    nil))
+(defn add-cell-watch! [rt id key f] (edit-cell-watch! rt id key f true))
+(defn remove-cell-watch! [rt id key] (edit-cell-watch! rt id key nil false))
+
+(defn- cell-in-use? [rt node aux]
+  (let [id (a node n-id)]
+    (or (pos? (long (a aux 2)))
+        (any! (a node n-dependents) #(a % o-live))
+        (any! (runtime-field rt :events) #(identical? node (a % 0)))
+        ;; A live following world with no local row still needs this backing.
+        (some (fn [world]
+                (and (not (same-cell-world? rt world))
+                     (when-let [[backing _ _] (cell-backing world id)]
+                       (same-cell-world? rt backing))))
+              (values (runtime-field rt :family))))))
+
+(defn- ancestor-cell-gc-pending? [rt id allocation]
+  ;; Keep the local copy independent until collected ancestor storage is gone.
+  ;; Removing it sooner would restore read-through and block that ancestor.
+  (loop [ancestor (runtime-field rt :parent)]
+    (when ancestor
+      (or (= allocation (find! (a (runtime-field ancestor :managed-cells) 1) id))
+          (recur (runtime-field ancestor :parent))))))
+
+(defn- retry-world-cell-gc! [rt id]
+  (let [state (runtime-field rt :managed-cells)]
+    (when-let [allocation (find! (a state 1) id)]
+      (let [node (find! (runtime-field rt :nodes) id)
+            aux (find! (a state 0) id)
+            current? (and node aux (= :atom (a node n-kind)) (= allocation (a aux 0)))]
+        (when (or (not current?)
+                  (and (not (ancestor-cell-gc-pending? rt id allocation))
+                       (not (cell-in-use? rt node aux))))
+          (clear-cell-gc-receipt! rt id)
+          (when current?
+            (owner! rt node nil)
+            (reclaim-unwanted! rt node))
+          (boundary! rt (when (runtime-field rt :audit)
+                          {:t :reap-source :w (runtime-field rt :world) :e id :allocation allocation})))))))
+
+(defn- retry-family-cell-id! [rt id]
+  (each! [world (values (runtime-field rt :family))]
+         (let [aux-table (a (runtime-field world :managed-cells) 0)
+               aux (find! aux-table id)]
+           ;; A borrowed watch registration cannot keep a retired backing
+           ;; allocation or its callbacks alive after ordinary ownership exit.
+           (when (and aux (nil? (find! (runtime-field world :nodes) id)))
+             (let [[_ node backing-aux] (cell-backing world id)]
+               (when-not (and node backing-aux (= (a aux 0) (a backing-aux 0)))
+                 (dissoc! aux-table id))))
+           (retry-world-cell-gc! world id))))
+
+(defn- retry-cell-gc! [rt]
+  ;; Ordinary publication with no dirty IDs performs no world or cell scans.
+  ;; Reaping/clearing a receipt queues the ID again, so ancestor-first progress
+  ;; does not depend on family iteration order or recursive boundary dispatch.
+  (let [gc (:cell-gc (runtime-field rt :home))]
+    (when (and (not (a gc 2)) (zero? (long (a gc 3))) (queued? (a gc 0)))
+      (put gc 2 true)
+      (try
+        (loop []
+          (when (zero? (long (a gc 3)))
+            (when-let [id (pop! (a gc 0))]
+              (dissoc! (a gc 1) id)
+              (retry-family-cell-id! rt id)
+              (recur))))
+        (finally (put gc 2 false))))))
+
+(defn- collect-home-cell! [home id]
+  ;; The Cleaner registry owns only a weak home reference and this global fn.
+  ;; Blocked receipts stay in world-owned metadata and retry at later boundaries.
+  (let [collect (fn []
+                  (let [worlds (vec (values (:worlds home)))
+                        gc (:cell-gc home)]
+                    ;; Publish each trusted fact separately for model replay,
+                    ;; but do not reap a child before its ancestor's fact has
+                    ;; been published. Otherwise deleting the child copy can
+                    ;; turn it back into a following dependency on the parent.
+                    (put gc 3 (inc (long (a gc 3))))
+                    (try
+                      (doseq [rt worlds
+                              :let [aux (find! (a (runtime-field rt :managed-cells) 0) id)
+                                    node (find! (runtime-field rt :nodes) id)]
+                              :when (and aux node (= :atom (a node n-kind)) (= id (a aux 0)))]
+                        (put-cell-gc-receipt! rt id id)
+                        (boundary! rt (when (runtime-field rt :audit)
+                                        {:t :source-unreachable :w (runtime-field rt :world) :e id :allocation id})))
+                      (finally
+                        (put gc 3 (dec (long (a gc 3))))))
+                    (when-let [rt (first worlds)] (retry-cell-gc! rt))))]
+    #?(:clj (locking (:gate home) (collect)) :cljs (collect))))
 
 (defn compare-and-set-signal!
   "Identity CAS, including atom-style ABA semantics. The commit and reactive
@@ -2217,63 +2668,68 @@
 
 (defn snapshot [rt]
   (locked rt
-          (merge (profile-view rt) {:global (global-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status :live :admission :open :seal-seq nil
-                                    :scopes {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
-                                    :pins #{} :fdeps #{} :releasing #{}
-                                    :entities (into {} (for [node (values (runtime-field rt :nodes))]
-                                                         [(a node n-id)
-                                                          (cond-> {:kind (a node n-kind) :origin (or (a node n-origin) :created) :owner (owner-id (a node n-owner))
-                                                                   :creator (run-id (a node n-creator)) :completed? (boolean (a node n-complete))
-                                                                   :kept? (boolean (a node n-kept)) :result (diagnostic-value (a node n-value) (= :error (a node n-complete)))
-                                                                   :tokens (set (map #(a % t-id) (items (a node n-tokens)))) :key nil :order (a node n-order)}
-                                                            (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
-                                                            (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
-                                    :runs (into {} (for [run (items (a (runtime-field rt :counters) 6)) :let [node (a run r-node)]]
-                                                     [(run-id run) (cond-> {:spin (a node n-id) :owner (owner-id (a run r-owner))
-                                                                            :pred (when-let [gen (a run r-pred)] [(a node n-id) gen])
-                                                                            :ancestors (set (map #(vector (a node n-id) %) (items (a run r-ancestors))))
-                                                                            :status (a run r-status) :seq (a run r-seq)
-                                                                            :creations (set (map #(a % n-id) (items (a run r-created))))
-                                                                            :spawned (set (map run-id (items (a run r-spawned))))}
-                                                                     (a run r-validation-lost) (assoc :validation-lost? true)
-                                                                     (a run r-entered) (assoc :cps-entered? true)
-                                                                     (a run r-finalization-seq) (assoc :finalization-sequence (a run r-finalization-seq))
-                                                                     (= :unwinding (a run r-status)) (assoc :retired? true :anchor (a run r-anchor))
-                                                                     (a run r-origin) (assoc :origin (a run r-origin) :source-world (a run r-source-world)))]))
-                                    :obligations (into {} (for [ob (all-obligations rt)]
-                                                            [[:o (a ob o-id)]
-                                                             (cond-> {:kind (a ob o-kind) :debtor (if-let [debtor (a ob o-debtor)]
-                                                                                                    [:entity (:world (a debtor n-runtime)) (a debtor n-id)]
-                                                                                                    [:host (a ob o-host)])
-                                                                      :creditor (if-let [run (a ob o-run)] [:run (runtime-field rt :world) (run-id run)] [:host :caller])
-                                                                      :standing? (a ob o-standing) :cont (when (a ob o-run) [:continuation [:o (a ob o-id)]])
-                                                                      :token nil :order (a ob o-order) :slot (a ob o-slot)}
-                                                               (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
-                                                               (a ob o-source-world) (assoc :source-world (a ob o-source-world))
-                                                               (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
-                                    :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world) :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
-                                                               (= :signal (a (a event 0) n-kind)) (assoc :source-change? true)))
-                                                 (filter #(identical? rt (a (a % 0) n-runtime))
-                                                         (items (runtime-field rt :events))))
-                                    :seq (a (runtime-field rt :counters) 1)
-                                    :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
-                                    :threads (let [run (a (runtime-field rt :thread) 0)
-                                                   ticket (a (runtime-field rt :thread) 4)
-                                                   id (if ticket (nth (a ticket x-id) 2) (run-id run))]
-                                               (cond-> {:host {:world (a (runtime-field rt :thread) 3) :scope nil :run nil :read-permits #{} :excl-permits []}}
-                                                 (a (runtime-field rt :thread) 1)
-                                                 (assoc :engine (cond-> {:world (a (runtime-field rt :thread) 2) :scope id :run id :executing? (boolean id)}
-                                                                  id (assoc :obligation-world (a (runtime-field rt :thread) 2))
-                                                                  (= :unwinding (some-> run (a r-status))) (assoc :retired? true)
-                                                                  ticket (assoc :retired? true :anchor (a ticket x-anchor) :cleanup-ticket (a ticket x-id))))))
-                                    :gc (mapv (fn [notification]
-                                                (let [target (a notification 0) token (a notification 1)]
-                                                  {:t :t17 :w (:world target) :e (a token t-spin) :tok (a token t-id)}))
-                                              (items (runtime-field rt :gc)))
-                                    :handles (when (runtime-field rt :tokens)
-                                               (into {} (for [token (items (runtime-field rt :tokens))]
-                                                          [(a token t-id) {:spin (a token t-spin) :reachable? (a token t-reachable)
-                                                                           :touched (set (items (a token t-touched))) :dropped (set (items (a token t-dropped)))}])))})))
+          (merge (profile-view rt)
+                 (when (a (runtime-field rt :managed-cells) 2)
+                   {:source-gc (into {} (for [[id allocation] (map-value (a (runtime-field rt :managed-cells) 1))]
+                                          [[(runtime-field rt :world) id allocation] true]))})
+                 {:global (global-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status :live :admission :open :seal-seq nil
+                  :scopes {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
+                  :pins #{} :fdeps #{} :releasing #{}
+                  :entities (into {} (for [node (values (runtime-field rt :nodes))]
+                                       [(a node n-id)
+                                        (cond-> {:kind (a node n-kind) :origin (or (a node n-origin) :created) :owner (owner-id (a node n-owner))
+                                                 :creator (run-id (a node n-creator)) :completed? (boolean (a node n-complete))
+                                                 :kept? (boolean (a node n-kept)) :result (diagnostic-value (a node n-value) (= :error (a node n-complete)))
+                                                 :tokens (set (map #(a % t-id) (items (a node n-tokens)))) :key nil :order (a node n-order)}
+                                          (= :atom (a node n-kind)) (assoc :allocation (source-allocation rt (a node n-id)))
+                                          (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
+                                          (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
+                  :runs (into {} (for [run (items (a (runtime-field rt :counters) 6)) :let [node (a run r-node)]]
+                                   [(run-id run) (cond-> {:spin (a node n-id) :owner (owner-id (a run r-owner))
+                                                          :pred (when-let [gen (a run r-pred)] [(a node n-id) gen])
+                                                          :ancestors (set (map #(vector (a node n-id) %) (items (a run r-ancestors))))
+                                                          :status (a run r-status) :seq (a run r-seq)
+                                                          :creations (set (map #(a % n-id) (items (a run r-created))))
+                                                          :spawned (set (map run-id (items (a run r-spawned))))}
+                                                   (a run r-validation-lost) (assoc :validation-lost? true)
+                                                   (a run r-entered) (assoc :cps-entered? true)
+                                                   (a run r-finalization-seq) (assoc :finalization-sequence (a run r-finalization-seq))
+                                                   (= :unwinding (a run r-status)) (assoc :retired? true :anchor (a run r-anchor))
+                                                   (a run r-origin) (assoc :origin (a run r-origin) :source-world (a run r-source-world)))]))
+                  :obligations (into {} (for [ob (all-obligations rt)]
+                                          [[:o (a ob o-id)]
+                                           (cond-> {:kind (a ob o-kind) :debtor (if-let [debtor (a ob o-debtor)]
+                                                                                  [:entity (:world (a debtor n-runtime)) (a debtor n-id)]
+                                                                                  [:host (a ob o-host)])
+                                                    :creditor (if-let [run (a ob o-run)] [:run (runtime-field rt :world) (run-id run)] [:host :caller])
+                                                    :standing? (a ob o-standing) :cont (when (a ob o-run) [:continuation [:o (a ob o-id)]])
+                                                    :token nil :order (a ob o-order) :slot (a ob o-slot)}
+                                             (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
+                                             (a ob o-source-world) (assoc :source-world (a ob o-source-world))
+                                             (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
+                  :queue (mapv (fn [event] (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world) :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
+                                             (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true)))
+                               (filter #(identical? rt (a (a % 0) n-runtime))
+                                       (items (runtime-field rt :events))))
+                  :seq (a (runtime-field rt :counters) 1)
+                  :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
+                  :threads (let [run (a (runtime-field rt :thread) 0)
+                                 ticket (a (runtime-field rt :thread) 4)
+                                 id (if ticket (nth (a ticket x-id) 2) (run-id run))]
+                             (cond-> {:host {:world (a (runtime-field rt :thread) 3) :scope nil :run nil :read-permits #{} :excl-permits []}}
+                               (a (runtime-field rt :thread) 1)
+                               (assoc :engine (cond-> {:world (a (runtime-field rt :thread) 2) :scope id :run id :executing? (boolean id)}
+                                                id (assoc :obligation-world (a (runtime-field rt :thread) 2))
+                                                (= :unwinding (some-> run (a r-status))) (assoc :retired? true)
+                                                ticket (assoc :retired? true :anchor (a ticket x-anchor) :cleanup-ticket (a ticket x-id))))))
+                  :gc (mapv (fn [notification]
+                              (let [target (a notification 0) token (a notification 1)]
+                                {:t :t17 :w (:world target) :e (a token t-spin) :tok (a token t-id)}))
+                            (items (runtime-field rt :gc)))
+                  :handles (when (runtime-field rt :tokens)
+                             (into {} (for [token (items (runtime-field rt :tokens))]
+                                        [(a token t-id) {:spin (a token t-spin) :reachable? (a token t-reachable)
+                                                         :touched (set (items (a token t-touched))) :dropped (set (items (a token t-dropped)))}])))})))
 
 (defn fork-parked!
   "Prototype T19 for quiescent host-ticket bundles. Copies the ownership
@@ -2311,7 +2767,8 @@
                                :audit (runtime-field rt :audit) :tokens (runtime-field rt :tokens)
                                :lineage {:parent (runtime-field rt :world) :root (get-in rt [:lineage :root])
                                          :mode :following :cut nil :basis nil})
-                  node-map (dict)]
+                  node-map (dict)
+                  inherited-gc (volatile! [])]
         ;; No old world version is pinned. The following child still retains
         ;; its live parent and code closures; only the parked ownership rows
         ;; are copied into child-owned mutable storage.
@@ -2320,6 +2777,13 @@
                        (assoc! node-map node copy)
                        (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank]]
                                 (put copy field (a node field)))
+                       (when (= :atom (a node n-kind))
+                         (assoc! (a (runtime-field child :managed-cells) 0) (a node n-id)
+                                 (doto (slots 3) (put 0 (source-allocation rt (a node n-id))) (put 1 {}) (put 2 0))))
+                       (when-let [allocation (when (= :atom (a node n-kind))
+                                               (find! (a (runtime-field rt :managed-cells) 1) (a node n-id)))]
+                         (when (= allocation (source-allocation rt (a node n-id)))
+                           (vswap! inherited-gc conj [(a node n-id) allocation])))
                        (put copy n-origin :inherited) (put copy n-source-world (runtime-field rt :world))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
@@ -2374,9 +2838,20 @@
               (assoc! (runtime-field rt :family) world child)
               (node! rt [:fork world] :fork (runtime-field rt :owner-root))
               (each! [node (values (:nodes child))]
+                     (when (= :atom (a node n-kind))
+                       (note-cell-gc-blocker-change! child (a node n-id)))
                      (each! [token (a node n-tokens)] (add! (a token t-touched) world)))
               (boundary! rt (when (runtime-field rt :audit) {:t :t19 :w (runtime-field rt :world) :v world :k [:cap world]
                                                              :scope (runtime-field rt :root) :systems #{}}))
+              ;; T19 first publishes the independent rows. The allocation-wide
+              ;; host fact remains valid for clones made after its one-shot
+              ;; callback, so publish a receipt for each surviving copied cell.
+              (doseq [[id allocation] @inherited-gc
+                      :let [node (find! (runtime-field child :nodes) id)]
+                      :when (and node (= allocation (source-allocation child id)))]
+                (put-cell-gc-receipt! child id allocation)
+                (boundary! child (when (runtime-field child :audit)
+                                   {:t :source-unreachable :w world :e id :allocation allocation})))
               child))))
 
 (defn snapshot-family [rt]
@@ -2390,7 +2865,8 @@
             {:live-runs (count! runs)
              :protected-tickets (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 0))) 0)
              :retained-cleanup-cells (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 1))) 0)
-             :source-allocation-identities (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 3))) 0)
+             :source-allocation-identities (+ (count (map-value (a (runtime-field rt :managed-cells) 0)))
+                                              (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 3))) 0))
              :retired-ordinary-references
              (reduce + 0 (for [run (items runs) :when (= :unwinding (a run r-status))]
                            (+ (count (filter some? (map #(a run %) [r-owner r-pred r-cancel-cont])))

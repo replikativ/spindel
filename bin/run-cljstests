@@ -8,4 +8,6 @@ rm out/ci-tests.js 2>/dev/null || true
 npx shadow-cljs release ci
 node out/ci-tests.js
 # Exercise managed-cell heap probes separately from the legacy DOM GC profile.
-node --expose-gc out/ci-tests.js --test=org.replikativ.spindel.engine.cell-handles-test
+node --expose-gc out/ci-tests.js --test=org.replikativ.spindel.engine.cell-handles-test,org.replikativ.spindel.engine.native-cells-test
+npx shadow-cljs release native-cell-gc
+node --expose-gc out/native-cell-gc.js

@@ -62,10 +62,13 @@
       #?(:clj (Reference/reachabilityFence ref) :cljs nil))))
 
 (defn- read-cell [ref id op f]
-  (cell-op ref id op
-           (fn [ctx]
-             (when (rtp/runtime-cell-present? ctx id)
-               (f ctx id)))))
+  (try
+    (let [ctx (ec/current-execution-context)]
+      (if (rtp/runtime-cell-present? ctx id)
+        (f ctx id)
+        (check-present! id op)))
+    (finally
+      #?(:clj (Reference/reachabilityFence ref) :cljs nil))))
 
 (defn- swap-and-notify! [ref id f args]
   (cell-op ref id :swap #(rtp/swap-runtime-cell! % ref id f args)))
