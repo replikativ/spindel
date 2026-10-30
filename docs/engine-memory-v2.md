@@ -492,12 +492,15 @@ restore success after cancellation. Merely caching a propagated child-cancellati
 error does not revoke a reactive owner's authority to recover. Separate reporting
 of cleanup failures remains part of the error-egress integration gate.
 
-Generic lexical user bindings on public effect callbacks remain a compiler
-integration gate. The boundary needs distinct same-stack inline and later resumed
-continuation paths. Resumption restores user scope while preserving the runner's
-selected world/generation; synchronous loops must retain constant stack depth.
-The native handlers already distinguish inline and resumed continuations. A
-wrapper that grows with every synchronous await does not satisfy this contract.
+Context scope handoff uses partial-cps's registered scope adapters. Public
+callbacks and trampoline thunks capture the context's lexical `:bindings` map,
+then restore it onto the runner-selected context. Portable regressions cover
+initial inline loops, parked resumption, fork selection and bounded repeated
+scope entry/exit; compiler tests also cover exception/finally egress. This
+preserves Spindel's explicit context scope contract without introducing generic
+snapshot semantics for arbitrary dynamic Vars. The native public adapter must
+preserve the same selected-world/generation contract when it is integrated; a
+wrapper that grows with every synchronous await does not satisfy it.
 
 ## Replacement acceptance
 

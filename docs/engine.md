@@ -307,6 +307,17 @@ single compiled class. (Keeping it a compiled deftype matters for
 the SCI integration — see [`sci-integration.md`](sci-integration.md)
 for the identity discussion.)
 
+Lexical context scopes also cross these bounces. Spindel registers
+`*execution-context*` with partial-cps's scope adapter: a thunk or
+continuation captures its `:bindings` map, then restores that map onto
+the context selected by the runner before executing. It does not capture
+an execution context as scope data or replace the runner's world or run
+generation. Replacing the map also restores absent keys on scope exit.
+This works on JVM and CLJS, including an initial synchronous loop and a
+callback resumed in a fork. Repeated registered scope entry and exit
+keeps a bounded stack; ordinary unregistered dynamic Vars retain their
+existing compiler behavior.
+
 ### `*in-trampoline*` — re-entry signaling
 
 The dynamic var `pcps-async/*in-trampoline*` tells nested CPS code

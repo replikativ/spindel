@@ -14,7 +14,9 @@
         ;; org.replikativ/partial-cps since it moved to replikativ.
         ;; 0.1.69 preserves lexical entry handlers across loop-generated bounces,
         ;; including failed native construction and cleanup.
-        org.replikativ/partial-cps {:mvn/version "0.1.69"}
+        ;; 0.1.70 carries registered context scope through thunk and callback
+        ;; dispatch without replacing the runner-selected world.
+        org.replikativ/partial-cps {:mvn/version "0.1.70"}
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.
