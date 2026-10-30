@@ -126,6 +126,9 @@
                          :gc (vec (get-in expected [:env :gc] []))
                          :global (assoc (select-keys expected [:registry :known-worlds :lineages :caps])
                                         :generation-clock (get expected :generation-clock {})))
+               ev (if (contains? actual :native)
+                    (assoc ev :native (get-in expected [:env :native])
+                           :cleanup-cells (get-in expected [:env :cleanup-cells] {})) ev)
                difference (take 2 (data/diff ev actual))]
            (when-not (= ev actual)
              (throw (ex-info "Boundary mismatch" {:action action :world id :difference (vec difference)})))
@@ -133,7 +136,7 @@
        (is (empty? (inv/check expected)))
        (is (empty? (inv/edge-check {:before state :action action :after expected})))
        expected))
-   (model/init-state) @(:audit rt)))
+   (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})) @(:audit rt)))
 
 (deftest completed-ownership-island-becomes-value-only-before-gc
   (doseq [audit? [false true]]

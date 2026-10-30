@@ -477,12 +477,37 @@ converts its authority to cleanup. Sequence numbers increase across successive
 waits in a generation and seed later retirement waits, so an old success-path
 callback cannot wake a new cleanup suspension.
 
-This is a symbolic lifetime refinement, not yet the public `await-finalization`
-implementation. The native implementation still needs the profile. Typed scoped
-application resources (including their fork policy), error egress, and real CPS
-continuation handoff remain integration gates. The existing model profiles and native default are unchanged.
-The public backend cannot claim the finalization contract until those integration
-checks pass on both platforms.
+The native owned-object engine implements this profile with
+`(owned/runtime {:cps-exit? true})` and the native `cspin` effect
+`owned/await-finalization`. Actual CPS continuations suspend and resume under
+protected tickets. Retired source payloads are shared by participant holders;
+allocation identities prevent a finalizer from reaching a replacement source
+that reuses its entity ID. Cleanup uses retained source reads/writes and
+protected callback waits, and refuses ordinary construction, registration,
+cancellation, subscription disposal and generic application-cell access.
+Callbacks record readiness until the previous physical frame returns, except
+for the model's explicit same-frame live resumption or cleanup adoption.
+
+Native audit traces replay each published boundary against the independent
+model and its state/edge invariants. Tests exercise both parent/child retirement
+orders, pooled run reuse, nullable errors, producer/callback/cancellation races
+and repeated retirement with audit history disabled. Storage diagnostics count
+protected tickets, retained cells, source allocation identities and references
+from retired rows back into ordinary ownership.
+
+The optional native `:on-finalization-result` observer receives
+`{:owner [world run] :failed? boolean :value payload}` after physical return,
+outside the family gate. This is the terminal CPS outcome, which can include the
+body's original rejection; attributing a new finalizer failure requires further
+compiler/public-adapter integration. The observer uses the existing host egress
+drain, rather than retaining an undrained results queue.
+
+This remains an opt-in native profile, not the public `await-finalization`
+replacement. It refuses forks until protected-wait recovery is implemented.
+Typed scoped application resources and their fork policy, public error egress,
+world release and the full public CPS adapter remain integration gates. The
+native default is unchanged. The public backend cannot claim the finalization
+contract until those integration checks pass on both platforms.
 
 Result arbitration commits and returns the effective Result in one transaction.
 An explicit cancellation fences the current generation's later success/error
