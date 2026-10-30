@@ -16,13 +16,14 @@
 
 (deftest the-runtime-it-sees-is-pinned
   ;; a new runtime public is reviewed before sandbox code reaches it
-  (is (= '#{->Thunk ->thunk thunk? force-thunk owns-trampoline? call-in-trampoline bound-fn}
+  (is (= '#{->Thunk ->thunk thunk? force-thunk owns-trampoline? call-in-trampoline bound-fn scope-continuation}
          (set (keys ((interpreter) "(ns-publics 'is.simm.partial-cps.runtime)"))))))
 
 (deftest activations-cannot-be-entered-or-left-by-hand
   (let [ev (interpreter)]
     (doseq [source ["(is.simm.partial-cps.runtime/enter-trampoline!)"
-                    "(is.simm.partial-cps.runtime/leave-trampoline! nil)"]]
+                    "(is.simm.partial-cps.runtime/leave-trampoline! nil)"
+                    "is.simm.partial-cps.runtime/*scope-frame*"]]
       (is (thrown-with-msg? Exception #"resolve" (ev source)) source))))
 
 (deftest a-stale-token-cannot-be-forged

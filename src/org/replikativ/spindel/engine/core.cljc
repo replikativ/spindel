@@ -68,8 +68,21 @@
     (assoc current :bindings (:bindings saved))
     saved))
 
+(defn capture-context-scope
+  "Pure lexical scope data for a trampoline bounce. No runtime is retained."
+  [context]
+  (:bindings context))
+
+(defn restore-context-scope
+  "Restore scope data onto the context selected by the runner."
+  [captured current]
+  (when current (assoc current :bindings captured)))
+
 #?(:clj
-   (ioc/register-binding-restorer! `*execution-context* `restore-scope))
+   (do
+     (ioc/register-binding-restorer! `*execution-context* `restore-scope)
+     (ioc/register-binding-scope! `*execution-context*
+                                  `capture-context-scope `restore-context-scope)))
 
 (def ^:dynamic *spin-id*
   "The spin whose body is currently executing on this call stack.
