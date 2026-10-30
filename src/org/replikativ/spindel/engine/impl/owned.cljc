@@ -631,10 +631,15 @@
       (queue-cleanup! rt ticket)
       ticket)))
 
+(defn- unfinished-cps-subtree? [run]
+  ;; Run ownership is a forest. Inspect its existing child index without
+  ;; allocating retention tables for a completely returned subtree.
+  (or (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
+      (any! (a run r-childruns) unfinished-cps-subtree?)))
+
 (defn- retain-cleanup! [rt root-run]
   (when-let [profile (runtime-field rt :finalization)]
-    (when (or (and (a root-run r-entered) (#{:running :parked :stale} (a root-run r-status)))
-              (pos? (count! (a root-run r-childruns))) (not (empty-dict? (a profile 0))))
+    (when (or (not (empty-dict? (a profile 0))) (unfinished-cps-subtree? root-run))
     ;; Capture the whole subtree before recursive retirement mutates ownership.
       (let [owners (members) identities (id-dict)]
         (letfn [(visit [run]
