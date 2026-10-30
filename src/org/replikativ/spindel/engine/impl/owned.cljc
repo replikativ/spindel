@@ -342,7 +342,14 @@
 (defrecord Source [id family allocation])
 (defrecord Ticket [id])
 (defrecord Delivery [family world obligation])
-(defrecord RootOwner [id])
+(deftype RootOwner [id]
+  ;; Runtime identity is opaque even when independent worlds have the same
+  ;; symbolic model coordinate. The sole field is data, never the runtime.
+  #?(:clj clojure.lang.ILookup :cljs ILookup)
+  (#?(:clj valAt :cljs -lookup) [_ key]
+    (when (= :id key) id))
+  (#?(:clj valAt :cljs -lookup) [_ key not-found]
+    (if (= :id key) id not-found)))
 (defrecord Failure [error])
 
 (defn- diagnostic-value [value failed?]

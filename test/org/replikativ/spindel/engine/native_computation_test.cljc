@@ -15,6 +15,25 @@
 (defn- invoke! [rt target id body values]
   (rtp/invoke-computation! rt target id body #(swap! values conj %) #(throw %) :callback))
 
+(deftest native-world-identities-remain-distinct-for-equal-model-coordinates
+  (let [a (owned/runtime {:bindings nil :metadata nil})
+        b (owned/runtime {:bindings nil :metadata nil})
+        decorated (assoc a :bindings {:scope :lexical})
+        identity-a (rtp/world-identity a)
+        identity-b (rtp/world-identity b)]
+    (is (= [:root owned/w] (:id identity-a)))
+    (is (= (:id identity-a) (:id identity-b)) "Symbolic owner projection stays unchanged")
+    (is (not (identical? identity-a identity-b)))
+    (is (not= identity-a identity-b))
+    (is (= 2 (count #{identity-a identity-b})))
+    (is (= 2 (count (assoc {} identity-a :a identity-b :b))))
+    (is (identical? identity-a (rtp/world-identity decorated)))
+    (is (true? (ec/same-world? a decorated)))
+    (is (false? (ec/same-world? a b)))
+    (is (= [:root owned/w] (get identity-a :id :missing)))
+    (is (= :missing (get identity-a :absent :missing)))
+    (is (nil? (get identity-a :absent)))))
+
 (deftest constructors-are-lazy-and-capture-changes-select-a-cold-generation
   (let [rt (owned/runtime {:audit? true}) calls (atom []) values (atom [])
         a (target) b (target)
