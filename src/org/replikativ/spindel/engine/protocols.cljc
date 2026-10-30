@@ -326,3 +326,10 @@
     "Direct two-argument Mailbox CPS invocation.")
   (invoke-public-mailbox-next! [ctx ref resolve reject]
     "Callable next step, preserving CPS return values and yielding [value ref]."))
+
+(defprotocol PTimers
+  "Typed timer waits owned by an admitted ordinary computation. Logical
+   cancellation revokes callback admission; physical return is separate evidence."
+  (await-public-timer! [ctx delay-ms value resolve reject]
+    "Park the current computation until its timer fires with successful value.
+     Registration and callback admission use the selected world and generation."))

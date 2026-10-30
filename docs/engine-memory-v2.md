@@ -645,6 +645,32 @@ retaining the world. Buffered data alone does not root an unreachable Mailbox;
 pending takes, reservations, queued posts and physical callbacks do. Fork/cut
 copying and recovery of these controls remain explicit refusal boundaries.
 
+Ordinary `sleep` now registers a typed native timer only when its body executes.
+Its cold body captures duration/value, not its creating world. Timer records keep
+logical disposition, installation, platform-handle release and admitted callback
+frames separate. Installation stays on the existing ordinary physical slice;
+seating a returned handle does not return that slice. A synchronous timer queues
+readiness until installation returns. A callback's finally accounts for all drain
+and trampoline work executed on its stack, even if the body already completed.
+
+The internal timer transport captures no ambient bindings. JVM delays use the
+shared daemon timer service and a neutral borrowed worker; JS uses a neutral
+timer callback. Only weak runtime references and immutable IDs cross that seam.
+Admission is checked before application payload/continuation access. Cancellation
+revokes future entry atomically and releases known or late-arriving handles through
+a fenced postcommit command. Failed release reports a fault without replacing the
+application result or claiming successful platform disposal. Cancellation of a
+handle never substitutes for an admitted callback's actual physical return.
+Capability-free queued platform wrappers may still run to observe revocation;
+the native join guarantee does not claim OS thread or executor shutdown.
+
+Live timer ancestry follows ordinary ownership adoption; retirement freezes the
+minimal unwinding witness. Typed timer fork/cut copying currently refuses before
+mutation. True process loss still destroys volatile timers and callbacks; it does
+not reconstruct them. Public virtual-clock controls, protected/raw timer child
+admission and general native executor configuration remain separate integration gates; native
+`:executor` options still refuse explicitly.
+
 External resource adapters, broader typed cleanup capabilities,
 component ownership, complete forks/cuts/world release, physical callback joining
 and recovery remain replacement gates. Separate

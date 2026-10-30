@@ -244,6 +244,16 @@
          ;; leak a pending timer for a completed / cancelled delayed spin.
          (js/setTimeout bound-spin-fn delay-ms)))))
 
+(defn ^:no-doc schedule-native-delay!
+  "Internal capture-free delay dispatcher. Unlike PExecutor, this does not
+   capture bindings or select an application executor. The supplied task must
+   only hand off neutral work; it must not run application bodies on the shared
+   JVM delay thread. Cancellation of its handle does not prove task return."
+  [delay-ms task]
+  #?(:clj (.schedule ^ScheduledExecutorService @delay-executor ^Runnable task
+                     (long delay-ms) TimeUnit/MILLISECONDS)
+     :cljs (js/setTimeout task delay-ms)))
+
 #?(:clj
    (do
      (defn ^:no-doc thread-pool-executor

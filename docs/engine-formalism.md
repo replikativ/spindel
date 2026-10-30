@@ -1711,6 +1711,46 @@ Mailbox fork/cut copying and recovery refuse before mutation in this profile.
 Operation combinations use explicit traces and native audit replay; the optional
 bounded Mailbox search alphabet covers host source/post/take/poll actions only.
 
+**Typed ordinary timers.** A lazy `sleep` body registers one `:timer` obligation
+and a `:timer-resource` native participant, identified by `[:timer w o]`. The
+obligation links to that participant. Its logical phase (`:armed`, `:fired`,
+`:failed`, `:revoked`), installation state, handle-release state and exact callback
+frame set are independent. The registered successful value is not an error
+disposition, even when nil, false or exception-shaped.
+
+| Transition | Effect |
+|---|---|
+| `timer-register` | Validate the exact admitted ordinary run and physical installer slice; park its typed wait before transport runs outside the gate. |
+| `timer-install-result` | Record the synchronous installation result on that same still-executing installer slice. Seat a live handle or queue its late release. An installation error rejects an armed wait; an error after another outcome won is an out-of-band fault. |
+| `timer-fire` | Atomically claim an exact callback frame and deliver the registered value or explicit transport failure through the ordinary scheduler. Revoked, obsolete and duplicate callbacks cannot enter. |
+| `timer-handle-release` | Claim the exact postcommit release command once, then record returned success or reported failure. This witnesses a disposal attempt, not physical task termination. |
+| `timer-return` | Remove the admitted callback frame only after its real call chain, including nested drain/trampoline work, has returned. |
+
+Ending the armed obligation atomically revokes timer admission. Generic T6/host
+delivery cannot wake a typed timer or supply its value. The ordinary installer
+borrows its existing physical slice: T38 refuses while installation is pending,
+and a seated handle does not remove that physical evidence. Synchronous readiness
+queues work until installation returns. A callback frame remains visible through
+logical completion or cancellation. Live ancestry follows ordinary run adoption;
+retirement freezes the current ancestry and retains only the minimal unwinding
+witness required by outstanding installation, release or callback evidence.
+
+The transport retains only weak runtime references and immutable IDs. A queued
+capability-free platform wrapper may still run after revocation; this profile
+does not promise OS task termination. Failed handle release is reported explicitly
+without changing an already selected application result or claiming successful
+disposal. Registration, values, callbacks and handles leave no completed resource
+history once their required bookkeeping ends.
+
+Protected/raw timer admission, public virtual clocks and native timer fork/cut
+copying remain unsupported in this profile. Their preflight refusals leave state
+unchanged. T31 still models true process loss without a precondition: volatile
+timers, callbacks and worlds disappear; restart recovers only the existing durable
+settlement authority, not these resource registrations. The opt-in finite timer
+alphabet and explicit traces supplement literal public continuation, concurrency
+and retained-heap tests; none establishes
+general external producer shutdown or the complete default-engine replacement.
+
 **D. Host GC (idle caches only)**
 
 | T | Transition | Pre | Effect | Re-establishes |
