@@ -2328,7 +2328,11 @@
                 s (update-in s [:env :native]
                              #(into {} (for [[n native] %]
                                          [n (cond-> native
-                                              (and (= w (first (:owner native))) (not= :joined (:state native)))
+                                              ;; Raw receipts froze their ancestry at first
+                                              ;; physical claim (or queued rejection). Their
+                                              ;; ordinary owner row may already be gone.
+                                              (and (= w (first (:owner native))) (not= :joined (:state native))
+                                                   (not (cleanup/mailbox-callback? native)))
                                               (assoc :anchor (owner-chain s w (second (:owner native))))
                                               (and (= w (first (:owner native))) (cleanup/mailbox-callback? native))
                                               (assoc :retired? true))])))]

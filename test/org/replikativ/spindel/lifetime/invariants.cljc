@@ -1003,6 +1003,14 @@
       :else (recur (or (:owner (m/run s w id)) (get-in s [:worlds w :scopes id :parent]))
                    (conj seen id) (conj result id)))))
 
+(defn- participant-ancestry [s w r participant]
+  ;; Raw Mailbox callbacks are independent of the lifetime of their former
+  ;; ordinary owner row. Other participants follow ordinary adoption until
+  ;; retirement snapshots that ownership into the unwinding run's anchor.
+  (if (cleanup/mailbox-callback? participant)
+    (:anchor participant)
+    (physical-ancestry s w r)))
+
 (defn released-join-evidence-errors
   "Before world rows disappear, physical participants must retain the exact
    ancestry needed for run/scope/world joins. Do not derive it from their new
@@ -1027,7 +1035,7 @@
                             (not (and (cleanup/timer-resource? native) (nil? current)
                                       (not= :pending (:install native)) (empty? (:frames native))
                                       (#{:none :released :failed} (:handle native)))))
-                 :let [expected (physical-ancestry before w r)]
+                 :let [expected (participant-ancestry before w r native)]
                  :when (or (not= [w r] (:owner current)) (= :joined (:state current))
                            (not= expected (:anchor current)))]
              {:w w :native n :r r :expected expected :actual current}))))
@@ -1049,7 +1057,7 @@
                             (or (= x w) (= x r)
                                 (some #{x} (if (= :released (:status (m/wr before w)))
                                              (:anchor participant)
-                                             (physical-ancestry before w r)))))
+                                             (participant-ancestry before w r participant)))))
           busy (into busy
                      (concat
                       (for [[_ thread] (get-in before [:env :threads])
