@@ -44,6 +44,12 @@
    :ns-regexp "differential-fuzz.*-test$"
    :compiler-options {:optimizations :none}}
 
+  :native-cell-gc
+  {:target :node-script
+   :output-to "out/native-cell-gc.js"
+   :main org.replikativ.spindel.engine.native-cell-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"

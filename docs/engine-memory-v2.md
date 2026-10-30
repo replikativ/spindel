@@ -414,10 +414,24 @@ if its parent group is subsequently replaced by a scalar, vector or nil. Direct
 reads and bulk views must agree. Untouched cells do not pin historical parent
 application maps. Immutable diagnostic views remain unchanged after later writes.
 
-The native root-world extension-cell facility does not yet implement scoped
-RuntimeAtom allocation/release, listener egress, component ownership or world
-release. Those require typed lifecycle integration in addition to generic cell
-payload updates; passing extension-cell tests does not close those gates.
+The native backend also implements `PRuntimeCells` through typed RuntimeAtom
+operations. Atom nodes carry an immutable value/metadata payload and a fresh
+allocation stamp; per-world mutable auxiliary storage holds watches and active
+operation claims. Context views with different lexical bindings resolve to the
+same canonical world storage, while an explicit other-world target keeps its
+own root authority. Native body and cleanup dispatch select that canonical
+execution context; registered CPS scope adapters restore only lexical data.
+
+Watch edits are fork-local metadata changes and do not freeze an inherited
+payload. The first value write copies following storage and preserves those
+local watches. User transformations and watch-key hashing run outside the gate;
+commit revalidates allocation, owner generation, payload and watch roots.
+Ordinary reads validate and consume the payload directly inside the gate.
+Captured watches run synchronously after commit in the selected writer context.
+Operation claims defer host collection through transforms, watch delivery and
+drain; logical owner retirement remains decisive. Full callback physical
+joining, component ownership and world release still require the public
+lifecycle adapter. Passing cell tests does not close those gates.
 
 The public RuntimeAtom adapter uses typed `PRuntimeCells` operations. Every
 supported wrapper reconstruction keeps the allocation's shared host-liveness
@@ -437,9 +451,16 @@ wrappers are unreachable, not merely the allocating wrapper. Reaping refuses
 while ordinary obligations, pending completions, pins, operation claims, foreign
 dependencies or following descendants require storage. It leaves the owner live
 and never removes protected cleanup payloads, which survive until physical
-return. Native managed-cell storage, notification authority and retry of blocked
-host receipts still need executable integration; these transitions do not close
-the public-runtime replacement gate.
+return. Native operations retain blocked receipts and retry affected allocation IDs
+after blocker changes or operation return. A family dirty-ID queue makes an
+ordinary publication with no GC work independent of the managed-cell count;
+retries inspect only queued IDs across the family. A copy-on-write operation or parked fork that copies an
+already-unreachable allocation inherits its host receipt. Family collection
+publishes each receipt before sweeping, then reclaims pending ancestors before
+descendants, so removing a child copy cannot strand required parent backing.
+Receipts retain only world/entity/allocation identifiers and disappear after
+reaping; protected cleanup storage remains independent. Full public callback
+and world-release integration remains a replacement gate.
 
 The cell-handle suite also runs separately under Node `--expose-gc`, alongside
 the normal full CLJS suite. The legacy exposed-GC DOM regression
