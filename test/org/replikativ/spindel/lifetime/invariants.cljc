@@ -728,8 +728,11 @@
               [[w (:mailbox-post event) (:message-id event)] (:value event)]))
    (mailbox-stores s)))
 
+(defn process-loss? [action]
+  (and (= :t31 (:t action)) (not= :restart (:phase action))))
+
 (defn mailbox-edge-errors [{:keys [before action after refusal observation]}]
-  (when (and (not refusal) (not observation))
+  (when (and (not refusal) (not observation) (not (process-loss? action)))
     (let [old (mailbox-unentered before) current (mailbox-unentered after)
           stores-before (mailbox-stores before) stores-after (mailbox-stores after)
           entered (for [ev (:events after)
@@ -781,11 +784,92 @@
               :when (not= (get old key) (:value ev))]
           {:message key :counterfeit-mailbox-entry {:expected (get old key) :actual (:value ev)}}))))))
 
+(defn timer-errors
+  "Typed timer identity, logical wait and independent physical/disposal barriers."
+  [s]
+  (vec
+   (concat
+    (for [[n row] (get-in s [:env :native]) :when (cleanup/timer-resource? row)
+          :let [[w r] (:owner row) o (:o row) ob (get-in s [:worlds w :obligations o])
+                armed? (= :armed (:phase row)) installer (get-in s [:env :threads (:installer row)])]
+          :when (or (not= n [:timer w o]) (not= :running (:state row))
+                    (not (#{:armed :fired :failed :revoked} (:phase row)))
+                    (not (#{:pending :seated :none :failed} (:install row)))
+                    (not (#{:none :present :release-pending :release-claimed :released :failed} (:handle row)))
+                    (not (set? (:frames row)))
+                    (not (set/subset? (:frames row) #{[:timer-frame n 0]}))
+                    (and (seq (:frames row)) (not (#{:fired :failed} (:phase row))))
+                    (not= armed? (contains? row :value))
+                    (and armed? (not (and (= :timer (:kind ob)) (= n (:timer ob))
+                                          (= [:run w r] (:creditor ob)) (= :armed (:slot ob))
+                                          (= :parked (:status (m/run s w r))))))
+                    (and (not armed?) (= n (:timer ob)))
+                    (and (= :pending (:install row))
+                         (not (and (= [w r] [(:world installer) (:run installer)]) (:executing? installer))))
+                    (and (#{:pending :none :failed} (:install row)) (not= :none (:handle row)))
+                    (and armed? (not (#{:none :present} (:handle row))))
+                    (and (not armed?) (= :present (:handle row)))
+                    (not= (:anchor row) (if (:retired? row) (:anchor row) (m/owner-chain s w r)))
+                    (not (and (vector? (:anchor row)) (= r (first (:anchor row))) (= w (last (:anchor row)))))
+                    (and (not armed?) (not= :pending (:install row)) (empty? (:frames row))
+                         (#{:none :released :failed} (:handle row))))]
+      {:timer n :row row :obligation ob})
+    (for [[w world] (:worlds s) [o ob] (:obligations world) :when (:timer ob)
+          :let [row (get-in s [:env :native (:timer ob)])]
+          :when (not (and (cleanup/timer-resource? row) (= :armed (:phase row))
+                          (= o (:o row)) (= (:creditor ob) (into [:run] (:owner row)))))]
+      {:w w :o o :unbacked-timer ob}))))
+
+(defn timer-edge-errors
+  "Conserve admitted callback frames and registered data independently of indices."
+  [{:keys [before action after refusal]}]
+  (when (and (not refusal) (not= :join (:t action)) (not (process-loss? action)))
+    (let [t (:t action) n (:n action) old (get-in before [:env :native n])
+          [w r] (:owner old) o (:o old) ob (get-in before [:worlds w :obligations o])
+          fires? (and (= :timer-fire t) (cleanup/timer-resource? old) (= :armed (:phase old))
+                      (= w (:w action)) (= :live (:status (m/wr before w)))
+                      (= :open (:admission (m/wr before w))) (= :parked (:status (m/run before w r)))
+                      (= r (m/current before w (first r))) (= n (:timer ob)) (= :armed (:slot ob)))
+          entries (filter #(= :timer-entry (:event %)) (:events after))]
+      (vec
+       (concat
+        (when (not= (if fires? 1 0) (count entries))
+          [{:timer n :unexpected-entries (vec entries) :expected-entry? (boolean fires?)}])
+        (for [ev entries
+              :when (or (not= (select-keys action [:n :frame :variant :value])
+                              (select-keys ev [:n :frame :variant :value]))
+                        (not= [w r o] [(:world ev) (:r ev) (:o ev)])
+                        (and (= :ok (:variant ev)) (not= (:value old) (:value ev))))]
+          {:timer n :forged-entry ev})
+        (for [[id row] (get-in before [:env :native]) :when (cleanup/timer-resource? row)
+              :let [current (get-in after [:env :native id])
+                    returned? (and (= :timer-return t) (= id n))
+                    entered? (and fires? (= id n))
+                    expected (cond entered? #{(:frame action)} returned? #{} :else (:frames row))]
+              :when (or (not= expected (get current :frames #{}))
+                        (and current (not= (:owner row) (:owner current)))
+                        (and (:retired? row) current (not= (:anchor row) (:anchor current)))
+                        (and (seq (:frames row)) (not returned?) (nil? current)))]
+          {:timer id :physical-or-owner-conservation {:before row :after current :action action}})
+        (for [[id row] (get-in before [:env :native]) :when (cleanup/timer-resource? row)
+              :let [current (get-in after [:env :native id])]
+              :when (and (nil? current)
+                         (or (and (= :pending (:install row))
+                                  (not (and (= id n) (= :timer-install-result t))))
+                             (and (#{:present :release-pending :release-claimed} (:handle row))
+                                  (not (and (= id n) (= :timer-handle-release t) (= :returned (:phase action)))))))]
+          {:timer id :lost-install-or-disposal-receipt row})
+        (for [[id row] (get-in after [:env :native])
+              :when (and (cleanup/timer-resource? row) (nil? (get-in before [:env :native id]))
+                         (not (and (= :timer-register t) (= id n) (= :pending (:install row))
+                                   (= :armed (:phase row)) (empty? (:frames row)))))]
+          {:timer id :unregistered-resource row}))))))
+
 (def predicates
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates))))
@@ -939,7 +1023,10 @@
              {:w w :thread th :r r :expected expected :actual current})
            (for [[n native] (get-in before [:env :native])
                  :let [[world r] (:owner native) current (get-in after [:env :native n])]
-                 :when (and (= w world) (not= :joined (:state native)))
+                 :when (and (= w world) (not= :joined (:state native))
+                            (not (and (cleanup/timer-resource? native) (nil? current)
+                                      (not= :pending (:install native)) (empty? (:frames native))
+                                      (#{:none :released :failed} (:handle native)))))
                  :let [expected (physical-ancestry before w r)]
                  :when (or (not= [w r] (:owner current)) (= :joined (:state current))
                            (not= expected (:anchor current)))]
@@ -1074,7 +1161,7 @@
   "Independently conserve callback input, terminal selection and physical receipts.
   Deferred assignment may publish registration readiness but never the outer result."
   [{:keys [before action after refusal]}]
-  (when-not refusal
+  (when (and (not refusal) (not (process-loss? action)))
     (vec
      (concat
       (for [[n ticket] (get-in before [:env :native]) :let [op (:operation ticket)] :when op
@@ -1136,7 +1223,7 @@
   their own physical return."
   [{:keys [before action after refusal observation]}]
   (when (and (get-in before [:model :cps-exit?]) (not refusal) (not observation)
-             (not= :t31 (:t action)))
+             (not (process-loss? action)))
     (let [w (:w action)
           effective (loop [a action]
                       (case (:t a)
@@ -1201,7 +1288,8 @@
         body-entries (filter #(= :body-entry (:event %)) events)]
     (vec
      (keep identity
-           [(when-let [bad (seq (mailbox-edge-errors edge))] {:id :TL22 :evidence (vec bad)})
+           [(when-let [bad (seq (timer-edge-errors edge))] {:id :TL23 :evidence (vec bad)})
+            (when-let [bad (seq (mailbox-edge-errors edge))] {:id :TL22 :evidence (vec bad)})
             (when-let [bad (seq (cleanup-edge-errors edge))] {:id :TL21 :evidence (vec bad)})
             (when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
             (when-let [bad (seq (released-join-evidence-errors edge))] {:id :TL19 :evidence (vec bad)})
@@ -1389,6 +1477,10 @@
                            [(:world ev) (:e ev) (:consumer ev)])
                  repeated (filter #(> (val %) 1) (frequencies entries))]
              (when (seq repeated) [{:id :TL1 :evidence {:duplicate-mailbox-entries (vec repeated)}}]))
+           (let [entries (for [edge trace :when (not (:refusal edge))
+                               ev (:events (:after edge)) :when (= :timer-entry (:event ev))] (:n ev))
+                 repeated (filter #(> (val %) 1) (frequencies entries))]
+             (when (seq repeated) [{:id :TL1 :evidence {:duplicate-timer-entries (vec repeated)}}]))
            (when (and maximal? adapters-answer? crashes-stop? (seq incomplete)
                       (not-any? #(some :permanent? (:steps %)) (vals (m/all-records last-state))))
              [{:id :TL12 :evidence {:nonterminal (into {} incomplete)}}])

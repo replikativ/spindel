@@ -11,6 +11,8 @@
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.addressing :as addressing]
             [org.replikativ.spindel.engine.cell-handles :as cell-handles]
+            [org.replikativ.spindel.engine.timer-transport :as timer-transport]
+            [org.replikativ.spindel.engine.fault :as fault]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as delta]))
 
@@ -320,7 +322,7 @@
 (def ^:const r-owned 9) (def ^:const r-backlinks 10) (def ^:const r-childruns 11) (def ^:const r-physical 12) (def ^:const r-anchor 13) (def ^:const r-origin 14) (def ^:const r-source-world 15) (def ^:const r-wide 16) (def ^:const r-reactives 17) (def ^:const r-ancestors 18) (def ^:const r-validation-lost 19)
 (def ^:const r-entered 20) (def ^:const r-finalization-seq 21)
 (def ^:const r-exit 22) (def ^:const r-cancel-cont 23)
-(def ^:const r-address 24)
+(def ^:const r-address 24) (def ^:const r-timers 25)
 
 ;; Protected tickets contain identity, continuations and opaque retained payloads.
 ;; They never retain a retired logical run or its ownership graph.
@@ -372,7 +374,7 @@
 (def ^:const o-live 12) (def ^:const o-value 13) (def ^:const o-host 14)
 (def ^:const o-address 19)
 (def ^:const o-body 20)
-(def ^:const o-signal-generation 21) (def ^:const o-mailbox 22)
+(def ^:const o-signal-generation 21) (def ^:const o-mailbox 22) (def ^:const o-timer 23)
 (def ^:const o-origin 15) (def ^:const o-source-world 16) (def ^:const o-creditor-generation 17) (def ^:const o-creditor-node 18)
 (def ^:const t-id 0) (def ^:const t-spin 1) (def ^:const t-reachable 2)
 (def ^:const t-touched 3) (def ^:const t-dropped 4) (def ^:const t-family 6)
@@ -395,11 +397,17 @@
 
 (defn- diagnostic-value [value failed?]
   (if failed? (->Failure value) value))
+ ;; Timer lifetime is separate from its ended logical wait and opaque handle.
+(def ^:const z-id 0) (def ^:const z-run 1) (def ^:const z-ob 2)
+(def ^:const z-order 3) (def ^:const z-delay 4) (def ^:const z-value 5)
+(def ^:const z-phase 6) (def ^:const z-install 7) (def ^:const z-handle-state 8)
+(def ^:const z-handle 9) (def ^:const z-frames 10)
 (defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
 (declare read-application-state swap-application-state! cas-application-state!
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
          register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
+         await-public-timer! timer-revoke! timer-profile-view prune-timer-queue! same-cell-world?
          create-public-deferred! claim-public-deferred! deliver-public-deferred! read-public-deferred invoke-public-deferred!
          operation-deliver! protect-deferred! start-protected-operation! invoke-operation-ready! operation-terminal! operation-check!
          create-public-mailbox! post-public-mailbox! take-public-mailbox-now! invoke-public-mailbox! invoke-public-mailbox-next!
@@ -411,7 +419,10 @@
          await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts home liveness extension-state finalization managed-cells trace-address]
+                         operations posts home liveness extension-state finalization managed-cells trace-address timers]
+  rtp/PTimers
+  (await-public-timer! [this delay-ms value resolve reject]
+    (await-public-timer! this delay-ms value resolve reject))
   rtp/PMailboxSynchronization
   (create-public-mailbox! [this id] (create-public-mailbox! this id))
   (post-public-mailbox! [this target value]
@@ -509,7 +520,7 @@
 
 (defn runtime
   ([] (runtime {}))
-  ([{:keys [audit? record-audit? world-id cps-exit? on-finalization-result bindings metadata] :or {record-audit? true world-id w}}]
+  ([{:keys [audit? record-audit? world-id cps-exit? on-finalization-result bindings metadata timer-transport] :or {record-audit? true world-id w}}]
    (let [family (id-dict) gate #?(:clj (Object.) :cljs nil)
          rt (->OwnedRuntime
              gate (id-dict) (dict) (queue) (queue) (queue)
@@ -532,7 +543,8 @@
              (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
                    (put 3 (members)) (put 4 (queue)) (put 5 (dict))) (atom {:values {} :shadowed #{} :map-groups #{}})
              (when cps-exit? (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict)) (put 4 on-finalization-result)))
-             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1))
+             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1)
+             (doto (slots 3) (put 0 (id-dict)) (put 1 (or timer-transport timer-transport/default-transport)) (put 2 (queue))))
          rt (cond-> rt bindings (assoc :bindings bindings) metadata (assoc :metadata metadata))]
      (assoc! family world-id rt)
      rt)))
@@ -1005,6 +1017,7 @@
 
 (defn- end-ob! [rt ob]
   (when (a ob o-live)
+    (when-let [timer (a ob o-timer)] (timer-revoke! rt timer))
     (when-let [consumer (a ob o-mailbox)]
       (when-not (#{:claimed :entered} (a consumer b-state)) (mailbox-detach! rt consumer)))
     (put ob o-live false)
@@ -1114,7 +1127,7 @@
                (put run field empty-members)
                (clear-members! (a run field))))
     (put run r-wide nil)
-    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives r-validation-lost r-entered r-finalization-seq r-exit r-cancel-cont r-address]]
+    (fields! [field [r-node r-gen r-owner r-pred r-status r-seq r-physical r-anchor r-origin r-source-world r-reactives r-validation-lost r-entered r-finalization-seq r-exit r-cancel-cont r-address r-timers]]
              (put run field nil))
     (let [pool (a (runtime-field rt :counters) 0)]
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
@@ -1126,7 +1139,7 @@
    (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
      (let [node (a run r-node)
            _ (retain-cleanup! rt run cancellation)
-           physical? (or (a run r-physical) (a run r-exit))
+           physical? (or (a run r-physical) (a run r-exit) (pos? (long (or (a run r-timers) 0))))
            anchor (when physical?
                     (loop [owner run chain []]
                       (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
@@ -1308,6 +1321,7 @@
 
 (defn- boundary! [rt action]
   (reclaim! rt)
+  (when (prune-timer-queue! rt) (reclaim! rt))
   (prune-ancestry! rt)
   (when-let [audit (runtime-field rt :audit)]
     (audit-derived-state! rt)
@@ -1622,7 +1636,7 @@
 
 (defn- run-slots! [rt]
   (or (pop! (a (runtime-field rt :counters) 0))
-      (let [run (slots 25)]
+      (let [run (slots 26)]
         (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                  (put run field empty-members))
         run)))
@@ -1659,7 +1673,7 @@
     (mark! rt node) run))
 
 (defn- ob! [rt kind debtor run order resolve reject]
-  (let [ob (slots 23) id (a (runtime-field rt :serial) 0)]
+  (let [ob (slots 24) id (a (runtime-field rt :serial) 0)]
     (next-number! rt 0)
     (put ob o-address (when run (a run r-address)))
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
@@ -1851,6 +1865,10 @@
       (throw (ex-info "Delivery belongs to a different runtime family or world" {:world (:world delivery)})))
     (locked rt
             (check-native-caller! rt)
+            (when (find! (a (runtime-field rt :timers) 0)
+                         [:timer (runtime-field rt :world) [:o (:obligation delivery)]])
+              (throw (ex-info "Timer readiness requires its registered callback"
+                              {:error :unsupported-operation :operation :timer-delivery})))
             (when-let [ob (find! (runtime-field rt :deliveries) (:obligation delivery))]
               (let [run (a ob o-run)]
                 (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
@@ -1926,6 +1944,197 @@
                   :cancelled (when cancel (push! (runtime-field rt :posts) (doto (slots 1) (put 0 cancel))))
                   :settled nil))))
     nil))
+
+(defn- timer-row [rt timer]
+  (let [run (a timer z-run)]
+    (cond-> {:kind :timer-resource :owner [(runtime-field rt :world) (run-id run)]
+             :state :running :o [:o (a timer 11)] :order (a timer z-order) :delay-ms (a timer z-delay)
+             :phase (a timer z-phase) :install (a timer z-install) :handle (a timer z-handle-state)
+             :frames (a timer z-frames) :installer :engine
+             :retired? (= :unwinding (a run r-status))
+             :anchor (or (a run r-anchor) (run-anchor rt run))}
+      (= :armed (a timer z-phase)) (assoc :value (a timer z-value)))))
+
+(defn- timer-profile-view [rt]
+  (let [profile (profile-view rt) timers (a (runtime-field rt :timers) 0)]
+    (if (empty-dict? timers) profile
+        (update (or profile {}) :native merge
+                (into {} (for [timer (values timers)] [(a timer z-id) (timer-row rt timer)]))))))
+
+(defn- timer-action [rt timer kind]
+  {:t kind :w (runtime-field rt :world) :n (a timer z-id)})
+
+(defn- timer-prune! [rt timer]
+  (when (and (not= :armed (a timer z-phase)) (not= :pending (a timer z-install))
+             (empty? (a timer z-frames)) (#{:none :released :failed} (a timer z-handle-state))
+             (identical? timer (find! (a (runtime-field rt :timers) 0) (a timer z-id))))
+    (let [run (a timer z-run) ticket (a run r-exit)]
+      (dissoc! (a (runtime-field rt :timers) 0) (a timer z-id))
+      (put run r-timers (dec (long (a run r-timers))))
+      (put timer z-run nil) (put timer z-ob nil) (put timer z-value nil) (put timer z-handle nil)
+      (when (and (zero? (long (a run r-timers))) (= :unwinding (a run r-status))
+                 (not (a run r-physical))
+                 (or (nil? ticket) (nil? (find! (a (runtime-field rt :finalization) 0) (a ticket x-id)))))
+        (forget-run! rt run)))))
+
+(defn- prune-timer-queue! [rt]
+  (loop [changed? false]
+    (if-let [timer (pop! (a (runtime-field rt :timers) 2))]
+      (do (timer-prune! rt timer) (recur true))
+      changed?)))
+
+(defn- release-timer-handle! [rt timer]
+  (let [handle (locked rt
+                       (when (= :release-pending (a timer z-handle-state))
+                         (put timer z-handle-state :release-claimed)
+                         (boundary! rt (when (runtime-field rt :audit)
+                                         (assoc (timer-action rt timer :timer-handle-release) :phase :claim)))
+                         [(a timer z-handle)]))]
+    (when handle
+      (let [failure (try
+                      (timer-transport/cancel-native-timer! (a (runtime-field rt :timers) 1) (first handle))
+                      nil
+                      (catch #?(:clj Throwable :cljs :default) error [error]))]
+        (locked rt
+                (put timer z-handle nil)
+                (put timer z-handle-state (if failure :failed :released))
+                (timer-prune! rt timer)
+                (boundary! rt (when (runtime-field rt :audit)
+                                (cond-> (assoc (timer-action rt timer :timer-handle-release)
+                                               :phase :returned :variant (if failure :error :ok))
+                                  failure (assoc :value (diagnostic-value (first failure) true))))))
+        (when failure
+          (fault/report-fault! ::fault/executor-task-fault
+                               {:error (first failure) :site :native-timer-release}))))))
+
+(defn- queue-timer-release! [rt timer]
+  (when (= :present (a timer z-handle-state))
+    (put timer z-handle-state :release-pending)
+    (push! (runtime-field rt :posts) (doto (slots 1) (put 0 #(release-timer-handle! rt timer))))))
+
+(defn- timer-revoke! [rt timer]
+  ;; Called inside the same obligation-retirement transaction. A fired timer
+  ;; already closed entry and must not be reclassified as revoked.
+  (when (= :armed (a timer z-phase))
+    (put timer z-phase :revoked) (put timer z-value nil) (put timer z-ob nil)
+    (queue-timer-release! rt timer)
+    (push! (a (runtime-field rt :timers) 2) timer)))
+
+(defn- settle-timer! [rt timer value failed?]
+  (let [ob (a timer z-ob) run (a timer z-run)]
+    (put timer z-phase (if failed? :failed :fired))
+    (put timer z-value nil)
+    (put ob o-slot :consumed)
+    (end-ob! rt ob)
+    (put timer z-ob nil)
+    (put ob o-value value) (put ob o-delivery-error failed?)
+    (put run r-status :running)
+    (schedule! rt (a run r-node) ob)
+    (queue-timer-release! rt timer)))
+
+(defn- fire-timer! [rt id error failed?]
+  (let [claimed (locked rt
+                        (when-let [timer (find! (a (runtime-field rt :timers) 0) id)]
+                          (let [run (a timer z-run) ob (a timer z-ob)]
+                            (when (and (= :armed (a timer z-phase)) ob (a ob o-live)
+                                       (= :armed (a ob o-slot)) (= :parked (a run r-status))
+                                       (identical? run (current (a run r-node))))
+                              (let [frame [:timer-frame id 0]
+                                    value (if failed? error (a timer z-value))]
+                                (put timer z-frames #{frame})
+                                (settle-timer! rt timer value failed?)
+                                (boundary! rt (when (runtime-field rt :audit)
+                                                (assoc (timer-action rt timer :timer-fire)
+                                                       :frame frame :variant (if failed? :error :ok)
+                                                       :value (diagnostic-value value failed?))))
+                                [timer frame])))))]
+    (when claimed
+      (let [[timer frame] claimed]
+        (try
+          ;; During synchronous installation the enclosing ordinary drain is
+          ;; already active. Readiness queues work; it cannot resume it inline.
+          (drain! rt)
+          (finally
+            (locked rt
+                    (put timer z-frames (disj (a timer z-frames) frame))
+                    (timer-prune! rt timer)
+                    (boundary! rt (when (runtime-field rt :audit)
+                                    (assoc (timer-action rt timer :timer-return) :frame frame))))))))))
+
+(defn- timer-callback [rt id failed?]
+  ;; Keep this factory separate from installer closures: a JS shared lexical
+  ;; environment must not retain the run, body, value or continuations.
+  (let [weak #?(:clj (java.lang.ref.WeakReference. rt) :cljs (js/WeakRef. rt))]
+    (if failed?
+      (fn [error]
+        (when-let [target #?(:clj (.get weak) :cljs (.deref weak))]
+          (fire-timer! target id error true)))
+      (fn []
+        (when-let [target #?(:clj (.get weak) :cljs (.deref weak))]
+          (fire-timer! target id nil false))))))
+
+(defn await-public-timer! [requested delay-ms value resolve reject]
+  (when (or (active-operation) (active-mailbox-callback))
+    (throw (ex-info "Timer waits require ordinary execution admission"
+                    {:error :cleanup-only :operation :timer-wait})))
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) frame (current-activation)]
+    (when-not (and frame (same-cell-world? rt (a frame 0)) (a frame 1))
+      (throw (ex-info "Timer wait requires an ordinary computation" {:error :unsupported-operation :operation :timer-wait})))
+    ;; check-running! rejects operation/raw frames before any registration.
+    (locked rt (check-running! (a frame 1)))
+    (when-not (number? delay-ms)
+      (throw (ex-info "Timer delay must be numeric" {:error :invalid-timer-delay :delay-ms delay-ms})))
+    (let [resolve (cps-runtime/scope-continuation resolve) reject (cps-runtime/scope-continuation reject)
+          timer (locked rt
+                        (let [run (a frame 1)]
+                          (check-running! run)
+                          (when-not (and (a run r-physical) (= :running (a run r-status))
+                                         (identical? run (current (a run r-node))))
+                            (throw (ex-info "Timer installer is not current" {:error :cancelled})))
+                          (let [order (put frame 2 (inc (long (a frame 2))))
+                                ob (ob! rt :timer nil run order resolve reject)
+                                id [:timer (runtime-field rt :world) [:o (a ob o-id)]]
+                                timer (doto (slots 12)
+                                        (put z-id id) (put z-run run) (put z-ob ob) (put 11 (a ob o-id))
+                                        (put z-order order) (put z-delay delay-ms) (put z-value value)
+                                        (put z-phase :armed) (put z-install :pending) (put z-handle-state :none)
+                                        (put z-frames #{}))]
+                            (put ob o-timer timer) (put ob o-host :executor)
+                            (put run r-timers (inc (long (or (a run r-timers) 0))))
+                            (put run r-status :parked)
+                            (when (runtime-field rt :finalization) (put run r-cancel-cont reject))
+                            (assoc! (a (runtime-field rt :timers) 0) id timer)
+                            (boundary! rt (when (runtime-field rt :audit)
+                                            {:t :timer-register :w (runtime-field rt :world) :r (run-id run)
+                                             :o [:o (a ob o-id)] :n id :order order :delay-ms delay-ms :value value :th :engine}))
+                            timer)))
+          outcome (try
+                    [:ok (timer-transport/schedule-native-timer!
+                          (a (runtime-field rt :timers) 1) delay-ms
+                          (timer-callback rt (a timer z-id) false) (timer-callback rt (a timer z-id) true))]
+                    (catch #?(:clj Throwable :cljs :default) error [:error error]))
+          failed? (= :error (first outcome))
+          late-failure? (volatile! false)]
+      (locked rt
+              (if failed?
+                (do (vreset! late-failure? (not= :armed (a timer z-phase)))
+                    (put timer z-install :failed)
+                    (when (= :armed (a timer z-phase)) (settle-timer! rt timer (second outcome) true)))
+                (let [handle (second outcome)]
+                  (put timer z-install (if (some? handle) :seated :none))
+                  (when (some? handle)
+                    (put timer z-handle handle) (put timer z-handle-state :present)
+                    (when-not (= :armed (a timer z-phase)) (queue-timer-release! rt timer)))))
+              (timer-prune! rt timer)
+              (boundary! rt (when (runtime-field rt :audit)
+                              (cond-> (assoc (timer-action rt timer :timer-install-result)
+                                             :variant (if failed? :error :ok)
+                                             :handle? (and (not failed?) (some? (second outcome))))
+                                failed? (assoc :value (diagnostic-value (second outcome) true))))))
+      (when @late-failure?
+        (fault/report-fault! ::fault/executor-task-fault {:error (second outcome) :site :native-timer-install}))
+      :org.replikativ.spindel.spin/incomplete)))
 
 (defn- protected-callback [rt id sequence failed?]
   (let [weak #?(:clj (java.lang.ref.WeakReference. rt) :cljs (js/WeakRef. rt))]
@@ -2184,6 +2393,7 @@
             (when ticket (finish-cleanup-slice! rt ticket))
             (put (runtime-field rt :thread) 0 nil) (put (runtime-field rt :thread) 4 nil)
             (when (and retired-run (= :unwinding (a retired-run r-status))
+                       (zero? (long (or (a retired-run r-timers) 0)))
                        (or (nil? ticket) (nil? (find! (a (runtime-field rt :finalization) 0) (a ticket x-id)))))
               (forget-run! rt retired-run))
             (boundary! rt (when (runtime-field rt :audit) {:t :t38 :th :engine})))))
@@ -3022,6 +3232,9 @@
                            (and (or (work-status? (a run r-status)) (a run r-physical))
                                 (some #{scope} (or (a run r-anchor) (run-anchor rt run)))))
                          (items (a (runtime-field rt :counters) 6)))
+               (not-any? #(let [run (a % z-run)]
+                            (some #{scope} (or (a run r-anchor) (run-anchor rt run))))
+                         (values (a (runtime-field rt :timers) 0)))
                (not-any? #(some #{scope} (a % x-anchor))
                          (when-let [profile (runtime-field rt :finalization)] (values (a profile 0)))))))
 
@@ -3070,7 +3283,7 @@
 
 (defn snapshot [rt]
   (locked rt
-          (merge (profile-view rt)
+          (merge (timer-profile-view rt)
                  (when (a (runtime-field rt :managed-cells) 2)
                    {:source-gc (into {} (for [[id allocation] (map-value (a (runtime-field rt :managed-cells) 1))]
                                           [[(runtime-field rt :world) id allocation] true]))})
@@ -3112,6 +3325,7 @@
                                                     :standing? (a ob o-standing) :cont (when (a ob o-run) [:continuation [:o (a ob o-id)]])
                                                     :token nil :order (a ob o-order) :slot (a ob o-slot)}
                                              (a ob o-run) (assoc :origin (or (a ob o-origin) :created))
+                                             (a ob o-timer) (assoc :timer (a (a ob o-timer) z-id))
                                              (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                              (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
                   :queue (mapv (fn [event]
@@ -3156,6 +3370,8 @@
   [rt world]
   (admit-native-effect!)
   (locked rt
+          (when-not (empty-dict? (a (runtime-field rt :timers) 0))
+            (throw (ex-info "Timer fork recovery is not implemented" {:error :unsupported-operation :operation :fork-timer})))
           (when (or (some #(= :mailbox (a % n-kind)) (values (runtime-field rt :nodes)))
                     (when-let [profile (runtime-field rt :finalization)]
                       (or (some #(= :mailbox (a % 0)) (values (a profile 1)))
@@ -3214,7 +3430,7 @@
                        (put copy n-origin :inherited) (put copy n-source-world (runtime-field rt :world))
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
-                (let [copy (slots 25) node (find! node-map (a run r-node))]
+                (let [copy (slots 26) node (find! node-map (a run r-node))]
                   (assoc! run-map run copy)
                   (put copy r-node node) (put copy r-gen (a run r-gen))
                   (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
@@ -3244,7 +3460,7 @@
                          (when-let [descendant (find! run-map spawned)]
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
-                         (let [clone (slots 23)]
+                         (let [clone (slots 24)]
                            (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body o-signal-generation]]
                                     (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
@@ -3294,6 +3510,8 @@
                 protected-operations (keep #(a % x-operation)
                                            (when-let [profile (runtime-field rt :finalization)] (values (a profile 0))))]
             {:live-runs (count! runs)
+             :timer-resources (count (map-value (a (runtime-field rt :timers) 0)))
+             :timer-frames (reduce + 0 (map #(count (a % z-frames)) (values (a (runtime-field rt :timers) 0))))
              :protected-operations (count protected-operations)
              :operation-registrations (reduce + 0 (map #(count (map-value (a % p-registrations))) protected-operations))
              :operation-frames (reduce + 0 (map #(count (a % p-frames)) protected-operations))

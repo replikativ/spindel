@@ -385,6 +385,26 @@
         s (if (seq d) (update-in s [:worlds dw :fdeps] conj [:bundle v d]) s)]
     (if (seq ended) (cleanup-dependency s dw [:bundle v ended] v) s)))
 
+(defn timer-prune
+  "Resource bookkeeping may end before its borrowed ordinary slice returns.
+   The ordinary thread remains independent physical evidence through T38."
+  [s n]
+  (let [{:keys [owner phase install handle frames] :as row} (get-in s [:env :native n])
+        [w r] owner]
+    (if (and (cleanup/timer-resource? row) (not= :armed phase) (not= :pending install)
+             (empty? frames) (#{:none :released :failed} handle))
+      (let [s (update-in s [:env :native] dissoc n)]
+        (if (and (= :unwinding (:status (run s w r))) (not (physical? s w r)))
+          (update-in s [:worlds w :runs] dissoc r) s)) s)))
+
+(defn timer-revoke [s n]
+  (let [row (get-in s [:env :native n])]
+    (if (and (cleanup/timer-resource? row) (= :armed (:phase row)))
+      (timer-prune
+       (update-in s [:env :native n]
+                  #(cond-> (-> % (assoc :phase :revoked) (dissoc :value))
+                     (= :present (:handle %)) (assoc :handle :release-pending))) n) s)))
+
 (declare queue-mailbox-rejection)
 
 (defn end-obligation
@@ -405,6 +425,7 @@
                (queue-mailbox-rejection s dw e o (if cancellation (:value cancellation) :org.replikativ.spindel.engine.protocols/cancelled)) s)
            s (if (and (= :entity kind) (cleanup/mailbox-control s dw e e) (not= :delivered cause))
                (cleanup/detach-mailbox-consumer s dw e e [(if (= :host ck) :host :obligation) o]) s)
+           s (if (:timer ob) (timer-revoke s (:timer ob)) s)
            s (-> s
                  (update-in [:worlds w :obligations] dissoc o)
                  (emit {:event :obligation-exit :world w :o o :ob ob :cause cause}))
@@ -1249,6 +1270,97 @@
             (emit s {:event :resume :world w :r r :o o :one-shot? (not (:standing? ob))
                      :thread-world w :value value}))) s)) s))
 
+(defn timer-register [s {:keys [w r o n th order delay-ms value] :or {order 0} :as action}]
+  (let [thread (get-in s [:env :threads th]) rr (run s w r) expected (fresh s :o)]
+    (live! s w)
+    (require! (and (= :open (:admission (wr s w))) (= :running (:status rr))
+                   (= r (current s w (:spin rr))) (= [w r] [(:world thread) (:run thread)])
+                   (:executing? thread) (nil? (:cleanup-ticket thread))
+                   (not (cleanup/protected? (get-in s [:env :native (cleanup/ticket w r)])))
+                   (nil? (:op action)) (nil? (:callback action)))
+              ::not-timer-activation {:action action})
+    (require! (and (= o expected) (= n [:timer w o]) (number? delay-ms)
+                   (nil? (get-in s [:env :native n]))) ::not-timer-registration {:action action})
+    (let [[s _] (allocate s :o)
+          ob {:kind :timer :debtor [:host :executor] :creditor [:run w r]
+              :standing? false :cont [:continuation o] :token nil :order order
+              :origin :created :slot :armed :timer n}
+          row {:kind :timer-resource :owner [w r] :state :running :o o :order order
+               :delay-ms delay-ms :value value :phase :armed :install :pending :handle :none
+               :frames #{} :installer th :retired? false :anchor (owner-chain s w r)}]
+      (-> s (assoc-in [:worlds w :obligations o] ob)
+          (assoc-in [:worlds w :runs r :status] :parked)
+          (assoc-in [:env :native n] row)))))
+
+(defn- timer-settle [s n variant value]
+  (let [{:keys [owner o] :as row} (get-in s [:env :native n]) [w r] owner
+        s (update-in s [:env :native n]
+                     #(cond-> (-> % (assoc :phase (if (= :ok variant) :fired :failed)) (dissoc :value))
+                        (= :present (:handle %)) (assoc :handle :release-pending)))]
+    (t06-resume s {:w w :o o :value value})))
+
+(defn timer-install-result [s {:keys [w n variant handle? value] :as action}]
+  (let [row (get-in s [:env :native n])
+        installer (get-in s [:env :threads (:installer row)])]
+    (require! (and (cleanup/timer-resource? row) (= w (first (:owner row)))
+                   (= :pending (:install row)) (= (:owner row) [(:world installer) (:run installer)])
+                   (:executing? installer) (#{:ok :error} variant)
+                   (or (true? handle?) (false? handle?))
+                   (or (= :ok variant) (false? handle?)))
+              ::not-timer-install {:action action})
+    (let [armed? (= :armed (:phase row))
+          s (update-in s [:env :native n] assoc
+                       :install (if (= :error variant) :failed (if handle? :seated :none))
+                       :handle (if handle? (if armed? :present :release-pending) :none))
+          s (if (= :error variant)
+              (if armed? (timer-settle s n :error value)
+                  (emit s {:event :timer-fault :world w :n n :stage :install :value value})) s)]
+      (timer-prune s n))))
+
+(defn timer-fire [s {:keys [w n frame variant value] :as action}]
+  (let [{:keys [owner o phase] :as row} (get-in s [:env :native n]) [_ r] owner
+        ob (get-in s [:worlds w :obligations o])]
+    (require! (and (#{:ok :error} variant) (= frame [:timer-frame n 0]))
+              ::not-timer-fire {:action action})
+    ;; Cap-free late platform wrappers may call this gate; they acquire nothing.
+    (if-not (and (cleanup/timer-resource? row) (= w (first owner)) (= :armed phase)
+                 (= :live (:status (wr s w))) (= :open (:admission (wr s w)))
+                 (= :parked (:status (run s w r))) (= r (current s w (first r)))
+                 (= n (:timer ob)) (= :armed (:slot ob))) s
+            (do
+              (require! (or (= :error variant) (= value (:value row)))
+                        ::not-timer-value {:action action})
+              (let [s (assoc-in s [:env :native n :frames] #{frame})]
+                (-> s (timer-settle n variant value)
+                    (emit {:event :timer-entry :world w :n n :r r :o o :frame frame
+                           :variant variant :value value})))))))
+
+(defn timer-return [s {:keys [w n frame] :as action}]
+  (let [row (get-in s [:env :native n])]
+    (require! (and (cleanup/timer-resource? row) (= w (first (:owner row)))
+                   (= #{frame} (:frames row)) (= frame [:timer-frame n 0]))
+              ::not-timer-return {:action action})
+    (timer-prune (assoc-in s [:env :native n :frames] #{}) n)))
+
+(defn timer-handle-release [s {:keys [w n phase variant value] :as action}]
+  (let [row (get-in s [:env :native n])]
+    (require! (and (cleanup/timer-resource? row) (= w (first (:owner row)))
+                   (not= :armed (:phase row))
+                   (case phase :claim (= :release-pending (:handle row))
+                         :returned (and (= :release-claimed (:handle row)) (#{:ok :error} variant)) false))
+              ::not-timer-handle-release {:action action})
+    (let [s (assoc-in s [:env :native n :handle]
+                      (if (= :claim phase) :release-claimed (if (= :ok variant) :released :failed)))
+          s (if (and (= :returned phase) (= :error variant))
+              (emit s {:event :timer-fault :world w :n n :stage :release :value value}) s)]
+      (timer-prune s n))))
+
+(defn refresh-timer-anchors [s]
+  (update-in s [:env :native]
+             #(into {} (for [[n row] %]
+                         [n (if (and (cleanup/timer-resource? row) (not (:retired? row)))
+                              (assoc row :anchor (owner-chain s (first (:owner row)) (second (:owner row)))) row)]))))
+
 (defn t07-complete
   "T7 complete current running copy; missing/stale completions are inert."
   [s {:keys [w r value] :or {value :result}}]
@@ -1360,7 +1472,7 @@
         (update-in [:env :native]
                    #(into {} (for [[n nr] %]
                                [n (if (and (= [w r] (:owner nr)) (not= :joined (:state nr))
-                                           (not (or (cleanup/protected? nr) (cleanup/mailbox-callback? nr))))
+                                           (not (or (cleanup/protected? nr) (cleanup/mailbox-callback? nr) (cleanup/timer-resource? nr))))
                                     (assoc nr :state :cancel-requested) nr)])))
         (emit {:event :run-exit :world w :r r :cause cause
                :t (if (= cause :superseded) :t10 :t11)}))))
@@ -1375,7 +1487,11 @@
   only physical evidence. Nested teardown reaches rule L at the outer boundary."
   [s w r cause logical-effects anchor]
   (let [rr (run s w r) chain (or anchor (owner-chain s w r))
-        s (retain-cleanup-subtree s w r)]
+        s (retain-cleanup-subtree s w r)
+        s (update-in s [:env :native]
+                     #(into {} (for [[n row] %]
+                                 [n (if (and (cleanup/timer-resource? row) (= [w r] (:owner row)))
+                                      (assoc row :retired? true :anchor chain) row)])))]
     (binding [*cascading?* true]
       (let [scopes (loop [parents #{r} found #{}]
                      (let [children (set (for [[id row] (:scopes (wr s w))
@@ -1748,7 +1864,7 @@
   (or (some #(#{:deferred :mailbox} (:kind %)) (vals (:entities world)))
       (some (fn [[key cell]] (and (= w (first key)) (#{:deferred :mailbox} (:kind cell))))
             (get-in s [:env :cleanup-cells]))
-      (some #(and (= w (first (:owner %))) (or (:operation %) (cleanup/mailbox-callback? %))) (vals (get-in s [:env :native])))))
+      (some #(and (= w (first (:owner %))) (or (:operation %) (cleanup/mailbox-callback? %) (cleanup/timer-resource? %))) (vals (get-in s [:env :native])))))
 
 (defn t19-fork-following
   "T19 persistent inherited bundles, expanded here for logical-row checking."
@@ -2331,6 +2447,10 @@
 (defn t38-slice-exit [s {:keys [th]}]
   (let [{:keys [world run] :as thread} (get-in s [:env :threads th])]
     (require! run ::no-slice {:th th})
+    (require! (not-any? #(and (cleanup/timer-resource? %) (= [world run] (:owner %))
+                              (= th (:installer %)) (= :pending (:install %)))
+                        (vals (get-in s [:env :native])))
+              ::timer-install-pending {:th th})
     (-> (cleanup/slice-exit s thread)
         (update-in [:env :threads th]
                    #(-> % (assoc :run nil :scope nil :executing? false)
@@ -2354,6 +2474,8 @@
 
 (def transitions
   {:t01 t01-create-spin :t02 t02-create-signal :t03 t03-touch-keyed :t04 t04-invoke
+   :timer-register timer-register :timer-install-result timer-install-result
+   :timer-fire timer-fire :timer-return timer-return :timer-handle-release timer-handle-release
    :t05 t05-park :t06 t06-resume :t07 t07-complete :t08 t08-deliver :t09 t09-reenter
    :t10 t10-supersede :t11 t11-cancel :t12 t12-open-scope :t13 t13-close-scope
    :t14 t14-pin :t15 t15-cancel-world-work :t16 t16-handle-unreachable :t17 t17-gc-notify
@@ -2409,6 +2531,7 @@
     :signal-write [:write (:w a) (:e a)]
     :t04 [:invoke (:w a) (:e a)]
     :t05 nil
+    :timer-register [:timer-register (:w a) (:r a)]
     :mailbox-create [:mailbox-create (:w a) (:e a)]
     :mailbox-post-request [:mailbox-post (:w a) (:e a)]
     :mailbox-take [:mailbox-take (:w a) (:e a)]
@@ -2434,7 +2557,7 @@
               (refuse ::released {:w w :thread (:th a)}))
           _ (when (and unwinding?
                        (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
-                          :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe :mailbox-create :mailbox-take} t))
+                          :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe :mailbox-create :mailbox-take :timer-register} t))
               (refuse ::cancelled {:w w :r (:run thread)}))
           _ (when (and (or (:cleanup-ticket thread)
                            (cleanup/exit? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
@@ -2465,94 +2588,104 @@
           _ (let [resume (case t :t06 a :t35 (when (= :resume (get-in a [:op :kind])) (:op a)) nil)
                   ob (when resume (get-in s [:worlds (:w resume) :obligations (:o resume)]))
                   [_ dw e] (:debtor ob)]
+              (when (:timer ob)
+                (refuse ::unsupported-timer-resume {:action a}))
               (when (and ob (cleanup/mailbox-control s dw e e))
                 (refuse ::unsupported-mailbox-resume {:action a})))
+          _ (when (#{:t20 :t20q} t)
+              (let [worlds (get-in a [:participants :worlds])]
+                (when (some #(and (cleanup/timer-resource? %) (contains? worlds (first (:owner %))))
+                            (vals (get-in s [:env :native])))
+                  (refuse ::unsupported-timer-cut {:action a}))
+                (when (some #(deferred-world? s % (wr s %)) worlds)
+                  (refuse ::unsupported-resource-cut {:action a}))))
           before s s (assoc s :events [])]
       (when (and (quiescent-cut? s (acting-world s a))
                  (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11
                     :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37
-                    :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe :mailbox-create :mailbox-take} t))
+                    :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe :mailbox-create :mailbox-take :timer-register} t))
         (refuse ::not-admitted {:action a}))
-      (release-fixpoint
-       before
-       (let [s (if-let [key (budget-key a)]
-                 (update-in s [:uses key] (fnil inc 0)) s)]
-         (case t
-           :t02 (do (require! (not (#{:deferred :mailbox} (:kind a))) ::reserved-source-kind {:kind (:kind a)})
-                    (t02-create-signal s a))
-           :queued
-           (let [w (:w a) ev (first (:queue (wr s w)))
-                 _ (require! ev ::empty-queue {:w w})
-                 s (update-in s [:worlds w :queue] #(vec (rest %)))]
-             (cond (:mailbox-post ev)
-                   (mailbox-post (update-in s [:worlds w :queue] #(into [ev] %))
-                                 (assoc (dissoc ev :mailbox-post) :w w :e (:mailbox-post ev)))
-                   (:deferred-assignment ev)
-                   (deferred-assign (update-in s [:worlds w :queue] #(into [ev] %))
-                                    (assoc (dissoc ev :deferred-assignment) :w w :e (:deferred-assignment ev)))
-                   (:action ev) (step s (:action ev))
-                   (some ev [:fdep-ended :cancelled :fork-released :join-bundle]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
-                   (:start-for ev) (t37-start-for (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
-                   (:register-host ev)
-                   (let [e (:e ev) o (:register-host ev)]
-                     (if (and (ent s w e) (= :live (:status (wr s w))))
-                       (let [s (touch s w e (:tok ev))
-                             cached? (and (:completed? (ent s w e))
-                                          (not (work? (run s w (current s w e)))))
-                             s (if cached? (emit s {:event :host-delivery :world w :o o}) s)]
-                         (if (or (not cached?) (and (:standing? (:ob ev)) (not (final? s w e))))
-                           (assoc-in s [:worlds w :obligations o] (:ob ev)) s))
-                       (emit s {:event :host-delivery :world w :o o :value ::released})))
-                   (:discard ev) (let [k (:discard ev)]
-                                   (if (= :open (:disposition (cap s k)))
-                                     (t26-seal s {:k k :caller (:holder (cap s k)) :op [:implicit k] :kind :discard}) s))
-                   (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
-                   :else s))
-           :native-progress
-           (let [native (get-in s [:env :native (:n a)])
-                 [w r] (:owner native)]
-             (require! (not (or (cleanup/protected? native) (cleanup/mailbox-callback? native))) ::protected-cleanup {:n (:n a)})
-             (-> s (update-in [:env :native (:n a)]
-                              #(cond-> (merge % (select-keys a [:state :boundary?]))
-                                 (= :joined (:state a)) (dissoc :anchor)))
-                 (finish-unwinding w r)))
-           :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
-           :thread-entry
-           (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
-               (require! (and (nil? (get-in a [:thread :cleanup-ticket]))
-                              (not (cleanup/protected?
-                                    (get-in s [:env :native (cleanup/ticket (get-in a [:thread :world])
-                                                                            (get-in a [:thread :run]))]))))
-                         ::protected-cleanup {:th (:th a)})
-               (assoc-in s [:env :threads (:th a)] (:thread a)))
-           :unsubscribe
-           (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
-                 [_ dw _] (:debtor ob)]
-             (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o (:o a)})
-             (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
-           :signal-write
-           (let [w (:w a) e (:e a) er (ent s w e)]
-             (require! (not= :released (:status (wr s w))) ::released {:w w})
-             (when-not (and unwinding? (nil? er))
-               (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
-             (if (and unwinding? (nil? er)) s
-                 (if (= :fenced (:admission (wr s w)))
-                   (update-in s [:env :outside] conj
-                              {:w w :event (cond-> {:signal-write e :value (:value a)}
-                                             (false? (:publish? a)) (assoc :publish? false))})
-                   (let [s (assoc-in s [:worlds w :entities e :result] (:value a))]
-                     (if (false? (:publish? a)) s
-                         (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
-                                 s (conj (fdep-targets (wr s w) e) w)))))))
-           :arrival (cond (:mailbox-post (:event a))
-                          (mailbox-post s (assoc (dissoc (:event a) :mailbox-post)
-                                                 :w (:w a) :e (:mailbox-post (:event a))))
-                          (:deferred-assignment (:event a))
-                          (deferred-assign s (assoc (dissoc (:event a) :deferred-assignment)
-                                                    :w (:w a) :e (:deferred-assignment (:event a))))
-                          :else (enqueue s (:w a) (:event a)))
-           (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
-       (acting-world before a)))
+      (refresh-timer-anchors
+       (release-fixpoint
+        before
+        (let [s (if-let [key (budget-key a)]
+                  (update-in s [:uses key] (fnil inc 0)) s)]
+          (case t
+            :t02 (do (require! (not (#{:deferred :mailbox} (:kind a))) ::reserved-source-kind {:kind (:kind a)})
+                     (t02-create-signal s a))
+            :queued
+            (let [w (:w a) ev (first (:queue (wr s w)))
+                  _ (require! ev ::empty-queue {:w w})
+                  s (update-in s [:worlds w :queue] #(vec (rest %)))]
+              (cond (:mailbox-post ev)
+                    (mailbox-post (update-in s [:worlds w :queue] #(into [ev] %))
+                                  (assoc (dissoc ev :mailbox-post) :w w :e (:mailbox-post ev)))
+                    (:deferred-assignment ev)
+                    (deferred-assign (update-in s [:worlds w :queue] #(into [ev] %))
+                                     (assoc (dissoc ev :deferred-assignment) :w w :e (:deferred-assignment ev)))
+                    (:action ev) (step s (:action ev))
+                    (some ev [:fdep-ended :cancelled :fork-released :join-bundle]) (t36-cleanup (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
+                    (:start-for ev) (t37-start-for (update-in s [:worlds w :queue] #(into [ev] %)) {:w w})
+                    (:register-host ev)
+                    (let [e (:e ev) o (:register-host ev)]
+                      (if (and (ent s w e) (= :live (:status (wr s w))))
+                        (let [s (touch s w e (:tok ev))
+                              cached? (and (:completed? (ent s w e))
+                                           (not (work? (run s w (current s w e)))))
+                              s (if cached? (emit s {:event :host-delivery :world w :o o}) s)]
+                          (if (or (not cached?) (and (:standing? (:ob ev)) (not (final? s w e))))
+                            (assoc-in s [:worlds w :obligations o] (:ob ev)) s))
+                        (emit s {:event :host-delivery :world w :o o :value ::released})))
+                    (:discard ev) (let [k (:discard ev)]
+                                    (if (= :open (:disposition (cap s k)))
+                                      (t26-seal s {:k k :caller (:holder (cap s k)) :op [:implicit k] :kind :discard}) s))
+                    (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
+                    :else s))
+            :native-progress
+            (let [native (get-in s [:env :native (:n a)])
+                  [w r] (:owner native)]
+              (require! (not (or (cleanup/protected? native) (cleanup/mailbox-callback? native) (cleanup/timer-resource? native))) ::protected-cleanup {:n (:n a)})
+              (-> s (update-in [:env :native (:n a)]
+                               #(cond-> (merge % (select-keys a [:state :boundary?]))
+                                  (= :joined (:state a)) (dissoc :anchor)))
+                  (finish-unwinding w r)))
+            :waiter-unregister (update-in s [:env :waiters] dissoc (:token a))
+            :thread-entry
+            (do (require! (nil? (get-in s [:env :threads (:th a) :run])) ::thread-busy {:th (:th a)})
+                (require! (and (nil? (get-in a [:thread :cleanup-ticket]))
+                               (not (cleanup/protected?
+                                     (get-in s [:env :native (cleanup/ticket (get-in a [:thread :world])
+                                                                             (get-in a [:thread :run]))]))))
+                          ::protected-cleanup {:th (:th a)})
+                (assoc-in s [:env :threads (:th a)] (:thread a)))
+            :unsubscribe
+            (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
+                  [_ dw _] (:debtor ob)]
+              (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o (:o a)})
+              (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
+            :signal-write
+            (let [w (:w a) e (:e a) er (ent s w e)]
+              (require! (not= :released (:status (wr s w))) ::released {:w w})
+              (when-not (and unwinding? (nil? er))
+                (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
+              (if (and unwinding? (nil? er)) s
+                  (if (= :fenced (:admission (wr s w)))
+                    (update-in s [:env :outside] conj
+                               {:w w :event (cond-> {:signal-write e :value (:value a)}
+                                              (false? (:publish? a)) (assoc :publish? false))})
+                    (let [s (assoc-in s [:worlds w :entities e :result] (:value a))]
+                      (if (false? (:publish? a)) s
+                          (reduce #(enqueue %1 %2 {:completion e :debtor-world w :value (:value a) :source-change? true})
+                                  s (conj (fdep-targets (wr s w) e) w)))))))
+            :arrival (cond (:mailbox-post (:event a))
+                           (mailbox-post s (assoc (dissoc (:event a) :mailbox-post)
+                                                  :w (:w a) :e (:mailbox-post (:event a))))
+                           (:deferred-assignment (:event a))
+                           (deferred-assign s (assoc (dissoc (:event a) :deferred-assignment)
+                                                     :w (:w a) :e (:deferred-assignment (:event a))))
+                           :else (enqueue s (:w a) (:event a)))
+            (if-let [f (transitions t)] (f s a) (refuse ::unknown-transition {:action a}))))
+        (acting-world before a))))
     (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
       (throw (ex-info (ex-message e) (assoc (ex-data e) :state s :action a))))))
 
@@ -2690,6 +2823,39 @@
                                                     :when (not (idle? s w e))]
                                                 [e (dissoc er :tokens)]))))])))
 
+(defn timer-enabled
+  "Opt-in finite timer alphabet: bounded registrations per exact ordinary run,
+   one callback frame per registration, two handle outcomes and two variants.
+   Ordinary lifetime/adoption actions remain supplied by the surrounding model."
+  [s]
+  (when (get-in s [:model :timers?])
+    (concat
+     (for [[th thread] (get-in s [:env :threads])
+           :let [w (:world thread) r (:run thread) rr (run s w r) o (fresh s :o)]
+           :when (and r (:executing? thread) (= :running (:status rr))
+                      (= r (current s w (first r))) (nil? (:cleanup-ticket thread))
+                      (< (get-in s [:uses [:timer-register w r]] 0) (get-in s [:model :registrations] 1)))]
+       {:t :timer-register :w w :r r :th th :o o :n [:timer w o] :order 0 :delay-ms 1 :value :timer-value})
+     (mapcat
+      (fn [[n row]]
+        (when (cleanup/timer-resource? row)
+          (let [w (first (:owner row)) base {:w w :n n} frame [:timer-frame n 0]]
+            (concat
+             (when (= :pending (:install row))
+               [(assoc base :t :timer-install-result :variant :ok :handle? true)
+                (assoc base :t :timer-install-result :variant :ok :handle? false)
+                (assoc base :t :timer-install-result :variant :error :handle? false :value :install-error)])
+             (when (= :armed (:phase row))
+               [(assoc base :t :timer-fire :frame frame :variant :ok :value (:value row))
+                (assoc base :t :timer-fire :frame frame :variant :error :value :submission-error)])
+             (when (contains? (:frames row) frame) [(assoc base :t :timer-return :frame frame)])
+             (case (:handle row)
+               :release-pending [(assoc base :t :timer-handle-release :phase :claim)]
+               :release-claimed [(assoc base :t :timer-handle-release :phase :returned :variant :ok)
+                                 (assoc base :t :timer-handle-release :phase :returned :variant :error :value :release-error)]
+               [])))))
+      (get-in s [:env :native])))))
+
 (defn mailbox-enabled
   "Opt-in bounded Mailbox resource alphabet. Operation execution remains scripted."
   [s]
@@ -2779,10 +2945,11 @@
       (get-in s [:env :gc])
       (cleanup/enabled s)
       (mailbox-enabled s)
-      (for [[n nr] (get-in s [:env :native]) :when (and (not= :joined (:state nr)) (not (or (cleanup/protected? nr) (cleanup/mailbox-callback? nr))))]
+      (timer-enabled s)
+      (for [[n nr] (get-in s [:env :native]) :when (and (not= :joined (:state nr)) (not (or (cleanup/protected? nr) (cleanup/mailbox-callback? nr) (cleanup/timer-resource? nr))))]
         {:t :native-progress :n n :state :joined})
       (for [[n nr] (get-in s [:env :native])
-            :when (and (not= :joined (:state nr)) (not (:boundary? nr)) (not (or (cleanup/protected? nr) (cleanup/mailbox-callback? nr))))]
+            :when (and (not= :joined (:state nr)) (not (:boundary? nr)) (not (or (cleanup/protected? nr) (cleanup/mailbox-callback? nr) (cleanup/timer-resource? nr))))]
         {:t :native-progress :n n :state (:state nr) :boundary? true})
       (for [[token waiter] (get-in s [:env :waiters]) :when (:armed? waiter)]
         {:t :waiter-unregister :token token})

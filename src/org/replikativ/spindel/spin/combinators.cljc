@@ -4,6 +4,8 @@
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.bindings :as bindings]
             [org.replikativ.spindel.engine.executor :as executor]
+            [org.replikativ.spindel.engine.context :as ctx]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.spin.core :as spin-core]
@@ -234,75 +236,49 @@
 ;; Delay Primitive
 ;; =============================================================================
 
+(defn- await-legacy-timer! [context duration value resolve reject]
+  (let [sleep-id ec/*spin-id*
+        cont-id (keyword (str "sleep-release-" (gensym)))
+        delayed-id (volatile! nil)
+        release {:id cont-id :registration cont-id
+                 :event-key [:sleep/release sleep-id] :kind :await-reactive
+                 :reject-fn (fn [error]
+                              (when-let [id @delayed-id]
+                                (delayed/cancel-delayed-spin! (ec/current-execution-context) id))
+                              (spin-core/resume reject error))
+                 :on-resume (fn [_] nil)}]
+    (ec/continuation-add! sleep-id release)
+    (if-let [cancellation (spin-core/cancelled-after-registration sleep-id release reject)]
+      (:result cancellation)
+      (let [id (delayed/schedule-delayed!
+                context duration
+                #(when (ec/continuation-remove! sleep-id cont-id)
+                   (spin-core/resume resolve value)))]
+        (vreset! delayed-id id)
+        ;; Cancellation may win before schedule returns its handle. The late
+        ;; installer releases it; cancellation after this check sees it itself.
+        (when-not (ec/get-state [:await-conts sleep-id cont-id])
+          (delayed/cancel-delayed-spin! context id))
+        spin-core/incomplete))))
+
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PTimers
+  (await-public-timer! [context duration value resolve reject]
+    (binding [ec/*execution-context* context]
+      (await-legacy-timer! context duration value resolve reject))))
+
 (defn sleep
-  "Create a spin that completes with given value after specified duration (in milliseconds).
-
-   Example:
-     (def delayed (sleep 1000 :done))
-     (deref delayed)  ; => :done (after 1000ms)
-
-   With immediate-executor (testing):
-   - Executes immediately without delay (deterministic)
-
-   With thread-pool-executor:
-   - Sleeps the worker thread for the duration
-   - Blocks one thread from pool while sleeping"
-  ([duration]
-   (sleep duration nil))
+  "Create a lazy Spin that completes with value after duration milliseconds.
+   Construction does not arm a timer. Waiting uses the selected execution world;
+   timer transport and virtual-clock support follow that world's engine.
+   Legacy synchronous executors complete immediately without a real delay."
+  ([duration] (sleep duration nil))
   ([duration value]
-   (let [execution-context (ec/current-execution-context)
-         sleep-id (keyword (gensym "sleep-"))]
-     (binding [ec/*execution-context* execution-context]
-       (spin-core/make-spin
-        (fn [resolve reject]
-          ;; Non-blocking delay via the engine's delayed-spin scheduler.
-          ;; In real-time mode it also schedules an executor timer so the
-          ;; queued spin actually fires; in virtual time it sleeps until
-          ;; advance-time! processes it.
-          ;;
-          ;; A cancelled sleep (the losing arm of a `race`/`timeout`) must
-          ;; release its entry: otherwise the queued entry, its timer and the
-          ;; callback (with everything it reaches: the race, its awaiters,
-          ;; their worlds) stay live until the full duration has elapsed. A
-          ;; `timeout` around every Run made a long experiment hold every
-          ;; Run of the last timeout period. The release is a parked
-          ;; continuation on the sleep's own id, which `cancel-spin!` claims
-          ;; and rejects; the wake-up claims it instead when the delay ends.
-          ;; Reactive, like the race's fan-out, so the generation sweep never
-          ;; removes it between a cancel's two steps; only the wake-up or a
-          ;; cancel does.
-          (let [cont-id (keyword (str "sleep-release-" (gensym)))
-                delayed-id (volatile! nil)
-                release {:id cont-id
-                         :registration cont-id
-                         :event-key [:sleep/release sleep-id]
-                         :kind :await-reactive
-                         ;; The claiming cancel settles the sleep (its awaiters
-                         ;; see the cancellation) and releases the entry in the
-                         ;; world it runs in: a fork holds its own copy of the
-                         ;; continuation but no entry, so cancelling the sleep
-                         ;; there leaves the parent's sleep running.
-                         :reject-fn (fn [err]
-                                      (when-let [d @delayed-id]
-                                        (delayed/cancel-delayed-spin! (ec/current-execution-context) d))
-                                      (spin-core/resume reject err))
-                         :on-resume (fn [_] nil)}]
-            (ec/continuation-add! sleep-id release)
-            (if-let [cancellation (spin-core/cancelled-after-registration sleep-id release reject)]
-              (:result cancellation)
-              (let [d (delayed/schedule-delayed!
-                       execution-context duration
-                       #(when (ec/continuation-remove! sleep-id cont-id)
-                          (spin-core/resume resolve value)))]
-                (vreset! delayed-id d)
-                ;; A cancel that claimed the release between its registration
-                ;; and this point saw no entry yet: release it here. Set
-                ;; before the check, so a later claim sees the entry itself
-                ;; (releasing twice is harmless).
-                (when-not (ec/get-state [:await-conts sleep-id cont-id])
-                  (delayed/cancel-delayed-spin! execution-context d))
-                spin-core/incomplete))))
-        sleep-id)))))
+   (spin-core/make-spin
+    (fn [resolve reject]
+      (rtp/await-public-timer! (ec/current-execution-context) duration value resolve reject))
+    (keyword (gensym "sleep-")))))
 
 ;; =============================================================================
 ;; Race Combinator

@@ -356,14 +356,20 @@
 (deftest deferred-cut-capture-and-restored-basis-attach-refuse-before-mutating-authority
   (let [cut {:t :t20q :c :cut :scope [:root w]
              :participants {:worlds #{w} :components #{} :systems #{}}}
-        live (m/step (m/step (m/init-state) create) cut)
+        live (m/step (m/init-state) create)
+        fenced (assoc-in (m/step (m/init-state) cut) [:worlds w :entities :d]
+                         (m/ent live w :d))
         captured (-> (m/init-state) (m/step cut) (m/step {:t :t22 :c :cut}))
         ;; A restored basis can predate the ingress guard. It still cannot
         ;; transplant a Deferred's protected ticket identities into a child.
         restored (assoc-in captured [:cuts :cut :basis w :entities :d]
                            (m/ent (m/step (m/init-state) create) w :d))
-        cases [[live {:t :t22 :c :cut}]
+        cases [[fenced {:t :t22 :c :cut}]
                [restored {:t :t23 :c :cut :v [:w 1] :k :fork}]]]
+    ;; The bounded resource profile refuses before fencing, not merely before
+    ;; copying rows. Restored older bases still need their defensive guard.
+    (is (= ::m/unsupported-resource-cut (get-in (m/attempt live cut) [:refusal :error])))
+    (is (= live (peek (checked-walk! live [cut]))))
     ;; T22/T23 remain outside the concrete kernel profile; these checks pin the
     ;; complete symbolic boundary without expanding that implementation scope.
     (doseq [[before action] cases]

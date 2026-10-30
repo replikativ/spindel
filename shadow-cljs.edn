@@ -68,6 +68,12 @@
    :main org.replikativ.spindel.engine.native-mailbox-gc-probe/-main
    :compiler-options {:optimizations :advanced}}
 
+  :native-timer-gc
+  {:target :node-script
+   :output-to "out/native-timer-gc.js"
+   :main org.replikativ.spindel.engine.native-timer-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"

@@ -32,6 +32,8 @@
 
 (declare operation-barrier?)
 
+(defn timer-resource? [row] (= :timer-resource (:kind row)))
+
 (defn mailbox-callback? [row] (= :mailbox-callback (:kind row)))
 
 (defn mailbox-control [s w e allocation]
