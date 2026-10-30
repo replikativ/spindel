@@ -6,7 +6,7 @@
 
 (def w [:w 0])
 (def root [:root w])
-(def ancestor :ancestor)
+(def ancestor [:scope :id 0])
 (def parent [:parent 1])
 (def owner [:owner 1])
 (def consumer [:host [:o 2]])

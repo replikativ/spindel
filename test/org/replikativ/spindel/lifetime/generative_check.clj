@@ -125,12 +125,12 @@
                     {:t :join :w rooted/w :x [:physical 1] :timeout? true}
                     {:t :t38 :th :worker}
                     {:t :join :w rooted/w :x [:physical 1]}]
-                   [{:t :t12 :w rooted/w :scope :resource :parent [:root rooted/w]}
+                   [{:t :t12 :w rooted/w :scope [:scope :id 0] :parent [:root rooted/w]}
                     {:t :t01 :w rooted/w :e :scoped :tok :hp}
-                    {:t :t04 :w rooted/w :e :scoped :scope :resource :tok :hp :mode :callback}
+                    {:t :t04 :w rooted/w :e :scoped :scope [:scope :id 0] :tok :hp :mode :callback}
                     {:t :t05 :w rooted/w :r [:scoped 1] :kind :timer :debtor [:host :executor]}
                     {:t :t16 :tok :hp}
-                    {:t :t13 :w rooted/w :scope :resource}]]]
+                    {:t :t13 :w rooted/w :scope [:scope :id 0]}]]]
     (doseq [actions scenarios]
       (let [baseline (interleaved-gc-replay actions [] :lost)
             report (tc/quick-check

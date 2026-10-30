@@ -49,7 +49,7 @@
   ;; Complete traces of T1/T2/T4/T12 from model.cljc. No T13 or unsubscribe
   ;; prerequisite, and no prefix extracted from a historical counterexample.
   (let [w [:w 0] root [:root w] e [:spin 0] r [e 1] child [:spin 1]
-        s [:scope 0] child-scope [:scope 1]
+        s [:scope :id 0] child-scope [:scope :id 1]
         open {:t :t12 :w w :scope s :parent root}
         start {:t :t04 :w w :e e :mode :callback}
         lexical {:t :t01 :w w :r r :e child :tok [:tok 0] :order 0}]
@@ -69,8 +69,8 @@
                   {:t :t04 :w w :scope s :e child :mode :callback}]
      :owner-scopes [open
                     {:t :t12 :w w :scope child-scope :parent s :kind :supervisor}
-                    {:t :t12 :w w :scope [:scope 2] :parent child-scope :kind :render-root}
-                    {:t :t12 :w w :scope [:scope 3] :parent root :kind :sci-component}
+                    {:t :t12 :w w :scope [:scope :id 2] :parent child-scope :kind :render-root}
+                    {:t :t12 :w w :scope [:scope :id 3] :parent root :kind :sci-component}
                     {:t :t04 :w w :scope child-scope :e e :mode :callback}]}))
 
 (def scripted-prerequisites

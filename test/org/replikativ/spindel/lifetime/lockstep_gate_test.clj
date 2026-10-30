@@ -12,22 +12,22 @@
 (def r [e 1])
 
 (def ownership-trace
-  [{:t :t12 :w w :scope [:scope 0] :parent [:root w]}
+  [{:t :t12 :w w :scope [:scope :id 0] :parent [:root w]}
    {:t :t04 :w w :e e :mode :callback}
    {:t :t01 :w w :r r :e child :order 3}
-   {:t :t04 :w w :scope [:scope 0] :e child :mode :callback}])
+   {:t :t04 :w w :scope [:scope :id 0] :e child :mode :callback}])
 
 (deftest b1-compares-each-ownership-field
   (let [state (reduce m/step (m/init-state) ownership-trace)
         descriptors (update-vals l/components
                                  #(assoc % :enabled? (= :B1 (:step %))))]
     (is (= r (get-in state [:worlds w :entities child :owner])))
-    (is (= [:scope 0] (get-in state [:worlds w :runs [child 1] :owner])))
+    (is (= [:scope :id 0] (get-in state [:worlds w :runs [child 1] :owner])))
     (with-redefs [l/components descriptors]
       (doseq [path [[:entities child :owner] [:entities child :creator]
                     [:entities child :order] [:runs [child 1] :owner]
-                    [:scopes [:scope 0] :parent] [:scopes [:scope 0] :kind]
-                    [:scopes [:scope 0] :status]]]
+                    [:scopes [:scope :id 0] :parent] [:scopes [:scope :id 0] :kind]
+                    [:scopes [:scope :id 0] :status]]]
         (is (not= (l/comparable state)
                   (l/comparable (assoc-in state (into [:worlds w] path) :corrupt) false))
             (pr-str path))))))
@@ -38,7 +38,7 @@
       (is (= (l/comparable state)
              (l/comparable (assoc-in state [:worlds w :runs [child 1] :status] :different) false)))
       (is (not= (l/comparable state)
-                (l/comparable (assoc-in state [:worlds w :root] [:scope 999]) false))))))
+                (l/comparable (assoc-in state [:worlds w :root] [:scope :id 999]) false))))))
 
 (deftest converged-witness-corpus-includes-nested-runs
   (let [corpus (into {} (l/witnesses))]
@@ -257,9 +257,9 @@
                                [:owner-lexical [:entities child :creator]]
                                [:owner-lexical [:entities child :order]]
                                [:owner-lexical [:runs [child 1] :owner]]
-                               [:owner-scopes [:scopes [:scope 0] :parent]]
-                               [:owner-scopes [:scopes [:scope 0] :kind]]
-                               [:owner-scopes [:scopes [:scope 0] :status]]
+                               [:owner-scopes [:scopes [:scope :id 0] :parent]]
+                               [:owner-scopes [:scopes [:scope :id 0] :kind]]
+                               [:owner-scopes [:scopes [:scope :id 0] :status]]
                                [:owner-scopes [:root]]]]
           (let [project l/projection
                 result (with-redefs [l/projection (fn [driver]

@@ -6,7 +6,7 @@
 
 (def w [:w 0])
 (def run [:spin 1])
-(def scope :resource)
+(def scope [:scope :id 0])
 (def native [:cancel [:o 1]])
 
 (defn checked [state action]

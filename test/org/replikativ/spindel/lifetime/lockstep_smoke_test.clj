@@ -15,7 +15,7 @@
                                             {:t :t04 :w w :e e :mode :callback}]))))
   (is (= :passed (:status (lockstep/replay [{:t :t02 :w w :e [:signal 0] :value 1}
                                             {:t :signal-write :w w :e [:signal 0] :value 2}]))))
-  (is (= :skipped (:status (lockstep/replay [{:t :t13 :w w :scope [:scope 0]}])))))
+  (is (= :skipped (:status (lockstep/replay [{:t :t13 :w w :scope [:scope :id 0]}])))))
 
 (deftest oracle-detects-corruption
   (with-redefs [lockstep/project (fn [& _] {:entities {e {:kind :spin :completed? true :result :wrong}}})]
@@ -32,7 +32,7 @@
 
 (deftest unsupported-middle-is-not-deleted
   (let [result (lockstep/replay [{:t :t04 :w w :e e}
-                                 {:t :t13 :w w :scope [:scope 0]}
+                                 {:t :t13 :w w :scope [:scope :id 0]}
                                  {:t :t07 :w w :r [e 1]}])]
     (is (= :skipped (:status result)))
     (is (= 1 (:checked result)))
@@ -201,8 +201,8 @@
                     :compare = :available? (constantly true)}]
     (with-redefs [lockstep/components {:a (assoc descriptor :model-view :a :projected-view :a)
                                        :b (assoc descriptor :model-view :b :projected-view :b)}]
-      (is (not= (lockstep/comparable {:a {:owner [:scope 0]} :b {:scope [:scope 0]}})
-                (lockstep/comparable {:a {:owner [:scope 0]} :b {:scope [:scope 999]}} false))))))
+      (is (not= (lockstep/comparable {:a {:owner [:scope :id 0]} :b {:scope [:scope :id 0]}})
+                (lockstep/comparable {:a {:owner [:scope :id 0]} :b {:scope [:scope :id 999]}} false))))))
 
 (deftest explicitly-declared-host-templates-follow-visibility
   (let [actions [{:t :t01 :w w :e e :tok [:tok 0]}

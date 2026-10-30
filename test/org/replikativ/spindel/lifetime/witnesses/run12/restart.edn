@@ -5,10 +5,10 @@
    :k [:cap 0],
    :scope [:root [:w 0]],
    :systems #{:memory}}
-  {:t :t12, :w [:w 1], :scope [:scope 0], :parent [:root [:w 1]]}
+  {:t :t12, :w [:w 1], :scope [:scope :id 0], :parent [:root [:w 1]]}
   {:t :t04,
    :w [:w 1],
-   :scope [:scope 0],
+   :scope [:scope :id 0],
    :e [:spin 0],
    :mode :callback}
   {:t :t05,
@@ -27,6 +27,6 @@
   {:t :t11, :w [:w 1], :r [[:spin 0] 1]}
   {:t :t04,
    :w [:w 1],
-   :scope [:scope 0],
+   :scope [:scope :id 0],
    :e [:spin 1],
    :mode :callback}]}

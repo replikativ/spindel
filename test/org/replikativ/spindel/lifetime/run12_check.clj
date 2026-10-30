@@ -8,7 +8,7 @@
             [org.replikativ.spindel.lifetime.run10-check :as r10]
             [org.replikativ.spindel.lifetime.run11-check :as r11]))
 
-(def scope [:scope 0])
+(def scope [:scope :id 0])
 (def child [:spin 1])
 (def cr [child 1])
 (def sig [:signal 0])
@@ -258,7 +258,7 @@
   (let [result (checked (conj dvergr {:t :t13 :w b/v :scope scope}))
         s (:state result)
         joined (m/attempt s {:t :join :w b/v :x scope :timeout? true})]
-    (is (= :closed (get-in s [:worlds b/v :scopes scope :status])))
+    (is (nil? (get-in s [:worlds b/v :scopes scope])))
     (is (= [cr] (get-in joined [:refusal :busy])))
     (is (empty? (inv/l02 s)))
     (is (empty? (inv/l06 s)))

@@ -3,6 +3,7 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.engine.kernel :as kernel]
             [org.replikativ.spindel.lifetime.model :as model]
+            [org.replikativ.spindel.lifetime.execution-scope-model-test :as execution-scopes]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.lifetime.first-delivery-test :as handoff]
             [org.replikativ.spindel.lifetime.rooted-liveness-test :as rooted]
@@ -37,14 +38,21 @@
       (loop [expected initial remaining actions]
         (if-let [action (first remaining)]
           (let [{after :state refusal :refusal observation :observation} (model/attempt expected action)
-                actual-error (try (kernel/step! actual action) nil
-                                  (catch #?(:clj Exception :cljs :default) e
-                                    (merge {:error ::unexpected-exception :message (ex-message e)} (ex-data e))))]
+                query-before (when (= :join (:t action)) (kernel/snapshot actual))
+                attempted (try {:result (kernel/step! actual action)}
+                               (catch #?(:clj Exception :cljs :default) e
+                                 {:refusal (merge {:error ::unexpected-exception :message (ex-message e)} (ex-data e))}))
+                actual-error (:refusal attempted)]
             ;; Projection agreement alone can reproduce the same model bug.
             (is (empty? (inv/check after)) (str action))
             (is (empty? (inv/edge-check {:before expected :action action :after after
                                          :refusal refusal :observation observation})) (str action))
             (is (= (some-> refusal :error name) (some-> actual-error :error name)) (str action))
+            (when (= :join (:t action))
+              (is (= observation (get-in attempted [:result :result])) (str action))
+              (is (= query-before (kernel/snapshot actual)) (str "join changed state: " action))
+              (when refusal
+                (is (= (:busy refusal) (:busy actual-error)) (str action))))
             (when seal?
               (is (= (view after) (view (kernel/snapshot actual))) (str action)))
             (recur after (next remaining)))
@@ -109,8 +117,8 @@
 (deftest create-invoke-and-cold-await
   (compare-walk!
    (model/init-state)
-   [{:t :t12 :w w :scope [:scope 0] :parent [:root w]}
-    {:t :t02 :w w :scope [:scope 0] :e signal :value 1}
+   [{:t :t12 :w w :scope [:scope :id 0] :parent [:root w]}
+    {:t :t02 :w w :scope [:scope :id 0] :e signal :value 1}
     {:t :t04 :w w :e parent :mode :callback}
     {:t :t04 :w w :e parent :mode :callback}
     {:t :t05 :w w :r [parent 1] :kind :await-once :debtor [:entity w child]}
@@ -136,11 +144,11 @@
 (deftest close-scope-cascades-before-return
   (compare-walk!
    (model/init-state)
-   [{:t :t12 :w w :scope [:scope 0] :parent [:root w]}
-    {:t :t02 :w w :e signal :scope [:scope 0] :value 1}
-    {:t :t04 :w w :e parent :scope [:scope 0] :mode :callback}
-    {:t :t13 :w w :scope [:scope 0]}
-    {:t :t13 :w w :scope [:scope 0]}]))
+   [{:t :t12 :w w :scope [:scope :id 0] :parent [:root w]}
+    {:t :t02 :w w :e signal :scope [:scope :id 0] :value 1}
+    {:t :t04 :w w :e parent :scope [:scope :id 0] :mode :callback}
+    {:t :t13 :w w :scope [:scope :id 0]}
+    {:t :t13 :w w :scope [:scope :id 0]}]))
 
 (deftest reactive-successor-fences-old-completion
   (compare-walk!
@@ -175,8 +183,8 @@
    (model/init-state)
    [{:t :t04 :w w :e parent :mode :callback}
     {:t :slice-enter :w w :r [parent 1] :th :host}
-    {:t :t12 :w w :scope [:scope 0] :parent [parent 1]}
-    {:t :t02 :w w :e signal :scope [:scope 0] :value 1}
+    {:t :t12 :w w :scope [:scope :id 0] :parent [parent 1]}
+    {:t :t02 :w w :e signal :scope [:scope :id 0] :value 1}
     {:t :t11 :w w :r [parent 1]}
     {:t :t01 :th :host :e child}
     {:t :signal-write :th :host :e signal :value :late}
@@ -332,7 +340,7 @@
       {:t :t36 :w w}])))
 
 (deftest following-fork-preserves-owned-scopes
-  (let [v [:w 1] scope [:scope 0]]
+  (let [v [:w 1] scope [:scope :id 0]]
     (compare-walk!
      (model/init-state)
      [{:t :t04 :w w :e parent :mode :callback}
@@ -505,7 +513,7 @@
 
 (deftest cleanup-refines-scope-close-and-bulk-world-cancellation
   (doseq [scope? [false true]]
-    (let [r [:cleanup 1] n [:cps-exit w r] scope :resource
+    (let [r [:cleanup 1] n [:cps-exit w r] scope [:scope :id 0]
           actions (concat
                    (when scope? [{:t :t12 :w w :scope scope :parent [:root w]}])
                    [(cond-> (first (cleanup-fixture-actions)) scope? (assoc :scope scope))]
@@ -721,3 +729,77 @@
         (doseq [action earlier-change] (kernel/step! actual action))
         (is (= [parent 3] (model/current (kernel/snapshot actual) w parent)))))
     (compare-walk! (model/init-state) actions)))
+
+(deftest execution-scopes-refine-freshness-and-eager-close
+  (let [root [:root w] s0 [:scope :id 0] s1 [:scope :id 1]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t12 :w w :scope root :parent root}
+      {:t :t12 :w w :scope [parent 1] :parent root}
+      {:t :t12 :w w :scope s0 :parent root}
+      {:t :t12 :w w :scope s0 :parent s0}
+      {:t :t12 :w w :scope s1 :parent s0}
+      {:t :t12 :w w :scope s0 :parent s1}
+      {:t :t04 :w w :scope s1 :e parent :mode :callback}
+      {:t :slice-enter :w w :r [parent 1] :th :worker}
+      {:t :t13 :w w :scope [parent 1]}
+      {:t :t13 :w w :scope s0}
+      {:t :join :w w :x s0}
+      {:t :join :w w :x s0 :timeout? true}
+      {:t :t12 :w w :scope s0 :parent root}
+      {:t :t13 :w w :scope s0}
+      {:t :t38 :th :worker}
+      {:t :join :w w :x s0}
+      {:t :t13 :w w :scope [parent 1]}]))
+  (compare-walk!
+   (model/init-state)
+   (vec (mapcat (fn [n]
+                  [{:t :t12 :w w :scope [:scope :id n] :parent [:root w]}
+                   {:t :t13 :w w :scope [:scope :id n]}]) (range 128)))))
+
+(deftest physical-join-observation-preserves-released-state-and-events
+  (let [s0 [:scope :id 0]]
+    (compare-walk!
+     (model/init-state)
+     [{:t :t12 :w w :scope s0 :parent [:root w]}
+      {:t :t04 :w w :e parent :scope s0 :mode :callback}
+      {:t :slice-enter :w w :r [parent 1] :th :worker}
+      {:t :t34 :w w}
+      {:t :join :w w :x s0}
+      {:t :join :w w :x s0 :timeout? true}
+      {:t :join :w w :x w}
+      {:t :t38 :th :worker}
+      {:t :join :w w :x s0}
+      {:t :join :w w :x w}]))
+  (compare-walk!
+   (model/init-state)
+   [{:t :t04 :w w :e parent :mode :callback}
+    {:t :t07 :w w :r [parent 1] :value :answer}
+    ;; This query must retain the preceding completion event diagnostically.
+    {:t :join :w w :x [:root w]}]))
+
+(deftest scope-close-enqueues-fork-discard-and-keeps-related-release-fenced
+  (compare-walk!
+   (model/init-state)
+   (conj execution-scopes/scoped-fork-close
+         {:t :release-request :w w :reason :done :release [:world-release w]}))
+  (doseq [cells? [false true]]
+    (let [actual (kernel/restore (model/init-state) {:cells? cells?})]
+      (doseq [action execution-scopes/scoped-fork-close] (kernel/step! actual action))
+      (let [snapshot (kernel/snapshot actual)]
+        (is (nil? (get-in snapshot [:worlds w :scopes [:scope :id 0]])))
+        (is (= [{:discard [:cap 0] :seq 1}] (get-in snapshot [:worlds [:w 1] :queue]))))))
+  (compare-walk!
+   (execution-scopes/independent-world-state)
+   [{:t :t19 :w [:w 9] :v [:w 10] :k [:cap 0]
+     :scope [:root [:w 9]] :systems #{}}
+    {:t :release-request :w w :reason :done :release [:world-release w]}]))
+
+(deftest isolated-release-profile-rejects-related-family-tombstones
+  (compare-walk! (execution-scopes/related-tombstone-state)
+                 [{:t :release-request :w w :reason :done :release [:world-release w]}]))
+
+(deftest nested-scope-prefix-boundary-and-dirty-restart-refine
+  (doseq [[cause order] [[:track 1] [:dirty -1]]]
+    (compare-walk! (model/init-state)
+                   (execution-scopes/scope-adoption-actions cause order))))

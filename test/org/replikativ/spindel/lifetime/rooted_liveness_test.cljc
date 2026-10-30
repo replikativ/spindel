@@ -87,12 +87,12 @@
       (is (empty? (get-in final [:worlds w :runs]))))))
 
 (deftest explicit-resource-scope-is-an-independent-anchor
-  (let [prefix [{:t :t12 :w w :scope :resource-scope :parent [:root w]}
-                {:t :t02 :w w :e :source :scope :resource-scope :value 1}]
+  (let [prefix [{:t :t12 :w w :scope [:scope :id 0] :parent [:root w]}
+                {:t :t02 :w w :e :source :scope [:scope :id 0] :value 1}]
         state (check-walk! prefix)]
     (is (m/execution-live? state w :source))
-    (is (= :resource-scope (get-in state [:worlds w :entities :source :owner])))
-    (let [final (check-walk! (conj prefix {:t :t13 :w w :scope :resource-scope}))]
+    (is (= [:scope :id 0] (get-in state [:worlds w :entities :source :owner])))
+    (let [final (check-walk! (conj prefix {:t :t13 :w w :scope [:scope :id 0]}))]
       (is (empty? (get-in final [:worlds w :entities]))))))
 
 (deftest a-completed-run-does-not-anchor-its-own-source
@@ -118,22 +118,22 @@
       (is (nil? (get-in final [:worlds w :entities :source]))))))
 
 (deftest frozen-value-basis-survives-live-world-reclamation
-  (let [prefix [{:t :t12 :w w :scope :resource-scope :parent [:root w]}
-                {:t :t02 :w w :e :source :scope :resource-scope :value 1}
+  (let [prefix [{:t :t12 :w w :scope [:scope :id 0] :parent [:root w]}
+                {:t :t02 :w w :e :source :scope [:scope :id 0] :value 1}
                 {:t :t20 :c :cut :scope [:root w] :mode :frozen
                  :participants {:worlds #{w} :components #{} :systems #{}}}
                 {:t :t21 :c :cut} {:t :t22 :c :cut}
                 {:t :t23 :c :cut :v v :k [:cap 1] :mode :frozen}
                 {:t :t24 :c :cut :e :fork-result}
                 {:t :t07 :w v :r [:fork-result 1] :value :ready}
-                {:t :t13 :w w :scope :resource-scope}]
+                {:t :t13 :w w :scope [:scope :id 0]}]
         state (check-walk! prefix)]
     (is (nil? (get-in state [:worlds w :entities :source])))
     (is (= 1 (get-in state [:worlds v :entities :source :result])))
     (is (= 1 (get-in state [:worlds v :lineage :basis w :entities :source :result])))
     (is (every? empty? (map :runs (vals (:worlds state)))))
     (is (every? empty? (map :obligations (vals (:worlds state)))))
-    (let [final (check-walk! (conj prefix {:t :t13 :w v :scope :resource-scope}))]
+    (let [final (check-walk! (conj prefix {:t :t13 :w v :scope [:scope :id 0]}))]
       (is (nil? (get-in final [:worlds v :entities :source])))
       (is (= 1 (get-in final [:worlds v :lineage :basis w :entities :source :result]))))))
 
