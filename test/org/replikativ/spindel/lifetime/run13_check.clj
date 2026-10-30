@@ -10,9 +10,9 @@
             [org.replikativ.spindel.lifetime.run11-check :as r11]
             [org.replikativ.spindel.lifetime.run12-check :as r12]))
 
-(def outer [:scope 2])
-(def scope [:scope 0])
-(def inner [:scope 1])
+(def outer [:scope :id 0])
+(def scope [:scope :id 1])
+(def inner [:scope :id 2])
 (def child r12/child)
 (def cr r12/cr)
 (def successor [b/e 2])
@@ -149,7 +149,7 @@
     (let [s (:state (checked prefix))
           r (if (= prefix (conj nested r12/cancel)) cr b/r)]
       (doseq [bad [(assoc-in s [:worlds b/w :runs r :owner] b/root)
-                   (assoc-in s [:worlds b/w :scopes [:scope 99]] {:status :closed :parent r})
+                   (assoc-in s [:worlds b/w :scopes [:scope :id 99]] {:status :closed :parent r})
                    (assoc-in s [:worlds b/w :runs r :retired?] false)
                    (assoc-in s [:worlds b/w :runs r :anchor] [r])]]
         (is (seq (inv/l25 bad)))))))
@@ -171,6 +171,7 @@
 (deftest owned-child-includes-f59
   (let [actions (assoc (:actions (get r12/findings "F59-child-scope"))
                        0 (assoc b/invoke :scope b/root)
+                       1 (assoc (second (:actions (get r12/findings "F59-child-scope"))) :scope scope)
                        3 (assoc r12/cancel :value 0))
         result (b/execute (m/init-state owned-child-bounds) actions)]
     (doseq [{:keys [before action after refusal]} (:trace result)]
@@ -206,10 +207,12 @@
     (is (empty? (:findings report)) (pr-str (:findings report)))))
 
 (defn regressions! []
-  (require 'org.replikativ.spindel.lifetime.generative-check)
+  (require 'org.replikativ.spindel.lifetime.generative-check
+           'org.replikativ.spindel.lifetime.transition-catalog-coverage-test)
   (doseq [[namespace excluded]
           [['org.replikativ.spindel.lifetime.bfs-check (set b/search-checks)]
            ['org.replikativ.spindel.lifetime.generative-check #{}]
+           ['org.replikativ.spindel.lifetime.transition-catalog-coverage-test #{}]
            ['org.replikativ.spindel.lifetime.run9-check #{'join-interleavings}]
            ['org.replikativ.spindel.lifetime.run10-check #{'f57-release-interleavings}]
            ['org.replikativ.spindel.lifetime.run11-check #{'owned-child-exhaustion}]

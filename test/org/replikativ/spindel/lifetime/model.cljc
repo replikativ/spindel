@@ -13,13 +13,14 @@
 (def standing #{:track :await-reactive :callback})
 (def work-status #{:running :parked})
 (def active-cuts #{:fenced :ready :captured :attached})
-(def defaults {:worlds 3 :world-ids 4 :invocations 2 :host-registrations 2 :spins 4 :generations 2 :scopes 2 :handles 2
+(def defaults {:worlds 3 :world-ids 4 :invocations 2 :host-registrations 2 :spins 4 :generations 2 :scopes 2 :scope-births 3 :handles 2
                :steps 2 :cuts 2 :depth 40 :crashes 1 :failures 1 :unknowns 1 :writes 1
                :threads 2 :slice-enters 1 :registrations 1 :signals 1 :atoms 1 :filters [:local :causal-follow] :invoke-modes [:deref :callback] :durable-systems #{:a :b}})
 
 (defn world-row [w parent mode root]
   {:id w :lineage {:parent parent :root root :mode mode :cut nil :basis nil}
    :status :live :admission :open :seal-seq nil :root [:root w]
+   :next-scope 0 :scope-balance 0
    :scopes {[:root w] {:kind (if parent :fork :world-root) :parent nil :status :open}}
    :entities {} :runs {} :obligations {} :releasing #{} :fdeps #{} :pins #{} :queue []})
 
@@ -48,6 +49,10 @@
 (defn work? [r] (boolean (work-status (:status r))))
 (defn busy? [r] (or (work? r) (= :unwinding (:status r))))
 (defn cut-busy? [r] (and (busy? r) (not= :parked (:status r))))
+(defn explicit-scope-id? [id]
+  (and (vector? id) (= 3 (count id)) (= [:scope :id] (subvec id 0 2))
+       (integer? (nth id 2)) (not (neg? (nth id 2)))))
+
 (defn open? [s w scope]
   (or (and (run s w scope) (not= :unwinding (:status (run s w scope))))
       (= :open (get-in s [:worlds w :scopes scope :status]))))
@@ -99,8 +104,10 @@
                        (not= :inherited (:status (run s w (nth (:creditor %) 2 nil)))))
                  (vals (:obligations (wr s w))))))
 (defn joined? [s w]
-  (every? #(or (not= w (first (:owner %))) (= :joined (:state %)))
-          (vals (get-in s [:env :native]))))
+  (and (not-any? #(and (= w (:world %)) (:run %))
+                 (vals (get-in s [:env :threads])))
+       (every? #(or (not= w (first (:owner %))) (= :joined (:state %)))
+               (vals (get-in s [:env :native])))))
 (defn all-caps [s] (merge (:caps s) (get-in s [:durable :caps])))
 (defn all-records [s] (merge (:records s) (get-in s [:durable :records])))
 (defn cap [s k] (get (all-caps s) k))
@@ -1722,10 +1729,17 @@
   "T12 open explicit, supervisor, render or SCI scope."
   [s {:keys [w scope parent kind order] :or {kind :explicit order 0}}]
   (live! s w)
+  (require! (explicit-scope-id? scope) ::invalid-scope-id {:scope scope})
+  (require! (and (>= (nth scope 2) (:next-scope (wr s w)))
+                 (nil? (get-in s [:worlds w :scopes scope]))
+                 (not= scope parent)) ::scope-id-reused {:scope scope})
   (require! (open? s w parent) ::closed-scope {:parent parent})
-  (assoc-in s [:worlds w :scopes scope]
-            (cond-> {:kind kind :parent parent :status :open}
-              (run s w parent) (assoc :order order))))
+  (-> s
+      (assoc-in [:worlds w :next-scope] (inc (nth scope 2)))
+      (update-in [:worlds w :scope-balance] inc)
+      (assoc-in [:worlds w :scopes scope]
+                (cond-> {:kind kind :parent parent :status :open}
+                  (run s w parent) (assoc :order order)))))
 
 (defn close-owned [s w scope]
   (rule-l
@@ -1743,12 +1757,16 @@
                                  (if (= :open (:disposition cap))
                                    (enqueue s v {:discard k}) s))
                                s (caps-of s v))) s forks)]
-       (-> s (release-owned w scope)
-           (assoc-in [:worlds w :scopes scope :status] :closed)))) w))
+       (cond-> (release-owned s w scope)
+         (not= scope (:root (wr s w)))
+         (-> (update-in [:worlds w :scopes] dissoc scope)
+             (update-in [:worlds w :scope-balance] dec))))) w))
 
 (defn t13-close-scope
   "T13 idempotent close, including implicit fork discard."
   [s {:keys [w scope]}]
+  (require! (or (explicit-scope-id? scope) (= scope [:root w]))
+            ::invalid-scope-id {:scope scope})
   (cond (= :released (:status (wr s w))) s
         (= scope (:root (wr s w))) (t34-release-world s {:w w})
         (not (open? s w scope)) s
@@ -1916,6 +1934,7 @@
       (attach-world s w v scope k systems
                     (assoc child :runs copies :entities entities :obligations obs
                            :scopes (merge (:scopes child) scopes)
+                           :next-scope (:next-scope (wr s w)) :scope-balance (count scopes)
                            :queue (copy-queue evidence obs)) evidence false))))
 
 (defn t20-cut-fence
@@ -2383,13 +2402,16 @@
 (defn- local-release-profile! [s w]
   (let [world (wr s w) owners (conj (into (set (keys (:runs world))) (keys (:scopes world))) (or (:root world) [:root w]))
         events (pending-events s w)
+        related? (fn [v] (= w (get-in s [:lineages v :root])))
         local? (fn [endpoint] (or (not= :entity (first endpoint)) (= w (second endpoint))))]
     (require! world ::unknown-world {:w w})
     (require! (and (nil? (get-in world [:lineage :parent]))
+                   (not-any? #(and (not= w %) (related? %)) (:known-worlds s))
                    (not-any? #(and (active-cuts (:phase %))
                                    (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s)))
                    (not-any? (fn [[_ cap]] (and (not (terminal (:disposition cap)))
-                                                (or (= w (:world cap)) (contains? owners (:holder cap)))))
+                                                (or (related? (:world cap)) (= w (:world cap))
+                                                    (contains? owners (:holder cap)))))
                              (all-caps s))
                    (not-any? #(= :fork (:kind %)) (vals (:entities world)))
                    (empty? (:fdeps world)) (empty? (:releasing world))
@@ -2600,6 +2622,7 @@
     :slice-enter [:slice-enter (:w a) (:r a)]
     :signal-write [:write (:w a) (:e a)]
     :t04 [:invoke (:w a) (:e a)]
+    :t12 [:scope-open (:w a)]
     :t05 nil
     :timer-register [:timer-register (:w a) (:r a)]
     :mailbox-create [:mailbox-create (:w a) (:e a)]
@@ -2817,7 +2840,7 @@
   checked on edges then removed. Resume/host monitors and budgets remain in key."
   [s]
   (let [renames (atom {}) counters (atom {})
-        tags #{:w :scope :o :tok :op :cap :cut}
+        tags #{:w :o :tok :op :cap :cut}
         id? #(and (vector? %) (= 2 (count %)) (tags (first %)))
         ;; Previously assigned names must sort before unvisited ids. In
         ;; particular, :caps can encounter a child world before its parent.
@@ -3036,8 +3059,9 @@
                (for [i (range (:spins cfg)) :let [e [:spin i]]
                      mode (:invoke-modes cfg) f (:filters cfg)]
                  {:t :t04 :w w :e e :scope root :mode mode :filter {:mode f :origin w}})
-               (when (< (count (:scopes world)) (inc (:scopes cfg)))
-                 [{:t :t12 :w w :scope [:scope (count (:scopes world))] :parent root}])
+               (when (and (< (:scope-balance world) (:scopes cfg))
+                          (< (get-in s [:uses [:scope-open w]] 0) (:scope-births cfg)))
+                 [{:t :t12 :w w :scope [:scope :id (:next-scope world)] :parent root}])
                (when (< (count (:known-worlds s)) (:world-ids cfg))
                  [{:t :t19 :w w :v next-w :k next-k :scope root}])
                (when (< (get s :cut-allocations 0) (:cuts cfg))
@@ -3131,7 +3155,7 @@
          (every? (fn [[[kind & _] n]]
                    (<= n (case kind :invoke (:invocations cfg) :host-register (:host-registrations cfg)
                                :register (:registrations cfg) :slice-enter (:slice-enters cfg) :source 1 :pin 1 :write (:writes cfg)
-                               :crash (:crashes cfg) :reenter (dec (:generations cfg))
+                               :scope-open (:scope-births cfg) :crash (:crashes cfg) :reenter (dec (:generations cfg))
                                :unknown (:unknowns cfg) (:fail :fail-permanent) (:failures cfg) n))) (:uses s))
          (<= (count (get-in s [:env :threads])) (:threads cfg))
          (<= (count (get-in s [:env :handles])) (:handles cfg))
@@ -3146,7 +3170,9 @@
 (defn enabled
   "Allocation/site budgets close host and program nondeterminism. These bounds
   constrain only the exploration alphabet, never the transition preconditions.
-  One crash+restart, one failure and one uncertainty per step by default."
+  One crash+restart, one failure and one uncertainty per step by default.
+  :scope-births bounds total opens per world independently of :scopes live rows;
+  neither exploration budget restricts literal transition semantics."
   [s]
   (let [spin-counts (into {} (for [[w world] (:worlds s)]
                                [w (count (filter #(= :spin (:kind %)) (vals (:entities world))))]))]

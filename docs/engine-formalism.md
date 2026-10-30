@@ -1046,7 +1046,9 @@ World
  :admission ad                         ; :open | :fenced
  :seal-seq  n-or-nil                     ; queue seq at T26
  :root      s0
- :scopes    {s {:kind sk :parent s-or-nil :status ss}}               ; ss: :open | :closed
+ :scopes    {s {:kind sk :parent s-or-nil :status :open}}             ; closed non-root rows are removed
+ :next-scope n                          ; scalar fresh-name high-water, not a retention reason
+ :scope-balance n                       ; outstanding explicit scope acquisitions
  :entities  {e {:kind ek :origin og :owner s-or-nil :creator r-or-nil
                 :completed? bool :kept? bool :order n :result v :tokens #{tok} :key k-or-nil}}
                                        ; :order = creator's continuation order at creation
@@ -1563,10 +1565,38 @@ must survive retirement of the predecessor that originally created it.
 | T | Transition | Pre | Effect | Re-establishes |
 |---|---|---|---|---|
 | T11 | `cancel(r)` | — (a no-op if absent or `:unwinding`) | Retire `r` (§4.3, run retirement): its child scopes are closed first (T13, anchors snapshotted); the row becomes `:unwinding` instead of being removed if `physical(r)`. Everything below happens now in either case, so cancellation semantics and callback timing do not depend on physical exit. **Obligations with creditor `r`:** delete them; for `:external`, arm the token; for `:timer`, cancel the timer; drop their `fdeps`; set native ops to `:cancel-requested`. **Obligations whose debtor is `spin(r)`, if `r` was current:** a one-shot obligation fails, and its creditor receives a cancellation error (a host callback, or T6 with an error); a standing obligation receives the error once and ends. For a creditor in another world, the failure is an event `{:cancelled o}` enqueued in that world after this world retires the matching `fdeps` row or bundle member, or deletes the obligation's queued `{:start-for}` request (§4.1.2 phases); its T6 is that world's transaction. **Stale predecessor:** if `r` was current and its predecessor is `:stale`, apply T10 to the predecessor (nothing can adopt its creations any more). **Runs owned by `r`:** T11. **Entities owned by `r`:** owner release (§4.3 rule 3), which cancels their work runs whatever their run owner. Rule L. | L1 L2 L5 L6 L24 L25 TL2 |
-| T12 | `open-scope(kind, parent)` | `parent` is open in a `:live` world | insert `{:kind :parent :status :open}`, recording continuation `:order` when parented by a run | L6 |
-| T13 | `close-scope(s)` | `s` is not a run scope; idempotent | Atomic cascade (rows; physical exit is observed with `join!`, TL19): close child scopes; apply T11 to runs owned by `s`; owner release (§4.3 rule 3) of the entities owned by `s`. For `[:fork v]` owned by `s`: an event `{:discard k}` is enqueued in `v` for every open capability `k` of `v`; the resulting T15/T26 are `v`'s transactions, and `settle` retains the entity until they are terminal. If `s = root(w)`, run T34. Supervisor `shutdown!`, render unmount (`:stop!`), pubsub pump `close`, SCI component unregister and `with-new-scope` exit are all T13. | L1 L6 TL7 |
+| T12 | `open-scope(kind, parent)` | `parent` is open in a `:live` world; the scope identity is fresh and disjoint from Run/root IDs | Insert `{:kind :parent :status :open}`, recording continuation `:order` when parented by a run. Advance the scalar fresh-name high-water and increment the outstanding explicit acquisition balance. A deleted/closed identity cannot be reopened. | L6 ScopeForest |
+| T13 | `close-scope(s)` | `s` is not a run scope; idempotent | Atomic cascade (rows; physical exit is observed with `join!`, TL19): preserve retained cleanup rights and physical ancestry before mutation; close child scopes; apply T11 to runs owned by `s`; owner release (§4.3 rule 3) of the entities owned by `s`. For `[:fork v]` owned by `s`: an event `{:discard k}` is enqueued in `v` for every open capability `k` of `v`; the resulting T15/T26 are `v`'s transactions, and `settle` retains the entity until they are terminal. Remove each closed non-root scope row and decrement its outstanding acquisition balance; no closed-scope history remains in the live world. Frozen participant anchors still name its immutable ID. If `s = root(w)`, run T34; keep the root row until tombstone replacement. Supervisor `shutdown!`, render unmount (`:stop!`), pubsub pump `close`, SCI component unregister and `with-new-scope` exit are all T13. | L1 L6 TL7 |
 | T14 | `pin!(e)` / `unpin!(e)` | `pin!`: `e ∈ ent_w`. `unpin!` on an absent row: no-op. | `pin!` adds `e` to the pins (a root-held reason); the owner is unchanged. `unpin!` removes `e` from the pins; rule L. | L1 L3 |
 | T15 | `cancel-world-work!(w)` | — | Apply T11 to every work run of `w`, including pumps, watchers and timers. Inherited copies are left alone; T34 drops them. | L16 |
+
+**Scope identity and retention.** The executable model uses three-element
+`[:scope :id n]` names, disjoint from two-element Run IDs `[e generation]`.
+This is alpha-renaming for model traces, not a public capability format. Each
+world keeps one monotone `:next-scope` scalar; T12 accepts only an ordinal at or
+above that high-water and then advances it. Repeating a closed name cannot
+resurrect authority, even after its row is reclaimed. Following forks inherit
+the allocator high-water and count their copied open scope acquisitions; cut
+bases carry the same header data.
+
+The independent `ScopeForest` check requires retained scope rows to be open,
+with an existing open parent and an acyclic mixed Scope/Run path to the world
+root. Its separate census charges scope rows and parent memberships to
+`:scope-balance`, the outstanding open acquisitions. Many empty open scopes are
+legitimate explicit liveness; repeated completed open/close cycles must return
+to root-only rows. The bound is `scope-rows <= 1 + scope-balance` and
+`scope-parent-memberships <= scope-balance`. It does not charge deleted rows to
+an ever-growing historical denominator. Physical ancestry and retained cleanup
+payloads remain separately accounted until their participants actually return.
+Saved immutable snapshots own their own rows and are not mutated by live-world
+reclamation.
+
+The bounded generator keeps `:scopes` as the simultaneous explicit-scope limit
+and adds `:scope-births` as a total allocation budget per world (default three,
+versus the old default's effective two births because closed rows accumulated).
+The high-water is not normalized away to revive old names. Literal churn tests
+exercise more than one hundred completed acquisitions independently of this
+finite search bound.
 
 **Typed public computation operations.** The public adapter adds three named
 transitions without changing raw T11 lifetime cancellation:
@@ -1960,7 +1990,7 @@ violated.
 | L3 | **Rule L.** `∀e. reasons(e) ≠ ∅ ∨ (idle(e) ∧ tokens(e) ≠ ∅)`. | all entities | V: I15, GCQ heuristics, I7 |
 | L4 | **Index closure** (I2, I3). Every id in an index (observers, subscriptions, tracking, keyed children, creations, spawned, cache rows, pins, `fdeps`, queued events) names an existing row of the same world (completion envelopes are value-only and exempt, §4.1.2); inherited bundles are closed under their indices (T19), so no index names a parent row. Cross-world ids appear only as obligation ends, `fdeps`/`releasing` rows and `[:fork v]`; they name a non-released world, or a released world in in-flight form (L20). | all indices | V: I2, I4, I6, I8 |
 | L5 | **Obligations** (I4). Non-host ends exist, except the debtor of a cross-world obligation in phase pending-start or cancelling (§4.1.2). `standing?` matches the kind table. A one-shot row is never already delivered: it is deleted on delivery. `:slot :consumed` only on standing rows. Placement follows §4.1.2. `:timer`/`:external ⇒` the creditor is a work run, or an `:inherited` copy, in which case the row is **dormant**: no native registration, no token, no host delivery; only T6 by the copy's owner can resume it, and it is dropped with the copy. A cross-world debtor of an inherited obligation is retained by its `[:bundle]` row (L10), so it always exists. | obligations | V: spread over 6 tables (§4.4), I9, I10 |
-| L6 | **Closed scopes** (I5). A closed scope owns no entity and no run, is the creditor of no obligation, and has no open child. | scopes, owners | M; supervisor `shutdown!` leaves children running |
+| L6 | **Closed scopes** (I5). A closed scope owns no entity and no run, is the creditor of no obligation, and has no open child. No closed non-root scope row is retained after the atomic cascade. Physical join evidence lives in participant anchors, not tombstone scope rows. | scopes, owners | M; supervisor `shutdown!` leaves children running |
 | L7 | **Idle shape.** `idle(e) ⇒` `e` is a completed spin with `owner = nil`, no run (other than `:unwinding` rows), no obligation end, no `fdeps` row and no pin. The result is held in the world's state, never in the handle. | entities | M |
 | L8 | **Tokens cover handles.** `∀tok. reachable?(tok) ∧ w ∈ touched(tok) ∖ dropped(tok) ∧ spin(tok) = e ∈ ent_w ⇒ tok ∈ tokens_w(e)`; `w ∈ dropped(tok) ⇒ tok ∉ tokens_w(e)`. This is checkable in the model; the implementation registers a Cleaner per touch. | env × entities | V: incarnation-less Cleaner (REPORT F2) |
 | L9 | **Write locality** (I6a). Origin `:copied` occurs only in following forks, origin `:inherited` only in forks. A copied `[:fork x]` row carries no capability and is no reason for `x`. | fork rows | H for GC transactions (I20) |

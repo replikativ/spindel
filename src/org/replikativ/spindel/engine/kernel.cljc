@@ -78,6 +78,7 @@
          lineage {:parent nil :root w :mode :root :cut nil :basis nil}]
      (restore {:worlds {w {:id w :lineage lineage
                            :status :live :admission :open :seal-seq nil :root [:root w]
+                           :next-scope 0 :scope-balance 0
                            :scopes {[:root w] {:kind :world-root :parent nil :status :open}}
                            :entities {} :runs {} :obligations {} :releasing #{}
                            :fdeps #{} :pins #{} :queue []}}
@@ -986,6 +987,10 @@
           chain))))))
 
 (defn- close-scope! [ctx w scope]
+  (require! (or (and (vector? scope) (= 3 (count scope))
+                     (= [:scope :id] (subvec scope 0 2))
+                     (integer? (nth scope 2)) (not (neg? (nth scope 2))))
+                (= scope [:root w])) ::invalid-scope-id {:scope scope})
   (if (= scope (:root (header ctx w)))
     (release-world! ctx {:w w})
     (when (and (not= :released (:status (header ctx w))) (open? ctx w scope))
@@ -994,8 +999,17 @@
         (close-scope! ctx w s))
       (doseq [r (read-row ctx w :runs-by-owner scope)]
         (cancel-run! ctx w r nil))
+      (doseq [e (read-row ctx w :entities-by-owner scope)
+              :let [row (read-row ctx w :entities e)]
+              :when (and (= :fork (:kind row)) (not (:reference? row)))
+              [k cap] (merge (:caps (root-state ctx)) (get-in (root-state ctx) [:durable :caps]))
+              :when (and (= (second e) (:world cap)) (= :open (:disposition cap)))]
+        (enqueue! ctx (second e) {:discard k}))
       (release-owned! ctx w scope)
-      (edit! ctx w :scopes scope assoc :status :closed))))
+      (let [parent (:parent (read-row ctx w :scopes scope))]
+        (index-remove! ctx w :scopes-by-parent parent scope)
+        (delete! ctx w :scopes scope)
+        (header-edit! ctx w update :scope-balance dec)))))
 
 (defn- remove-entity! [ctx w e]
   (when-let [er (read-row ctx w :entities e)]
@@ -2401,6 +2415,7 @@
                                :mode :following :cut nil :basis nil}
                :status :live :admission :open :seal-seq nil :root [:root v]
                :scopes (assoc scopes [:root v] {:kind :fork :parent nil :status :open})
+               :next-scope (:next-scope (header ctx w)) :scope-balance (count scopes)
                :entities entities :runs runs :obligations obligations
                :releasing #{} :fdeps #{} :pins #{} :queue queue :seq (get (header ctx w) :seq 0)}
         last-seq (reduce max (:seq child) (keep :seq queue))
@@ -2485,13 +2500,16 @@
         owners (conj (into (set (keys (store/table-view (:tx ctx) w :runs)))
                            (keys (store/table-view (:tx ctx) w :scopes))) (or (:root world) [:root w]))
         caps (merge (:caps state) (get-in state [:durable :caps]))
+        related? (fn [v] (= w (get-in state [:lineages v :root])))
         local? (fn [endpoint] (or (not= :entity (first endpoint)) (= w (second endpoint))))]
     (require! world ::unknown-world {:w w})
     (require! (and (nil? (get-in world [:lineage :parent]))
+                   (not-any? #(and (not= w %) (related? %)) (:known-worlds state))
                    (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
                                    (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts state)))
                    (not-any? (fn [[_ cap]] (and (not (#{:merged :discarded :transferred :partitioned} (:disposition cap)))
-                                                (or (= w (:world cap)) (contains? owners (:holder cap))))) caps)
+                                                (or (related? (:world cap)) (= w (:world cap))
+                                                    (contains? owners (:holder cap))))) caps)
                    (not-any? #(= :fork (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
                    (empty? (:fdeps world)) (empty? (:releasing world))
                    (every? #(and (local? (:debtor %)) (local? (:creditor %)))
@@ -2736,242 +2754,282 @@
     (when (and ob (mailbox-control ctx dw e))
       (require! false ::unsupported-mailbox-resume {:action action}))))
 
+(defn- observe-join [ctx {:keys [w x timeout?]}]
+  (let [released? (= :released (:status (header ctx w)))
+        env (:env (root-state ctx))
+        under? (fn [r participant]
+                 (if (or released? (= :mailbox-callback (:kind participant)))
+                   (or (= x w) (= x r) (some #{x} (:anchor participant)))
+                   (some #{x} (owner-chain ctx w r))))
+        busy (vec
+              (distinct
+               (concat
+                (when-not released?
+                  (for [[r rr] (store/table-view (:tx ctx) w :runs)
+                        :when (and (#{:running :parked :unwinding} (:status rr))
+                                   (some #{x} (owner-chain ctx w r)))] r))
+                (for [[_ thread] (:threads env)
+                      :let [r (:run thread)]
+                      :when (and r (= w (:world thread)) (under? r thread))] r)
+                (for [[_ native] (:native env)
+                      :let [[world r] (:owner native)]
+                      :when (and (= w world) (not= :joined (:state native))
+                                 (under? r native))] r))))]
+    (require! (not (and timeout? (seq busy))) ::join-timeout {:w w :x x :busy busy})
+    {:complete? (empty? busy) :busy busy}))
+
 (defn step!
   "Execute a supported transition, returning delivery descriptors after commit.
   Unsupported actions refuse explicitly; this is not yet the runtime engine."
   [kernel {:keys [t w o] :as action}]
-  (store/transact!
-   kernel
-   (fn [tx]
-     (let [diagnostics? (get (store/options kernel) :diagnostics? true)
-           ctx {:tx tx :events (when diagnostics? (volatile! [])) :work (volatile! [])
-                :work-set (volatile! #{}) :commands (volatile! []) :result (volatile! nil)
-                :fresh-runs (when (contains? action :fresh-runs) (volatile! (:fresh-runs action)))
-                :diagnostics? diagnostics? :immediate-await? (= t :await)
-                :cache-gc-only? (= t :t17)}
-           thread (get-in (root-state ctx) [:env :threads (:th action)])
-           slice? (:run thread)
-           unwinding? (= :unwinding (:status (read-row ctx (:world thread) :runs (:run thread))))
-           action (if (and slice? (not (#{:t38 :slice-enter :t35} t)))
-                    (assoc action :w (:world thread)) action)
-           w (:w action)
-           ctx (assoc ctx :acting-world w)]
-       (admit-action! ctx action thread slice? unwinding?)
-       (case t
-         :finalization-wait (finalization-wait! ctx action)
-         :finalization-resume (finalization-resume! ctx action)
-         :cleanup-adopt (cleanup-adopt! ctx action)
-         :cleanup-claim (cleanup-claim! ctx action)
-         :cleanup-park (cleanup-boundary! ctx action :waiting)
-         :cleanup-return (cleanup-boundary! ctx action :returning)
-         :cleanup-deliver (cleanup-deliver! ctx action)
-         :cleanup-cell (cleanup-access! ctx action)
-         :source-unreachable (source-unreachable! ctx action)
-         :reap-source (reap-source! ctx action)
-         :invalidate-computation (invalidate-computation! ctx action)
-         :withdraw-deref (withdraw-deref! ctx action)
-         :cancel-computation (cancel-computation! ctx action)
-         :signal-publish (publish-signal! ctx action)
-         :deferred-create (create-deferred! ctx action)
-         :deferred-request (request-deferred! ctx action)
-         :deferred-assign (assign-deferred! ctx action)
-         :deferred-observe (observe-deferred! ctx action)
-         :deferred-protect (protect-deferred! ctx action)
-         :mailbox-create (create-mailbox! ctx action)
-         :mailbox-post-request (request-mailbox-post! ctx action)
-         :mailbox-post (process-mailbox-post! ctx action)
-         :mailbox-take (take-mailbox! ctx action)
-         :mailbox-take-now (take-mailbox-now! ctx action)
-         :mailbox-claim (claim-mailbox! ctx action)
-         :mailbox-detach (detach-mailbox! ctx action)
-         :mailbox-return (return-mailbox! ctx action)
-         :operation-start (operation-start! ctx action)
-         :operation-await (operation-await! ctx action)
-         :operation-deliver
-         (require! false ::unsupported-operation-delivery {:action action})
-         :operation-claim (operation-claim! ctx action)
-         :operation-terminal (operation-terminal! ctx action)
-         :operation-return (operation-return! ctx action)
-         :arrival
-         (let [event (:event action)]
-           (if (:deferred-assignment event)
-             (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
-             (if (:mailbox-post event)
-               (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))
-               (throw (ex-info "Unsupported kernel transition" {:action action})))))
-         :t01 (create-spin! ctx action)
-         :t02
-         (do (require! (not (#{:deferred :mailbox} (:kind action))) ::reserved-source-kind {:kind (:kind action)})
-             (create-source! ctx action))
-         :t04 (invoke! ctx action)
-         :t03
-         (let [r (:r action)
-               rr (read-row ctx w :runs r)]
-           (require! (#{:running :parked} (:status rr)) ::not-work {:r r})
-           (require! (not (#{:deferred :mailbox} (:kind action))) ::reserved-source-kind {:kind (:kind action)})
-           (let [e [(:spin rr) (:key action)]]
-             (require! (not (#{:deferred :mailbox} (:kind (read-row ctx w :entities e))))
-                       ::reserved-source-kind {:w w :e e})
-             (put-entity! ctx w e
-                          (assoc (entity-row (get action :kind :cache-row) r)
-                                 :order (get action :order 0)))
-             (edit! ctx w :runs r update :creations conj e)))
-         :t12
-         (do (require! (= :live (:status (header ctx w))) ::not-live {:world w})
-             (require! (open? ctx w (:parent action)) ::closed-scope {:parent (:parent action)})
-             (put! ctx w :scopes (:scope action)
-                   (cond-> {:kind (get action :kind :explicit) :parent (:parent action) :status :open}
-                     (read-row ctx w :runs (:parent action)) (assoc :order (get action :order 0))))
-             (index-add! ctx w :scopes-by-parent (:parent action) (:scope action)))
-         :timer-register (register-timer! ctx action)
-         :timer-install-result (install-timer-result! ctx action)
-         :timer-fire (fire-timer! ctx action)
-         :timer-return (return-timer! ctx action)
-         :timer-handle-release (release-timer-handle! ctx action)
-         :t05 (register! ctx action)
+  (if (= :join t)
+    ;; Observation bypasses admission, normalization and event replacement.
+    (store/transact! kernel
+                     (fn [tx]
+                       {:events [] :commands []
+                        :result (observe-join {:tx tx} action)}))
+    (store/transact!
+     kernel
+     (fn [tx]
+       (let [diagnostics? (get (store/options kernel) :diagnostics? true)
+             ctx {:tx tx :events (when diagnostics? (volatile! [])) :work (volatile! [])
+                  :work-set (volatile! #{}) :commands (volatile! []) :result (volatile! nil)
+                  :fresh-runs (when (contains? action :fresh-runs) (volatile! (:fresh-runs action)))
+                  :diagnostics? diagnostics? :immediate-await? (= t :await)
+                  :cache-gc-only? (= t :t17)}
+             thread (get-in (root-state ctx) [:env :threads (:th action)])
+             slice? (:run thread)
+             unwinding? (= :unwinding (:status (read-row ctx (:world thread) :runs (:run thread))))
+             action (if (and slice? (not (#{:t38 :slice-enter :t35} t)))
+                      (assoc action :w (:world thread)) action)
+             w (:w action)
+             ctx (assoc ctx :acting-world w)]
+         (admit-action! ctx action thread slice? unwinding?)
+         (case t
+           :finalization-wait (finalization-wait! ctx action)
+           :finalization-resume (finalization-resume! ctx action)
+           :cleanup-adopt (cleanup-adopt! ctx action)
+           :cleanup-claim (cleanup-claim! ctx action)
+           :cleanup-park (cleanup-boundary! ctx action :waiting)
+           :cleanup-return (cleanup-boundary! ctx action :returning)
+           :cleanup-deliver (cleanup-deliver! ctx action)
+           :cleanup-cell (cleanup-access! ctx action)
+           :source-unreachable (source-unreachable! ctx action)
+           :reap-source (reap-source! ctx action)
+           :invalidate-computation (invalidate-computation! ctx action)
+           :withdraw-deref (withdraw-deref! ctx action)
+           :cancel-computation (cancel-computation! ctx action)
+           :signal-publish (publish-signal! ctx action)
+           :deferred-create (create-deferred! ctx action)
+           :deferred-request (request-deferred! ctx action)
+           :deferred-assign (assign-deferred! ctx action)
+           :deferred-observe (observe-deferred! ctx action)
+           :deferred-protect (protect-deferred! ctx action)
+           :mailbox-create (create-mailbox! ctx action)
+           :mailbox-post-request (request-mailbox-post! ctx action)
+           :mailbox-post (process-mailbox-post! ctx action)
+           :mailbox-take (take-mailbox! ctx action)
+           :mailbox-take-now (take-mailbox-now! ctx action)
+           :mailbox-claim (claim-mailbox! ctx action)
+           :mailbox-detach (detach-mailbox! ctx action)
+           :mailbox-return (return-mailbox! ctx action)
+           :operation-start (operation-start! ctx action)
+           :operation-await (operation-await! ctx action)
+           :operation-deliver
+           (require! false ::unsupported-operation-delivery {:action action})
+           :operation-claim (operation-claim! ctx action)
+           :operation-terminal (operation-terminal! ctx action)
+           :operation-return (operation-return! ctx action)
+           :arrival
+           (let [event (:event action)]
+             (if (:deferred-assignment event)
+               (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
+               (if (:mailbox-post event)
+                 (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))
+                 (throw (ex-info "Unsupported kernel transition" {:action action})))))
+           :t01 (create-spin! ctx action)
+           :t02
+           (do (require! (not (#{:deferred :mailbox} (:kind action))) ::reserved-source-kind {:kind (:kind action)})
+               (create-source! ctx action))
+           :t04 (invoke! ctx action)
+           :t03
+           (let [r (:r action)
+                 rr (read-row ctx w :runs r)]
+             (require! (#{:running :parked} (:status rr)) ::not-work {:r r})
+             (require! (not (#{:deferred :mailbox} (:kind action))) ::reserved-source-kind {:kind (:kind action)})
+             (let [e [(:spin rr) (:key action)]]
+               (require! (not (#{:deferred :mailbox} (:kind (read-row ctx w :entities e))))
+                         ::reserved-source-kind {:w w :e e})
+               (put-entity! ctx w e
+                            (assoc (entity-row (get action :kind :cache-row) r)
+                                   :order (get action :order 0)))
+               (edit! ctx w :runs r update :creations conj e)))
+           :t12
+           (do (require! (= :live (:status (header ctx w))) ::not-live {:world w})
+               (let [scope (:scope action)]
+                 (require! (and (vector? scope) (= 3 (count scope))
+                                (= [:scope :id] (subvec scope 0 2))
+                                (integer? (nth scope 2)) (not (neg? (nth scope 2))))
+                           ::invalid-scope-id {:scope scope})
+                 (require! (and (>= (nth scope 2) (:next-scope (header ctx w)))
+                                (nil? (read-row ctx w :scopes scope))
+                                (not= scope (:parent action))) ::scope-id-reused {:scope scope}))
+               (require! (open? ctx w (:parent action)) ::closed-scope {:parent (:parent action)})
+               (header-edit! ctx w assoc :next-scope (inc (nth (:scope action) 2)))
+               (header-edit! ctx w update :scope-balance inc)
+               (put! ctx w :scopes (:scope action)
+                     (cond-> {:kind (get action :kind :explicit) :parent (:parent action) :status :open}
+                       (read-row ctx w :runs (:parent action)) (assoc :order (get action :order 0))))
+               (index-add! ctx w :scopes-by-parent (:parent action) (:scope action)))
+           :timer-register (register-timer! ctx action)
+           :timer-install-result (install-timer-result! ctx action)
+           :timer-fire (fire-timer! ctx action)
+           :timer-return (return-timer! ctx action)
+           :timer-handle-release (release-timer-handle! ctx action)
+           :t05 (register! ctx action)
          ;; The gate excludes observation between registration and claim.
          ;; A ready standing await refines T5 followed by T6; a cold await is T5.
-         :await (register! ctx action)
-         :t06 (resume! ctx action)
-         :t07 (complete! ctx action)
-         :t08 (deliver! ctx action)
-         :queued
-         (let [event (first (:queue (header ctx w)))]
-           (require! event ::empty-queue {:w w})
-           (cond
-             (:completion event) (deliver! ctx (assoc event :w w :e (:completion event)))
-             (:deferred-assignment event) (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
-             (:mailbox-post event) (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))
-             (:start-for event) (start-request! ctx w)
-             (some event [:fdep-ended :cancelled :fork-released]) (cleanup! ctx w)
-             (:register-host event)
-             (let [e (:e event) o (:register-host event) er (read-row ctx w :entities e)]
-               (header-edit! ctx w update :queue #(vec (rest %)))
-               (if (and er (= :live (:status (header ctx w))))
-                 (let [cached? (and (:completed? er)
-                                    (not (#{:running :parked} (:status (read-row ctx w :runs (current-run ctx w e))))))]
-                   (touch! ctx w e (:tok event))
-                   (when cached?
-                     (emit! ctx {:event :host-delivery :world w :o o})
-                     (vswap! (:commands ctx) update (dec (count @(:commands ctx))) assoc :value (:result er)))
-                   (when (or (not cached?) (and (:standing? (:ob event))
-                                                (or (not (:completed? er)) (reactive? ctx w (current-run ctx w e)))))
-                     (add-obligation! ctx w o (:ob event))))
-                 (emit! ctx {:event :host-delivery :world w :o o :value ::released})))
-             :else (require! false ::unsupported-control {:w w :event event})))
-         :t09 (reenter! ctx action)
-         :t10 (supersede! ctx w (:r action))
-         :t11 (cancel-run! ctx w (:r action) (:anchor action))
-         :t13 (close-scope! ctx w (:scope action))
-         :t34 (release-world! ctx action)
-         :release-request (request-release! ctx action)
-         :release-observe (observe-release! ctx action)
-         :release-detach (detach-release! ctx action)
-         :release-notify (notify-release! ctx action)
-         :t14
-         (let [pin? (:pin? action) e (:e action)]
-           (when pin?
-             (require! (= :live (:status (header ctx w))) ::not-live {:world w})
-             (require! (read-row ctx w :entities e) ::missing-entity {:e e}))
-           (header-edit! ctx w update :pins (if pin? conj disj) e)
-           (mark! ctx w e))
-         :t15
-         (doseq [[r rr] (store/table-view tx w :runs)
-                 :when (#{:running :parked} (:status rr))]
-           (cancel-run! ctx w r nil))
-         :t19 (fork-following! ctx action)
-         :t36 (cleanup! ctx w)
-         :t37 (start-request! ctx w)
-         :t16 (handle-unreachable! ctx (:tok action))
-         :t17 (gc-notify! ctx action)
-         :t18 (release-idle! ctx action)
-         :slice-enter
-         (let [th (:th action) r (:r action)]
-           (require! (not-any? (fn [o]
-                                 (let [ob (read-row ctx w :obligations o) [_ dw e] (:debtor ob)]
-                                   (mailbox-control ctx dw e)))
-                               (read-row ctx w :by-run-creditor r))
-                     ::mailbox-claim-required {:w w :r r})
-           (require! (= :running (:status (read-row ctx w :runs r))) ::not-running {:w w :r r})
-           (require! (nil? (get-in (root-state ctx) [:env :threads th :run])) ::thread-busy {:th th})
-           (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
-                               (vals (get-in (root-state ctx) [:env :threads])))
-                     ::slice-busy {:w w :r r})
-           (when (get-in (root-state ctx) [:model :cps-exit?])
-             (edit! ctx w :runs r assoc :cps-entered? true))
-           (root-edit! ctx update-in [:env :threads th] merge
-                       {:world w :scope r :run r :obligation-world w :executing? true}))
-         :t38
-         (let [th (:th action)
-               {:keys [world run] :as thread} (get-in (root-state ctx) [:env :threads th])]
-           (require! run ::no-slice {:th th})
-           (require! (not-any? #(and (= :timer-resource (:kind %)) (= [world run] (:owner %))
-                                     (= th (:installer %)) (= :pending (:install %)))
-                               (vals (get-in (root-state ctx) [:env :native])))
-                     ::timer-install-pending {:th th})
-           (cleanup-exit! ctx thread)
-           (root-edit! ctx update-in [:env :threads th]
-                       #(-> % (assoc :run nil :scope nil :executing? false)
-                            (dissoc :retired? :obligation-world :anchor :cleanup-ticket)))
-           (when (and (= :unwinding (:status (read-row ctx world :runs run)))
-                      (not (physical? ctx world run)))
-             (remove-run! ctx world run)))
-         :native-progress
-         (let [row (get-in (root-state ctx) [:env :native (:n action)]) [world run] (:owner row)]
-           (require! (not (or (protected-native? row) (#{:mailbox-callback :timer-resource} (:kind row))))
-                     ::protected-cleanup {:n (:n action)})
-           (root-edit! ctx update-in [:env :native (:n action)]
-                       #(cond-> (merge % (select-keys action [:state :boundary?]))
-                          (= :joined (:state action)) (dissoc :anchor)))
-           (when (and (= :unwinding (:status (read-row ctx world :runs run)))
-                      (not (physical? ctx world run)))
-             (remove-run! ctx world run)))
-         :thread-entry
-         (do (require! (nil? (get-in (root-state ctx) [:env :threads (:th action) :run]))
-                       ::thread-busy {:th (:th action)})
-             (require! (and (nil? (get-in action [:thread :cleanup-ticket]))
-                            (not (protected-native?
-                                  (get-in (root-state ctx)
-                                          [:env :native (cleanup-ticket (get-in action [:thread :world])
-                                                                        (get-in action [:thread :run]))]))))
-                       ::protected-cleanup {:th (:th action)})
-             (root-edit! ctx assoc-in [:env :threads (:th action)] (:thread action)))
-         :waiter-unregister (root-edit! ctx update-in [:env :waiters] dissoc (:token action))
-         :t35
-         (let [th (get action :th :foreign) op (:op action)]
-           (require! (get-in (root-state ctx) [:env :threads th :world]) ::no-world {:thread th})
-           (when (= :resume (:kind op)) (resume! ctx op)))
-         :signal-write
-         (let [e (:e action) er (read-row ctx w :entities e)]
-           (when-let [op (:op action)]
-             (let [participant (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native (first op)])]
-               (require! (and participant (= :cps-finalization (:kind ticket))
-                              (= w (first (:owner ticket))) (= (second op) (:sequence ticket))
-                              (contains? (:frames participant) (:frame action))
-                              (= (:parent participant) (current-run ctx w (first (:parent participant)))))
-                         ::cleanup-only {:action action})))
-           (require! (not= :released (:status (header ctx w))) ::released {:w w})
-           (when-not (and unwinding? (nil? er))
-             (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
-           (when er
-             (edit! ctx w :entities e assoc :result (:value action))
-             (when-not (false? (:publish? action))
-               (enqueue! ctx w {:completion e :debtor-world w :value (:value action) :source-change? true})
-               (doseq [v (set (for [[x v d] (:fdeps (header ctx w))
-                                    :when (if (= :bundle x) (contains? d e) (= x e))] v))]
-                 (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true})))))
-         :unsubscribe
-         (let [ob (read-row ctx w :obligations o)]
-           (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})
-           (end-obligation! ctx w o :creditor-cancelled))
-         (throw (ex-info "Unsupported kernel transition" {:action action})))
-       (when (contains? action :fresh-runs)
-         (require! (and (vector? (:fresh-runs action)) (empty? @(:fresh-runs ctx)))
-                   ::unused-run-allocation {:remaining @(:fresh-runs ctx)}))
-       (rule-l! ctx)
-       (prune-ancestry! ctx)
-       (refresh-timer-anchors! ctx)
-       (refresh-releases! ctx)
-       (when diagnostics? (root-edit! ctx assoc :events @(:events ctx)))
-       {:events (if diagnostics? @(:events ctx) [])
-        :commands @(:commands ctx) :result @(:result ctx)}))))
+           :await (register! ctx action)
+           :t06 (resume! ctx action)
+           :t07 (complete! ctx action)
+           :t08 (deliver! ctx action)
+           :queued
+           (let [event (first (:queue (header ctx w)))]
+             (require! event ::empty-queue {:w w})
+             (cond
+               (:completion event) (deliver! ctx (assoc event :w w :e (:completion event)))
+               (:deferred-assignment event) (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
+               (:mailbox-post event) (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))
+               (:start-for event) (start-request! ctx w)
+               (some event [:fdep-ended :cancelled :fork-released]) (cleanup! ctx w)
+               (:register-host event)
+               (let [e (:e event) o (:register-host event) er (read-row ctx w :entities e)]
+                 (header-edit! ctx w update :queue #(vec (rest %)))
+                 (if (and er (= :live (:status (header ctx w))))
+                   (let [cached? (and (:completed? er)
+                                      (not (#{:running :parked} (:status (read-row ctx w :runs (current-run ctx w e))))))]
+                     (touch! ctx w e (:tok event))
+                     (when cached?
+                       (emit! ctx {:event :host-delivery :world w :o o})
+                       (vswap! (:commands ctx) update (dec (count @(:commands ctx))) assoc :value (:result er)))
+                     (when (or (not cached?) (and (:standing? (:ob event))
+                                                  (or (not (:completed? er)) (reactive? ctx w (current-run ctx w e)))))
+                       (add-obligation! ctx w o (:ob event))))
+                   (emit! ctx {:event :host-delivery :world w :o o :value ::released})))
+               :else (require! false ::unsupported-control {:w w :event event})))
+           :t09 (reenter! ctx action)
+           :t10 (supersede! ctx w (:r action))
+           :t11 (cancel-run! ctx w (:r action) (:anchor action))
+           :t13 (close-scope! ctx w (:scope action))
+           :t34 (release-world! ctx action)
+           :release-request (request-release! ctx action)
+           :release-observe (observe-release! ctx action)
+           :release-detach (detach-release! ctx action)
+           :release-notify (notify-release! ctx action)
+           :t14
+           (let [pin? (:pin? action) e (:e action)]
+             (when pin?
+               (require! (= :live (:status (header ctx w))) ::not-live {:world w})
+               (require! (read-row ctx w :entities e) ::missing-entity {:e e}))
+             (header-edit! ctx w update :pins (if pin? conj disj) e)
+             (mark! ctx w e))
+           :t15
+           (doseq [[r rr] (store/table-view tx w :runs)
+                   :when (#{:running :parked} (:status rr))]
+             (cancel-run! ctx w r nil))
+           :t19 (fork-following! ctx action)
+           :t36 (cleanup! ctx w)
+           :t37 (start-request! ctx w)
+           :t16 (handle-unreachable! ctx (:tok action))
+           :t17 (gc-notify! ctx action)
+           :t18 (release-idle! ctx action)
+           :slice-enter
+           (let [th (:th action) r (:r action)]
+             (require! (not-any? (fn [o]
+                                   (let [ob (read-row ctx w :obligations o) [_ dw e] (:debtor ob)]
+                                     (mailbox-control ctx dw e)))
+                                 (read-row ctx w :by-run-creditor r))
+                       ::mailbox-claim-required {:w w :r r})
+             (require! (= :running (:status (read-row ctx w :runs r))) ::not-running {:w w :r r})
+             (require! (nil? (get-in (root-state ctx) [:env :threads th :run])) ::thread-busy {:th th})
+             (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
+                                 (vals (get-in (root-state ctx) [:env :threads])))
+                       ::slice-busy {:w w :r r})
+             (when (get-in (root-state ctx) [:model :cps-exit?])
+               (edit! ctx w :runs r assoc :cps-entered? true))
+             (root-edit! ctx update-in [:env :threads th] merge
+                         {:world w :scope r :run r :obligation-world w :executing? true}))
+           :t38
+           (let [th (:th action)
+                 {:keys [world run] :as thread} (get-in (root-state ctx) [:env :threads th])]
+             (require! run ::no-slice {:th th})
+             (require! (not-any? #(and (= :timer-resource (:kind %)) (= [world run] (:owner %))
+                                       (= th (:installer %)) (= :pending (:install %)))
+                                 (vals (get-in (root-state ctx) [:env :native])))
+                       ::timer-install-pending {:th th})
+             (cleanup-exit! ctx thread)
+             (root-edit! ctx update-in [:env :threads th]
+                         #(-> % (assoc :run nil :scope nil :executing? false)
+                              (dissoc :retired? :obligation-world :anchor :cleanup-ticket)))
+             (when (and (= :unwinding (:status (read-row ctx world :runs run)))
+                        (not (physical? ctx world run)))
+               (remove-run! ctx world run)))
+           :native-progress
+           (let [row (get-in (root-state ctx) [:env :native (:n action)]) [world run] (:owner row)]
+             (require! (not (or (protected-native? row) (#{:mailbox-callback :timer-resource} (:kind row))))
+                       ::protected-cleanup {:n (:n action)})
+             (root-edit! ctx update-in [:env :native (:n action)]
+                         #(cond-> (merge % (select-keys action [:state :boundary?]))
+                            (= :joined (:state action)) (dissoc :anchor)))
+             (when (and (= :unwinding (:status (read-row ctx world :runs run)))
+                        (not (physical? ctx world run)))
+               (remove-run! ctx world run)))
+           :thread-entry
+           (do (require! (nil? (get-in (root-state ctx) [:env :threads (:th action) :run]))
+                         ::thread-busy {:th (:th action)})
+               (require! (and (nil? (get-in action [:thread :cleanup-ticket]))
+                              (not (protected-native?
+                                    (get-in (root-state ctx)
+                                            [:env :native (cleanup-ticket (get-in action [:thread :world])
+                                                                          (get-in action [:thread :run]))]))))
+                         ::protected-cleanup {:th (:th action)})
+               (root-edit! ctx assoc-in [:env :threads (:th action)] (:thread action)))
+           :waiter-unregister (root-edit! ctx update-in [:env :waiters] dissoc (:token action))
+           :t35
+           (let [th (get action :th :foreign) op (:op action)]
+             (require! (get-in (root-state ctx) [:env :threads th :world]) ::no-world {:thread th})
+             (when (= :resume (:kind op)) (resume! ctx op)))
+           :signal-write
+           (let [e (:e action) er (read-row ctx w :entities e)]
+             (when-let [op (:op action)]
+               (let [participant (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native (first op)])]
+                 (require! (and participant (= :cps-finalization (:kind ticket))
+                                (= w (first (:owner ticket))) (= (second op) (:sequence ticket))
+                                (contains? (:frames participant) (:frame action))
+                                (= (:parent participant) (current-run ctx w (first (:parent participant)))))
+                           ::cleanup-only {:action action})))
+             (require! (not= :released (:status (header ctx w))) ::released {:w w})
+             (when-not (and unwinding? (nil? er))
+               (require! (and (#{:signal :atom} (:kind er)) (or (:owner er) unwinding?)) ::released {:w w :e e}))
+             (when er
+               (edit! ctx w :entities e assoc :result (:value action))
+               (when-not (false? (:publish? action))
+                 (enqueue! ctx w {:completion e :debtor-world w :value (:value action) :source-change? true})
+                 (doseq [v (set (for [[x v d] (:fdeps (header ctx w))
+                                      :when (if (= :bundle x) (contains? d e) (= x e))] v))]
+                   (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true})))))
+           :unsubscribe
+           (let [ob (read-row ctx w :obligations o)]
+             (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})
+             (end-obligation! ctx w o :creditor-cancelled))
+           (throw (ex-info "Unsupported kernel transition" {:action action})))
+         (when (contains? action :fresh-runs)
+           (require! (and (vector? (:fresh-runs action)) (empty? @(:fresh-runs ctx)))
+                     ::unused-run-allocation {:remaining @(:fresh-runs ctx)}))
+         (rule-l! ctx)
+         (prune-ancestry! ctx)
+         (refresh-timer-anchors! ctx)
+         (refresh-releases! ctx)
+         (when diagnostics? (root-edit! ctx assoc :events @(:events ctx)))
+         {:events (if diagnostics? @(:events ctx) [])
+          :commands @(:commands ctx) :result @(:result ctx)})))))

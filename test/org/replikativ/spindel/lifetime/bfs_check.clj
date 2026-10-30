@@ -4,6 +4,7 @@
             [clojure.set :as set]
             [clojure.edn]
             [org.replikativ.spindel.lifetime.model :as m]
+            [org.replikativ.spindel.lifetime.transition-catalog :as catalog]
             [org.replikativ.spindel.lifetime.invariants :as inv]))
 
 (def w [:w 0]) (def v [:w 1]) (def e [:spin 0]) (def r [e 1])
@@ -205,7 +206,7 @@
 
 (deftest refusal-and-canonical-contract
   (is (empty? (inv/check (m/init-state))))
-  (is (= 48 (count m/transitions)))
+  (is (empty? (catalog/errors (set (keys m/transitions)))))
   (let [s (:state (execute [following {:t :t04 :w v :e e}])) a (m/attempt s seal)]
     (is (= ::m/not-quiescent (get-in a [:refusal :error]))) (is (= s (:state a))))
   (let [s (m/init-state)] (is (= s (:state (m/attempt s {:t :t35 :th :foreign})))))
@@ -313,8 +314,8 @@
               (m/canonical (assoc (m/init-state) :sleep #{invoke}))))))
 
 (defn cross-world-copy []
-  (execute [{:t :t12 :w w :scope [:scope 0] :parent root}
-            {:t :t02 :w w :scope [:scope 0] :e [:signal 0]}
+  (execute [{:t :t12 :w w :scope [:scope :id 0] :parent root}
+            {:t :t02 :w w :scope [:scope :id 0] :e [:signal 0]}
             following {:t :t04 :w v :e e}
             {:t :t05 :w v :r r :kind :track :debtor [:entity w [:signal 0]]}
             {:t :t05 :w v :r r :kind :timer :debtor [:host :executor]}
@@ -382,20 +383,20 @@
                         (butlast (cut-actions :frozen)))
    :control-queue [following {:t :t13 :w w :scope root}]
    :aggregate-census
-   [{:t :t12 :w w :scope [:scope 0] :parent root}
-    {:t :t02 :w w :scope [:scope 0] :e [:signal 0]}
-    {:t :t04 :w w :scope [:scope 0] :e [:spin 1] :mode :callback}
+   [{:t :t12 :w w :scope [:scope :id 0] :parent root}
+    {:t :t02 :w w :scope [:scope :id 0] :e [:signal 0]}
+    {:t :t04 :w w :scope [:scope :id 0] :e [:spin 1] :mode :callback}
     following {:t :t04 :w v :e e}
     {:t :t05 :w v :r r :kind :track :debtor [:entity w [:signal 0]]}
     {:t :t05 :w v :r r :kind :await-once :debtor [:entity w [:spin 1]]}
     {:t :t19 :w v :v [:w 2] :k [:cap 1] :scope [:root v]}
-    {:t :t11 :w v :r r} {:t :t13 :w w :scope [:scope 0]}]
+    {:t :t11 :w v :r r} {:t :t13 :w w :scope [:scope :id 0]}]
    :foreign-reclaim
-   [{:t :t12 :w w :scope [:scope 0] :parent root}
-    {:t :t02 :w w :scope [:scope 0] :e [:signal 0]}
+   [{:t :t12 :w w :scope [:scope :id 0] :parent root}
+    {:t :t02 :w w :scope [:scope :id 0] :e [:signal 0]}
     following {:t :t04 :w v :e e}
     {:t :t05 :w v :r r :kind :track :debtor [:entity w [:signal 0]]}
-    {:t :t13 :w w :scope [:scope 0]} {:t :unsubscribe :w v :o [:o 1]}]
+    {:t :t13 :w w :scope [:scope :id 0]} {:t :unsubscribe :w v :o [:o 1]}]
    :foreign-release
    [following {:t :t02 :w w :e [:signal 0]} {:t :t04 :w v :e e}
     {:t :t05 :w v :r r :kind :track :debtor [:entity w [:signal 0]]}
@@ -448,7 +449,7 @@
                  {:t :t05 :w w :r r :kind :timer :debtor [:host :executor]}
                  {:t :t06 :w w :o [:o 1]} {:t :t09 :w w :e e}
                  {:t :t10 :w w :r r} {:t :t11 :w w :r [e 2]}]
-                [{:t :t12 :w w :scope [:scope 0] :parent root} {:t :t13 :w w :scope [:scope 0]}
+                [{:t :t12 :w w :scope [:scope :id 0] :parent root} {:t :t13 :w w :scope [:scope :id 0]}
                  invoke {:t :t14 :w w :e e :pin? true} {:t :t14 :w w :e e :pin? false} {:t :t15 :w w}
                  {:t :t34 :w w}]
                 [{:t :t01 :w w :e e :tok [:tok 0]} (assoc invoke :tok [:tok 0])
@@ -486,7 +487,7 @@
                       (execute (m/init-state {:cps-exit? true :slices? true}) cleanup-actions))
         covered (set (for [result results edge (:trace result) :when (not (:refusal edge))] (get-in edge [:action :t])))]
     (println "LIFETIME TRANSITION-COVERAGE" (pr-str covered))
-    (is (= (set (keys m/transitions)) covered))
+    (is (= catalog/core-trace-transitions covered))
     (doseq [result results]
       (is (not-any? :refusal (:trace result)) (pr-str (keep :refusal (:trace result))))
       (is (empty? (violations result)) (pr-str (violations result))))))
@@ -841,10 +842,10 @@
     (is (empty? (:queue (m/wr (:state result) w))))))
 
 (deftest ownerless-settling-fork
-  (let [result (execute [{:t :t12 :w w :scope [:scope 0] :parent root}
-                         (assoc following :scope [:scope 0])
-                         (assoc seal :caller [:scope 0])
-                         {:t :t13 :w w :scope [:scope 0]}])
+  (let [result (execute [{:t :t12 :w w :scope [:scope :id 0] :parent root}
+                         (assoc following :scope [:scope :id 0])
+                         (assoc seal :caller [:scope :id 0])
+                         {:t :t13 :w w :scope [:scope :id 0]}])
         s (:state result)]
     (is (not-any? :refusal (:trace result)))
     (is (nil? (:owner (m/ent s w [:fork v]))))
@@ -1044,11 +1045,11 @@
              {:t :t04 :w w :e [:spin 1] :tok [:tok 0]}
              {:t :t07 :w w :r r} {:t :t09 :w w :e e}]
             {:t :t07 :w w :r [e 2]}]
-           [[{:t :t12 :w w :scope [:scope 0] :parent root}
-             (assoc invoke :scope [:scope 0])
+           [[{:t :t12 :w w :scope [:scope :id 0] :parent root}
+             (assoc invoke :scope [:scope :id 0])
              {:t :t01 :w w :r r :e [:spin 1] :tok [:tok 0]}
              {:t :t04 :w w :e [:spin 1] :tok [:tok 0]}]
-            {:t :t13 :w w :scope [:scope 0]}]]]
+            {:t :t13 :w w :scope [:scope :id 0]}]]]
     (let [prefix (execute setup) s (:state prefix)
           result (execute s [ending]) child [:spin 1]]
       (is (= r (:owner (m/ent s w child))))
@@ -1086,10 +1087,10 @@
     (is (= :cached (:result (m/ent s w [:spin 1]))))
     (is (true? (:dirty? (m/ent s w [:spin 1]))))
     (is (empty? (:obligations (m/wr s w)))))
-  (let [result (execute [{:t :t12 :w w :scope [:scope 0] :parent root}
-                         {:t :t02 :w w :scope [:scope 0] :e [:signal 0]}
+  (let [result (execute [{:t :t12 :w w :scope [:scope :id 0] :parent root}
+                         {:t :t02 :w w :scope [:scope :id 0] :e [:signal 0]}
                          invoke {:t :t05 :w w :r r :kind :track :debtor [:entity w [:signal 0]]}
-                         {:t :t13 :w w :scope [:scope 0]}])]
+                         {:t :t13 :w w :scope [:scope :id 0]}])]
     (is (not-any? :refusal (:trace result)))
     (is (empty? (violations result)) (pr-str (violations result)))
     (is (nil? (m/ent (:state result) w [:signal 0])))))

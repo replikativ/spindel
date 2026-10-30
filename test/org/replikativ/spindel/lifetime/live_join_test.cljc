@@ -7,7 +7,7 @@
 (def w [:w 0])
 (def r [:spin 1])
 (def successor [:spin 2])
-(def scope :owner)
+(def scope [:scope :id 0])
 (def native [:cancel [:o 1]])
 
 (defn checked [s action]
@@ -100,3 +100,38 @@
     (is (= {:complete? true :busy []} (join s r)))
     (is (= {:complete? false :busy [r]}
            (:observation (m/attempt s {:t :join :w v :x r}))))))
+
+(deftest settlement-preparation-waits-for-the-reactive-completion-tail
+  (let [v [:w 1] cap [:cap 0] op :tail-settlement
+        fixture (reduce checked (m/init-state {:slices? true :cps-exit? false})
+                        [{:t :t19 :w w :v v :k cap :scope [:root w] :systems #{}}
+                         {:t :t02 :w v :e :driver :value 0}
+                         {:t :t04 :w v :e :spin :mode :callback}
+                         {:t :slice-enter :w v :r r :th :worker}
+                         {:t :t05 :w v :r r :kind :track :debtor [:entity v :driver] :order 0}
+                         {:t :t07 :w v :r r :value 0}])
+        seal {:t :t26 :caller [:root w] :k cap :op op :kind :merge}
+        prepare {:t :t27 :k cap :op op :steps [] :bases {} :payload :tail}
+        sealed (checked fixture seal)
+        refused (m/attempt sealed prepare)]
+    (is (= :completed (:status (m/run fixture v r))))
+    (is (m/reactive? fixture v r))
+    (is (m/quiescent? fixture v))
+    (is (empty? (get-in fixture [:env :native])))
+    (is (false? (m/joined? fixture v)))
+    ;; T26 is a logical seal. T27 is the physical preparation fence.
+    (is (= :sealed (:disposition (m/cap sealed cap))))
+    (is (= ::m/not-joined (get-in refused [:refusal :error])))
+    (is (= sealed (:state refused)))
+    (is (nil? (m/record sealed op)))
+    (let [forged (assoc-in sealed (conj (m/cap-path sealed cap) :disposition) :settling)]
+      ;; A buggy transition helper cannot certify its own invariant.
+      (with-redefs [m/joined? (fn [_ _] true) m/quiescent? (fn [_ _] true)]
+        (is (some #(= [:worker] (:threads %)) (inv/l16 forged)))))
+    (let [returned (checked sealed {:t :t38 :th :worker})
+          prepared (checked returned prepare)]
+      (is (= v (get-in returned [:env :threads :worker :world])))
+      (is (nil? (get-in returned [:env :threads :worker :run])))
+      (is (m/joined? returned v))
+      (is (= :settling (:disposition (m/cap prepared cap))))
+      (is (= :tail (:payload-hash (m/record prepared op)))))))

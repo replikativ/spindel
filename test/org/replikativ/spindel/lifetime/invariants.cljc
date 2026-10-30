@@ -181,6 +181,45 @@
          {:w w :scope scope :entities (vec es) :runs (vec rs)
           :obligations (vec os) :children (vec children)})))
 
+(defn scope-errors
+  "Open ownership is a rooted forest; acquisition balance charges scope storage."
+  [s]
+  (vec
+   (mapcat
+    (fn [[w world]]
+      (when (not= :released (:status world))
+        (let [root (:root world) scopes (:scopes world)
+              explicit (dissoc scopes root)
+              balance (:scope-balance world) high-water (:next-scope world)
+              chain-error
+              (fn [start]
+                (loop [id start seen #{}]
+                  (cond
+                    (= id root) nil
+                    (contains? seen id) {:start start :cycle id}
+                    (not (m/open? s w id)) {:start start :missing-open-parent id}
+                    :else (recur (if-let [rr (m/run s w id)] (:owner rr)
+                                         (:parent (get scopes id))) (conj seen id)))))]
+          (concat
+           (when-not (and (= root [:root w]) (= :open (get-in scopes [root :status]))
+                          (nil? (get-in scopes [root :parent])))
+             [{:w w :invalid-root root}])
+           (when-not (and (integer? balance) (not (neg? balance))
+                          (= balance (count explicit)))
+             [{:w w :scope-balance balance :scope-rows (count explicit)}])
+           (when-not (and (integer? high-water) (not (neg? high-water)))
+             [{:w w :invalid-scope-high-water high-water}])
+           (for [[id row] explicit
+                 :when (or (not (m/explicit-scope-id? id)) (m/run s w id)
+                           (not= :open (:status row))
+                           (and (m/explicit-scope-id? id) (number? high-water)
+                                (>= (nth id 2) high-water)))]
+             {:w w :invalid-scope id :row row :next-scope high-water})
+           (for [id (concat (keys explicit)
+                            (for [[id rr] (:runs world) :when (not= :unwinding (:status rr))] id))
+                 :let [error (chain-error id)] :when error]
+             (assoc error :w w)))))) (:worlds s))))
+
 (defn l07
   "L7 idle caches own no run or owner, handle holds no result."
   [s]
@@ -287,7 +326,9 @@
   {:pins (count (:pins world)) :fdeps (count (:fdeps world)) :releasing (count (:releasing world))
    :creations (reduce + 0 (map #(count (:creations %)) (vals (:runs world))))
    :spawned (reduce + 0 (map #(count (:spawned %)) (vals (:runs world))))
-   :queue (count (:queue world))})
+   :queue (count (:queue world))
+   :scopes (count (:scopes world))
+   :scope-parents (count (filter :parent (vals (:scopes world))))})
 (defn l13
   "L13 extended denominator, fixed c=8, logical dependency members; no waiver for releasing."
   [s]
@@ -312,8 +353,13 @@
                                                 (vals (get-in s [:env :native]))))]
                       (when (> unwinding (+ threads native))
                         [{:w w :unwinding unwinding :threads threads :unjoined native}]))
-                    (for [[index size] (census world) :when (> size (+ (* census-constant n) (* census-constant control)))]
-                      {:w w :index index :size size :rows n :control control :c census-constant})
+                    (for [[index size] (census world)
+                          :let [scope-index? (#{:scopes :scope-parents} index)
+                                limit (if scope-index?
+                                        (+ (if (= :scopes index) 1 0) (get world :scope-balance 0))
+                                        (+ (* census-constant n) (* census-constant control)))]
+                          :when (> size limit)]
+                      {:w w :index index :size size :rows n :control control :c census-constant :limit limit})
                     (when (not (<= deps fd (+ obs in-flight))) [{:w w :dep-retained deps :fdeps fd :obligations obs :in-flight in-flight}])
                     (for [[key events] (group-by m/control-key
                                                  (concat (:queue world)
@@ -365,8 +411,21 @@
               :when (or (#{:settling :incomplete} (:disposition cap))
                         (and (m/terminal (:disposition cap))
                              (#{:merge :discard} (:kind (m/record s (:op cap))))))
-              :when (not (and (m/quiescent? s (:world cap)) (m/joined? s (:world cap))))]
-          {:k k :world (:world cap) :disposition (:disposition cap)}))))
+              :let [w (:world cap) world (m/wr s w)
+                    ;; Observe the tables independently of the transition's
+                    ;; quiescent?/joined? predicates, including ordinary tails.
+                    work (for [[r rr] (:runs world)
+                               :when (#{:running :parked :unwinding} (:status rr))] r)
+                    waits (for [[o ob] (:obligations world)
+                                :when (and (#{:timer :external} (:kind ob))
+                                           (not= :inherited (:status (get (:runs world) (nth (:creditor ob) 2 nil)))))] o)
+                    threads (for [[th row] (get-in s [:env :threads])
+                                  :when (and (= w (:world row)) (:run row))] th)
+                    native (for [[n row] (get-in s [:env :native])
+                                 :when (and (= w (first (:owner row))) (not= :joined (:state row)))] n)]
+              :when (some seq [work waits threads native])]
+          {:k k :world w :disposition (:disposition cap)
+           :work (vec work) :waits (vec waits) :threads (vec threads) :native (vec native)}))))
 
 (defn l17
   "L17 disjoint live authority, total scope cover and one terminal consuming op."
@@ -973,7 +1032,7 @@
                {:host-result-lost-release-reason event})))))))))
 
 (def predicates
-  [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06]
+  [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06] [:ScopeForest scope-errors]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
    [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors] [:L30 release-errors]])

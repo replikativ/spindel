@@ -202,7 +202,7 @@
   ([transition]
    (let [child [:spin 0]
          parent [:spin 1]
-         scope [:scope 0]
+         scope [:scope :id 0]
          actions [{:t :t12 :w world-id :scope scope :parent root-id}
                   {:t :t04 :w world-id :e child :scope scope :mode :callback}
                   {:t :t04 :w world-id :e parent :mode :callback}

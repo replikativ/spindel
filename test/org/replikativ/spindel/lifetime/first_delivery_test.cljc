@@ -225,7 +225,7 @@
     (is (empty? (inv/check s)))))
 
 (defn prefix-scope-actions []
-  (let [w [:w 0] p [:spin 0] e [:signal 0] scope [:scope 0]]
+  (let [w [:w 0] p [:spin 0] e [:signal 0] scope [:scope :id 0]]
     [{:t :t04 :w w :e p :mode :callback}
      {:t :t12 :w w :scope scope :parent [p 1] :order 0}
      {:t :t02 :w w :scope scope :e e :value 1}
@@ -238,7 +238,7 @@
      {:t :t07 :w w :r [p 2] :value 2}]))
 
 (deftest prefix-scope-survives-predecessor-retirement
-  (let [w [:w 0] p [:spin 0] e [:signal 0] scope [:scope 0]
+  (let [w [:w 0] p [:spin 0] e [:signal 0] scope [:scope :id 0]
         s (reduce model/step (model/init-state) (prefix-scope-actions))]
     (is (= [p 2] (get-in s [:worlds w :scopes scope :parent])))
     (is (= :open (get-in s [:worlds w :scopes scope :status])))
@@ -266,7 +266,7 @@
 
 (deftest following-bundle-includes-descendant-scopes
   (let [w [:w 0] v [:w 1] p [:spin 0] e [:signal 0]
-        scope [:scope 0] nested [:scope 1]
+        scope [:scope :id 0] nested [:scope :id 1]
         before (reduce model/step (model/init-state)
                        [{:t :t04 :w w :e p :mode :callback}
                         {:t :t12 :w w :scope scope :parent [p 1]}
