@@ -417,9 +417,12 @@
          public-signal-view! register-public-signal! public-signal-value public-signal-state swap-public-signal! cas-public-signal!
          clear-public-signal-deltas! public-signal-watches edit-public-signal-watch! publish-public-signals! track-public-signal!
          await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor)
-(defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
-                         serial thread world root family parent tickets lineage gc family-id owner-root
-                         operations posts home liveness extension-state finalization managed-cells trace-address timers]
+;; Every public/scoped view shares one revocable world arena. Only value/identity
+;; fields live on the facade; borrowed family services never become view aliases.
+(defrecord ^:private ArenaState [nodes deliveries events hosts work ready draining counters audit tokens
+                                 serial thread family parent tickets lineage gc operations posts home liveness
+                                 extension-state finalization managed-cells trace-address timers])
+(defrecord OwnedRuntime [gate world root family-id owner-root arena-cell]
   rtp/PTimers
   (await-public-timer! [this delay-ms value resolve reject]
     (await-public-timer! this delay-ms value resolve reject))
@@ -506,48 +509,73 @@
 
 #?(:clj
    (defmacro runtime-field [rt field]
-     ;; Fields are private to this implementation. Avoid keyword/protocol
-     ;; lookup on JS while preserving ordinary record access during JVM REPL
-     ;; reloads, where an older runtime can still be finishing a callback.
-     (if (:ns &env)
-       (list (symbol (str ".-" (name field)))
-             (with-meta rt (assoc (meta rt) :tag 'org.replikativ.spindel.engine.impl.owned/OwnedRuntime)))
-       (with-meta (list field rt) (meta &form)))))
+     ;; Stable facade fields are direct. Everything retaining engine objects is
+     ;; behind the same cell for canonical and assoc-decorated runtime views.
+     (let [owned-tag (if (:ns &env) 'org.replikativ.spindel.engine.impl.owned/OwnedRuntime
+                         'org.replikativ.spindel.engine.impl.owned.OwnedRuntime)
+           arena-tag (if (:ns &env) 'org.replikativ.spindel.engine.impl.owned/ArenaState
+                         'org.replikativ.spindel.engine.impl.owned.ArenaState)
+           owned (with-meta rt (assoc (meta rt) :tag owned-tag))
+           target (if (#{:gate :world :root :family-id :owner-root :arena-cell} field)
+                    owned
+                    (let [cell (list '.-arena-cell owned)
+                          state (if (:ns &env)
+                                  (list 'cljs.core/deref cell)
+                                  (list '.deref (with-meta cell {:tag 'clojure.lang.Volatile})))]
+                      (with-meta state {:tag arena-tag})))]
+       (with-meta (list (symbol (str ".-" (name field))) target) (meta &form)))))
 
 #?(:clj
    (defmacro locked [rt & body]
-     (if (:ns &env) `(do ~@body) `(locking (:gate ~rt) ~@body))))
+     (if (:ns &env) `(do ~@body) `(locking (runtime-field ~rt :gate) ~@body))))
 
 (defn runtime
   ([] (runtime {}))
   ([{:keys [audit? record-audit? world-id cps-exit? on-finalization-result bindings metadata timer-transport] :or {record-audit? true world-id w}}]
    (let [family (id-dict) gate #?(:clj (Object.) :cljs nil)
-         rt (->OwnedRuntime
-             gate (id-dict) (dict) (queue) (queue) (queue)
-             #?(:clj (java.util.PriorityQueue.
-                      11 (reify java.util.Comparator
-                           (compare [_ x y]
-                             (compare (long (a x n-rank)) (long (a y n-rank))))))
-                :cljs (array))
-             (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 14)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
-             (when audit? (atom (when record-audit? []))) (when audit? (members))
-             (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 5) (put 3 world-id))
-             world-id [:root world-id] family nil (id-dict)
-             {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
-             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id]) (dict) (queue)
-             (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))
-                              ;; Shared dirty-ID queue, value-keyed dedup,
-                              ;; sweeping flag, publication pause depth, receipt count.
-                              (doto (slots 5) (put 0 (queue)) (put 1 (id-dict))
-                                    (put 2 false) (put 3 0) (put 4 0)))
-             (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
-                   (put 3 (members)) (put 4 (queue)) (put 5 (dict))) (atom {:values {} :shadowed #{} :map-groups #{}})
-             (when cps-exit? (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict)) (put 4 on-finalization-result)))
-             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1)
-             (doto (slots 3) (put 0 (id-dict)) (put 1 (or timer-transport timer-transport/default-transport)) (put 2 (queue))))
+         arena (->ArenaState
+                (id-dict) (dict) (queue) (queue) (queue)
+                #?(:clj (java.util.PriorityQueue.
+                         11 (reify java.util.Comparator
+                              (compare [_ x y]
+                                (compare (long (a x n-rank)) (long (a y n-rank))))))
+                   :cljs (array))
+                (atom false)
+                (doto (slots 10)
+                  (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue))
+                  (put 4 (slots 32)) (put 5 (slots 14)) (put 1 0) (put 2 0)
+                  (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
+                (when audit? (atom (when record-audit? []))) (when audit? (members))
+                (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 5) (put 3 world-id))
+                family nil (id-dict)
+                {:parent nil :root world-id :mode :root :cut nil :basis nil} (queue)
+                (dict) (queue)
+                (->RuntimeFamily gate family #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))
+                                 ;; Shared dirty-ID queue, value-keyed dedup,
+                                 ;; sweeping flag, publication pause depth, receipt count.
+                                 (doto (slots 5) (put 0 (queue)) (put 1 (id-dict))
+                                       (put 2 false) (put 3 0) (put 4 0)))
+                (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
+                      (put 3 (members)) (put 4 (queue)) (put 5 (dict)))
+                (atom {:values {} :shadowed #{} :map-groups #{}})
+                (when cps-exit?
+                  (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue))
+                        (put 3 (id-dict)) (put 4 on-finalization-result)))
+                (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1)
+                (doto (slots 3) (put 0 (id-dict))
+                      (put 1 (or timer-transport timer-transport/default-transport)) (put 2 (queue))))
+         rt (->OwnedRuntime gate world-id [:root world-id]
+                            #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id])
+                            (volatile! arena))
          rt (cond-> rt bindings (assoc :bindings bindings) metadata (assoc :metadata metadata))]
      (assoc! family world-id rt)
      rt)))
+
+(defn auditing? [rt]
+  (boolean (runtime-field rt :audit)))
+
+(defn audit-trace [rt]
+  (when-let [audit (runtime-field rt :audit)] @audit))
 
 (defn- enqueue-cell-gc! [rt id]
   (let [gc (:cell-gc (runtime-field rt :home))]
@@ -603,7 +631,7 @@
 (defn- execution-runtime [rt] (if (current-activation) (a (current-activation) 0) rt))
 (defn- parent-node [rt id]
   (loop [parent (runtime-field rt :parent)]
-    (when parent (or (find! (:nodes parent) id) (recur (:parent parent))))))
+    (when parent (or (find! (runtime-field parent :nodes) id) (recur (runtime-field parent :parent))))))
 
 (defn- work-status? [status] (case status (:running :parked) true false))
 (defn- active-status? [status] (case status (:running :parked :inherited :stale) true false))
@@ -1439,7 +1467,7 @@
             (put token t-reachable false)
             (each! [world (a token t-touched)]
                    (when-let [target (find! (runtime-field rt :family) world)]
-                     (when (find! (:nodes target) (a token t-spin))
+                     (when (find! (runtime-field target :nodes) (a token t-spin))
                        (push! (runtime-field rt :gc) (doto (slots 2) (put 0 target) (put 1 token))))))
             (boundary! rt (when (runtime-field rt :audit) {:t :t16 :tok (a token t-id)
                                                            :notification-order (mapv #(-> (a % 0) :world)
@@ -1447,9 +1475,9 @@
           (loop []
             (when-let [notification (pop! (runtime-field rt :gc))]
               (let [target (a notification 0) dead (a notification 1)]
-                (when-let [node (find! (:nodes target) (a dead t-spin))]
+                (when-let [node (find! (runtime-field target :nodes) (a dead t-spin))]
                   (remove! (a node n-tokens) dead) (mark! target node))
-                (boundary! target (when (:audit target) {:t :t17 :w (:world target) :e (a dead t-spin) :tok (a dead t-id)})))
+                (boundary! target (when (runtime-field target :audit) {:t :t17 :w (runtime-field target :world) :e (a dead t-spin) :tok (a dead t-id)})))
               (recur)))))
 
 (defn notify-unreachable!
@@ -1708,7 +1736,7 @@
       (when (> rank (long (a node n-rank)))
         ;; Both platform queues borrow node priorities. Rank is refined only
         ;; after claiming a slice, never while its node remains queued.
-        (when (and (:audit (a node n-runtime)) (a node n-ready))
+        (when (and (runtime-field (a node n-runtime) :audit) (a node n-ready))
           (throw (ex-info "Queued priority mutation" {:id (a node n-id)})))
         (put node n-rank rank)))))
 
@@ -2832,7 +2860,7 @@
     (when world
       (if-let [node (find! (runtime-field world :nodes) id)]
         [world node (find! (a (runtime-field world :managed-cells) 0) id)]
-        (when (= :following (get-in world [:lineage :mode]))
+        (when (= :following (:mode (runtime-field world :lineage)))
           (recur (runtime-field world :parent)))))))
 
 (defn- ordinary-cell-node [rt id]
@@ -3269,10 +3297,10 @@
 (defn- global-view [rt]
   (let [worlds (values (runtime-field rt :family))]
     {:registry (set (map :world worlds)) :known-worlds (set (map :world worlds))
-     :lineages (into {} (map (juxt :world :lineage) worlds))
+     :lineages (into {} (for [world worlds] [(runtime-field world :world) (runtime-field world :lineage)]))
      :caps (map-value (a (runtime-field rt :counters) 7))
-     :generation-clock (into {} (for [world worlds :let [clock (a (:counters world) 3)] :when clock [id n] (map-value clock)]
-                                  [[(:world world) id] n]))}))
+     :generation-clock (into {} (for [world worlds :let [clock (a (runtime-field world :counters) 3)] :when clock [id n] (map-value clock)]
+                                  [[(runtime-field world :world) id] n]))}))
 
 (defn- all-obligations [rt]
   ;; Internal graph links already own reactive registrations. Only ticket
@@ -3356,7 +3384,7 @@
                                                 ticket (assoc :retired? true :anchor (a ticket x-anchor) :cleanup-ticket (a ticket x-id))))))
                   :gc (mapv (fn [notification]
                               (let [target (a notification 0) token (a notification 1)]
-                                {:t :t17 :w (:world target) :e (a token t-spin) :tok (a token t-id)}))
+                                {:t :t17 :w (runtime-field target :world) :e (a token t-spin) :tok (a token t-id)}))
                             (items (runtime-field rt :gc)))
                   :handles (when (runtime-field rt :tokens)
                              (into {} (for [token (items (runtime-field rt :tokens))]
@@ -3402,19 +3430,26 @@
                    (when (some #(or (identical? % (a node n-owner)) (identical? % (a node n-creator))) copies)
                      (add! selected node)))
             (let [child (assoc (runtime {:audit? (boolean (runtime-field rt :audit)) :world-id world})
-                               :gate (runtime-field rt :gate) :family (runtime-field rt :family) :family-id (runtime-field rt :family-id) :parent rt
-                               :events (runtime-field rt :events) :hosts (runtime-field rt :hosts) :posts (runtime-field rt :posts) :ready (runtime-field rt :ready) :draining (runtime-field rt :draining)
-                               :serial (runtime-field rt :serial) :thread (runtime-field rt :thread) :gc (runtime-field rt :gc) :home (runtime-field rt :home)
-                               :audit (runtime-field rt :audit) :tokens (runtime-field rt :tokens)
-                               :lineage {:parent (runtime-field rt :world) :root (get-in rt [:lineage :root])
-                                         :mode :following :cut nil :basis nil})
+                               :gate (runtime-field rt :gate) :family-id (runtime-field rt :family-id))
+                  _ (vreset! (runtime-field child :arena-cell)
+                             (assoc @(runtime-field child :arena-cell)
+                                    :family (runtime-field rt :family) :parent rt
+                                    :events (runtime-field rt :events) :hosts (runtime-field rt :hosts)
+                                    :posts (runtime-field rt :posts) :ready (runtime-field rt :ready)
+                                    :draining (runtime-field rt :draining) :serial (runtime-field rt :serial)
+                                    :thread (runtime-field rt :thread) :gc (runtime-field rt :gc)
+                                    :home (runtime-field rt :home) :audit (runtime-field rt :audit)
+                                    :tokens (runtime-field rt :tokens)
+                                    :lineage {:parent (runtime-field rt :world)
+                                              :root (:root (runtime-field rt :lineage))
+                                              :mode :following :cut nil :basis nil}))
                   node-map (dict)
                   inherited-gc (volatile! [])]
         ;; No old world version is pinned. The following child still retains
         ;; its live parent and code closures; only the parked ownership rows
         ;; are copied into child-owned mutable storage.
               (each! [node selected]
-                     (let [copy (node! child (a node n-id) (a node n-kind) (:owner-root child))]
+                     (let [copy (node! child (a node n-id) (a node n-kind) (runtime-field child :owner-root))]
                        (assoc! node-map node copy)
                        (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank n-descriptor n-cancelled]]
                                 (put copy field (a node field)))
@@ -3433,7 +3468,7 @@
                 (let [copy (slots 26) node (find! node-map (a run r-node))]
                   (assoc! run-map run copy)
                   (put copy r-node node) (put copy r-gen (a run r-gen))
-                  (put copy r-owner (:owner-root child)) (put copy r-pred (a run r-pred))
+                  (put copy r-owner (runtime-field child :owner-root)) (put copy r-pred (a run r-pred))
                   (put copy r-address (a run r-address))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-validation-lost (a run r-validation-lost))
@@ -3441,12 +3476,12 @@
                   (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
                            (put copy field empty-members))
                   (each! [gen (a run r-ancestors)] (add-run! copy r-ancestors gen))
-                  (add! (a (:counters child) 8) node)
+                  (add! (a (runtime-field child :counters) 8) node)
                   (assoc! (a node n-runs) (a copy r-gen) copy)
                   (when (or (nil? (current node)) (> (long (a copy r-gen)) (long (a (current node) r-gen))))
                     (put node n-current copy) (put node n-generation (a copy r-gen)))
-                  (when (:audit child) (assoc! (a (:counters child) 3) (a node n-id) (a node n-generation)))
-                  (add! (a (:counters child) 6) copy)))
+                  (when (runtime-field child :audit) (assoc! (a (runtime-field child :counters) 3) (a node n-id) (a node n-generation)))
+                  (add! (a (runtime-field child :counters) 6) copy)))
               (each! [node selected]
                      (let [copy (find! node-map node)
                            creator (a node n-creator)]
@@ -3468,21 +3503,21 @@
                            (put clone o-origin :inherited) (put clone o-source-world (runtime-field rt :world))
                            (add-run! copy r-obs clone)
                            (when (reactive-kind? (a clone o-kind)) (reactive-delta! copy 1))
-                           (when (= :await-once (a clone o-kind)) (assoc! (:deliveries child) (a clone o-id) clone))
-                           (let [waiters (or (find! (:tickets child) (a clone o-host))
-                                             (assoc! (:tickets child) (a clone o-host) (members)))]
+                           (when (= :await-once (a clone o-kind)) (assoc! (runtime-field child :deliveries) (a clone o-id) clone))
+                           (let [waiters (or (find! (runtime-field child :tickets) (a clone o-host))
+                                             (assoc! (runtime-field child :tickets) (a clone o-host) (members)))]
                              (add! waiters clone))))))
               (put (runtime-field child :trace-address) 0 (a (runtime-field rt :trace-address) 0))
               (reclaim! child)
               (prune-ancestry! child)
-              (put (:counters child) 1 (a (runtime-field rt :counters) 1))
-              (put (:counters child) 7 (a (runtime-field rt :counters) 7))
+              (put (runtime-field child :counters) 1 (a (runtime-field rt :counters) 1))
+              (put (runtime-field child :counters) 7 (a (runtime-field rt :counters) 7))
               (assoc! (a (runtime-field rt :counters) 7) [:cap world]
                       {:world world :scope #{} :holder (runtime-field rt :root) :disposition :open :published? true
                        :op nil :pred nil :successors [] :durable? false :bases {}})
               (assoc! (runtime-field rt :family) world child)
               (node! rt [:fork world] :fork (runtime-field rt :owner-root))
-              (each! [node (values (:nodes child))]
+              (each! [node (values (runtime-field child :nodes))]
                      (when (= :atom (a node n-kind))
                        (note-cell-gc-blocker-change! child (a node n-id)))
                      (each! [token (a node n-tokens)] (add! (a token t-touched) world)))
@@ -3501,7 +3536,7 @@
 
 (defn snapshot-family [rt]
   (locked rt
-          (into {} (for [world (values (runtime-field rt :family))] [(:world world) (snapshot world)]))))
+          (into {} (for [world (values (runtime-field rt :family))] [(runtime-field world :world) (snapshot world)]))))
 
 (defn storage-stats [rt]
   (locked rt

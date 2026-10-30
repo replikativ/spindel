@@ -144,7 +144,7 @@
        (is (empty? (inv/check expected)))
        (is (empty? (inv/edge-check {:before state :action action :after expected})))
        expected))
-   (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})) @(:audit rt)))
+   (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})) (c/audit-trace rt)))
 
 (deftest completed-ownership-island-becomes-value-only-before-gc
   (doseq [audit? [false true]]
@@ -1409,8 +1409,8 @@
       (is (= [:parent] @values))
       (is (= :child (get-in (c/snapshot child) [:entities :structural-spin :result])))
       (doseq [runtime [rt child]]
-        (is (some? (:audit runtime)))
-        (is (nil? @(:audit runtime)))
+        (is (c/auditing? runtime))
+        (is (nil? (c/audit-trace runtime)))
         (is (zero? (:liveness-scratch-references (c/storage-stats runtime))))))))
 
 #?(:clj
