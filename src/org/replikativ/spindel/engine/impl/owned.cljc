@@ -394,6 +394,14 @@
     (when (= :id key) id))
   (#?(:clj valAt :cljs -lookup) [_ key not-found]
     (if (= :id key) id not-found)))
+(deftype ^:private ScopeCapability [world id])
+(deftype ^:private ScopeOwner [data])
+(deftype ^:private CapturedOwner [owner role world spin])
+(def ^:const s-id 0) (def ^:const s-cap 1) (def ^:const s-parent 2)
+(def ^:const s-kind 3) (def ^:const s-order 4) (def ^:const s-open 6)
+(def ^:const s-owned 9) (def ^:const s-runs 11)
+(def ^:const s-origin 14) (def ^:const s-source-world 15)
+
 (defrecord Failure [error])
 
 (defn- diagnostic-value [value failed?]
@@ -420,13 +428,25 @@
          assign-deferred! await-public-deferred! deferred-view! deferred-metadata end-deferred-protection! release-ticket-cells!
          public-signal-view! register-public-signal! public-signal-value public-signal-state swap-public-signal! cas-public-signal!
          clear-public-signal-deltas! public-signal-watches edit-public-signal-watch! publish-public-signals! track-public-signal!
-         await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor)
+         await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor
+         root-execution-owner current-execution-owner open-execution-scope! bindable-execution-owner
+         capture-execution-owner restore-execution-owner
+         close-execution-scope! execution-owner-joined? selected-owner close-owner! check-scope-close! owner-capability)
 ;; Every public/scoped view shares one revocable world arena. Only value/identity
 ;; fields live on the facade; borrowed family services never become view aliases.
 (defrecord ^:private ArenaState [nodes deliveries events hosts work ready draining counters audit tokens
                                  serial thread family parent tickets lineage gc operations posts home liveness
-                                 extension-state finalization managed-cells trace-address timers lifecycle])
+                                 extension-state finalization managed-cells trace-address timers lifecycle execution-scopes])
 (defrecord OwnedRuntime [gate world root family-id owner-root arena-cell]
+  rtp/PExecutionScopes
+  (root-execution-owner [this] (root-execution-owner this))
+  (current-execution-owner [this] (current-execution-owner this))
+  (open-execution-scope! [this kind parent] (open-execution-scope! this kind parent))
+  (bindable-execution-owner [this owner] (bindable-execution-owner this owner))
+  (capture-execution-owner [this owner] (capture-execution-owner this owner))
+  (restore-execution-owner [this captured current] (restore-execution-owner this captured current))
+  (close-execution-scope! [this scope] (close-execution-scope! this scope))
+  (execution-owner-joined? [this owner] (execution-owner-joined? this owner))
   rtp/PWorldLifecycle
   (request-world-release! [this reason] (request-world-release! this reason))
   (observe-world-release! [this receipt resolve reject] (observe-world-release! this receipt resolve reject))
@@ -571,7 +591,7 @@
                 (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1)
                 (doto (slots 3) (put 0 (id-dict))
                       (put 1 (or timer-transport timer-transport/default-transport)) (put 2 (queue)))
-                (doto (slots 7) (put 0 :live) (put 4 0) (put 5 (id-dict))))
+                (doto (slots 7) (put 0 :live) (put 4 0) (put 5 (id-dict))) (volatile! nil))
          rt (->OwnedRuntime gate world-id [:root world-id]
                             #?(:clj (Object.) :cljs (js-obj)) (->RootOwner [:root world-id])
                             (volatile! arena))
@@ -646,6 +666,23 @@
     (put (runtime-field rt :serial) 0 (inc (long (a (runtime-field rt :serial) 0))))
     (put (runtime-field rt :counters) i (inc (long (a (runtime-field rt :counters) i))))))
 (defn- root-owner? [owner] (instance? RootOwner owner))
+(defn- scope-owner? [owner] (instance? ScopeOwner owner))
+(defn- owner-storage [owner] (if (scope-owner? owner) (.-data ^ScopeOwner owner) owner))
+(defn- owner-parent [owner]
+  (when (and owner (not (root-owner? owner))) (a (owner-storage owner) r-owner)))
+(defn- scope-state [rt] @(runtime-field rt :execution-scopes))
+(defn- scope-children [rt owner]
+  (when-let [state (scope-state rt)] (find! (a state 1) owner)))
+(defn- scope-parent! [rt scope parent]
+  (let [state (scope-state rt) data (owner-storage scope) previous (a data s-parent)]
+    (when previous
+      (when-let [children (scope-children rt previous)]
+        (remove! children scope)
+        (when (zero? (count! children)) (dissoc! (a state 1) previous))))
+    (put data s-parent parent)
+    (when parent
+      (let [children (or (scope-children rt parent) (assoc! (a state 1) parent (members)))]
+        (add! children scope)))))
 (defn- execution-runtime [rt] (if (current-activation) (a (current-activation) 0) rt))
 (defn- parent-node [rt id]
   (loop [parent (runtime-field rt :parent)]
@@ -658,7 +695,10 @@
 (defn- fork-busy-status? [status] (case status (:running :unwinding :inherited) true false))
 
 (defn- current [node] (a node n-current))
-(defn- open-owner? [owner] (or (root-owner? owner) (and owner (not= :unwinding (a owner r-status)))))
+(defn- open-owner? [owner]
+  (or (root-owner? owner)
+      (and owner (if (scope-owner? owner) (a (owner-storage owner) s-open)
+                     (not= :unwinding (a owner r-status))))))
 (defn- mark-graph! [rt node]
   (when (and node (not (a node n-graph-dirty)))
     (put node n-graph-dirty true) (push! (a (runtime-field rt :liveness) 0) node)))
@@ -668,7 +708,20 @@
     (put node n-work true) (push! (runtime-field rt :work) node)))
 
 (defn- owner-node [owner]
-  (when (and owner (not (root-owner? owner))) (a owner r-node)))
+  (loop [owner owner]
+    (cond (or (nil? owner) (root-owner? owner)) nil
+          (scope-owner? owner) (recur (owner-parent owner))
+          :else (a owner r-node))))
+(defn- root-connected-owner? [owner]
+  (loop [owner owner]
+    (cond (root-owner? owner) true
+          (scope-owner? owner) (and (open-owner? owner) (recur (owner-parent owner)))
+          :else false)))
+(defn- scope-owned-nodes [rt owner]
+  (mapcat (fn visit [scope]
+            (concat (items (a (owner-storage scope) s-owned))
+                    (mapcat visit (when-let [children (scope-children rt scope)] (items children)))))
+          (when-let [children (scope-children rt owner)] (items children))))
 
 (defn- reactive-kind? [kind] (or (= :track kind) (= :await-reactive kind)))
 (defn- reactive? [run] (boolean (and run (pos? (long (or (a run r-reactives) 0))))))
@@ -693,6 +746,14 @@
   (when (and target (identical? target (find! (runtime-field rt :nodes) (a target n-id))))
     (add! links target)))
 
+(defn- retain-scope-links! [rt links scopes]
+  (each! [scope scopes]
+         (each! [child (a (owner-storage scope) s-owned)]
+                (when (and (open-owner? (a child n-owner)) (owns-live-kind? child))
+                  (retain-link! rt links child)))
+         (when-let [children (scope-children rt scope)]
+           (when-not (empty-native? children) (retain-scope-links! rt links children)))))
+
 (defn- reconcile-retention! [rt]
   (let [pending (a (runtime-field rt :liveness) 0)]
     (loop []
@@ -703,22 +764,24 @@
               owner (a node n-owner)
               external? (boolean
                          (and present?
-                              (or (and (root-owner? owner) (owns-live-kind? node))
+                              (or (and (root-connected-owner? owner) (owns-live-kind? node))
                                   (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run)))))))]
           (clear-members! next)
           (when present?
             (when (and owner (not (root-owner? owner)))
-              (retain-link! rt next (a owner r-node)))
+              (retain-link! rt next (owner-node owner)))
             (each! [run (values (a node n-runs))]
                    (when-not (= :unwinding (a run r-status))
                      (let [owner (a run r-owner)]
                        (when (and owner (not (root-owner? owner)))
-                         (retain-link! rt next (a owner r-node))))
+                         (retain-link! rt next (owner-node owner))))
                      (each! [ob (a run r-obs)]
                             (when (a ob o-live) (retain-link! rt next (a ob o-debtor))))
                      (each! [child (a run r-owned)]
                             (when (and (open-owner? (a child n-owner)) (owns-live-kind? child))
-                              (retain-link! rt next child))))))
+                              (retain-link! rt next child)))
+                     (when-let [scopes (scope-children rt run)]
+                       (when-not (empty-native? scopes) (retain-scope-links! rt next scopes))))))
           (when-not (= external? (boolean (a node n-external-root)))
             (put node n-external-root external?) (invalidate-liveness! rt))
           (if (and (= (count! before) (count! next))
@@ -799,15 +862,18 @@
 (defn- owner! [rt node owner]
   (let [old (a node n-owner)]
     (when-not (identical? old owner)
-      (when (or (not= (root-owner? old) (root-owner? owner))
+      (when (or (not= (root-connected-owner? old) (root-connected-owner? owner))
                 (not (identical? (owner-node old) (owner-node owner)))
                 (not= (boolean (open-owner? old)) (boolean (open-owner? owner))))
         (mark-graph! rt node) (mark-graph! rt (owner-node old)) (mark-graph! rt (owner-node owner)))
-      (when-let [parent (owner-node old)]
-        (remove! (a old r-owned) node) (mark! rt parent))
+      (when (and old (not (root-owner? old)))
+        (remove! (a (owner-storage old) r-owned) node)
+        (when-let [parent (owner-node old)] (mark! rt parent)))
       (put node n-owner owner)
-      (when-let [parent (owner-node owner)]
-        (add-run! owner r-owned node) (mark! rt parent))
+      (when (and owner (not (root-owner? owner)))
+        (if (scope-owner? owner) (add! (a (owner-storage owner) s-owned) node)
+            (add-run! owner r-owned node))
+        (when-let [parent (owner-node owner)] (mark! rt parent)))
       (mark! rt node))))
 
 (defn- kept! [rt node value]
@@ -856,8 +922,11 @@
 (defn- exit-id [rt run] [:cps-exit (runtime-field rt :world) (run-id run)])
 (defn- run-anchor [rt run]
   (loop [owner run chain []]
-    (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
-        (recur (a owner r-owner) (conj chain (run-id owner))))))
+    (cond (nil? owner) (conj chain (runtime-field rt :world))
+          (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
+          (scope-owner? owner) (recur (owner-parent owner) (conj chain (a (owner-storage owner) s-id)))
+          (= :unwinding (a owner r-status)) (into chain (a owner r-anchor))
+          :else (recur (a owner r-owner) (conj chain (run-id owner))))))
 
 (defn- empty-dict? [m]
   #?(:clj (.isEmpty ^java.util.Map m)
@@ -898,11 +967,14 @@
        (queue-cleanup! rt ticket)
        ticket))))
 
-(defn- unfinished-cps-subtree? [run]
-  ;; Run ownership is a forest. Inspect its existing child index without
-  ;; allocating retention tables for a completely returned subtree.
-  (or (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
-      (any! (a run r-childruns) unfinished-cps-subtree?)))
+(defn- owner-child-runs [owner]
+  (if (root-owner? owner) empty-members (a (owner-storage owner) r-childruns)))
+(defn- unfinished-cps-subtree? [rt owner]
+  (or (and (not (root-owner? owner)) (not (scope-owner? owner))
+           (a owner r-entered) (#{:running :parked :stale} (a owner r-status)))
+      (any! (owner-child-runs owner) #(unfinished-cps-subtree? rt %))
+      (when-let [children (scope-children rt owner)]
+        (any! children #(unfinished-cps-subtree? rt %)))))
 
 (defn- source-allocation [rt id]
   (if-let [aux (find! (a (runtime-field rt :managed-cells) 0) id)]
@@ -913,26 +985,28 @@
   ([rt root-run] (retain-cleanup! rt root-run nil))
   ([rt root-run cancellation]
    (when-let [profile (runtime-field rt :finalization)]
-     (when (or (not (empty-dict? (a profile 0))) (unfinished-cps-subtree? root-run))
+     (when (or (not (empty-dict? (a profile 0))) (unfinished-cps-subtree? rt root-run))
     ;; Capture the whole subtree before recursive retirement mutates ownership.
        (let [owners (members) identities (id-dict)]
          (letfn [(visit [run]
                    (when-not (has? owners run)
-                     (add! owners run) (assoc! identities (run-id run) true)
-                     (each! [child (a run r-childruns)] (visit child))))]
+                     (add! owners run) (assoc! identities (owner-id run) true)
+                     (each! [child (owner-child-runs run)] (visit child))
+                     (each! [child (or (scope-children rt run) empty-members)] (visit child))))]
            (visit root-run))
          (each! [run owners]
-                (reserve-exit! rt run (when (and cancellation
-                                                 (identical? (:node cancellation) (a run r-node)))
-                                        cancellation)))
+                (when-not (or (root-owner? run) (scope-owner? run))
+                  (reserve-exit! rt run (when (and cancellation
+                                                   (identical? (:node cancellation) (a run r-node)))
+                                          cancellation))))
          (let [participants (filter #(and (= :cps-exit (a % x-kind))
                                           (some (fn [id] (find! identities id)) (a % x-anchor)))
                                     (values (a profile 0)))
                cells (id-dict)]
            (each! [run owners]
-                  (each! [node (a run r-owned)]
+                  (each! [node (if (root-owner? run) empty-members (a (owner-storage run) r-owned))]
                          (when (#{:signal :atom :deferred :mailbox} (a node n-kind))
-                           (let [key [(runtime-field rt :world) (run-id run) (a node n-id)]
+                           (let [key [(runtime-field rt :world) (owner-id run) (a node n-id)]
                                  cell (or (find! (a profile 1) key)
                                           (let [cell (doto (slots (if (#{:deferred :mailbox} (a node n-kind)) 5 4))
                                                        (put 0 (a node n-kind)) (put 1 (a node n-value))
@@ -1137,7 +1211,7 @@
    (end-ob! rt ob)))
 
 (defn- release-owned! [rt run]
-  (each-copy! [node (a run r-owned)]
+  (each-copy! [node (a (owner-storage run) r-owned)]
               (when-let [control (a node n-mailbox)]
                 (doseq [consumer (vec (concat (values (a control m-pending)) (values (a control m-reservations))))]
                   (refresh-mailbox-owner! rt consumer (a node n-owner))
@@ -1187,10 +1261,8 @@
      (let [node (a run r-node)
            _ (retain-cleanup! rt run cancellation)
            physical? (or (a run r-physical) (a run r-exit) (pos? (long (or (a run r-timers) 0))))
-           anchor (when physical?
-                    (loop [owner run chain []]
-                      (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
-                          (recur (a owner r-owner) (conj chain [(a (a owner r-node) n-id) (a owner r-gen)])))))]
+           anchor (when physical? (run-anchor rt run))]
+       (each-copy! [scope (or (scope-children rt run) empty-members)] (close-owner! rt scope))
        (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
        (each-copy! [child (a run r-childruns)] (cancel! rt child))
        (release-owned! rt run)
@@ -1205,13 +1277,14 @@
                     (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
        (when-let [owner (a run r-owner)]
          (when-not (root-owner? owner)
-           (let [parent (a owner r-node)]
-             (when (and (not (identical? parent (owner-node (a node n-owner))))
+           (let [parent (owner-node owner)]
+             (when (and parent (not (identical? parent (owner-node (a node n-owner))))
                         (not (any! (values (a node n-runs))
                                    #(and (not (identical? run %)) (not= :unwinding (a % r-status))
                                          (identical? parent (owner-node (a % r-owner)))))))
-               (mark-graph! rt node)))
-           (remove! (a owner r-childruns) run) (mark! rt (a owner r-node))))
+               (mark-graph! rt node))
+             (remove! (a (owner-storage owner) r-childruns) run)
+             (when parent (mark! rt parent)))))
        (if physical?
          (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
              (put run r-anchor anchor)
@@ -1312,10 +1385,10 @@
                                                          (concat [(owner-node (a run r-owner))]
                                                                  (for [ob (items (a run r-obs)) :when (a ob o-live)] (a ob o-debtor))
                                                                  (filter #(and (open-owner? (a % n-owner)) (owns-live-kind? %))
-                                                                         (items (a run r-owned))))))
+                                                                         (concat (items (a run r-owned)) (scope-owned-nodes rt run))))))
                                                      (values (a node n-runs))))))
                actual (set (items (a node n-links)))
-               external? (boolean (or (and (root-owner? owner) (owns-live-kind? node))
+               external? (boolean (or (and (root-connected-owner? owner) (owns-live-kind? node))
                                       (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run))))))]
            (when-not (and (= expected actual) (= external? (boolean (a node n-external-root))))
              (throw (ex-info "Retention graph differs from semantic rows"
@@ -1430,7 +1503,7 @@
       (check-running! (a frame 1)))))
 
 (defn- predecessor-run? [previous caller]
-  (when (and previous caller (not (root-owner? previous)))
+  (when (and previous caller (not (root-owner? previous)) (not (scope-owner? previous)))
     (let [id (if (vector? previous) (nth previous 0) (a (a previous r-node) n-id))
           gen (if (vector? previous) (nth previous 1) (a previous r-gen))]
       (and (= id (a (a caller r-node) n-id)) (has? (a caller r-ancestors) gen)))))
@@ -1440,15 +1513,18 @@
           (let [run (when (current-activation) (a (current-activation) 1))
                 order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
                 _ (check-running! run)
+                owner (selected-owner rt)
+                creator (when-not (or (root-owner? owner) (scope-owner? owner)) owner)
                 old (find! (runtime-field rt :nodes) id)
-                node (or old (node! rt id :signal (or run (runtime-field rt :owner-root))))]
+                node (or old (node! rt id :signal owner))]
             (when-not (= :signal (a node n-kind)) (throw (ex-info "Source ID collision" {:id id})))
-            (when (or (nil? old) (predecessor-run? (a node n-owner) run))
+            (when (or (nil? old) (predecessor-run? (a node n-owner) creator))
               (when-not old (put node n-value value))
-              (owner! rt node (or run (runtime-field rt :owner-root))) (put node n-order order)
-              (when run (creation! run node)))
+              (owner! rt node owner) (put node n-order order)
+              (when creator (creation! creator node)))
             (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t02 :w (runtime-field rt :world) :e id :value value}
-                                                            run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))
+                                                            creator (assoc :r (run-id creator) :order order)
+                                                            (scope-owner? owner) (assoc :scope (owner-id owner) :order order))))
             (->Source id (runtime-field rt :family-id)
                       (when-let [profile (runtime-field rt :finalization)]
                         (or (find! (a profile 3) id)
@@ -1519,27 +1595,33 @@
     (put t-spin id) (put t-reachable true)
     (put t-touched (members)) (put t-dropped (members))))
 
-(defn- construct-token! [rt id token run]
-  (world-open! rt)
-  (check-running! run)
-  (when-let [node (find! (runtime-field rt :nodes) id)]
-    (when-not (= :spin (a node n-kind))
-      (throw (ex-info "Computation ID collision" {:id id}))))
-  (when (runtime-field rt :tokens) (add! (runtime-field rt :tokens) token))
-  (let [order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
-        node (find! (runtime-field rt :nodes) id)]
-    (when (and run (nil? node))
-      (let [node (node! rt id :spin run)]
-        (creator! rt node run) (kept! rt node (reactive? run)) (put node n-order order)
-        (creation! run node)))
-    (when-let [node (find! (runtime-field rt :nodes) id)]
-      (when (predecessor-run? (a node n-creator) run)
-        (adopt! rt node run)
-        (owner! rt node run) (creator! rt node run) (kept! rt node (reactive? run))
-        (put node n-order order) (creation! run node))
-      (touch! rt node token))
-    (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t01 :w (runtime-field rt :world) :e id :tok (a token t-id)}
-                                                    run (assoc :r [(a (a run r-node) n-id) (a run r-gen)] :order order))))))
+(defn- construct-token!
+  ([rt id token run] (construct-token! rt id token run true))
+  ([rt id token run construction?]
+   (world-open! rt)
+   (check-running! run)
+   (let [owner (if construction? (selected-owner rt) (runtime-field rt :owner-root))
+         creator (when-not (or (root-owner? owner) (scope-owner? owner)) owner)]
+     (when-let [node (find! (runtime-field rt :nodes) id)]
+       (when-not (= :spin (a node n-kind))
+         (throw (ex-info "Computation ID collision" {:id id}))))
+     (when (runtime-field rt :tokens) (add! (runtime-field rt :tokens) token))
+     (let [order (if run (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)
+           node (find! (runtime-field rt :nodes) id)]
+       (when (and creator (nil? node))
+         (let [node (node! rt id :spin creator)]
+           (creator! rt node creator) (kept! rt node (reactive? creator)) (put node n-order order)
+           (creation! creator node)))
+       (when-let [node (find! (runtime-field rt :nodes) id)]
+         (when (predecessor-run? (a node n-creator) creator)
+           (adopt! rt node creator)
+           (owner! rt node creator) (creator! rt node creator) (kept! rt node (reactive? creator))
+           (put node n-order order) (creation! creator node))
+         (touch! rt node token))
+       (boundary! rt (when (runtime-field rt :audit)
+                       (cond-> {:t :t01 :w (runtime-field rt :world) :e id :tok (a token t-id)}
+                         creator (assoc :r (run-id creator) :order order)
+                         (scope-owner? owner) (assoc :scope (owner-id owner)))))))))
 
 (defn make-spin [requested id body]
   (let [rt (execution-runtime requested)
@@ -1555,6 +1637,7 @@
   ;; Values contain no body, public target or strong reference to the family.
   (locked rt
           (world-open! rt)
+          (selected-owner rt)
           (when (and (current-activation) (identical? (runtime-field rt :owner-root)
                                                       (runtime-field (a (current-activation) 0) :owner-root)))
             (check-running! (a (current-activation) 1)))
@@ -1566,7 +1649,7 @@
                   (construct-token! rt id token (when (and construction? (current-activation)
                                                            (identical? (runtime-field rt :owner-root)
                                                                        (runtime-field (a (current-activation) 0) :owner-root)))
-                                                  (a (current-activation) 1)))
+                                                  (a (current-activation) 1)) construction?)
                   (arm-handle! rt target token)
                   #?(:clj (.put ^java.util.WeakHashMap cache target token) :cljs (.set cache target token))
                   token)))))
@@ -1722,9 +1805,13 @@
     (add! (a (runtime-field rt :counters) 6) run)
     (put node n-current run)
     (when-not (root-owner? owner)
-      (add-run! owner r-spawned run) (add-run! run r-backlinks owner)
-      (add-run! owner r-childruns run) (mark! rt (a owner r-node))
-      (when-not (has? (a node n-links) (a owner r-node)) (mark-graph! rt node)))
+      (if (scope-owner? owner)
+        (add! (a (owner-storage owner) s-runs) run)
+        (do (add-run! owner r-spawned run) (add-run! run r-backlinks owner)
+            (add-run! owner r-childruns run)))
+      (when-let [parent (owner-node owner)]
+        (mark! rt parent)
+        (when-not (has? (a node n-links) parent) (mark-graph! rt node))))
     (schedule! rt node nil)
     (mark! rt node) run))
 
@@ -1829,11 +1916,12 @@
           (check-token! rt token)
           (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
             (throw (ex-info "Foreign await is outside this slice" {:id id})))
-          (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin run))]
+          (let [owner (selected-owner rt)
+                node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin owner))]
             (when-not (= :spin (a node n-kind))
               (throw (ex-info "Computation await target has another kind" {:error :not-computation :id id})))
-            (adopt! rt node run)
-            (when-not (a node n-owner) (owner! rt node run))
+            (when-not (or (scope-owner? owner) (root-owner? owner)) (adopt! rt node owner))
+            (when-not (a node n-owner) (owner! rt node owner))
             (when (and (not (work-status? (some-> (current node) (a r-status))))
                        (or (not (a node n-complete)) (a node n-dirty)))
               ;; A checkpoint may select its saved executable on a genuine
@@ -1842,7 +1930,7 @@
               ;; template, scope and descriptor instead.
               (put node n-body body)
               (put node n-descriptor descriptor-reference)
-              (start! rt node run false))
+              (start! rt node owner false))
             (let [ob (ob! rt :await-reactive node run order resolve reject)]
               ;; A resumed await rechecks this exact call template. Its
               ;; debtor's ordinary cache may be released before the queued
@@ -2370,6 +2458,11 @@
                          (when (= :await-reactive (a ob o-kind))
                            (adopt! rt (a ob o-debtor) run)))
                      (when work? (end-ob! rt ob))))
+       (each-copy! [scope (or (scope-children rt previous) empty-members)]
+                   (when (< (long (a (owner-storage scope) s-order)) (long order))
+                     (scope-parent! rt scope run)
+                     (doseq [owned (scope-owned-nodes rt run)] (mark-graph! rt owned))
+                     (mark-graph! rt node)))
        (each-copy! [child (a previous r-created)]
                    (when (< (long (a child n-order)) (long order))
                      (owner! rt child run)
@@ -2581,19 +2674,21 @@
                    (check-token! rt token)
                    (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
                      (throw (ex-info "Foreign invocation is outside this slice" {:id id})))
-                   (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin (runtime-field rt :owner-root)))
+                   (let [owner (selected-owner rt)
+                         node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin owner))
                          cached? (and (a node n-complete) (not (a node n-dirty)) (not (work-status? (some-> (current node) (a r-status)))))]
                      (put node n-body body)
-                     (when-not (a node n-owner) (owner! rt node (runtime-field rt :owner-root)))
+                     (when-not (a node n-owner) (owner! rt node owner))
                      (touch! rt node token)
-                     (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node (runtime-field rt :owner-root) false))
+                     (when-not (or cached? (work-status? (some-> (current node) (a r-status)))) (start! rt node owner false))
                      (let [ob (ob! rt :callback node nil 0 nil nil)]
                        (put ob o-success success) (put ob o-failure failure)
                        (when cached?
                          (push! (runtime-field rt :hosts) (doto (slots 2) (put 0 (a ob (if (= :error (a node n-complete)) o-failure o-success)))
                                                                 (put 1 (a node n-value))))
                          (when-not (reactive? (current node)) (end-ob! rt ob)))
-                       (boundary! rt (when (runtime-field rt :audit) {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode :callback}))
+                       (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode :callback}
+                                                                       (not (root-owner? owner)) (assoc :scope (owner-id owner)))))
                        ob)))]
     (drain! rt)
     (fn []
@@ -2636,7 +2731,7 @@
 (def ^:private engine-state-keys
   #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
     :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
-    :seq :serial :clock :handles :threads :gc :global :scopes :pins
+    :seq :serial :clock :handles :threads :gc :global :scopes :next-scope :scope-balance :pins
     :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc :addressing})
 
 (defn- engine-path? [path]
@@ -3002,7 +3097,9 @@
             (let [frame (current-activation)
                   run (when (and frame (same-cell-world? rt (a frame 0))) (a frame 1))
                   order (if run (put frame 2 (inc (long (a frame 2)))) 0)
-                  node (node! rt id kind (or run (runtime-field rt :owner-root)))
+                  owner (selected-owner rt)
+                  creator (when-not (or (root-owner? owner) (scope-owner? owner)) owner)
+                  node (node! rt id kind owner)
                   aux (doto (slots 3) (put 0 id) (put 1 {}) (put 2 0))]
               (put node n-value payload) (put node n-order order)
               (when (= :deferred kind)
@@ -3012,12 +3109,13 @@
                                           (put m-pending (dict)) (put m-reservations (dict))
                                           (put m-protected (dict)) (put m-physical (dict)))))
               (assoc! (a (runtime-field rt :managed-cells) 0) id aux)
-              (when run (creation! run node))
+              (when creator (creation! creator node))
               (boundary! rt (when (runtime-field rt :audit)
                               (cond-> {:t (case kind :deferred :deferred-create :mailbox :mailbox-create :t02)
                                        :w (runtime-field rt :world) :e id :kind kind
                                        :allocation id :value payload :order order}
-                                run (assoc :r (run-id run)))))))
+                                creator (assoc :r (run-id creator))
+                                (scope-owner? owner) (assoc :scope (owner-id owner)))))))
     {:id id :anchor (cell-handles/allocate! id (runtime-field rt :home) collect-home-cell!)}))
 
 (defn allocate-cell! [requested value options]
@@ -3310,7 +3408,10 @@
 
 (defn- run-id [run]
   (when run (if (vector? run) run [(a (a run r-node) n-id) (a run r-gen)])))
-(defn- owner-id [owner] (if (root-owner? owner) (:id owner) (run-id owner)))
+(defn- owner-id [owner]
+  (cond (root-owner? owner) (:id owner)
+        (scope-owner? owner) (a (owner-storage owner) s-id)
+        :else (run-id owner)))
 (defn- map-value [m]
   #?(:clj (into {} m)
      :cljs (let [result (volatile! {})]
@@ -3347,7 +3448,15 @@
                    {:source-gc (into {} (for [[id allocation] (map-value (a (runtime-field rt :managed-cells) 1))]
                                           [[(runtime-field rt :world) id allocation] true]))})
                  {:global (global-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status :live :admission :open :seal-seq nil
-                  :scopes {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
+                  :scopes (into {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
+                                (for [scope (when-let [state (scope-state rt)] (values (a state 0)))
+                                      :let [data (owner-storage scope) parent (a data s-parent)]]
+                                  [(a data s-id)
+                                   (cond-> {:kind (a data s-kind) :parent (owner-id parent) :status :open}
+                                     (and parent (not (root-owner? parent)) (not (scope-owner? parent))) (assoc :order (a data s-order))
+                                     (a data s-origin) (assoc :origin (a data s-origin) :source-world (a data s-source-world)))]))
+                  :next-scope (if-let [state (scope-state rt)] (a state 2) 0)
+                  :scope-balance (if-let [state (scope-state rt)] (a state 3) 0)
                   :pins #{} :fdeps #{} :releasing #{}
                   :entities (into {} (for [node (values (runtime-field rt :nodes))]
                                        [(a node n-id)
@@ -3362,7 +3471,7 @@
                                           (= :deferred (a node n-kind)) (assoc :deferred (deferred-metadata (a node n-deferred)))
                                           (= :mailbox (a node n-kind)) (assoc :mailbox (mailbox-metadata (a node n-mailbox)))
                                           (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
-                                          (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
+                                          (a node n-source-world) (assoc :source-world (:world (a node n-source-world))))]))
                   :runs (into {} (for [run (items (a (runtime-field rt :counters) 6)) :let [node (a run r-node)]]
                                    [(run-id run) (cond-> {:spin (a node n-id) :owner (owner-id (a run r-owner))
                                                           :pred (when-let [gen (a run r-pred)] [(a node n-id) gen])
@@ -3433,11 +3542,14 @@
 
 (defn fork-parked!
   "Prototype T19 for quiescent host-ticket bundles. Copies the ownership
-  closure into independent mutable slots. Entity-debtor bundles and explicit
-  scopes are refused until their cross-world retention path is implemented."
+  closure into independent mutable slots. Entity-debtor bundles and scoped
+  affine custody remain outside this bounded fork profile."
   [rt world]
   (admit-native-effect!)
   (locked rt
+          (when-not (root-owner? (selected-owner rt))
+            (throw (ex-info "Scoped affine fork ownership is not implemented"
+                            {:error :unsupported-operation :operation :fork-execution-owner})))
           (when-not (empty-dict? (a (runtime-field rt :timers) 0))
             (throw (ex-info "Timer fork recovery is not implemented" {:error :unsupported-operation :operation :fork-timer})))
           (when (or (some #(= :mailbox (a % n-kind)) (values (runtime-field rt :nodes)))
@@ -3454,7 +3566,11 @@
           (when (or (a (runtime-field rt :thread) 0) (queued? (runtime-field rt :events)))
             (throw (ex-info "Fork requires a parked boundary" {:world (runtime-field rt :world)})))
           (let [copies (vec (filter #(= :parked (a % r-status)) (items (a (runtime-field rt :counters) 6))))
-                run-map (dict)
+                run-map (dict) scope-map (dict)
+                scope-copies (loop [parents copies found []]
+                               (let [children (vec (mapcat #(when-let [children (scope-children rt %)] (items children)) parents))]
+                                 (if (empty? children) found (recur children (into found children)))))
+                owners (into (set copies) scope-copies)
                 selected (members)]
             (each! [run (a (runtime-field rt :counters) 6)]
                    (when (fork-busy-status? (a run r-status))
@@ -3467,7 +3583,7 @@
                        (throw (ex-info "Entity-debtor bundles are outside this slice" {:world (runtime-field rt :world)}))))
               (add! selected (a run r-node)))
             (each! [node (values (runtime-field rt :nodes))]
-                   (when (some #(or (identical? % (a node n-owner)) (identical? % (a node n-creator))) copies)
+                   (when (or (contains? owners (a node n-owner)) (contains? owners (a node n-creator)))
                      (add! selected node)))
             (let [child (assoc (runtime {:audit? (boolean (runtime-field rt :audit)) :world-id world})
                                :gate (runtime-field rt :gate) :family-id (runtime-field rt :family-id))
@@ -3502,7 +3618,11 @@
                                                (find! (a (runtime-field rt :managed-cells) 1) (a node n-id)))]
                          (when (= allocation (source-allocation rt (a node n-id)))
                            (vswap! inherited-gc conj [(a node n-id) allocation])))
-                       (put copy n-origin :inherited) (put copy n-source-world (runtime-field rt :world))
+                       (put copy n-origin :inherited)
+                       (put copy n-source-world
+                            {:world (runtime-field rt :world)
+                             :owners (conj (or (:owners (a node n-source-world)) #{})
+                                           (runtime-field rt :owner-root))})
                        (each! [token (a node n-tokens)] (add! (a copy n-tokens) token))))
               (doseq [run copies]
                 (let [copy (slots 26) node (find! node-map (a run r-node))]
@@ -3522,10 +3642,28 @@
                     (put node n-current copy) (put node n-generation (a copy r-gen)))
                   (when (runtime-field child :audit) (assoc! (a (runtime-field child :counters) 3) (a node n-id) (a node n-generation)))
                   (add! (a (runtime-field child :counters) 6) copy)))
+              (when-let [source-state (scope-state rt)]
+                (let [state (doto (slots 4) (put 0 (id-dict)) (put 1 (dict))
+                                  (put 2 (a source-state 2)) (put 3 (count scope-copies)))]
+                  (vreset! (runtime-field child :execution-scopes) state)
+                  (doseq [scope scope-copies]
+                    (let [source (owner-storage scope) id (a source s-id)
+                          capability (ScopeCapability. (runtime-field child :owner-root) id)
+                          data (doto (slots 16) (put s-id id) (put s-cap capability)
+                                     (put s-kind (a source s-kind)) (put s-order (a source s-order))
+                                     (put s-open true) (put s-owned (members)) (put s-runs (members))
+                                     (put s-origin :inherited) (put s-source-world (runtime-field rt :world))
+                                     (put 8 (into [(a source s-cap)] (a source 8))))
+                          copy (ScopeOwner. data)
+                          parent (or (find! run-map (a source s-parent)) (find! scope-map (a source s-parent)))]
+                      (when-not parent (throw (ex-info "Inherited scope has no copied parent" {:scope id})))
+                      (assoc! scope-map scope copy) (assoc! (a state 0) id copy)
+                      (scope-parent! child copy parent)))))
               (each! [node selected]
                      (let [copy (find! node-map node)
                            creator (a node n-creator)]
-                       (when-let [owner (find! run-map (a node n-owner))] (owner! child copy owner))
+                       (when-let [owner (or (find! run-map (a node n-owner)) (find! scope-map (a node n-owner)))]
+                         (owner! child copy owner))
                        (creator! child copy (or (find! run-map creator) (run-id creator)))))
               (doseq [run copies]
                 (let [copy (find! run-map run)]
@@ -3585,6 +3723,16 @@
                 protected-operations (keep #(a % x-operation)
                                            (when-let [profile (runtime-field rt :finalization)] (values (a profile 0))))]
             {:live-runs (count! runs)
+             :execution-scope-rows (if-let [state (scope-state rt)] (count (map-value (a state 0))) 0)
+             :execution-scope-parent-buckets (if-let [state (scope-state rt)] (count (map-value (a state 1))) 0)
+             :execution-scope-parent-memberships
+             (if-let [state (scope-state rt)] (reduce + 0 (map count! (values (a state 1)))) 0)
+             :execution-scope-owned-memberships
+             (if-let [state (scope-state rt)]
+               (reduce + 0 (map #(count! (a (owner-storage %) s-owned)) (values (a state 0)))) 0)
+             :execution-scope-run-memberships
+             (if-let [state (scope-state rt)]
+               (reduce + 0 (map #(count! (a (owner-storage %) s-runs)) (values (a state 0)))) 0)
              :timer-resources (count (map-value (a (runtime-field rt :timers) 0)))
              :timer-frames (reduce + 0 (map #(count (a % z-frames)) (values (a (runtime-field rt :timers) 0))))
              :protected-operations (count protected-operations)
@@ -3695,6 +3843,7 @@
        (let [[witness previous-descriptor]
              (locked rt
                      (check-computation-caller! rt)
+                     (selected-owner rt)
                      (when token (check-public-token! rt token id))
                      (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
                        (throw (ex-info "Foreign invocation is outside this slice" {:id id})))
@@ -3714,6 +3863,7 @@
              committed
              (locked rt
                      (check-computation-caller! rt)
+                     (selected-owner rt)
                      (when token (check-public-token! rt token id))
                      (when (computation-current? rt id witness)
                        (when-let [node (:node witness)]
@@ -3749,16 +3899,16 @@
                     (check-public-token! rt token id)
                     (when (computation-current? rt id witness)
                       (enter-public-computation! rt id body)
-                      (let [node (or (find! (runtime-field rt :nodes) id)
-                                     (node! rt id :spin (runtime-field rt :owner-root)))
+                      (let [owner (selected-owner rt)
+                            node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin owner))
                             cached? (and (a node n-complete) (not (a node n-dirty))
                                          (not (work-status? (some-> (current node) (a r-status)))))]
                         (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness)))
-                        (when-not (a node n-owner) (owner! rt node (runtime-field rt :owner-root)))
+                        (when-not (a node n-owner) (owner! rt node owner))
                         (touch! rt node token)
                         (when-not (or cached? (work-status? (some-> (current node) (a r-status))))
                           (put node n-body body)
-                          (start! rt node (runtime-field rt :owner-root) false))
+                          (start! rt node owner false))
                         (let [ob (ob! rt mode node nil 0 nil nil)]
                           (put ob o-success success) (put ob o-failure failure)
                           (when cached?
@@ -3768,7 +3918,8 @@
                                      (put 1 (a node n-value))))
                             (when (or (= :deref mode) (not (reactive? (current node)))) (end-ob! rt ob)))
                           (boundary! rt (when (runtime-field rt :audit)
-                                          {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode mode}))
+                                          (cond-> {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode mode}
+                                            (not (root-owner? owner)) (assoc :scope (owner-id owner)))))
                           {:ob ob :cached? cached?}))))]
         (if observation observation (recur))))))
 
@@ -4033,7 +4184,11 @@
                        (check-computation-caller! rt)
                        (let [frame (current-activation)
                              source (if (and frame (not (same-cell-world? rt (a frame 0))))
-                                      (with-activation nil (allocate-source! rt (:id ref) value))
+                                      (let [owner (selected-owner rt)]
+                                        (with-activation nil
+                                          (binding [ec/*owner-scope* (when-not (root-owner? owner)
+                                                                       (owner-capability rt owner))]
+                                            (allocate-source! rt (:id ref) value))))
                                       (allocate-source! rt (:id ref) value))
                              node (source-node! rt source false)
                              aux (or (a node n-public-signal)
@@ -5215,7 +5370,7 @@
                           (put 1 (a (:thread old) 1)) (put 2 (a (:thread old) 2))
                           (put 3 (a (:thread old) 3)))
                 :family family :parent nil :tickets (id-dict) :lineage (:lineage old) :gc (queue)
-                :operations (dict)
+                :operations (dict) :execution-scopes (volatile! nil)
                 :home (->RuntimeFamily (runtime-field rt :gate) family
                                        #?(:clj (java.util.WeakHashMap.) :cljs (js/WeakMap.))
                                        (doto (slots 5) (put 0 (queue)) (put 1 (id-dict)) (put 2 false) (put 3 0) (put 4 0)))
@@ -5364,6 +5519,8 @@
                                        (reject-dependent! rt ob {:reason reason}))
                                      (doseq [run (sort-by #(a % r-gen) > (vec (items (a (runtime-field rt :counters) 6))))]
                                        (retire! rt run {:reason reason :node (a run r-node)}))
+                                     (each-copy! [scope (or (scope-children rt (runtime-field rt :owner-root)) empty-members)]
+                                                 (close-owner! rt scope))
                                      (doseq [node (vec (values (runtime-field rt :nodes)))]
                                        (when-let [control (a node n-mailbox)]
                                          (doseq [consumer (vec (concat (values (a control m-pending))
@@ -5417,3 +5574,229 @@
     (let [resolve (cps-runtime/scope-continuation resolve) reject (cps-runtime/scope-continuation reject)]
       (await-host-effect! (fn [ready failed] (lifecycle/observe! completion ready failed)) resolve reject)
       :org.replikativ.spindel.spin/incomplete)))
+
+(defn- owner-capability [rt owner]
+  (cond (root-owner? owner) (ScopeCapability. (runtime-field rt :owner-root) (runtime-field rt :root))
+        (scope-owner? owner) (a (owner-storage owner) s-cap)
+        :else (ScopeCapability. (runtime-field rt :owner-root)
+                                [:run (runtime-field rt :world) (a (a owner r-node) n-id) (a owner r-gen)])))
+
+(defn- owner-cap-id [rt capability]
+  (when-not (and (instance? ScopeCapability capability)
+                 (identical? (runtime-field rt :owner-root) (.-world ^ScopeCapability capability)))
+    (throw (ex-info "Execution owner belongs to another world" {:error :foreign-execution-owner})))
+  (.-id ^ScopeCapability capability))
+
+(defn- resolve-owner [rt capability]
+  (let [id (when (instance? ScopeCapability capability) (.-id ^ScopeCapability capability))
+        state (scope-state rt)
+        scope (when state (find! (a state 0) id))
+        local? (and (instance? ScopeCapability capability)
+                    (identical? (runtime-field rt :owner-root) (.-world ^ScopeCapability capability)))]
+    (cond
+      (and scope local? (identical? capability (a (owner-storage scope) s-cap))) scope
+      (and local? (= id (runtime-field rt :root))) (runtime-field rt :owner-root)
+      (and local? (vector? id) (= :run (first id)) (= 4 (count id)))
+      (let [node (find! (runtime-field rt :nodes) (nth id 2))
+            run (when node (find! (a node n-runs) (nth id 3)))]
+        (when-not (and run (open-owner? run) (identical? run (current node)))
+          (throw (ex-info "Execution run is not current" {:error :closed-execution-owner})))
+        run)
+      :else (throw (ex-info "Execution owner is not open in this world"
+                            {:error (if local? :closed-execution-owner :foreign-execution-owner)})))))
+
+(defn- local-activation-run [rt]
+  (when-let [frame (current-activation)]
+    (when (identical? (runtime-field rt :owner-root) (runtime-field (a frame 0) :owner-root))
+      (a frame 1))))
+
+(defn- runner-owner-id [rt]
+  (when-let [frame (current-activation)]
+    (when (identical? (runtime-field rt :owner-root) (runtime-field (a frame 0) :owner-root))
+      (if-let [run (a frame 1)]
+        [:run (runtime-field rt :world) (a (a run r-node) n-id) (a run r-gen)]
+        (when-let [ticket (or (a frame 8) (when-let [operation (active-operation)] (a operation p-ticket)))]
+          (when (#{:cps-exit :cps-finalization} (a ticket x-kind))
+            (let [[spin generation] (nth (a ticket x-id) 2)]
+              [:run (runtime-field rt :world) spin generation])))))))
+
+(defn- copied-owner-root? [rt source spin]
+  (when-let [run (local-activation-run rt)]
+    (let [node (a run r-node)]
+      (and (= spin (a node n-id)) (contains? (:owners (a node n-source-world)) source)))))
+
+(defn capture-execution-owner [requested owner]
+  (let [rt (canonical-runtime (execution-runtime requested))]
+    (locked rt
+            (let [world (runtime-field rt :owner-root) runner (runner-owner-id rt)
+                  cap? (instance? ScopeCapability owner)
+                  id (when cap? (.-id ^ScopeCapability owner))
+                  local? (and cap? (identical? world (.-world ^ScopeCapability owner)))
+                  scope (when (and local? (scope-state rt)) (find! (a (scope-state rt) 0) id))]
+              (cond
+                ;; Only ownership that actually names this activation is a
+                ;; contextual Run role. Other saved caps stay literal forever.
+                (and runner (or (and (vector? owner) (= owner runner)) (and local? (= id runner))))
+                (CapturedOwner. runner :run world (nth runner 2))
+                (and local? (= id (runtime-field rt :root)))
+                (CapturedOwner. owner :root world (when runner (nth runner 2)))
+                (and scope (identical? owner (a (owner-storage scope) s-cap)))
+                (CapturedOwner. owner :scope world nil)
+                (or (nil? owner) cap? (vector? owner))
+                (CapturedOwner. owner :literal nil nil)
+                :else (throw (ex-info "Execution owner is not capture data"
+                                      {:error :invalid-execution-owner-capture})))))))
+
+(defn restore-execution-owner [requested captured current]
+  (let [rt (canonical-runtime (execution-runtime requested))]
+    (when-not (instance? CapturedOwner captured)
+      (throw (ex-info "Execution owner capture is unavailable" {:error :invalid-execution-owner-capture})))
+    (locked rt
+            (let [owner (.-owner ^CapturedOwner captured)
+                  role (.-role ^CapturedOwner captured)
+                  source (.-world ^CapturedOwner captured)
+                  spin (.-spin ^CapturedOwner captured)
+                  local? (identical? source (runtime-field rt :owner-root))
+                  runner (when (= :run role) (runner-owner-id rt))]
+              (case role
+                :literal owner
+                :run (if (and runner (= spin (nth runner 2))
+                              (or local? (copied-owner-root? rt source spin)))
+                       (if (and (vector? current) (= current runner)) current runner)
+                       (ScopeCapability. source owner))
+                :root (if (or local? (and spin (copied-owner-root? rt source spin)))
+                        (owner-capability rt (runtime-field rt :owner-root))
+                        owner)
+                :scope (if local?
+                         owner
+                         (let [id (.-id ^ScopeCapability owner)
+                               scope (when-let [state (scope-state rt)] (find! (a state 0) id))]
+                           ;; A deleted or never-copied Scope stays qualified by
+                           ;; its original world. Restoring data grants no new
+                           ;; admission and never fabricates a local Scope row.
+                           (if (and scope (some #(identical? owner %) (a (owner-storage scope) 8)))
+                             (a (owner-storage scope) s-cap)
+                             owner))))))))
+
+(defn- selected-owner [rt]
+  (let [frame (current-activation) run (local-activation-run rt) bound ec/*owner-scope*]
+    (cond
+      ;; An explicit target-world capability is admitted in that world. The
+      ;; caller's own owner is merely ambient and defaults to the target root.
+      (and frame (not (identical? (runtime-field rt :owner-root)
+                                  (runtime-field (a frame 0) :owner-root))))
+      (cond
+        (and (instance? ScopeCapability bound)
+             (identical? (.-world ^ScopeCapability bound) (runtime-field rt :owner-root)))
+        (resolve-owner rt bound)
+        (or (nil? bound)
+            (and (instance? ScopeCapability bound)
+                 (identical? (.-world ^ScopeCapability bound) (runtime-field (a frame 0) :owner-root)))
+            (and (vector? bound) (= bound (runner-owner-id (a frame 0)))))
+        (runtime-field rt :owner-root)
+        :else (resolve-owner rt bound))
+      (nil? bound) (or run (runtime-field rt :owner-root))
+      ;; Runner-installed and CPS-restored Run bindings are pure coordinates;
+      ;; only the actual activation can supply their execution authority.
+      (and run (vector? bound) (= :run (first bound)) (= 4 (count bound))
+           (= (second bound) (runtime-field rt :world))
+           (= (nth bound 2) (a (a run r-node) n-id))
+           (= (nth bound 3) (a run r-gen))) run
+      :else (resolve-owner rt bound))))
+
+(defn root-execution-owner [requested]
+  (owner-capability requested (runtime-field requested :owner-root)))
+
+(defn current-execution-owner [requested]
+  (let [rt (canonical-runtime requested)]
+    (locked rt
+            (if (and (instance? ScopeCapability ec/*owner-scope*)
+                     (identical? (.-world ^ScopeCapability ec/*owner-scope*) (runtime-field rt :owner-root)))
+              ;; Reading restored identity is separate from admitting effects;
+              ;; async finally may still name a Scope whose row was reclaimed.
+              ec/*owner-scope*
+              (owner-capability rt (selected-owner rt))))))
+
+(defn bindable-execution-owner [requested capability]
+  (let [rt (canonical-runtime requested)]
+    (locked rt
+            (world-open! rt)
+            (resolve-owner rt capability)
+            capability)))
+
+(defn open-execution-scope! [requested kind parent]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested)]
+    (locked rt
+            (check-computation-caller! rt)
+            (world-open! rt)
+            (let [owner (resolve-owner rt parent)
+                  state (or (scope-state rt)
+                            (let [state (doto (slots 4) (put 0 (id-dict)) (put 1 (dict)) (put 2 0) (put 3 0))]
+                              (vreset! (runtime-field rt :execution-scopes) state) state))
+                  id [:scope :id (a state 2)]
+                  capability (ScopeCapability. (runtime-field rt :owner-root) id)
+                  data (doto (slots 16) (put s-id id) (put s-cap capability) (put s-kind kind)
+                             (put s-open true) (put s-owned (members)) (put s-runs (members)))
+                  scope (ScopeOwner. data)
+                  run (local-activation-run rt)
+                  order (if (and run (identical? owner run))
+                          (put (current-activation) 2 (inc (long (a (current-activation) 2)))) 0)]
+              (put data s-order order)
+              (put state 2 (inc (long (a state 2)))) (put state 3 (inc (long (a state 3))))
+              (assoc! (a state 0) id scope) (scope-parent! rt scope owner)
+              (when-let [node (owner-node owner)] (mark-graph! rt node) (mark! rt node))
+              (boundary! rt (when (runtime-field rt :audit)
+                              {:t :t12 :w (runtime-field rt :world) :scope id :parent (owner-id owner)
+                               :kind kind :order order}))
+              capability))))
+
+(defn- check-scope-close! [rt owner]
+  ;; Scope disposal of affine worlds needs authenticated custody. Until that
+  ;; integration exists the whole local cascade refuses before any mutation.
+  (when-not (root-owner? owner)
+    (each! [node (a (owner-storage owner) r-owned)]
+           (when (= :fork (a node n-kind))
+             (throw (ex-info "Execution scope contains unsupported affine cleanup"
+                             {:error :unsupported-affine-scope-close}))))
+    (each! [run (owner-child-runs owner)] (check-scope-close! rt run)))
+  (each! [scope (or (scope-children rt owner) empty-members)] (check-scope-close! rt scope)))
+
+(defn- close-owner! [rt scope]
+  (when (a (owner-storage scope) s-open)
+    (retain-cleanup! rt scope)
+    (each-copy! [child (or (scope-children rt scope) empty-members)] (close-owner! rt child))
+    (each-copy! [run (owner-child-runs scope)] (cancel! rt run))
+    (release-owned! rt scope)
+    (let [data (owner-storage scope) state (scope-state rt) parent (a data s-parent)
+          node (owner-node parent)]
+      (scope-parent! rt scope nil) (put data s-open false)
+      (dissoc! (a state 0) (a data s-id)) (put state 3 (dec (long (a state 3))))
+      (clear-members! (a data s-owned)) (clear-members! (a data s-runs)) (put data 8 nil)
+      (when node (mark-graph! rt node) (mark! rt node)))))
+
+(defn close-execution-scope! [requested capability]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) id (owner-cap-id rt capability)]
+    (when (and (vector? id) (= :run (first id)))
+      (throw (ex-info "A Run is closed through cancellation" {:error :invalid-execution-scope})))
+    (if (= id (runtime-field rt :root))
+      (request-world-release! rt :scope-close)
+      (do
+        (locked rt
+                (when (= :live (a (runtime-field rt :lifecycle) 0))
+                  (check-computation-caller! rt)
+                  (when-let [scope (when-let [state (scope-state rt)] (find! (a state 0) id))]
+                    (when-not (identical? capability (a (owner-storage scope) s-cap))
+                      (throw (ex-info "Execution scope capability is unavailable" {:error :foreign-execution-owner})))
+                    (check-scope-close! rt scope)
+                    (close-owner! rt scope)
+                    (boundary! rt (when (runtime-field rt :audit)
+                                    {:t :t13 :w (runtime-field rt :world) :scope id})))))
+        (drain! rt)))
+    nil))
+
+(defn execution-owner-joined? [requested capability]
+  (let [rt (canonical-runtime requested) id (owner-cap-id rt capability)
+        id (if (and (vector? id) (= :run (first id))) [(nth id 2) (nth id 3)] id)]
+    (join-ready? rt id)))

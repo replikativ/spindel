@@ -104,6 +104,28 @@
 (def ^:dynamic *run-gen* nil)
 (def ^:dynamic *owner-scope* nil)
 
+(defn capture-owner-scope [owner]
+  ;; No owner is context-independent data, including before a combined
+  ;; context/owner binding has evaluated and installed its initializers.
+  (when (some? owner)
+    (rtp/capture-execution-owner *execution-context* owner)))
+
+(defn restore-owner-scope [captured current]
+  ;; Binding exit computes restored values before installing the restored
+  ;; context. A saved nil owner needs no backend even at that boundary.
+  (when (some? captured)
+    (rtp/restore-execution-owner *execution-context* captured current)))
+
+(defn restore-owner-binding [captured current _entered]
+  ;; The compiler captures the saved outer value at binding ENTRY. Re-reading
+  ;; or reclassifying it when a later continuation exits would lose authority.
+  (restore-owner-scope captured current))
+
+#?(:clj
+   (do
+     (ioc/register-binding-restorer! `*owner-scope* `restore-owner-binding `capture-owner-scope)
+     (ioc/register-binding-scope! `*owner-scope* `capture-owner-scope `restore-owner-scope)))
+
 (def ^:dynamic *yield-handler*
   "Yield handler for async-sequence generators (`gen-aseq`).
   Bound by `seq/core.cljc/with-yield` around the generator body;

@@ -80,6 +80,12 @@
    :main org.replikativ.spindel.engine.native-release-gc-probe/-main
    :compiler-options {:optimizations :advanced}}
 
+  :native-execution-scope-gc
+  {:target :node-script
+   :output-to "out/native-execution-scope-gc.js"
+   :main org.replikativ.spindel.engine.native-execution-scope-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"

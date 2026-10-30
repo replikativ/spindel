@@ -1,9 +1,10 @@
 (ns org.replikativ.spindel.engine.lifetime
   "Ownership metadata for a world's lifetime scopes and runs."
   (:require [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.protocols :as rtp]))
+            [org.replikativ.spindel.engine.protocols :as rtp])
+  #?(:cljs (:require-macros [org.replikativ.spindel.engine.lifetime :refer [with-owner]])))
 
-(defn root-scope [context]
+(defn legacy-root-scope [context]
   [:root (:fork-id context)])
 
 (defn run-id [context spin-id token]
@@ -21,7 +22,7 @@
       (:run-gen node)
       (run-id context spin-id (or (:lifetime/seq node) 1)))))
 
-(defn current-scope [context]
+(defn legacy-current-scope [context]
   (let [world (:fork-id context)
         explicit ec/*owner-scope*
         foreign-run? (and (= :run (first explicit))
@@ -30,20 +31,20 @@
       (throw (ex-info "Scope belongs to another world" {:scope explicit :world world})))
     (cond
       foreign-run?
-      (or (current-run-id context) (root-scope context))
+      (or (current-run-id context) (legacy-root-scope context))
       explicit explicit
-      :else (or (current-run-id context) (root-scope context)))))
+      :else (or (current-run-id context) (legacy-root-scope context)))))
 
-(defn open-scope!
+(defn legacy-open-scope!
   ([context kind]
-   (open-scope! context kind (current-scope context)))
+   (legacy-open-scope! context kind (legacy-current-scope context)))
   ([context kind parent]
    (let [id [:scope (:fork-id context) (random-uuid)]]
      (rtp/swap-state! context [:lifetime/scopes id]
                       (constantly {:kind kind :parent parent :status :open}))
      id)))
 
-(defn bindable-scope [context scope]
+(defn legacy-bindable-scope [context scope]
   (when-not (and (= (:fork-id context) (second scope))
                  (or (= :root (first scope))
                      (and (= :run (first scope))
@@ -51,6 +52,23 @@
                      (= :open (rtp/get-state context [:lifetime/scopes scope :status]))))
     (throw (ex-info "Scope is not open in this world" {:scope scope :world (:fork-id context)})))
   scope)
+
+(defn legacy-capture-execution-owner [_ owner] owner)
+
+(defn legacy-restore-execution-owner [context captured _current]
+  (let [run (current-run-id context)]
+    (if (and run (vector? captured) (= :run (first captured))
+             (= (nth captured 2) (nth run 2)))
+      run
+      captured)))
+
+(defn root-scope [context] (rtp/root-execution-owner context))
+(defn current-scope [context] (rtp/current-execution-owner context))
+(defn open-scope!
+  ([context kind] (open-scope! context kind (current-scope context)))
+  ([context kind parent] (rtp/open-execution-scope! context kind parent)))
+(defn bindable-scope [context scope] (rtp/bindable-execution-owner context scope))
+(defn close-scope! [context scope] (rtp/close-execution-scope! context scope))
 
 #?(:clj
    (defmacro with-owner [scope & body]

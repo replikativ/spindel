@@ -17,6 +17,7 @@
   (:require [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.impl.owned :as owned]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.cells :as cells]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.engine.impl.graph :as graph]
@@ -116,6 +117,19 @@
 
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
+
+  rtp/PExecutionScopes
+  (root-execution-owner [this] (lifetime/legacy-root-scope this))
+  (current-execution-owner [this] (lifetime/legacy-current-scope this))
+  (open-execution-scope! [this kind parent] (lifetime/legacy-open-scope! this kind parent))
+  (bindable-execution-owner [this owner] (lifetime/legacy-bindable-scope this owner))
+  (capture-execution-owner [this owner] (lifetime/legacy-capture-execution-owner this owner))
+  (restore-execution-owner [this captured current]
+    (lifetime/legacy-restore-execution-owner this captured current))
+  (close-execution-scope! [_ _]
+    (throw (ex-info "Legacy execution scope close is unsupported" {:error :unsupported-execution-scope-close})))
+  (execution-owner-joined? [_ _]
+    (throw (ex-info "Legacy execution owner join is unsupported" {:error :unsupported-execution-owner-join})))
 
   rtp/PTraceAddressing
   (next-trace-address! [this prefix source-loc]

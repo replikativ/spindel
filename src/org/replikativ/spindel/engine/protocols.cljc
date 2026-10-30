@@ -22,6 +22,17 @@
   #?(:clj Object :cljs default)
   (world-identity [ctx] (:backend ctx)))
 
+(defprotocol PExecutionScopes
+  "World-local execution ownership; physical join observes only this world."
+  (root-execution-owner [context])
+  (current-execution-owner [context])
+  (open-execution-scope! [context kind parent])
+  (bindable-execution-owner [context owner])
+  (capture-execution-owner [context owner])
+  (restore-execution-owner [context captured current])
+  (close-execution-scope! [context scope])
+  (execution-owner-joined? [context owner]))
+
 (defprotocol PGraph
   "Operations on the dependency graph and observer sets. Implementations must
   ensure their own consistency (e.g., dosync for STM, swap! for atom runtimes)."

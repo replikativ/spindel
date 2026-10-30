@@ -4,6 +4,7 @@
             [is.simm.partial-cps.runtime :as cps-runtime]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.impl.owned :as owned]
+            [org.replikativ.spindel.engine.lifetime :as lifetime]
             [org.replikativ.spindel.engine.owned-runtime-test :refer [verify-boundaries!]]
             [org.replikativ.spindel.spin.core :as spin-core]))
 
@@ -26,6 +27,7 @@
 
 (deftest native-entry-preserves-unrelated-descriptors-and-isolates-dynamic-set
   (let [rt (owned/runtime {:audit? true :cps-exit? true :bindings {}})
+        outside-owner (lifetime/open-scope! rt :explicit)
         caller (assoc rt :bindings {:scope :caller})
         descriptors {'scope-entry/probe [capture-probe restore-probe bind-probe]}
         values (atom []) errors (atom [])]
@@ -33,7 +35,7 @@
               ec/*spin-id* :outside
               ec/*run-gen* [:outside 9]
               ec/*lifetime-run* 9
-              ec/*owner-scope* [:outside-owner]
+              ec/*owner-scope* outside-owner
               cps-runtime/*scope-frame* descriptors]
       (let [task (spin-core/make-spin
                   (fn [succeed _fail]
@@ -53,7 +55,7 @@
       (is (= :outside ec/*spin-id*))
       (is (= [:outside 9] ec/*run-gen*))
       (is (= 9 ec/*lifetime-run*))
-      (is (= [:outside-owner] ec/*owner-scope*))
+      (is (identical? outside-owner ec/*owner-scope*))
       (is (identical? descriptors cps-runtime/*scope-frame*)))
     (is (empty? @errors))
     (is (= [[[true :scope-entry [:scope-entry 1] 1 [:run owned/w :scope-entry 1]]
