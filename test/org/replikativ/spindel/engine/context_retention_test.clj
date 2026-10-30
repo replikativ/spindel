@@ -39,7 +39,7 @@
             [org.replikativ.spindel.spin.sync :as sync]
             [org.replikativ.spindel.effects.await :refer [await]]
             [org.replikativ.spindel.effects.track :refer [track]])
-  (:import [java.lang.ref WeakReference]))
+  (:import [java.lang.ref Reference WeakReference]))
 
 ;; =============================================================================
 ;; GC measurement
@@ -118,6 +118,68 @@
                                   (recur (inc i)))))
                 "the atom's [:atoms id] entry is removed once the atom is collected")))
         (finally (ctx/stop-context! c))))))
+
+(defn- original-atom-and-unread-alias []
+  ;; Only the reconstructed wrapper escapes; no original wrapper local is
+  ;; retained in the frame which measures collection.
+  (let [original (ratom/atom :retained)
+        id (ratom/atom-id original)]
+    (add-watch original :retention-probe (fn [_ _ _ _] nil))
+    {:id id :original-ref (WeakReference. original)
+     :alias (ratom/->RuntimeAtom id)}))
+
+(defn- release-last-alias-after-probing! []
+  (let [{:keys [id original-ref alias]} (original-atom-and-unread-alias)]
+    (try
+      (is (cleared? [original-ref] 50)
+          "the allocating wrapper is collectable while its alias is retained")
+      ;; These inspect the runtime directly before the alias's first deref.
+      (is (= :retained (get-in (ec/get-state [:atoms id]) [:value])))
+      (is (contains? (ec/get-state [:listeners id]) :retention-probe)
+          "collecting the original wrapper cannot delete a live alias's watches")
+      (is (= :retained @alias))
+      {:id id :alias-ref (WeakReference. alias)}
+      (finally (Reference/reachabilityFence alias)))))
+
+(defn- atom-and-listeners-reaped? [id alias-ref rounds]
+  (loop [i 0]
+    (cond
+      (and (nil? (.get ^WeakReference alias-ref))
+           (nil? (ec/get-state [:atoms id]))
+           (nil? (ec/get-state [:listeners id]))) true
+      (>= i rounds) false
+      :else (do (System/gc)
+                ;; A cleared WeakReference precedes the Cleaner callback. Give
+                ;; its thread a bounded opportunity to remove ordinary storage.
+                (Thread/sleep 5)
+                (recur (inc i))))))
+
+(deftest all-runtime-atom-aliases-protect-storage-before-their-first-read
+  (let [c (ctx/create-execution-context)]
+    (try
+      (binding [ec/*execution-context* c]
+        (let [{:keys [id alias-ref]} (release-last-alias-after-probing!)]
+          (is (atom-and-listeners-reaped? id alias-ref 50)
+              "storage and listeners are reaped after the final wrapper dies")
+          (is (= :still-live @(ratom/atom :still-live))
+              "the owner context remains usable after cell collection")))
+      (finally
+        (Reference/reachabilityFence c)
+        (ctx/stop-context! c)))))
+
+(defn- stopped-context-with-retained-atom-alias []
+  (let [c (ctx/create-execution-context)
+        alias (binding [ec/*execution-context* c]
+                (:alias (original-atom-and-unread-alias)))]
+    (ctx/stop-context! c)
+    {:alias alias :refs [(WeakReference. c) (WeakReference. (:backend c))]}))
+
+(deftest a-retained-runtime-atom-alias-does-not-retain-its-creating-context
+  (let [{:keys [alias refs]} (stopped-context-with-retained-atom-alias)]
+    (try
+      (is (cleared? refs 50)
+          "a retained unread alias keeps neither the context nor backend alive")
+      (finally (Reference/reachabilityFence alias)))))
 
 ;; =============================================================================
 ;; 2. Superseded children are reaped

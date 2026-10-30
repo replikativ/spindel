@@ -419,6 +419,35 @@ RuntimeAtom allocation/release, listener egress, component ownership or world
 release. Those require typed lifecycle integration in addition to generic cell
 payload updates; passing extension-cell tests does not close those gates.
 
+The public RuntimeAtom adapter uses typed `PRuntimeCells` operations. Every
+supported wrapper reconstruction keeps the allocation's shared host-liveness
+anchor, including aliases that have never been read. The registry weakly holds
+both that anchor and its cleanup target. IDs are fresh and never reused;
+reconstructing a collected allocation fails instead of reviving its authority.
+Legacy writes capture listeners with the value commit and dispatch afterward:
+removal after commit does not revoke delivery, and later watches do not receive
+an earlier write. This preparatory adapter preserves legacy world selection; it
+does not give the legacy overlay backend the native following-lineage validation
+contract described above. Concurrent parent changes during a legacy transform
+remain a replacement gate.
+
+The model and independent kernel admit allocation-fenced `source-unreachable`
+and `reap-source` transitions for managed atoms. A receipt means all supported
+wrappers are unreachable, not merely the allocating wrapper. Reaping refuses
+while ordinary obligations, pending completions, pins, operation claims, foreign
+dependencies or following descendants require storage. It leaves the owner live
+and never removes protected cleanup payloads, which survive until physical
+return. Native managed-cell storage, notification authority and retry of blocked
+host receipts still need executable integration; these transitions do not close
+the public-runtime replacement gate.
+
+The cell-handle suite also runs separately under Node `--expose-gc`, alongside
+the normal full CLJS suite. The legacy exposed-GC DOM regression
+`removed-item-is-reaped-after-same-change-removal` currently leaves one extra
+cached spin after item removal, despite releasing its track subscriptions and
+observers. This reproduces on the unchanged baseline; the replacement must
+close this reclamation gap before claiming the full GC acceptance gate.
+
 Cancellation-shielded `await-finalization` is also an explicit migration gate.
 It must preserve the cancelled cached result while asynchronous cleanup can
 finish and physical joining waits. It cannot be translated into an ordinary

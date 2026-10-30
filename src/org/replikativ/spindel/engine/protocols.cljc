@@ -214,3 +214,19 @@
 
   nil
   (fork-value [_ _ _] nil))
+
+(defprotocol PRuntimeCells
+  "Typed lifecycle and value operations for aliasable, world-selected cells.
+   Allocation IDs are globally fresh and never reused. Runtime metadata and
+   listener registration remain engine-owned; application values are opaque.
+   An allocation returns {:id id :anchor anchor}; wrappers retain the anchor,
+   never a runtime. Updates notify only after commit and outside mutation gates."
+  (allocate-runtime-cell! [ctx value options])
+  (runtime-cell-present? [ctx id])
+  (runtime-cell-value [ctx id])
+  (runtime-cell-meta [ctx id])
+  (runtime-cell-watches [ctx id])
+  (swap-runtime-cell! [ctx ref id f args])
+  (cas-runtime-cell! [ctx ref id old-value new-value])
+  (add-runtime-cell-watch! [ctx id key f])
+  (remove-runtime-cell-watch! [ctx id key]))

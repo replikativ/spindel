@@ -203,6 +203,9 @@
    (into {} (for [t [:finalization-wait :finalization-resume :cleanup-adopt :cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell]]
               [t {:status :not-yet :step :B4 :reason :requires-protected-cleanup-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
+   (into {} (for [t [:source-unreachable :reap-source]]
+              [t {:status :not-yet :step :B5 :reason :requires-managed-cell-gc-adapter
+                  :restrictions (constantly nil) :dispatch nil}]))
    (update-vals
     {:t08 {:status :macrostep-only :extent :local-completion :reason :needs-microstep-hook :dispatch nil}
      :t12 {:step :B1

@@ -297,3 +297,79 @@
                  (swap! a inc))
                (is (= [[0 1]] @calls) "restored-context watcher fired with no prior create-atom")
                (done))))))
+
+(deftest reconstructed-alias-retains-canonical-anchor
+  (async done
+         (with-ctx [_ctx]
+           (let [original (ratom/atom :initial)
+                 alias (ratom/->RuntimeAtom (ratom/atom-id original))]
+        ;; The alias has not been dereferenced: construction itself keeps the
+        ;; shared anchor alive, so collecting original cannot reclaim its state.
+             (is (identical? (.-anchor original) (.-anchor alias)))
+             (is (= :initial (reset! alias :initial)))
+             (is (= :initial @original))
+             (done)))))
+
+#?(:clj
+   (deftest atom-cas-identity-and-watch-semantics
+     (with-ctx [_ctx]
+       (let [initial (with-meta [:value] {:identity :first})
+             equal-value (with-meta [:value] {:identity :second})
+             a (ratom/atom initial)
+             calls (atom [])]
+         (add-watch a :watch
+                    (fn [key ref old new]
+                      (swap! calls conj [key (identical? a ref) old new @ref])))
+         (is (false? (compare-and-set! a equal-value :wrong)))
+         (is (empty? @calls))
+         (is (true? (compare-and-set! a initial nil)))
+         (is (= [[:watch true initial nil nil]] @calls))
+         (is (true? (compare-and-set! a nil false)))
+         (is (true? (compare-and-set! a false :done)))
+         (is (= :done @a))
+         (is (= 3 (count @calls)))))))
+
+(deftest missing-cell-mutations-cannot-resurrect-state
+  (async done
+         (with-ctx [root]
+           (let [a (ratom/atom :initial)
+                 id (ratom/atom-id a)
+                 other (ctx/create-execution-context)]
+             (try
+               (binding [ec/*execution-context* other]
+                 (is (thrown? #?(:clj Exception :cljs js/Error) (reset! a :resurrected)))
+                 (is (thrown? #?(:clj Exception :cljs js/Error)
+                              (add-watch a :watch (fn [& _]))))
+                 (is (thrown? #?(:clj Exception :cljs js/Error) (remove-watch a :watch)))
+                 (is (nil? (ec/get-state [:atoms id])))
+                 (is (nil? (ec/get-state [:listeners id]))))
+               (is (= :initial @a))
+               (finally (ctx/stop-context! other))))
+           (done))))
+
+#?(:clj
+   (deftest watches-are-selected-at-value-commit
+     (doseq [mutate! [(fn [a] (swap! a inc))
+                      (fn [a] (compare-and-set! a 0 1))]]
+       (with-ctx [_ctx]
+         (let [a (ratom/atom 0)
+               calls (atom [])
+               committed (promise)
+               continue (promise)
+               notify ec/notify-listeners!]
+           (add-watch a :before (fn [k _ old new] (swap! calls conj [k old new])))
+           (with-redefs [ec/notify-listeners!
+                         (fn [& args]
+                           (deliver committed true)
+                           (when-not (= true (deref continue 5000 ::timeout))
+                             (throw (ex-info "Watch test dispatch timeout" {})))
+                           (apply notify args))]
+             (let [worker (future (mutate! a))]
+               (try
+                 (is (= true (deref committed 5000 ::timeout)))
+                 (remove-watch a :before)
+                 (add-watch a :after (fn [k _ old new] (swap! calls conj [k old new])))
+                 (finally (deliver continue true)))
+               (is (not= ::timeout (deref worker 5000 ::timeout)))
+               (is (= [[:before 0 1]] @calls)
+                   "Committed delivery survives removal; new registrations do not see old writes"))))))))

@@ -16,6 +16,7 @@
   - Fork-local effect handlers (can override behavior per branch)"
   (:require [org.replikativ.spindel.engine.impl.simple :as simple]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.cells :as cells]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
             [org.replikativ.spindel.engine.impl.graph :as graph]
             [org.replikativ.spindel.engine.protocols :as rtp]
@@ -114,6 +115,18 @@
 
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
+
+  rtp/PRuntimeCells
+  (allocate-runtime-cell! [this value options] (cells/allocate! this value options))
+  (runtime-cell-present? [this id] (cells/present? this id))
+  (runtime-cell-value [this id] (cells/value this id))
+  (runtime-cell-meta [this id] (cells/cell-meta this id))
+  (runtime-cell-watches [this id] (cells/watches this id))
+  (swap-runtime-cell! [this ref id f args] (cells/swap-cell! this ref id f args))
+  (cas-runtime-cell! [this ref id old-value new-value]
+    (cells/cas-cell! this ref id old-value new-value))
+  (add-runtime-cell-watch! [this id key f] (cells/add-watch! this id key f))
+  (remove-runtime-cell-watch! [this id key] (cells/remove-watch! this id key))
 
   rtp/PGraph
   (record-deps! [this spin-id]

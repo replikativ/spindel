@@ -3,7 +3,8 @@
   Expanded logical rows; physical attach cost is outside this model."
   (:require [clojure.set :as set]
             [clojure.walk :as walk]
-            [org.replikativ.spindel.lifetime.cleanup :as cleanup]))
+            [org.replikativ.spindel.lifetime.cleanup :as cleanup]
+            [org.replikativ.spindel.lifetime.managed-cells :as managed-cells]))
 
 (def terminal #{:merged :discarded :transferred :partitioned})
 (def standing #{:track :await-reactive :callback})
@@ -559,7 +560,8 @@
               (assoc-in [:worlds w :entities e :order] order)
               (update-in [:worlds w :runs owner :creations] conj e)) s))
       (cond-> (assoc-in s [:worlds w :entities e]
-                        (assoc (row kind owner) :key key :result value :order order))
+                        (cond-> (assoc (row kind owner) :key key :result value :order order)
+                          (contains? a :allocation) (assoc :allocation (:allocation a))))
         (run s w owner) (update-in [:worlds w :runs owner :creations] conj e)))))
 
 (defn t03-touch-keyed
@@ -1715,7 +1717,8 @@
    :finalization-wait finalization-wait :finalization-resume finalization-resume
    :cleanup-adopt cleanup/adopt :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
    :cleanup-deliver cleanup/deliver :cleanup-return cleanup/returning
-   :cleanup-cell cleanup/access})
+   :cleanup-cell cleanup/access
+   :source-unreachable managed-cells/unreachable :reap-source managed-cells/reap})
 
 (defn changed-worlds [before after]
   (set (for [w (set/union (set (keys (:worlds before))) (set (keys (:worlds after))))

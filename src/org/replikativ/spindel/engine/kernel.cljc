@@ -1000,9 +1000,61 @@
         (when (and (= source w) (predecessor? ctx w (:owner er) scope))
           (edit-entity! ctx w e assoc :owner scope :order order)
           (edit! ctx w :runs scope update :creations conj e)))
-      (do (put-entity! ctx w e (assoc (entity-row kind scope) :key key :result value :order order))
+      (do (put-entity! ctx w e (cond-> (assoc (entity-row kind scope) :key key :result value :order order)
+                                 (contains? action :allocation) (assoc :allocation (:allocation action))))
           (when (read-row ctx w :runs scope)
             (edit! ctx w :runs scope update :creations conj e))))))
+
+(defn- managed-source? [ctx {:keys [w e allocation]}]
+  (let [row (read-row ctx w :entities e)]
+    (and (= :atom (:kind row)) (some? allocation) (= allocation (:allocation row)))))
+
+(defn- source-unreachable! [ctx {:keys [w e allocation] :as action}]
+  ;; Trusted host receipt: all wrappers of this allocation are gone.
+  (when (managed-source? ctx action)
+    (root-edit! ctx assoc-in [:env :source-gc [w e allocation]] true)))
+
+(defn- source-backing-world [ctx v e]
+  (loop [v v seen #{}]
+    (when (and v (not (seen v)))
+      (cond
+        (read-row ctx v :entities e) v
+        (= :following (get-in (header ctx v) [:lineage :mode]))
+        (recur (get-in (header ctx v) [:lineage :parent]) (conj seen v))))))
+
+(defn- source-in-use? [ctx w e allocation]
+  (or (contains? (:pins (header ctx w)) e)
+      (seq (get-in (root-state ctx) [:env :cell-claims [w e allocation]]))
+      (some
+       (fn [v]
+         (let [h (header ctx v)]
+           (or (some (fn [o]
+                       (= [:entity w e] (:debtor (read-row ctx v :obligations o))))
+                     (entity-obligations ctx v w e))
+               (some #(and (= e (:completion %)) (= w (get % :debtor-world v))) (pending-events ctx v))
+               (and (= v w)
+                    (some (fn [[x _ debtors]] (if (= :bundle x) (contains? debtors e) (= x e)))
+                          (:fdeps h)))
+               (and (not= v w) (not= :released (:status h))
+                    (= w (source-backing-world ctx v e))))))
+       (:known-worlds (root-state ctx)))))
+
+(defn- reap-source! [ctx {:keys [w e allocation] :as action}]
+  (let [receipt [w e allocation]]
+    (when (get-in (root-state ctx) [:env :source-gc receipt])
+      (when (managed-source? ctx action)
+        (require! (not (source-in-use? ctx w e allocation)) ::source-in-use
+                  {:w w :e e :allocation allocation})
+        ;; Atom storage has no run to cancel. Leave its owner and protected
+        ;; cleanup payloads intact; delete only this world's ordinary cell.
+        (let [row (read-row ctx w :entities e)]
+          (index-remove! ctx w :entities-by-owner (:owner row) e)
+          (delete! ctx w :entities e)
+          (doseq [creator (read-row ctx w :created-by e)]
+            (when (read-row ctx w :runs creator)
+              (edit! ctx w :runs creator update :creations disj e)))
+          (command! ctx {:op :release-entity :world w :e e})))
+      (root-edit! ctx update-in [:env :source-gc] dissoc receipt))))
 
 (defn- allocate-generation! [ctx w e dense]
   (if-let [pending (:fresh-runs ctx)]
@@ -1496,6 +1548,8 @@
          :cleanup-return (cleanup-boundary! ctx action :returning)
          :cleanup-deliver (cleanup-deliver! ctx action)
          :cleanup-cell (cleanup-access! ctx action)
+         :source-unreachable (source-unreachable! ctx action)
+         :reap-source (reap-source! ctx action)
          :t01 (create-spin! ctx action)
          :t02
          (create-source! ctx action)
