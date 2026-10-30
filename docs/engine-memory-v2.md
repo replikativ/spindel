@@ -552,12 +552,25 @@ body's original rejection; attributing a new finalizer failure requires further
 compiler/public-adapter integration. The observer uses the existing host egress
 drain, rather than retaining an undrained results queue.
 
-This remains an opt-in native profile, not the public `await-finalization`
-replacement. It refuses forks until protected-wait recovery is implemented.
-Typed scoped application resources and their fork policy, public error egress,
-world release and the full public CPS adapter remain integration gates. The
-native default is unchanged. The public backend cannot claim the finalization
-contract until those integration checks pass on both platforms.
+Explicit `create-execution-context {:engine :owned}` now connects the public
+`spin`, computation `await`, `await-finalization`, callback invocation, result
+queries, JVM deref and cancellation to typed native operations. The default
+remains the established engine. Native construction rejects legacy executor
+and initial-state options; application RuntimeAtom cells keep their typed API.
+
+Constructor captures travel on the immutable public body descriptor. Native
+nodes retain only a weak comparison baseline when execution becomes value-only.
+Changed captures invalidate lazily; entry starts a fresh fenced generation.
+Each live or queued await checkpoint retains its callee template as resumption
+payload. Cold restart seats that body and its descriptor together; joining
+active work or a valid cache replaces neither.
+
+Protected waits still refuse native forks until their recovery is implemented.
+Public Signal intervals/deltas, Deferred/Mailbox and resource adapters, typed
+cleanup capabilities, component ownership, complete forks/cuts/world release,
+physical callback joining and recovery remain replacement gates. Separate
+reporting of actual cleanup failures also needs compiler provenance; a terminal
+body rejection cannot by itself identify a new finalizer failure.
 
 Result arbitration commits and returns the effective Result in one transaction.
 An explicit cancellation fences the current generation's later success/error
@@ -573,9 +586,10 @@ then restore it onto the runner-selected context. Portable regressions cover
 initial inline loops, parked resumption, fork selection and bounded repeated
 scope entry/exit; compiler tests also cover exception/finally egress. This
 preserves Spindel's explicit context scope contract without introducing generic
-snapshot semantics for arbitrary dynamic Vars. The native public adapter must
-preserve the same selected-world/generation contract when it is integrated; a
-wrapper that grows with every synchronous await does not satisfy it.
+snapshot semantics for arbitrary dynamic Vars. The public native adapter uses
+the same selected-world/generation contract, including suspension under a
+foreign host context and repeated loop/recur bounces. A wrapper that grows with
+every synchronous await does not satisfy it.
 
 ## Replacement acceptance
 

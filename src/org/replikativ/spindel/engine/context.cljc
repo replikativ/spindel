@@ -15,6 +15,7 @@
   - Shared parent state via OverlayBackend (memory efficient)
   - Fork-local effect handlers (can override behavior per branch)"
   (:require [org.replikativ.spindel.engine.impl.simple :as simple]
+            [org.replikativ.spindel.engine.impl.owned :as owned]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.cells :as cells]
             [org.replikativ.spindel.engine.impl.delayed :as delayed]
@@ -264,7 +265,7 @@
 ;; Creation
 ;; =============================================================================
 
-(defn create-execution-context
+(defn- create-legacy-execution-context
   "Create a new root execution context.
 
   Options:
@@ -342,6 +343,23 @@
         (assoc :base-bindings bindings)
         ;; A stable record for weak references (GC cleanup) — ec/with-home.
         (ec/with-home))))
+
+(defn create-execution-context
+  "Create an execution world. :engine selects :simple (default) or the native
+   :owned engine. Both accept :bindings and :metadata. Native execution owns
+   its dispatch; :executor and legacy :initial-state are unsupported there.
+   :audit? enables native model-boundary recording."
+  [& {:keys [engine bindings metadata audit?] :as options}]
+  (case engine
+    :owned
+    (do
+      (when (some #(contains? options %) [:executor :initial-state])
+        (throw (ex-info "Native execution does not accept legacy scheduler/state options"
+                        {:error :unsupported-engine-options :engine engine})))
+      (owned/runtime {:bindings (or bindings {}) :metadata (or metadata {})
+                      :audit? audit? :cps-exit? true}))
+    (nil :simple) (create-legacy-execution-context (dissoc options :engine :audit?))
+    (throw (ex-info "Unknown execution engine" {:error :unknown-engine :engine engine}))))
 
 (defn stop-context!
   "Quiesce an execution context.

@@ -82,14 +82,15 @@
 (defn- model-value [value]
   ;; The executable model uses symbolic identifiers and error values. Keep
   ;; equality/collision and actual exception identity tests on the runtime too.
-  (walk/postwalk
-   (fn [x]
-     (cond
-       (uuid? x) [:token (str x)]
-       (instance? EqualID x) [:equal-id (.-id ^EqualID x)]
-       (instance? #?(:clj org.replikativ.spindel.engine.impl.owned.Failure :cljs c/Failure) x)
-       [:failure (ex-message (:error x)) (ex-data (:error x))]
-       :else x)) value))
+  (cond
+    (uuid? value) [:token (str value)]
+    (inst? value) [:instant (inst-ms value)]
+    (instance? EqualID value) [:equal-id (.-id ^EqualID value)]
+    (instance? #?(:clj org.replikativ.spindel.engine.impl.owned.Failure :cljs c/Failure) value)
+    [:failure (ex-message (:error value)) (model-value (ex-data (:error value)))]
+    (instance? #?(:clj Throwable :cljs js/Error) value)
+    [:exception (ex-message value) (model-value (ex-data value))]
+    :else (walk/walk model-value identity value)))
 
 (defn verify-boundaries! [rt]
   (reduce

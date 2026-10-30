@@ -206,6 +206,15 @@
    (into {} (for [t [:source-unreachable :reap-source]]
               [t {:status :not-yet :step :B5 :reason :requires-managed-cell-gc-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
+   {:invalidate-computation
+    {:status :not-yet :step :B3 :reason :requires-computation-invalidation-adapter
+     :restrictions (constantly nil) :dispatch nil}}
+   {:withdraw-deref
+    {:status :not-yet :step :B2 :reason :requires-deref-withdrawal-adapter
+     :restrictions (constantly nil) :dispatch nil}}
+   {:cancel-computation
+    {:status :not-yet :step :B3 :reason :requires-public-cancellation-adapter
+     :restrictions (constantly nil) :dispatch nil}}
    (update-vals
     {:t08 {:status :macrostep-only :extent :local-completion :reason :needs-microstep-hook :dispatch nil}
      :t12 {:step :B1
