@@ -305,6 +305,8 @@
 (def ^:const n-source-event 26)
 (def ^:const n-links 27) (def ^:const n-link-buffer 28) (def ^:const n-supporters 29)
 (def ^:const n-graph-dirty 30) (def ^:const n-external-root 31)
+(def ^:const n-descriptor 32)
+(def ^:const n-cancelled 33)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
@@ -321,6 +323,7 @@
 (def ^:const x-cells 9) (def ^:const x-run 10) (def ^:const x-physical 11)
 (def ^:const x-queued 12) (def ^:const x-delivered 13)
 (def ^:const x-address 15)
+(def ^:const x-cancel-value 16)
 
 (def ^:const o-id 0) (def ^:const o-kind 1) (def ^:const o-debtor 2)
 (def ^:const o-run 3) (def ^:const o-standing 4) (def ^:const o-resolve 5)
@@ -330,6 +333,7 @@
 (def ^:const o-success 9) (def ^:const o-delivery-error 9) (def ^:const o-failure 10) (def ^:const o-last 11)
 (def ^:const o-live 12) (def ^:const o-value 13) (def ^:const o-host 14)
 (def ^:const o-address 19)
+(def ^:const o-body 20)
 (def ^:const o-origin 15) (def ^:const o-source-world 16) (def ^:const o-creditor-generation 17) (def ^:const o-creditor-node 18)
 (def ^:const t-id 0) (def ^:const t-spin 1) (def ^:const t-reachable 2)
 (def ^:const t-touched 3) (def ^:const t-dropped 4) (def ^:const t-family 6)
@@ -338,7 +342,14 @@
 (defrecord Source [id family allocation])
 (defrecord Ticket [id])
 (defrecord Delivery [family world obligation])
-(defrecord RootOwner [id])
+(deftype RootOwner [id]
+  ;; Runtime identity is opaque even when independent worlds have the same
+  ;; symbolic model coordinate. The sole field is data, never the runtime.
+  #?(:clj clojure.lang.ILookup :cljs ILookup)
+  (#?(:clj valAt :cljs -lookup) [_ key]
+    (when (= :id key) id))
+  (#?(:clj valAt :cljs -lookup) [_ key not-found]
+    (if (= :id key) id not-found)))
 (defrecord Failure [error])
 
 (defn- diagnostic-value [value failed?]
@@ -346,10 +357,25 @@
 (defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
 (declare read-application-state swap-application-state! cas-application-state!
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
-         swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!)
+         swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
+         register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
+         await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor)
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
                          operations posts home liveness extension-state finalization managed-cells trace-address]
+  rtp/PComputations
+  (register-computation! [this target id body] (register-computation! this target id body))
+  (invoke-computation! [this target id body resolve reject mode]
+    (invoke-computation! this target id body resolve reject mode))
+  (cancel-computation! [this target id body reason] (cancel-computation! this target id body reason))
+  (computation-result [this target id] (computation-result this target id))
+  (deref-computation! [this target id body timeout-ms timeout-val]
+    (deref-computation! this target id body timeout-ms timeout-val))
+  rtp/PComputationAwait
+  (await-computation! [this target id body caller-id source-loc resolve reject]
+    (await-public-computation! this target id body caller-id source-loc resolve reject))
+  (await-computation-finalization! [this operation caller-id source-loc resolve reject]
+    (await-public-finalization! this operation caller-id source-loc resolve reject))
   rtp/PTraceAddressing
   (next-trace-address! [this prefix source-loc] (next-trace-address! this prefix source-loc))
   rtp/PWorldIdentity
@@ -389,7 +415,7 @@
 
 (defn runtime
   ([] (runtime {}))
-  ([{:keys [audit? record-audit? world-id cps-exit? on-finalization-result] :or {record-audit? true world-id w}}]
+  ([{:keys [audit? record-audit? world-id cps-exit? on-finalization-result bindings metadata] :or {record-audit? true world-id w}}]
    (let [family (id-dict) gate #?(:clj (Object.) :cljs nil)
          rt (->OwnedRuntime
              gate (id-dict) (dict) (queue) (queue) (queue)
@@ -412,7 +438,8 @@
              (doto (slots 6) (put 0 (queue)) (put 1 (members)) (put 2 (members))
                    (put 3 (members)) (put 4 (queue)) (put 5 (dict))) (atom {:values {} :shadowed #{} :map-groups #{}})
              (when cps-exit? (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict)) (put 4 on-finalization-result)))
-             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1))]
+             (doto (slots 3) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 false)) (slots 1))
+         rt (cond-> rt bindings (assoc :bindings bindings) metadata (assoc :metadata metadata))]
      (assoc! family world-id rt)
      rt)))
 
@@ -637,7 +664,7 @@
   (put node n-kept value))
 
 (defn- node! [rt id kind owner]
-  (let [node (slots 32)]
+  (let [node (slots 34)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
@@ -688,22 +715,33 @@
     (put ticket x-queued true)
     (push! (a (runtime-field rt :finalization) 2) ticket)))
 
-(defn- reserve-exit! [rt run]
-  (when (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
-    (let [ticket (or (a run r-exit)
-                     (doto (slots 16)
-                       (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
-                       (put x-phase :ready) (put x-seq (or (a run r-finalization-seq) 0))
-                       (put x-reject (a run r-cancel-cont)) (put x-run run)
-                       (put x-address (a run r-address))
-                       (put x-cells (id-dict))
-                       (put 14 (ex-info "Cancelled" {:error :cancelled}))))]
-      (put run r-exit ticket)
-      (when-not (a ticket 14) (put ticket 14 (ex-info "Cancelled" {:error :cancelled})))
-      (put ticket x-kind :cps-exit) (put ticket x-run nil) (put ticket x-physical (boolean (a run r-physical)))
-      (assoc! (a (runtime-field rt :finalization) 0) (a ticket x-id) ticket)
-      (queue-cleanup! rt ticket)
-      ticket)))
+(defn- install-cancel-reason! [ticket cancellation]
+  (when (and cancellation (nil? (a ticket x-cancel-value)))
+    (put ticket x-cancel-value [(:reason cancellation)])
+    (put ticket 14 (:reason cancellation))))
+
+(defn- reserve-exit!
+  ([rt run] (reserve-exit! rt run nil))
+  ([rt run cancellation]
+   (when (and (a run r-entered) (#{:running :parked :stale} (a run r-status)))
+     (let [ticket (or (a run r-exit)
+                      (doto (slots 17)
+                        (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
+                        (put x-phase :ready) (put x-seq (or (a run r-finalization-seq) 0))
+                        (put x-reject (a run r-cancel-cont)) (put x-run run)
+                        (put x-address (a run r-address))
+                        (put x-cells (id-dict))
+                        (put 14 (if cancellation (:reason cancellation)
+                                    (ex-info "Cancelled" {:error :cancelled})))))]
+       (put run r-exit ticket)
+       (install-cancel-reason! ticket cancellation)
+       (when (and (nil? (a ticket x-cancel-value)) (not (a ticket 14)))
+         (put ticket 14 (if cancellation (:reason cancellation)
+                            (ex-info "Cancelled" {:error :cancelled}))))
+       (put ticket x-kind :cps-exit) (put ticket x-run nil) (put ticket x-physical (boolean (a run r-physical)))
+       (assoc! (a (runtime-field rt :finalization) 0) (a ticket x-id) ticket)
+       (queue-cleanup! rt ticket)
+       ticket))))
 
 (defn- unfinished-cps-subtree? [run]
   ;; Run ownership is a forest. Inspect its existing child index without
@@ -716,35 +754,40 @@
     (a aux 0)
     (when-let [profile (runtime-field rt :finalization)] (find! (a profile 3) id))))
 
-(defn- retain-cleanup! [rt root-run]
-  (when-let [profile (runtime-field rt :finalization)]
-    (when (or (not (empty-dict? (a profile 0))) (unfinished-cps-subtree? root-run))
+(defn- retain-cleanup!
+  ([rt root-run] (retain-cleanup! rt root-run nil))
+  ([rt root-run cancellation]
+   (when-let [profile (runtime-field rt :finalization)]
+     (when (or (not (empty-dict? (a profile 0))) (unfinished-cps-subtree? root-run))
     ;; Capture the whole subtree before recursive retirement mutates ownership.
-      (let [owners (members) identities (id-dict)]
-        (letfn [(visit [run]
-                  (when-not (has? owners run)
-                    (add! owners run) (assoc! identities (run-id run) true)
-                    (each! [child (a run r-childruns)] (visit child))))]
-          (visit root-run))
-        (each! [run owners] (reserve-exit! rt run))
-        (let [participants (filter #(and (= :cps-exit (a % x-kind))
-                                         (some (fn [id] (find! identities id)) (a % x-anchor)))
-                                   (values (a profile 0)))
-              cells (id-dict)]
-          (each! [run owners]
-                 (each! [node (a run r-owned)]
-                        (when (#{:signal :atom} (a node n-kind))
-                          (let [key [(runtime-field rt :world) (run-id run) (a node n-id)]
-                                cell (or (find! (a profile 1) key)
-                                         (doto (slots 4) (put 0 (a node n-kind)) (put 1 (a node n-value))
-                                               (put 2 (members)) (put 3 (source-allocation rt (a node n-id)))))]
-                            (assoc! cells key cell)))))
-          (doseq [ticket participants]
-            (doseq [[key cell] (map-value (a ticket x-cells))] (assoc! cells key cell)))
-          (doseq [[key cell] (map-value cells) :when (seq participants)]
-            (assoc! (a profile 1) key cell)
-            (doseq [ticket participants]
-              (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell))))))))
+       (let [owners (members) identities (id-dict)]
+         (letfn [(visit [run]
+                   (when-not (has? owners run)
+                     (add! owners run) (assoc! identities (run-id run) true)
+                     (each! [child (a run r-childruns)] (visit child))))]
+           (visit root-run))
+         (each! [run owners]
+                (reserve-exit! rt run (when (and cancellation
+                                                 (identical? (:node cancellation) (a run r-node)))
+                                        cancellation)))
+         (let [participants (filter #(and (= :cps-exit (a % x-kind))
+                                          (some (fn [id] (find! identities id)) (a % x-anchor)))
+                                    (values (a profile 0)))
+               cells (id-dict)]
+           (each! [run owners]
+                  (each! [node (a run r-owned)]
+                         (when (#{:signal :atom} (a node n-kind))
+                           (let [key [(runtime-field rt :world) (run-id run) (a node n-id)]
+                                 cell (or (find! (a profile 1) key)
+                                          (doto (slots 4) (put 0 (a node n-kind)) (put 1 (a node n-value))
+                                                (put 2 (members)) (put 3 (source-allocation rt (a node n-id)))))]
+                             (assoc! cells key cell)))))
+           (doseq [ticket participants]
+             (doseq [[key cell] (map-value (a ticket x-cells))] (assoc! cells key cell)))
+           (doseq [[key cell] (map-value cells) :when (seq participants)]
+             (assoc! (a profile 1) key cell)
+             (doseq [ticket participants]
+               (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell)))))))))
 
 (defn- cleanup-adopt! [rt run]
   (when-let [ticket (a run r-exit)]
@@ -779,7 +822,7 @@
       (when (zero? (count! (a cell 2))) (dissoc! (a profile 1) key)))
     (dissoc! (a profile 0) (a ticket x-id))
     (doseq [key (keys (map-value (a ticket x-cells)))] (dissoc! (a ticket x-cells) key))
-    (put ticket x-run nil) (put ticket 14 nil) (put ticket x-address nil)))
+    (put ticket x-run nil) (put ticket 14 nil) (put ticket x-address nil) (put ticket x-cancel-value nil)))
 
 (defn- cleanup-cell! [rt source]
   (let [frame (current-activation)
@@ -803,6 +846,7 @@
                                   :state :running :phase (a ticket x-phase) :sequence (a ticket x-seq)
                                   :retired? (= :cps-exit (a ticket x-kind)) :anchor (a ticket x-anchor)}
                            (seq (map-value (a ticket x-cells))) (assoc :cells (set (keys (map-value (a ticket x-cells)))))
+                           (a ticket x-cancel-value) (assoc :cancel-value (diagnostic-value (first (a ticket x-cancel-value)) true))
                            (a ticket x-delivered) (assoc :delivery (diagnostic-value (a ticket x-value) (a ticket x-failed))))]))
      :cleanup-cells (into {} (for [[key cell] (map-value (a profile 1))]
                                [key {:kind (a cell 0) :result (a cell 1)
@@ -848,24 +892,28 @@
         (when-not (any! (a node n-dependents) #(and (a % o-live) (nil? (a % o-run))))
           (mark-graph! rt node))))))
 
-(defn- reject-dependent! [rt ob]
-  (if-let [run (a ob o-run)]
-    (do
-      (when (and (= :consumed (a ob o-slot)) (= :await-reactive (a ob o-kind))
-                 (#{:running :parked :inherited :completed} (a run r-status)) (identical? run (current (a run r-node))))
-        (put run r-validation-lost true)
-        (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
-      (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
-        (put run r-status :running)
-        (put ob o-value (ex-info "Cancelled" {:error :cancelled}))
-        (put ob o-delivery-error true) (put ob o-slot :consumed)
-        (when (= :await-reactive (a ob o-kind))
-          (put run r-validation-lost true)
-          (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
-        (schedule! rt (a run r-node) ob)))
-    (push! (runtime-field rt :hosts)
-           (doto (slots 2) (put 0 (a ob o-failure)) (put 1 (ex-info "Cancelled" {})))))
-  (end-ob! rt ob))
+(defn- reject-dependent!
+  ([rt ob] (reject-dependent! rt ob nil))
+  ([rt ob cancellation]
+   (if-let [run (a ob o-run)]
+     (do
+       (when (and (= :consumed (a ob o-slot)) (= :await-reactive (a ob o-kind))
+                  (#{:running :parked :inherited :completed} (a run r-status)) (identical? run (current (a run r-node))))
+         (put run r-validation-lost true)
+         (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
+       (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
+         (put run r-status :running)
+         (put ob o-value (if cancellation (:reason cancellation)
+                             (ex-info "Cancelled" {:error :cancelled})))
+         (put ob o-delivery-error true) (put ob o-slot :consumed)
+         (when (= :await-reactive (a ob o-kind))
+           (put run r-validation-lost true)
+           (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
+         (schedule! rt (a run r-node) ob)))
+     (push! (runtime-field rt :hosts)
+            (doto (slots 2) (put 0 (a ob o-failure))
+                  (put 1 (if cancellation (:reason cancellation) (ex-info "Cancelled" {}))))))
+   (end-ob! rt ob)))
 
 (defn- release-owned! [rt run]
   (each-copy! [node (a run r-owned)]
@@ -897,49 +945,51 @@
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
         (push! pool run)))))
 
-(defn- retire! [rt run]
-  (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
-    (let [node (a run r-node)
-          _ (retain-cleanup! rt run)
-          physical? (or (a run r-physical) (a run r-exit))
-          anchor (when physical?
-                   (loop [owner run chain []]
-                     (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
-                         (recur (a owner r-owner) (conj chain [(a (a owner r-node) n-id) (a owner r-gen)])))))]
-      (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
-      (each-copy! [child (a run r-childruns)] (cancel! rt child))
-      (release-owned! rt run)
-      (each! [owner (a run r-backlinks)] (remove! (a owner r-spawned) run))
-      (each! [child (a run r-spawned)] (remove! (a child r-backlinks) run))
-      (each! [node (a run r-created)]
-             (remove! (a node n-created-by) run)
-             (when (identical? run (a node n-creator))
+(defn- retire!
+  ([rt run] (retire! rt run nil))
+  ([rt run cancellation]
+   (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
+     (let [node (a run r-node)
+           _ (retain-cleanup! rt run cancellation)
+           physical? (or (a run r-physical) (a run r-exit))
+           anchor (when physical?
+                    (loop [owner run chain []]
+                      (if (root-owner? owner) (conj chain (:id owner) (runtime-field rt :world))
+                          (recur (a owner r-owner) (conj chain [(a (a owner r-node) n-id) (a owner r-gen)])))))]
+       (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
+       (each-copy! [child (a run r-childruns)] (cancel! rt child))
+       (release-owned! rt run)
+       (each! [owner (a run r-backlinks)] (remove! (a owner r-spawned) run))
+       (each! [child (a run r-spawned)] (remove! (a child r-backlinks) run))
+       (each! [node (a run r-created)]
+              (remove! (a node n-created-by) run)
+              (when (identical? run (a node n-creator))
           ;; A surviving cache keeps the logical creator ID, not the old run's
           ;; mutable ownership graph.
-               (if physical? (creator! rt node nil)
-                   (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
-      (when-let [owner (a run r-owner)]
-        (when-not (root-owner? owner)
-          (let [parent (a owner r-node)]
-            (when (and (not (identical? parent (owner-node (a node n-owner))))
-                       (not (any! (values (a node n-runs))
-                                  #(and (not (identical? run %)) (not= :unwinding (a % r-status))
-                                        (identical? parent (owner-node (a % r-owner)))))))
-              (mark-graph! rt node)))
-          (remove! (a owner r-childruns) run) (mark! rt (a owner r-node))))
-      (if physical?
-        (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
-            (put run r-anchor anchor)
-            (add! (a (runtime-field rt :counters) 8) (a run r-node))
-            (each! [successor (values (a (a run r-node) n-runs))]
-                   (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
-            (clear-members! (a run r-ancestors))
-            (clear-members! (a run r-created))
-            (clear-members! (a run r-spawned))
-            (clear-members! (a run r-backlinks))
-            (put run r-cancel-cont nil))
-        (forget-run! rt run))
-      (mark! rt (a run r-node)))))
+                (if physical? (creator! rt node nil)
+                    (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
+       (when-let [owner (a run r-owner)]
+         (when-not (root-owner? owner)
+           (let [parent (a owner r-node)]
+             (when (and (not (identical? parent (owner-node (a node n-owner))))
+                        (not (any! (values (a node n-runs))
+                                   #(and (not (identical? run %)) (not= :unwinding (a % r-status))
+                                         (identical? parent (owner-node (a % r-owner)))))))
+               (mark-graph! rt node)))
+           (remove! (a owner r-childruns) run) (mark! rt (a owner r-node))))
+       (if physical?
+         (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
+             (put run r-anchor anchor)
+             (add! (a (runtime-field rt :counters) 8) (a run r-node))
+             (each! [successor (values (a (a run r-node) n-runs))]
+                    (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
+             (clear-members! (a run r-ancestors))
+             (clear-members! (a run r-created))
+             (clear-members! (a run r-spawned))
+             (clear-members! (a run r-backlinks))
+             (put run r-cancel-cont nil))
+         (forget-run! rt run))
+       (mark! rt (a run r-node))))))
 
 (defn- cancel! [rt run]
   (when (and (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
@@ -1242,7 +1292,8 @@
   ;; Only the engine's identity-equality public Spin objects enter this cache.
   ;; Values contain no body, public target or strong reference to the family.
   (locked rt
-          (when (and (current-activation) (identical? rt (a (current-activation) 0)))
+          (when (and (current-activation) (identical? (runtime-field rt :owner-root)
+                                                      (runtime-field (a (current-activation) 0) :owner-root)))
             (check-running! (a (current-activation) 1)))
           (let [cache (:host-tokens (runtime-field rt :home))]
             (or #?(:clj (.get ^java.util.WeakHashMap cache target) :cljs (.get cache target))
@@ -1250,7 +1301,8 @@
                   ;; First use in another family is not body construction:
                   ;; an existing portable host handle must not acquire a creator.
                   (construct-token! rt id token (when (and construction? (current-activation)
-                                                           (identical? rt (a (current-activation) 0)))
+                                                           (identical? (runtime-field rt :owner-root)
+                                                                       (runtime-field (a (current-activation) 0) :owner-root)))
                                                   (a (current-activation) 1)))
                   (arm-handle! rt target token)
                   #?(:clj (.put ^java.util.WeakHashMap cache target token) :cljs (.set cache target token))
@@ -1270,12 +1322,20 @@
 (defn register-computation!
   "Record construction of a portable public computation in this family.
   The target must have Object identity equality (the public Spin deftype)."
-  [requested target id]
-  (try
-    (admit-world-switch! requested)
-    (portable-token! requested target id true)
-    nil
-    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  ([requested target id]
+   (try
+     (admit-world-switch! requested)
+     (portable-token! (canonical-runtime requested) target id true)
+     nil
+     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  ([requested target id body]
+   (try
+     (admit-world-switch! requested)
+     (let [rt (canonical-runtime requested)
+           token (portable-token! rt target id true)]
+       (prepare-computation! rt id body true token))
+     nil
+     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil)))))
 
 (defn track [& _] (throw (ex-info "track requires cspin" {})))
 (defn await [& _] (throw (ex-info "await requires cspin" {})))
@@ -1375,6 +1435,7 @@
   (when-not reentry? (put node n-resume nil))
   (each-copy! [inherited (values (a node n-runs))]
               (when (= :inherited (a inherited r-status)) (cancel! rt inherited)))
+  (put node n-cancelled nil)
   (let [run (run-slots! rt)
         pred (current node)
         generation (put (runtime-field rt :serial) 1 (inc (long (a (runtime-field rt :serial) 1))))]
@@ -1400,7 +1461,7 @@
     (mark! rt node) run))
 
 (defn- ob! [rt kind debtor run order resolve reject]
-  (let [ob (slots 20) id (a (runtime-field rt :serial) 0)]
+  (let [ob (slots 21) id (a (runtime-field rt :serial) 0)]
     (next-number! rt 0)
     (put ob o-address (when run (a run r-address)))
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
@@ -1473,20 +1534,29 @@
 (defn- deliver-cont! [ob value]
   (deliver-value! (a ob o-resolve) (a ob o-reject) value (a ob o-delivery-error)))
 
-(defn- register-await! [rt run order id token body resolve reject]
+(defn- register-await! [rt run order id token body resolve reject descriptor-reference]
   (locked rt
           (check-running! run)
           (check-token! rt token)
           (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
             (throw (ex-info "Foreign await is outside this slice" {:id id})))
           (let [node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin run))]
-            (put node n-body body)
             (adopt! rt node run)
             (when-not (a node n-owner) (owner! rt node run))
             (when (and (not (work-status? (some-> (current node) (a r-status))))
                        (or (not (a node n-complete)) (a node n-dirty)))
+              ;; A checkpoint may select its saved executable on a genuine
+              ;; cold restart. Seat the matching descriptor proof with it;
+              ;; valid caches and already-running generations keep their own
+              ;; template, scope and descriptor instead.
+              (put node n-body body)
+              (put node n-descriptor descriptor-reference)
               (start! rt node run false))
             (let [ob (ob! rt :await-reactive node run order resolve reject)]
+              ;; A resumed await rechecks this exact call template. Its
+              ;; debtor's ordinary cache may be released before the queued
+              ;; continuation claims a slice, including its n-body field.
+              (put ob o-body body)
               (put run r-status :parked) (when (runtime-field rt :finalization) (put run r-cancel-cont reject)) (touch! rt node token) (rank! run node)
               (let [ready? (and (a node n-complete) (not (a node n-dirty))
                                 (not (work-status? (some-> (current node) (a r-status)))))]
@@ -1507,7 +1577,8 @@
 (defn- await-id-effect! [id token body resolve reject resume-resolve resume-reject]
   (let [frame (current-activation) rt (a frame 0) run (a frame 1)
         order (put frame 2 (inc (long (a frame 2))))
-        ob (register-await! rt run order id token body resume-resolve resume-reject)]
+        descriptor-reference (weak-descriptor (::rtp/computation (meta body)))
+        ob (register-await! rt run order id token body resume-resolve resume-reject descriptor-reference)]
     (when (= :consumed (a ob o-slot)) (deliver-value! resolve reject (a ob o-value) (a ob o-delivery-error)))))
 
 (defn await-effect!
@@ -1679,7 +1750,7 @@
                                              (when-not (and run (identical? run (current (a run r-node)))
                                                             (nil? (a run r-exit)))
                                                (throw (ex-info "Finalization wait requires the current physical slice" {})))
-                                             (doto (slots 16)
+                                             (doto (slots 17)
                                                (put x-id (exit-id rt run)) (put x-anchor (run-anchor rt run))
                                                (put x-kind :cps-finalization) (put x-cells (id-dict))
                                                (put x-run run))))
@@ -1745,12 +1816,12 @@
                      (a ticket x-reject))
           value (if (a ticket x-delivered) (a ticket x-value) (a ticket 14))]
       (try
-        (binding [ec/*execution-context* rt]
-          (with-activation frame
-            (try
-              (cps/invoke-continuation callback value)
-              (catch #?(:clj Throwable :cljs :default) error
-                (complete! rt run error true)))))
+        (public-slice! rt run ticket nil
+                       (fn [] (with-activation frame
+                                (try
+                                  (cps/invoke-continuation callback value)
+                                  (catch #?(:clj Throwable :cljs :default) error
+                                    (complete! rt run error true))))))
         (finally
           (finish-slice! rt run frame)
           (dotimes [i 9] (put frame i nil)))))))
@@ -1784,31 +1855,39 @@
                                     {:t :t07 :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)]
                                      :value (diagnostic-value value failed?)}))))))))
 
-(defn- reenter! [rt node trigger]
-  (let [previous (current node) work? (work-status? (a previous r-status))
-        order (a trigger o-order)]
-    (each-copy! [old (values (a node n-runs))]
-                (when (= :stale (a old r-status)) (retire! rt old)))
-    (let [run (start! rt node (a previous r-owner) true)]
-      (when (or (a previous r-validation-lost) (a node n-dirty)) (put run r-validation-lost true))
-      (when work? (put previous r-status :stale))
+(defn- reenter!
+  ([rt node trigger] (reenter! rt node trigger :reactive))
+  ([rt node trigger cause]
+   (let [previous (current node) work? (work-status? (a previous r-status))
+         order (if trigger (a trigger o-order) -1)]
+     (each-copy! [old (values (a node n-runs))]
+                 (when (= :stale (a old r-status)) (retire! rt old)))
+     (let [run (start! rt node (a previous r-owner) true)]
+       (when (and (not= :dirty cause) (or (a previous r-validation-lost) (a node n-dirty)))
+         (put run r-validation-lost true))
+       (when work? (put previous r-status :stale))
       ;; A completed predecessor still supplies the continuation's prefix.
-      ;; Transfer those tracks before successor completion retires its basis.
-      (each-copy! [ob (a previous r-obs)]
-                  (if (and (= :track (a ob o-kind)) (<= (long (a ob o-order)) (long order)))
-                    (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
-                        (put ob o-creditor-generation (a run r-gen))
-                        (put ob o-creditor-node node) (add-run! run r-obs ob))
-                    (when work? (end-ob! rt ob))))
-      (each-copy! [child (a previous r-created)]
-                  (when (< (long (a child n-order)) (long order))
-                    (owner! rt child run)
-                    (when (a child n-creator) (creator! rt child run))
-                    (uncreate! previous child) (creation! run child)
-                    (each! [cr (values (a child n-runs))]
-                           (when (identical? previous (a cr r-owner))
-                             (remove! (a previous r-childruns) cr) (put cr r-owner run) (add-run! run r-childruns cr)))))
-      (schedule! rt node trigger))))
+      ;; Earlier consumed awaits retain captured values too. The triggering
+      ;; await stays behind so its successor rechecks the debtor's fresh state.
+       (each-copy! [ob (a previous r-obs)]
+                   (if (or (and (= :track (a ob o-kind)) (<= (long (a ob o-order)) (long order)))
+                           (and (= :await-reactive (a ob o-kind)) (a ob o-standing)
+                                (= :consumed (a ob o-slot)) (< (long (a ob o-order)) (long order))))
+                     (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
+                         (put ob o-creditor-generation (a run r-gen))
+                         (put ob o-creditor-node node) (add-run! run r-obs ob)
+                         (when (= :await-reactive (a ob o-kind))
+                           (adopt! rt (a ob o-debtor) run)))
+                     (when work? (end-ob! rt ob))))
+       (each-copy! [child (a previous r-created)]
+                   (when (< (long (a child n-order)) (long order))
+                     (owner! rt child run)
+                     (when (a child n-creator) (creator! rt child run))
+                     (uncreate! previous child) (creation! run child)
+                     (each! [cr (values (a child n-runs))]
+                            (when (identical? previous (a cr r-owner))
+                              (remove! (a previous r-childruns) cr) (put cr r-owner run) (add-run! run r-childruns cr)))))
+       (schedule! rt node trigger)))))
 
 (defn- subscriber-buffer! [rt node]
   (let [n (count! (a node n-dependents))
@@ -1838,7 +1917,9 @@
                 (schedule! rt (a ob o-creditor-node) ob)))
             (do (push! (runtime-field rt :hosts)
                        (doto (slots 2) (put 0 (a ob (if failed? o-failure o-success))) (put 1 value)))
-                (when (and (a node n-complete) (not (reactive? (current node)))) (end-ob! rt ob))))))
+                (when (or (= :deref (a ob o-kind))
+                          (and (a node n-complete) (not (reactive? (current node)))))
+                  (end-ob! rt ob))))))
       (boundary! rt (when (runtime-field rt :audit) {:t :t08 :w (runtime-field rt :world) :e (a node n-id) :value (diagnostic-value value failed?)
                                                      :delivery-order order}))
       (finally (dotimes [i n] (put dependents i nil))))))
@@ -1892,7 +1973,7 @@
                 (put frame 0 rt) (put frame 1 run) (put frame 2 (if ob (a ob o-order) -1))
                 (put frame 3 ob) (put frame 4 (a node n-body))
                 (put frame 5 (when debtor (a debtor n-value)))
-                (put frame 6 (when debtor (a debtor n-body)))
+                (put frame 6 (when ob (a ob o-body)))
                 (put frame 7 (when ob (a ob o-last)))
                 (when (and ob (= :track (a ob o-kind)) (identical? run (a ob o-run))
                            (= (a run r-gen) (a ob o-creditor-generation)))
@@ -1923,15 +2004,15 @@
   (when-let [activation (claim-slice! rt node)]
     (let [run (a activation 1) ob (a activation 3)]
       (try
-        (binding [ec/*execution-context* rt]
-          (with-activation activation
-            (try (invoke-slice! rt activation)
-                 (catch #?(:clj Throwable :cljs :default) error
-                   (try
-                     (if ob (cps/invoke-continuation (a ob o-reject) error)
-                         (complete! rt run error true))
-                     (catch #?(:clj Throwable :cljs :default) rejected
-                       (complete! rt run rejected true)))))))
+        (public-slice! rt run nil (when-not ob (a activation 4))
+                       (fn [] (with-activation activation
+                                (try (invoke-slice! rt activation)
+                                     (catch #?(:clj Throwable :cljs :default) error
+                                       (try
+                                         (if ob (cps/invoke-continuation (a ob o-reject) error)
+                                             (complete! rt run error true))
+                                         (catch #?(:clj Throwable :cljs :default) rejected
+                                           (complete! rt run rejected true))))))))
         (finally
           (finish-slice! rt run activation)
           (dotimes [i 9] (put activation i nil)))))))
@@ -2027,15 +2108,17 @@
 
 (defn invoke-computation!
   "Typed public invocation; token identity is local to the runtime family."
-  [requested target id body success failure]
-  (try
-    (admit-world-switch! requested)
-    (let [rt requested]
-      (locked rt
-              (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
-                (throw (ex-info "Foreign invocation is outside this slice" {:id id}))))
-      (observe-token! rt id (portable-token! rt target id false) body success failure))
-    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  ([requested target id body success failure]
+   (try
+     (admit-world-switch! requested)
+     (let [rt (canonical-runtime requested)]
+       (locked rt
+               (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
+                 (throw (ex-info "Foreign invocation is outside this slice" {:id id}))))
+       (observe-token! rt id (portable-token! rt target id false) body success failure))
+     (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  ([requested target id body success failure mode]
+   (invoke-public-computation! requested target id body success failure mode)))
 
 (defn- source-node! [rt source unwinding?]
   (let [node (find! (runtime-field rt :nodes) (:id source))]
@@ -2734,6 +2817,9 @@
                                                  :creator (run-id (a node n-creator)) :completed? (boolean (a node n-complete))
                                                  :kept? (boolean (a node n-kept)) :result (diagnostic-value (a node n-value) (= :error (a node n-complete)))
                                                  :tokens (set (map #(a % t-id) (items (a node n-tokens)))) :key nil :order (a node n-order)}
+                                          (a node n-cancelled)
+                                          (assoc :cancelled-completion {:run (first (a node n-cancelled))
+                                                                        :result (diagnostic-value (a node n-value) true)})
                                           (= :atom (a node n-kind)) (assoc :allocation (source-allocation rt (a node n-id)))
                                           (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
                                           (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
@@ -2828,7 +2914,7 @@
               (each! [node selected]
                      (let [copy (node! child (a node n-id) (a node n-kind) (:owner-root child))]
                        (assoc! node-map node copy)
-                       (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank]]
+                       (fields! [field [n-complete n-kept n-value n-order n-dirty n-body n-rank n-descriptor n-cancelled]]
                                 (put copy field (a node field)))
                        (when (= :atom (a node n-kind))
                          (assoc! (a (runtime-field child :managed-cells) 0) (a node n-id)
@@ -2870,8 +2956,8 @@
                          (when-let [descendant (find! run-map spawned)]
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
-                         (let [clone (slots 20)]
-                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address]]
+                         (let [clone (slots 21)]
+                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body]]
                                     (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
@@ -2962,3 +3048,329 @@
                                                 (a (runtime-field rt :counters) 0)]
                                          (runtime-field rt :audit) (conj (a (runtime-field rt :counters) 9))
                                          (runtime-field rt :finalization) (conj (a (runtime-field rt :finalization) 2))))))})))
+
+;; Public computation descriptors are weak node metadata, never token payloads.
+(defn- weak-descriptor [descriptor]
+  (when descriptor
+    #?(:clj (java.lang.ref.WeakReference. descriptor) :cljs (js/WeakRef. descriptor))))
+(defn- descriptor-value [reference]
+  (when reference #?(:clj (.get ^java.lang.ref.WeakReference reference) :cljs (.deref reference))))
+
+(defn- same-public-capture? [a b]
+  (or (identical? a b)
+      #?(:clj (and (or (number? a) (char? a) (keyword? a) (symbol? a) (boolean? a))
+                   (.equals ^Object a b))
+         :cljs (cond (number? a) (and (number? b) (.is js/Object a b))
+                     (or (keyword? a) (symbol? a)) (= a b)
+                     :else false))))
+
+(defn- public-captures-changed? [old new]
+  (or (not= (set (keys old)) (set (keys new)))
+      (boolean (some (fn [[k value]] (not (same-public-capture? value (get old k)))) new))))
+
+(defn- check-computation-caller! [rt]
+  (when-let [frame (current-activation)]
+    (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
+      (check-running! (a frame 1)))))
+
+(defn- computation-witness [rt id]
+  (let [node (find! (runtime-field rt :nodes) id)]
+    {:node node :generation (when node (some-> (current node) (a r-gen)))
+     :reference (when node (a node n-descriptor))
+     :completed? (boolean (when node (a node n-complete)))}))
+
+(defn- computation-current? [rt id witness]
+  (let [node (find! (runtime-field rt :nodes) id)]
+    (and (identical? node (:node witness))
+         (= (:generation witness) (when node (some-> (current node) (a r-gen))))
+         (identical? (:reference witness) (when node (a node n-descriptor))))))
+
+(defn- check-public-token! [rt token id]
+  (check-token! rt token)
+  (when-not (and (a token t-reachable) (= id (a token t-spin)))
+    (throw (ex-info "Public computation capability is unavailable"
+                    {:error :unreachable-handle :id id}))))
+
+(defn- prepare-computation!
+  ([rt id body construction?] (prepare-computation! rt id body construction? nil))
+  ([rt id body construction? token]
+   (let [descriptor (::rtp/computation (meta body))]
+     (loop []
+       (let [[witness previous-descriptor]
+             (locked rt
+                     (check-computation-caller! rt)
+                     (when token (check-public-token! rt token id))
+                     (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
+                       (throw (ex-info "Foreign invocation is outside this slice" {:id id})))
+                     (let [witness (computation-witness rt id)]
+                       [witness (descriptor-value (:reference witness))]))
+            ;; Map traversal and scalar equality may invoke user code. Neither
+            ;; comparison nor WeakRef construction executes under the gate.
+             changed? (and (:node witness)
+                           (or (:reference witness) (:generation witness)
+                               (:completed? witness))
+                           (or (nil? previous-descriptor)
+                               (and construction? (= :resource (:kind descriptor)))
+                               (public-captures-changed? (:captured-locals previous-descriptor)
+                                                         (:captured-locals descriptor))))
+             reference (if (identical? previous-descriptor descriptor)
+                         (:reference witness) (weak-descriptor descriptor))
+             committed
+             (locked rt
+                     (check-computation-caller! rt)
+                     (when token (check-public-token! rt token id))
+                     (when (computation-current? rt id witness)
+                       (when-let [node (:node witness)]
+                         (when changed?
+                           (put node n-dirty true)
+                           (when-let [run (current node)] (put run r-validation-lost true))
+                           (boundary! rt (when (runtime-field rt :audit)
+                                           {:t :invalidate-computation :w (runtime-field rt :world) :e id})))
+                         (put node n-descriptor reference))
+                       (assoc witness :reference (when (:node witness) reference)
+                              :prepared-reference reference)))]
+         (if committed committed (recur)))))))
+
+(defn- enter-public-computation! [rt id body]
+  (let [node (find! (runtime-field rt :nodes) id)
+        run (when node (current node))]
+    (when (and run (not= :unwinding (a run r-status)) (a node n-dirty)
+               (or (not (work-status? (a run r-status))) (a run r-validation-lost)))
+      ;; Constructor invalidation is lazy. Entry is an explicit cold T09,
+      ;; retaining incoming observers while dropping the old outgoing suffix.
+      (put node n-body body)
+      (reenter! rt node nil :dirty)
+      (boundary! rt (when (runtime-field rt :audit)
+                      {:t :t09 :w (runtime-field rt :world) :e id :cause :dirty :order -1})))))
+
+(defn- observe-public! [rt target id body success failure mode]
+  (let [token (portable-token! rt target id false)]
+    (loop []
+      (let [witness (prepare-computation! rt id body false token)
+            observation
+            (locked rt
+                    (check-computation-caller! rt)
+                    (check-public-token! rt token id)
+                    (when (computation-current? rt id witness)
+                      (enter-public-computation! rt id body)
+                      (let [node (or (find! (runtime-field rt :nodes) id)
+                                     (node! rt id :spin (runtime-field rt :owner-root)))
+                            cached? (and (a node n-complete) (not (a node n-dirty))
+                                         (not (work-status? (some-> (current node) (a r-status)))))]
+                        (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness)))
+                        (when-not (a node n-owner) (owner! rt node (runtime-field rt :owner-root)))
+                        (touch! rt node token)
+                        (when-not (or cached? (work-status? (some-> (current node) (a r-status))))
+                          (put node n-body body)
+                          (start! rt node (runtime-field rt :owner-root) false))
+                        (let [ob (ob! rt mode node nil 0 nil nil)]
+                          (put ob o-success success) (put ob o-failure failure)
+                          (when cached?
+                            (push! (runtime-field rt :hosts)
+                                   (doto (slots 2)
+                                     (put 0 (a ob (if (= :error (a node n-complete)) o-failure o-success)))
+                                     (put 1 (a node n-value))))
+                            (when (or (= :deref mode) (not (reactive? (current node)))) (end-ob! rt ob)))
+                          (boundary! rt (when (runtime-field rt :audit)
+                                          {:t :t04 :w (runtime-field rt :world) :e id :tok (a token t-id) :mode mode}))
+                          {:ob ob :cached? cached?}))))]
+        (if observation observation (recur))))))
+
+(defn- host-callback-scope [requested f value]
+  (binding [ec/*execution-context* requested ec/*spin-id* nil ec/*run-gen* nil
+            ec/*lifetime-run* nil ec/*owner-scope* nil]
+    (with-activation nil (f value))))
+
+(defn- invoke-public-computation! [requested target id body resolve reject mode]
+  (try
+    (admit-world-switch! requested)
+    (let [rt (canonical-runtime requested)
+          in-call (volatile! true)
+          thread #?(:clj (Thread/currentThread) :cljs nil)
+          outer-trampoline? (cps/in-trampoline?)
+          outcome (volatile! nil)
+          callback
+          (fn [failed? f]
+            (fn [value]
+              (let [inline? (and @in-call #?(:clj (identical? thread (Thread/currentThread)) :cljs true))
+                    receipt (when (and inline? (nil? @outcome))
+                              (let [ret (volatile! nil)] (vreset! outcome [failed? value ret]) ret))
+                    ret (host-callback-scope
+                         requested
+                         (fn [value]
+                           (if (and inline? outer-trampoline?)
+                             (cps-runtime/call-in-trampoline
+                              (fn [token] (binding [cps/*in-trampoline* token]
+                                            (cps/invoke-continuation f value))))
+                             (binding [cps/*in-trampoline* false] (cps/invoke-continuation f value))))
+                         value)]
+                (when receipt (vreset! receipt ret))
+                ret)))
+          observation (observe-public! rt target id body (callback false resolve) (callback true reject) mode)]
+      (try
+        (drain! rt)
+        (if-let [[failed? value ret] @outcome]
+          (cond
+            (cps-runtime/thunk? @ret) @ret
+            (and failed? (:cached? observation))
+            (if (= :org.replikativ.spindel.spin.core/spin-cancelled (:type (ex-data value))) nil (throw value))
+            failed? nil
+            :else value)
+          :org.replikativ.spindel.spin/incomplete)
+        (finally (vreset! in-call false))))
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+
+(defn computation-result [requested target id]
+  (try
+    (admit-world-switch! requested)
+    (let [rt (canonical-runtime requested)]
+      (locked rt
+              (check-computation-caller! rt)
+              (when-let [node (find! (runtime-field rt :nodes) id)]
+                (when (a node n-complete)
+                  {:variant (if (= :error (a node n-complete)) :error :ok)
+                   :payload (a node n-value)
+                   :clean? (and (not (a node n-dirty))
+                                (not (work-status? (some-> (current node) (a r-status)))))}))))
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+
+(defn cancel-computation! [requested target id body reason]
+  (try
+    (admit-world-switch! requested)
+    (let [rt (canonical-runtime requested)
+          token (portable-token! rt target id false)]
+      (loop []
+        (let [witness (prepare-computation! rt id body false token)
+              committed?
+              (locked rt
+                      (check-computation-caller! rt)
+                      (check-public-token! rt token id)
+                      (when (computation-current? rt id witness)
+                        (let [node (or (find! (runtime-field rt :nodes) id)
+                                       (node! rt id :spin (runtime-field rt :owner-root)))]
+                          (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness)))
+                          (touch! rt node token)
+                          (when-not (a node n-cancelled)
+                            (let [runs (vec (sort-by #(a % r-gen) > (values (a node n-runs))))
+                                  cancelled-run (run-id (current node))
+                                  dirty? (boolean (or (a node n-dirty)
+                                                      (some-> (current node) (a r-validation-lost))))
+                                  cancellation {:node node :reason reason}]
+                              ;; Publish provenance before retiring anything:
+                              ;; finally and incoming callbacks observe this
+                              ;; first result, including pre-invocation cancel.
+                              (put node n-cancelled [cancelled-run])
+                              (put node n-complete :error) (put node n-value reason)
+                              (drop-node-events! rt node)
+                              (doseq [run runs]
+                                (when-let [ticket (a run r-exit)] (install-cancel-reason! ticket cancellation))
+                                (retire! rt run cancellation))
+                              (doseq [ob (sort-by #(a % o-id) (seq (copy-items (a node n-dependents))))]
+                                (reject-dependent! rt ob cancellation))
+                              ;; Raw lifetime teardown may dirty owned graphs;
+                              ;; preserve only the target's prior invalidation.
+                              (put node n-dirty dirty?)))
+                          (boundary! rt (when (runtime-field rt :audit)
+                                          {:t :cancel-computation :w (runtime-field rt :world)
+                                           :e id :tok (a token t-id) :value (diagnostic-value reason true)}))
+                          true)))]
+          (when-not committed? (recur))))
+      (drain! rt))
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+
+(defn deref-computation! [requested target id body timeout-ms timeout-val]
+  #?(:cljs (throw (js/Error. "Blocking deref is unsupported in ClojureScript"))
+     :clj
+     (try
+       (admit-world-switch! requested)
+       (let [rt (canonical-runtime requested)]
+         (when (or (current-activation) @(runtime-field rt :draining))
+           (throw (ex-info "Cannot block while the native engine is executing" {:error :blocking-engine-wait})))
+         (let [result (promise)
+               timeout (Object.)
+               settle (fn [variant value]
+                        (host-callback-scope requested
+                                             #(deliver result {:variant variant :payload %}) value))
+               observation (observe-public! rt target id body #(settle :ok %) #(settle :error %) :deref)]
+           (drain! rt)
+           (let [outcome (if (pos? timeout-ms) (deref result timeout-ms timeout) @result)]
+             (cond
+               (identical? timeout outcome)
+               (do (locked rt
+                           (end-ob! rt (:ob observation))
+                           (boundary! rt (when (runtime-field rt :audit)
+                                           {:t :withdraw-deref :w (runtime-field rt :world)
+                                            :o [:o (a (:ob observation) o-id)]})))
+                   timeout-val)
+               (= :error (:variant outcome)) (throw (:payload outcome))
+               :else (:payload outcome)))))
+       (finally (java.lang.ref.Reference/reachabilityFence target)))))
+
+(defn await-public-computation! [requested target id body _caller-id _source-loc resolve reject]
+  (when-not (and id body)
+    (throw (ex-info "Native await requires a typed computation target"
+                    {:error :unsupported-operation :operation :await-resource})))
+  (try
+    (admit-world-switch! requested)
+    (let [rt (canonical-runtime requested) frame (current-activation)]
+      (when-not (and frame (same-cell-world? rt (a frame 0)))
+        (throw (ex-info "Computation await requires the selected native activation"
+                        {:error :unsupported-operation :operation :await-outside-activation})))
+      (let [token (portable-token! rt target id false)
+            resume-resolve (cps-runtime/scope-continuation resolve)
+            resume-reject (cps-runtime/scope-continuation reject)]
+        (loop []
+          (let [witness (prepare-computation! rt id body false token)
+                committed?
+                (locked rt
+                        (check-computation-caller! rt)
+                        (check-public-token! rt token id)
+                        (when (computation-current? rt id witness)
+                          (enter-public-computation! rt id body)
+                          (let [run (a frame 1)
+                                order (put frame 2 (inc (long (a frame 2))))
+                                ob (register-await! rt run order id token body resume-resolve resume-reject
+                                                    (:prepared-reference witness))]
+                            (when-let [node (find! (runtime-field rt :nodes) id)]
+                              (when-not (a node n-descriptor) (put node n-descriptor (:prepared-reference witness))))
+                            ob)))]
+            (if committed?
+              (when (= :consumed (a committed? o-slot))
+                (deliver-value! resolve reject (a committed? o-value) (a committed? o-delivery-error)))
+              (recur))))))
+    (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+
+(defn await-public-finalization! [requested operation _caller-id _source-loc resolve reject]
+  (when-not (ifn? operation)
+    (throw (ex-info "Protected finalization requires an async thunk" {:error :invalid-finalization-operation})))
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) frame (current-activation)]
+    (when-not (and frame (same-cell-world? rt (a frame 0)))
+      (throw (ex-info "Protected finalization requires the selected native activation"
+                      {:error :unsupported-operation :operation :finalization-outside-activation})))
+    (await-finalization-effect!
+     (fn [r j]
+       ;; Registration may itself be CPS code. Pump its Thunks independently;
+       ;; protected settlement records readiness until this exact slice parks.
+       (binding [cps/*in-trampoline* false]
+         (cps/with-trampoline (operation r j))))
+     resolve reject
+     (cps-runtime/scope-continuation resolve) (cps-runtime/scope-continuation reject))))
+
+;; These descriptors contain only global functions. Scope capture stores pure
+;; lexical bindings; the selected runner supplies world and generation authority.
+(defn- capture-public-scope [] (ec/capture-context-scope ec/*execution-context*))
+(defn- restore-public-scope [captured] (ec/restore-context-scope captured ec/*execution-context*))
+(defn- bind-public-scope [value f] (binding [ec/*execution-context* value] (f)))
+
+(defn- public-slice! [rt run ticket cold-body f]
+  (let [[id generation] (if run (run-id run) (some-> ticket (a x-id) (nth 2)))
+        scope (:spin-scope (::rtp/computation (meta cold-body)))
+        context (if (seq scope) (update rt :bindings merge scope) rt)]
+    (binding [ec/*execution-context* context ec/*spin-id* id
+              ec/*run-gen* (when id [id generation]) ec/*lifetime-run* generation
+              ec/*owner-scope* (when id [:run (runtime-field rt :world) id generation])
+              cps-runtime/*scope-frame* (assoc cps-runtime/*scope-frame*
+                                               'org.replikativ.spindel.engine.core/*execution-context*
+                                               [capture-public-scope restore-public-scope bind-public-scope])]
+      (f))))

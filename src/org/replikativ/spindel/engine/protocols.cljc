@@ -236,3 +236,26 @@
    A matching ordinary activation advances its run cursor; otherwise the
    requested world's root cursor is used after caller admission."
   (next-trace-address! [ctx prefix source-loc]))
+
+(defprotocol PComputations
+  "Public computation ingress. Bodies carry immutable constructor data under
+   ::computation in their metadata. Engines own registration, generations and
+   result arbitration; generic state paths cannot mutate that authority."
+  (register-computation! [ctx target id body])
+  (invoke-computation! [ctx target id body resolve reject mode]
+    "Invoke with :callback or one-shot :deref observation. Preserve the public
+     CPS return convention: value/Thunk for inline success, incomplete when
+     suspended, and the existing cached-error rejection convention.")
+  (cancel-computation! [ctx target id body reason])
+  (computation-result [ctx target id]
+    "Immutable {:variant :ok|:error :payload value :clean? boolean}, or nil.")
+  (deref-computation! [ctx target id body timeout-ms timeout-val]
+    "JVM host blocking adapter; refuse an engine activation or drain.
+     ClojureScript blocking deref remains unsupported."))
+
+(defprotocol PComputationAwait
+  "Await ingress before any engine-specific cancellation or state access.
+   A reactive target supplies id/body; other awaitables supply nil for both."
+  (await-computation! [ctx target id body caller-id source-loc resolve reject])
+  (await-computation-finalization! [ctx operation caller-id source-loc resolve reject]
+    "Protected finalizer wait; retirement must preserve its physical return."))

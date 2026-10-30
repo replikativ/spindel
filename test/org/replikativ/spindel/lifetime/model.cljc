@@ -385,28 +385,31 @@
         s (if (seq d) (update-in s [:worlds dw :fdeps] conj [:bundle v d]) s)]
     (if (seq ended) (cleanup-dependency s dw [:bundle v ended] v) s)))
 
-(defn end-obligation [s w o cause]
-  (if-let [ob (get-in s [:worlds w :obligations o])]
-    (let [[kind dw e] (:debtor ob)
-          [ck cw r] (:creditor ob)
-          s (if (and (= :cancel-delivered cause) (= :await-reactive (:kind ob))
-                     (= :consumed (:slot ob)) (= :run ck)
-                     (#{:running :parked :inherited :completed} (:status (run s cw r)))
-                     (= r (current s cw (first r))))
-              (cond-> (assoc-in s [:worlds cw :runs r :validation-lost?] true)
-                (:completed? (ent s cw (first r)))
-                (assoc-in [:worlds cw :entities (first r) :dirty?] true)) s)
-          s (-> s
-                (update-in [:worlds w :obligations] dissoc o)
-                (emit {:event :obligation-exit :world w :o o :ob ob :cause cause}))
-          s (if (and (= cause :cancel-delivered) (= :host (first (:creditor ob))))
-              (emit s {:event :host-delivery :world w :o o :value ::cancelled}) s)
-          s (if (and (= :entity kind) (not= dw w) (= :run (first (:creditor ob))) (not= :released (:status (wr s dw))))
-              (let [fd [e w o]
-                    s (if (contains? (:fdeps (wr s dw)) fd) (cleanup-dependency s dw fd w) s)]
-                (sync-bundle s dw w)) s)]
-      (if (and (= :external (:kind ob)) (:token ob))
-        (assoc-in s [:env :waiters (:token ob) :armed?] true) s)) s))
+(defn end-obligation
+  ([s w o cause] (end-obligation s w o cause nil))
+  ([s w o cause cancellation]
+   (if-let [ob (get-in s [:worlds w :obligations o])]
+     (let [[kind dw e] (:debtor ob)
+           [ck cw r] (:creditor ob)
+           s (if (and (= :cancel-delivered cause) (= :await-reactive (:kind ob))
+                      (= :consumed (:slot ob)) (= :run ck)
+                      (#{:running :parked :inherited :completed} (:status (run s cw r)))
+                      (= r (current s cw (first r))))
+               (cond-> (assoc-in s [:worlds cw :runs r :validation-lost?] true)
+                 (:completed? (ent s cw (first r)))
+                 (assoc-in [:worlds cw :entities (first r) :dirty?] true)) s)
+           s (-> s
+                 (update-in [:worlds w :obligations] dissoc o)
+                 (emit {:event :obligation-exit :world w :o o :ob ob :cause cause}))
+           s (if (and (= cause :cancel-delivered) (= :host (first (:creditor ob))))
+               (emit s {:event :host-delivery :world w :o o
+                        :value (if cancellation (:value cancellation) ::cancelled)}) s)
+           s (if (and (= :entity kind) (not= dw w) (= :run (first (:creditor ob))) (not= :released (:status (wr s dw))))
+               (let [fd [e w o]
+                     s (if (contains? (:fdeps (wr s dw)) fd) (cleanup-dependency s dw fd w) s)]
+                 (sync-bundle s dw w)) s)]
+       (if (and (= :external (:kind ob)) (:token ob))
+         (assoc-in s [:env :waiters (:token ob) :armed?] true) s)) s)))
 
 (defn add-fdep [s w o]
   (let [ob (get-in s [:worlds w :obligations o]) [k dw e] (:debtor ob)]
@@ -446,6 +449,7 @@
     (require! (= :live (:status (wr s w))) ::sealed {:world w})
     (require! (open? s w owner) ::closed-scope {:world w :scope owner})
     [(-> s (assoc-in [:generation-clock [w e]] n) (assoc-in [:worlds w :seq] seqno)
+         (update-in [:worlds w :entities e] dissoc :cancelled-completion)
          (assoc-in [:worlds w :runs r]
                    {:spin e :owner owner :pred pred
                     :ancestors (cond-> (get-in s [:worlds w :runs pred :ancestors] #{}) pred (conj pred))
@@ -583,6 +587,29 @@
   (live! s w)
   (require! (not-any? #(and (= w (:child %)) (= :attached (:phase %)))
                       (vals (:cuts s))) ::not-admitted {:w w}))
+
+(defn invalidate-computation
+  "Invalidate constructor captures without executing or retiring a generation."
+  [s {:keys [w e]}]
+  (executable! s w)
+  (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})
+  (require! (= :spin (:kind (ent s w e))) ::not-computation {:w w :e e})
+  (let [r (current s w e)]
+    (cond-> (assoc-in s [:worlds w :entities e :dirty?] true)
+      (run s w r) (assoc-in [:worlds w :runs r :validation-lost?] true))))
+
+(defn withdraw-deref
+  "Withdraw one local host deref observer without cancelling its computation."
+  [s {:keys [w o]}]
+  (if-let [ob (get-in s [:worlds w :obligations o])]
+    (do
+      (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})
+      (require! (and (= :deref (:kind ob)) (not (:standing? ob))
+                     (= :host (first (:creditor ob)))
+                     (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
+                ::not-host-deref {:w w :o o})
+      (end-obligation s w o :creditor-cancelled))
+    s))
 
 (defn adopt-call-target
   "A successor that invokes/awaits a predecessor-owned spin adopts its
@@ -793,8 +820,14 @@
           s (if (work? previous) (assoc-in s [:worlds w :runs r :status] :stale) s)
           s (reduce (fn [s [o ob]]
                       (if (not= [:run w r] (:creditor ob)) s
-                          (if (and previous (= :track (:kind ob)) (<= (:order ob) order))
-                            (assoc-in s [:worlds w :obligations o :creditor] [:run w r2])
+                          (if (and previous
+                                   (or (and (= :track (:kind ob)) (<= (:order ob) order))
+                                       (and (= :await-reactive (:kind ob)) (:standing? ob)
+                                            (= :consumed (:slot ob)) (< (:order ob) order))))
+                            (let [[dk dw de] (:debtor ob)]
+                              (cond-> (assoc-in s [:worlds w :obligations o :creditor] [:run w r2])
+                                (and (= :await-reactive (:kind ob)) (= :entity dk) (= w dw))
+                                (adopt-call-target w de r2)))
                             (if (work? previous) (end-obligation s w o :creditor-cancelled) s))))
                     s (:obligations (wr s w)))
           s (update-in s [:worlds w :scopes]
@@ -911,24 +944,27 @@
                                  (when-let [event (remove-request (:event held) v o)] (assoc held :event event))
                                  held)) %)))))
 
-(defn cancel-foreign-debtor [s w v o]
+(defn cancel-foreign-debtor
+  ([s w v o] (cancel-foreign-debtor s w v o nil))
+  ([s w v o cancellation]
   ;; These are this transaction's own rows, so no releasing/cleanup handshake.
-  (let [ob (get-in s [:worlds v :obligations o]) e (nth (:debtor ob) 2)
-        s (-> s (retire-request w v o)
-              (update-in [:worlds w :fdeps] disj [e v o])
-              (enqueue v {:cancelled o}))
-        other? (some (fn [[other candidate]]
-                       (and (not= o other) (= [:entity w e] (:debtor candidate))
-                            (= :run (first (:creditor candidate)))
-                            (= :inherited (:status (run s v (nth (:creditor candidate) 2))))
-                            (not (pending-start? s v other candidate))
-                            (not (cancelling? s v other candidate))))
-                     (:obligations (wr s v)))]
-    (if other? s
-        (update-in s [:worlds w :fdeps]
-                   #(set (keep (fn [[tag target d :as fd]]
-                                 (if (and (= :bundle tag) (= v target))
-                                   (when (seq (disj d e)) [:bundle v (disj d e)]) fd)) %))))))
+   (let [ob (get-in s [:worlds v :obligations o]) e (nth (:debtor ob) 2)
+         s (-> s (retire-request w v o)
+               (update-in [:worlds w :fdeps] disj [e v o])
+               (enqueue v (cond-> {:cancelled o}
+                            cancellation (assoc :value (:value cancellation)))))
+         other? (some (fn [[other candidate]]
+                        (and (not= o other) (= [:entity w e] (:debtor candidate))
+                             (= :run (first (:creditor candidate)))
+                             (= :inherited (:status (run s v (nth (:creditor candidate) 2))))
+                             (not (pending-start? s v other candidate))
+                             (not (cancelling? s v other candidate))))
+                      (:obligations (wr s v)))]
+     (if other? s
+         (update-in s [:worlds w :fdeps]
+                    #(set (keep (fn [[tag target d :as fd]]
+                                  (if (and (= :bundle tag) (= v target))
+                                    (when (seq (disj d e)) [:bundle v (disj d e)]) fd)) %)))))))
 
 (defn t10-supersede
   "T10 retire completed/stale runs at successor completion or owner release.
@@ -952,10 +988,11 @@
 
 (defn t11-cancel
   "T11 retire a copy, fail debtor obligations, recursively release owned runs."
-  [s {:keys [w r anchor]}]
+  [s {:keys [w r anchor] :as action}]
   (if-let [rr (when (not= :unwinding (:status (run s w r))) (run s w r))]
     (let [chain (or anchor (owner-chain s w r))
-          e (:spin rr) current? (= r (current s w e))]
+          e (:spin rr) current? (= r (current s w e))
+          cancellation (when (contains? action :cancel-value) {:value (:cancel-value action)})]
       (rule-l
        (retire-run
         s w r :cancelled
@@ -966,18 +1003,68 @@
                     (reduce
                      (fn [s [v o ob]]
                        (if (not= v w)
-                         (cancel-foreign-debtor s w v o)
+                         (cancel-foreign-debtor s w v o cancellation)
                          (let [s (if (= :run (first (:creditor ob)))
-                                   (t06-resume s {:w v :o o :value ::cancelled}) s)]
-                           (end-obligation s v o :cancel-delivered))))
-                     s (for [[v world] (:worlds s) [o ob] (:obligations world)
-                             :when (and (= [:entity w e] (:debtor ob))
-                                        (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])) s)
+                                   (t06-resume s {:w v :o o :value (if cancellation (:value cancellation) ::cancelled)}) s)]
+                           (end-obligation s v o :cancel-delivered cancellation))))
+                     s (cond->> (for [[v world] (:worlds s) [o ob] (:obligations world)
+                                      :when (and (= [:entity w e] (:debtor ob))
+                                                 (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])
+                         cancellation (sort-by #(second (second %))))) s)
                 s (if (and current? (= :stale (:status (run s w (:pred rr)))))
                     (t10-supersede s {:w w :r (:pred rr)}) s)
                 s (release-owned s w r)]
             (if (ent s w e) (assoc-in s [:worlds w :entities e :dirty?] true) s)))
         chain) w)) s))
+
+(defn cancel-computation
+  "Commit public cancellation before retiring only the target's existing runs."
+  [s {:keys [w e tok value]}]
+  (executable! s w)
+  (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})
+  (let [handle (get-in s [:env :handles tok]) old (ent s w e)]
+    (require! (and handle (= e (:spin handle)) (:reachable? handle))
+              ::unknown-handle {:w w :e e :tok tok})
+    (require! (not (contains? (:dropped handle) w)) ::idle-cache-released {:w w :e e :tok tok})
+    (require! (or (nil? old) (= :spin (:kind old))) ::not-computation {:w w :e e})
+    (let [s (if old s (assoc-in s [:worlds w :entities e] (spin-row s w e (:root (wr s w)))))
+          s (touch s w e tok)]
+      (if (contains? (ent s w e) :cancelled-completion) s
+          (let [r (current s w e)
+                dirty? (boolean (or (:dirty? (ent s w e)) (:validation-lost? (run s w r))))
+                targets (vec (sort-by second > (for [[id row] (:runs (wr s w)) :when (= e (:spin row))] id)))
+                publication? (fn [event] (and (= e (:completion event)) (= w (:debtor-world event))))
+                s (-> s
+                      (assoc-in [:worlds w :entities e :completed?] true)
+                      (assoc-in [:worlds w :entities e :result] value)
+                      (assoc-in [:worlds w :entities e :cancelled-completion] {:run r :result value})
+                      (update :worlds #(into {} (for [[v world] %]
+                                                  [v (if (some publication? (:queue world))
+                                                       (update world :queue (fn [queue] (vec (remove publication? queue))))
+                                                       world)])))
+                      (update-in [:env :outside] #(vec (remove (fn [held] (publication? (:event held))) %))))
+              ;; Reserve before teardown, preserving any live protected wait.
+                s (reduce (fn [s id]
+                            (let [s (retain-cleanup-subtree s w id) n (cleanup/ticket w id)
+                                  ticket (get-in s [:env :native n])]
+                              (if (and (cleanup/exit? ticket) (not (contains? ticket :cancel-value)))
+                                (assoc-in s [:env :native n :cancel-value] value) s))) s targets)
+              ;; One public transaction retires the entire pre-action batch.
+              ;; Intermediate Rule L must not supersede an older basis before
+              ;; its explicit T11 cancellation is applied.
+                s (binding [*cascading?* true]
+                    (reduce #(t11-cancel %1 {:w w :r %2 :cancel-value value}) s targets))
+              ;; There may be incoming observers but no run (an idle cache).
+                s (reduce (fn [s [v o ob]]
+                            (if (not= v w) (cancel-foreign-debtor s w v o {:value value})
+                                (let [s (if (= :run (first (:creditor ob)))
+                                          (t06-resume s {:w w :o o :value value}) s)]
+                                  (end-obligation s w o :cancel-delivered {:value value}))))
+                          s (sort-by #(second (second %))
+                                     (for [[v world] (:worlds s) [o ob] (:obligations world)
+                                           :when (and (= [:entity w e] (:debtor ob))
+                                                      (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])))]
+            (assoc-in s [:worlds w :entities e :dirty?] dirty?))))))
 
 (defn t12-open-scope
   "T12 open explicit, supervisor, render or SCI scope."
@@ -1718,7 +1805,9 @@
    :cleanup-adopt cleanup/adopt :cleanup-claim cleanup/claim :cleanup-park cleanup/suspend
    :cleanup-deliver cleanup/deliver :cleanup-return cleanup/returning
    :cleanup-cell cleanup/access
-   :source-unreachable managed-cells/unreachable :reap-source managed-cells/reap})
+   :source-unreachable managed-cells/unreachable :reap-source managed-cells/reap
+   :invalidate-computation invalidate-computation :withdraw-deref withdraw-deref
+   :cancel-computation cancel-computation})
 
 (defn changed-worlds [before after]
   (set (for [w (set/union (set (keys (:worlds before))) (set (keys (:worlds after))))
@@ -1771,7 +1860,8 @@
           _ (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell} t)) (= :released (:status (wr s (:world thread)))))
               (refuse ::released {:w w :thread (:th a)}))
           _ (when (and unwinding?
-                       (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q} t))
+                       (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
+                          :invalidate-computation :withdraw-deref :cancel-computation} t))
               (refuse ::cancelled {:w w :r (:run thread)}))
           _ (when (and (or (:cleanup-ticket thread)
                            (cleanup/exit? (get-in s [:env :native (cleanup/ticket (:world thread) (:run thread))])))
@@ -1780,7 +1870,8 @@
           before s s (assoc s :events [])]
       (when (and (quiescent-cut? s (acting-world s a))
                  (#{:t01 :t02 :t03 :t04 :t05 :t06 :t07 :t08 :t09 :t10 :t11
-                    :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37} t))
+                    :t12 :t13 :t14 :t15 :t17 :t18 :t19 :unsubscribe :queued :t36 :t37
+                    :invalidate-computation :withdraw-deref :cancel-computation} t))
         (refuse ::not-admitted {:action a}))
       (release-fixpoint
        before

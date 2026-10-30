@@ -691,7 +691,7 @@
         once)
       result)))
 
-(defn await-finalization-handler
+(defn- await-legacy-finalization-handler
   "Direct handler for the cancellation-shielded finalization boundary."
   [awaitable spin-id source-loc resolve reject]
   (try
@@ -742,7 +742,7 @@
   (and (satisfies? spin-core/PSpin x)
        (satisfies? spin-core/PSpinBody x)))
 
-(defn await-handler
+(defn- await-legacy-handler
   "Unified direct await handler - dispatches based on type.
 
   This is the entry point called from CPS-transformed code.
@@ -854,6 +854,27 @@
     ;; silently never completes.
     (catch #?(:clj Throwable :cljs :default) t
       (reject t))))
+
+(defn await-handler [awaitable caller-id source-loc resolve reject]
+  (let [reactive? (reactive-spin? awaitable)]
+    (rtp/await-computation! (ec/current-execution-context) awaitable
+                            (when reactive? (spin-core/spin-id awaitable))
+                            (when reactive? (spin-core/spin-body awaitable))
+                            caller-id source-loc resolve reject)))
+
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PComputationAwait
+  (await-computation! [ctx target _id _body caller-id source-loc resolve reject]
+    (binding [ec/*execution-context* ctx]
+      (await-legacy-handler target caller-id source-loc resolve reject)))
+  (await-computation-finalization! [ctx operation caller-id source-loc resolve reject]
+    (binding [ec/*execution-context* ctx]
+      (await-legacy-finalization-handler operation caller-id source-loc resolve reject))))
+
+(defn await-finalization-handler [operation caller-id source-loc resolve reject]
+  (rtp/await-computation-finalization! (ec/current-execution-context) operation
+                                       caller-id source-loc resolve reject))
 
 ;; =============================================================================
 ;; Registration

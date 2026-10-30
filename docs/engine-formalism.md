@@ -1554,7 +1554,7 @@ must survive retirement of the predecessor that originally created it.
 | T6 | `resume(o, v)` | `o ∈ ob_w`, `slot(o) = :armed`, and its creditor copy `⟨w,r⟩` is `:parked` or `:inherited` (activation: see legality) | **Inherited copy with a cross-world debtor:** its debtor is already retained by the fork's `[:bundle w D]` row (T19/T23); a one-shot `o` removes its debtor from `D` when no other inherited obligation of `w` names it (O(log n)). **H1:** the executing thread is bound to `w`, the world holding `o`, whatever path runs it: the drain, a deferred or mailbox delivery, an embedder thread, or an SCI-conveyed fn. A captured binding never overrides `w`. A one-shot `o` and its `fdeps` row are deleted in this transaction; a standing `o` gets `:slot :consumed` (its later deliveries re-enter through T9). Set `r := :running` (an inherited copy now counts as work). **Activation of an inherited copy:** its dormant resource obligations are armed in the same transaction (native registration and cancel token allocated; a timer is registered for its remaining duration); members of `[:bundle w D]` still named by the copy's obligations become ordinary `fdeps` rows. | L5 L10 L14 L15 TL1 |
 | T7 | `complete(r, res)` | `r ∈ runs_w`, `:running`, `current(r)`. On a missing or non-current run, or an `:unwinding` one: no-op (TL5); an unwinding row ends only through T38. T7 itself is not deferred to physical return: if this run's own slice is still executing when T10 normalises it, the row is retired to `:unwinding` (§4.3) until T38. | Cache `res` on `e = spin(r)` and set `r := :completed`. Enqueue the completion envelope `{:completion e res}` (value-only, §4.1.2) in `w`, and in every `v` with `[e v _] ∈ fdeps_w`. Apply T10 to every predecessor in `:completed`/`:stale`. Remove the `:timer`/`:waiter` entities owned by `r`, cancelling them and arming their tokens. Rule L. | L1–L3 L7 L24 |
 | T8 | `deliver(e)` (process `{:completion e}`) | — | For each obligation whose debtor is `e`: a run creditor with an armed slot goes to T6, including the first delivery of a standing `:await-reactive` obligation. A consumed standing run-creditor slot re-enters through T9; an inherited copy activates through T6. A host `:deref` invokes its callback and is deleted; a standing host `:callback` re-delivers, and on a `final(e)` is delivered and deleted. | L5 TL1 TL2 |
-| T9 | `reenter(e, cause)`, where `cause ∈ {:track o, :reactive o, :dirty, :rerun!}` | live; `r` = the current run of `e` | If a predecessor of `r` is already `:stale`, apply T10 to it first: at most one stale generation per spin. Add `r' = [e g]`, with fresh `g`, `{:owner owner(r) :pred r :ancestors (ancestors(r) ∪ {r}) :status :running}`. Standing `:track` obligations at or before the resume point move from the extant predecessor to `r'`, including when `r` is `:completed`; the triggering track moves too. If `work(r)`: set `r := :stale` and delete its remaining creditor obligations (arming tokens, cancelling timers, dropping `fdeps`). Creations of `r` with `:order` below the resume point's continuation order move to `r'` (prefix adoption). Other creations and spawned runs stay with `r` and can be adopted until `r'` completes; a successor that never completes keeps them. If `r` is `:completed`, it stays as the basis until `r'` completes. | L2 L5 |
+| T9 | `reenter(e, cause)`, where `cause ∈ {:track o, :reactive o, :dirty, :rerun!}` | live; `r` = the current run of `e` | If a predecessor of `r` is already `:stale`, apply T10 to it first: at most one stale generation per spin. Add `r' = [e g]`, with fresh `g`, `{:owner owner(r) :pred r :ancestors (ancestors(r) ∪ {r}) :status :running}`. Standing `:track` obligations at or before the resume point move from the extant predecessor to `r'`, including when `r` is `:completed`; the triggering track moves too. Standing, consumed `:await-reactive` obligations strictly before the resume point also move, adopting local predecessor-owned debtors and their owned runs through call-target adoption. The triggering await stays with the predecessor so reentry rechecks the debtor's current value, error, or readiness. If `work(r)`: set `r := :stale` and delete its remaining creditor obligations (arming tokens, cancelling timers, dropping `fdeps`). Creations of `r` with `:order` below the resume point's continuation order move to `r'` (prefix adoption). Other creations and spawned runs stay with `r` and can be adopted until `r'` completes; a successor that never completes keeps them. If `r` is `:completed`, it stays as the basis until `r'` completes. | L2 L5 |
 | T10 | `supersede(r)` (inside T7 of a successor) | `r` is `:completed` or `:stale`; inside T7 of a successor, or without a successor as part of owner release (§4.3 rule 3) | Retire `r` (§4.3, run retirement: its child scopes close first; it stays `:unwinding` while a slice of it executes). Each `e' ∈ creations(r)` with `creator(e') = r` gets owner release (§4.3 rule 3), which applies T11 to every work run of `e'`. Each spawned run not adopted gets T11. Keyed entries and cache rows owned by `r` are removed; any other entity owned by `r` gets owner release. Standing obligations with creditor `r` end. Rule L. | L1 L3 L6 |
 
 **C. Cancellation, scopes and pins**
@@ -1566,6 +1566,34 @@ must survive retirement of the predecessor that originally created it.
 | T13 | `close-scope(s)` | `s` is not a run scope; idempotent | Atomic cascade (rows; physical exit is observed with `join!`, TL19): close child scopes; apply T11 to runs owned by `s`; owner release (§4.3 rule 3) of the entities owned by `s`. For `[:fork v]` owned by `s`: an event `{:discard k}` is enqueued in `v` for every open capability `k` of `v`; the resulting T15/T26 are `v`'s transactions, and `settle` retains the entity until they are terminal. If `s = root(w)`, run T34. Supervisor `shutdown!`, render unmount (`:stop!`), pubsub pump `close`, SCI component unregister and `with-new-scope` exit are all T13. | L1 L6 TL7 |
 | T14 | `pin!(e)` / `unpin!(e)` | `pin!`: `e ∈ ent_w`. `unpin!` on an absent row: no-op. | `pin!` adds `e` to the pins (a root-held reason); the owner is unchanged. `unpin!` removes `e` from the pins; rule L. | L1 L3 |
 | T15 | `cancel-world-work!(w)` | — | Apply T11 to every work run of `w`, including pumps, watchers and timers. Inherited copies are left alone; T34 drops them. | L16 |
+
+**Typed public computation operations.** The public adapter adds three named
+transitions without changing raw T11 lifetime cancellation:
+
+- `invalidate-computation(w, e)` requires a live admitted local spin. It marks
+  its cached result dirty and its current generation validation-lost, preserving
+  observers, outgoing obligations and execution. Construction remains lazy. A
+  later invocation or await explicitly enters a cold T9 (`:dirty`, order `-1`)
+  when superseding invalidated work; an unwinding copy instead permits a fresh
+  T4/T5 entry while its physical cleanup remains outstanding.
+- `withdraw-deref(w, o)` withdraws a local one-shot host dereference observer.
+  It cannot cancel the body or withdraw a different obligation kind. A missing
+  observer is inert, including after T8 has committed delivery; withdrawal does
+  not revoke an already committed callback.
+- `cancel-computation(w, e, tok, value)` validates the public token and commits
+  an error result plus `:cancelled-completion {:run r :result value}` before
+  retiring the target's existing generations. An absent target is materialized
+  without a body run; `r` can therefore be nil. The fence, rather than fields
+  in the error payload, identifies explicit cancellation. Repeated cancellation
+  preserves its first result and protected cleanup. The target's incoming
+  obligations and cleanup receive that same reason; owned descendants retain
+  ordinary lifetime cancellation. Pre-existing invalidation remains dirty,
+  while a fresh generation clears the fence. Old target publications are
+  removed before delivery, and already committed T8 callbacks remain valid.
+
+These operations obey the ordinary admission and cut boundaries. Public
+cancellation retains raw T11's invalidation of an already-consumed reactive
+parent; it does not install an explicit-cancellation fence on that parent.
 
 **D. Host GC (idle caches only)**
 

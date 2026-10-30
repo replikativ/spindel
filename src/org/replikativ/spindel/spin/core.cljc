@@ -498,34 +498,30 @@
 
   #?(:clj clojure.lang.IFn :cljs IFn)
   (#?(:clj invoke :cljs -invoke) [this resolve reject]
-    (invoke-legacy-spin this spin-id spin-fn resolve reject))
+    (rtp/invoke-computation! (ec/current-execution-context) this spin-id spin-fn resolve reject :callback))
 
   #?(:clj clojure.lang.IDeref :cljs IDeref)
   (#?(:clj deref :cljs -deref) [this]
     ;; Blocks until spin completes, then returns cached value.
     ;; Requires *execution-context* to be bound by the caller.
-    #?(:clj (deref-spin this spin-id spin-fn 0 nil)
+    #?(:clj (rtp/deref-computation! (ec/current-execution-context) this spin-id spin-fn 0 nil)
        :cljs (throw (ex-info "@Spin not supported in CLJS runtime" {}))))
 
   #?@(:clj
       [clojure.lang.IBlockingDeref
        (deref [this timeout-ms timeout-val]
-              (deref-spin this spin-id spin-fn timeout-ms timeout-val))])
+              (rtp/deref-computation! (ec/current-execution-context) this spin-id spin-fn timeout-ms timeout-val))])
 
   Object
   (toString [_this]
     (str "#<Spin " spin-id ">")))
 
-(deftype CallbackEgressSpin [task policy]
+(deftype CallbackEgressSpin [task policy body]
   PSpin
   (spin-id [_] (spin-id task))
 
   PSpinBody
-  (spin-body [_]
-    (let [body (spin-body task)]
-      (fn [resolve reject]
-        (binding [ec/*callback-egress-policy* policy]
-          (body resolve reject)))))
+  (spin-body [_] body)
 
   #?(:clj clojure.lang.IFn :cljs IFn)
   (#?(:clj invoke :cljs -invoke) [_ resolve reject]
@@ -550,11 +546,105 @@
 (defn ^:no-doc with-causal-descendant-egress
   "Authorize a host-owned Spin callback to complete from COW descendants."
   [task]
-  (CallbackEgressSpin. task :causal-follow))
+  (let [body (spin-body task)
+        scoped (with-meta (fn [resolve reject]
+                            (binding [ec/*callback-egress-policy* :causal-follow]
+                              (body resolve reject)))
+                 (meta body))]
+    (CallbackEgressSpin. task :causal-follow scoped)))
 
 ;; =============================================================================
 ;; Spin Creation
 ;; =============================================================================
+
+(defn- register-legacy-computation! [ctx reactive-spin spin-id spin-fn]
+  (binding [ec/*execution-context* ctx]
+    (let [{:keys [captured-locals kind] :as descriptor} (::rtp/computation (meta spin-fn))]
+     ;; Register spin with runtime via protocol (uses dynamic *execution-context*).
+     ;; captured-locals — {sym value} of the body's free variables — lets
+     ;; register-spin! detect (identical?) whether a re-registered spin's
+     ;; captured environment changed. nil for non-macro callers.
+     ;; kind — :computation (deterministic id, replayable, B-gated; minted by
+     ;; the `spin`/`effect` macro's 3-arity call) or :resource (gensym id,
+     ;; effectful one-shot body; the 1-/2-arity used by sleep/parallel/race/
+     ;; deferred/mailbox/… combinators, which are not replayable).
+      (ec/spin-register! spin-id {:provides #{}
+                                  :captured-locals captured-locals
+                                  :kind kind})
+
+     ;; Snapshot this spin's lexical scope — the registered spin-scope
+     ;; binding keys (see engine.bindings) — from the construction-time
+     ;; execution context onto the spin's node. The engine re-applies the
+     ;; snapshot on every COLD body start (the :spin-execution handler in
+     ;; engine/impl/simple.cljc and the await-spin slow/rebuild child
+     ;; invocation in effects/await.cljc), giving spins closure semantics
+     ;; over the scope they were constructed under. Continuation resumes
+     ;; instead restore the suspend-time scope via the cont's
+     ;; `:slice-state` snapshot. Which keys count as scope is
+     ;; supplied entirely by the registry — e.g. dom.addressing registers
+     ;; :dom/parent-addr / :dom/current-slot — so spin/core stays domain-
+     ;; agnostic. Spins constructed at root scope capture nothing, so this
+     ;; is a no-op there.
+      (when-let [ctx (ec/current-execution-context)]
+        (let [spin-scope (:spin-scope descriptor)]
+          (when (seq spin-scope)
+           ;; NODE-RECORD INVARIANT (#31): swap the WHOLE node, never a
+           ;; field path. A field-path write (`[:nodes id :spin-scope]`)
+           ;; on an ABSENT node — possible when a reap raced between
+           ;; register-spin! above and here — materializes a plain map
+           ;; `{:spin-scope …}` where a SpinNode record belongs; every
+           ;; downstream `(or node (->spin-node …))` guard then keeps the
+           ;; truthy map forever, and the first protocol call on it
+           ;; (`get-observers` in cache-result!) throws — silently
+           ;; stranding that spin's completion.
+            (rtp/swap-state! ctx [:nodes spin-id]
+                             (fn [node]
+                               (let [node (or node (nodes/->spin-node
+                                                    nil :clean false false #{} {} nil #{}))]
+                                 (assoc node :spin-scope spin-scope)))))))
+
+     ;; Register automatic cleanup when spin is GC'd
+     ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
+     ;; can find the context even when *execution-context* is not bound.
+      #?(:clj
+         (let [;; The context's HOME record, not the bound one: a bound
+              ;; record is usually a short-lived derivative (binding
+              ;; scope), and a weak reference to it clears long before the
+              ;; context dies — the cleanup then never runs (ec/with-home).
+               ctx (ec/home-context (ec/current-execution-context))
+               weak-ctx (WeakReference. ctx)
+               sid spin-id]
+           (.register ^java.lang.ref.Cleaner @spin-cleaner
+                      reactive-spin
+                      (reify Runnable
+                        (run [_]
+                          (try
+                            (when-let [c (.get weak-ctx)]
+                             ;; ENQUEUE the reap instead of mutating engine
+                             ;; state from the Cleaner thread — the drain
+                             ;; serializes it against event dispatch, so
+                             ;; cleanup can never race a :spin-completion
+                             ;; (see :gc-cleanup in process-event! +
+                             ;; gc-quiescent? in engine/impl/simple.cljc).
+                              (rtp/enqueue! c {:type :gc-cleanup :id sid}))
+                            (catch Exception _
+                             ;; Silently ignore errors during GC cleanup
+                              nil))))))
+         :cljs
+         (when spin-registry
+           (let [;; The HOME record — see the JVM branch above.
+                 ctx (ec/home-context (ec/current-execution-context))]
+             (.register spin-registry
+                        reactive-spin
+                        #js {:spin_id spin-id
+                             :weak_ctx (js/WeakRef. ctx)}))))
+
+      reactive-spin)))
+
+(defn- describe-body [spin-fn captured-locals kind scope]
+  (with-meta (fn [resolve reject] (spin-fn resolve reject))
+    (assoc (meta spin-fn) ::rtp/computation
+           {:captured-locals captured-locals :kind kind :spin-scope scope})))
 
 (defn make-spin
   "Create a stateless Spin.
@@ -578,88 +668,11 @@
   ([spin-fn spin-id captured-locals]
    (make-spin spin-fn spin-id captured-locals :computation))
   ([spin-fn spin-id captured-locals kind]
-   (let [reactive-spin (->Spin spin-id spin-fn)]
-
-     ;; Register spin with runtime via protocol (uses dynamic *execution-context*).
-     ;; captured-locals — {sym value} of the body's free variables — lets
-     ;; register-spin! detect (identical?) whether a re-registered spin's
-     ;; captured environment changed. nil for non-macro callers.
-     ;; kind — :computation (deterministic id, replayable, B-gated; minted by
-     ;; the `spin`/`effect` macro's 3-arity call) or :resource (gensym id,
-     ;; effectful one-shot body; the 1-/2-arity used by sleep/parallel/race/
-     ;; deferred/mailbox/… combinators, which are not replayable).
-     (ec/spin-register! spin-id {:provides #{}
-                                 :captured-locals captured-locals
-                                 :kind kind})
-
-     ;; Snapshot this spin's lexical scope — the registered spin-scope
-     ;; binding keys (see engine.bindings) — from the construction-time
-     ;; execution context onto the spin's node. The engine re-applies the
-     ;; snapshot on every COLD body start (the :spin-execution handler in
-     ;; engine/impl/simple.cljc and the await-spin slow/rebuild child
-     ;; invocation in effects/await.cljc), giving spins closure semantics
-     ;; over the scope they were constructed under. Continuation resumes
-     ;; instead restore the suspend-time scope via the cont's
-     ;; `:slice-state` snapshot. Which keys count as scope is
-     ;; supplied entirely by the registry — e.g. dom.addressing registers
-     ;; :dom/parent-addr / :dom/current-slot — so spin/core stays domain-
-     ;; agnostic. Spins constructed at root scope capture nothing, so this
-     ;; is a no-op there.
-     (when-let [ctx (ec/current-execution-context)]
-       (let [spin-scope (select-keys (:bindings ctx)
-                                     (bindings/spin-scope-keys))]
-         (when (seq spin-scope)
-           ;; NODE-RECORD INVARIANT (#31): swap the WHOLE node, never a
-           ;; field path. A field-path write (`[:nodes id :spin-scope]`)
-           ;; on an ABSENT node — possible when a reap raced between
-           ;; register-spin! above and here — materializes a plain map
-           ;; `{:spin-scope …}` where a SpinNode record belongs; every
-           ;; downstream `(or node (->spin-node …))` guard then keeps the
-           ;; truthy map forever, and the first protocol call on it
-           ;; (`get-observers` in cache-result!) throws — silently
-           ;; stranding that spin's completion.
-           (rtp/swap-state! ctx [:nodes spin-id]
-                            (fn [node]
-                              (let [node (or node (nodes/->spin-node
-                                                   nil :clean false false #{} {} nil #{}))]
-                                (assoc node :spin-scope spin-scope)))))))
-
-     ;; Register automatic cleanup when spin is GC'd
-     ;; Both platforms: capture a WeakRef to the ExecutionContext so cleanup
-     ;; can find the context even when *execution-context* is not bound.
-     #?(:clj
-        (let [;; The context's HOME record, not the bound one: a bound
-              ;; record is usually a short-lived derivative (binding
-              ;; scope), and a weak reference to it clears long before the
-              ;; context dies — the cleanup then never runs (ec/with-home).
-              ctx (ec/home-context (ec/current-execution-context))
-              weak-ctx (WeakReference. ctx)
-              sid spin-id]
-          (.register ^java.lang.ref.Cleaner @spin-cleaner
-                     reactive-spin
-                     (reify Runnable
-                       (run [_]
-                         (try
-                           (when-let [c (.get weak-ctx)]
-                             ;; ENQUEUE the reap instead of mutating engine
-                             ;; state from the Cleaner thread — the drain
-                             ;; serializes it against event dispatch, so
-                             ;; cleanup can never race a :spin-completion
-                             ;; (see :gc-cleanup in process-event! +
-                             ;; gc-quiescent? in engine/impl/simple.cljc).
-                             (rtp/enqueue! c {:type :gc-cleanup :id sid}))
-                           (catch Exception _
-                             ;; Silently ignore errors during GC cleanup
-                             nil))))))
-        :cljs
-        (when spin-registry
-          (let [;; The HOME record — see the JVM branch above.
-                ctx (ec/home-context (ec/current-execution-context))]
-            (.register spin-registry
-                       reactive-spin
-                       #js {:spin_id spin-id
-                            :weak_ctx (js/WeakRef. ctx)}))))
-
+   (let [ctx (ec/current-execution-context)
+         body (describe-body spin-fn captured-locals kind
+                             (select-keys (:bindings ctx) (bindings/spin-scope-keys)))
+         reactive-spin (->Spin spin-id body)]
+     (rtp/register-computation! ctx reactive-spin spin-id body)
      reactive-spin)))
 
 (defn ^:no-doc register-cleanup!
@@ -740,13 +753,17 @@
 ;; Spin Lifecycle (from spin/lifecycle.cljc)
 ;; =============================================================================
 
+(defn- observed-result [spin]
+  (when-let [result (rtp/computation-result (ec/current-execution-context) spin (spin-id spin))]
+    (->Result (:variant result) (:payload result))))
+
 (defn spin-cancelled?
   "Check if a spin has been cancelled by user.
 
    Uses PSpin protocol and PSpinLifecycle to check error state.
    Requires *execution-context* to be bound."
   [spin]
-  (let [cached (ec/spin-current-result (spin-id spin))]
+  (let [cached (observed-result spin)]
     (when (and cached (error? cached))
       (match cached
         (fn [_] false)
@@ -759,7 +776,7 @@
    Requires *execution-context* to be bound.
    This includes both user-initiated cancellation and error propagation."
   [spin]
-  (let [cached (ec/spin-current-result (spin-id spin))]
+  (let [cached (observed-result spin)]
     (boolean (and cached (error? cached)))))
 
 (defn ^:no-doc set-owned-spins!
@@ -793,7 +810,9 @@
                        (when node
                          (assoc node :owned-spins (when (seq spins) (vec spins))))))))
 
-(defn cancel-spin!
+(declare cancel-spin!)
+
+(defn- cancel-legacy-spin!
   "Cancel a spin and all its observers (cooperative cancellation).
 
    Spins will check cancellation at await points (cooperative, not preemptive).
@@ -803,13 +822,9 @@
 
    Returns:
      nil"
-  [spin]
+  [spin reason]
   (let [sid (spin-id spin)
-        err (ex-info "Spin cancelled by user"
-                     {:type spin-cancelled
-                      :spin-id sid
-                      :cancelled-at #?(:clj (java.util.Date.)
-                                       :cljs (js/Date.))})
+        err reason
         ;; Requires *execution-context* to be bound by caller
         ctx   (ec/current-execution-context)]
     ;; (1) Cache the cancel result + dirty observers. Makes `spin-is-cancelled?`
@@ -885,6 +900,25 @@
     (doseq [child (ec/get-state [:nodes sid :owned-spins])]
       (when (and child (nil? (ec/spin-current-result (spin-id child))))
         (cancel-spin! child)))))
+
+(defn cancel-spin!
+  "Cancel a spin and all its observers (cooperative cancellation).
+
+   Spins will check cancellation at await points (cooperative, not preemptive).
+
+   Parameters:
+     spin - The Spin to cancel (not spin-id!)
+
+   Returns:
+     nil"
+  [spin]
+  (let [sid (spin-id spin)
+        reason (ex-info "Spin cancelled by user"
+                        {:type spin-cancelled
+                         :spin-id sid
+                         :cancelled-at #?(:clj (java.util.Date.)
+                                          :cljs (js/Date.))})]
+    (rtp/cancel-computation! (ec/current-execution-context) spin sid (spin-body spin) reason)))
 
 (defn ^:no-doc cancelled-after-registration
   "Re-check cancellation once the continuation `registered` (the map passed
@@ -974,3 +1008,22 @@
             on-err (fn [e] (reject e))]
         (spin on-ok on-err)
         incomplete)))))
+
+(extend-type #?(:clj org.replikativ.spindel.engine.context.ExecutionContext
+                :cljs ctx/ExecutionContext)
+  rtp/PComputations
+  (register-computation! [ctx target id body]
+    (register-legacy-computation! ctx target id body))
+  (invoke-computation! [ctx target id body resolve reject _mode]
+    (binding [ec/*execution-context* ctx]
+      (invoke-legacy-spin target id body resolve reject)))
+  (cancel-computation! [ctx target _id _body reason]
+    (binding [ec/*execution-context* ctx]
+      (cancel-legacy-spin! target reason)))
+  (computation-result [ctx _target id]
+    (when-let [result (rtp/current-result ctx id)]
+      {:variant (:variant result) :payload (:payload result) :clean? (rtp/clean? ctx id)}))
+  (deref-computation! [ctx target id body timeout-ms timeout-val]
+    #?(:clj (binding [ec/*execution-context* ctx]
+              (deref-spin target id body timeout-ms timeout-val))
+       :cljs (throw (ex-info "@Spin not supported in CLJS runtime" {})))))
