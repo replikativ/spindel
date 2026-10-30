@@ -286,3 +286,21 @@
 (defprotocol PSignalTracking
   "Signal checkpoint ingress, before engine-specific cancellation/state access."
   (track-public-signal! [ctx ref spin-id source-loc resolve reject]))
+
+(defprotocol PDeferred
+  "A Deferred's opaque synchronization payload, interpreted by its runtime."
+  (deferred-payload [this]))
+
+(defprotocol PSynchronization
+  "Typed single-assignment synchronization ingress. Operations select the
+   bound world; a reference does not retain or select its creation world.
+   Delivered values, including exceptions, are successful application data."
+  (create-public-deferred! [ctx id])
+  (claim-public-deferred! [ctx ref value]
+    "Claim callable delivery once and return the claim winner boolean.")
+  (deliver-public-deferred! [ctx ref value]
+    "Queue an assignment attempt without claiming; return the supplied value.")
+  (read-public-deferred [ctx ref]
+    "Immutable {:assigned? boolean :value value}; nil/false are valid values.")
+  (invoke-public-deferred! [ctx ref resolve reject]
+    "Direct two-argument Deferred CPS invocation."))

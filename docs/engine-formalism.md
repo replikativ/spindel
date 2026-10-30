@@ -1065,7 +1065,7 @@ World
 end ::= [:run w r] | [:entity w e] | [:host h]
 m   ∈ #{:root :following :frozen :materialized}
 sk  ∈ #{:world-root :fork :run :render-root :supervisor :explicit :sci-component}
-ek  ∈ #{:spin :signal :atom :keyed-entry :cache-row :timer :waiter :fork}
+ek  ∈ #{:spin :signal :atom :deferred :keyed-entry :cache-row :timer :waiter :fork}
 og  ∈ #{:created :copied :inherited}
 rs  ∈ #{:running :parked :inherited :stale :completed :unwinding}   ; terminal runs are removed
 ok  ∈ #{:deref :await-once :await-reactive :track :callback :external :timer}
@@ -1245,7 +1245,7 @@ joined(w)    ≡ ∀n ∈ env.native. world(owner(n)) = w ⇒ state(n) = :joined
 
 ```
 own(e)    ≡ owner(e) ≠ nil ∧ rooted(owner(e)) ∧ open(owner(e)) ∧
-            ( kind(e) ∈ {:signal :atom :keyed-entry :cache-row :fork}
+            ( kind(e) ∈ {:signal :atom :deferred :keyed-entry :cache-row :fork}
             ∨ kind(e) ∈ {:timer :waiter} ∧ (work(owner(e)) ∨ dormant(owner(e)))
             ∨ kind(e) = :spin ∧ (¬completed?(e) ∨ kept?(e)) )
 active(e) ≡ ∃r ∈ runs_W. spin(r) = e ∧ (work(r) ∨ dormant(r) ∨ status(r) = :stale)
@@ -1603,6 +1603,73 @@ requires ordinary admitted authority and an owned live source, then queues its
 current value without changing it. Repeated source invalidations coalesce; this
 is a current-state notification, not a lossless history. Protected cleanup may
 update its retained payload, but cannot publish ordinary work.
+
+**Typed Deferred sources.** A `:deferred` entity has one allocation identity,
+`:completed?` as its assigned flag, an opaque successful `:result`, and
+`:deferred {:claimed? boolean :protected {registration {:operation op :sequence sequence}}}`. Its state is
+engine-owned; generic source mutation and computation creation/invocation cannot
+modify it. A pending T5 `:await-once` names this source without starting a body;
+an assigned source resumes inline. Other reader kinds refuse.
+
+- `deferred-create(w, e, allocation)` allocates that private source. Its initial
+  assigned and claimed flags are independent and false.
+- `deferred-request(w, e, allocation, value, claim?)` queues an assignment
+  attempt. A callable claim wins only once and sets the claim flag; a non-claim
+  request does not set it. Assignment does not imply a callable claim.
+- `deferred-assign(w, e, allocation, seq, value)` consumes the exact queued
+  attempt. Only the first assignment changes the value. It atomically queues
+  ordinary reader delivery and records readiness for matching operation
+  registrations. It does not settle the enclosing protected wait. An
+  exception-shaped value is still successful data. A posted
+  attempt follows its exact allocation into retained cleanup; a stale allocation
+  cannot acquire a new source. Released-world retained attempts use environment
+  envelopes, with original sequence order preserved across T34.
+- `deferred-observe(w, e, allocation)` registers a one-shot host reader, or
+  returns an already assigned value without an obligation.
+- `operation-await` attaches the named allocation to an operation's exact
+  executing frame. A live allocation can be retained across another owner's
+  retirement; a retired source requires an already held cleanup capability.
+  Live and retained aliases in one world share claim, assignment and registration
+  state, including after T9 moves the source to a successor owner. The former
+  `deferred-protect` shortcut refuses explicitly.
+
+**Protected operation participants.** A ticket names the outer suspended
+continuation. Its operation has identity `[ticket sequence]`; each resource
+registration has a fresh operation-local ordinal. Neither resource assignment
+nor a callback's return value selects the operation's terminal result.
+
+| Transition | Effect |
+|---|---|
+| `operation-start` | Install a participant and startup physical frame on the exact waiting ticket before invoking the thunk outside the gate. |
+| `operation-await` | Acquire an allowed Deferred capability and save the supplied scoped continuation under a fresh registration. Assigned data claims inline work on the existing operation frame; pending data installs a source edge. |
+| `operation-deliver` | Move a pending registration to ready, preserving successful data. Deferred assignment performs all its registration deliveries atomically; this profile refuses standalone delivery ingress. |
+| `operation-claim` | Enter the exact saved continuation once, outside the gate. External claims require an idle operation lane; assigned inline entry uses its existing physical frame. |
+| `operation-terminal` | The first terminal capability selects an explicit `:ok` or `:error` outcome. Invalidate unclaimed work; preserve claimed work and its physical evidence. |
+| `operation-return` | Remove the exact physical frame and consumed registrations. Returning without terminal selection leaves the operation open. |
+
+An assigned registration is already claimed before inline entry. Terminal
+selection in that interval preserves its right to enter once; `:entered?`
+prevents duplicate entry. Terminal selection does not permit new registrations.
+Parent dispatch waits for operation frames and the previous parent slice to
+return. Exact same-frame parent continuation handoff remains permitted once
+operation frames return, with existing live admission or cleanup adoption.
+Acquired cell holders survive intermediate callbacks and are released by the
+parent's existing lifetime protocol, not by consuming a resource registration.
+Raw callback-only tickets without an operation retain their one-shot
+`cleanup-deliver` protocol; it cannot bypass an operation-backed ticket.
+
+Independent continuation-entry and terminal observations distinguish
+`assignment 41 -> callback entry 41 -> terminal 42` from the former shortcut.
+Current operation coverage comprises explicit traces and public audit replay;
+the bounded search generator does not yet enumerate these new actions.
+
+Retained Deferred cells preserve the assignment flag and allocation identity in
+addition to their opaque value. They may be read by an authorized cleanup frame,
+but generic cleanup writes cannot bypass single assignment. External producer
+capabilities may settle an existing retained allocation, without granting ordinary
+read/work authority. The final holder releases the cell. Fork and cut copying of
+Deferred controls currently refuse before mutation; remapping their registrations
+and recovery is required before the full engine replacement.
 
 **D. Host GC (idle caches only)**
 

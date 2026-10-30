@@ -203,6 +203,10 @@
    (into {} (for [t [:finalization-wait :finalization-resume :cleanup-adopt :cleanup-claim :cleanup-park :cleanup-return :cleanup-deliver :cleanup-cell]]
               [t {:status :not-yet :step :B4 :reason :requires-protected-cleanup-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
+   (into {} (for [t [:operation-start :operation-await :operation-deliver
+                     :operation-claim :operation-terminal :operation-return]]
+              [t {:status :not-yet :step :B4 :reason :requires-protected-operation-adapter
+                  :restrictions (constantly nil) :dispatch nil}]))
    (into {} (for [t [:source-unreachable :reap-source]]
               [t {:status :not-yet :step :B5 :reason :requires-managed-cell-gc-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
@@ -212,6 +216,9 @@
    {:withdraw-deref
     {:status :not-yet :step :B2 :reason :requires-deref-withdrawal-adapter
      :restrictions (constantly nil) :dispatch nil}}
+   (into {} (for [t [:deferred-create :deferred-request :deferred-assign :deferred-observe :deferred-protect]]
+              [t {:status :not-yet :step :B2 :reason :requires-typed-deferred-adapter
+                  :restrictions (constantly nil) :dispatch nil}]))
    {:signal-publish
     {:status :not-yet :step :B2 :reason :requires-deferred-publication-adapter
      :restrictions (constantly nil) :dispatch nil}}

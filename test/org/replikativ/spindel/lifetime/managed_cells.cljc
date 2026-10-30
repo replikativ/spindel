@@ -4,7 +4,7 @@
 
 (defn current? [s {:keys [w e allocation]}]
   (let [row (get-in s [:worlds w :entities e])]
-    (and (= :atom (:kind row)) (some? allocation)
+    (and (#{:atom :deferred} (:kind row)) (some? allocation)
          (= allocation (:allocation row)))))
 
 (defn unreachable [s {:keys [w e allocation] :as action}]
@@ -23,10 +23,19 @@
 (defn in-use? [s w e allocation]
   (or (contains? (get-in s [:worlds w :pins]) e)
       (seq (get-in s [:env :cell-claims [w e allocation]]))
+      (some (fn [[reg {:keys [operation sequence]}]]
+              (let [ticket (get-in s [:env :native (first operation)])
+                    participant (:operation ticket)]
+                (and (= operation (:id participant)) (= :open (:state participant))
+                     (= sequence (:sequence ticket))
+                     (= :pending (get-in participant [:registrations reg :state])))))
+            (get-in s [:worlds w :entities e :deferred :protected]))
       (some (fn [[v world]]
               (or (some #(= [:entity w e] (:debtor %)) (vals (:obligations world)))
-                  (some #(and (= e (:completion %)) (= w (get % :debtor-world v))) (concat (:queue world)
-                                                                                           (map :event (filter #(= v (:w %)) (get-in s [:env :outside])))))
+                  (some #(or (and (= e (:completion %)) (= w (get % :debtor-world v)))
+                             (and (= w v) (= e (:deferred-assignment %)) (= allocation (:allocation %))))
+                        (concat (:queue world)
+                                (map :event (filter #(= v (:w %)) (get-in s [:env :outside])))))
                   ;; Fdeps live on the debtor world; bundles name debtor IDs.
                   (and (= v w)
                        (some (fn [[x _ debtors]] (if (= :bundle x) (contains? debtors e) (= x e)))

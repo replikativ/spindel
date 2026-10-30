@@ -50,6 +50,18 @@
    :main org.replikativ.spindel.engine.native-cell-gc-probe/-main
    :compiler-options {:optimizations :advanced}}
 
+  :native-deferred-gc
+  {:target :node-script
+   :output-to "out/native-deferred-gc.js"
+   :main org.replikativ.spindel.engine.native-deferred-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
+  :native-operation-gc
+  {:target :node-script
+   :output-to "out/native-operation-gc.js"
+   :main org.replikativ.spindel.engine.native-operation-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"
