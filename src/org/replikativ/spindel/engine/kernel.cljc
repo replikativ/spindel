@@ -153,7 +153,7 @@
       (mark! ctx dw e))
     nil))
 
-(declare index-add! index-remove!)
+(declare index-add! index-remove! detach-mailbox-consumer! mailbox-control queue-mailbox-rejection!)
 
 (defn- index-run-links! [ctx w r old value]
   (doseq [[field index] [[:spawned :spawned-by] [:creations :created-by]]
@@ -360,6 +360,19 @@
   ([ctx w o cause] (end-obligation! ctx w o cause nil))
   ([ctx w o cause cancellation]
    (when-let [ob (read-row ctx w :obligations o)]
+     (let [[kind dw e] (:debtor ob)]
+       (when (and (= :cancel-delivered cause) (= :host (first (:creditor ob))) (= :entity kind) (= dw w))
+         (queue-mailbox-rejection! ctx w e [:host o]
+                                   (if cancellation (:value cancellation)
+                                       :org.replikativ.spindel.engine.protocols/cancelled)))
+       (when (and (= :entity kind) (= dw w)
+                  (or (= :mailbox (:kind (read-row ctx w :entities e)))
+                      (some (fn [[key row]] (and (= w (first key)) (= e (nth key 2 nil)) (= :mailbox (:kind row))))
+                            (get-in (root-state ctx) [:env :cleanup-cells]))))
+         (let [consumer [(if (= :run (first (:creditor ob))) :obligation :host) o]
+               reservation (get-in (mailbox-control ctx w e) [:reservations consumer])]
+           (when-not (#{:claimed :entered} (:state reservation))
+             (detach-mailbox-consumer! ctx w e consumer)))))
      (let [[ck cw r] (:creditor ob)]
        (when (and (= :cancel-delivered cause) (= :await-reactive (:kind ob))
                   (= :consumed (:slot ob)) (= :run ck)
@@ -376,7 +389,12 @@
      (if (:diagnostics? ctx)
        (emit! ctx {:event :obligation-exit :world w :o o :ob ob :cause cause})
        (command! ctx {:op :release-obligation :world w :o o :cause cause}))
-     (when (and (= :cancel-delivered cause) (= :host (first (:creditor ob))))
+     (when (and (= :cancel-delivered cause) (= :host (first (:creditor ob)))
+                (let [[_ dw e] (:debtor ob)]
+                  (and (not (#{:claimed :entered} (get-in (mailbox-control ctx dw e) [:reservations [:host o] :state])))
+                       (not-any? (fn [[_ row]] (and (= :mailbox-callback (:kind row))
+                                                    (= [:host o] (:consumer row)) (= :error (:variant row))))
+                                 (get-in (root-state ctx) [:env :native])))))
        (emit! ctx {:event :host-delivery :world w :o o
                    :value (if cancellation (:value cancellation) ::cancelled)}))
      (let [[kind dw e] (:debtor ob)
@@ -430,7 +448,7 @@
 (defn- own-reason? [ctx w entity]
   (let [{:keys [kind owner completed? kept?]} entity]
     (and owner (open? ctx w owner)
-         (or (#{:signal :atom :deferred :keyed-entry :cache-row :fork} kind)
+         (or (#{:signal :atom :deferred :mailbox :keyed-entry :cache-row :fork} kind)
              (and (#{:timer :waiter} kind)
                   (#{:running :parked :inherited} (:status (read-row ctx w :runs owner))))
              (and (= :spin kind) (or (not completed?) kept?))))))
@@ -581,14 +599,16 @@
 (defn- physical? [ctx w r]
   (let [env (:env (root-state ctx))]
     (or (some #(and (= w (:world %)) (= r (:run %))) (vals (:threads env)))
-        (some #(and (= [w r] (:owner %)) (not= :joined (:state %))) (vals (:native env))))))
+        (some #(and (= [w r] (:owner %)) (not= :joined (:state %))
+                    (not= :mailbox-callback (:kind %))) (vals (:native env))))))
 
 (defn- cleanup-ticket [w r] [:cps-exit w r])
 (defn- cleanup-op? [row] (= :cps-exit (:kind row)))
 (defn- protected-native? [row] (#{:cps-exit :cps-finalization} (:kind row)))
 
 (defn- retain-cleanup! [ctx w scope]
-  (when (get-in (root-state ctx) [:model :cps-exit?])
+  (when (or (get-in (root-state ctx) [:model :cps-exit?])
+            (some #(= :mailbox-callback (:kind %)) (vals (get-in (root-state ctx) [:env :native]))))
     (let [owners (loop [pending [scope] found #{}]
                    (if-let [id (peek pending)]
                      (if (found id) (recur (pop pending) found)
@@ -596,23 +616,31 @@
                                                             (read-row ctx w :scopes-by-parent id)))
                                 (conj found id))) found))]
       (doseq [r owners :let [row (read-row ctx w :runs r) n (cleanup-ticket w r)]
-              :when (and (:cps-entered? row) (#{:running :parked :stale} (:status row))
+              :when (and (get-in (root-state ctx) [:model :cps-exit?]) (:cps-entered? row) (#{:running :parked :stale} (:status row))
                          (not (cleanup-op? (get-in (root-state ctx) [:env :native n]))))]
         (root-edit! ctx update-in [:env :native n]
                     #(assoc (or % {:owner [w r] :state :running :phase :ready
                                    :sequence (:finalization-sequence row 0)})
                             :kind :cps-exit :retired? true :anchor (owner-chain ctx w r))))
+      (root-edit! ctx update-in [:env :native]
+                  (fn [rows]
+                    (into {} (map (fn [[n row]]
+                                    [n (cond-> row
+                                         (and (= :mailbox-callback (:kind row)) (= w (first (:owner row)))
+                                              (some owners (:anchor row))) (assoc :retired? true))]) rows))))
       (let [state (root-state ctx)
             participants (set (for [[n row] (get-in state [:env :native])
                                     :when (and (cleanup-op? row) (= w (first (:owner row)))
                                                (some owners (:anchor row)))] n))
             captured (into {} (for [owner owners e (read-row ctx w :entities-by-owner owner)
                                     :let [row (read-row ctx w :entities e)]
-                                    :when (#{:signal :atom :deferred} (:kind row))]
+                                    :when (#{:signal :atom :deferred :mailbox} (:kind row))]
                                 [[w owner e] (cond-> {:kind (:kind row) :result (:result row)}
                                                (= :deferred (:kind row))
                                                (assoc :allocation (:allocation row)
-                                                      :deferred (assoc (:deferred row) :assigned? (:completed? row))))]))
+                                                      :deferred (assoc (:deferred row) :assigned? (:completed? row)))
+                                               (= :mailbox (:kind row))
+                                               (assoc :allocation (:allocation row) :mailbox (:mailbox row)))]))
             keys (into (set (keys captured))
                        (mapcat #(get-in state [:env :native % :cells]) participants))]
         (when (seq participants)
@@ -705,15 +733,18 @@
       (detach-deferred-wait! ctx n)
       (root-edit! ctx update-in [:env :native n] assoc :phase :ready :delivery value))))
 
-(defn- cleanup-access! [ctx {:keys [th cell value op frame] :as action}]
-  (let [n (or (when op (first op)) (get-in (root-state ctx) [:env :threads th :cleanup-ticket]))
+(defn- cleanup-access! [ctx {:keys [th cell value op frame callback] :as action}]
+  (let [n (or callback (when op (first op)) (get-in (root-state ctx) [:env :threads th :cleanup-ticket]))
         row (get-in (root-state ctx) [:env :native n]) participant (operation-row ctx op)
-        admitted? (if op (and participant (contains? (:frames participant) frame)) (= :claimed (:phase row)))]
+        admitted? (cond op (and participant (contains? (:frames participant) frame))
+                        callback (and (= :mailbox-callback (:kind row)) (= frame (:frame row))
+                                      (= :executing (:phase row)) (:physical? row))
+                        :else (= :claimed (:phase row)))]
     (require! (and n admitted? (contains? (:cells row #{}) cell)
                    (contains? (get-in (root-state ctx) [:env :cleanup-cells cell :holders] #{}) n))
               ::missing-cleanup-cell {:th th :cell cell :op op :frame frame})
     (when (contains? action :value)
-      (require! (not= :deferred (get-in (root-state ctx) [:env :cleanup-cells cell :kind]))
+      (require! (not (#{:deferred :mailbox} (get-in (root-state ctx) [:env :cleanup-cells cell :kind])))
                 ::not-mutable-cleanup-cell {:cell cell})
       (root-edit! ctx assoc-in [:env :cleanup-cells cell :result] value))))
 
@@ -738,9 +769,21 @@
 
 (defn- release-entity! [ctx w e]
   (when-let [er (read-row ctx w :entities e)]
+    (when (= :mailbox (:kind er))
+      (doseq [o (entity-obligations ctx w w e)
+              :let [ob (read-row ctx w :obligations o)]
+              :when (= :host (first (:creditor ob)))]
+        (queue-mailbox-rejection! ctx w e [:host o] :org.replikativ.spindel.engine.protocols/cancelled)))
     (if (= :spin (:kind er))
       (edit-entity! ctx w e assoc :owner nil :dirty? true)
       (edit-entity! ctx w e assoc :owner nil))
+    (when (= :mailbox (:kind er))
+      (root-edit! ctx update-in [:env :native]
+                  (fn [rows]
+                    (into {} (map (fn [[id row]]
+                                    [id (cond-> row
+                                          (and (= :mailbox-callback (:kind row)) (= w (first (:owner row)))
+                                               (= e (:allocation row))) (assoc :retired? true))]) rows)))))
     (doseq [r (read-row ctx w :runs-by-spin e)]
       (case (:status (read-row ctx w :runs r))
         (:running :parked) (cancel-run! ctx w r nil)
@@ -749,7 +792,13 @@
     (doseq [o (entity-obligations ctx w w e)]
       (let [ob (read-row ctx w :obligations o)]
         (when (= :run (first (:creditor ob)))
-          (resume! ctx {:w w :o o :value ::cancelled}))
+          (let [reservation (when (= :mailbox (:kind er))
+                              (get-in (mailbox-control ctx w e) [:reservations [:obligation o]]))
+                r (nth (:creditor ob) 2)]
+            (when-not (#{:claimed :entered} (:state reservation))
+              (when (and (= :reserved (:state reservation)) (= :running (:status (read-row ctx w :runs r))))
+                (edit! ctx w :runs r assoc :status :parked))
+              (resume! ctx {:w w :o o :value ::cancelled}))))
         (end-obligation! ctx w o :cancel-delivered)))))
 
 (defn- release-owned! [ctx w scope]
@@ -777,7 +826,7 @@
                 (fn [ops]
                   (into {} (map (fn [[n row]]
                                   [n (if (and (= [w r] (:owner row)) (not= :joined (:state row))
-                                              (not (protected-native? row)))
+                                              (not (protected-native? row)) (not= :mailbox-callback (:kind row)))
                                        (assoc row :state :cancel-requested) row)])) ops)))
     (when (:diagnostics? ctx)
       (emit! ctx {:event :run-exit :world w :r r :cause cause
@@ -954,7 +1003,7 @@
       (let [todo (pop todo) er (read-row ctx w :entities e)]
         (cond
           (contains? seen key) (recur todo seen)
-          (or (#{:signal :atom :deferred} (:kind er)) (:dirty? er)) true
+          (or (#{:signal :atom :deferred :mailbox} (:kind er)) (:dirty? er)) true
           :else
           (recur (into todo (for [r (read-row ctx w :runs-by-spin e)
                                   o (read-row ctx w :by-run-creditor r)
@@ -1048,7 +1097,7 @@
 
 (defn- managed-source? [ctx {:keys [w e allocation]}]
   (let [row (read-row ctx w :entities e)]
-    (and (#{:atom :deferred} (:kind row)) (some? allocation) (= allocation (:allocation row)))))
+    (and (#{:atom :deferred :mailbox} (:kind row)) (some? allocation) (= allocation (:allocation row)))))
 
 (defn- source-unreachable! [ctx {:keys [w e allocation] :as action}]
   ;; Trusted host receipt: all wrappers of this allocation are gone.
@@ -1070,6 +1119,8 @@
                 (and (= :open (:state participant))
                      (= :pending (get-in participant [:registrations reg :state])))))
             (get-in (read-row ctx w :entities e) [:deferred :protected]))
+      (let [control (:mailbox (read-row ctx w :entities e))]
+        (or (seq (:pending control)) (seq (:reservations control)) (seq (:physical control))))
       (seq (get-in (root-state ctx) [:env :cell-claims [w e allocation]]))
       (some
        (fn [v]
@@ -1078,7 +1129,7 @@
                        (= [:entity w e] (:debtor (read-row ctx v :obligations o))))
                      (entity-obligations ctx v w e))
                (some #(or (and (= e (:completion %)) (= w (get % :debtor-world v)))
-                          (and (= v w) (= e (:deferred-assignment %)) (= allocation (:allocation %))))
+                          (and (= v w) (or (= e (:deferred-assignment %)) (= e (:mailbox-post %))) (= allocation (:allocation %))))
                      (pending-events ctx v))
                (and (= v w)
                     (some (fn [[x _ debtors]] (if (= :bundle x) (contains? debtors e) (= x e)))
@@ -1132,7 +1183,14 @@
       {:row source}
       fallback? (deferred-retained ctx w e allocation nil))))
 
-(defn- admit-deferred-view! [ctx {:keys [w th cell op frame]} view]
+(defn- admit-deferred-view! [ctx {:keys [w th cell op frame callback]} view]
+  (when callback
+    (let [receipt (get-in (root-state ctx) [:env :native callback])]
+      (require! (and (= :mailbox-callback (:kind receipt)) (= w (first (:owner receipt)))
+                     (= frame (:frame receipt)) (:cell view)
+                     (contains? (:cells receipt #{}) (:cell view))
+                     (contains? (:holders (:row view) #{}) callback))
+                ::released-deferred {:callback callback :cell cell})))
   (when op
     (let [participant (operation-row ctx op) ticket (get-in (root-state ctx) [:env :native (first op)])]
       (require! (and participant (= w (first (:owner ticket))) (contains? (:frames participant) frame)
@@ -1223,9 +1281,12 @@
 
 (defn- unlink-operation-registration! [ctx op reg]
   (when-let [{:keys [w e allocation cell]} (get-in (operation-row ctx op) [:registrations reg])]
-    (when-let [view (or (deferred-retained ctx w e allocation cell)
-                        (deferred-view ctx {:w w :e e :allocation allocation} false))]
-      (deferred-edit! ctx w e view update-in [:deferred :protected] dissoc reg))
+    (if (or (= :mailbox (:kind (read-row ctx w :entities e)))
+            (= :mailbox (get-in (root-state ctx) [:env :cleanup-cells cell :kind])))
+      (detach-mailbox-consumer! ctx w e [:operation reg])
+      (when-let [view (or (deferred-retained ctx w e allocation cell)
+                          (deferred-view ctx {:w w :e e :allocation allocation} false))]
+        (deferred-edit! ctx w e view update-in [:deferred :protected] dissoc reg)))
     (root-edit! ctx update-in [:env :native (first op) :operation :registrations] dissoc reg)))
 
 (defn- operation-start! [ctx {:keys [op n sequence frame]}]
@@ -1240,14 +1301,345 @@
                 {:id op :state :open :parent r :physical 1 :frames #{frame}
                  :next-registration 0 :next-frame 1 :registrations {}})))
 
+(defn- mailbox-view [ctx {:keys [w e allocation cell]} fallback?]
+  (require! (= e allocation) ::allocation-mismatch {:w w :e e :allocation allocation})
+  (let [source (read-row ctx w :entities e)
+        live? (and (= :mailbox (:kind source)) (= allocation (:allocation source)) (:owner source))
+        key (or cell (when (and fallback? (not live?))
+                       (first (for [[key row] (get-in (root-state ctx) [:env :cleanup-cells])
+                                    :when (and (= w (first key)) (= e (nth key 2 nil))
+                                               (= :mailbox (:kind row)) (= allocation (:allocation row))
+                                               (seq (:holders row)))] key))))
+        retained (when key (get-in (root-state ctx) [:env :cleanup-cells key]))]
+    (cond
+      (and key (= w (first key)) (= e (nth key 2 nil)) (= :mailbox (:kind retained))
+           (= allocation (:allocation retained)) (seq (:holders retained))) {:cell key :row retained}
+      key nil
+      live? {:row source})))
+
+(defn- mailbox-control [ctx w e]
+  (let [source (read-row ctx w :entities e)]
+    (if (and (= :mailbox (:kind source)) (= e (:allocation source)))
+      (:mailbox source)
+      (some (fn [[key row]] (when (and (= w (first key)) (= e (nth key 2 nil))
+                                       (= :mailbox (:kind row)) (= e (:allocation row))) (:mailbox row)))
+            (get-in (root-state ctx) [:env :cleanup-cells])))))
+
+(defn- mailbox-edit! [ctx w e f & args]
+  (let [view (mailbox-view ctx {:w w :e e :allocation e} true)
+        control (apply f (mailbox-control ctx w e) args)
+        source (read-row ctx w :entities e)]
+    (when (= :mailbox (:kind source)) (edit! ctx w :entities e assoc :mailbox control))
+    (doseq [[key row] (get-in (root-state ctx) [:env :cleanup-cells])
+            :when (and (= w (first key)) (= e (nth key 2 nil))
+                       (= :mailbox (:kind row)) (= e (:allocation row)))]
+      (root-edit! ctx assoc-in [:env :cleanup-cells key :mailbox] control))
+    control))
+
+(defn- mailbox-admit! [ctx {:keys [w op frame th cell callback] :as action} view]
+  (require! view ::released-mailbox {:w w :cell cell})
+  (let [ticket (when op (get-in (root-state ctx) [:env :native (first op)]))
+        participant (when op (operation-row ctx op)) raw (get-in (root-state ctx) [:env :native callback])
+        source (read-row ctx w :entities (:e action))
+        thread (get-in (root-state ctx) [:env :threads th])
+        held? (fn [receipt id]
+                (and (:cell view) (contains? (:cells receipt #{}) (:cell view))
+                     (contains? (:holders (:row view) #{}) id)))]
+    (cond
+      op (require! (and participant (= w (first (:owner ticket))) (contains? (:frames participant) frame)
+                        (if (:cell view) (held? ticket (first op)) (not (cleanup-op? ticket))))
+                   ::released-mailbox {:w w :op op :cell cell})
+      callback (require! (and (= :mailbox-callback (:kind raw)) (= frame (:frame raw))
+                              (= :executing (:phase raw)) (:physical? raw)
+                              (= w (first (:owner raw)))
+                              (if (:cell view) (held? raw callback)
+                                  (and (not (:retired? raw)) (= :mailbox (:kind source))
+                                       (= (:allocation action) (:allocation source)) (:owner source))))
+                         ::released-mailbox {:callback callback :frame frame})
+      (:run thread) (if (:cell view)
+                      (let [n (:cleanup-ticket thread) cleanup (get-in (root-state ctx) [:env :native n])]
+                        (require! (and (= w (:world thread)) (= :claimed (:phase cleanup)) (held? cleanup n))
+                                  ::released-mailbox {:w w :cell cell :th th}))
+                      (require! (and (= w (:world thread)) (not (:retired? thread))
+                                     (not= :unwinding (:status (read-row ctx w :runs (:run thread)))))
+                                ::cancelled {:w w :th th}))
+      (:cell view) (require! (= :mailbox-post-request (:t action)) ::released-mailbox {:cell cell})
+      :else nil)
+    (when-not (:cell view) (deferred-admitted! ctx w))))
+
+(defn- retain-mailbox! [ctx w e view holder]
+  (let [key (or (:cell view) [w (:owner (:row view)) e])
+        old (get-in (root-state ctx) [:env :cleanup-cells key])]
+    (root-edit! ctx assoc-in [:env :cleanup-cells key]
+                (assoc (or old {:kind :mailbox :allocation e :result nil :mailbox (:mailbox (:row view))})
+                       :holders (conj (:holders old #{}) holder)))
+    (root-edit! ctx update-in [:env :native holder :cells] (fnil conj #{}) key)
+    key))
+
+(defn- enqueue-mailbox-post! [ctx w e value message-id cell repost?]
+  (let [sequence (inc (max (get (header ctx w) :seq 0) (get-in (root-state ctx) [:clocks w] 0)))
+        envelope (cond-> {:mailbox-post e :allocation e :message-id (or message-id [e sequence])
+                          :value value :seq sequence}
+                   cell (assoc :cell cell) repost? (assoc :repost? true))]
+    (root-edit! ctx assoc-in [:clocks w] sequence)
+    (if (or (= :released (:status (header ctx w))) (= :fenced (:admission (header ctx w))))
+      (root-edit! ctx update-in [:env :outside] (fnil conj []) {:w w :event envelope})
+      (header-edit! ctx w update :queue (fnil conj []) envelope))))
+
+(defn- create-mailbox! [ctx {:keys [w e allocation] :as action}]
+  (deferred-admitted! ctx w)
+  (require! (= e allocation) ::allocation-mismatch {:w w :e e :allocation allocation})
+  (require! (nil? (read-row ctx w :entities e)) ::released-mailbox {:w w :e e})
+  (create-source! ctx (assoc action :kind :mailbox :value nil))
+  (edit! ctx w :entities e assoc :mailbox
+         {:messages [] :consumers [] :pending {} :reservations {} :protected {} :physical {}}))
+
+(defn- request-mailbox-post! [ctx {:keys [w e value cell message-id] :as action}]
+  (let [view (mailbox-view ctx action true)]
+    (mailbox-admit! ctx action view)
+    (let [sequence (inc (max (get (header ctx w) :seq 0) (get-in (root-state ctx) [:clocks w] 0)))]
+      (require! (or (nil? message-id) (= [e sequence] message-id))
+                ::mailbox-message-mismatch {:message-id message-id}))
+    (enqueue-mailbox-post! ctx w e value nil (:cell view) false)))
+
+(defn- mailbox-select! [ctx w e message consumer]
+  (let [control (mailbox-control ctx w e) pending (get-in control [:pending consumer])]
+    (mailbox-edit! ctx w e
+                   #(-> % (update :consumers (fn [ids] (vec (remove #{consumer} ids))))
+                        (update :pending dissoc consumer)
+                        (assoc-in [:reservations consumer]
+                                  (assoc pending :message-id (:id message) :value (:value message) :state :reserved))
+                        (cond-> (= :operation (:kind pending)) (update :protected dissoc (:reg pending)))))
+    (case (:kind pending)
+      :ordinary (edit! ctx w :runs (:r pending) assoc :status :running)
+      :operation (root-edit! ctx update-in [:env :native (first (:op pending)) :operation :registrations (:reg pending)]
+                             assoc :state :ready :delivery (:value message) :message-id (:id message))
+      nil)))
+
+(defn- process-mailbox-post! [ctx {:keys [w e allocation seq message-id cell] :as action}]
+  (let [queued (first (:queue (header ctx w)))
+        outside (when-not queued (first (filter #(= w (:w %)) (get-in (root-state ctx) [:env :outside]))))
+        envelope (or queued (:event outside))]
+    (require! (and (= e (:mailbox-post envelope)) (= allocation (:allocation envelope))
+                   (= seq (:seq envelope)) (= message-id (:message-id envelope)) (= cell (:cell envelope)))
+              ::not-mailbox-post {:w w :e e :envelope envelope})
+    (let [view (or (mailbox-view ctx action true)
+                   (mailbox-view ctx (dissoc action :cell) true))
+          control (:mailbox (:row view)) selected (first (:consumers control))]
+      (require! (or (not (contains? action :consumer)) (= selected (:consumer action)))
+                ::not-mailbox-post {:consumer (:consumer action)})
+      (if queued (header-edit! ctx w update :queue #(vec (rest %)))
+          (root-edit! ctx update-in [:env :outside]
+                      #(vec (remove (fn [held] (and (= w (:w held)) (= seq (get-in held [:event :seq])))) %))))
+      (when view
+        (let [message {:id message-id :value (:value envelope)}]
+          (if selected (mailbox-select! ctx w e message selected)
+              (mailbox-edit! ctx w e update :messages conj message))
+          (emit! ctx {:event :mailbox-post :world w :e e :message-id message-id
+                      :consumer selected :value (:value envelope)}))))))
+
+(defn- detach-mailbox-consumer! [ctx w e consumer]
+  (when-let [control (mailbox-control ctx w e)]
+    (let [reservation (get-in control [:reservations consumer])
+          key (when-not (:owner (read-row ctx w :entities e))
+                (:cell (mailbox-view ctx {:w w :e e :allocation e} true)))]
+      (mailbox-edit! ctx w e #(-> % (update :consumers (fn [ids] (vec (remove #{consumer} ids))))
+                                  (update :pending dissoc consumer) (update :reservations dissoc consumer)
+                                  (cond-> (= :operation (first consumer))
+                                    (update :protected dissoc (second consumer)))))
+      (when (= :reserved (:state reservation))
+        (enqueue-mailbox-post! ctx w e (:value reservation) (:message-id reservation) key true)))))
+
+(defn- mailbox-physical-claim! [ctx w e consumer kind frame view]
+  (let [source (read-row ctx w :entities e)
+        view (if (and (= :mailbox (:kind source)) (= e (:allocation source)) (:owner source))
+               {:row source} view)
+        owner (or (:owner (:row view)) (second (:cell view)))
+        anchor (owner-chain ctx w owner)
+        receipt [:mailbox-callback w owner consumer]]
+    (root-edit! ctx assoc-in [:env :native receipt]
+                {:kind :mailbox-callback :owner [w owner] :anchor anchor :state :running
+                 :cells #{} :consumer consumer :consumer-kind kind :allocation e :frame frame :retired? false
+                 :phase :executing :physical? true :variant :ok})
+    (retain-mailbox! ctx w e view receipt)
+    (mailbox-edit! ctx w e assoc-in [:physical frame]
+                   {:consumer consumer :owner [w owner] :anchor anchor :kind kind})
+    receipt))
+
+(defn- queue-mailbox-rejection! [ctx w e consumer reason]
+  (when-let [control (mailbox-control ctx w e)]
+    (let [pending (get-in control [:pending consumer]) reservation (get-in control [:reservations consumer])
+          target (or pending reservation)]
+      (when (and (= :host (:kind target)) (not (#{:claimed :entered} (:state reservation))))
+        (let [initial (mailbox-view ctx {:w w :e e :allocation e} true)]
+          (detach-mailbox-consumer! ctx w e consumer)
+          (let [view (or (mailbox-view ctx {:w w :e e :allocation e} true) initial)
+                owner (or (:owner (:row view)) (second (:cell view)))
+                anchor (owner-chain ctx w owner) frame [:mailbox-frame consumer]
+                receipt [:mailbox-callback w owner consumer]]
+            (root-edit! ctx assoc-in [:env :native receipt]
+                        {:kind :mailbox-callback :owner [w owner] :anchor anchor :state :running
+                         :cells #{} :consumer consumer :consumer-kind :host :allocation e :frame nil
+                         :retired? false :phase :queued :physical? false :variant :error :delivery reason})
+            (retain-mailbox! ctx w e view receipt)))))))
+
+(defn- take-mailbox! [ctx {:keys [w e allocation consumer kind o r order available? th host callback] :or {order 0 host :caller} :as action}]
+  (let [view (mailbox-view ctx action false)
+        control (:mailbox (:row view))
+        message (first (:messages control))
+        expected [(if (= :ordinary kind) :obligation :host) o]]
+    (mailbox-admit! ctx action view)
+    (when callback
+      (require! (and (not (:retired? (get-in (root-state ctx) [:env :native callback])))
+                     (:owner (read-row ctx w :entities e)))
+                ::cleanup-only {:callback callback}))
+    (require! (and (#{:ordinary :host} kind)
+                   (or (nil? callback) (= :host kind))
+                   (= consumer expected) (= o [:o (get-in (root-state ctx) [:serial :o] 0)])
+                   (or (not (contains? action :available?)) (= (boolean message) available?)))
+              ::not-mailbox-consumer {:consumer consumer})
+    (when (= :ordinary kind)
+      (require! (and (= :running (:status (read-row ctx w :runs r)))
+                     (= r (current-run ctx w (first r)))) ::not-running {:w w :r r})
+      (when message
+        (let [thread (get-in (root-state ctx) [:env :threads th])]
+          (require! (and (:executing? thread) (= [w r] [(:world thread) (:run thread)]))
+                    ::not-mailbox-frame {:th th :r r}))))
+    (allocate! ctx :o)
+    (add-obligation! ctx w o
+                     (cond-> {:kind (if (= :ordinary kind) :await-once :deref)
+                              :debtor [:entity w e] :creditor (if (= :ordinary kind) [:run w r] [:host host])
+                              :standing? false :cont (when (= :ordinary kind) [:continuation o])
+                              :token nil :order order :slot :armed}
+                       (= :ordinary kind) (assoc :origin :created)
+                       (= :host kind) (assoc :filter {:mode :local :origin w})))
+    (let [pending (cond-> {:kind kind :o o :order order} (= :ordinary kind) (assoc :r r))]
+      (if message
+        (let [frame [:mailbox-frame consumer]]
+          (mailbox-edit! ctx w e
+                         #(-> % (update :messages (fn [messages] (vec (rest messages))))
+                              (assoc-in [:reservations consumer]
+                                        (assoc pending :message-id (:id message) :value (:value message)
+                                               :state :claimed :frame frame))))
+          (mailbox-physical-claim! ctx w e consumer kind frame view))
+        (do (mailbox-edit! ctx w e #(-> % (update :consumers conj consumer) (assoc-in [:pending consumer] pending)))
+            (when (= :ordinary kind) (edit! ctx w :runs r assoc :status :parked)))))
+    (vreset! (:result ctx) {:available? (boolean message) :value (:value message)})))
+
+(defn- claim-mailbox-success! [ctx {:keys [w e allocation consumer message-id frame th inline?] :as action}]
+  (let [view (mailbox-view ctx action true)
+        reservation (get-in (:mailbox (:row view)) [:reservations consumer])
+        kind (:kind reservation) r (:r reservation)
+        ticket (first (for [[n row] (get-in (root-state ctx) [:env :native])
+                            :when (and (= :mailbox-callback (:kind row)) (= consumer (:consumer row))
+                                       (= w (first (:owner row))) (= allocation (:allocation row)))] n))
+        thread (get-in (root-state ctx) [:env :threads th])
+        ob (read-row ctx w :obligations (:o reservation))]
+    (require! (and view (#{:ordinary :host} kind) (= message-id (:message-id reservation)) (= frame [:mailbox-frame consumer])
+                   (if inline? (and ticket (= :claimed (:state reservation)))
+                       (and (= :reserved (:state reservation)) ob (= :armed (:slot ob))
+                            (nil? ticket)
+                            (if (= :ordinary kind) (= [:run w r] (:creditor ob))
+                                (= :host (first (:creditor ob)))))))
+              ::not-mailbox-reservation {:consumer consumer :message-id message-id})
+    (when (= :ordinary kind)
+      (require! (if inline?
+                  (and (= w (:world thread)) (= r (:run thread)) (:executing? thread))
+                  (and (= :running (:status (read-row ctx w :runs r))) (= r (current-run ctx w (first r)))
+                       (nil? (:run thread))
+                       (not-any? #(and (= w (:world %)) (= r (:run %)))
+                                 (vals (get-in (root-state ctx) [:env :threads])))))
+                ::not-mailbox-consumer {:w w :r r}))
+    (when-not inline? (mailbox-physical-claim! ctx w e consumer kind frame view))
+    (mailbox-edit! ctx w e update-in [:reservations consumer] assoc :state :entered :frame frame)
+    (when (and (= :ordinary kind) (not inline?))
+      (when (get-in (root-state ctx) [:model :cps-exit?])
+        (edit! ctx w :runs r assoc :cps-entered? true))
+      (root-edit! ctx update-in [:env :threads th] merge
+                  {:world w :scope r :run r :obligation-world w :executing? true}))
+    (end-obligation! ctx w (:o reservation) :delivered)
+    (emit! ctx {:event :mailbox-entry :world w :e e :consumer consumer :message-id message-id
+                :variant :ok :value (:value reservation)})
+    (vreset! (:result ctx) {:value (:value reservation)})))
+
+(defn- claim-mailbox! [ctx {:keys [w e allocation consumer frame callback variant] :as action}]
+  (require! (or (nil? variant) (#{:ok :error} variant)) ::invalid-mailbox-variant {:variant variant})
+  (if (= :error variant)
+    (let [receipt (get-in (root-state ctx) [:env :native callback])
+          control (mailbox-control ctx w e)]
+      (require! (and (= e allocation (:allocation receipt)) (= :mailbox-callback (:kind receipt))
+                     (= :queued (:phase receipt)) (false? (:physical? receipt)) (= :error (:variant receipt))
+                     (= consumer (:consumer receipt)) (nil? (:frame receipt)) (= frame [:mailbox-frame consumer])
+                     (= w (first (:owner receipt))) (not (contains? action :message-id)) control)
+                ::not-mailbox-reservation {:consumer consumer :frame frame})
+      (root-edit! ctx update-in [:env :native callback] assoc :phase :executing :physical? true :frame frame)
+      (mailbox-edit! ctx w e assoc-in [:physical frame]
+                     {:consumer consumer :owner (:owner receipt) :anchor (:anchor receipt) :kind :host})
+      (emit! ctx {:event :mailbox-rejection-entry :world w :e e :consumer consumer
+                  :variant :error :value (:delivery receipt)}))
+    (claim-mailbox-success! ctx action)))
+
+(defn- return-mailbox! [ctx {:keys [w e allocation consumer frame]}]
+  (let [view (mailbox-view ctx {:w w :e e :allocation allocation} true)
+        physical (get-in (:mailbox (:row view)) [:physical frame])
+        receipt (first (for [[n row] (get-in (root-state ctx) [:env :native])
+                             :when (and (= :mailbox-callback (:kind row)) (= consumer (:consumer row))
+                                        (= frame (:frame row)) (= w (first (:owner row))) (= allocation (:allocation row)))] n))
+        row (get-in (root-state ctx) [:env :native receipt])]
+    (require! (and receipt view (= :executing (:phase row)) (:physical? row)
+                   (= consumer (:consumer physical))
+                   (or (= :error (:variant row))
+                       (and (= :ok (:variant row))
+                            (= :entered (get-in (:mailbox (:row view)) [:reservations consumer :state])))))
+              ::not-mailbox-frame {:consumer consumer :frame frame})
+    (mailbox-edit! ctx w e #(-> % (update :physical dissoc frame) (update :reservations dissoc consumer)))
+    (release-cleanup-cells! ctx receipt)
+    (root-edit! ctx update-in [:env :native] dissoc receipt)
+    (let [[owner-world owner] (:owner row)]
+      (when (and (= :unwinding (:status (read-row ctx owner-world :runs owner)))
+                 (not (physical? ctx owner-world owner)))
+        (remove-run! ctx owner-world owner)))))
+
+(defn- take-mailbox-now! [ctx {:keys [w e r consumer-id available? message-id] :as action}]
+  (let [view (mailbox-view ctx action false)
+        consumer-node (when consumer-id (read-row ctx w :entities consumer-id))
+        consumer-run (when consumer-id (current-run ctx w consumer-id))
+        cancelled? (or (:cancelled-completion consumer-node)
+                       (= :unwinding (:status (read-row ctx w :runs consumer-run))))
+        admissible? (and (not cancelled?) (or (nil? r) (#{:running :parked} (:status (read-row ctx w :runs r)))))
+        message (when admissible? (first (get-in view [:row :mailbox :messages])))]
+    (mailbox-admit! ctx action view)
+    (require! (or (not (contains? action :available?)) (= (boolean message) available?))
+              ::mailbox-availability-mismatch {:available? available?})
+    (when (contains? action :message-id)
+      (require! (and message (= message-id (:id message))) ::mailbox-message-mismatch {:message-id message-id}))
+    (when message
+      (mailbox-edit! ctx w e update :messages #(vec (rest %)))
+      (emit! ctx {:event :mailbox-immediate :world w :e e :message-id (:id message) :value (:value message)}))
+    (vreset! (:result ctx) {:available? (boolean message) :value (:value message)})))
+
+(defn- detach-mailbox! [ctx {:keys [w e allocation consumer]}]
+  (require! (= e allocation) ::allocation-mismatch {:w w :e e})
+  (let [control (mailbox-control ctx w e) pending (get-in control [:pending consumer])
+        reservation (get-in control [:reservations consumer]) target (or pending reservation)]
+    (require! (and control (or pending (= :reserved (:state reservation))))
+              ::not-mailbox-consumer {:consumer consumer})
+    (require! (:o target) ::not-mailbox-consumer {:consumer consumer})
+    (end-obligation! ctx w (:o target) :creditor-cancelled)))
+
 (defn- operation-await! [ctx {:keys [w op n sequence reg frame allocation e] :as action}]
-  (let [participant (operation-frame! ctx action)
-        ticket (get-in (root-state ctx) [:env :native n])
+  (let [participant (operation-frame! ctx action) ticket (get-in (root-state ctx) [:env :native n])
         source (read-row ctx w :entities e)
-        live? (and (= :deferred (:kind source)) (= allocation (:allocation source)) (:owner source))
-        view (deferred-view ctx (if live? (dissoc action :cell) action) false) row (:row view)
-        key (or (:cell view) [w (:owner row) e])
-        assigned? (if (:cell view) (get-in row [:deferred :assigned?]) (:completed? row))]
+        mailbox? (or (= :mailbox (:kind source))
+                     (= :mailbox (get-in (root-state ctx) [:env :cleanup-cells (:cell action) :kind])))
+        live? (and (if mailbox? (= :mailbox (:kind source)) (= :deferred (:kind source)))
+                   (= allocation (:allocation source)) (:owner source))
+        view ((if mailbox? mailbox-view deferred-view) ctx
+                                                       (if (get-in (root-state ctx) [:env :cleanup-cells (:cell action)]) action (dissoc action :cell)) false)
+        row (:row view) key (or (:cell view) [w (:owner row) e])
+        message (when mailbox? (first (get-in row [:mailbox :messages])))
+        assigned? (if mailbox? (boolean message)
+                      (if (:cell view) (get-in row [:deferred :assigned?]) (:completed? row)))]
     (require! (and view (= w (first (:owner ticket)))
                    (or (nil? (:cell action)) (= key (:cell action)))
                    (= reg [op (inc (:next-registration participant))]))
@@ -1256,15 +1648,25 @@
       (require! (and (contains? (:cells ticket #{}) (:cell view)) (contains? (:holders row #{}) n))
                 ::released-deferred {:cell (:cell view)})
       (deferred-admitted! ctx w))
-    (let [key (retain-deferred-for-ticket! ctx w e view n)]
-      (root-edit! ctx update-in [:env :native n :operation :next-registration] inc)
-      (root-edit! ctx assoc-in [:env :native n :operation :registrations reg]
-                  (cond-> {:w w :e e :allocation allocation :cell key
-                           :state (if assigned? :claimed :pending) :continuation reg :entered? false}
-                    assigned? (assoc :delivery (:result row))))
+    ((if mailbox? retain-mailbox! retain-deferred-for-ticket!) ctx w e view n)
+    (root-edit! ctx update-in [:env :native n :operation :next-registration] inc)
+    (root-edit! ctx assoc-in [:env :native n :operation :registrations reg]
+                (cond-> {:w w :e e :allocation allocation :cell key
+                         :state (if assigned? :claimed :pending) :continuation reg :entered? false}
+                  assigned? (assoc :delivery (if mailbox? (:value message) (:result row)))
+                  (and mailbox? assigned?) (assoc :message-id (:id message))))
+    (if mailbox?
+      (let [consumer [:operation reg] pending {:kind :operation :op op :reg reg :order (second reg)}]
+        (if assigned?
+          (mailbox-edit! ctx w e #(-> % (update :messages (fn [xs] (vec (rest xs))))
+                                      (assoc-in [:reservations consumer]
+                                                (assoc pending :message-id (:id message) :value (:value message)
+                                                       :state :claimed :frame frame))))
+          (mailbox-edit! ctx w e #(-> % (update :consumers conj consumer)
+                                      (assoc-in [:pending consumer] pending)
+                                      (assoc-in [:protected reg] {:operation op :sequence sequence})))))
       (when-not assigned?
-        (deferred-edit! ctx w e view assoc-in [:deferred :protected reg]
-                        {:operation op :sequence sequence})))))
+        (deferred-edit! ctx w e view assoc-in [:deferred :protected reg] {:operation op :sequence sequence})))))
 
 (defn- operation-deliver! [ctx {:keys [op reg value]}]
   (let [participant (operation-row ctx op) registration (get-in participant [:registrations reg])]
@@ -1286,13 +1688,22 @@
                      (and (= :ready (:state registration)) (zero? (:physical participant))
                           (= reg (first ready)) (= frame [op (inc (:next-frame participant))]))))
               ::not-operation-ready {:op op :reg reg :frame frame})
+    (when (contains? registration :message-id)
+      (let [{:keys [w e]} registration
+            consumer [:operation reg]
+            reservation (get-in (mailbox-control ctx w e) [:reservations consumer])]
+        (require! (and (= (:message-id registration) (:message-id reservation))
+                       (= (if inline? :claimed :reserved) (:state reservation)))
+                  ::not-mailbox-reservation {:consumer consumer})
+        (mailbox-edit! ctx w e update-in [:reservations consumer] assoc :state :entered :frame frame)))
     (when-not inline?
       (root-edit! ctx update-in [:env :native (first op) :operation]
                   #(-> % (assoc :physical 1 :frames #{frame}) (update :next-frame inc))))
     (root-edit! ctx update-in [:env :native (first op) :operation :registrations reg]
                 assoc :state :claimed :entered? true)
-    (emit! ctx {:event :continuation-entry :op op :reg reg :continuation reg
-                :variant :ok :value (:delivery registration)})))
+    (emit! ctx (cond-> {:event :continuation-entry :op op :reg reg :continuation reg
+                        :variant :ok :value (:delivery registration)}
+                 (contains? registration :message-id) (assoc :message-id (:message-id registration))))))
 
 (defn- operation-terminal! [ctx {:keys [op n sequence value variant]}]
   (require! (#{:ok :error} variant) ::invalid-operation-variant {:op op :variant variant})
@@ -1398,7 +1809,7 @@
     dense))
 
 (defn- start-run! [ctx w e scope cause]
-  (require! (not= :deferred (:kind (read-row ctx w :entities e))) ::not-computation {:w w :e e})
+  (require! (not (#{:deferred :mailbox} (:kind (read-row ctx w :entities e)))) ::not-computation {:w w :e e})
   (require! (= :live (:status (header ctx w))) ::sealed {:world w})
   (require! (open? ctx w scope) ::closed-scope {:world w :scope scope})
   (doseq [r (read-row ctx w :runs-by-spin e)
@@ -1462,7 +1873,7 @@
         previous-creator (:creator old)
         adopt? (and rr old (predecessor? ctx w (:creator old) scope))
         h (get-in (root-state ctx) [:env :handles tok])]
-    (require! (not= :deferred (:kind old)) ::not-computation {:w w :e e})
+    (require! (not (#{:deferred :mailbox} (:kind old))) ::not-computation {:w w :e e})
     (when h (require! (= e (:spin h)) ::token-spin-mismatch {:tok tok :e e :handle h}))
     (when (and tok (nil? h))
       (root-edit! ctx assoc-in [:env :handles tok]
@@ -1620,7 +2031,7 @@
   (let [scope (owner ctx w action)
         h (get-in (root-state ctx) [:env :handles tok])
         source (read-source ctx w e)
-        _ (require! (not= :deferred (:kind (read-row ctx source :entities e)))
+        _ (require! (not (#{:deferred :mailbox} (:kind (read-row ctx source :entities e))))
                     ::not-computation {:w w :e e})
         foreign? (and source (not= source w))
         foreign-run (current-run ctx source e)
@@ -1667,6 +2078,8 @@
     (require! (or (nil? tok) h) ::unknown-handle {:tok tok})
     (require! (not (contains? (:dropped h) w)) ::idle-cache-released {:w w :tok tok}))
   (let [[dk dw e] debtor
+        _ (require! (or (not= :entity dk) (not= :mailbox (:kind (read-row ctx dw :entities e))))
+                    ::unsupported-mailbox-obligation {:debtor debtor :kind kind})
         _ (require! (or (not= :entity dk)
                         (not= :deferred (:kind (read-row ctx dw :entities e)))
                         (= :await-once kind))
@@ -1777,6 +2190,7 @@
         (delete! ctx w :entities child)))))
 
 (defn- deliver! [ctx {:keys [w e debtor-world value]}]
+  (require! (not (mailbox-control ctx (or debtor-world w) e)) ::unsupported-mailbox-publication {:w w :e e})
   ;; A foreign root loss can precede this world's next publication. Retire
   ;; unreachable completed creditors before a stale envelope can reenter them.
   (rule-l! ctx)
@@ -1808,8 +2222,8 @@
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
   (require! (open? ctx w scope) ::closed-scope {:scope scope})
   (require! (not (contains? (:known-worlds (root-state ctx)) v)) ::world-id-reused {:world v})
-  (require! (not (or (some #(= :deferred (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
-                     (some (fn [[key row]] (and (= w (first key)) (= :deferred (:kind row))))
+  (require! (not (or (some #(#{:deferred :mailbox} (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
+                     (some (fn [[key row]] (and (= w (first key)) (#{:deferred :mailbox} (:kind row))))
                            (get-in (root-state ctx) [:env :cleanup-cells]))
                      (some (fn [[_ ticket]] (and (= w (first (:owner ticket))) (:operation ticket)))
                            (get-in (root-state ctx) [:env :native]))))
@@ -1910,7 +2324,7 @@
                       (not (some #(and (= :bundle (first %)) (= v (second %)) (contains? (nth % 2) e))
                                  (:fdeps (header ctx w)))))]
     (require! e ::not-start-request {:event event})
-    (require! (not= :deferred (:kind (read-row ctx w :entities e))) ::not-computation {:w w :e e})
+    (require! (not (#{:deferred :mailbox} (:kind (read-row ctx w :entities e)))) ::not-computation {:w w :e e})
     (header-edit! ctx w update :queue #(vec (rest %)))
     (when pending?
       (if (not= :live (:status (header ctx w)))
@@ -1966,19 +2380,41 @@
          (require! (and (vector? (:fresh-runs action))
                         (every? #(and (vector? %) (= 3 (count %))) (:fresh-runs action)))
                    ::invalid-run-allocation {:action action}))
-       (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)) (= :released (:status (header ctx (:world thread)))))
+       (when (and slice? (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :mailbox-claim :mailbox-return :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)) (= :released (:status (header ctx (:world thread)))))
          (require! false ::released {:w w :thread (:th action)}))
        (when (and unwinding? (#{:t01 :t02 :t03 :t04 :t05 :t12 :t19 :t20 :t20q
-                                :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe} t))
+                                :invalidate-computation :withdraw-deref :cancel-computation :signal-publish :deferred-create :deferred-observe :mailbox-create :mailbox-take} t))
          (require! false ::cancelled {:w w :r (:run thread)}))
        (when (and (or (:cleanup-ticket thread)
                       (cleanup-op? (get-in (root-state ctx) [:env :native (cleanup-ticket (:world thread) (:run thread))])))
-                  (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)))
+                  (not (#{:t38 :cleanup-adopt :cleanup-park :cleanup-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :mailbox-claim :mailbox-return :operation-start :operation-await :operation-deliver :operation-claim :operation-terminal :operation-return} t)))
          (require! false ::cleanup-only {:thread (:th action) :action action}))
        (when (and (protected-operation-id? (:op action))
                   (not (#{:operation-start :operation-await :operation-deliver :operation-claim
-                          :operation-terminal :operation-return :cleanup-cell :deferred-request :signal-write} t)))
+                          :operation-terminal :operation-return :cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now :signal-write} t)))
          (require! false ::cleanup-only {:action action}))
+       (when (:callback action)
+         (let [receipt (get-in (root-state ctx) [:env :native (:callback action)])
+               reservation (get-in (mailbox-control ctx (first (:owner receipt)) (:allocation receipt))
+                                   [:reservations (:consumer receipt)])]
+           (require! (and (= :mailbox-callback (:kind receipt)) (or (= (:frame action) (:frame receipt))
+                                                                    (and (= :mailbox-claim t) (= :error (:variant action))
+                                                                         (= :queued (:phase receipt)) (nil? (:frame receipt))
+                                                                         (= (:frame action) [:mailbox-frame (:consumer receipt)])))
+                          (= w (first (:owner receipt)))
+                          (or (= :mailbox-claim t)
+                              (and (= :executing (:phase receipt)) (:physical? receipt)
+                                   (or (= :error (:variant receipt))
+                                       (and (= :ok (:variant receipt)) (= :entered (:state reservation))
+                                            (= (:frame receipt) (:frame reservation))))))
+                          (#{:cleanup-cell :deferred-request :mailbox-post-request :mailbox-take-now
+                             :mailbox-take :mailbox-claim :mailbox-return} t))
+                     ::cleanup-only {:action action})))
+       (let [resume (case t :t06 action :t35 (when (= :resume (get-in action [:op :kind])) (:op action)) nil)
+             ob (when resume (read-row ctx (:w resume) :obligations (:o resume)))
+             [_ dw e] (:debtor ob)]
+         (when (and ob (mailbox-control ctx dw e))
+           (require! false ::unsupported-mailbox-resume {:action action})))
        (case t
          :finalization-wait (finalization-wait! ctx action)
          :finalization-resume (finalization-resume! ctx action)
@@ -1999,6 +2435,14 @@
          :deferred-assign (assign-deferred! ctx action)
          :deferred-observe (observe-deferred! ctx action)
          :deferred-protect (protect-deferred! ctx action)
+         :mailbox-create (create-mailbox! ctx action)
+         :mailbox-post-request (request-mailbox-post! ctx action)
+         :mailbox-post (process-mailbox-post! ctx action)
+         :mailbox-take (take-mailbox! ctx action)
+         :mailbox-take-now (take-mailbox-now! ctx action)
+         :mailbox-claim (claim-mailbox! ctx action)
+         :mailbox-detach (detach-mailbox! ctx action)
+         :mailbox-return (return-mailbox! ctx action)
          :operation-start (operation-start! ctx action)
          :operation-await (operation-await! ctx action)
          :operation-deliver
@@ -2010,19 +2454,21 @@
          (let [event (:event action)]
            (if (:deferred-assignment event)
              (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
-             (throw (ex-info "Unsupported kernel transition" {:action action}))))
+             (if (:mailbox-post event)
+               (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))
+               (throw (ex-info "Unsupported kernel transition" {:action action})))))
          :t01 (create-spin! ctx action)
          :t02
-         (do (require! (not= :deferred (:kind action)) ::reserved-source-kind {:kind (:kind action)})
+         (do (require! (not (#{:deferred :mailbox} (:kind action))) ::reserved-source-kind {:kind (:kind action)})
              (create-source! ctx action))
          :t04 (invoke! ctx action)
          :t03
          (let [r (:r action)
                rr (read-row ctx w :runs r)]
            (require! (#{:running :parked} (:status rr)) ::not-work {:r r})
-           (require! (not= :deferred (:kind action)) ::reserved-source-kind {:kind (:kind action)})
+           (require! (not (#{:deferred :mailbox} (:kind action))) ::reserved-source-kind {:kind (:kind action)})
            (let [e [(:spin rr) (:key action)]]
-             (require! (not= :deferred (:kind (read-row ctx w :entities e)))
+             (require! (not (#{:deferred :mailbox} (:kind (read-row ctx w :entities e))))
                        ::reserved-source-kind {:w w :e e})
              (put-entity! ctx w e
                           (assoc (entity-row (get action :kind :cache-row) r)
@@ -2048,6 +2494,7 @@
            (cond
              (:completion event) (deliver! ctx (assoc event :w w :e (:completion event)))
              (:deferred-assignment event) (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
+             (:mailbox-post event) (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))
              (:start-for event) (start-request! ctx w)
              (some event [:fdep-ended :cancelled :fork-released]) (cleanup! ctx w)
              (:register-host event)
@@ -2088,6 +2535,11 @@
          :t18 (release-idle! ctx action)
          :slice-enter
          (let [th (:th action) r (:r action)]
+           (require! (not-any? (fn [o]
+                                 (let [ob (read-row ctx w :obligations o) [_ dw e] (:debtor ob)]
+                                   (mailbox-control ctx dw e)))
+                               (read-row ctx w :by-run-creditor r))
+                     ::mailbox-claim-required {:w w :r r})
            (require! (= :running (:status (read-row ctx w :runs r))) ::not-running {:w w :r r})
            (require! (nil? (get-in (root-state ctx) [:env :threads th :run])) ::thread-busy {:th th})
            (require! (not-any? #(and (= w (:world %)) (= r (:run %)))
@@ -2110,7 +2562,8 @@
              (remove-run! ctx world run)))
          :native-progress
          (let [row (get-in (root-state ctx) [:env :native (:n action)]) [world run] (:owner row)]
-           (require! (not (protected-native? row)) ::protected-cleanup {:n (:n action)})
+           (require! (not (or (protected-native? row) (= :mailbox-callback (:kind row))))
+                     ::protected-cleanup {:n (:n action)})
            (root-edit! ctx update-in [:env :native (:n action)]
                        #(cond-> (merge % (select-keys action [:state :boundary?]))
                           (= :joined (:state action)) (dissoc :anchor)))

@@ -63,6 +63,8 @@
        (set! head 0)
        (when (> (.-length buffer) 256)
          (set! buffer (doto (make-array 16) (.fill nil)))))
+     (peek [_]
+       (when (pos? length) (aget buffer head)))
      (poll [this]
        (when (pos? length)
          (let [value (aget buffer head)]
@@ -257,6 +259,7 @@
 (defn- queue [] #?(:clj (java.util.ArrayDeque.) :cljs (OwnedQueue. (doto (make-array 16) (.fill nil)) 0 0)))
 (defn- push! [q x] #?(:clj (.addLast ^java.util.ArrayDeque q x) :cljs (.add q x)))
 (defn- pop! [q] #?(:clj (.pollFirst ^java.util.ArrayDeque q) :cljs (.poll q)))
+(defn- queue-front [q] #?(:clj (.peekFirst ^java.util.ArrayDeque q) :cljs (.peek q)))
 (defn- queued? [q] #?(:clj (not (.isEmpty ^java.util.ArrayDeque q)) :cljs (pos? (.-length q))))
 
 (def ^:private empty-array #?(:clj (object-array 0) :cljs (array)))
@@ -310,7 +313,7 @@
 (def ^:const n-descriptor 32)
 (def ^:const n-cancelled 33)
 (def ^:const n-public-signal 34)
-(def ^:const n-deferred 35)
+(def ^:const n-deferred 35) (def ^:const n-mailbox 36)
 (def ^:const r-node 0) (def ^:const r-gen 1) (def ^:const r-owner 2)
 (def ^:const r-pred 3) (def ^:const r-status 4) (def ^:const r-created 5)
 (def ^:const r-spawned 6) (def ^:const r-seq 7) (def ^:const r-obs 8)
@@ -339,7 +342,20 @@
 (def ^:const g-id 0) (def ^:const g-operation 1) (def ^:const g-allocation 2)
 (def ^:const g-control 3) (def ^:const g-key 4) (def ^:const g-state 5)
 (def ^:const g-resolve 6) (def ^:const g-reject 7) (def ^:const g-value 8)
-(def ^:const g-entered 9)
+(def ^:const g-entered 9) (def ^:const g-mailbox 10)
+
+(def ^:const m-messages 0) (def ^:const m-consumers 1) (def ^:const m-pending 2)
+(def ^:const m-reservations 3) (def ^:const m-protected 4) (def ^:const m-physical 5)
+(def ^:const b-id 0) (def ^:const b-kind 1) (def ^:const b-ob 2) (def ^:const b-registration 3)
+(def ^:const b-state 4) (def ^:const b-message 5) (def ^:const b-resolve 6) (def ^:const b-reject 7)
+(def ^:const b-anchor 8) (def ^:const b-owner 9) (def ^:const b-control 10) (def ^:const b-allocation 11)
+(def ^:const b-key 12) (def ^:const b-frame 13) (def ^:const b-node 14) (def ^:const b-receipt 15)
+(def ^:const b-context 16) (def ^:const b-run 17)
+(def ^:const b-error 18) (def ^:const b-error-receipt 19)
+
+(defn- active-mailbox-callback []
+  (when-let [frame (current-activation)]
+    (when (> (alength ^objects frame) 12) (a frame 12))))
 
 (defn- active-operation []
   (when-let [frame (current-activation)]
@@ -356,7 +372,7 @@
 (def ^:const o-live 12) (def ^:const o-value 13) (def ^:const o-host 14)
 (def ^:const o-address 19)
 (def ^:const o-body 20)
-(def ^:const o-signal-generation 21)
+(def ^:const o-signal-generation 21) (def ^:const o-mailbox 22)
 (def ^:const o-origin 15) (def ^:const o-source-world 16) (def ^:const o-creditor-generation 17) (def ^:const o-creditor-node 18)
 (def ^:const t-id 0) (def ^:const t-spin 1) (def ^:const t-reachable 2)
 (def ^:const t-touched 3) (def ^:const t-dropped 4) (def ^:const t-family 6)
@@ -364,6 +380,7 @@
 (defrecord Handle [id token body])
 (defrecord Source [id family allocation])
 (defrecord DeferredRef [id family anchor])
+(defrecord MailboxRef [id family anchor])
 (defrecord Ticket [id])
 (defrecord Delivery [family world obligation])
 (deftype RootOwner [id]
@@ -385,6 +402,9 @@
          register-computation! invoke-computation! cancel-computation! computation-result deref-computation!
          create-public-deferred! claim-public-deferred! deliver-public-deferred! read-public-deferred invoke-public-deferred!
          operation-deliver! protect-deferred! start-protected-operation! invoke-operation-ready! operation-terminal! operation-check!
+         create-public-mailbox! post-public-mailbox! take-public-mailbox-now! invoke-public-mailbox! invoke-public-mailbox-next!
+         await-public-mailbox! mailbox-view! mailbox-metadata mailbox-detach! mailbox-enter! mailbox-return!
+         queue-mailbox-rejection! invoke-mailbox-rejection! refresh-mailbox-owner! process-mailbox-post! mailbox-callback-check! protect-mailbox! mailbox-owner-anchor
          assign-deferred! await-public-deferred! deferred-view! deferred-metadata end-deferred-protection! release-ticket-cells!
          public-signal-view! register-public-signal! public-signal-value public-signal-state swap-public-signal! cas-public-signal!
          clear-public-signal-deltas! public-signal-watches edit-public-signal-watch! publish-public-signals! track-public-signal!
@@ -392,6 +412,20 @@
 (defrecord OwnedRuntime [gate nodes deliveries events hosts work ready draining counters audit tokens
                          serial thread world root family parent tickets lineage gc family-id owner-root
                          operations posts home liveness extension-state finalization managed-cells trace-address]
+  rtp/PMailboxSynchronization
+  (create-public-mailbox! [this id] (create-public-mailbox! this id))
+  (post-public-mailbox! [this target value]
+    (try (post-public-mailbox! this target value)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  (take-public-mailbox-now! [this target consumer-id]
+    (try (take-public-mailbox-now! this target consumer-id)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  (invoke-public-mailbox! [this target resolve reject]
+    (try (invoke-public-mailbox! this target resolve reject)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
+  (invoke-public-mailbox-next! [this target resolve reject]
+    (try (invoke-public-mailbox-next! this target resolve reject)
+         (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil))))
   rtp/PSynchronization
   (create-public-deferred! [this id] (create-public-deferred! this id))
   (claim-public-deferred! [this ref value]
@@ -484,7 +518,7 @@
                            (compare [_ x y]
                              (compare (long (a x n-rank)) (long (a y n-rank))))))
                 :cljs (array))
-             (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 10)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
+             (atom false) (doto (slots 10) (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue)) (put 4 (slots 32)) (put 5 (slots 14)) (put 1 0) (put 2 0) (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
              (when audit? (atom (when record-audit? []))) (when audit? (members))
              (doto (slots 2) (put 0 0) (put 1 0)) (doto (slots 5) (put 3 world-id))
              world-id [:root world-id] family nil (id-dict)
@@ -724,7 +758,7 @@
   (put node n-kept value))
 
 (defn- node! [rt id kind owner]
-  (let [node (slots 36)]
+  (let [node (slots 37)]
     (put node n-id id) (put node n-runtime rt) (put node n-kind kind) (put node n-complete false)
     (put node n-kept false) (put node n-tokens (members)) (put node n-order 0)
     (put node n-created-by (members)) (put node n-creator-refs (dict))
@@ -838,15 +872,22 @@
                cells (id-dict)]
            (each! [run owners]
                   (each! [node (a run r-owned)]
-                         (when (#{:signal :atom :deferred} (a node n-kind))
+                         (when (#{:signal :atom :deferred :mailbox} (a node n-kind))
                            (let [key [(runtime-field rt :world) (run-id run) (a node n-id)]
                                  cell (or (find! (a profile 1) key)
-                                          (let [cell (doto (slots (if (= :deferred (a node n-kind)) 5 4))
+                                          (let [cell (doto (slots (if (#{:deferred :mailbox} (a node n-kind)) 5 4))
                                                        (put 0 (a node n-kind)) (put 1 (a node n-value))
                                                        (put 2 (members)) (put 3 (source-allocation rt (a node n-id))))]
-                                            (when (= :deferred (a node n-kind)) (put cell 4 (a node n-deferred)))
+                                            (when (#{:deferred :mailbox} (a node n-kind))
+                                              (put cell 4 (a node (if (= :mailbox (a node n-kind)) n-mailbox n-deferred))))
                                             cell))]
                              (assoc! cells key cell)))))
+           (doseq [receipt (values (a profile 0))
+                   :when (and (= :mailbox-callback (a receipt x-kind))
+                              (some (fn [id] (find! identities id)) (a receipt x-anchor)))]
+             ;; A raw consumer retains its named Mailbox, not its owner's
+             ;; neighboring application payloads or ownership graph.
+             (put receipt 20 true))
            (doseq [ticket participants]
              (doseq [[key cell] (map-value (a ticket x-cells))] (assoc! cells key cell)))
            (doseq [[key cell] (map-value cells) :when (seq participants)]
@@ -899,15 +940,17 @@
         ticket (when (and frame (not (active-operation)) (identical? rt (a frame 0)))
                  (or (a frame 8) (when-let [run (a frame 1)]
                                    (when (= :unwinding (a run r-status)) (cleanup-adopt! rt run)))))]
-    (when-let [ticket (or (when-let [operation (active-operation)]
+    (when-let [ticket (or (when-let [receipt (active-mailbox-callback)]
+                            (mailbox-callback-check! rt receipt) receipt)
+                          (when-let [operation (active-operation)]
                             (when (operation-retired? operation)
                               (operation-check! rt operation) (a operation p-ticket)))
                           ticket)]
-      (when-not (or (active-operation) (= :claimed (a ticket x-phase)))
+      (when-not (or (active-operation) (active-mailbox-callback) (= :claimed (a ticket x-phase)))
         (throw (ex-info "Cleanup is not executing" {})))
       (or (first (for [[key cell] (map-value (a ticket x-cells))
                        :when (and (= (:id source) (nth key 2))
-                                  (if (#{:atom :deferred} (a cell 0))
+                                  (if (#{:atom :deferred :mailbox} (a cell 0))
                                     (= (:allocation source) (a cell 3))
                                     (identical? (:allocation source) (a cell 3))))] [key cell]))
           (throw (ex-info "Source is outside the retained cleanup view" {:error :missing-cleanup-cell :id (:id source)}))))))
@@ -916,39 +959,54 @@
   (when-let [profile (runtime-field rt :finalization)]
     {:native (into {} (for [ticket (values (a profile 0))]
                         [(a ticket x-id)
-                         (cond-> {:kind (a ticket x-kind) :owner [(runtime-field rt :world) (nth (a ticket x-id) 2)]
-                                  :state :running :phase (a ticket x-phase) :sequence (a ticket x-seq)
-                                  :retired? (= :cps-exit (a ticket x-kind)) :anchor (a ticket x-anchor)}
-                           (seq (map-value (a ticket x-cells))) (assoc :cells (set (keys (map-value (a ticket x-cells)))))
-                           (a ticket x-cancel-value) (assoc :cancel-value (diagnostic-value (first (a ticket x-cancel-value)) true))
-                           (a ticket x-operation)
-                           (assoc :operation
-                                  (let [operation (a ticket x-operation)]
-                                    (cond-> {:id (a operation p-id) :state (a operation p-state)
-                                             :parent (a operation p-parent) :physical (a operation p-physical)
-                                             :frames (a operation p-frames)
-                                             :next-registration (a operation p-next) :next-frame (a operation p-frame-next)
-                                             :registrations (into {} (for [registration (values (a operation p-registrations))]
-                                                                       [(a registration g-id)
-                                                                        (cond-> {:w (runtime-field rt :world)
-                                                                                 :e (a registration g-allocation)
-                                                                                 :allocation (a registration g-allocation)
-                                                                                 :cell (a registration g-key)
-                                                                                 :state (a registration g-state) :entered? (boolean (a registration g-entered))
-                                                                                 :continuation (a registration g-id)}
-                                                                          (#{:ready :claimed} (a registration g-state))
-                                                                          (assoc :delivery (diagnostic-value (a registration g-value) false)))]))}
-                                      (= :terminal (a operation p-state)) (assoc :variant (a operation p-terminal)))))
-                           (a ticket x-delivered) (assoc :delivery (diagnostic-value (a ticket x-value) (a ticket x-failed))))]))
+                         (if (= :mailbox-callback (a ticket x-kind))
+                           (let [consumer (a ticket 18)]
+                             (cond-> {:kind :mailbox-callback :owner [(runtime-field rt :world) (a ticket 19)]
+                                      :state :running :anchor (a ticket x-anchor) :cells (set (keys (map-value (a ticket x-cells))))
+                                      :consumer (a consumer b-id) :allocation (a consumer b-allocation)
+                                      :frame (a consumer b-frame) :consumer-kind (a consumer b-kind) :retired? (boolean (a ticket 20))
+                                      :phase (a ticket x-phase) :physical? (boolean (a ticket x-physical))
+                                      :variant (if (#{:rejection-queued :rejection-entered} (a consumer b-state)) :error :ok)}
+                               (#{:rejection-queued :rejection-entered} (a consumer b-state))
+                               (assoc :delivery (a consumer b-error-receipt))))
+                           (cond-> {:kind (a ticket x-kind) :owner [(runtime-field rt :world) (nth (a ticket x-id) 2)]
+                                    :state :running :phase (a ticket x-phase) :sequence (a ticket x-seq)
+                                    :retired? (= :cps-exit (a ticket x-kind)) :anchor (a ticket x-anchor)}
+                             (seq (map-value (a ticket x-cells))) (assoc :cells (set (keys (map-value (a ticket x-cells)))))
+                             (a ticket x-cancel-value) (assoc :cancel-value (diagnostic-value (first (a ticket x-cancel-value)) true))
+                             (a ticket x-operation)
+                             (assoc :operation
+                                    (let [operation (a ticket x-operation)]
+                                      (cond-> {:id (a operation p-id) :state (a operation p-state)
+                                               :parent (a operation p-parent) :physical (a operation p-physical)
+                                               :frames (a operation p-frames)
+                                               :next-registration (a operation p-next) :next-frame (a operation p-frame-next)
+                                               :registrations (into {} (for [registration (values (a operation p-registrations))]
+                                                                         [(a registration g-id)
+                                                                          (cond-> {:w (runtime-field rt :world)
+                                                                                   :e (a registration g-allocation)
+                                                                                   :allocation (a registration g-allocation)
+                                                                                   :cell (a registration g-key)
+                                                                                   :state (a registration g-state) :entered? (boolean (a registration g-entered))
+                                                                                   :continuation (a registration g-id)}
+                                                                            (and (a registration g-mailbox) (a (a registration g-mailbox) b-message))
+                                                                            (assoc :message-id (first (a (a registration g-mailbox) b-message)))
+                                                                            (#{:ready :claimed} (a registration g-state))
+                                                                            (assoc :delivery (diagnostic-value (a registration g-value) false)))]))}
+                                        (= :terminal (a operation p-state)) (assoc :variant (a operation p-terminal)))))
+                             (a ticket x-delivered) (assoc :delivery (diagnostic-value (a ticket x-value) (a ticket x-failed)))))]))
      :cleanup-cells (into {} (for [[key cell] (map-value (a profile 1))]
                                [key (cond-> {:kind (a cell 0) :result (if (= :deferred (a cell 0)) (a (a cell 4) 2) (a cell 1))
                                              :holders (set (map #(a % x-id) (items (a cell 2))))}
                                       (= :deferred (a cell 0))
                                       (assoc :allocation (a cell 3) :deferred (assoc (deferred-metadata (a cell 4))
-                                                                                     :assigned? (boolean (a (a cell 4) 1)))))]))}))
+                                                                                     :assigned? (boolean (a (a cell 4) 1))))
+                                      (= :mailbox (a cell 0)) (assoc :allocation (a cell 3) :mailbox (mailbox-metadata (a cell 4))))]))}))
 
 (defn- end-ob! [rt ob]
   (when (a ob o-live)
+    (when-let [consumer (a ob o-mailbox)]
+      (when-not (#{:claimed :entered} (a consumer b-state)) (mailbox-detach! rt consumer)))
     (put ob o-live false)
     (when (= :await-once (a ob o-kind))
       (dissoc! (runtime-field rt :deliveries) (a ob o-id))
@@ -970,7 +1028,7 @@
           (when (zero? (count! waiters)) (dissoc! (runtime-field rt :tickets) host)))))
     (when-let [node (a ob o-debtor)]
       (remove! (a node n-dependents) ob) (mark! rt node)
-      (when (#{:atom :deferred} (a node n-kind))
+      (when (#{:atom :deferred :mailbox} (a node n-kind))
         (note-cell-gc-blocker-change! rt (a node n-id)))
       (if-let [creditor (a ob o-creditor-node)]
         (when-not
@@ -996,7 +1054,10 @@
                   (#{:running :parked :inherited :completed} (a run r-status)) (identical? run (current (a run r-node))))
          (put run r-validation-lost true)
          (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
-       (when (and (= :armed (a ob o-slot)) (= :parked (a run r-status)))
+       (when (and (= :armed (a ob o-slot))
+                  (or (= :parked (a run r-status))
+                      (and (= :running (a run r-status)) (a ob o-mailbox)
+                           (= :reserved (a (a ob o-mailbox) b-state)))))
          (put run r-status :running)
          (put ob o-value (if cancellation (:reason cancellation)
                              (ex-info "Cancelled" {:error :cancelled})))
@@ -1005,14 +1066,33 @@
            (put run r-validation-lost true)
            (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
          (schedule! rt (a run r-node) ob)))
-     (push! (runtime-field rt :hosts)
-            (doto (slots 2) (put 0 (a ob o-failure))
-                  (put 1 (if cancellation (:reason cancellation) (ex-info "Cancelled" {}))))))
+     (if-let [consumer (a ob o-mailbox)]
+       (when (#{:pending :reserved} (a consumer b-state))
+         (queue-mailbox-rejection! rt consumer
+                                   (if cancellation (:reason cancellation) (ex-info "Cancelled" {}))
+                                   (if cancellation :explicit :cancelled)))
+       (push! (runtime-field rt :hosts)
+              (doto (slots 2) (put 0 (a ob o-failure))
+                    (put 1 (if cancellation (:reason cancellation) (ex-info "Cancelled" {})))))))
    (end-ob! rt ob)))
 
 (defn- release-owned! [rt run]
   (each-copy! [node (a run r-owned)]
+              (when-let [control (a node n-mailbox)]
+                (doseq [consumer (vec (concat (values (a control m-pending)) (values (a control m-reservations))))]
+                  (refresh-mailbox-owner! rt consumer (a node n-owner))
+                  ;; Queue raw rejection while the closing owner is still
+                  ;; explicit. Its named holder then survives source removal;
+                  ;; a returned reservation uses the original live envelope.
+                  (when (and (= :host (a consumer b-kind)) (#{:pending :reserved} (a consumer b-state)))
+                    (queue-mailbox-rejection! rt consumer (ex-info "Cancelled" {}) :cancelled))))
               (owner! rt node nil)
+              (when-let [control (a node n-mailbox)]
+                ;; Prefix adoption can move this allocation away from a raw
+                ;; consumer's original join anchor. Retirement follows the
+                ;; allocation as well as that immutable original anchor.
+                (doseq [consumer (values (a control m-physical))]
+                  (when-let [receipt (a consumer b-receipt)] (put receipt 20 true))))
               (when (= :spin (a node n-kind)) (put node n-dirty true))
               (each-copy! [child (values (a node n-runs))]
                           (if (work-status? (a child r-status)) (cancel! rt child) (retire! rt child)))
@@ -1098,7 +1178,7 @@
 
 (defn- drop-node-events! [rt node]
   (put node n-source-event nil)
-  (when (#{:atom :deferred} (a node n-kind))
+  (when (#{:atom :deferred :mailbox} (a node n-kind))
     (note-cell-gc-blocker-change! rt (a node n-id)))
   #?(:clj (.removeIf ^java.util.Collection (runtime-field rt :events)
                      (reify java.util.function.Predicate
@@ -1114,7 +1194,7 @@
         (let [todo (pop todo)]
           (cond
             (contains? seen node) (recur todo seen)
-            (or (#{:signal :atom :deferred} (a node n-kind)) (a node n-dirty)) true
+            (or (#{:signal :atom :deferred :mailbox} (a node n-kind)) (a node n-dirty)) true
             :else
             (recur (into todo (for [run (values (a node n-runs))
                                     ob (items (a run r-obs))
@@ -1139,7 +1219,7 @@
     (creator! rt node nil)
     (dissoc! (runtime-field rt :nodes) (a node n-id))
     (dissoc! (a (runtime-field rt :managed-cells) 0) (a node n-id))
-    (when (#{:atom :deferred} (a node n-kind))
+    (when (#{:atom :deferred :mailbox} (a node n-kind))
       (note-cell-removal! rt (a node n-id)))
     (when-let [profile (runtime-field rt :finalization)] (dissoc! (a profile 3) (a node n-id)))
     (put node n-body nil) (put node n-value nil) (put node n-resume nil)
@@ -1236,11 +1316,15 @@
           recording? (some? @audit)
           action (when recording?
                    (let [action (assoc action :fresh-runs (vec (items pending)))]
-                     (if-let [operation (when (#{:cleanup-cell :deferred-request :signal-write} (:t action))
+                     (if-let [operation (when (#{:cleanup-cell :deferred-request :signal-write :mailbox-post-request :mailbox-take-now} (:t action))
                                           (active-operation))]
                        (assoc (dissoc action :th) :op (a operation p-id)
                               :frame (a (current-activation) 11))
-                       action)))]
+                       (if-let [receipt (when (#{:cleanup-cell :deferred-request :signal-write :mailbox-post-request :mailbox-take-now :mailbox-take} (:t action))
+                                          (active-mailbox-callback))]
+                         (assoc (dissoc action :th) :callback (a receipt x-id)
+                                :frame (a (current-activation) 11))
+                         action))))]
       #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
       (when recording?
         (swap! audit conj [action (snapshot rt) (snapshot-family rt)]))))
@@ -1255,6 +1339,9 @@
     (throw (ex-info "Idle cache released" {:error :idle-cache-released}))))
 
 (defn- check-running! [run]
+  (when (active-mailbox-callback)
+    (throw (ex-info "Raw Mailbox callback graph effects require typed admission"
+                    {:error :unsupported-operation :operation :mailbox-callback-graph-effect})))
   (when (active-operation)
     (throw (ex-info "Protected operation graph effects require typed parent admission"
                     {:error :unsupported-operation :operation :protected-graph-effect})))
@@ -1572,7 +1659,7 @@
     (mark! rt node) run))
 
 (defn- ob! [rt kind debtor run order resolve reject]
-  (let [ob (slots 22) id (a (runtime-field rt :serial) 0)]
+  (let [ob (slots 23) id (a (runtime-field rt :serial) 0)]
     (next-number! rt 0)
     (put ob o-address (when run (a run r-address)))
     (put ob o-id id) (put ob o-kind kind) (put ob o-debtor debtor) (put ob o-run run)
@@ -1628,7 +1715,7 @@
            (check-running! run)
            (let [node (or (find! (runtime-field rt :nodes) id)
                           (throw (ex-info "Foreign or released track is outside this slice" {:id id})))
-                 _ (when (= :deferred (a node n-kind))
+                 _ (when (#{:deferred :mailbox} (a node n-kind))
                      (throw (ex-info "Deferred permits one-shot await only" {:error :unsupported-deferred-obligation})))
                  _ (when expected-source (public-signal-view! rt expected-source))
                  ob (ob! rt :track node run order resolve reject)]
@@ -1963,7 +2050,7 @@
                                     (complete! rt run error true))))))
         (finally
           (finish-slice! rt run frame)
-          (dotimes [i 10] (put frame i nil)))))))
+          (dotimes [i 14] (put frame i nil)))))))
 
 (defn- complete! [requested run value failed?]
   (let [rt (execution-runtime requested)]
@@ -2043,7 +2130,7 @@
         dependents (a (runtime-field rt :counters) 4)
         order (when (runtime-field rt :audit) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
     (when (identical? event (a node n-source-event)) (put node n-source-event nil))
-    (when (#{:atom :deferred} (a node n-kind))
+    (when (#{:atom :deferred :mailbox} (a node n-kind))
       (note-cell-gc-blocker-change! rt (a node n-id)))
     (try
       (dotimes [index n]
@@ -2091,6 +2178,8 @@
                 retired-run (or run (when ticket
                                       (first (filter #(= (run-id %) (nth (a ticket x-id) 2))
                                                      (items (a (runtime-field rt :counters) 6))))))]
+            (when-let [consumer (when frame (when (> (alength ^objects frame) 13) (a frame 13)))]
+              (mailbox-return! rt consumer))
             (when run (put run r-physical false))
             (when ticket (finish-cleanup-slice! rt ticket))
             (put (runtime-field rt :thread) 0 nil) (put (runtime-field rt :thread) 4 nil)
@@ -2108,11 +2197,14 @@
               (put run r-physical true)
               (when (runtime-field rt :finalization) (put run r-entered true))
               (put (runtime-field rt :thread) 0 run) (put (runtime-field rt :thread) 1 true) (put (runtime-field rt :thread) 2 (runtime-field rt :world))
-              (boundary! rt (when (runtime-field rt :audit) {:t :slice-enter :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)] :th :engine}))
+              (if-let [consumer (when (and ob (not (a ob o-delivery-error))) (a ob o-mailbox))]
+                (mailbox-enter! rt consumer [:mailbox-frame (a consumer b-id)] false true)
+                (boundary! rt (when (runtime-field rt :audit) {:t :slice-enter :w (runtime-field rt :world) :r [(a node n-id) (a run r-gen)] :th :engine})))
               (let [frame (a (runtime-field rt :counters) 5) debtor (when ob (a ob o-debtor))]
                 (put run r-address (when ob (a ob o-address)))
                 (put frame 0 rt) (put frame 1 run) (put frame 2 (if ob (a ob o-order) -1))
                 (put frame 3 ob) (put frame 4 (a node n-body))
+                (put frame 13 (when (and ob (not (a ob o-delivery-error))) (a ob o-mailbox)))
                 (put frame 5 (when debtor (a debtor n-value)))
                 (put frame 6 (when ob (a ob o-body)))
                 (put frame 7 (when ob (a ob o-last)))
@@ -2157,16 +2249,16 @@
                                            (complete! rt run rejected true))))))))
         (finally
           (finish-slice! rt run activation)
-          (dotimes [i 10] (put activation i nil)))))))
+          (dotimes [i 14] (put activation i nil)))))))
 
 (defn- next-dispatch! [rt]
   (locked rt
           (if-let [post (pop! (runtime-field rt :posts))]
             post
             (if-let [event (pop! (runtime-field rt :events))]
-              (do (if (= 7 (alength ^objects event))
-                    (assign-deferred! (a event 0) event)
-                    (process-event! (a (a event 0) n-runtime) event))
+              (do (cond (= 9 (alength ^objects event)) (process-mailbox-post! (a event 0) event)
+                        (= 7 (alength ^objects event)) (assign-deferred! (a event 0) event)
+                        :else (process-event! (a (a event 0) n-runtime) event))
                   :event)
               (or (when-let [profile (runtime-field rt :finalization)]
                     (when-let [ticket (pop! (a profile 2))]
@@ -2549,16 +2641,19 @@
 (defn- cleanup-cell-access? [rt]
   (when-let [frame (current-activation)]
     (and (same-cell-world? rt (a frame 0))
-         (or (when-let [operation (active-operation)] (operation-retired? operation))
+         (or (active-mailbox-callback)
+             (when-let [operation (active-operation)] (operation-retired? operation))
              (a frame 8)
              (= :unwinding (some-> (a frame 1) (a r-status)))))))
 
 (defn- check-cell-caller! [rt]
-  (if-let [operation (active-operation)]
-    (operation-check! rt operation)
-    (when-let [frame (current-activation)]
-      (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
-        (check-running! (a frame 1))))))
+  (if-let [receipt (active-mailbox-callback)]
+    (mailbox-callback-check! rt receipt)
+    (if-let [operation (active-operation)]
+      (operation-check! rt operation)
+      (when-let [frame (current-activation)]
+        (when (identical? (runtime-field rt :gate) (runtime-field (a frame 0) :gate))
+          (check-running! (a frame 1)))))))
 
 (defn- cell-view! [rt id]
   (let [frame (current-activation)
@@ -2632,8 +2727,8 @@
   (let [rt (canonical-runtime requested)
         id (keyword (str "atom-" (random-uuid)))
         payload (when (= :atom kind) {:value value :meta (:meta options)})]
-    (when (active-operation)
-      (throw (ex-info "Protected operation cannot allocate sources" {:error :cleanup-only})))
+    (when (or (active-operation) (active-mailbox-callback))
+      (throw (ex-info "Resource callbacks cannot allocate sources" {:error :cleanup-only})))
     (locked rt
             (check-cell-caller! rt)
             (let [frame (current-activation)
@@ -2644,10 +2739,14 @@
               (put node n-value payload) (put node n-order order)
               (when (= :deferred kind)
                 (put node n-deferred (doto (slots 4) (put 0 false) (put 1 false) (put 3 (dict)))))
+              (when (= :mailbox kind)
+                (put node n-mailbox (doto (slots 6) (put m-messages (queue)) (put m-consumers (queue))
+                                          (put m-pending (dict)) (put m-reservations (dict))
+                                          (put m-protected (dict)) (put m-physical (dict)))))
               (assoc! (a (runtime-field rt :managed-cells) 0) id aux)
               (when run (creation! run node))
               (boundary! rt (when (runtime-field rt :audit)
-                              (cond-> {:t (if (= :deferred kind) :deferred-create :t02)
+                              (cond-> {:t (case kind :deferred :deferred-create :mailbox :mailbox-create :t02)
                                        :w (runtime-field rt :world) :e id :kind kind
                                        :allocation id :value payload :order order}
                                 run (assoc :r (run-id run)))))))
@@ -2786,6 +2885,9 @@
   (let [id (a node n-id)]
     (or (pos? (long (a aux 2)))
         (when-let [state (a node n-deferred)] (not (empty-dict? (a state 3))))
+        (when-let [control (a node n-mailbox)]
+          (or (queued? (a control m-consumers))
+              (not (empty-dict? (a control m-reservations))) (not (empty-dict? (a control m-physical)))))
         (any! (a node n-dependents) #(a % o-live))
         (any! (runtime-field rt :events) #(identical? node (a % 0)))
         ;; A live following world with no local row still needs this backing.
@@ -2808,7 +2910,7 @@
     (when-let [allocation (find! (a state 1) id)]
       (let [node (find! (runtime-field rt :nodes) id)
             aux (find! (a state 0) id)
-            current? (and node aux (#{:atom :deferred} (a node n-kind)) (= allocation (a aux 0)))]
+            current? (and node aux (#{:atom :deferred :mailbox} (a node n-kind)) (= allocation (a aux 0)))]
         (when (or (not current?)
                   (and (not (ancestor-cell-gc-pending? rt id allocation))
                        (not (cell-in-use? rt node aux))))
@@ -2862,7 +2964,7 @@
                       (doseq [rt worlds
                               :let [aux (find! (a (runtime-field rt :managed-cells) 0) id)
                                     node (find! (runtime-field rt :nodes) id)]
-                              :when (and aux node (#{:atom :deferred} (a node n-kind)) (= id (a aux 0)))]
+                              :when (and aux node (#{:atom :deferred :mailbox} (a node n-kind)) (= id (a aux 0)))]
                         (put-cell-gc-receipt! rt id id)
                         (boundary! rt (when (runtime-field rt :audit)
                                         {:t :source-unreachable :w (runtime-field rt :world) :e id :allocation id})))
@@ -2984,8 +3086,9 @@
                                           (a node n-cancelled)
                                           (assoc :cancelled-completion {:run (first (a node n-cancelled))
                                                                         :result (diagnostic-value (a node n-value) true)})
-                                          (#{:atom :deferred} (a node n-kind)) (assoc :allocation (source-allocation rt (a node n-id)))
+                                          (#{:atom :deferred :mailbox} (a node n-kind)) (assoc :allocation (source-allocation rt (a node n-id)))
                                           (= :deferred (a node n-kind)) (assoc :deferred (deferred-metadata (a node n-deferred)))
+                                          (= :mailbox (a node n-kind)) (assoc :mailbox (mailbox-metadata (a node n-mailbox)))
                                           (some? (a node n-dirty)) (assoc :dirty? (a node n-dirty))
                                           (a node n-source-world) (assoc :source-world (a node n-source-world)))]))
                   :runs (into {} (for [run (items (a (runtime-field rt :counters) 6)) :let [node (a run r-node)]]
@@ -3012,17 +3115,19 @@
                                              (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                              (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
                   :queue (mapv (fn [event]
-                                 (if (= 7 (alength ^objects event))
-                                   (cond-> {:deferred-assignment (:id (a event 1)) :allocation (:id (a event 1))
-                                            :value (a event 3) :seq (a event 2)}
-                                     (a event 5) (assoc :cell (a event 5)))
+                                 (case (alength ^objects event)
+                                   9 (cond-> {:mailbox-post (:id (a event 1)) :allocation (:id (a event 1))
+                                              :message-id (first (a event 3)) :value (second (a event 3)) :seq (a event 2)}
+                                       (a event 5) (assoc :cell (a event 5)) (a event 7) (assoc :repost? true))
+                                   7 (cond-> {:deferred-assignment (:id (a event 1)) :allocation (:id (a event 1))
+                                              :value (a event 3) :seq (a event 2)}
+                                       (a event 5) (assoc :cell (a event 5)))
                                    (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world)
                                             :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
                                      (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true))))
                                (filter (fn [event]
-                                         (identical? rt (if (= 7 (alength ^objects event))
-                                                          (a event 0)
-                                                          (a (a event 0) n-runtime))))
+                                         (identical? rt (if (#{7 9} (alength ^objects event)) (a event 0)
+                                                            (a (a event 0) n-runtime))))
                                        (items (runtime-field rt :events))))
                   :seq (a (runtime-field rt :counters) 1)
                   :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
@@ -3051,6 +3156,11 @@
   [rt world]
   (admit-native-effect!)
   (locked rt
+          (when (or (some #(= :mailbox (a % n-kind)) (values (runtime-field rt :nodes)))
+                    (when-let [profile (runtime-field rt :finalization)]
+                      (or (some #(= :mailbox (a % 0)) (values (a profile 1)))
+                          (some #(= :mailbox-callback (a % x-kind)) (values (a profile 0))))))
+            (throw (ex-info "Mailbox fork recovery is not implemented" {:error :unsupported-operation :operation :fork-mailbox})))
           (when (some #(= :deferred (a % n-kind)) (values (runtime-field rt :nodes)))
             (throw (ex-info "Deferred fork recovery is not implemented" {:error :unsupported-operation :operation :fork-deferred})))
           (when (runtime-field rt :finalization)
@@ -3134,7 +3244,7 @@
                          (when-let [descendant (find! run-map spawned)]
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
-                         (let [clone (slots 22)]
+                         (let [clone (slots 23)]
                            (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body o-signal-generation]]
                                     (put clone field (a ob field)))
                            (put clone o-run copy) (put clone o-live true)
@@ -3191,6 +3301,11 @@
                                                               registration (values (a operation p-registrations))]
                                                           (+ (if (a registration g-resolve) 1 0)
                                                              (if (a registration g-reject) 1 0))))
+             :mailbox-consumers (reduce + 0 (for [node (values (runtime-field rt :nodes)) :when (a node n-mailbox)]
+                                              (+ (count (map-value (a (a node n-mailbox) m-pending)))
+                                                 (count (map-value (a (a node n-mailbox) m-reservations))))))
+             :mailbox-physical-frames (count (filter #(= :mailbox-callback (a % x-kind))
+                                                     (when-let [profile (runtime-field rt :finalization)] (values (a profile 0)))))
              :protected-tickets (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 0))) 0)
              :retained-cleanup-cells (if-let [profile (runtime-field rt :finalization)] (count (map-value (a profile 1))) 0)
              :source-allocation-identities (+ (count (map-value (a (runtime-field rt :managed-cells) 0)))
@@ -3494,8 +3609,15 @@
        (finally (java.lang.ref.Reference/reachabilityFence target)))))
 
 (defn await-public-computation! [requested target id body _caller-id _source-loc resolve reject]
-  (if (satisfies? rtp/PDeferred target)
+  (cond
+    (satisfies? rtp/PMailbox target)
+    (await-public-mailbox! requested target resolve reject false)
+    (satisfies? rtp/PMailboxNext target)
+    (let [mailbox (rtp/mailbox-next-target target)]
+      (await-public-mailbox! requested mailbox (fn [value] (cps/invoke-continuation resolve [value mailbox])) reject false))
+    (satisfies? rtp/PDeferred target)
     (await-public-deferred! requested target resolve reject)
+    :else
     (do
       (when-not (and id body)
         (throw (ex-info "Native await requires a typed computation target"
@@ -3897,7 +4019,9 @@
           (throw (ex-info "Protected operation lost its exact parent generation" {:error :cleanup-only})))))))
 
 (defn- clear-operation-registration! [rt operation registration]
-  (dissoc! (a (a registration g-control) 3) (a registration g-id))
+  (if-let [consumer (a registration g-mailbox)]
+    (if (= :entered (a consumer b-state)) (mailbox-return! rt consumer) (mailbox-detach! rt consumer))
+    (dissoc! (a (a registration g-control) 3) (a registration g-id)))
   (note-cell-gc-blocker-change! rt (a registration g-allocation))
   (dissoc! (a operation p-registrations) (a registration g-id))
   (put registration g-resolve nil) (put registration g-reject nil)
@@ -4014,6 +4138,7 @@
                                 frame-id [(a operation p-id) ordinal]]
                             (put operation p-physical 1) (put operation p-frames #{frame-id})
                             (put registration g-state :claimed) (put registration g-entered true)
+                            (when-let [consumer (a registration g-mailbox)] (mailbox-enter! rt consumer frame-id false false))
                             (boundary! rt (when (runtime-field rt :audit)
                                             (assoc (operation-action rt operation :operation-claim)
                                                    :reg (a registration g-id) :frame frame-id
@@ -4048,7 +4173,7 @@
                                             (doto (slots 5) (put 0 :deferred) (put 1 (a control 2))
                                                   (put 2 (members)) (put 3 (:id ref)) (put 4 control)))
                                    ordinal (put operation p-next (inc (long (a operation p-next))))
-                                   registration (doto (slots 10)
+                                   registration (doto (slots 11)
                                                   (put g-entered false)
                                                   (put g-id [(a operation p-id) ordinal])
                                                   (put g-operation operation) (put g-allocation (:id ref))
@@ -4096,7 +4221,9 @@
 (defn- end-deferred-protection! [rt ticket]
   (when-let [operation (a ticket x-operation)]
     (doseq [registration (vec (values (a operation p-registrations)))]
-      (dissoc! (a (a registration g-control) 3) (a registration g-id))
+      (if-let [consumer (a registration g-mailbox)]
+        (if (= :entered (a consumer b-state)) (mailbox-return! rt consumer) (mailbox-detach! rt consumer))
+        (dissoc! (a (a registration g-control) 3) (a registration g-id)))
       (put registration g-resolve nil) (put registration g-reject nil)
       (put registration g-value nil) (put registration g-state :invalid)
       (dissoc! (a operation p-registrations) (a registration g-id)))
@@ -4184,3 +4311,502 @@
                                #(binding [cps/*in-trampoline* false] (cps/invoke-continuation resolve %))
                                (second ready))
           :org.replikativ.spindel.spin/incomplete)))))
+
+;; Mailbox state is engine-owned. The same control is shared by every retained
+;; owner cohort; reservations remain cancellable until an exact physical claim.
+(defn- mailbox-owner-anchor [rt view]
+  (if-let [owner (some-> (:node view) (a n-owner))]
+    (if (root-owner? owner) [(:id owner) (runtime-field rt :world)] (run-anchor rt owner))
+    [(second (:key view)) (runtime-field rt :root) (runtime-field rt :world)]))
+
+(defn- mailbox-callback-check! [rt receipt]
+  (let [frame (current-activation)]
+    (when-not (and frame (same-cell-world? rt (a frame 0))
+                   (identical? receipt (active-mailbox-callback))
+                   (identical? receipt (find! (a (runtime-field rt :finalization) 0) (a receipt x-id)))
+                   (= :executing (a receipt x-phase)) (a receipt x-physical)
+                   (let [consumer (a receipt 18)]
+                     (and (#{:entered :rejection-entered} (a consumer b-state))
+                          (= (a frame 11) (a consumer b-frame))
+                          (identical? consumer (find! (a (a consumer b-control) m-physical) (a consumer b-frame))))))
+      (throw (ex-info "Mailbox callback frame is no longer admitted" {:error :cleanup-only})))))
+
+(defn- mailbox-reference! [rt target]
+  (let [ref (rtp/mailbox-payload target)]
+    (when-not (and (instance? MailboxRef ref) (identical? (:family ref) (runtime-field rt :family-id)))
+      (throw (ex-info "Mailbox belongs to another engine or family" {:error :unknown-mailbox})))
+    ref))
+
+(defn- mailbox-view! [rt ref purpose]
+  (let [id (:id ref) node (find! (runtime-field rt :nodes) id)
+        aux (find! (a (runtime-field rt :managed-cells) 0) id)
+        live? (and node aux (= :mailbox (a node n-kind)) (a node n-owner) (= id (a aux 0)))
+        frame (current-activation) operation (active-operation) raw (active-mailbox-callback)
+        ;; The live forwarding exception belongs to Mailbox synchronization.
+        ;; Generic cells keep named-only raw callback rights even while live.
+        cleanup? (if raw (boolean (a raw 20)) (cleanup-cell-access? rt))
+        ticket (when-not (= :assign purpose)
+                 (or raw (when operation (a operation p-ticket))
+                     (when cleanup?
+                       (or (a frame 8) (when-let [run (a frame 1)] (cleanup-adopt! rt run))))))
+        retained (when (and (or ticket (= :assign purpose) (nil? frame))
+                            (or cleanup? (not live?)))
+                   (when-let [profile (runtime-field rt :finalization)]
+                     (first (for [[key cell] (map-value (if ticket (a ticket x-cells) (a profile 1)))
+                                  :when (and (= id (nth key 2)) (= :mailbox (a cell 0))
+                                             (= id (a cell 3)) (pos? (count! (a cell 2))))]
+                              {:key key :cell cell :control (a cell 4)}))))]
+    (when-not (= :assign purpose)
+      (when operation (operation-check! rt operation))
+      (when raw (mailbox-callback-check! rt raw))
+      (when-not (or (= :protect purpose) cleanup?) (check-cell-caller! rt)))
+    (when (and cleanup? (not= :protect purpose) (not retained))
+      (throw (ex-info "Mailbox is outside the retained callback capability" {:error :missing-cleanup-cell :id id})))
+    (when (and cleanup? (not operation) (not raw)
+               (not= :assign purpose) (not= :claimed (some-> ticket (a x-phase))))
+      (throw (ex-info "Mailbox cleanup frame is not claimed" {:error :cleanup-only})))
+    (when (and retained (nil? frame) (not (#{:post :assign} purpose)))
+      (throw (ex-info "A retired Mailbox permits host posting only" {:error :missing-mailbox :id id})))
+    (when (and raw (or (a raw 20) (not live?)) (#{:take :observe} purpose))
+      (throw (ex-info "Retired Mailbox callback cannot register ordinary work" {:error :cleanup-only})))
+    (cond
+      (and retained (or (not live?) (and cleanup? (not (and raw (not (a raw 20)))))))
+      (assoc retained :node nil :aux nil)
+      live? {:node node :aux aux :control (a node n-mailbox)}
+      (= :assign purpose) nil
+      :else (throw (ex-info "Released Mailbox allocation" {:error :missing-mailbox :id id})))))
+
+(defn- mailbox-consumer-row [consumer]
+  (let [ob (a consumer b-ob) registration (a consumer b-registration)]
+    (cond-> {:kind (a consumer b-kind) :order (if registration (last (a registration g-id)) (a ob o-order))}
+      ob (assoc :o [:o (a ob o-id)])
+      (= :ordinary (a consumer b-kind)) (assoc :r (run-id (a consumer b-run)))
+      registration (assoc :op (a (a registration g-operation) p-id) :reg (a registration g-id)))))
+
+(defn- mailbox-metadata [control]
+  {:messages (mapv (fn [[id value]] {:id id :value value}) (items (a control m-messages)))
+   :consumers (mapv #(a % b-id) (items (a control m-consumers)))
+   :pending (into {} (for [consumer (values (a control m-pending))]
+                       [(a consumer b-id) (mailbox-consumer-row consumer)]))
+   :reservations (into {} (for [consumer (values (a control m-reservations))
+                                :let [[id value] (a consumer b-message)]]
+                            [(a consumer b-id) (cond-> (assoc (mailbox-consumer-row consumer)
+                                                              :message-id id :value value :state (a consumer b-state))
+                                                 (a consumer b-frame) (assoc :frame (a consumer b-frame)))]))
+   :protected (into {} (for [consumer (values (a control m-protected))
+                             :let [registration (a consumer b-registration) operation (a registration g-operation)]]
+                         [(a registration g-id) {:operation (a operation p-id) :sequence (second (a operation p-id))}]))
+   :physical (into {} (for [[frame consumer] (map-value (a control m-physical))]
+                        [frame {:consumer (a consumer b-id) :owner [(first (a consumer b-key)) (a consumer b-owner)]
+                                :anchor (a consumer b-anchor) :kind (a consumer b-kind)}]))})
+
+(defn create-public-mailbox! [requested _public-id]
+  (let [rt (canonical-runtime requested)]
+    (when-not (runtime-field rt :finalization)
+      (throw (ex-info "Mailbox physical receipts require the native lifetime profile" {:error :profile-disabled})))
+    (let [allocation (allocate-managed-source! requested nil {} :mailbox)]
+      (->MailboxRef (:id allocation) (runtime-field rt :family-id) (:anchor allocation)))))
+
+(defn- mailbox-action [rt consumer kind]
+  {:t kind :w (runtime-field rt :world) :e (a consumer b-allocation) :allocation (a consumer b-allocation)
+   :consumer (a consumer b-id)})
+
+(defn- refresh-mailbox-owner! [rt consumer owner]
+  ;; Pending consumers have no physical owner witness yet. Prefix adoption
+  ;; may move the allocation before their callback is claimed. Once seated,
+  ;; its receipt keeps the exact owner/anchor until actual physical return.
+  (when (and owner (nil? (a consumer b-receipt)) (not= :operation (a consumer b-kind)))
+    (let [id (owner-id owner)]
+      (put consumer b-owner id)
+      (put consumer b-key [(runtime-field rt :world) id (a consumer b-allocation)])
+      (put consumer b-anchor (if (root-owner? owner) [id (runtime-field rt :world)] (run-anchor rt owner))))))
+
+(defn- retain-mailbox-frame! [rt consumer frame]
+  (when-not (a consumer b-receipt)
+    (refresh-mailbox-owner! rt consumer (some-> (a consumer b-node) (a n-owner)))
+    (let [profile (runtime-field rt :finalization) key (a consumer b-key)
+          control (a consumer b-control)
+          cell (or (find! (a profile 1) key)
+                   (doto (slots 5) (put 0 :mailbox) (put 2 (members))
+                         (put 3 (a consumer b-allocation)) (put 4 control)))
+          receipt (doto (slots 21)
+                    (put x-id [:mailbox-callback (runtime-field rt :world) (a consumer b-owner) (a consumer b-id)])
+                    (put x-kind :mailbox-callback) (put x-anchor (a consumer b-anchor))
+                    (put x-phase (if frame :executing :queued)) (put x-physical (boolean frame)) (put x-cells (id-dict))
+                    (put 18 consumer) (put 19 (a consumer b-owner))
+                    (put 20 (nil? (some-> (a consumer b-node) (a n-owner)))))]
+      (assoc! (a profile 1) key cell)
+      (add! (a cell 2) receipt) (assoc! (a receipt x-cells) key cell)
+      (assoc! (a profile 0) (a receipt x-id) receipt)
+      (put consumer b-frame frame) (put consumer b-receipt receipt)
+      (when frame (assoc! (a control m-physical) frame consumer)))))
+
+(defn- queue-mailbox-envelope! [rt ref view message repost?]
+  (let [counters (runtime-field rt :counters)
+        sequence (put counters 2 (inc (max (long (a counters 1)) (long (a counters 2)))))
+        message (or message [[(:id ref) sequence] nil])
+        aux (:aux view)
+        event (doto (slots 9) (put 0 rt) (put 1 ref) (put 2 sequence) (put 3 message)
+                    (put 4 :mailbox-post) (put 5 (:key view)) (put 6 aux) (put 7 repost?))]
+    (when aux (put aux 2 (inc (long (a aux 2)))))
+    (push! (runtime-field rt :events) event)
+    event))
+
+(defn post-public-mailbox! [requested target value]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ref (mailbox-reference! rt target)]
+    (locked rt
+            (let [view (mailbox-view! rt ref :post)
+                  event (queue-mailbox-envelope! rt ref view nil false)
+                  message [[(:id ref) (a event 2)] value]]
+              (put event 3 message)
+              (boundary! rt (when (runtime-field rt :audit)
+                              (cond-> {:t :mailbox-post-request :w (runtime-field rt :world) :e (:id ref)
+                                       :allocation (:id ref) :value value :message-id (first message)}
+                                (:key view) (assoc :cell (:key view))
+                                (when-let [frame (current-activation)] (same-cell-world? rt (a frame 0)))
+                                (assoc :th :engine))))))
+    (drain! rt))
+  nil)
+
+(defn- mailbox-unlink-pending! [control consumer]
+  (dissoc! (a control m-pending) (a consumer b-id))
+  (let [pending (a control m-consumers)]
+    (if (identical? consumer (queue-front pending))
+      (pop! pending)
+      #?(:clj (.remove ^java.util.ArrayDeque pending consumer)
+         :cljs (.remove pending consumer))))
+  (when-let [registration (a consumer b-registration)]
+    (dissoc! (a control m-protected) (a registration g-id))))
+
+(defn- mailbox-detach! [rt consumer]
+  (let [state (a consumer b-state) control (a consumer b-control)]
+    (when (#{:pending :reserved} state)
+      (mailbox-unlink-pending! control consumer)
+      (dissoc! (a control m-reservations) (a consumer b-id))
+      (when (and (= :reserved state) (a consumer b-message))
+        (let [ref (->MailboxRef (a consumer b-allocation) (runtime-field rt :family-id) nil)
+              view (mailbox-view! rt ref :assign)]
+          (when view (queue-mailbox-envelope! rt ref view (a consumer b-message) true))))
+      (put consumer b-state :detached) (put consumer b-message nil)
+      (put consumer b-resolve nil) (put consumer b-reject nil)
+      (note-cell-gc-blocker-change! rt (a consumer b-allocation)))))
+
+(defn- mailbox-enter! [rt consumer frame inline? audit?]
+  (let [state (a consumer b-state) ob (a consumer b-ob) run (a consumer b-run)
+        ;; Buffered takes already seated their physical receipt. Keep that
+        ;; exact key: the CLJS physical map compares frame keys by identity.
+        frame (or (a consumer b-frame) frame)
+        operation (some-> (a consumer b-registration) (a g-operation))]
+    (when-not (#{:reserved :claimed} state)
+      (throw (ex-info "Mailbox reservation is not enterable" {:error :not-mailbox-reservation})))
+    (when (and run (not (and inline? (= :claimed state))))
+      (when-not (and (a ob o-live) (identical? run (current (a run r-node)))
+                     (= (a run r-gen) (a ob o-creditor-generation)) (not= :unwinding (a run r-status)))
+        (throw (ex-info "Mailbox consumer is no longer current" {:error :cancelled}))))
+    (put consumer b-state :entered) (put consumer b-frame frame)
+    (when-not operation (retain-mailbox-frame! rt consumer frame))
+    (when ob
+      (put ob o-value (second (a consumer b-message))) (put ob o-delivery-error false)
+      (put ob o-slot :consumed) (end-ob! rt ob))
+    (note-cell-gc-blocker-change! rt (a consumer b-allocation))
+    (when audit?
+      (boundary! rt (when (runtime-field rt :audit)
+                      (cond-> (assoc (mailbox-action rt consumer :mailbox-claim)
+                                     :message-id (first (a consumer b-message)) :frame frame :inline? inline?)
+                        run (assoc :r (run-id run) :th :engine)))))))
+
+(defn- mailbox-return! [rt consumer]
+  (when (#{:entered :rejection-entered} (a consumer b-state))
+    (let [control (a consumer b-control) receipt (a consumer b-receipt) frame (a consumer b-frame)]
+      (dissoc! (a control m-reservations) (a consumer b-id))
+      (dissoc! (a control m-physical) frame)
+      (when receipt
+        (release-ticket-cells! rt receipt)
+        (dissoc! (a (runtime-field rt :finalization) 0) (a receipt x-id))
+        (put receipt x-physical false) (put receipt 18 nil))
+      (put consumer b-state :returned) (put consumer b-message nil) (put consumer b-error nil) (put consumer b-error-receipt nil)
+      (put consumer b-resolve nil) (put consumer b-reject nil)
+      (put consumer b-context nil) (put consumer b-node nil)
+      (when (not= :operation (a consumer b-kind))
+        (boundary! rt (when (runtime-field rt :audit)
+                        (assoc (mailbox-action rt consumer :mailbox-return) :frame frame)))))))
+
+(defn- run-mailbox-host! [rt consumer]
+  (let [entered? (locked rt
+                         (when (= :reserved (a consumer b-state))
+                           (mailbox-enter! rt consumer [:mailbox-frame (a consumer b-id)] false true)
+                           true))]
+    (when entered?
+      (let [frame (doto (slots 14) (put 0 rt) (put 2 -1)
+                        (put 11 (a consumer b-frame)) (put 12 (a consumer b-receipt)) (put 13 consumer))
+            callback (a consumer b-resolve) value (second (a consumer b-message))
+            context (a consumer b-context)]
+        (try
+          (host-callback-scope context
+                               (fn [value]
+                                 (with-activation frame
+                                   (binding [cps/*in-trampoline* false]
+                                     (cps/with-trampoline (cps/invoke-continuation callback value))))) value)
+          (finally (locked rt (mailbox-return! rt consumer))))))))
+
+(defn- reserve-mailbox! [rt consumer message state]
+  (let [control (a consumer b-control)]
+    (mailbox-unlink-pending! control consumer)
+    (put consumer b-state state) (put consumer b-message message)
+    (assoc! (a control m-reservations) (a consumer b-id) consumer)
+    (if-let [registration (a consumer b-registration)]
+      (let [operation (a registration g-operation)]
+        (put registration g-value (second message))
+        (put registration g-state (if (= :claimed state) :claimed :ready))
+        (queue-operation! rt operation))
+      (when (= :reserved state)
+        (if-let [run (a consumer b-run)]
+          (do (put run r-status :running) (schedule! rt (a run r-node) (a consumer b-ob)))
+          (push! (runtime-field rt :posts) (doto (slots 1) (put 0 #(run-mailbox-host! rt consumer)))))))))
+
+(defn- process-mailbox-post! [rt event]
+  (let [ref (a event 1) aux (a event 6)]
+    (when aux (put aux 2 (dec (long (a aux 2)))))
+    (when-let [view (mailbox-view! rt ref :assign)]
+      (let [control (:control view)
+            consumer (loop []
+                       (when-let [consumer (queue-front (a control m-consumers))]
+                         (let [ob (a consumer b-ob) run (a consumer b-run)
+                               registration (a consumer b-registration)
+                               admissible? (and (= :pending (a consumer b-state))
+                                                (if registration
+                                                  (let [operation (a registration g-operation)]
+                                                    (and (= :open (a operation p-state))
+                                                         (identical? registration (find! (a operation p-registrations) (a registration g-id)))))
+                                                  (and (a ob o-live)
+                                                       (or (nil? run)
+                                                           (and (identical? run (current (a run r-node)))
+                                                                (not= :unwinding (a run r-status)))))))]
+                           (if admissible? consumer
+                               (do (mailbox-detach! rt consumer)
+                                   (when (identical? consumer (queue-front (a control m-consumers)))
+                                     (mailbox-unlink-pending! control consumer))
+                                   (when (and ob (a ob o-live)) (end-ob! rt ob))
+                                   (recur))))))]
+        (if consumer (reserve-mailbox! rt consumer (a event 3) :reserved)
+            (push! (a control m-messages) (a event 3)))))
+    (note-cell-gc-blocker-change! rt (:id ref))
+    (boundary! rt (when (runtime-field rt :audit)
+                    (cond-> {:t :mailbox-post :w (runtime-field rt :world) :e (:id ref) :allocation (:id ref)
+                             :seq (a event 2) :message-id (first (a event 3)) :value (second (a event 3))}
+                      (a event 5) (assoc :cell (a event 5)) (a event 7) (assoc :repost? true))))))
+
+(defn- new-mailbox-consumer! [rt ref view kind ob registration resolve reject]
+  (let [control (:control view) id (if registration [:operation (a registration g-id)]
+                                       [(if (= :ordinary kind) :obligation :host) [:o (a ob o-id)]])
+        key (or (:key view) [(runtime-field rt :world) (owner-id (a (:node view) n-owner)) (:id ref)])
+        consumer (doto (slots 20) (put b-id id) (put b-kind kind) (put b-ob ob)
+                       (put b-registration registration) (put b-state :pending)
+                       (put b-resolve resolve) (put b-reject reject)
+                       (put b-anchor (mailbox-owner-anchor rt view)) (put b-owner (second key))
+                       (put b-control control) (put b-allocation (:id ref)) (put b-key key)
+                       (put b-node (:node view)) (put b-context ec/*execution-context*) (put b-run (when ob (a ob o-run))))]
+    (when ob (put ob o-mailbox consumer))
+    consumer))
+
+(defn- mailbox-add-take! [rt consumer]
+  (let [control (a consumer b-control)]
+    (if (queued? (a control m-messages))
+      (let [message (pop! (a control m-messages))]
+        (reserve-mailbox! rt consumer message :claimed)
+        (if (= :operation (a consumer b-kind))
+          (put consumer b-frame (a (current-activation) 11))
+          (retain-mailbox-frame! rt consumer [:mailbox-frame (a consumer b-id)]))
+        true)
+      (do
+        (push! (a control m-consumers) consumer)
+        (assoc! (a control m-pending) (a consumer b-id) consumer)
+        (when-let [registration (a consumer b-registration)]
+          (assoc! (a control m-protected) (a registration g-id) consumer))
+        false))))
+
+(defn- mailbox-cancelled-id? [rt id]
+  (when id (when-let [node (find! (runtime-field rt :nodes) id)]
+             (or (a node n-cancelled) (= :unwinding (some-> (current node) (a r-status)))))))
+
+(defn take-public-mailbox-now! [requested target consumer-id]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ref (mailbox-reference! rt target)]
+    (locked rt
+            (let [view (mailbox-view! rt ref :read) control (:control view)
+                  available? (and (not (mailbox-cancelled-id? rt consumer-id))
+                                  (queued? (a control m-messages)) (not (queued? (a control m-consumers))))
+                  message (when available? (pop! (a control m-messages)))]
+              (boundary! rt (when (runtime-field rt :audit)
+                              (cond-> {:t :mailbox-take-now :w (runtime-field rt :world) :e (:id ref)
+                                       :allocation (:id ref) :consumer-id consumer-id :available? (boolean available?)}
+                                message (assoc :message-id (first message)) (:key view) (assoc :cell (:key view))
+                                (when-let [frame (current-activation)] (same-cell-world? rt (a frame 0)))
+                                (assoc :th :engine))))
+              {:available? (boolean available?) :value (second message)}))))
+
+(defn- protect-mailbox! [requested rt ref operation resolve reject direct?]
+  (let [resolve (cps-runtime/scope-continuation resolve) reject (cps-runtime/scope-continuation reject)
+        consumer (locked rt
+                         (operation-check! rt operation)
+                         (when-not (= :open (a operation p-state)) (throw (ex-info "Operation settled" {:error :operation-settled})))
+                         (let [view (mailbox-view! rt ref :protect) ticket (a operation p-ticket)
+                               key (or (:key view) [(runtime-field rt :world) (owner-id (a (:node view) n-owner)) (:id ref)])
+                               profile (runtime-field rt :finalization)
+                               cell (or (:cell view) (find! (a profile 1) key)
+                                        (doto (slots 5) (put 0 :mailbox) (put 2 (members))
+                                              (put 3 (:id ref)) (put 4 (:control view))))
+                               ordinal (put operation p-next (inc (long (a operation p-next))))
+                               registration (doto (slots 11) (put g-id [(a operation p-id) ordinal])
+                                                  (put g-operation operation) (put g-allocation (:id ref))
+                                                  (put g-control (:control view)) (put g-key key) (put g-state :pending)
+                                                  (put g-resolve resolve) (put g-reject reject) (put g-entered false))
+                               consumer (new-mailbox-consumer! rt ref view :operation nil registration resolve reject)]
+                           (put registration g-mailbox consumer)
+                           (assoc! (a profile 1) key cell) (add! (a cell 2) ticket) (assoc! (a ticket x-cells) key cell)
+                           (assoc! (a operation p-registrations) (a registration g-id) registration)
+                           (let [available? (mailbox-add-take! rt consumer)]
+                             (boundary! rt (when (runtime-field rt :audit)
+                                             (assoc (operation-action rt operation :operation-await)
+                                                    :reg (a registration g-id) :frame (a (current-activation) 11)
+                                                    :continuation (a registration g-id) :e (:id ref) :allocation (:id ref)
+                                                    :cell key :available? available?)))
+                             consumer)))]
+    (if (= :claimed (a consumer b-state))
+      (let [registration (a consumer b-registration)]
+        (try
+          (locked rt
+                  (put registration g-entered true)
+                  (mailbox-enter! rt consumer (a (current-activation) 11) true false)
+                  (boundary! rt (when (runtime-field rt :audit)
+                                  (assoc (operation-action rt operation :operation-claim)
+                                         :reg (a registration g-id) :frame (a (current-activation) 11)
+                                         :continuation (a registration g-id) :inline? true))))
+          (if direct?
+            (binding [cps/*in-trampoline* false]
+              (cps/with-trampoline (cps/invoke-continuation resolve (a registration g-value))))
+            (cps/invoke-continuation resolve (a registration g-value)))
+          (finally
+            (locked rt
+                    (clear-operation-registration! rt operation registration)
+                    (boundary! rt (when (runtime-field rt :audit)
+                                    (assoc (operation-action rt operation :operation-return)
+                                           :reg (a registration g-id) :frame (a (current-activation) 11) :inline? true)))))))
+      :org.replikativ.spindel.spin/incomplete)))
+
+(defn await-public-mailbox! [requested target resolve reject direct?]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) ref (mailbox-reference! rt target) frame (current-activation)]
+    (if-let [operation (active-operation)]
+      (protect-mailbox! requested rt ref operation resolve reject direct?)
+      (let [run (when (and frame (same-cell-world? rt (a frame 0))) (a frame 1))
+            scoped-resolve (cps-runtime/scope-continuation resolve) scoped-reject (cps-runtime/scope-continuation reject)
+            consumer (locked rt
+                             (when run (check-running! run))
+                             (let [view (mailbox-view! rt ref (if run :take :observe))
+                                   kind (if run :ordinary :host)
+                                   order (if run (put frame 2 (inc (long (a frame 2)))) 0)
+                                   ob (ob! rt (if run :await-once :deref) (:node view) run order scoped-resolve scoped-reject)
+                                   consumer (new-mailbox-consumer! rt ref view kind ob nil scoped-resolve scoped-reject)
+                                   _ (put consumer b-context requested)
+                                   available? (mailbox-add-take! rt consumer)]
+                               (when-not available?
+                                 (when run (put run r-status :parked)
+                                       (when (runtime-field rt :finalization) (put run r-cancel-cont scoped-reject))))
+                               (put ob o-failure (fn [error]
+                                                   (host-callback-scope requested
+                                                                        #(binding [cps/*in-trampoline* false]
+                                                                           (cps/invoke-continuation scoped-reject %)) error)))
+                               (boundary! rt (when (runtime-field rt :audit)
+                                               (cond-> (assoc (mailbox-action rt consumer :mailbox-take)
+                                                              :kind kind :o [:o (a ob o-id)] :order order :available? available?)
+                                                 run (assoc :r (run-id run) :th :engine)
+                                                 (:key view) (assoc :cell (:key view)))))
+                               consumer))]
+        (if (= :claimed (a consumer b-state))
+          (try
+            (locked rt (mailbox-enter! rt consumer [:mailbox-frame (a consumer b-id)] true true))
+            (let [value (second (a consumer b-message))
+                  invoke (fn [value]
+                           (if direct?
+                             (binding [cps/*in-trampoline* false]
+                               (cps/with-trampoline (cps/invoke-continuation resolve value)))
+                             (cps/invoke-continuation resolve value)))]
+              (if run
+                (invoke value)
+                (let [raw-frame (doto (slots 14) (put 0 rt) (put 2 -1)
+                                      (put 11 (a consumer b-frame)) (put 12 (a consumer b-receipt)) (put 13 consumer))]
+                  (host-callback-scope requested #(with-activation raw-frame (invoke %)) value))))
+            (finally (locked rt (mailbox-return! rt consumer))))
+          :org.replikativ.spindel.spin/incomplete)))))
+
+(defn invoke-public-mailbox! [requested target resolve reject]
+  (await-public-mailbox! requested target resolve reject true))
+
+(defn- queue-mailbox-rejection! [rt consumer error cause]
+  ;; Logical retirement owns this callback before removing its obligation.
+  ;; It retains only the named allocation while queued; no physical frame is
+  ;; invented until the actual error continuation is entered.
+  (let [reject (a consumer b-reject)]
+    (retain-mailbox-frame! rt consumer nil)
+    (mailbox-detach! rt consumer)
+    (put consumer b-state :rejection-queued) (put consumer b-error error)
+    (put (a consumer b-receipt) 20 true)
+    (put consumer b-error-receipt (if (= :cancelled cause)
+                                    ::rtp/cancelled (diagnostic-value error true)))
+    (put consumer b-reject reject) (put consumer b-node nil)
+    (push! (runtime-field rt :posts)
+           (doto (slots 1) (put 0 #(invoke-mailbox-rejection! rt consumer))))))
+
+(defn- invoke-mailbox-rejection! [rt consumer]
+  (let [entered? (locked rt
+                         (let [receipt (a consumer b-receipt)]
+                           (when (and (= :rejection-queued (a consumer b-state))
+                                      (identical? receipt (find! (a (runtime-field rt :finalization) 0) (a receipt x-id))))
+                             (let [frame [:mailbox-frame (a consumer b-id)]]
+                               (put consumer b-state :rejection-entered) (put consumer b-frame frame)
+                               (put receipt x-phase :executing) (put receipt x-physical true)
+                               (assoc! (a (a consumer b-control) m-physical) frame consumer)
+                               (boundary! rt (when (runtime-field rt :audit)
+                                               (assoc (mailbox-action rt consumer :mailbox-claim)
+                                                      :variant :error :callback (a receipt x-id) :frame frame)))
+                               true))))]
+    (when entered?
+      (let [frame (doto (slots 14) (put 0 rt) (put 2 -1) (put 11 (a consumer b-frame))
+                        (put 12 (a consumer b-receipt)) (put 13 consumer))
+            reject (a consumer b-reject) error (a consumer b-error)]
+        (try
+          (host-callback-scope (a consumer b-context)
+                               (fn [error]
+                                 (with-activation frame
+                                   (binding [cps/*in-trampoline* false]
+                                     (cps/with-trampoline (cps/invoke-continuation reject error))))) error)
+          (finally (locked rt (mailbox-return! rt consumer))))))))
+
+(defn invoke-public-mailbox-next! [requested target resolve reject]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) frame (current-activation)
+        next-resolve (fn [value] (cps/invoke-continuation resolve [value target]))]
+    (cond
+      ;; Operation reads acquire the target capability and enter their exact
+      ;; supplied continuation on the existing frame, including buffered data.
+      (active-operation)
+      (await-public-mailbox! requested target next-resolve reject false)
+
+      (and frame (same-cell-world? rt (a frame 0)))
+      (let [run (a frame 1)
+            ready (take-public-mailbox-now! requested target
+                                            (when run (a (a run r-node) n-id)))]
+        (if (:available? ready)
+          (do
+            (when run (put frame 2 (inc (long (a frame 2)))))
+            ;; The frame's existing trampoline owns this return. In particular,
+            ;; an async reduction must not nest a new pump for every item.
+            (cps/invoke-continuation resolve [(:value ready) target]))
+          (await-public-mailbox! requested target next-resolve reject false)))
+
+      ;; The first raw call owns a real host take and callback physical frame.
+      ;; That frame pumps the whole CPS callback, including any returned Thunks;
+      ;; later buffered next calls can reuse it through the branch above.
+      :else (await-public-mailbox! requested target next-resolve reject true))))

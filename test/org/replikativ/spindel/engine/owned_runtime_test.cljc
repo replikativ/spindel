@@ -2,6 +2,7 @@
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])
             [org.replikativ.spindel.engine.impl.owned :as c #?@(:cljs [:include-macros true])]
+            [org.replikativ.spindel.engine.protocols :as rtp]
             [org.replikativ.spindel.lifetime.model :as model]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.incremental.interval :as iv]
@@ -86,6 +87,8 @@
     (uuid? value) [:token (str value)]
     (inst? value) [:instant (inst-ms value)]
     (instance? EqualID value) [:equal-id (.-id ^EqualID value)]
+    (satisfies? rtp/PMailbox value) [:mailbox-reference (:id (rtp/mailbox-payload value))]
+    (satisfies? rtp/PMailboxNext value) [:mailbox-next (model-value (rtp/mailbox-next-target value))]
     (instance? #?(:clj org.replikativ.spindel.engine.impl.owned.Failure :cljs c/Failure) value)
     [:failure (ex-message (:error value)) (model-value (ex-data (:error value)))]
     (instance? #?(:clj Throwable :cljs js/Error) value)

@@ -304,3 +304,25 @@
     "Immutable {:assigned? boolean :value value}; nil/false are valid values.")
   (invoke-public-deferred! [ctx ref resolve reject]
     "Direct two-argument Deferred CPS invocation."))
+
+(defprotocol PMailbox
+  "A Mailbox's opaque synchronization payload, interpreted by its runtime."
+  (mailbox-payload [this]))
+
+(defprotocol PMailboxNext
+  "Typed callable next step of a Mailbox, yielding [message same-mailbox]."
+  (mailbox-next-target [this]))
+
+(defprotocol PMailboxSynchronization
+  "World-selected FIFO message delivery. Message selection reserves a value;
+   cancelling an unclaimed reservation returns it once. A physical inline claim
+   preserves its single entry on the existing frame across cancellation."
+  (create-public-mailbox! [ctx id])
+  (post-public-mailbox! [ctx ref value]
+    "Queue a message and return nil; messages have no error disposition.")
+  (take-public-mailbox-now! [ctx ref consumer-id]
+    "Immediate {:available? boolean :value value} without a pending consumer.")
+  (invoke-public-mailbox! [ctx ref resolve reject]
+    "Direct two-argument Mailbox CPS invocation.")
+  (invoke-public-mailbox-next! [ctx ref resolve reject]
+    "Callable next step, preserving CPS return values and yielding [value ref]."))

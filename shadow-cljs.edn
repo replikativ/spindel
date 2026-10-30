@@ -62,6 +62,12 @@
    :main org.replikativ.spindel.engine.native-operation-gc-probe/-main
    :compiler-options {:optimizations :advanced}}
 
+  :native-mailbox-gc
+  {:target :node-script
+   :output-to "out/native-mailbox-gc.js"
+   :main org.replikativ.spindel.engine.native-mailbox-gc-probe/-main
+   :compiler-options {:optimizations :advanced}}
+
   :lib
   {:target :node-library
    :output-to "target/spindel.js"

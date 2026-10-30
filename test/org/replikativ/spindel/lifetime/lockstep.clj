@@ -219,6 +219,10 @@
    (into {} (for [t [:deferred-create :deferred-request :deferred-assign :deferred-observe :deferred-protect]]
               [t {:status :not-yet :step :B2 :reason :requires-typed-deferred-adapter
                   :restrictions (constantly nil) :dispatch nil}]))
+   (into {} (for [t [:mailbox-create :mailbox-post-request :mailbox-post :mailbox-take
+                     :mailbox-take-now :mailbox-claim :mailbox-return :mailbox-detach]]
+              [t {:status :not-yet :step :B2 :reason :requires-typed-mailbox-adapter
+                  :restrictions (constantly nil) :dispatch nil}]))
    {:signal-publish
     {:status :not-yet :step :B2 :reason :requires-deferred-publication-adapter
      :restrictions (constantly nil) :dispatch nil}}

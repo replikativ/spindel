@@ -1641,7 +1641,7 @@ nor a callback's return value selects the operation's terminal result.
 | Transition | Effect |
 |---|---|
 | `operation-start` | Install a participant and startup physical frame on the exact waiting ticket before invoking the thunk outside the gate. |
-| `operation-await` | Acquire an allowed Deferred capability and save the supplied scoped continuation under a fresh registration. Assigned data claims inline work on the existing operation frame; pending data installs a source edge. |
+| `operation-await` | Acquire an allowed Deferred or Mailbox capability and save the supplied scoped continuation under a fresh registration. Available data claims inline work on the existing operation frame; pending data installs a source edge. |
 | `operation-deliver` | Move a pending registration to ready, preserving successful data. Deferred assignment performs all its registration deliveries atomically; this profile refuses standalone delivery ingress. |
 | `operation-claim` | Enter the exact saved continuation once, outside the gate. External claims require an idle operation lane; assigned inline entry uses its existing physical frame. |
 | `operation-terminal` | The first terminal capability selects an explicit `:ok` or `:error` outcome. Invalidate unclaimed work; preserve claimed work and its physical evidence. |
@@ -1670,6 +1670,46 @@ capabilities may settle an existing retained allocation, without granting ordina
 read/work authority. The final holder releases the cell. Fork and cut copying of
 Deferred controls currently refuse before mutation; remapping their registrations
 and recovery is required before the full engine replacement.
+
+**Typed Mailboxes.** A Mailbox is an unbounded FIFO of messages and consumers,
+with one delivery per message. Posting returns nil. There is no close, capacity,
+producer wait or EOF protocol. The callable returned by `anext` yields
+`[message same-mailbox]`, including for a nil message. Private controls hold
+message identities, pending consumers, reservations, protected registrations
+and physical callback receipts. Generic
+source writes and computation transitions cannot mutate these controls.
+
+- `mailbox-create` allocates the source. `mailbox-post-request` queues an exact
+  allocation envelope; `mailbox-post` consumes it and appends the message once.
+  Aliases of a retained allocation share its control, even if the envelope's
+  original retained owner key disappears before delivery.
+- `mailbox-take` installs a FIFO consumer. Selection reserves input without
+  granting continuation entry. `mailbox-claim` authenticates the exact consumer,
+  reservation and physical frame before entry. An immediate `mailbox-take-now`
+  consumes only the supplied available message witness, without adding a waiter.
+- `mailbox-detach` skips an unselected consumer. A selected but unentered
+  reservation returns its message once to the tail. After entry, a callback
+  failure consumes the message. An inline claim already on an executing frame
+  retains its one entry across cancellation; it cannot acquire a new frame.
+- `mailbox-return` releases the exact physical receipt. Raw callbacks have their
+  own receipts and immutable owner ancestry, not invented computation runs.
+  Pending callback ownership is captured at first physical claim. Queued source
+  rejection retains a named capability until its error callback physically
+  returns; success data and rejection disposition remain distinct.
+
+A live raw Mailbox callback can forward to another live Mailbox after its origin
+entry is authenticated. This does not grant unrelated Atom, Signal or Deferred
+access, graph mutation or root execution authority. After retirement it can use
+only its retained named allocation and cannot add ordinary consumers. External
+producers may post to an exact retained allocation while a valid holder exists.
+Releasing the final holder cannot be undone by a stale handle.
+
+Pending consumers, reservations, queued posts and physical callbacks prevent
+premature reclamation. Buffered messages alone do not root an unreachable
+Mailbox. Mailbox handles retain allocation identity, not the creating world.
+Mailbox fork/cut copying and recovery refuse before mutation in this profile.
+Operation combinations use explicit traces and native audit replay; the optional
+bounded Mailbox search alphabet covers host source/post/take/poll actions only.
 
 **D. Host GC (idle caches only)**
 
