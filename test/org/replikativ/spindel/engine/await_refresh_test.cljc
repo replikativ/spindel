@@ -246,6 +246,72 @@
                    (finally (when @forked (ctx/close-context! @forked))))))))
          (done)))
 
+(deftest frozen-await-prefix-reenters-only-when-its-child-needs-refresh
+  (async done
+         (doseq [advance [:source :descendant]
+                 change [:unchanged :dirty :refresh :changed-result]]
+           (testing (str (name advance) " / " (name change))
+             (with-redefs [helpers/create-test-context
+                           #(ctx/create-execution-context :executor (ex/synchronous-executor))]
+               (with-ctx [source]
+                 (binding [cps/*in-trampoline* false]
+                   (let [gate (sync/create-mailbox source)
+                         runs (atom 0)
+                         first-child (spin (if (= 1 (swap! runs inc)) (await gate) :updated))
+                         forked (atom nil)
+                         finish (atom nil)
+                         middle-fork (atom nil)
+                         resume-middle (atom nil)
+                         later-child (spin (await (fn [resolve _]
+                                                    (reset! finish resolve)
+                                                    (reset! forked (ctx/fork-context ec/*execution-context* :mode :frozen))
+                                                    sc/incomplete)))
+                         seen (atom [])
+                         parent (spin (let [first-value (await first-child)]
+                                        (swap! seen conj first-value)
+                                        (when (and (= advance :descendant) (nil? @middle-fork))
+                                          (await (fn [resolve _]
+                                                   (reset! resume-middle resolve)
+                                                   (reset! middle-fork (ctx/fork-context ec/*execution-context* :mode :frozen))
+                                                   sc/incomplete)))
+                                        [first-value (await later-child)]))]
+                     (try
+                       (run-spin! parent (fn [_]) #(is false (str %)))
+                       (sync/post! gate :first)
+                       (when (= advance :descendant)
+                         (binding [ec/*execution-context* @middle-fork]
+                           (@resume-middle :continue)
+                           (simple/drain-events! @middle-fork (:executor @middle-fork))))
+                       (is (some? @forked))
+                       (is (= [:first] @seen))
+                       (let [world @forked
+                             parent-id (sc/spin-id parent)
+                             child-id (sc/spin-id first-child)]
+                         (binding [ec/*execution-context* world]
+                           ;; The fork was taken after the earlier await advanced,
+                           ;; while its delivery claim was still on the source stack.
+                           (case change
+                             :unchanged nil
+                             :dirty (simple/mark-dirty! world child-id)
+                             :changed-result (simple/cache-result! world child-id (sc/ok :updated))
+                             :refresh (rtp/swap-state! world [:await-conts parent-id]
+                                                       (fn [conts]
+                                                         (into {} (map (fn [[id cont]]
+                                                                         [id (if (= [:spin/complete child-id] (:event-key cont))
+                                                                               (assoc cont ::simple/refresh? {:world (:fork-id world)})
+                                                                               cont)])) conts))))
+                           (@finish :later)
+                           (simple/drain-events! world (:executor world)))
+                         (let [changed? (#{:dirty :changed-result} change)
+                               value (if changed? :updated :first)]
+                           (is (= [:ok [value :later]] (cached world parent)))
+                           (is (= (if (= change :unchanged) [:first] [:first value]) @seen)
+                               "a consumed prefix reenters for invalidation, refresh, or a changed result only")))
+                       (finally
+                         (when @forked (ctx/close-context! @forked))
+                         (when @middle-fork (ctx/close-context! @middle-fork))))))))))
+         (done)))
+
 (defn- reusable-child [source runs]
   (spin (swap! runs inc) (iv/get-new (track source))))
 
