@@ -18,7 +18,11 @@
         ;; dispatch without replacing the runner-selected world.
         ;; 0.1.71 captures binding restoration data at lexical entry, preserving
         ;; qualified execution owners across suspension and nested binding exit.
-        org.replikativ/partial-cps {:mvn/version "0.1.71"}
+        ;; Draft collection/compiler integration; pin the tested source until
+        ;; the optional lowering and diagnostics are published.
+        org.replikativ/partial-cps
+        {:git/url "https://github.com/replikativ/partial-cps.git"
+         :git/sha "247fed8d6d5a2db4bccc1929ba3182a4e952a6b5"}
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.

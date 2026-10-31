@@ -241,13 +241,17 @@ patterns.
    breaks the continuation chain, and silently produces wrong
    results. Outside spin bodies (REPL, tests), `@` is fine.
 
-2. **Effects work where the macro can see them.** The macro only
-   transforms its *lexical* body. `map`, `mapv`, `filter`, `remove`,
-   `keep`, `reduce`, `run!`, `doseq` and `for` over a fn literal that
-   awaits (`(spin (mapv #(await (fetch %)) items))`) are rewritten into
-   eager loops; a named function passed to `map` stays opaque. Nest
-   `(spin …)` per item and use `(apply parallel child-spins)` for
-   concurrent work. See [CLAUDE.md, Rule 2](CLAUDE.md) for the details.
+2. **Effects work where the compiler can see them.** `doseq` uses its
+   native macro expansion, including nested bindings and modifiers. Supported
+   collection calls over effectful function literals are lowered by Partial-CPS,
+   including calls introduced by macros. Spindel explicitly retains its eager
+   compatibility policy for `map`, `filter`, `remove`, `keep` and single-binding
+   `for`: these return vectors. `mapv`, `filterv`, explicit-initial-value
+   `reduce` and `run!` are sequential; inputs must be seqable. Both reduction
+   forms respect `reduced`. Unsupported visible suspension fails at compilation;
+   separately compiled callbacks remain opaque. Nest `(spin …)` per item and
+   use `(await (apply parallel child-spins))` for concurrent work.
+   See [CLAUDE.md, Rule 2](CLAUDE.md) for the details.
 
 ## License
 

@@ -3,7 +3,14 @@
 {:deps {:aliases [:cljs]}
 
  :builds
- {;; Local test runner: `npx shadow-cljs compile test` (or `watch test`).
+ {;; Focused compiler/collection integration regressions on node.
+  :collection-test
+  {:target :node-test
+   :output-to "target/collections-test.js"
+   :ns-regexp "org.replikativ.spindel.spin.hof-test"
+   :compiler-options {:optimizations :none :elide-asserts false}}
+
+  ;; Local test runner: `npx shadow-cljs compile test` (or `watch test`).
   ;; :autorun true → runs the tests as soon as compile completes.
   :test
   {:target :node-test

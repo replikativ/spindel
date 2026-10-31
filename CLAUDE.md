@@ -63,13 +63,17 @@ throws.
 
 ### Rule 2 — Effects only work where the macro can see them
 
-The `spin` macro CPS-transforms code it sees *lexically*. For the common
-higher-order calls it rewrites the call into a loop when the **fn
-literal** passed to it performs an effect (`await`, `track`, `sample`, …):
-`map`, `mapv`, `filter`, `filterv`, `remove`, `keep`, `reduce` with an
-initial value, `run!`, and `doseq` / `for` over a single binding. The
-rewritten call is eager and returns a vector; a call whose fn performs no
-effect is left alone and keeps its laziness.
+The `spin` macro delegates collection lowering and unsupported-closure
+checks to Partial-CPS. Core `doseq` expands directly and supports nested
+bindings, destructuring and modifiers. Visible effectful fn literals in
+`mapv`, `filterv`, explicit-initial-value `reduce` and `run!` use sequential
+persistent loops over seqable inputs. Both reduction forms honor `reduced`.
+Spindel explicitly selects `:collection-mode :legacy-eager` for compatibility:
+`map`, `filter`, `remove`, `keep` and single-binding `for` still collect vectors.
+Pure calls retain their native behavior; macro-generated calls are also handled.
+Unsupported visible suspension is rejected at compile time, including unused
+closures. A separately compiled function's hidden effects remain a runtime
+boundary; no source-level checker can prove arbitrary callbacks pure.
 
 ```clojure
 ;; ✅ rewritten into a loop: the fn literal awaits
@@ -78,7 +82,7 @@ effect is left alone and keeps its laziness.
 (spin (for [x data] (await (fetch-spin x))))
 
 ;; ❌ still invisible: a named function, partial, comp, juxt, several
-;;    collections, for/doseq with :when/:let or several bindings
+;;    collections, effectful for with :when/:let or several bindings
 (spin (map fetch-and-await items))   ; fetch-and-await's body isn't lexical
 
 ;; ✅ nest a (spin …) per item, splice with `parallel` for concurrency.
@@ -92,9 +96,10 @@ effect is left alone and keeps its laziness.
 
 The rewrite is sequential, like `loop`/`recur`. For concurrency, nest a
 `(spin …)` per item as above; for streaming, use the async-sequence
-primitives in `spindel.seq.{core,combinators}`. The rewrite lives in
-`spin/cps.cljc` (`rewrite-hofs`); extend it there rather than adding
-`map-spins`-style helpers.
+primitives in `spindel.seq.{core,combinators}`. Collection lowering lives in
+`is.simm.partial-cps.collections`; `spin/cps.cljc` selects the compatibility
+policy through `ioc/invert` options. Do not add another local rewrite walker.
+Lazy sequence realization across forks is a separate integration concern.
 
 ### Rule 3 — Runtime access via protocols only; never the `:state` field
 

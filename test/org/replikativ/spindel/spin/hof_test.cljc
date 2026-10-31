@@ -59,29 +59,59 @@
                           (done))
                         (fn [e] (is false (str "rejected: " (ex-message e))) (done)))))))
 
+(deftest rewritten-run-honors-reduced
+  (async done
+         (with-ctx [_ctx]
+           (let [seen (atom [])]
+             (run-spin! (spin
+                         (run! (fn [x]
+                                 (swap! seen conj (await (spin x)))
+                                 (when (= x 2) (reduced :stop))) [1 2 3]))
+                        (fn [v]
+                          (is (nil? v))
+                          (is (= [1 2] @seen))
+                          (done))
+                        (fn [e] (is false (str e)) (done)))))))
+
+(deftest core-doseq-supports-nested-bindings-and-modifiers
+  (async done
+         (with-ctx [_ctx]
+           (run-spin! (spin
+                       (let [seen (atom [])]
+                         (doseq [x [0 1] y (range 5)
+                                 :let [v y] :when (even? v) :while (< v 3)]
+                           (swap! seen conj (await (spin [x y]))))
+                         @seen))
+                      (fn [v]
+                        (is (= [[0 0] [0 2] [1 0] [1 2]] v))
+                        (done))
+                      (fn [e] (is false (str e)) (done))))))
+
+;; Even unused callback values must delimit their own effects. The shadowed
+;; functions below do not consume these tasks; no bare suspension is admitted.
 (deftest locally-shadowed-names-are-not-rewritten
   (async done
          (with-ctx [_ctx]
            (run-spin! (spin
                        {:let (let [mapv (fn [_f _xs] :custom)]
-                               (mapv (fn [x] (await x)) [1]))
+                               (mapv (fn [x] (spin (await x))) [1]))
                         :destructured (let [{:keys [run!]} {:run! (fn [_f _xs] :custom)}]
-                                        (run! (fn [x] (await x)) [1]))
+                                        (run! (fn [x] (spin (await x))) [1]))
                         :loop (loop [filterv (fn [_f _xs] :custom)]
-                                (filterv (fn [x] (await x)) [1]))
+                                (filterv (fn [x] (spin (await x))) [1]))
                         :when-let (when-let [keep (fn [_f _xs] :custom)]
-                                    (keep (fn [x] (await x)) [1]))
+                                    (keep (fn [x] (spin (await x))) [1]))
                         :letfn (letfn [(map [_f _xs] :custom)]
-                                 (map (fn [x] (await x)) [1]))
+                                 (map (fn [x] (spin (await x))) [1]))
                         :fn-param (mapv (fn [reduce]
-                                          [(await (spin 1)) (reduce (fn [a x] (await x)) 0 [1])])
+                                          [(await (spin 1)) (reduce (fn [a x] (spin (await x))) 0 [1])])
                                         [(fn [_f _init _xs] :custom)])
                         :seq-let (vec (for [i [1] :let [remove (fn [_f _xs] [:custom i])]]
-                                        (remove (fn [x] (await x)) [1])))
+                                        (remove (fn [x] (spin (await x))) [1])))
                         ;; the init sees only the bindings before it
                         :sequential (let [xs (mapv (fn [x] (await (spin x))) [1 2])
                                           mapv (fn [_f _xs] :custom)]
-                                      [xs (mapv (fn [x] (await x)) [1])])})
+                                      [xs (mapv (fn [x] (spin (await x))) [1])])})
                       (fn [v]
                         (is (= {:let :custom :destructured :custom :loop :custom :when-let :custom
                                 :letfn :custom :fn-param [[1 :custom]] :seq-let [[:custom 1]]
