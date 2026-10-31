@@ -98,8 +98,13 @@
                                           assoc :is.simm.partial-cps.ioc/eager-arguments true)
                            var-sym (symbol (str *ns*) (name vname))]
                        [sym var-sym]))]
-       (merge async/breakpoints
-              (into {} entries)))))
+       (let [effects (into {} entries)
+             await-handler (get effects 'org.replikativ.spindel.effects.await/await)]
+         ;; cljs >= 1.12 has a core await macro. Its syntax must select the
+         ;; managed effect inside spin, rather than Partial-CPS's generic CPS
+         ;; await, or cancellation and dependency subscriptions are bypassed.
+         (cond-> (merge async/breakpoints effects)
+           await-handler (assoc 'cljs.core/await await-handler))))))
 
 #?(:clj
    (defn ^:no-doc build-cps-fn

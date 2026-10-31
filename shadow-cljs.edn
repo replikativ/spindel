@@ -7,7 +7,7 @@
   :collection-test
   {:target :node-test
    :output-to "target/collections-test.js"
-   :ns-regexp "org.replikativ.spindel.spin.hof-test"
+   :ns-regexp "org.replikativ.spindel.(spin.hof|engine.cont-cancellation)-test"
    :compiler-options {:optimizations :none :elide-asserts false}}
 
   ;; Local test runner: `npx shadow-cljs compile test` (or `watch test`).
