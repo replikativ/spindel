@@ -334,24 +334,28 @@
     (assert-live-empty! keeper)
     (verify-boundaries! rt)))
 
-(deftest active-publication-refuses-but-active-transfer-uses-the-real-cursor
+(deftest active-publication-and-transfer-use-distinct-real-cursor-points
   (let [rt (c/runtime {:audit? true :cps-exit? true}) root (lifetime/root-scope rt)
         {child :context bearer :capability} (publish rt root [:w 1])
-        moved (atom nil) owner (atom nil)
+        moved (atom nil) published (atom nil) owner (atom nil)
         task (c/cspin rt :actor
                       (reset! owner (lifetime/current-scope rt))
                       (c/signal rt :prefix :value)
-                      (refuses-unchanged! [rt] #(publish rt @owner [:w 2]))
+                      (reset! published (publish rt @owner [:w 2]))
                       (reset! moved (rtp/transfer-owned-world! rt bearer root rt @owner {:operation-id :active-move}))
                       (c/park (c/ticket :actor-park)))]
     (c/observe! rt task ignore-result ignore-result)
     (let [[_ row] (live-cap rt child)]
       (is (some? @moved))
       (is (= [:execution-owner (world-id rt) :run [:actor 1]] (:holder row)))
-      (is (= (inc (get-in (c/snapshot rt) [:entities :prefix :order]))
-             (:holder-acquisition row))))
+      (let [[_ published-row] (live-cap rt (:context @published))]
+        (is (= (inc (get-in (c/snapshot rt) [:entities :prefix :order]))
+               (:holder-acquisition published-row)))
+        (is (= (inc (:holder-acquisition published-row)) (:holder-acquisition row)))
+        (is (empty? (:runs (c/snapshot (:context @published)))))))
     (c/cancel-spin! rt task)
     (is (= :released (:status (c/snapshot child))))
+    (is (= :released (:status (c/snapshot (:context @published)))))
     (assert-live-empty! rt)
     (verify-boundaries! rt)))
 

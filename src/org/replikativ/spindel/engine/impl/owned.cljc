@@ -715,7 +715,7 @@
 (defn- active-status? [status] (case status (:running :parked :inherited :stale) true false))
 (defn- resumable-status? [status] (case status (:parked :inherited) true false))
 (defn- basis-status? [status] (case status (:completed :stale) true false))
-(defn- fork-busy-status? [status] (case status (:running :unwinding) true false))
+(defn- fork-busy-status? [status] (= :unwinding status))
 
 (defn- current [node] (a node n-current))
 (defn- open-owner? [owner]
@@ -3742,8 +3742,18 @@
             (throw (ex-info "Fork requires supported logical notification evidence" {:error :unsupported-operation :operation :fork-events})))
           (when (find! (runtime-field rt :family) world)
             (throw (ex-info "World ID already used" {:world world})))
-          (when (a (runtime-field rt :thread) 0)
-            (throw (ex-info "Fork requires a parked boundary" {:world (runtime-field rt :world)})))
+          (when-let [executing (a (runtime-field rt :thread) 0)]
+            (let [frame (current-activation)]
+              ;; Active T19 snapshots parked cohorts, never this requester's
+              ;; suffix or physical entry. A different/retired activation is
+              ;; not source authority merely because it shares a family gate.
+              (when-not (and frame (same-cell-world? rt (a frame 0))
+                             (identical? executing (a frame 1))
+                             (identical? executing (current (a executing r-node)))
+                             (= :running (a executing r-status))
+                             (nil? (a frame 8)))
+                (throw (ex-info "Fork requires the actual ordinary source activation"
+                                {:error :unsupported-operation :operation :fork-activation})))))
           (let [copies (vec (filter #(= :parked (a % r-status)) (items (a (runtime-field rt :counters) 6))))
                 run-map (dict) scope-map (dict)
                 evidence (following-copy-evidence rt copies)
@@ -3754,7 +3764,7 @@
                 selected (members)]
             (each! [run (a (runtime-field rt :counters) 6)]
                    (when (fork-busy-status? (a run r-status))
-                     (throw (ex-info "Fork requires a parked boundary" {:world (runtime-field rt :world)}))))
+                     (throw (ex-info "Unwinding participants require fork recovery" {:world (runtime-field rt :world)}))))
             (doseq [run copies]
               (each! [ob (a run r-obs)]
                      (when (find! (runtime-field rt :operations) (a ob o-id))
@@ -3890,8 +3900,11 @@
                      (when (= :atom (a node n-kind))
                        (note-cell-gc-blocker-change! child (a node n-id)))
                      (each! [token (a node n-tokens)] (add! (a token t-touched) world)))
-              (boundary! rt (when (runtime-field rt :audit) {:t :t19 :w (runtime-field rt :world) :v world :k cap-id
-                                                             :scope (owner-id owner) :systems #{}}))
+              (boundary! rt (when (runtime-field rt :audit)
+                              (let [acquisition (:holder-acquisition (find! (a (runtime-field rt :counters) 7) cap-id))]
+                                (cond-> {:t :t19 :w (runtime-field rt :world) :v world :k cap-id
+                                         :scope (owner-id owner) :systems #{}}
+                                  (integer? acquisition) (assoc :acceptance {:th :engine :order acquisition})))))
               ;; T19 first publishes the independent rows. The allocation-wide
               ;; host fact remains valid for clones made after its one-shot
               ;; callback, so publish a receipt for each surviving copied cell.
