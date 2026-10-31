@@ -3587,8 +3587,10 @@
             (throw (ex-info "Mailbox fork recovery is not implemented" {:error :unsupported-operation :operation :fork-mailbox})))
           (when (some #(= :deferred (a % n-kind)) (values (runtime-field rt :nodes)))
             (throw (ex-info "Deferred fork recovery is not implemented" {:error :unsupported-operation :operation :fork-deferred})))
-          (when (runtime-field rt :finalization)
-            (throw (ex-info "Protected CPS profile requires fork recovery" {:error :unsupported-finalization-fork})))
+          (when-let [profile (runtime-field rt :finalization)]
+            (when (or (not (empty-dict? (a profile 0)))
+                      (not (empty-dict? (a profile 1))) (queued? (a profile 2)))
+              (throw (ex-info "Protected CPS participants require fork recovery" {:error :unsupported-finalization-fork}))))
           (when (find! (runtime-field rt :family) world)
             (throw (ex-info "World ID already used" {:world world})))
           (when (or (a (runtime-field rt :thread) 0) (queued? (runtime-field rt :events)))
@@ -3613,7 +3615,10 @@
             (each! [node (values (runtime-field rt :nodes))]
                    (when (or (contains? owners (a node n-owner)) (contains? owners (a node n-creator)))
                      (add! selected node)))
-            (let [child (assoc (runtime {:audit? (boolean (runtime-field rt :audit)) :world-id world})
+            (let [profile (runtime-field rt :finalization)
+                  child (assoc (runtime {:audit? (boolean (runtime-field rt :audit)) :world-id world
+                                         :cps-exit? (boolean profile)
+                                         :on-finalization-result (when profile (a profile 4))})
                                :gate (runtime-field rt :gate) :family-id (runtime-field rt :family-id))
                   _ (vreset! (runtime-field child :arena-cell)
                              (assoc @(runtime-field child :arena-cell)
@@ -3642,6 +3647,11 @@
                        (when (= :atom (a node n-kind))
                          (assoc! (a (runtime-field child :managed-cells) 0) (a node n-id)
                                  (doto (slots 3) (put 0 (source-allocation rt (a node n-id))) (put 1 {}) (put 2 0))))
+                       ;; Allocation identity follows the selected source, while
+                       ;; cleanup tickets/cells/queues are fresh in the child.
+                       (when (and profile (= :signal (a node n-kind)))
+                         (assoc! (a (runtime-field child :finalization) 3) (a node n-id)
+                                 (find! (a profile 3) (a node n-id))))
                        (when-let [allocation (when (= :atom (a node n-kind))
                                                (find! (a (runtime-field rt :managed-cells) 1) (a node n-id)))]
                          (when (= allocation (source-allocation rt (a node n-id)))
@@ -3658,6 +3668,7 @@
                   (put copy r-node node) (put copy r-gen (a run r-gen))
                   (put copy r-owner (runtime-field child :owner-root)) (put copy r-pred (a run r-pred))
                   (put copy r-address (a run r-address))
+                  (put copy r-finalization-seq (a run r-finalization-seq))
                   (put copy r-status :inherited) (put copy r-seq (a run r-seq)) (put copy r-reactives 0)
                   (put copy r-validation-lost (a run r-validation-lost))
                   (put copy r-origin :inherited) (put copy r-source-world (runtime-field rt :world))

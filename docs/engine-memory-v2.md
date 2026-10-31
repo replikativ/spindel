@@ -503,6 +503,14 @@ body has already returned from its finalizers. Logical retirement still removes
 ordinary ownership and obligations. Cleanup tickets are physical evidence in the
 environment, never ordinary execution roots or permission to create new work.
 
+Physical entry belongs to one world. T19 and T23 copy logical Run history,
+including the finalization sequence, but clear the source world's entry flag.
+Logical resumption alone does not enter the copied body. The bounded native
+parked fork accepts an empty CPS cleanup profile and creates fresh child cleanup
+storage, preserving the configured result observer and selected source allocation
+identities. It refuses pending tickets, retained cells and queued cleanup before
+publication; physical cleanup participants are never copied.
+
 Cleanup retains existing owned source/atom payloads until its participants have
 physically returned. Each retained cell is stored once, keyed by world, original
 owner and entity, with explicit participant holders. Overlapping parent/child
