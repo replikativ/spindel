@@ -31,18 +31,20 @@
     after))
 
 (defn- walk [initial actions]
-  (doseq [cells? [false true]]
-    (let [implementation (kernel/restore initial {:cells? cells?})]
-      (reduce (fn [before action]
-                (let [after (checked before action)
-                      failure (try (kernel/step! implementation action) nil
-                                   (catch #?(:clj Exception :cljs :default) error
-                                     (or (ex-data error) {:unexpected-exception error})))]
-                  (is (nil? failure) (pr-str [cells? action failure]))
-                  (is (= (view after action) (view (kernel/snapshot implementation) action)) (pr-str [cells? action]))
-                  (is (empty? (inv/check (kernel/snapshot implementation))))
-                  after)) initial actions)))
-  (reduce m/step initial actions))
+  (let [implementations (mapv (fn [cells?]
+                                [cells? (kernel/restore initial {:cells? cells?})])
+                              [false true])]
+    (reduce (fn [before action]
+              (let [after (checked before action)]
+                (doseq [[cells? implementation] implementations]
+                  (let [failure (try (kernel/step! implementation action) nil
+                                     (catch #?(:clj Exception :cljs :default) error
+                                       (or (ex-data error) {:unexpected-exception error})))
+                        actual (kernel/snapshot implementation)]
+                    (is (nil? failure) (pr-str [cells? action failure]))
+                    (is (= (view after action) (view actual action)) (pr-str [cells? action]))
+                    (is (empty? (inv/check actual)))))
+                after)) initial actions)))
 
 (def pending-start
   [fork
