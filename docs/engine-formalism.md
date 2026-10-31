@@ -1115,6 +1115,15 @@ Notes:
   run creditors. A cross-world debtor `e ∈ W` is mirrored by the row
   `[e v o] ∈ fdeps_W`. That row is both the retention reason and the
   delivery index (T8).
+- **Host callback origin.** T4 captures the selected invocation world in
+  the filter's `:origin`, independently of the debtor's storage world.
+  An omitted origin is stamped at registration; a different supplied origin
+  or an unknown filter mode refuses before allocation. A direct foreign
+  registration can deliver from its debtor. Copying and delivering its
+  value-only descriptor requires the origin's causal descendant lineage.
+  A registration originating in B and stored in parent A therefore cannot
+  be copied into B's sibling C merely because C forks A. Queueing the
+  registration or the copy transaction preserves this origin proof.
 - **Continuations.** The continuation lives only in `:cont` of its
   obligation row (contract rule 5).
 - **Phases of a cross-world obligation.** An obligation `o ∈ ob_v` with
