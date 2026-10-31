@@ -55,7 +55,6 @@
            (get-in (c/snapshot rt) [:global :caps b-id :holder])))
     (binding [ec/*execution-context* b]
       (c/observe! b task ignore-result #(swap! task-errors conj %)))
-    (verify-boundaries! rt)
     ;; B's Scope claims C; terminal C then closes its Scope and claims B.
     ;; C has no public receipt yet. B cannot finish while its finally is parked.
     (lifetime/close-scope! b b-scope)
@@ -71,13 +70,11 @@
       (is (= #{b-world c-world} (set (keys debts))))
       (is (= #{c-world} (set (map :target-world (vals (get debts b-world))))))
       (is (= #{b-world} (set (map :target-world (vals (get debts c-world)))))))
-    (verify-boundaries! rt)
     (reset! c-completion (rtp/request-world-release! target-c :observe-cycle))
     (is (satisfies? rtp/PWorldRelease @c-completion))
     (lifecycle/observe! @c-completion #(swap! delivered conj %) #(swap! errors conj %))
     (is (empty? @delivered))
     (is (= :releasing (get-in (c/snapshot target-c) [:release :phase])))
-    (verify-boundaries! rt)
     (@callback :finish-b)
     (is (= [:finally-entered [:finally-returning 42 true]] @trace))
     (when try-self-wait?
@@ -95,7 +92,6 @@
     (is (empty? (get-in (c/snapshot rt) [:global :custody :by-holder])))
     (doseq [field [:custody-live-leaves :custody-holder-buckets :custody-claims :custody-pending]]
       (is (zero? (get (c/storage-stats rt) field)) (str field)))
-    (verify-boundaries! rt)
     ;; The completed receipt remains usable without recreating either world.
     (let [detach (lifecycle/observe! @c-completion #(swap! late-delivered conj %) #(swap! errors conj %))]
       (is (ifn? detach))

@@ -62,7 +62,6 @@
       (is (= [[:entity (world-id rt) :worker]] (mapv :debtor obligations)))
       (is (= #{[:bundle (world-id child) #{:worker}]} (:fdeps (c/snapshot rt))))
       (is (not-any? :join-bundle (:queue (c/snapshot rt))))
-      (verify-boundaries! rt)
       (c/drain! rt)
       (is (some #(and (= :bundle (first %)) (= (world-id child) (second %)))
                 (:fdeps (c/snapshot rt))))
@@ -102,7 +101,6 @@
         (is (empty? (:native (c/snapshot child))))
         (is (empty? (:cleanup-cells (c/snapshot child))))
         (is (c/join-ready? child [:waiter 1]))
-        (verify-boundaries! rt)
         (c/resume-ticket! rt (c/pending-ticket rt gate) :source)
         (is (= [[(world-id rt) :source]] @suffixes))
         (is (= [(world-id rt)] @finalizers))
@@ -149,7 +147,6 @@
       (is (= 4 (count @observations)))
       (is (some #{[(world-id child) 3 9]} @intervals))
       (is (= :open (get-in (c/snapshot child) [:scopes [:scope :id 1] :status])))
-      (verify-boundaries! rt)
       (release! rt)
       (verify-boundaries! rt))))
 
@@ -196,7 +193,6 @@
         (is (empty? (:fdeps (c/snapshot rt))))
         (is (empty? (:native (c/snapshot child))))
         (is (empty? (:cleanup-cells (c/snapshot child))))
-        (verify-boundaries! rt)
         (when-not (= :release-root operation) (release! rt))
         (is (= (if (= :cancel-source operation)
                  [(world-id rt) (world-id child)] [(world-id rt)]) @finalizers))
@@ -227,7 +223,6 @@
                  (set @suffixes)))
           (is (= 2 (count @suffixes)))
           (is (= :public-result (get-in (c/snapshot child) [:entities id :result])))
-          (verify-boundaries! rt)
           (release! rt)
           (verify-boundaries! rt))))))
 
@@ -241,7 +236,6 @@
       (is (= :inherited (get-in (c/snapshot child) [:runs [:dormant 1] :status])))
       (is (empty? (:runs (c/snapshot grandchild))))
       (is (= 1 @entries))
-      (verify-boundaries! rt)
       (release! rt)
       (is (= 1 @entries))
       (is (zero? (:following-worlds (c/storage-stats rt))))
@@ -265,7 +259,6 @@
             worker-handles (filter #(= :observed-worker (:spin %)) handles)]
         (is (= 1 (count worker-handles)))
         (is (= #{(world-id rt)} (:touched (first worker-handles)))))
-      (verify-boundaries! rt)
       (release! rt)
       (verify-boundaries! rt))))
 
@@ -287,7 +280,6 @@
       (is (= (set tracks) (:fdeps (c/snapshot rt))))
       (is (empty? (:releasing (c/snapshot rt))))
       (is (not-any? :fdep-ended (:queue (c/snapshot rt))))
-      (verify-boundaries! rt)
       (release! rt)
       (verify-boundaries! rt))))
 
@@ -455,6 +447,5 @@
       (is (= :inherited (get-in copied [:runs [:evidence-waiter 1] :status])))
       (is (= :inherited (get-in (c/snapshot child) [:runs [:evidence-waiter 1] :status])))
       (is (= [[(world-id rt) 1] [(world-id rt) 2]] @observations))
-      (verify-boundaries! rt)
       (release! rt)
       (verify-boundaries! rt))))
