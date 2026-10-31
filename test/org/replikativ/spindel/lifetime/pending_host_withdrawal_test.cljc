@@ -2,7 +2,6 @@
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])
             [org.replikativ.spindel.lifetime.model :as m]
-            [clojure.walk :as walk]
             [org.replikativ.spindel.lifetime.host-origin-model-test :as h]
             [org.replikativ.spindel.engine.kernel :as kernel]))
 
@@ -20,12 +19,10 @@
                    :filter {:mode :causal-follow :origin creditor}}]) true))
 (defn- basis [mode] (basis-at mode a b))
 (defn- view [state]
-  (walk/postwalk
-   (fn [x]
-     (if (and (keyword? x) (#{"cancelled" "released"} (name x))
-              (#{"org.replikativ.spindel.engine.kernel" "org.replikativ.spindel.lifetime.model"} (namespace x)))
-       (keyword "error" (name x)) x))
-   (dissoc state :uses)))
+  ;; These comparisons cover withdrawal or unchanged refusal, not generated
+  ;; producer outcomes. Preserve every application value and diagnostic.
+  (dissoc state :uses))
+
 (defn- withdrawal [mode]
   {:t (if (= :deref mode) :withdraw-deref :unsubscribe) :w a :o observer})
 (defn- packets [state]
@@ -82,13 +79,34 @@
     (is (= (:runs (m/wr before a)) (:runs (m/wr after a))))
     (is (= (:clocks before) (:clocks after)))))
 
+
+(defn- sealed-cached-basis
+  ([mode neighbor?] (sealed-cached-basis mode neighbor? 42))
+  ([mode neighbor? value]
+  (let [initial (h/walk! (m/init-state {:slices? true :host-registrations 5 :invocations 5})
+                        [(h/fork a b) (h/fork b h/c)
+                         {:t :t02 :w b :e :pulse :kind :signal :value 0}
+                         {:t :t04 :w b :e :worker :mode :callback}
+                         {:t :t05 :w b :r [:worker 1] :kind :track :debtor [:entity b :pulse] :order 0}
+                         {:t :t07 :w b :r [:worker 1] :value value}
+                         {:t :queued :w b}] true)
+        sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-cached :kind :discard
+                                   :caller (m/execution-holder a [:root a])})]
+    (is (= :sealed (:status (m/wr sealed b))))
+    (is (= :completed (:status (m/run sealed b [:worker 1]))))
+    (is (= value (:result (m/ent sealed b :worker))))
+    ;; T26 and enqueueing a HOST into a sealed debtor are model setup. Neither
+    ;; enables the kernel's intentionally unsupported cut/seal entry surfaces.
+    ;; The live descendant can request this existing cache without entering B.
+    (reduce h/checked sealed
+            (cond-> [{:t :t04 :w h/c :e :worker :mode mode}
+                     {:t :t04 :w h/c :e :worker :mode :callback
+                      :filter {:mode :causal-follow :origin h/c}}]
+              neighbor? (conj {:t :t04 :w h/c :e :worker :mode :callback}))))))
+
 (deftest sealed-pending-host-withdrawal-preserves-queue-and-outside-order
   (doseq [mode [:deref :callback] outside? [false true]]
-    (let [initial (basis-at mode b h/c)
-          ;; T26 is model-only: restore its real sealed checkpoint into both
-          ;; kernel stores before testing their supported withdrawal action.
-          sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-pending :kind :discard
-                                     :caller (m/execution-holder a [:root a])})
+    (let [sealed (sealed-cached-basis mode false)
           [target other] (filter :register-host (m/pending-events sealed b))
           ;; Outside registration is also a valid physical checkpoint extent;
           ;; moving the exact immutable envelope preserves its allocated seq.
@@ -98,6 +116,9 @@
                    sealed)
           action (assoc (withdrawal mode) :w b)
           after (h/walk! before [action action] true)]
+      (is (= observer (:register-host target)))
+      (is (= other-observer (:register-host other)))
+      (is (> (:seq target) (:seal-seq (m/wr sealed b))))
       (is (= [other] (vec (filter :register-host (:queue (m/wr after b))))))
       (is (empty? (get-in after [:env :outside])))
       (is (= (:clocks before) (:clocks after)))
@@ -106,10 +127,7 @@
 
 (deftest pending-host-withdrawal-preserves-neighboring-outside-envelopes
   (doseq [mode [:deref :callback]]
-    (let [initial (h/walk! (basis-at mode b h/c)
-                           [{:t :t04 :w h/c :e :worker :mode :callback}] true)
-          sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-neighbors :kind :discard
-                                     :caller (m/execution-holder a [:root a])})
+    (let [sealed (sealed-cached-basis mode true)
           [target prefix suffix :as registrations] (vec (filter :register-host (m/pending-events sealed b)))
           neighbors (mapv #(hash-map :w b :event %) [prefix target suffix])
           ;; Real immutable registration envelopes in a valid sealed-world
@@ -122,6 +140,38 @@
       (is (= [(first neighbors) (last neighbors)] (get-in after [:env :outside])))
       (is (= (:clocks before) (:clocks after)))
       (is (= (:queue (m/wr before b)) (:queue (m/wr after b)))))))
+
+
+(deftest sealing-current-work-settles-its-already-pending-hosts-before-withdrawal
+  (doseq [mode [:deref :callback]]
+    (let [before (basis-at mode b h/c)
+          sealed (h/checked before {:t :t26 :k [:cap b] :op :seal-existing :kind :discard
+                                    :caller (m/execution-holder a [:root a])})
+          deliveries (filter #(= :host-delivery (:event %)) (:events sealed))
+          after (h/walk! sealed [(assoc (withdrawal mode) :w b)] true)]
+      (is (= {[:o 0] 1 observer 1 other-observer 1} (frequencies (map :o deliveries))))
+      (is (every? #(= ::m/cancelled (:value %)) deliveries))
+      (is (empty? (filter :register-host (m/pending-events sealed b))))
+      (is (nil? (m/run sealed b [:worker 1])))
+      (is (= (:entities (m/wr sealed b)) (:entities (m/wr after b))))
+      (is (= (:runs (m/wr sealed b)) (:runs (m/wr after b))))
+      (is (= (:clocks sealed) (:clocks after)))
+      (is (empty? (:events after))))))
+
+
+(deftest sealed-withdrawal-preserves-application-data-even-with-runtime-enum-names
+  (doseq [value [::kernel/cancelled ::m/cancelled {:nested [::kernel/cancelled ::m/released]}]]
+    (let [before (sealed-cached-basis :deref false value)
+          action (assoc (withdrawal :deref) :w b)
+          after (h/checked before action)]
+      ;; Use this namespace's exact canonical view, without the host-origin
+      ;; harness's generated-error-domain conversion, for application payloads.
+      (doseq [cells? [false true]]
+        (let [engine (kernel/restore before {:cells? cells?})]
+          (kernel/step! engine action)
+          (let [actual (kernel/snapshot engine)]
+            (is (= (view after) (view actual)))
+            (is (= value (get-in actual [:worlds b :entities :worker :result])))))))))
 
 (deftest pending-host-proof-rejects-forged-origin-debtor-or-duplicate-envelope
   (let [before (basis :deref)
