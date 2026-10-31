@@ -13,13 +13,20 @@
   ;; Only raw T11's generated HOST cancellation enum differs by namespace.
   ;; Application values (including public cancellation reasons) stay exact.
   (cond-> (dissoc s :uses)
-    (= :t11 (:t action))
+    (and (= :t11 (:t action)) (not (contains? action :cancel-value)))
     (update :events
             (fn [events]
               (mapv (fn [event]
                       (if (and (= :host-delivery (:event event))
                                (#{::m/cancelled ::kernel/cancelled} (:value event)))
                         (assoc event :value ::m/cancelled) event)) events)))))
+
+(deftest explicit-raw-cancellation-payloads-remain-exact-in-the-test-view
+  (doseq [payload [::kernel/cancelled ::m/cancelled
+                   {:nested [::kernel/cancelled ::m/cancelled]}]]
+    (let [state {:events [{:event :host-delivery :world a :o [:o 0] :value payload}]}
+          action {:t :t11 :w a :r [:worker 1] :cancel-value payload}]
+      (is (= state (view state action))))))
 
 (defn- trace! [initial actions]
   (let [engines (mapv #(kernel/restore initial {:cells? %}) [false true])]
