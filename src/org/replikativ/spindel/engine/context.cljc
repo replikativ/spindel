@@ -129,13 +129,12 @@
     (if (owned/context-scope-runner-view)
       ;; Generic application cells in an explicitly selected legacy view must
       ;; not borrow a native Run or collide with a same-named legacy Run.
-      (if (and (vector? ec/*owner-scope*) (= fork-id (second ec/*owner-scope*)))
-        (lifetime/legacy-current-scope this)
-        (lifetime/legacy-root-scope this))
+      (lifetime/legacy-root-scope this)
       (lifetime/legacy-current-scope this)))
   (open-execution-scope! [this kind parent]
     (ec/legacy-graph-entry! this) (lifetime/legacy-open-scope! this kind parent))
-  (bindable-execution-owner [this owner] (lifetime/legacy-bindable-scope this owner))
+  (bindable-execution-owner [this owner]
+    (ec/legacy-graph-entry! this) (lifetime/legacy-bindable-scope this owner))
   (capture-execution-owner [this owner]
     (if-let [runner (owned/context-scope-runner-view)]
       (rtp/capture-execution-owner runner owner)
@@ -1299,6 +1298,8 @@
 
   Returns: ExecutionContext with normal execution mode"
   [ctx & {:keys [drain-events?] :or {drain-events? true}}]
+  (when drain-events?
+    (ec/legacy-graph-entry! ctx))
   (let [final-ctx (set-execution-mode ctx nil)]
     (when drain-events?
       (simple/drain-events! final-ctx (:executor final-ctx)))

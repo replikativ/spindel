@@ -32,49 +32,60 @@
       (is (= family (c/snapshot-family native)))
       (is (= callbacks @effects)))))
 
+(defn- root-owned-app-cell! [legacy retained]
+  (let [cell (ratom/create-atom 10)
+        id (ratom/atom-id cell)]
+    (swap! retained conj cell)
+    (is (= 11 (swap! cell inc)))
+    (is (= 11 (rtp/runtime-cell-value legacy id)))
+    (is (= (rtp/root-execution-owner legacy)
+           (rtp/get-state legacy [:atoms id :lifetime/owner])))))
+
 (deftest native-frame-cannot-enter-a-selected-legacy-graph-or-producer
   (doseq [following? [false true]]
     (let [root (ctx/create-execution-context :engine :simple :executor (ex/synchronous-executor))
           legacy (if following? (ctx/fork-context root) root)
-          native (c/runtime {:audit? true})
-          effects (atom []) results (atom []) retained-cell (atom nil)
+          native (c/runtime {:audit? true :world-id (:fork-id legacy)})
+          effects (atom []) results (atom []) retained-cells (atom [])
           gate (c/ticket :boundary)]
       (try
         (binding [ec/*execution-context* legacy]
-          (let [target (spin (swap! effects conj :legacy-body) :legacy-result)
+          (let [run-gate (sync/deferred)
+                target (spin (swap! effects conj :legacy-body) (await run-gate) :legacy-result)
                 id (spin-core/spin-id target) body (spin-core/spin-body target)
                 signal (sig/signal 0)
                 lazy-signal (sig/->SignalRef :uninitialized-boundary-signal 7)
                 deferred (sync/deferred) mailbox (sync/mailbox)
                 ok #(swap! effects conj [:ok %])
                 fail #(swap! effects conj [:error %])
+                _ (lifetime/with-owner (rtp/root-execution-owner legacy)
+                    (run-spin! target #(swap! effects conj [:result %]) fail))
+                _ (is (= [:run (:fork-id legacy) id 1]
+                         (rtp/get-state legacy [:nodes id :lifetime/run])))
                 _ (sync/post! mailbox :seed)
                 _ (rtp/add-public-signal-watch! legacy signal :boundary
                                                 (fn [& _] (swap! effects conj :watch)))
-                ;; The native actor deliberately shares the real legacy Spin's
-                ;; ID. Generic legacy cells must still belong to B Root,
+                ;; Both actual worlds have the same printable world label,
+                ;; Spin ID and generation. Generic cells still belong to B Root,
                 ;; rather than borrowing either world's apparent Run ID.
                 actor (c/cspin native id
                                (let [owner (lifetime/current-scope (ec/current-execution-context))]
+                                 (binding [ec/*execution-context* legacy]
+                                   (root-owned-app-cell! legacy retained-cells))
                                  (lifetime/with-owner owner
                                    (binding [ec/*execution-context* legacy]
                                      (is (ec/same-world? legacy (ec/current-execution-context)))
                                      (is (ec/same-world? native (rtp/context-scope-runner legacy)))
                                      (is (= (rtp/root-execution-owner legacy)
                                             (rtp/current-execution-owner legacy)))
-                                     (let [cell (ratom/create-atom 10)
-                                           cell-id (ratom/atom-id cell)]
-                                       (reset! retained-cell cell)
-                                       (is (= 11 (swap! cell inc)))
-                                       (is (= 11 (rtp/runtime-cell-value legacy cell-id)))
-                                       (is (= (rtp/root-execution-owner legacy)
-                                              (rtp/get-state legacy [:atoms cell-id :lifetime/owner]))))
+                                     (root-owned-app-cell! legacy retained-cells)
                                      (rtp/swap-state! legacy [:application :selected] (constantly :allowed))
                                      (is (= :allowed (rtp/get-state legacy [:application :selected])))
                                      ;; These are real typed callback entrypoints,
                                      ;; not hidden await/track calls inside fns.
                                      (doseq [[label operation]
-                                             [[:construct #(spin (swap! effects conj :constructed-body) :new)]
+                                             [[:bindable-owner #(rtp/bindable-execution-owner legacy (rtp/root-execution-owner legacy))]
+                                              [:construct #(spin (swap! effects conj :constructed-body) :new)]
                                               [:register #(rtp/register-computation! legacy target id body)]
                                               [:invoke #(rtp/invoke-computation! legacy target id body ok fail :callback)]
                                               [:await #(rtp/await-computation! legacy target id body id :boundary ok fail)]
@@ -104,7 +115,7 @@
                                (c/park gate))]
             (c/observe! native actor #(swap! results conj [:ok %]) #(swap! results conj [:error %]))
             (is (empty? @results))
-            (is (empty? @effects))
+            (is (= [:legacy-body] @effects))
             (is (= :parked (get-in (c/snapshot native) [:runs [id 1] :status])))
             ;; Retiring the actual A Run must not revoke or re-own app data
             ;; deliberately allocated in the selected legacy B world.
@@ -112,14 +123,18 @@
               (c/cancel-spin! native actor)
               (is (= [:error] (mapv first @results)))
               (is (= before (rtp/get-state legacy []))))
-            (is (= 11 (rtp/runtime-cell-value legacy (ratom/atom-id @retained-cell))))
-            (is (= (rtp/root-execution-owner legacy)
-                   (rtp/get-state legacy [:atoms (ratom/atom-id @retained-cell) :lifetime/owner])))
+            (is (= 2 (count @retained-cells)))
+            (doseq [cell @retained-cells]
+              (is (= 11 (rtp/runtime-cell-value legacy (ratom/atom-id cell))))
+              (is (= (rtp/root-execution-owner legacy)
+                     (rtp/get-state legacy [:atoms (ratom/atom-id cell) :lifetime/owner]))))
             (is (nil? (rtp/get-state legacy [:nodes (:id lazy-signal)])))
             ;; Once the physical native frame has returned, these same legacy
             ;; handles retain their ordinary public behavior.
-            (run-spin! target #(swap! effects conj [:result %]) fail)
+            (sync/deliver! run-gate :resume-legacy)
             (is (= [:legacy-body [:result :legacy-result]] @effects))
+            (doseq [cell @retained-cells]
+              (is (= 11 (rtp/runtime-cell-value legacy (ratom/atom-id cell)))))
             (deferred ok fail)
             (sync/deliver! deferred 42)
             (is (= {:assigned? true :value 42} (rtp/read-public-deferred legacy deferred)))
@@ -132,8 +147,63 @@
             (let [reader (spin (+ (await deferred) (iv/get-new (track signal))))]
               (run-spin! reader #(swap! effects conj [:legacy-await-track %]) fail)
               (is (= [:legacy-await-track 43] (last @effects))))
-            (verify-boundaries! native)))
+            (verify-boundaries! native {:initial-world (:fork-id legacy)})))
         (finally
           ;; Hold cell/handles through state checks; all dispatch is synchronous.
+          (when following? (ctx/stop-context! legacy))
+          (ctx/stop-context! root))))))
+
+(deftest native-frame-cannot-drain-or-stop-real-pending-legacy-work
+  (doseq [following? [false true]]
+    (let [scheduled (atom [])
+          executor (reify ex/PExecutor
+                     (execute! [_ task] (swap! scheduled conj task) nil)
+                     (execute-after! [_ _ task] (swap! scheduled conj task) nil))
+          root (ctx/create-execution-context :engine :simple :executor executor)
+          legacy (if following? (ctx/fork-context root) root)
+          native (c/runtime {:audit? true :world-id (:fork-id legacy)})
+          effects (atom []) results (atom []) restored (atom nil)]
+      (try
+        (binding [ec/*execution-context* legacy]
+          (let [deferred (sync/deferred)
+                _ (deferred #(swap! effects conj [:delivered %]) #(swap! effects conj [:error %]))
+                _ (sync/deliver! deferred 42)
+                rebuild (ctx/set-execution-mode legacy :rebuild)
+                snapshot (ctx/snapshot-context rebuild)
+                pending (rtp/get-state legacy [:engine/pending])
+                actor (c/cspin native :lifecycle
+                               (binding [ec/*execution-context* legacy]
+                                 (refused-without-effects! native legacy effects :finalize-drain
+                                                          #(ctx/finalize-rebuild-context rebuild))
+                                 (refused-without-effects! native legacy effects :restore-drain
+                                                          #(ctx/restore-snapshot snapshot))
+                                 (refused-without-effects! native legacy effects :stop
+                                                          #(ctx/stop-context! legacy))
+                                 (let [finalized (ctx/finalize-rebuild-context rebuild :drain-events? false)
+                                       thawed (ctx/restore-snapshot snapshot :drain-events? false)]
+                                   (reset! restored thawed)
+                                   (is (nil? (ctx/get-execution-mode finalized)))
+                                   (is (= :rebuild (ctx/get-execution-mode rebuild)))
+                                   (is (= (rtp/get-state legacy []) (rtp/get-state finalized [])))
+                                   (is (= (rtp/get-state snapshot []) (rtp/get-state thawed [])))
+                                   (is (empty? @effects))))
+                               (c/park (c/ticket :lifecycle)))]
+            (is (seq pending))
+            (is (some #(= :deferred-delivery (:type %)) pending))
+            (is (seq @scheduled))
+            (is (empty? @effects))
+            (c/observe! native actor #(swap! results conj [:ok %]) #(swap! results conj [:error %]))
+            (is (= pending (rtp/get-state legacy [:engine/pending])))
+            (is (empty? @effects))
+            (c/cancel-spin! native actor)
+            (is (= [:error] (mapv first @results)))
+            ;; The same real queued assignment can drain after A's frame exits.
+            ;; This also detects stop's running-flag mutation before refusal.
+            (ctx/finalize-rebuild-context rebuild)
+            (is (= [[:delivered 42]] @effects))
+            (is (empty? (rtp/get-state legacy [:engine/pending])))
+            (verify-boundaries! native {:initial-world (:fork-id legacy)})))
+        (finally
+          (when @restored (ctx/stop-context! @restored))
           (when following? (ctx/stop-context! legacy))
           (ctx/stop-context! root))))))

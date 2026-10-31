@@ -111,7 +111,10 @@
               :cljs (.set cache value result)))
          result)))))
 
-(defn verify-boundaries! [rt]
+(defn verify-boundaries!
+  "Replay every boundary strictly; custom-root fixtures must name their initial world."
+  ([rt] (verify-boundaries! rt {}))
+  ([rt {:keys [initial-world] :or {initial-world c/w}}]
   (let [trace (c/audit-trace rt)
         total (count trace)
         now-ms #?(:clj #(quot (System/nanoTime) 1000000) :cljs #(.now js/Date))
@@ -123,7 +126,7 @@
      ;; Map iteration order is unspecified by the contract. Replay the
      ;; runtime's witnessed subscriber order without changing logical state.
        (let [action (model-value raw-action)
-             family (model-value (or raw-family {c/w raw-actual}))
+             family (model-value (or raw-family {(or (:id raw-actual) (second (:root raw-actual))) raw-actual}))
              order (zipmap (:delivery-order action) (range))
              state (if (:delivery-order action)
                      (update-in state [:worlds (:w action) :obligations]
@@ -206,7 +209,8 @@
              #?(:clj (flush))
              (vreset! last-report now)))
          expected))
-     (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})) trace)))
+     (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})
+                       (model-value initial-world)) trace))))
 
 (deftest completed-ownership-island-becomes-value-only-before-gc
   (doseq [audit? [false true]]

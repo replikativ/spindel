@@ -178,7 +178,7 @@
     (try
       (c/observe! a task #(swap! values conj %) #(swap! errors conj %))
       (let [discarded (atom [])]
-        (lifecycle/observe! (rtp/discard-owned-world! a (:capability publication) {})
+        (lifecycle/observe! (rtp/discard-owned-world! a (:capability publication) (lifetime/root-scope a) {})
                             #(swap! discarded conj %) #(swap! errors conj %))
         (is (= [nil] @discarded)))
       (is (= :released (:status (c/snapshot b))))
