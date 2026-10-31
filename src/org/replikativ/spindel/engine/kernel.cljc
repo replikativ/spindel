@@ -2692,7 +2692,7 @@
                               (same-family? world) (same-family? dw)
                               (or (#{:signal :atom :spin} (:kind (read-row ctx dw :entities e)))
                                   (and (= :released (:status (header ctx dw)))
-                                       (cancelling? ctx world o ob)))))))
+                                       (cancelling? ctx world o)))))))
         involved? (fn [world ob] (or (contains? required world)
                                      (and (= :entity (first (:debtor ob)))
                                           (contains? required (second (:debtor ob))))))

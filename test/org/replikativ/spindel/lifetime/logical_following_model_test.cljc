@@ -34,7 +34,8 @@
   (doseq [cells? [false true]]
     (let [implementation (kernel/restore before {:cells? cells?})
           failure (try (kernel/step! implementation action) nil
-                       (catch #?(:clj Exception :cljs :default) error (ex-data error)))]
+                       (catch #?(:clj Exception :cljs :default) error
+                         (or (ex-data error) {:message (ex-message error)})))]
       (is (nil? failure) (pr-str [cells? action failure]))
       (is (= (normalize expected) (normalize (kernel/snapshot implementation)))
           (pr-str [cells? action])))))
@@ -188,4 +189,23 @@
                         {:t :t05 :w v :r [:reader 1] :kind :await-reactive :debtor [:entity w :spinner]}])
         after (checked before request)]
     (is (some #(= :spinner (first %)) (:fdeps (m/wr before w))))
+    (parity before request after)))
+
+(deftest release-admits-cancellation-from-an-already-released-source
+  (let [before (reduce checked (m/init-state {:slices? true})
+                       [fork
+                        {:t :t02 :w v :scope [:root v] :e :a :kind :signal :value 1}
+                        {:t :t04 :w w :e :reader :mode :callback}
+                        {:t :t05 :w w :r [:reader 1] :kind :track :debtor [:entity v :a] :order 0}
+                        {:t :t05 :w w :r [:reader 1] :kind :await-once :debtor [:host :gate] :order 1}
+                        {:t :t26 :w v :k :child :kind :discard :op :dispose
+                         :caller (m/execution-holder w [:root w])}
+                        {:t :t27 :k :child :op :dispose :payload :empty :bases {} :steps []}
+                        {:t :t29 :op :dispose}])
+        after (checked before request)]
+    (is (= :released (:status (m/wr before v))))
+    (is (= :live (:status (m/wr before w))))
+    (is (some :cancelled (:queue (m/wr before w))))
+    ;; Settlement setup is reference-only; compare the supported public release
+    ;; from its real checkpoint in both independent kernel stores.
     (parity before request after)))
