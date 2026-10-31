@@ -86,6 +86,35 @@
                 (inv/edge-check {:before before :action action :after orphaned}))))
     (parity before action after)))
 
+(deftest foreign-cancellation-does-not-readmit-an-ended-debtor
+  (let [parent [:waiter 1] child [:worker 1]
+        copied (reduce checked (m/init-state {:slices? true})
+                       [{:t :t04 :w w :e :waiter :mode :callback}
+                        {:t :t05 :w w :r parent :kind :await-reactive
+                         :debtor [:entity w :worker] :order 0}
+                        {:t :t05 :w w :r child :kind :await-once
+                         :debtor [:host :gate] :order 0}
+                        fork])
+        before (checked copied {:t :t11 :w w :r parent})
+        action {:t :t36 :w v}
+        after (checked before action)]
+    (is (nil? (m/ent before w :worker)))
+    (is (= [:o 1] (:cancelled (first (:queue (m/wr before v))))))
+    (is (= :running (:status (m/run after v parent))))
+    (is (nil? (get-in after [:worlds v :obligations [:o 1]])))
+    (is (empty? (:fdeps (m/wr after w))))
+    (is (empty? (:releasing (m/wr after w))))
+    (is (empty? (:queue (m/wr after w))))
+    (parity before action after)
+    ;; The old queued-only test forgot the packet at the start of T36. Keep
+    ;; that real counterexample: it fabricates an ACK extent for a gone row.
+    (with-redefs [m/cancelling? (fn [state world id ob]
+                                 (and (= :entity (first (:debtor ob)))
+                                      (not= world (second (:debtor ob)))
+                                      (some #(= id (:cancelled %)) (m/pending-events state world))))]
+      (let [broken (m/step before action)]
+        (is (some #(= :L4 (:id %)) (inv/check broken)))))))
+
 (deftest release-admits-logical-bundles-individual-edges-and-releasing-extents
   (let [bundle (followed)
         activated (checked bundle {:t :t06 :w v :o [:o 3] :value :ready})

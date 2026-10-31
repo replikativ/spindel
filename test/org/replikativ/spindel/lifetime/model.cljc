@@ -456,9 +456,12 @@
                 (and (= :bundle tag) (= v target) (contains? d e)))
               (:fdeps (wr s w))))))
 
+(def ^:dynamic ^:private *cancel-delivery* nil)
+
 (defn cancelling? [s v o ob]
   (and (= :entity (first (:debtor ob))) (not= v (second (:debtor ob)))
-       (some #(= o (:cancelled %)) (pending-events s v))))
+       (or (= [v o] *cancel-delivery*)
+           (some #(= o (:cancelled %)) (pending-events s v)))))
 
 (defn control-key [event]
   (if (:start-for event) [:start-for (:creditor-world event) (:o event)]
@@ -2761,8 +2764,11 @@
                 (:join-bundle ev) (admit-join-bundle s w ev)
                 (:fdep-ended ev) (update-in s [:worlds w :releasing] disj (:fdep-ended ev))
                 (:cancelled ev) (let [o (:cancelled ev)]
-                                  (-> s (t06-resume {:w w :o o :value (:value ev ::cancelled)})
-                                      (end-obligation w o :cancel-delivered)))
+                                  ;; Popping the packet does not readmit its
+                                  ;; ended debtor during this atomic handoff.
+                                  (binding [*cancel-delivery* [w o]]
+                                    (-> s (t06-resume {:w w :o o :value (:value ev ::cancelled)})
+                                        (end-obligation w o :cancel-delivered))))
                 (:fork-released ev) (update-in s [:worlds w :entities] dissoc [:fork (:fork-released ev)])
                 :else (refuse ::not-cleanup {:event ev}))]
         (rule-l s w))))

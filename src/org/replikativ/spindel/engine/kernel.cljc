@@ -306,7 +306,8 @@
           (map :event (filter #(= w (:w %)) (get-in (root-state ctx) [:env :outside])))))
 
 (defn- cancelling? [ctx w o]
-  (some #(= o (:cancelled %)) (pending-events ctx w)))
+  (or (= [w o] (:cancel-delivery ctx))
+      (some #(= o (:cancelled %)) (pending-events ctx w))))
 
 (defn- pending-start? [ctx v o ob]
   (let [[kind w e] (:debtor ob)]
@@ -2645,8 +2646,9 @@
         (let [fd (:fdep-ended event)]
           (header-edit! ctx w update :releasing disj fd)
           (doseq [e (if (= :bundle (first fd)) (nth fd 2) [(first fd)])] (mark! ctx w e)))
-        (:cancelled event) (do (resume! ctx {:w w :o (:cancelled event) :value (get event :value ::cancelled)})
-                               (end-obligation! ctx w (:cancelled event) :cancel-delivered))
+        (:cancelled event) (let [delivery (assoc ctx :cancel-delivery [w (:cancelled event)])]
+                            (resume! delivery {:w w :o (:cancelled event) :value (get event :value ::cancelled)})
+                            (end-obligation! delivery w (:cancelled event) :cancel-delivered))
         (:fork-released event) (remove-entity! ctx w [:fork (:fork-released event)])
         :else (require! false ::not-cleanup {:event event})))))
 
