@@ -17,10 +17,10 @@
 (defn- world-id [rt] (let [state (c/snapshot rt)] (or (:id state) (second (:root state)))))
 (defn- publish [rt]
   (rtp/fork-owned-world! rt {:world-id [:w 1] :owner (lifetime/root-scope rt)
-                           :mode :following :systems #{}}))
+                             :mode :following :systems #{}}))
 (defn- run-obligations [rt run]
   (into {} (filter (fn [[_ row]] (= [:run (world-id rt) run] (:creditor row)))
-                  (:obligations (c/snapshot rt)))))
+                   (:obligations (c/snapshot rt)))))
 (defn- release! [rt]
   (let [values (atom []) errors (atom [])]
     (lifecycle/observe! (rtp/request-world-release! rt :finished)
@@ -172,7 +172,7 @@
           (let [values (atom []) errors (atom [])]
             (lifecycle/observe!
              (rtp/discard-owned-world! rt bearer (lifetime/root-scope rt)
-                                      {:operation-id :discard-pending})
+                                       {:operation-id :discard-pending})
              #(swap! values conj %) #(swap! errors conj %))
             (is (= [nil] @values))
             (is (empty? @errors))
@@ -237,7 +237,7 @@
     (c/observe! rt task ignore-result ignore-result)
     (let [{child :context} (publish rt)
           {grandchild :context} (rtp/fork-owned-world! child {:world-id [:w 2] :owner (lifetime/root-scope child)
-                                                            :mode :following :systems #{}})]
+                                                              :mode :following :systems #{}})]
       (is (= :inherited (get-in (c/snapshot child) [:runs [:dormant 1] :status])))
       (is (empty? (:runs (c/snapshot grandchild))))
       (is (= 1 @entries))
@@ -303,11 +303,11 @@
       (c/observe! rt waiter ignore-result ignore-result)
       (let [{child :context bearer :capability} (publish rt)
             blocker (c/cspin child :cleanup-blocker
-                            (try (c/park cleanup-gate)
-                                 (finally (c/await-finalization (fn [resolve _] (reset! cleanup-ack resolve))))))]
+                             (try (c/park cleanup-gate)
+                                  (finally (c/await-finalization (fn [resolve _] (reset! cleanup-ack resolve))))))]
         (c/observe! child blocker ignore-result ignore-result)
         (let [receipt (rtp/discard-owned-world! rt bearer (lifetime/root-scope rt)
-                                              {:operation-id :sealed-inherited})]
+                                                {:operation-id :sealed-inherited})]
           (lifecycle/observe! receipt #(swap! values conj %) #(swap! errors conj %))
           (is (= :sealed (:status (c/snapshot child))))
           (is (fn? @cleanup-ack))
@@ -349,6 +349,83 @@
           (verify-boundaries! rt)
           (release! rt)
           (verify-boundaries! rt))))))
+
+(deftest queued-source-value-does-not-reenter-a-cancelling-foreign-track
+  (let [rt (c/runtime {:audit? true :cps-exit? true})
+        source (c/signal rt :source 1)
+        gate (c/ticket :activate) after (c/ticket :after)
+        observations (atom [])
+        task (c/cspin rt :waiter
+                      (let [value (iv/get-new (c/track source))]
+                        (swap! observations conj [(world-id ec/*execution-context*) value]))
+                      (c/park gate)
+                      (c/park after))
+        trigger (c/cspin rt :trigger :ready)]
+    (c/observe! rt task ignore-result ignore-result)
+    (let [{child :context bearer :capability} (publish rt)
+          child-root (lifetime/root-scope child)
+          self-cap (rtp/transfer-owned-world! rt bearer (lifetime/root-scope rt)
+                                              child child-root {:operation-id :self-custody})]
+      (c/resume-ticket! child (c/pending-ticket child gate) :activate)
+      (try
+        (let [before (get-in (c/snapshot child) [:runs [:waiter 1]])]
+        ;; Both operations happen in a real host callback with nested draining
+        ;; held. The value is queued before T34 cancels its foreign observer.
+          (c/observe! rt trigger
+                      (fn [_]
+                        (c/set-signal! rt source 2)
+                        (rtp/request-world-release! rt :source-release))
+                      #(is false (str %)))
+          (is (= [[(world-id rt) 1]] @observations))
+          (is (= :released (:status (c/snapshot rt))))
+          (is (= :live (:status (c/snapshot child))))
+          (is (= (:status before) (get-in (c/snapshot child) [:runs [:waiter 1] :status])))
+          (is (empty? (filter #(= :track (:kind %)) (vals (:obligations (c/snapshot child))))))
+          (verify-boundaries! rt))
+        (finally
+          (lifecycle/observe! (rtp/discard-owned-world! child self-cap child-root {:operation-id :finish-child})
+                              ignore-result #(is false (str %)))))
+      (is (= :released (:status (c/snapshot child))))
+      (verify-boundaries! rt))))
+
+#?(:clj
+   (deftest local-completion-stays-local-after-the-last-following-bucket-is-pruned
+     (let [rt (c/runtime {:audit? true :cps-exit? true}) source (c/signal rt :source 1)
+           gate (c/ticket :activate) after (c/ticket :after) observations (atom [])
+           worker (c/cspin rt :worker (iv/get-new (c/track source)))
+           waiter (c/cspin rt :waiter
+                           (let [value (c/await worker)]
+                             (swap! observations conj [(world-id ec/*execution-context*) value]))
+                           (c/park gate)
+                           (c/park after))]
+       (c/observe! rt waiter ignore-result ignore-result)
+       (let [{child :context} (publish rt)
+             dispatch-var (ns-resolve 'org.replikativ.spindel.engine.impl.owned 'next-dispatch!)
+             dispatch @dispatch-var intercepted (atom nil)]
+         (c/resume-ticket! child (c/pending-ticket child gate) :activate)
+         (try
+           ;; Select the legal interval between committed completion and its
+           ;; dequeue. Only public cancellation mutates the actual engine.
+           (with-redefs-fn
+             {dispatch-var
+              (fn [runtime borrowed]
+                (when (and (nil? @intercepted)
+                           (some #(and (= :worker (:completion %)) (= 2 (:value %))
+                                       (= (world-id rt) (:debtor-world %)))
+                                 (:queue (c/snapshot rt))))
+                  (reset! intercepted :entered)
+                  (c/cancel-spin! rt worker)
+                  (reset! intercepted {:source (c/snapshot rt) :child (c/snapshot child)}))
+                (dispatch runtime borrowed))}
+             #(c/set-signal! rt source 2))
+           (is (map? @intercepted))
+           (is (empty? (:fdeps (:source @intercepted))))
+           (is (some :cancelled (:queue (:child @intercepted))))
+           (is (= [[(world-id rt) 1]] @observations))
+           (is (= :parked (get-in (c/snapshot child) [:runs [:waiter 1] :status])))
+           (verify-boundaries! rt)
+           (finally (release! rt)))
+         (verify-boundaries! rt)))))
 
 (deftest queued-source-evidence-is-copied-once-without-entering-a-consumed-follower
   (let [rt (c/runtime {:audit? true :cps-exit? true}) source (c/signal rt :queued-source 1)

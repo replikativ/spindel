@@ -2647,8 +2647,8 @@
         relevant (for [[world row] (:worlds s) [o ob] (:obligations row)
                        :when (involved? world ob)] [world o ob])
         endpoint-worlds (into required (mapcat (fn [[world _ ob]]
-                                               (cons world (when (= :entity (first (:debtor ob)))
-                                                             [(second (:debtor ob))]))) relevant))]
+                                                 (cons world (when (= :entity (first (:debtor ob)))
+                                                               [(second (:debtor ob))]))) relevant))]
     (and
      (every? (fn [[world o ob]]
                (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))

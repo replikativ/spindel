@@ -17,7 +17,7 @@
     (is (nil? refusal) (pr-str [action refusal]))
     (is (empty? (inv/check after)) (pr-str [action (inv/check after)]))
     (is (empty? (inv/edge-check {:before before :action action :after after
-                                :refusal refusal :observation observation})) (pr-str action))
+                                 :refusal refusal :observation observation})) (pr-str action))
     after))
 
 (defn- followed []
@@ -109,9 +109,9 @@
     ;; The old queued-only test forgot the packet at the start of T36. Keep
     ;; that real counterexample: it fabricates an ACK extent for a gone row.
     (with-redefs [m/cancelling? (fn [state world id ob]
-                                 (and (= :entity (first (:debtor ob)))
-                                      (not= world (second (:debtor ob)))
-                                      (some #(= id (:cancelled %)) (m/pending-events state world))))]
+                                  (and (= :entity (first (:debtor ob)))
+                                       (not= world (second (:debtor ob)))
+                                       (some #(= id (:cancelled %)) (m/pending-events state world))))]
       (let [broken (m/step before action)]
         (is (some #(= :L4 (:id %)) (inv/check broken)))))))
 
@@ -149,10 +149,10 @@
         (refused-unchanged (assoc-in base [:worlds v :obligations [:o 1] :kind] kind))))
     (testing "independent family"
       (refused-unchanged (-> base (assoc-in [:lineages v :root] v)
-                            (assoc-in [:worlds v :lineage :root] v))))
+                             (assoc-in [:worlds v :lineage :root] v))))
     (testing "active cut"
       (refused-unchanged (assoc-in base [:cuts :cut]
-                                  {:phase :fenced :participants {:worlds #{w} :systems #{} :components #{}}})))
+                                   {:phase :fenced :participants {:worlds #{w} :systems #{} :components #{}}})))
     (doseq [control [{:start-for :a :creditor-world v :o [:o 1]}
                      {:register-host [:o 1]}]]
       (refused-unchanged (m/enqueue base w control)))))

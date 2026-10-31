@@ -2348,8 +2348,8 @@
         (edit! ctx w :runs r assoc :status :running)
         (doseq [id (read-row ctx w :by-run-creditor r)] (add-fdep! ctx w id))
         (doseq [dw (set (for [id (read-row ctx w :by-run-creditor r)
-                             :let [[_ dw _] (:debtor (read-row ctx w :obligations id))]
-                             :when (and dw (not= dw w))] dw))]
+                              :let [[_ dw _] (:debtor (read-row ctx w :obligations id))]
+                              :when (and dw (not= dw w))] dw))]
           (sync-bundle! ctx dw w))
         (doseq [id (read-row ctx w :by-run-creditor r)
                 :let [other (read-row ctx w :obligations id)
@@ -2647,8 +2647,8 @@
           (header-edit! ctx w update :releasing disj fd)
           (doseq [e (if (= :bundle (first fd)) (nth fd 2) [(first fd)])] (mark! ctx w e)))
         (:cancelled event) (let [delivery (assoc ctx :cancel-delivery [w (:cancelled event)])]
-                            (resume! delivery {:w w :o (:cancelled event) :value (get event :value ::cancelled)})
-                            (end-obligation! delivery w (:cancelled event) :cancel-delivered))
+                             (resume! delivery {:w w :o (:cancelled event) :value (get event :value ::cancelled)})
+                             (end-obligation! delivery w (:cancelled event) :cancel-delivered))
         (:fork-released event) (remove-entity! ctx w [:fork (:fork-released event)])
         :else (require! false ::not-cleanup {:event event})))))
 
@@ -2699,8 +2699,8 @@
         relevant (for [world worlds [o ob] (store/table-view (:tx ctx) world :obligations)
                        :when (involved? world ob)] [world o ob])
         endpoint-worlds (into required (mapcat (fn [[world _ ob]]
-                                               (cons world (when (= :entity (first (:debtor ob)))
-                                                             [(second (:debtor ob))]))) relevant))]
+                                                 (cons world (when (= :entity (first (:debtor ob)))
+                                                               [(second (:debtor ob))]))) relevant))]
     (and
      (every? (fn [[world o ob]]
                (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))
