@@ -315,6 +315,15 @@
                     (and (= v (:join-bundle %)) (= e (get-in % [:members o :debtor]))))
                (pending-events ctx w)))))
 
+(defn- known-foreign-obligation? [ctx w v o ob]
+  (let [e (nth (:debtor ob) 2)
+        dependencies (:fdeps (header ctx w))]
+    (or (pending-start? ctx v o ob)
+        (contains? dependencies [e v o])
+        (some (fn [[tag target debtors]]
+                (and (= :bundle tag) (= v target) (contains? debtors e)))
+              dependencies))))
+
 (defn- cleanup-dependency! [ctx dw fd]
   (when (and (not= :released (:status (header ctx dw)))
              (not (contains? (:releasing (header ctx dw)) fd)))
@@ -2795,6 +2804,13 @@
         (doseq [r (sort-by pr-str (read-row ctx w :runs-by-owner root))] (cancel-run! ctx w r nil))
         (claim-owner-custody! ctx w root)
         (release-owned! ctx w root)
+        ;; The debtor's admitted rows and queued requests authenticate foreign
+        ;; creditors. Notify them before removing the world's routing tables.
+        (doseq [v (:known-worlds (root-state ctx)) :when (not= w v)
+                [o ob] (store/table-view (:tx ctx) v :obligations)
+                :when (and (= [:entity w] (subvec (:debtor ob) 0 2))
+                           (known-foreign-obligation? ctx w v o ob))]
+          (enqueue! ctx v {:cancelled o}))
         (doseq [o (keys (store/table-view (:tx ctx) w :obligations))]
           (end-obligation! ctx w o :creditor-cancelled))
         (root-edit! ctx update-in [:env :threads]
