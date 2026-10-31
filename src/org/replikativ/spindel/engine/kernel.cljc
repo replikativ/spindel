@@ -253,6 +253,17 @@
 
 (defn- command! [ctx command] (vswap! (:commands ctx) conj command))
 
+(defn- causal-world? [ctx origin w parent]
+  (and (contains? (:known-worlds (root-state ctx)) origin)
+       (loop [candidate w visited #{} initial? true]
+         (cond
+           (nil? candidate) false
+           (contains? visited candidate) false
+           (= origin candidate) true
+           :else (recur (if (and initial? parent) parent
+                            (get-in (root-state ctx) [:lineages candidate :parent]))
+                        (conj visited candidate) false)))))
+
 (defn- emit! [ctx event]
   (when (:diagnostics? ctx)
     (vswap! (:events ctx) conj (cond-> event (:ob event) (update :ob cells/value))))
@@ -264,6 +275,15 @@
     :obligation-exit (command! ctx {:op :release-obligation :world (:world event)
                                     :o (:o event) :cause (:cause event)})
     nil))
+
+(defn- deliver-host! [ctx w o ob event]
+  (let [causal? (= :causal-follow (get-in ob [:filter :mode]))]
+    (when (and (or (not (:descriptor? ob))
+                   (and causal? (causal-world? ctx (get-in ob [:filter :origin]) w nil)))
+               (not (and causal? (contains? (:host-delivered (root-state ctx)) [w o]))))
+      (emit! ctx (cond-> event causal? (assoc :causal? true)))
+      (when causal? (root-edit! ctx update :host-delivered (fnil conj #{}) [w o]))
+      true)))
 
 (defn- enqueue! [ctx w event]
   (require! (not= :fenced (:admission (header ctx w)))
@@ -409,8 +429,8 @@
                        (not-any? (fn [[_ row]] (and (= :mailbox-callback (:kind row))
                                                     (= [:host o] (:consumer row)) (= :error (:variant row))))
                                  (get-in (root-state ctx) [:env :native])))))
-       (emit! ctx {:event :host-delivery :world w :o o
-                   :value (if cancellation (:value cancellation) ::cancelled)}))
+       (deliver-host! ctx w o ob {:event :host-delivery :world w :o o
+                                  :value (if cancellation (:value cancellation) ::cancelled)}))
      (let [[kind dw e] (:debtor ob)
            fd [e w o]]
        (when (and (= :entity kind) (not= w dw) (= :run (first (:creditor ob)))
@@ -566,12 +586,6 @@
                      (not (contains? live [:run w r]))))
               (read-row ctx w :runs-by-spin e)))))
 
-(defn- wanted? [ctx w e]
-  (let [live (rooted-liveness ctx)]
-    (or (contains? live [:entity w e])
-        (pending-extent? ctx w e live)
-        (dependency-reason? (header ctx w) e))))
-
 (defn- reasons [ctx w e]
   (let [live (rooted-liveness ctx)]
     (cond-> #{}
@@ -583,7 +597,19 @@
           (some #(and (:register-host %) (= e (:e %))) (pending-events ctx w))) (conj :obl)
       (dependency-reason? (header ctx w) e) (conj :dep)
       (scope-reason? ctx w e live) (conj :scope)
-      (contains? (:pins (header ctx w)) e) (conj :pin))))
+      (contains? (:pins (header ctx w)) e) (conj :pin)
+      (and (= :fork (:kind (read-row ctx w :entities e)))
+           (not (:reference? (read-row ctx w :entities e)))
+           (some #(and (= (second e) (:world %))
+                       (#{:sealed :settling :incomplete} (:disposition %)))
+                 (vals (merge (:caps (root-state ctx)) (get-in (root-state ctx) [:durable :caps])))))
+      (conj :settle))))
+
+(defn- wanted? [ctx w e]
+  ;; Execution reachability alone is not a storage reason. In particular, an
+  ;; unadmitted foreign start may reach an ownerless cold entity, while its
+  ;; executable request (not that entity row) survives until T37 recreates it.
+  (boolean (seq (reasons ctx w e))))
 
 (defn- owner [ctx w action]
   (let [thread (get-in (root-state ctx) [:env :threads (get action :th :host)])]
@@ -2096,21 +2122,48 @@
   (when-let [r (current-run ctx w e)]
     (edit! ctx w :runs r assoc :validation-lost? true)))
 
-(defn- withdraw-deref! [ctx {:keys [w o]}]
+(defn- pending-host-registration [ctx w o]
+  (let [packets (filter #(= o (:register-host %)) (pending-events ctx w))
+        packet (first packets)]
+    (when packet
+      (let [ob (:ob packet)]
+        (require! (and (= 1 (count packets))
+                       (= :host (first (:creditor ob)))
+                       (= [:entity w (:e packet)] (:debtor ob))
+                       (= (:caller-world packet) (get-in ob [:filter :origin]))
+                       (contains? (:known-worlds (root-state ctx)) (:caller-world packet))
+                       (#{:local :causal-follow} (get-in ob [:filter :mode])))
+                  ::invalid-host-registration {:w w :o o}))
+      packet)))
+
+(defn- withdraw-host-registration! [ctx w packet]
+  (header-edit! ctx w update :queue #(vec (remove #{packet} %)))
+  (root-edit! ctx update-in [:env :outside]
+              #(vec (remove (fn [entry] (and (= w (:w entry)) (= packet (:event entry)))) %))))
+
+(defn- host-withdraw-admitted! [ctx w]
   ;; Like unsubscribe, withdrawal is an ordinary boundary and cannot cross
   ;; a quiescent cut, including when the observer has already been served.
   (require! (not-any? #(and (= :p1q (:protocol %))
                             (#{:fenced :ready :captured :attached} (:phase %))
                             (contains? (get-in % [:participants :worlds]) w))
                       (vals (:cuts (root-state ctx))))
+            ::not-admitted {:world w}))
+
+(defn- withdraw-deref! [ctx {:keys [w o]}]
+  (require! (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
+                            (contains? (get-in % [:participants :worlds]) w))
+                      (vals (:cuts (root-state ctx))))
             ::not-admitted {:world w})
-  (when-let [ob (read-row ctx w :obligations o)]
-    (require! (= :open (:admission (header ctx w))) ::not-admitted {:world w})
-    (require! (and (= :deref (:kind ob)) (not (:standing? ob))
-                   (= :host (first (:creditor ob)))
-                   (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
-              ::not-host-deref {:w w :o o})
-    (end-obligation! ctx w o :creditor-cancelled)))
+  (let [installed (read-row ctx w :obligations o)
+        packet (when-not installed (pending-host-registration ctx w o))]
+    (when-let [ob (or installed (:ob packet))]
+      (require! (and (= :deref (:kind ob)) (not (:standing? ob))
+                     (= :host (first (:creditor ob)))
+                     (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
+                ::not-host-deref {:w w :o o})
+      (if packet (withdraw-host-registration! ctx w packet)
+          (end-obligation! ctx w o :creditor-cancelled)))))
 
 (defn- publish-signal! [ctx {:keys [w e]}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
@@ -2232,17 +2285,6 @@
               ::invalid-host-filter {:world w :filter f})
     (assoc f :origin w)))
 
-(defn- causal-world? [ctx origin w parent]
-  (and (contains? (:known-worlds (root-state ctx)) origin)
-       (loop [candidate w visited #{} initial? true]
-         (cond
-           (nil? candidate) false
-           (contains? visited candidate) false
-           (= origin candidate) true
-           :else (recur (if (and initial? parent) parent
-                            (get-in (root-state ctx) [:lineages candidate :parent]))
-                        (conj visited candidate) false)))))
-
 (defn- invoke! [ctx {:keys [w e tok mode host] :or {mode :deref host :caller} :as action}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
   (let [scope (owner ctx w action)
@@ -2283,7 +2325,7 @@
         (if join?
           (enqueue! ctx dw {:register-host o :ob ob :tok tok :e e :caller-world w})
           (do
-            (when cached? (emit! ctx {:event :host-delivery :world w :e e :o o}))
+            (when cached? (deliver-host! ctx w o ob {:event :host-delivery :world w :e e :o o}))
             (when (or (not cached?) (and (= mode :callback) (reactive? ctx dw (current-run ctx dw e))))
               (add-obligation! ctx dw o ob))))
         (vreset! (:result ctx) {:o o :world dw :cached? cached? :value (:result er)})))))
@@ -2516,11 +2558,7 @@
     (doseq [o ids :let [ob (read-row ctx w :obligations o)]]
       (if (= :host (first (:creditor ob)))
         (let [causal? (= :causal-follow (get-in ob [:filter :mode]))]
-          (when (and (or (not (:descriptor? ob))
-                         (and causal? (causal-world? ctx (get-in ob [:filter :origin]) w nil)))
-                     (not (and causal? (contains? (:host-delivered (root-state ctx)) [w o]))))
-            (emit! ctx {:event :host-delivery :world w :e e :o o :value value :causal? causal?})
-            (when causal? (root-edit! ctx update :host-delivered (fnil conj #{}) [w o])))
+          (deliver-host! ctx w o ob {:event :host-delivery :world w :e e :o o :value value :causal? causal?})
           (when (or (not (:standing? ob))
                     (and (:completed? (read-row ctx dw :entities e))
                          (not (reactive? ctx dw (current-run ctx dw e)))))
@@ -2817,7 +2855,7 @@
           (let [[_ dw e] (:debtor ob) mailbox? (boolean (mailbox-control ctx dw e))]
             (when mailbox? (queue-mailbox-rejection! ctx w e [:host o] raw-reason))
             (end-obligation! ctx w o :creditor-cancelled)
-            (when-not mailbox? (emit! ctx {:event :host-delivery :world w :o o :value released-value}))))
+            (when-not mailbox? (deliver-host! ctx w o ob {:event :host-delivery :world w :o o :value released-value}))))
         ;; Dormant copies never entered this world; drop their links without
         ;; rejecting into another copy or manufacturing finalizer work.
         (doseq [[r rr] (store/table-view (:tx ctx) w :runs) :when (= :inherited (:status rr))]
@@ -3206,13 +3244,12 @@
                    (let [cached? (and (:completed? er)
                                       (not (#{:running :parked} (:status (read-row ctx w :runs (current-run ctx w e))))))]
                      (touch! ctx w e (:tok event))
-                     (when cached?
-                       (emit! ctx {:event :host-delivery :world w :o o})
+                     (when (and cached? (deliver-host! ctx w o (:ob event) {:event :host-delivery :world w :o o}))
                        (vswap! (:commands ctx) update (dec (count @(:commands ctx))) assoc :value (:result er)))
                      (when (or (not cached?) (and (:standing? (:ob event))
                                                   (or (not (:completed? er)) (reactive? ctx w (current-run ctx w e)))))
                        (add-obligation! ctx w o (:ob event))))
-                   (emit! ctx {:event :host-delivery :world w :o o :value ::released})))
+                   (deliver-host! ctx w o (:ob event) {:event :host-delivery :world w :o o :value ::released})))
                :else (require! false ::unsupported-control {:w w :event event})))
            :t09 (reenter! ctx action)
            :t10 (supersede! ctx w (:r action))
@@ -3316,9 +3353,13 @@
                                       :when (if (= :bundle x) (contains? d e) (= x e))] v))]
                    (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true})))))
            :unsubscribe
-           (let [ob (read-row ctx w :obligations o)]
+           (let [installed (read-row ctx w :obligations o)
+                 packet (when-not installed (pending-host-registration ctx w o))
+                 ob (or installed (:ob packet))]
+             (host-withdraw-admitted! ctx w)
              (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})
-             (end-obligation! ctx w o :creditor-cancelled))
+             (if packet (withdraw-host-registration! ctx w packet)
+                 (end-obligation! ctx w o :creditor-cancelled)))
            (throw (ex-info "Unsupported kernel transition" {:action action})))
          (when (contains? action :fresh-runs)
            (require! (and (vector? (:fresh-runs action)) (empty? @(:fresh-runs ctx)))

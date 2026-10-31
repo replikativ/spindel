@@ -2390,8 +2390,140 @@
                              (not (host-origin-ancestor? before (get-in ob [:filter :origin]) w))))]
           {:host-copy-egress {:world w :o o :filter (:filter ob)}}))))))
 
+(defn causal-host-publication-proof
+  "Expected cached/T08 causal outcomes from BEFORE registration facts.
+  Error outcomes use the same world-qualified registration history."
+  [before action]
+  (let [{s :before a :action} (custody-effective-context before action)
+        w (:w a) e (:e a)
+        causal? #(= :causal-follow (get-in % [:filter :mode]))
+        work? (fn [v id] (#{:running :parked} (get-in s [:worlds v :runs id :status])))
+        source (when (= :t04 (:t a))
+                 (loop [v w seen #{}]
+                   (cond
+                     (contains? seen v) nil
+                     (get-in s [:worlds v :entities e]) v
+                     (= :following (get-in s [:worlds v :lineage :mode]))
+                     (recur (get-in s [:worlds v :lineage :parent]) (conj seen v))
+                     :else nil)))
+        event (when (= :queued (:t a)) (first (get-in s [:worlds w :queue])))
+        candidates
+        (case (:t a)
+          :t04 (let [entity (get-in s [:worlds source :entities e])
+                     runs (vals (get-in s [:worlds source :runs]))
+                     busy? (some #(and (= e (:spin %)) (#{:running :parked} (:status %))) runs)
+                     f (get a :filter (get a :delivery-filter {:mode :local}))]
+                 (when (and (= source w) (:completed? entity) (not busy?)
+                            (not (:dirty? entity))
+                            (= :causal-follow (:mode f)))
+                   {[(or source w) [:o (get-in s [:serial :o] 0)]] {:filter f}}))
+          :queued (when (:register-host event)
+                    (let [entity (get-in s [:worlds w :entities (:e event)])
+                          current (last (sort-by second
+                                                 (for [[r row] (get-in s [:worlds w :runs])
+                                                       :when (= (:e event) (:spin row))] r)))]
+                      (when (and entity (= :live (get-in s [:worlds w :status]))
+                                 (:completed? entity) (not (work? w current)) (causal? (:ob event)))
+                        {[w (:register-host event)] (:ob event)})))
+          :t08 (into {} (for [[o ob] (get-in s [:worlds w :obligations])
+                              :when (and (= :host (first (:creditor ob))) (causal? ob)
+                                         (= [:entity (or (:debtor-world a) w) e] (:debtor ob))
+                                         (or (not (:descriptor? ob))
+                                             (host-origin-ancestor? s (get-in ob [:filter :origin]) w)))]
+                          [[w o] ob]))
+          nil)]
+    (into {} (remove #(contains? (:host-delivered before) (key %)) candidates))))
+
+(defn causal-host-registration-proof [before action event]
+  ;; Registration authority comes from BEFORE rows/packets, never the event's
+  ;; claimed tag or an AFTER filter. Direct T04 can publish and remove a deref
+  ;; registration without leaving a row at either endpoint.
+  (let [{s :before a :action} (custody-effective-context before action)
+        w (:world event) o (:o event)
+        packet (first (for [packet (queued-events s w)
+                            :when (= o (:register-host packet))] packet))]
+    (or (get-in s [:worlds w :obligations o]) (:ob packet)
+        (when (and (= :t04 (:t a))
+                   (contains? (causal-host-publication-proof before action) [w o]))
+          {:creditor [:host :caller]
+           :filter (assoc (get a :filter (get a :delivery-filter {:mode :local})) :origin (:w a))}))))
+
+(defn causal-host-publication-event?
+  "Recognize every causal HOST outcome, including untagged error diagnostics."
+  [before action event]
+  (when (= :host-delivery (:event event))
+    (or (:causal? event)
+        ;; A vanished one-shot row does not erase causal classification. This
+        ;; BEFORE fact rejects further outcomes; it grants no new egress.
+        (contains? (:host-delivered before) [(:world event) (:o event)])
+        (= :causal-follow (get-in (causal-host-registration-proof before action event) [:filter :mode])))))
+
+(defn causal-host-error-proof [before action]
+  ;; These direct entrypoints have an independently identifiable rejection set.
+  ;; Other compound cascades are still checked for once/history/authentication
+  ;; using their original BEFORE registrations and actual outcome diagnostics.
+  (let [{s :before a :action} (custody-effective-context before action)
+        w (:w a) world (get-in s [:worlds w])
+        root? (and (= :t13 (:t a)) (= (:scope a) (:root world)))
+        release? (or (= :t34 (:t a)) root?)
+        run (get-in world [:runs (:r a)])
+        current (fn [e] (last (sort-by second (for [[r row] (:runs world) :when (= e (:spin row))] r))))
+        closing? (and (= :t13 (:t a)) (not root?) (get-in world [:scopes (:scope a)]))
+        under? (fn [owner] (some #{(:scope a)} (retirement-before-chain s w owner)))
+        rejected? (fn [ob]
+                    (let [[tag dw e] (:debtor ob)]
+                      (and (= :entity tag) (= dw w)
+                           (or release?
+                               (and (= :t11 (:t a)) run (not= :unwinding (:status run))
+                                    (= (:r a) (current (:spin run))) (= e (:spin run)))
+                               (and closing?
+                                    (or (under? (get-in world [:entities e :owner]))
+                                        (under? (current e))))))))
+        queued (when (= :queued (:t a)) (first (:queue world)))
+        candidates (concat
+                    (for [[o ob] (:obligations world)
+                          :when (and (= :host (first (:creditor ob))) (rejected? ob))] [[w o] ob])
+                    (when (and release? (not= :released (:status world)))
+                      (for [packet (:queue world) :when (:register-host packet)]
+                        [[w (:register-host packet)] (:ob packet)]))
+                    (when (and (:register-host queued)
+                               (or (nil? (get-in world [:entities (:e queued)]))
+                                   (not= :live (:status world))))
+                      [[[w (:register-host queued)] (:ob queued)]]))]
+    (into {} (for [[key ob] candidates
+                   :when (and (= :causal-follow (get-in ob [:filter :mode]))
+                              (or (not (:descriptor? ob))
+                                  (host-origin-ancestor? s (get-in ob [:filter :origin]) w))
+                              (not (contains? (:host-delivered before) key)))] [key ob]))))
+
+(defn causal-host-publication-errors [{:keys [before action after refusal]}]
+  (when (and (not refusal) (not= :join (:t action))
+             (not= :t31 (:t (custody-effective-delivery before action))))
+    (let [proof (merge (causal-host-publication-proof before action) (causal-host-error-proof before action))
+          events (filter #(causal-host-publication-event? before action %) (:events after))
+          actual (frequencies (map (juxt :world :o) events))
+          old (get before :host-delivered #{})
+          required (set (keys proof))
+          history (into (into old required) (keys actual))]
+      (vec (concat
+            (for [[key n] actual :when (or (not= n 1) (contains? old key))]
+              {:duplicate-causal-host-outcome {:registration key :count n :previously-delivered? (contains? old key)}})
+            (for [key required :when (not= 1 (get actual key 0))]
+              {:missing-causal-host-outcome key})
+            (for [event events
+                  :let [ob (causal-host-registration-proof before action event)]
+                  :when (or (not (true? (:causal? event)))
+                            (not= :causal-follow (get-in ob [:filter :mode]))
+                            (and (:descriptor? ob)
+                                 (not (host-origin-ancestor? before (get-in ob [:filter :origin]) (:world event)))))]
+              {:unauthenticated-or-untagged-causal-host-outcome event})
+            (when (not= history (get after :host-delivered #{}))
+              [{:causal-host-publication-history {:expected history :actual (:host-delivered after)}}]))))))
+
 (defn edge-check [{:keys [after refusal action] :as edge}]
   (vec (concat (execution-edge-check edge)
+               (when-let [bad (seq (causal-host-publication-errors edge))]
+                 [{:id :TL1 :evidence bad}])
                (when-let [bad (seq (host-origin-edge-errors edge))]
                  [{:id :O12 :evidence bad}])
                (when-let [bad (seq (cleanup-target-edge-errors edge))]
@@ -2421,7 +2553,7 @@
                     (for [ev (:events (:after edge)) :when (and (not (:refusal edge))
                                                                 (not= :join (get-in edge [:action :t]))
                                                                 (or (= :resume (:event ev))
-                                                                    (and (= :host-delivery (:event ev)) (:causal? ev))))
+                                                                    (causal-host-publication-event? (:before edge) (:action edge) ev)))
                           key (cond-> [(if (= :host-delivery (:event ev)) [:host (:world ev) (:o ev)]
                                            [(:world ev) (:r ev) (:o ev)])]
                                 (:one-shot? ev) (conj [(:world ev) (:o ev)]))] key)) trace)

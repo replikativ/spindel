@@ -478,6 +478,35 @@
     (conj (vec (remove #(= key (source-notification-key %)) events)) event)
     (conj events event)))
 
+(defn causal-world?
+  "Immutable lineage proof; parent supplies the first edge for an unpublished child."
+  ([s origin w] (causal-world? s origin w nil))
+  ([s origin w parent]
+   (and (contains? (:known-worlds s) origin)
+        (loop [candidate w seen #{} first? true]
+          (cond
+            (nil? candidate) false
+            (contains? seen candidate) false
+            (= candidate origin) true
+            :else (recur (if (and first? parent) parent
+                             (get-in s [:lineages candidate :parent]))
+                         (conj seen candidate) false))))))
+
+(defn host-delivery-allowed? [s ob w]
+  (or (not (:descriptor? ob))
+      (and (= :causal-follow (get-in ob [:filter :mode]))
+           (causal-world? s (get-in ob [:filter :origin]) w))))
+
+(defn deliver-host
+  "Publish at most one outcome per causal world/registration, including errors.
+  The original registration authenticates inherited descriptor egress."
+  [s w o ob event]
+  (let [causal? (= :causal-follow (get-in ob [:filter :mode]))]
+    (if (or (not (host-delivery-allowed? s ob w))
+            (and causal? (contains? (:host-delivered s) [w o]))) s
+        (cond-> (emit s (cond-> event causal? (assoc :causal? true)))
+          causal? (update :host-delivered (fnil conj #{}) [w o])))))
+
 (defn enqueue
   "Tombstone requests fail locally in the sender transaction; joins reject every member."
   [s w event]
@@ -486,8 +515,9 @@
     (cond (:join-bundle event) (reduce #(enqueue %1 (:join-bundle event) {:cancelled %2 :value ::released})
                                        s (keys (:members event)))
           (:start-for event) (enqueue s (:creditor-world event) {:cancelled (:o event) :value ::released})
-          (:register-host event) (emit s {:event :host-delivery :world w
-                                          :o (:register-host event) :value ::released})
+          (:register-host event) (deliver-host s w (:register-host event) (:ob event)
+                                               {:event :host-delivery :world w
+                                                :o (:register-host event) :value ::released})
           :else s)
     (and (control-key event)
          (some #(= (control-key event) (control-key %)) (pending-events s w)))
@@ -584,8 +614,8 @@
                       (not (#{:claimed :entered}
                             (get-in (cleanup/mailbox-control s dw e e)
                                     [:reservations [:host o] :state]))))
-               (emit s {:event :host-delivery :world w :o o
-                        :value (if cancellation (:value cancellation) ::cancelled)}) s)
+               (deliver-host s w o ob {:event :host-delivery :world w :o o
+                                       :value (if cancellation (:value cancellation) ::cancelled)}) s)
            s (if (and (= :entity kind) (not= dw w) (= :run (first (:creditor ob))) (not= :released (:status (wr s dw))))
                (let [fd [e w o]
                      s (if (contains? (:fdeps (wr s dw)) fd) (cleanup-dependency s dw fd w) s)]
@@ -1291,18 +1321,43 @@
 (defn deferred-protect [_s action]
   (refuse ::obsolete-deferred-protection {:action action}))
 
+(defn- pending-host-registration [s w o]
+  (let [packets (filter #(= o (:register-host %)) (pending-events s w))
+        packet (first packets)]
+    (when packet
+      (let [ob (:ob packet)]
+        (require! (and (= 1 (count packets))
+                       (= :host (first (:creditor ob)))
+                       (= [:entity w (:e packet)] (:debtor ob))
+                       (= (:caller-world packet) (get-in ob [:filter :origin]))
+                       (contains? (:known-worlds s) (:caller-world packet))
+                       (#{:local :causal-follow} (get-in ob [:filter :mode])))
+                  ::invalid-host-registration {:w w :o o}))
+      packet)))
+
+(defn- withdraw-host-registration [s w packet]
+  (-> s
+      (update-in [:worlds w :queue] #(vec (remove #{packet} %)))
+      (update-in [:env :outside]
+                 #(vec (remove (fn [entry] (and (= w (:w entry)) (= packet (:event entry)))) %)))))
+
 (defn withdraw-deref
-  "Withdraw one local host deref observer without cancelling its computation."
+  "Withdraw one installed or pending host deref without cancelling its computation."
   [s {:keys [w o]}]
-  (if-let [ob (get-in s [:worlds w :obligations o])]
-    (do
-      (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})
-      (require! (and (= :deref (:kind ob)) (not (:standing? ob))
-                     (= :host (first (:creditor ob)))
-                     (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
-                ::not-host-deref {:w w :o o})
-      (end-obligation s w o :creditor-cancelled))
-    s))
+  ;; Custody sealing permits cancellation controls; active cuts retain their
+  ;; existing fence independently of the world's admission field.
+  (require! (not (cut-participant? s w)) ::not-admitted {:world w})
+  (let [installed (get-in s [:worlds w :obligations o])
+        packet (when-not installed (pending-host-registration s w o))]
+    (if-let [ob (or installed (:ob packet))]
+      (do
+        (require! (and (= :deref (:kind ob)) (not (:standing? ob))
+                       (= :host (first (:creditor ob)))
+                       (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
+                  ::not-host-deref {:w w :o o})
+        (if packet (withdraw-host-registration s w packet)
+            (end-obligation s w o :creditor-cancelled)))
+      s)))
 
 (defn adopt-call-target
   "A successor that invokes/awaits a predecessor-owned spin adopts its
@@ -1327,25 +1382,6 @@
                    (or (not (contains? f :origin)) (= w (:origin f))))
               ::invalid-host-filter {:world w :filter f})
     (assoc f :origin w)))
-
-(defn causal-world?
-  "Immutable lineage proof; parent supplies the first edge for an unpublished child."
-  ([s origin w] (causal-world? s origin w nil))
-  ([s origin w parent]
-   (and (contains? (:known-worlds s) origin)
-        (loop [candidate w seen #{} first? true]
-          (cond
-            (nil? candidate) false
-            (contains? seen candidate) false
-            (= candidate origin) true
-            :else (recur (if (and first? parent) parent
-                             (get-in s [:lineages candidate :parent]))
-                         (conj seen candidate) false))))))
-
-(defn host-delivery-allowed? [s ob w]
-  (or (not (:descriptor? ob))
-      (and (= :causal-follow (get-in ob [:filter :mode]))
-           (causal-world? s (get-in ob [:filter :origin]) w))))
 
 (defn t04-invoke
   "T4 invoke: join, cached delivery, or fresh body entry."
@@ -1384,7 +1420,7 @@
       (if join?
         (enqueue s dw {:register-host o :ob ob :tok tok :e e :caller-world w})
         (cond-> s
-          cached? (emit {:event :host-delivery :world w :e e :o o})
+          cached? (deliver-host w o ob {:event :host-delivery :world w :e e :o o})
           (or (not cached?) (and (= mode :callback) (not (final? s dw e))))
           (assoc-in [:worlds dw :obligations o] ob))))))
 
@@ -1600,13 +1636,8 @@
       (fn [s [o ob]]
         (if (not= [:entity dw e] (:debtor ob)) s
             (if (= :host (first (:creditor ob)))
-              (cond-> (if (or (not (host-delivery-allowed? s ob w))
-                              (and (= :causal-follow (get-in ob [:filter :mode]))
-                                   (contains? (:host-delivered s) [w o]))) s
-                          (cond-> (emit s {:event :host-delivery :world w :e e :o o
-                                           :value value :causal? (= :causal-follow (get-in ob [:filter :mode]))})
-                            (= :causal-follow (get-in ob [:filter :mode]))
-                            (update :host-delivered (fnil conj #{}) [w o])))
+              (cond-> (deliver-host s w o ob {:event :host-delivery :world w :e e :o o
+                                              :value value :causal? (= :causal-follow (get-in ob [:filter :mode]))})
                 (or (not (:standing? ob)) (final? s dw e)) (end-obligation w o :delivered))
               (if (cancelling? s w o ob)
                 (-> s (t06-resume {:w w :o o :value value}) (end-obligation w o :delivered))
@@ -2591,7 +2622,7 @@
                                                                    :org.replikativ.spindel.engine.protocols/released))
                                       (end-obligation w o :creditor-cancelled))
                                   (-> s (end-obligation w o :creditor-cancelled)
-                                      (emit {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))) s))
+                                      (deliver-host w o ob {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))) s))
                           s (:obligations world))
               ;; Drop dormant copies without rejecting into any other copy.
                 s (reduce (fn [s [r rr]]
@@ -2608,12 +2639,13 @@
                 s (reduce (fn [s [o ob]]
                             (cond-> (end-obligation s w o :creditor-cancelled)
                               (= :host (first (:creditor ob)))
-                              (emit {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))
+                              (deliver-host w o ob {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))
                           s (:obligations (wr s w)))
                 s (reduce (fn [s ev]
                             (cond (:start-for ev) (enqueue s (:creditor-world ev) {:cancelled (:o ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
-                                  (:register-host ev) (emit s {:event :host-delivery :world w
-                                                               :o (:register-host ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
+                                  (:register-host ev) (deliver-host s w (:register-host ev) (:ob ev)
+                                                                    {:event :host-delivery :world w
+                                                                     :o (:register-host ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
                                   :else s)) s (:queue (wr s w)))
                 parent (get-in world [:lineage :parent])
                 s (if (and parent (ent s parent [:fork w]))
@@ -3049,10 +3081,10 @@
                          (let [s (touch s w e (:tok ev))
                                cached? (and (:completed? (ent s w e))
                                             (not (work? (run s w (current s w e)))))
-                               s (if cached? (emit s {:event :host-delivery :world w :o o}) s)]
+                               s (if cached? (deliver-host s w o (:ob ev) {:event :host-delivery :world w :o o}) s)]
                            (if (or (not cached?) (and (:standing? (:ob ev)) (not (final? s w e))))
                              (assoc-in s [:worlds w :obligations o] (:ob ev)) s))
-                         (emit s {:event :host-delivery :world w :o o :value ::released})))
+                         (deliver-host s w o (:ob ev) {:event :host-delivery :world w :o o :value ::released})))
                      (:custody-dispatch ev)
                      (if-let [claim (get-in s [:custody :claims (:custody-dispatch ev)])]
                        (let [k (:cap ev) c (cap s k) holder [:cleanup (:custody-dispatch ev)]]
@@ -3086,10 +3118,14 @@
                            ::protected-cleanup {:th (:th a)})
                  (assoc-in s [:env :threads (:th a)] (:thread a)))
              :unsubscribe
-             (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
-                   [_ dw _] (:debtor ob)]
+             (let [w (:w a) o (:o a)
+                   installed (get-in s [:worlds w :obligations o])
+                   packet (when-not installed (pending-host-registration s w o))
+                   ob (or installed (:ob packet))]
                (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o (:o a)})
-               (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
+               (-> (if packet (withdraw-host-registration s w packet)
+                       (end-obligation s w o :creditor-cancelled))
+                   (rule-l w)))
              :signal-write
              (let [w (:w a) e (:e a) er (ent s w e)]
                (require! (not= :released (:status (wr s w))) ::released {:w w})
