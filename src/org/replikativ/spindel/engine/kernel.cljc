@@ -253,6 +253,17 @@
 
 (defn- command! [ctx command] (vswap! (:commands ctx) conj command))
 
+(defn- causal-world? [ctx origin w parent]
+  (and (contains? (:known-worlds (root-state ctx)) origin)
+       (loop [candidate w visited #{} initial? true]
+         (cond
+           (nil? candidate) false
+           (contains? visited candidate) false
+           (= origin candidate) true
+           :else (recur (if (and initial? parent) parent
+                            (get-in (root-state ctx) [:lineages candidate :parent]))
+                        (conj visited candidate) false)))))
+
 (defn- emit! [ctx event]
   (when (:diagnostics? ctx)
     (vswap! (:events ctx) conj (cond-> event (:ob event) (update :ob cells/value))))
@@ -264,6 +275,15 @@
     :obligation-exit (command! ctx {:op :release-obligation :world (:world event)
                                     :o (:o event) :cause (:cause event)})
     nil))
+
+(defn- deliver-host! [ctx w o ob event]
+  (let [causal? (= :causal-follow (get-in ob [:filter :mode]))]
+    (when (and (or (not (:descriptor? ob))
+                   (and causal? (causal-world? ctx (get-in ob [:filter :origin]) w nil)))
+               (not (and causal? (contains? (:host-delivered (root-state ctx)) [w o]))))
+      (emit! ctx (cond-> event causal? (assoc :causal? true)))
+      (when causal? (root-edit! ctx update :host-delivered (fnil conj #{}) [w o]))
+      true)))
 
 (defn- enqueue! [ctx w event]
   (require! (not= :fenced (:admission (header ctx w)))
@@ -409,8 +429,8 @@
                        (not-any? (fn [[_ row]] (and (= :mailbox-callback (:kind row))
                                                     (= [:host o] (:consumer row)) (= :error (:variant row))))
                                  (get-in (root-state ctx) [:env :native])))))
-       (emit! ctx {:event :host-delivery :world w :o o
-                   :value (if cancellation (:value cancellation) ::cancelled)}))
+       (deliver-host! ctx w o ob {:event :host-delivery :world w :o o
+                                  :value (if cancellation (:value cancellation) ::cancelled)}))
      (let [[kind dw e] (:debtor ob)
            fd [e w o]]
        (when (and (= :entity kind) (not= w dw) (= :run (first (:creditor ob)))
@@ -2265,17 +2285,6 @@
               ::invalid-host-filter {:world w :filter f})
     (assoc f :origin w)))
 
-(defn- causal-world? [ctx origin w parent]
-  (and (contains? (:known-worlds (root-state ctx)) origin)
-       (loop [candidate w visited #{} initial? true]
-         (cond
-           (nil? candidate) false
-           (contains? visited candidate) false
-           (= origin candidate) true
-           :else (recur (if (and initial? parent) parent
-                            (get-in (root-state ctx) [:lineages candidate :parent]))
-                        (conj visited candidate) false)))))
-
 (defn- invoke! [ctx {:keys [w e tok mode host] :or {mode :deref host :caller} :as action}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
   (let [scope (owner ctx w action)
@@ -2316,7 +2325,7 @@
         (if join?
           (enqueue! ctx dw {:register-host o :ob ob :tok tok :e e :caller-world w})
           (do
-            (when cached? (emit! ctx {:event :host-delivery :world w :e e :o o}))
+            (when cached? (deliver-host! ctx w o ob {:event :host-delivery :world w :e e :o o}))
             (when (or (not cached?) (and (= mode :callback) (reactive? ctx dw (current-run ctx dw e))))
               (add-obligation! ctx dw o ob))))
         (vreset! (:result ctx) {:o o :world dw :cached? cached? :value (:result er)})))))
@@ -2549,11 +2558,7 @@
     (doseq [o ids :let [ob (read-row ctx w :obligations o)]]
       (if (= :host (first (:creditor ob)))
         (let [causal? (= :causal-follow (get-in ob [:filter :mode]))]
-          (when (and (or (not (:descriptor? ob))
-                         (and causal? (causal-world? ctx (get-in ob [:filter :origin]) w nil)))
-                     (not (and causal? (contains? (:host-delivered (root-state ctx)) [w o]))))
-            (emit! ctx {:event :host-delivery :world w :e e :o o :value value :causal? causal?})
-            (when causal? (root-edit! ctx update :host-delivered (fnil conj #{}) [w o])))
+          (deliver-host! ctx w o ob {:event :host-delivery :world w :e e :o o :value value :causal? causal?})
           (when (or (not (:standing? ob))
                     (and (:completed? (read-row ctx dw :entities e))
                          (not (reactive? ctx dw (current-run ctx dw e)))))
@@ -2850,7 +2855,7 @@
           (let [[_ dw e] (:debtor ob) mailbox? (boolean (mailbox-control ctx dw e))]
             (when mailbox? (queue-mailbox-rejection! ctx w e [:host o] raw-reason))
             (end-obligation! ctx w o :creditor-cancelled)
-            (when-not mailbox? (emit! ctx {:event :host-delivery :world w :o o :value released-value}))))
+            (when-not mailbox? (deliver-host! ctx w o ob {:event :host-delivery :world w :o o :value released-value}))))
         ;; Dormant copies never entered this world; drop their links without
         ;; rejecting into another copy or manufacturing finalizer work.
         (doseq [[r rr] (store/table-view (:tx ctx) w :runs) :when (= :inherited (:status rr))]
@@ -3239,13 +3244,12 @@
                    (let [cached? (and (:completed? er)
                                       (not (#{:running :parked} (:status (read-row ctx w :runs (current-run ctx w e))))))]
                      (touch! ctx w e (:tok event))
-                     (when cached?
-                       (emit! ctx {:event :host-delivery :world w :o o})
+                     (when (and cached? (deliver-host! ctx w o (:ob event) {:event :host-delivery :world w :o o}))
                        (vswap! (:commands ctx) update (dec (count @(:commands ctx))) assoc :value (:result er)))
                      (when (or (not cached?) (and (:standing? (:ob event))
                                                   (or (not (:completed? er)) (reactive? ctx w (current-run ctx w e)))))
                        (add-obligation! ctx w o (:ob event))))
-                   (emit! ctx {:event :host-delivery :world w :o o :value ::released})))
+                   (deliver-host! ctx w o (:ob event) {:event :host-delivery :world w :o o :value ::released})))
                :else (require! false ::unsupported-control {:w w :event event})))
            :t09 (reenter! ctx action)
            :t10 (supersede! ctx w (:r action))

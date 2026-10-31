@@ -88,7 +88,7 @@
           ;; T26 is model-only: restore its real sealed checkpoint into both
           ;; kernel stores before testing their supported withdrawal action.
           sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-pending :kind :discard
-                                      :caller (m/execution-holder a [:root a])})
+                                     :caller (m/execution-holder a [:root a])})
           [target other] (filter :register-host (m/pending-events sealed b))
           ;; Outside registration is also a valid physical checkpoint extent;
           ;; moving the exact immutable envelope preserves its allocated seq.
@@ -109,7 +109,7 @@
     (let [initial (h/walk! (basis-at mode b h/c)
                            [{:t :t04 :w h/c :e :worker :mode :callback}] true)
           sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-neighbors :kind :discard
-                                      :caller (m/execution-holder a [:root a])})
+                                     :caller (m/execution-holder a [:root a])})
           [target prefix suffix :as registrations] (vec (filter :register-host (m/pending-events sealed b)))
           neighbors (mapv #(hash-map :w b :event %) [prefix target suffix])
           ;; Real immutable registration envelopes in a valid sealed-world
