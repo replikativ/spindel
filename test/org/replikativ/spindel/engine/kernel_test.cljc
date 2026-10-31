@@ -30,7 +30,8 @@
                  "org.replikativ.spindel.lifetime.model"} (namespace x)))
        (keyword "error" (name x)) x))
    (select-keys state [:worlds :env :serial :events :generation-clock :clocks :host-delivered
-                       :registry :caps :durable :known-worlds :lineages :cuts :records])))
+                       :registry :caps :durable :known-worlds :lineages :cuts :records
+                       :custody :next-claim :recovery-epoch :process-live?])))
 
 (defn- compare-walk! [initial actions]
   (doseq [[cells? seal?] [[false true] [true true] [true false]]]
@@ -788,7 +789,7 @@
       (doseq [action execution-scopes/scoped-fork-close] (kernel/step! actual action))
       (let [snapshot (kernel/snapshot actual)]
         (is (nil? (get-in snapshot [:worlds w :scopes [:scope :id 0]])))
-        (is (= [{:discard [:cap 0] :seq 1}] (get-in snapshot [:worlds [:w 1] :queue]))))))
+        (is (= [{:custody-dispatch [:custody-claim 0] :cap [:cap 0] :op [:custody-op [:custody-claim 0]] :seq 1}] (get-in snapshot [:worlds [:w 1] :queue]))))))
   (compare-walk!
    (execution-scopes/independent-world-state)
    [{:t :t19 :w [:w 9] :v [:w 10] :k [:cap 0]
@@ -803,3 +804,41 @@
   (doseq [[cause order] [[:track 1] [:dirty -1]]]
     (compare-walk! (model/init-state)
                    (execution-scopes/scope-adoption-actions cause order))))
+
+(deftest custody-claim-allocation-skips-existing-unprepared-operation-reservations
+  (let [w [:w 0] root [:root w] scope [:scope :id 0]
+        reserved [:custody-op [:custody-claim 0]]
+        initial (reduce model/step (model/init-state)
+                        [{:t :t12 :w w :scope scope :parent root}
+                         {:t :t19 :w w :v [:w 1] :k [:cap 0] :scope scope :systems #{}}
+                         {:t :t19 :w w :v [:w 2] :k [:cap 1] :scope root :systems #{}}
+                         {:t :t26 :k [:cap 1] :op reserved
+                          :caller (model/execution-holder w root) :kind :merge}])
+        action {:t :t13 :w w :scope scope}
+        expected (model/step initial action)]
+    (is (= 2 (:next-claim expected)))
+    (is (= #{[:custody-claim 1]} (set (keys (get-in expected [:custody :claims])))))
+    (compare-walk! initial [action])))
+
+(deftest lost-process-restoration-refuses-supported-mutation-ingress-before-admission
+  (let [lost (model/step (model/init-state) {:t :t31})]
+    (compare-walk! lost [{:t :thread-entry :th :outside :thread {:world [:w 0] :scope nil :run nil}}
+                         {:t :t19 :w [:w 0] :v [:w 1] :k [:cap 0] :scope [:root [:w 0]] :systems #{}}])
+    ;; Corrupt restored input must refuse without repairing its process marker;
+    ;; compare-walk! deliberately assumes valid input, so keep this path explicit.
+    (let [corrupt (dissoc lost :process-live?)
+          action {:t :thread-entry :th :outside :thread {:world [:w 0]}}
+          expected (model/attempt corrupt action)
+          errors (inv/check corrupt)]
+      (is (seq errors))
+      (is (= corrupt (:state expected)))
+      (is (= ::model/invalid-process-state (get-in expected [:refusal :error])))
+      (doseq [cells? [false true]]
+        (let [actual (kernel/restore corrupt {:cells? cells?}) before (kernel/snapshot actual)
+              refusal (try (kernel/step! actual action) nil
+                           (catch #?(:clj Exception :cljs :default) e (ex-data e)))
+              after (kernel/snapshot actual)]
+          (is (= "invalid-process-state" (some-> refusal :error name)))
+          (is (= before after))
+          (is (= (view corrupt) (view after)))
+          (is (= errors (inv/check after))))))))

@@ -208,11 +208,13 @@
 
 (defn regressions! []
   (require 'org.replikativ.spindel.lifetime.generative-check
-           'org.replikativ.spindel.lifetime.transition-catalog-coverage-test)
+           'org.replikativ.spindel.lifetime.transition-catalog-coverage-test
+           'org.replikativ.spindel.lifetime.custody-model-test)
   (doseq [[namespace excluded]
           [['org.replikativ.spindel.lifetime.bfs-check (set b/search-checks)]
            ['org.replikativ.spindel.lifetime.generative-check #{}]
            ['org.replikativ.spindel.lifetime.transition-catalog-coverage-test #{}]
+           ['org.replikativ.spindel.lifetime.custody-model-test #{}]
            ['org.replikativ.spindel.lifetime.run9-check #{'join-interleavings}]
            ['org.replikativ.spindel.lifetime.run10-check #{'f57-release-interleavings}]
            ['org.replikativ.spindel.lifetime.run11-check #{'owned-child-exhaustion}]

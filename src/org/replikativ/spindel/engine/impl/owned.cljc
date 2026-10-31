@@ -568,7 +568,7 @@
                                 (compare (long (a x n-rank)) (long (a y n-rank))))))
                    :cljs (array))
                 (atom false)
-                (doto (slots 10)
+                (doto (slots 11)
                   (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue))
                   (put 4 (slots 32)) (put 5 (slots 14)) (put 1 0) (put 2 0)
                   (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
@@ -2731,7 +2731,7 @@
 (def ^:private engine-state-keys
   #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
     :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
-    :seq :serial :clock :handles :threads :gc :global :scopes :next-scope :scope-balance :pins
+    :seq :serial :clock :handles :threads :gc :principals :global :scopes :next-scope :scope-balance :pins
     :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc :addressing})
 
 (defn- engine-path? [path]
@@ -3431,6 +3431,14 @@
                       (runtime-field world :world))) :known-worlds (set (map :world worlds))
      :lineages (into {} (for [world worlds] [(runtime-field world :world) (runtime-field world :lineage)]))
      :caps (map-value (a (runtime-field rt :counters) 7))
+     ;; This bounded profile only creates Root-held fork caps. The index is
+     ;; actual shared storage; claims, settlement and process recovery refuse.
+     :custody {:by-holder (if-let [index (a (runtime-field rt :counters) 10)]
+                            (into {} (for [[holder bucket] (map-value index)]
+                                       [holder (set (items bucket))]))
+                            {})
+               :claims {}}
+     :next-claim 0 :recovery-epoch 0 :process-live? true
      :generation-clock (into {} (for [world worlds :let [clock (a (runtime-field world :counters) 3)] :when clock [id n] (map-value clock)]
                                   [[(runtime-field world :world) id] n]))}))
 
@@ -3457,7 +3465,7 @@
                                      (a data s-origin) (assoc :origin (a data s-origin) :source-world (a data s-source-world)))]))
                   :next-scope (if-let [state (scope-state rt)] (a state 2) 0)
                   :scope-balance (if-let [state (scope-state rt)] (a state 3) 0)
-                  :pins #{} :fdeps #{} :releasing #{}
+                  :pins #{} :fdeps #{} :releasing #{} :principals #{}
                   :entities (into {} (for [node (values (runtime-field rt :nodes))]
                                        [(a node n-id)
                                         (cond-> {:kind (a node n-kind) :origin (or (a node n-origin) :created) :owner (owner-id (a node n-owner))
@@ -3690,9 +3698,17 @@
               (prune-ancestry! child)
               (put (runtime-field child :counters) 1 (a (runtime-field rt :counters) 1))
               (put (runtime-field child :counters) 7 (a (runtime-field rt :counters) 7))
-              (assoc! (a (runtime-field rt :counters) 7) [:cap world]
-                      {:world world :scope #{} :holder (runtime-field rt :root) :disposition :open :published? true
-                       :op nil :pred nil :successors [] :durable? false :bases {}})
+              (let [cap-id [:cap world]
+                    holder [:execution-owner (runtime-field rt :world) :root (runtime-field rt :root)]
+                    index (or (a (runtime-field rt :counters) 10)
+                              (put (runtime-field rt :counters) 10 (id-dict)))
+                    bucket (or (find! index holder) (assoc! index holder (members)))]
+                (assoc! (a (runtime-field rt :counters) 7) cap-id
+                        {:world world :scope #{} :holder holder :holder-acquisition nil
+                         :disposition :open :published? true
+                         :op nil :pred nil :successors [] :durable? false :bases {}})
+                (add! bucket cap-id)
+                (put (runtime-field child :counters) 10 index))
               (assoc! (runtime-field rt :family) world child)
               (node! rt [:fork world] :fork (runtime-field rt :owner-root))
               (each! [node (values (runtime-field child :nodes))]
@@ -5322,7 +5338,7 @@
   (let [world (runtime-field rt :world)
         outside (mapv (fn [event] {:w world :event event})
                       (filter #(or (:deferred-assignment %) (:mailbox-post %)) (:queue live)))]
-    (merge (select-keys live [:global :threads :native :cleanup-cells :gc :handles])
+    (merge (select-keys live [:global :threads :native :cleanup-cells :gc :handles :principals])
            {:id world :lineage (runtime-field rt :lineage) :status :released
             :release (release-observer-row rt) :outside outside})))
 
@@ -5350,7 +5366,7 @@
 
 (defn- revoke-release-arena! [rt]
   (let [old @(runtime-field rt :arena-cell)
-        family (id-dict) counters (doto (slots 10)
+        family (id-dict) counters (doto (slots 11)
                                     (put 0 (queue)) (put 1 (a (:counters old) 1)) (put 2 (a (:counters old) 2))
                                     (put 3 (a (:counters old) 3)) (put 4 (slots 32)) (put 5 (slots 14))
                                     (put 6 (members)) (put 7 (id-dict)) (put 8 (members))

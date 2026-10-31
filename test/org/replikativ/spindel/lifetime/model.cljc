@@ -14,7 +14,7 @@
 (def work-status #{:running :parked})
 (def active-cuts #{:fenced :ready :captured :attached})
 (def defaults {:worlds 3 :world-ids 4 :invocations 2 :host-registrations 2 :spins 4 :generations 2 :scopes 2 :scope-births 3 :handles 2
-               :steps 2 :cuts 2 :depth 40 :crashes 1 :failures 1 :unknowns 1 :writes 1
+               :custody-orders [1 2] :steps 2 :cuts 2 :depth 40 :crashes 1 :failures 1 :unknowns 1 :writes 1
                :threads 2 :slice-enters 1 :registrations 1 :signals 1 :atoms 1 :filters [:local :causal-follow] :invoke-modes [:deref :callback] :durable-systems #{:a :b}})
 
 (defn world-row [w parent mode root]
@@ -31,9 +31,10 @@
    (let [w [:w 0]]
      {:worlds {w (world-row w nil :root w)} :registry #{w} :cuts {}
       :caps {} :records {} :durable {:caps {} :records {}}
+      :custody {:by-holder {} :claims {}} :next-claim 0 :recovery-epoch 0 :process-live? true
       :env {:handles {} :threads {:host {:world w :scope nil :run nil
                                          :read-permits #{} :excl-permits []}}
-            :native {} :outside []}
+            :native {} :outside [] :principals (get options :external-principals #{})}
       ;; Instrumentation is data, never a retention reason.
       :model (merge defaults options) :serial {} :events []
       :known-worlds #{w} :lineages {w (:lineage (world-row w nil :root w))}
@@ -123,10 +124,142 @@
 (defn cap-path [s k] (if (get-in s [:durable :caps k]) [:durable :caps k] [:caps k]))
 (defn record-path [s op]
   (if (get-in s [:durable :records op]) [:durable :records op] [:records op]))
+(defn execution-holder [w owner]
+  [:execution-owner w (cond (= owner [:root w]) :root
+                            (explicit-scope-id? owner) :scope
+                            :else :run) owner])
+(defn holder-ref? [holder]
+  (and (vector? holder)
+       (case (first holder)
+         :execution-owner (and (= 4 (count holder))
+                               (case (nth holder 2)
+                                 :root (= (nth holder 3) [:root (second holder)])
+                                 :scope (explicit-scope-id? (nth holder 3))
+                                 :run (and (vector? (nth holder 3)) (= 2 (count (nth holder 3))))
+                                 false))
+         :external (= 2 (count holder))
+         :cleanup (= 2 (count holder))
+         :recovery (= 3 (count holder))
+         false)))
+(defn holder-open? [s holder]
+  (and (holder-ref? holder)
+       (case (first holder)
+         :execution-owner
+         (let [[_ w kind id] holder rr (run s w id)]
+           (and (wr s w) (not= :released (:status (wr s w)))
+                (if (= :run kind)
+                  (and rr (= id (current s w (:spin rr)))
+                       (or (#{:running :parked} (:status rr))
+                           (and (= :completed (:status rr)) (reactive? s w id))))
+                  (open? s w id))))
+         :external (contains? (get-in s [:env :principals] #{}) holder)
+         :cleanup (contains? (get-in s [:custody :claims]) (second holder))
+         :recovery (and (:restarted? s) (= holder [:recovery :durable (:recovery-epoch s)]))
+         false)))
+(defn remove-custody [s k holder]
+  (let [members (disj (get-in s [:custody :by-holder holder] #{}) k)]
+    (if (seq members) (assoc-in s [:custody :by-holder holder] members)
+        (update-in s [:custody :by-holder] dissoc holder))))
 (defn put-cap [s k c]
-  (let [d (durable-scope? s (:scope c))]
-    (-> s (update :caps dissoc k) (update-in [:durable :caps] dissoc k)
-        (assoc-in (if d [:durable :caps k] [:caps k]) (assoc c :durable? d)))))
+  (let [old (cap s k) d (durable-scope? s (:scope c))
+        s (if (and old (not (terminal (:disposition old))))
+            (remove-custody s k (:holder old)) s)]
+    (cond-> (-> s (update :caps dissoc k) (update-in [:durable :caps] dissoc k)
+                (assoc-in (if d [:durable :caps k] [:caps k]) (assoc c :durable? d)))
+      (not (terminal (:disposition c)))
+      (update-in [:custody :by-holder (:holder c)] (fnil conj #{}) k))))
+(defn remove-cap [s k]
+  (let [c (cap s k)]
+    (-> (remove-custody s k (:holder c))
+        (update :caps dissoc k) (update-in [:durable :caps] dissoc k))))
+(defn fresh-cap! [s k]
+  (require! (and k (nil? (cap s k)) (nil? (get (vanished-caps s) k))
+                 (not-any? #(some (fn [desc] (= k (:k desc))) (:successors %)) (vals (all-records s))))
+            ::cap-id-reused {:k k}))
+(defn terminal-custody-envelope? [s w event]
+  (let [c (cap s (:cap event)) rec (record s (:op event))]
+    (and (#{:merged :discarded} (:disposition c)) (= w (:world c))
+         (= [:cleanup (:custody-dispatch event)] (:holder c))
+         (= (:op event) (:op c)) (= (:cap event) (:cap rec)))))
+
+(defn operation-fresh?
+  "All committed/reserved operation domains; only dispatch may reuse its own claim."
+  [s op exempt-claim]
+  (and (some? op) (not (contains? (all-records s) op))
+       (not-any? #(= op (:op %)) (vals (all-caps s)))
+       (not-any? (fn [[id claim]] (and (not= id exempt-claim) (= op (:settlement-op claim))))
+                 (get-in s [:custody :claims]))))
+(defn fresh-operation!
+  ([s op] (fresh-operation! s op nil))
+  ([s op exempt-claim]
+   (require! (operation-fresh? s op exempt-claim) ::op-exists {:op op})))
+(defn allocate-custody-claim [s c]
+  (loop [n (:next-claim s)]
+    (let [id [:custody-claim n] op (if (= :open (:disposition c)) [:custody-op id] (:op c))]
+      (if (and (not (contains? (get-in s [:custody :claims]) id))
+               (or (not= :open (:disposition c)) (operation-fresh? s op nil)))
+        [(assoc s :next-claim (inc n)) id op]
+        (recur (inc n))))))
+(defn fresh-recovery-operation [s k]
+  (loop [n 0]
+    (let [op [:recovery-op (:recovery-epoch s) k n]]
+      (if (operation-fresh? s op nil) op (recur (inc n))))))
+
+(defn authenticate-holder! [s k caller]
+  (let [c (cap s k)]
+    (require! (and (= caller (:holder c)) (holder-open? s caller))
+              ::stale-capability {:k k :caller caller})))
+(defn holder-acquisition! [s holder acceptance]
+  (require! (and (holder-open? s holder) (#{:execution-owner :external} (first holder)))
+            ::invalid-destination {:holder holder})
+  (if (= :execution-owner (first holder))
+    (let [[_ w kind id] holder rr (run s w id)]
+      (if (= :run kind)
+        (if (= :running (:status rr))
+          (let [{:keys [th order]} acceptance thread (get-in s [:env :threads th])]
+            (require! (and (= w (:world thread)) (= id (:run thread)) (:executing? thread)
+                           (not (:retired? thread)) (nil? (:cleanup-ticket thread))
+                           (integer? order) (not (neg? order)))
+                      ::missing-destination-order {:holder holder :acceptance acceptance})
+            order)
+          :exact-run)
+        nil))
+    nil))
+
+(defn accept-holder! [s holder acceptance]
+  (require! (holder-ref? holder) ::invalid-destination {:holder holder})
+  (when (= :execution-owner (first holder))
+    (let [w (second holder)]
+      (require! (and (= :live (:status (wr s w))) (= :open (:admission (wr s w))))
+                ::invalid-destination {:holder holder})))
+  (holder-acquisition! s holder acceptance))
+
+(defn custody-actors
+  "Admitted model actors, independently of the cap whose authority is requested."
+  [s]
+  (filter #(holder-open? s %)
+          (concat (get-in s [:env :principals])
+                  (when (:restarted? s) [[:recovery :durable (:recovery-epoch s)]])
+                  (map :holder (vals (get-in s [:custody :claims])))
+                  (for [[w world] (:worlds s) owner (concat (keys (:scopes world)) (keys (:runs world)))]
+                    (execution-holder w owner)))))
+
+(defn custody-destinations [s]
+  (concat
+   (for [principal (get-in s [:env :principals])]
+     {:holder principal :acceptor principal})
+   (for [[w world] (:worlds s) :when (and (= :live (:status world)) (= :open (:admission world)))
+         owner (concat (keys (:scopes world)) (keys (:runs world)))
+         :let [holder (execution-holder w owner)] :when (holder-open? s holder)
+         acceptance (if (= :running (:status (run s w owner)))
+                      (for [[th thread] (get-in s [:env :threads])
+                            :when (and (= w (:world thread)) (= owner (:run thread)) (:executing? thread)
+                                       (not (:retired? thread)) (nil? (:cleanup-ticket thread)))
+                            order (get-in s [:model :custody-orders])]
+                        {:th th :order order})
+                      [nil])]
+     (cond-> {:holder holder :acceptor holder} acceptance (assoc :acceptance acceptance)))))
+
 (defn fdep-targets [world e]
   (set (for [[x v d] (:fdeps world) :when (if (= :bundle x) (contains? d e) (= x e))] v)))
 (def ^:dynamic *liveness-cache* nil)
@@ -326,7 +459,7 @@
 
 (defn control-key [event]
   (if (:start-for event) [:start-for (:creditor-world event) (:o event)]
-      (first (for [k [:discard :cancelled :register-host :fdep-ended :fork-released :join-bundle]
+      (first (for [k [:custody-dispatch :cancelled :register-host :fdep-ended :fork-released :join-bundle]
                    :when (contains? event k)] [k (get event k)]))))
 
 (defn source-notification-key [event]
@@ -485,7 +618,7 @@
   (require! (not (#{:deferred :mailbox} (:kind (ent s w e)))) ::not-computation {:w w :e e})
   (let [inherited (for [[r rr] (:runs (wr s w))
                         :when (and (= e (:spin rr)) (= :inherited (:status rr)))] r)
-        s (reduce #(t11-cancel %1 {:w w :r %2}) s inherited)
+        s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str inherited))
         ;; An unwinding row is physical evidence, never a predecessor index.
         pred (let [r (current s w e)] (when (not= :unwinding (:status (run s w r))) r))
         n (allocate-generation s w e (inc (max (or (second pred) 0) (get-in s [:generation-clock [w e]] 0)))) r [e n]
@@ -546,8 +679,8 @@
                           (let [rs (for [[r rr] (:runs (wr s w)) :when (and (= e (:spin rr)) (#{:completed :stale} (:status rr)))] r)
                                 s (if (signal-dependent? s w e)
                                     (assoc-in s [:worlds w :entities e :dirty?] true) s)]
-                            (-> (reduce #(t10-supersede %1 {:w w :r %2}) s rs)
-                                (assoc-in [:worlds w :entities e :owner] nil)))) s idle)
+                            (-> (reduce #(t10-supersede %1 {:w w :r %2}) s (sort-by pr-str rs))
+                                (assoc-in [:worlds w :entities e :owner] nil)))) s (sort-by pr-str idle))
                 dead (for [[e er] (:entities (wr normalized w))
                            :when (and (empty? (reasons normalized w e))
                                       (not (and (idle? normalized w e) (seq (:tokens er)))))] e)]
@@ -556,7 +689,7 @@
                  (reduce
                   (fn [s e]
                     (let [rs (for [[r rr] (:runs (wr s w)) :when (= e (:spin rr))] r)
-                          s (reduce #(t11-cancel %1 {:w w :r %2}) s rs)]
+                          s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str rs))]
                       (-> s (update-in [:worlds w :entities] dissoc e)
                           (update-in [:worlds w :pins] disj e)
                           (update-in [:worlds w :queue]
@@ -565,7 +698,7 @@
                           (update-in [:worlds w :runs]
                                      (fn [runs] (into {} (for [[r rr] runs]
                                                            [r (update rr :creations disj e)])))))))
-                  normalized dead))))))))
+                  normalized (sort-by pr-str dead)))))))))
 
 (defn t01-create-spin
   "T1 create-spin: host handles, lexical creations and predecessor adoption."
@@ -1393,7 +1526,7 @@
             preds (for [[p pr] (:runs (wr s w))
                         :when (and (= e (:spin pr)) (not= p r)
                                    (#{:completed :stale} (:status pr)))] p)
-            s (reduce #(t10-supersede %1 {:w w :r %2}) s preds)
+            s (reduce #(t10-supersede %1 {:w w :r %2}) s (sort-by pr-str preds))
             s (update-in s [:worlds w :entities]
                          #(into {} (remove (fn [[_ er]] (and (= r (:owner er))
                                                              (#{:timer :waiter} (:kind er)))) %)))]
@@ -1432,6 +1565,23 @@
                                   :order (:order ob)})
                   (t06-resume s {:w w :o o :value value})))))) s obligations) w)))
 
+(defn claim-owner-custody
+  "Move current custody before owner rows or async dispatch can disappear."
+  [s w owner]
+  (let [holder (execution-holder w owner)]
+    (reduce
+     (fn [state k]
+       (let [c (cap state k) [state id op] (allocate-custody-claim state c)
+             cleanup-holder [:cleanup id]
+             kind (if (= :open (:disposition c)) :discard (:kind c))
+             claim {:cap k :holder cleanup-holder :origin holder
+                    :anchor (mapv #(execution-holder w %) (butlast (owner-chain state w owner)))
+                    :target-world (:world c) :kind kind :settlement-op op :phase :dispatch-pending}]
+         (-> state (assoc-in [:custody :claims id] claim)
+             (put-cap k (assoc c :holder cleanup-holder :holder-acquisition nil))
+             (enqueue (:world c) {:custody-dispatch id :cap k :op op}))))
+     s (sort-by pr-str (get-in s [:custody :by-holder holder] #{})))))
+
 (defn t09-reenter
   "T9 successor generation, stale cleanup, and prefix adoption."
   [s {:keys [w e cause order] :or {cause :dirty order -1}}]
@@ -1440,7 +1590,7 @@
     (require! rr ::missing-run {:e e})
     (let [stales (for [[p pr] (:runs (wr s w))
                        :when (and (= e (:spin pr)) (= :stale (:status pr)))] p)
-          s (reduce #(t10-supersede %1 {:w w :r %2}) s stales)
+          s (reduce #(t10-supersede %1 {:w w :r %2}) s (sort-by pr-str stales))
           [s r2] (start-run s w e (:owner rr) cause)
           ;; Starting retires a dormant inherited run. Only a predecessor
           ;; still present after that teardown can donate prefix resources.
@@ -1465,6 +1615,11 @@
                        #(into {} (for [[id sr] %]
                                    [id (if (and (= r (:parent sr)) (< (get sr :order 0) order))
                                          (assoc sr :parent r2) sr)])))
+          s (reduce (fn [state k]
+                      (let [c (cap state k) acquisition (:holder-acquisition c)]
+                        (if (and previous (integer? acquisition) (< acquisition order))
+                          (put-cap state k (assoc c :holder (execution-holder w r2))) state)))
+                    s (get-in s [:custody :by-holder (execution-holder w r)] #{}))
           prefix (filter #(< (get-in s [:worlds w :entities % :order] 0) order)
                          (:creations previous))]
       (rule-l
@@ -1504,6 +1659,7 @@
   only physical evidence. Nested teardown reaches rule L at the outer boundary."
   [s w r cause logical-effects anchor]
   (let [rr (run s w r) chain (or anchor (owner-chain s w r))
+        s (claim-owner-custody s w r)
         s (retain-cleanup-subtree s w r)
         s (update-in s [:env :native]
                      #(into {} (for [[n row] %]
@@ -1516,7 +1672,7 @@
                        (if (empty? children) found
                            (recur children (into found children)))))
             s (reduce #(t13-close-scope %1 {:w w :scope %2}) s
-                      (for [[id row] (:scopes (wr s w)) :when (= r (:parent row))] id))
+                      (sort-by pr-str (for [[id row] (:scopes (wr s w)) :when (= r (:parent row))] id)))
             s (update-in s [:worlds w :scopes] #(apply dissoc % scopes))
             s (logical-effects (end-run-links s w r cause))
             s (update-in s [:worlds w :runs] dissoc r)]
@@ -1561,11 +1717,11 @@
               (= :spin (:kind (ent s w e))) (assoc-in [:worlds w :entities e :dirty?] true))
           runs (vec (for [[r rr] (:runs (wr s w))
                           :when (and (= e (:spin rr)) (work? rr))] r))
-          s (reduce #(t11-cancel %1 {:w w :r %2}) s runs)
+          s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str runs))
           completed (vec (for [[r rr] (:runs (wr s w))
                                :when (and (= e (:spin rr))
                                           (#{:completed :stale} (:status rr)))] r))
-          s (reduce #(t10-supersede %1 {:w w :r %2}) s completed)]
+          s (reduce #(t10-supersede %1 {:w w :r %2}) s (sort-by pr-str completed))]
       (reduce (fn [s [o ob]]
                 (let [consumer [(if (= :host (first (:creditor ob))) :host :obligation) o]
                       control (cleanup/mailbox-control s w e e)
@@ -1584,7 +1740,7 @@
 
 (defn release-owned [s w scope]
   (reduce #(owner-release %1 w %2) s
-          (vec (for [[e er] (:entities (wr s w)) :when (= scope (:owner er))] e))))
+          (sort-by pr-str (for [[e er] (:entities (wr s w)) :when (= scope (:owner er))] e))))
 
 (defn remove-request [event v o]
   (cond
@@ -1636,7 +1792,7 @@
         s w r :superseded
         (fn [s]
           (let [owned (for [[c cr] (:runs (wr s w)) :when (= r (:owner cr))] c)
-                s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s owned)
+                s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s (sort-by pr-str owned))
                 s (update-in s [:worlds w :entities]
                              #(into {} (remove (fn [[_ er]]
                                                  (and (= r (:owner er))
@@ -1657,7 +1813,7 @@
         s w r :cancelled
         (fn [s]
           (let [children (for [[c cr] (:runs (wr s w)) :when (= r (:owner cr))] c)
-                s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s children)
+                s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s (sort-by pr-str children))
                 s (if current?
                     (reduce
                      (fn [s [v o ob]]
@@ -1747,16 +1903,10 @@
      (let [s (retain-cleanup-subtree s w scope)
            children (for [[c cr] (:scopes (wr s w))
                           :when (and (= scope (:parent cr)) (= :open (:status cr)))] c)
-           s (reduce #(close-owned %1 w %2) s children)
+           s (reduce #(close-owned %1 w %2) s (sort-by pr-str children))
            runs (for [[r rr] (:runs (wr s w)) :when (= scope (:owner rr))] r)
-           s (reduce #(t11-cancel %1 {:w w :r %2}) s runs)
-           forks (for [[e er] (:entities (wr s w))
-                       :when (and (= :fork (:kind er)) (not (:reference? er)) (= scope (:owner er)))] (second e))
-           s (reduce (fn [s v]
-                       (reduce (fn [s [k cap]]
-                                 (if (= :open (:disposition cap))
-                                   (enqueue s v {:discard k}) s))
-                               s (caps-of s v))) s forks)]
+           s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str runs))
+           s (claim-owner-custody s w scope)]
        (cond-> (release-owned s w scope)
          (not= scope (:root (wr s w)))
          (-> (update-in [:worlds w :scopes] dissoc scope)
@@ -1785,7 +1935,7 @@
   "T15 cancel all work, excluding dormant inherited copies."
   [s {:keys [w]}]
   (reduce #(t11-cancel %1 {:w w :r %2}) s
-          (for [[r rr] (:runs (wr s w)) :when (work? rr)] r)))
+          (sort-by pr-str (for [[r rr] (:runs (wr s w)) :when (work? rr)] r))))
 
 (defn t16-handle-unreachable
   "T16 environment reachability loss; notifications can be delayed/lost."
@@ -1857,8 +2007,12 @@
                                                          [o {:debtor e :source-world (:source-world ob) :source-o o}]))}))
                     s (group-by first (filter #(= :admitted (get-in evidence [(nth % 2) :phase])) inherited))))))
 
-(defn attach-world [s w v scope k systems child evidence join?]
+(defn attach-world [s w v scope k systems child evidence join? order]
   (require! (not (contains? (:known-worlds s) v)) ::world-id-reused {:world v})
+  (fresh-cap! s k)
+  (when (run s w scope)
+    (require! (or (= :exact-run order) (and (integer? order) (not (neg? order))))
+              ::missing-creator-order {:scope scope :order order}))
   (let [last-seq (reduce max (get child :seq 0) (keep :seq (:queue child)))
         s (-> s (assoc-in [:worlds v] child)
               (cond-> (> last-seq (get child :seq 0)) (assoc-in [:clocks v] last-seq))
@@ -1868,7 +2022,8 @@
               (update :registry conj v)
               (update :known-worlds conj v) (assoc-in [:lineages v] (:lineage child))
               (assoc-in [:worlds w :entities [:fork v]] (row :fork scope))
-              (put-cap k {:world v :scope systems :holder scope
+              (put-cap k {:world v :scope systems :holder (execution-holder w scope)
+                          :holder-acquisition (when (run s w scope) order)
                           :disposition :open :published? (not= :fenced (:admission child))
                           :op nil :pred nil :successors []
                           :bases (into {} (for [sys systems] [sys [:base v sys]]))}))]
@@ -1900,11 +2055,12 @@
 
 (defn t19-fork-following
   "T19 persistent inherited bundles, expanded here for logical-row checking."
-  [s {:keys [w v k scope systems] :or {systems #{:a :b}}}]
+  [s {:keys [w v k scope systems acceptance] :or {systems #{:a :b}}}]
   (live! s w)
   (require! (not (deferred-world? s w (wr s w))) ::unsupported-deferred-fork {:w w})
   (require! (open? s w scope) ::closed-scope {:scope scope})
-  (let [child (assoc (world-row v w :following (get-in s [:worlds w :lineage :root])) :seq (get-in s [:worlds w :seq] 0))
+  (let [order (holder-acquisition! s (execution-holder w scope) acceptance)
+        child (assoc (world-row v w :following (get-in s [:worlds w :lineage :root])) :seq (get-in s [:worlds w :seq] 0))
         copies (into {} (for [[r rr] (:runs (wr s w)) :when (= :parked (:status rr))]
                           [r (assoc (copy-row rr w :inherited) :status :inherited :owner (:root child))]))
         scopes (loop [parents (set (keys copies)) found {}]
@@ -1935,7 +2091,7 @@
                     (assoc child :runs copies :entities entities :obligations obs
                            :scopes (merge (:scopes child) scopes)
                            :next-scope (:next-scope (wr s w)) :scope-balance (count scopes)
-                           :queue (copy-queue evidence obs)) evidence false))))
+                           :queue (copy-queue evidence obs)) evidence false order))))
 
 (defn t20-cut-fence
   "T20 fence participants, holding later arrivals outside."
@@ -2081,7 +2237,7 @@
 
 (defn t23-cut-attach
   "T23 attach a fenced logical basis with value-only causal descriptors."
-  [s {:keys [c v k mode] :or {mode :frozen}}]
+  [s {:keys [c v k mode acceptance] :or {mode :frozen}}]
   (let [cut (get-in s [:cuts c]) worlds (get-in cut [:participants :worlds])
         w (first (sort worlds))]
     (require! (= :captured (:phase cut)) ::cut-phase {:c c})
@@ -2093,7 +2249,8 @@
                     (assoc-in [:lineage :basis] (:basis cut)))
           s (-> (attach-world s w v (:requester cut) k
                               (get-in cut [:participants :systems]) child
-                              (get-in cut [:basis w :copy-evidence]) true)
+                              (get-in cut [:basis w :copy-evidence]) true
+                              (holder-acquisition! s (execution-holder w (:requester cut)) acceptance))
                 (assoc-in [:cuts c :phase] :attached) (assoc-in [:cuts c :child] v))]
       s)))
 
@@ -2133,8 +2290,7 @@
                           s (:obligations (wr s v)))
                   (update-in [:worlds (first (get-in cut [:participants :worlds])) :entities] dissoc [:fork v])
                   (update :worlds dissoc v) (update :registry disj v)
-                  (update :caps #(into {} (remove (fn [[_ cap]] (= v (:world cap))) %)))
-                  (update-in [:durable :caps] #(into {} (remove (fn [[_ cap]] (= v (:world cap))) %))))))))
+                  (as-> state (reduce remove-cap state (map first (caps-of state v)))))))))
 
 (defn current-cap! [s k expected]
   (let [cap (cap s k)]
@@ -2145,7 +2301,13 @@
   [s {:keys [k op kind force caller] :or {kind :merge}}]
   (let [cap (current-cap! s k #{:open}) w (:world cap)]
     (require! (:published? cap) ::unpublished-capability {:k k})
-    (require! (= caller (:holder cap)) ::stale-capability {:k k :caller caller})
+    (require! (wr s w) ::missing-world {:world w})
+    (authenticate-holder! s k caller)
+    (when (= :cleanup (first caller))
+      (let [claim (get-in s [:custody :claims (second caller)])]
+        (require! (and (= k (:cap claim)) (= op (:settlement-op claim)) (= kind (:kind claim)))
+                  ::invalid-custody-claim {:k k :op op})))
+    (fresh-operation! s op (when (= :cleanup (first caller)) (second caller)))
     (require! (wr s w) ::missing-world {:world w})
     (when (and (= :merge kind) (not force) (not (quiescent? s w)))
       (refuse ::not-quiescent {:world w :runs (:runs (wr s w)) :scopes (:scopes (wr s w))}))
@@ -2153,6 +2315,11 @@
                       (if (and (active-cuts (:phase cut))
                                (contains? (get-in cut [:participants :worlds]) w))
                         (t25-cut-fail s {:c c}) s)) s (:cuts s))
+          ;; Commit operation identity before cancellation can retire a Run
+          ;; that itself holds this authority and move it into cleanup custody.
+          s (-> s (assoc-in (into (cap-path s k) [:disposition]) :sealed)
+                (assoc-in (into (cap-path s k) [:op]) op)
+                (assoc-in (into (cap-path s k) [:kind]) kind))
           s (if (or force (= :discard kind)) (t15-cancel-world-work s {:w w}) s)]
       (-> s (assoc-in [:worlds w :status] :sealed)
           (assoc-in [:worlds w :admission] :fenced)
@@ -2165,6 +2332,7 @@
   "T27 durable ordered settlement, bases and payload identity."
   [s {:keys [k op steps bases payload]}]
   (let [cap (current-cap! s k #{:sealed}) w (:world cap)]
+    (require! (= op (:op cap)) ::changed-operation {:k k :op op})
     (require! (and (quiescent? s w) (joined? s w)) ::not-joined {:world w})
     (require! (not (record s op)) ::op-exists {:op op})
     (-> s (assoc-in (if (:durable? cap) [:durable :records op] [:records op])
@@ -2201,9 +2369,10 @@
   (let [rec (record s op) k (:cap rec)
         cap (cap s k) w (:world cap)]
     (require! (and rec (#{:merge :discard} (:kind rec)) (every? #(= :done (:status %)) (:steps rec))) ::unfinished {:op op})
-    (let [s (-> s (assoc-in (into (cap-path s k) [:disposition])
-                            (if (= :merge (:kind rec)) :merged :discarded))
-                (assoc-in (into (record-path s op) [:effects-released?]) true))
+    (let [s (-> s (put-cap k (assoc cap :disposition (if (= :merge (:kind rec)) :merged :discarded)))
+                (assoc-in (into (record-path s op) [:effects-released?]) true)
+                (cond-> (= :cleanup (first (:holder cap)))
+                  (update-in [:custody :claims] dissoc (second (:holder cap)))))
           needed (set (concat
                        (mapcat (fn [[_ r]] (when-not (:effects-released? r) (vals (:bases r))))
                                (all-records s))
@@ -2220,85 +2389,109 @@
   (let [rec (record s op) cap (cap s k)]
     (require! rec ::missing-record {:op op})
     (require! (= payload (:payload-hash rec)) ::changed-payload {:op op})
-    (require! (and (= caller (:holder cap)) (= k (:cap rec))) ::stale-capability {:k k})
+    (authenticate-holder! s k caller)
+    (require! (= k (:cap rec)) ::stale-capability {:k k})
     (if (terminal (:disposition cap)) s
         (do (current-cap! s k #{:settling :incomplete})
             (assoc-in s (into (cap-path s k) [:disposition])
                       (if (some :permanent? (:steps rec)) :incomplete :settling))))))
 
+(defn process-loss-state? [s]
+  (and (false? (:process-live? s)) (false? (:restarted? s))
+       (every? empty? [(:worlds s) (:cuts s) (:registry s) (:caps s) (:records s)
+                       (get-in s [:custody :by-holder]) (get-in s [:custody :claims])])
+       (= {:handles {} :threads {} :native {} :waiters {} :gc [] :outside [] :principals #{}}
+          (:env s))))
+
 (defn t31-crash
-  "T31 process loss; restart gives record-less durable authority to recovery."
+  "Process loss destroys volatile actors; restart freshly owns every durable leaf."
   [s {:keys [phase] :or {phase :crash}}]
+  (require! (#{:crash :restart} phase) ::invalid-crash-phase {:phase phase})
+  (when (= phase :restart)
+    (require! (process-loss-state? s) ::not-crashed {:phase phase}))
   (if (= phase :restart)
-    (reduce
-     (fn [s [k c]]
-       (if (and (#{:open :sealed} (:disposition c)) (nil? (record s (:op c))))
-         (let [op [:recovery k]
-               steps (mapv (fn [i sys] {:id i :kind :system-discard :system sys
-                                        :recovery :retry :status :pending :witness nil :effect-id [op i]})
-                           (range) (sort (set/intersection (:scope c) (get-in s [:model :durable-systems]))))]
-           (-> s (assoc-in [:durable :caps k] (assoc c :disposition :settling :op op :holder :recovery))
-               (assoc-in [:durable :records op] {:op op :cap k :kind :discard :payload-hash :recovery
-                                                 :steps steps :bases (:bases c) :effects-released? false}))) s))
-     (-> s (assoc :restarted? true)
-         (update-in [:durable :records]
-                    (fn [records]
-                      (into {} (for [[op rec] records]
-                                 [op (if (:successors rec)
-                                       (update rec :successors
-                                               #(mapv (fn [desc]
-                                                        (if (and (not (:durable? desc)) (nil? (cap s (:k desc))))
-                                                          (assoc desc :disposition :discarded :vanished? true) desc)) %))
-                                       rec)])))))
-     (get-in s [:durable :caps]))
-    (-> s (assoc :worlds {} :cuts {} :registry #{} :caps {} :records {} :restarted? false)
+    (let [s (-> s (assoc :restarted? true :process-live? true) (update :recovery-epoch inc)
+                (assoc :custody {:by-holder {} :claims {}}))
+          holder [:recovery :durable (:recovery-epoch s)]]
+      (reduce
+       (fn [state [k c]]
+         (if (terminal (:disposition c)) state
+             (let [c (assoc c :holder holder :holder-acquisition nil)
+                   state (put-cap state k c)]
+               (if (and (= :open (:disposition c)) (nil? (record state (:op c))))
+                 (let [op (fresh-recovery-operation state k)
+                       steps (mapv (fn [i sys] {:id i :kind :system-discard :system sys
+                                                :recovery :retry :status :pending :witness nil :effect-id [op i]})
+                                   (range) (sort (set/intersection (:scope c) (get-in state [:model :durable-systems]))))]
+                   (-> state (put-cap k (assoc c :disposition :settling :op op :kind :discard))
+                       (assoc-in [:durable :records op] {:op op :cap k :kind :discard :payload-hash :recovery
+                                                         :steps steps :bases (:bases c) :effects-released? false})))
+                 state))))
+       (update-in s [:durable :records]
+                  (fn [records]
+                    (into {} (for [[op rec] records]
+                               [op (if (:successors rec)
+                                     (update rec :successors
+                                             #(mapv (fn [desc]
+                                                      (if (and (not (:durable? desc)) (nil? (cap s (:k desc))))
+                                                        (assoc desc :disposition :discarded :vanished? true) desc)) %)) rec)]))))
+       (get-in s [:durable :caps])))
+    (-> s (assoc :worlds {} :cuts {} :registry #{} :caps {} :records {} :restarted? false
+                 :custody {:by-holder {} :claims {}} :process-live? false)
         (update-in [:durable :records]
                    (fn [records]
                      (into {} (for [[op rec] records]
                                 [op (if (:successors rec)
                                       (update rec :successors
-                                              #(mapv (fn [desc]
-                                                       (if (:durable? desc) desc
-                                                           (assoc desc :disposition :discarded :vanished? true))) %))
-                                      rec)]))))
-        (assoc :env {:handles {} :threads {} :native {} :waiters {} :gc [] :outside []}))))
+                                              #(mapv (fn [desc] (if (:durable? desc) desc
+                                                                    (assoc desc :disposition :discarded :vanished? true))) %)) rec)]))))
+        (assoc :env {:handles {} :threads {} :native {} :waiters {} :gc [] :outside [] :principals #{}}))))
 
 (defn consumption-record [s k op kind payload]
   (let [c (cap s k)]
-    (require! (nil? (record s op)) ::op-exists {:op op})
+    (fresh-operation! s op)
     (assoc-in s (if (:durable? c) [:durable :records op] [:records op])
               {:op op :cap k :kind kind :payload-hash payload :steps [] :bases {} :effects-released? true})))
 
 (defn t32-transfer
   "T32 affine capability transfer, retaining operation identity."
-  [s {:keys [k successor holder op]}]
+  [s {:keys [k successor holder op caller acceptor acceptance]}]
   (let [cap (current-cap! s k #{:open})]
     (require! (:published? cap) ::unpublished-capability {:k k})
     (require! (wr s (:world cap)) ::missing-world {:world (:world cap)})
-    (-> s (consumption-record k op :transfer {:successor successor :holder holder})
-        (assoc-in (into (cap-path s k) []) (assoc cap :disposition :transferred :op op :successors [successor]))
-        (put-cap successor
-                 (assoc cap :holder holder :pred k :op nil :successors [])))))
+    (authenticate-holder! s k caller)
+    (require! (#{:execution-owner :external} (first caller)) ::claimed-capability {:k k})
+    (require! (= holder acceptor) ::unaccepted-transfer {:holder holder :acceptor acceptor})
+    (fresh-cap! s successor)
+    (let [acquisition (accept-holder! s holder acceptance)]
+      (-> s (consumption-record k op :transfer {:successor successor :holder holder})
+          (put-cap k (assoc cap :disposition :transferred :op op :successors [successor]))
+          (put-cap successor (assoc cap :holder holder :holder-acquisition acquisition
+                                    :pred k :op nil :successors []))))))
 
 (defn t33-partition
   "T33 partition into disjoint scopes exactly covering the input."
-  [s {:keys [k successors op]}]
+  [s {:keys [k successors op caller]}]
   (let [cap (current-cap! s k #{:open}) scopes (map :scope successors)]
     (require! (:published? cap) ::unpublished-capability {:k k})
     (require! (wr s (:world cap)) ::missing-world {:world (:world cap)})
+    (authenticate-holder! s k caller)
+    (require! (#{:execution-owner :external} (first caller)) ::claimed-capability {:k k})
+    (require! (and (seq successors) (= (count successors) (count (set (map :k successors))))
+                   (every? (comp seq :scope) successors)) ::invalid-partition {:successors successors})
+    (doseq [desc successors] (fresh-cap! s (:k desc)))
     (require! (and (= (:scope cap) (apply set/union #{} scopes))
                    (= (reduce + (map count scopes)) (count (:scope cap))))
               ::invalid-partition {:scopes scopes})
-    (reduce (fn [s {:keys [k scope parent-cap]}]
-              (put-cap s k (assoc cap :scope scope :pred parent-cap
-                                  :bases (select-keys (:bases cap) scope)
-                                  :op nil :successors [])))
-            (assoc-in (assoc-in (consumption-record s k op :partition successors)
-                                (conj (record-path (consumption-record s k op :partition successors) op) :successors)
-                                (mapv (fn [desc] (assoc desc :holder (:holder cap)
-                                                        :durable? (durable-scope? s (:scope desc)))) successors)) (into (cap-path s k) [])
-                      (assoc cap :disposition :partitioned :op op :successors (mapv :k successors)))
-            (map #(assoc % :parent-cap k) successors))))
+    (let [s (consumption-record s k op :partition successors)
+          s (-> s (assoc-in (conj (record-path s op) :successors)
+                            (mapv (fn [desc] (assoc desc :holder (:holder cap)
+                                                    :durable? (durable-scope? s (:scope desc)))) successors))
+                (put-cap k (assoc cap :disposition :partitioned :op op :successors (mapv :k successors))))]
+      (reduce (fn [state desc]
+                (put-cap state (:k desc) (assoc cap :scope (:scope desc) :pred k
+                                                :bases (select-keys (:bases cap) (:scope desc))
+                                                :op nil :successors []))) s successors))))
 
 (defn t34-release-world
   "T34 local teardown and publication of a lineage-only tombstone."
@@ -2411,12 +2604,12 @@
                                    (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s)))
                    (not-any? (fn [[_ cap]] (and (not (terminal (:disposition cap)))
                                                 (or (related? (:world cap)) (= w (:world cap))
-                                                    (contains? owners (:holder cap)))))
+                                                    (some #(= (:holder cap) (execution-holder w %)) owners))))
                              (all-caps s))
                    (not-any? #(= :fork (:kind %)) (vals (:entities world)))
                    (empty? (:fdeps world)) (empty? (:releasing world))
                    (every? #(and (local? (:debtor %)) (local? (:creditor %))) (vals (:obligations world)))
-                   (not-any? #(some % [:start-for :register-host :join-bundle :discard :fork-released]) events)
+                   (not-any? #(some % [:start-for :register-host :join-bundle :custody-dispatch :fork-released]) events)
                    (not-any? (fn [[v other]]
                                (and (not= v w) (some #(= [:entity w] (subvec (vec (:debtor %)) 0 2))
                                                      (vals (:obligations other))))) (:worlds s)))
@@ -2641,6 +2834,8 @@
   :th denotes an engine/coordinator action (legacy host selection still applies)."
   [s {:keys [t] :as a}]
   (try
+    (require! (boolean? (:process-live? s)) ::invalid-process-state {:process-live? (:process-live? s)})
+    (require! (or (:process-live? s) (= :t31 t)) ::process-lost {:action a})
     (let [thread (get-in s [:env :threads (:th a)])
           slice? (:run thread)
           unwinding? (= :unwinding (:status (run s (:world thread) (:run thread))))
@@ -2730,9 +2925,19 @@
                            (if (or (not cached?) (and (:standing? (:ob ev)) (not (final? s w e))))
                              (assoc-in s [:worlds w :obligations o] (:ob ev)) s))
                          (emit s {:event :host-delivery :world w :o o :value ::released})))
-                     (:discard ev) (let [k (:discard ev)]
-                                     (if (= :open (:disposition (cap s k)))
-                                       (t26-seal s {:k k :caller (:holder (cap s k)) :op [:implicit k] :kind :discard}) s))
+                     (:custody-dispatch ev)
+                     (if-let [claim (get-in s [:custody :claims (:custody-dispatch ev)])]
+                       (let [k (:cap ev) c (cap s k) holder [:cleanup (:custody-dispatch ev)]]
+                         (require! (and (= k (:cap claim)) (= w (:target-world claim))
+                                        (= (:op ev) (:settlement-op claim)) (= holder (:holder c)))
+                                   ::invalid-custody-claim {:event ev})
+                         (let [s (case (:disposition c)
+                                   :open (t26-seal s {:k k :caller holder :op (:settlement-op claim) :kind (:kind claim)})
+                                   :incomplete (t30-recover s {:k k :caller holder :op (:settlement-op claim)
+                                                               :payload (:payload-hash (record s (:settlement-op claim)))})
+                                   s)]
+                           (assoc-in s [:custody :claims (:custody-dispatch ev) :phase] :active)))
+                       (do (require! (terminal-custody-envelope? s w ev) ::invalid-custody-claim {:event ev}) s))
                      (:completion ev) (t08-deliver s (assoc ev :w w :e (:completion ev) :dequeued? true))
                      :else s))
              :native-progress
@@ -3118,27 +3323,31 @@
                           :attached [{:t :t24 :c c :e [:spin (dec (:spins cfg))]}] []))) (:cuts s))
       (mapcat
        (fn [[k cap]]
-         (let [op [:op k] w (:world cap)]
+         (let [op [:op k] w (:world cap) caller (some #{(:holder cap)} (custody-actors s))]
            (case (:disposition cap)
-             :open (when (:published? cap)
-                     [{:t :t26 :caller (:holder cap) :k k :op op :kind :merge}
-                      {:t :t26 :caller (:holder cap) :k k :op op :kind :discard}
-                      {:t :t26 :caller (:holder cap) :k k :op op :kind :merge :force true}
-                      {:t :t32 :k k :successor [:cap k] :op op :holder :new-holder}
-                      {:t :t33 :k k :op op :successors
-                       (mapv (fn [sys] {:k [:cap k sys] :scope #{sys}}) (:scope cap))}])
-             :sealed [{:t :t27 :k k :op op :payload :payload :bases (:bases cap)
+             :open (when (and caller (:published? cap) (not= :cleanup (first (:holder cap))))
+                     (concat
+                      [{:t :t26 :caller caller :k k :op op :kind :merge}
+                       {:t :t26 :caller caller :k k :op op :kind :discard}
+                       {:t :t26 :caller caller :k k :op op :kind :merge :force true}
+                       {:t :t33 :k k :op op :caller caller :successors
+                        (mapv (fn [sys] {:k [:cap k sys] :scope #{sys}}) (:scope cap))}]
+                      (for [destination (custody-destinations s)]
+                        (merge {:t :t32 :k k :successor [:cap k] :op op :caller caller} destination))))
+             :sealed [{:t :t27 :k k :op (:op cap) :payload :payload :bases (:bases cap)
                        :steps (mapv (fn [i] {:id i :kind :stamp :system (first (sort (:scope cap))) :recovery :retry})
                                     (range (:steps cfg)))}]
              []))) (all-caps s))
       (mapcat
        (fn [[op rec]]
          (let [k (:cap rec) disposition (:disposition (cap s k))
+               caller (some #{(:holder (cap s k))} (custody-actors s))
                i (first (keep-indexed #(when (not= :done (:status %2)) %1) (:steps rec)))]
            (concat
-            [{:t :t30 :caller (:holder (cap s k)) :op op :k k :payload (:payload-hash rec)}
-             {:t :t30 :caller (:holder (cap s k)) :op op :k k :payload :wrong}
-             {:t :t30 :caller (:holder (cap s k)) :op op :k :stale :payload (:payload-hash rec)}]
+            (when caller
+              [{:t :t30 :caller caller :op op :k k :payload (:payload-hash rec)}
+               {:t :t30 :caller caller :op op :k k :payload :wrong}
+               {:t :t30 :caller caller :op op :k :stale :payload (:payload-hash rec)}])
             (when (and (= :settling disposition) i)
               (for [[outcome committed?] [[:ok false] [:fail false] [:unknown false] [:unknown true] [:fail-permanent false]]]
                 {:t :t28 :op op :i i :outcome outcome :committed? committed?}))
@@ -3172,7 +3381,9 @@
   constrain only the exploration alphabet, never the transition preconditions.
   One crash+restart, one failure and one uncertainty per step by default.
   :scope-births bounds total opens per world independently of :scopes live rows;
-  neither exploration budget restricts literal transition semantics."
+  neither exploration budget restricts literal transition semantics.
+  Generated T32/T33 consume predecessor-free caps only; repeated successor
+  chains are supported by step and checked separately by literal traces."
   [s]
   (let [spin-counts (into {} (for [[w world] (:worlds s)]
                                [w (count (filter #(= :spin (:kind %)) (vals (:entities world))))]))]
@@ -3181,9 +3392,10 @@
        (let [t (:t a) key (if (= :t05 t) [:register (:w a) (:r a) (:kind a) (:debtor a)] (budget-key a))
              n (get-in s [:uses key] 0) cfg (:model s)]
          (and
+          (or (true? (:process-live? s)) (= :t31 t))
           (case t
             :t31 (if (= :restart (:phase a))
-                   (and (empty? (:worlds s)) (not (:restarted? s)) (pos? (get-in s [:uses [:crash]] 0)))
+                   (process-loss-state? s)
                    (< (get-in s [:uses [:crash]] 0) (:crashes cfg)))
             :t28 (case (:outcome a)
                    (:fail :fail-permanent) (< (+ (get-in s [:uses [:fail (:op a) (:i a)]] 0)

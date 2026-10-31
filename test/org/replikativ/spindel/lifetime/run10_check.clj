@@ -120,7 +120,7 @@
                         :captured [{:t :t23 :c r9/cut :v r9/child :k [:cap 1]} {:t :t25 :c r9/cut}]
                         :attached [r9/release-child {:t :t25 :c r9/cut}] [])
                       (case (:disposition (m/cap s b/cap))
-                        :open [{:t :t26 :caller b/root :k b/cap :op :gone :kind :discard}]
+                        :open [{:t :t26 :caller (m/execution-holder b/w b/root) :k b/cap :op :gone :kind :discard}]
                         :sealed [{:t :t27 :k b/cap :op :gone :steps []}]
                         :settling [{:t :t29 :op :gone}] [])
                       (for [w [b/v r9/child] :when (seq (:queue (m/wr s w)))] {:t :queued :w w})))

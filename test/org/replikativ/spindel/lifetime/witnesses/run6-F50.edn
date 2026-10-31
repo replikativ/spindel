@@ -7,7 +7,7 @@
    :scope [:root [:w 1]],
    :participants
    {:worlds #{[:w 1]}, :components #{[[:w 1] :sci]}, :systems #{:a}}}
-  {:t :t26, :caller [:root [:w 0]], :k [:cap 0], :op :op, :kind :merge}
+  {:t :t26, :caller [:execution-owner [:w 0] :root [:root [:w 0]]], :k [:cap 0], :op :op, :kind :merge}
   {:t :t25, :c [:cut 0]}],
  :valid-prefix? true,
  :subsequence-minimal? true,
