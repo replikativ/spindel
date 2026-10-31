@@ -4,7 +4,8 @@
   (:refer-clojure :exclude [bound?])
   (:require [clojure.set :as set]
             [org.replikativ.spindel.lifetime.model :as m]
-            [org.replikativ.spindel.lifetime.cleanup :as cleanup]))
+            [org.replikativ.spindel.lifetime.cleanup :as cleanup]
+            [org.replikativ.spindel.lifetime.lifecycle :as lifecycle]))
 
 (defn entities [s] (for [[w world] (:worlds s) [e er] (:entities world)] [w e er]))
 (defn runs [s] (for [[w world] (:worlds s) [r rr] (:runs world)] [w r rr]))
@@ -1126,19 +1127,28 @@
          (= [:cleanup (:custody-dispatch event)] (:holder cap))
          (= (:op event) (:op cap)) (= (:cap event) (:cap record)))))
 
-(defn custody-effective-delivery [before action]
-  (loop [action action]
-    (let [thread (get-in before [:env :threads (get action :th :host)])
+(defn custody-effective-context
+  "Unwrap admitted queue/coordinator controls using only BEFORE facts. Each
+  action wrapper consumes its own head; the leaf primitive's head stays put.
+  No body, world row, environment or AFTER authority is synthesized here."
+  [before action]
+  (loop [state before action action]
+    (let [thread (get-in state [:env :threads (get action :th :host)])
           action (cond-> action
                    (or (nil? (:w action)) (and (:th action) (:run thread))) (assoc :w (:world thread)))]
       (case (:t action)
-        :t21 (recur (or (:body action)
-                        {:t :queued :w (first (get-in before [:cuts (:c action) :participants :worlds]))}))
-        :queued (let [event (first (get-in before [:worlds (:w action) :queue]))]
-                  (cond (:action event) (recur (:action event))
-                        (:completion event) (assoc event :t :t08 :w (:w action) :e (:completion event))
-                        :else action))
-        action))))
+        :t21 (recur state (or (:body action)
+                              {:t :queued :w (first (get-in state [:cuts (:c action) :participants :worlds]))}))
+        :queued (let [event (first (get-in state [:worlds (:w action) :queue]))]
+                  (cond (:action event)
+                        (recur (update-in state [:worlds (:w action) :queue] #(vec (rest %))) (:action event))
+                        (:completion event)
+                        {:before state :action (assoc event :t :t08 :w (:w action) :e (:completion event))}
+                        :else {:before state :action action}))
+        {:before state :action action}))))
+
+(defn custody-effective-delivery [before action]
+  (:action (custody-effective-context before action)))
 
 (defn custody-reentry-triggers [before action]
   (let [action (custody-effective-delivery before action) w (:w action)]
@@ -1505,11 +1515,37 @@
                  :when (not= expected (m/record after id))]
              {:recovery-record-rewritten id}))))))))
 
+(defn host-origin-ancestor?
+  "O12 proof from immutable lineage, independent of transition predicates."
+  [s origin world]
+  (and (contains? (:known-worlds s) origin)
+       (loop [at world visited #{}]
+         (cond
+           (nil? at) false
+           (contains? visited at) false
+           (= at origin) true
+           :else (recur (get-in s [:lineages at :parent]) (conj visited at))))))
+
+(defn host-origin-errors [s]
+  (vec
+   (for [[w o ob] (concat (obligations s)
+                          (for [[w _] (:worlds s) ev (queued-events s w)
+                                :when (:register-host ev)]
+                            [w (:register-host ev) (:ob ev)]))
+         :when (= :host (first (:creditor ob)))
+         :let [f (:filter ob) inherited? (or (:descriptor? ob) (= :inherited (:origin ob)))]
+         :when (or (not (#{:local :causal-follow} (:mode f)))
+                   (not (contains? (:known-worlds s) (:origin f)))
+                   (and inherited?
+                        (or (not= :causal-follow (:mode f))
+                            (not (host-origin-ancestor? s (:origin f) w)))))]
+     {:w w :o o :filter f :copied? (boolean inherited?)})))
+
 (def predicates
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06] [:ScopeForest scope-errors]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors] [:L30 release-errors] [:Custody custody-errors]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors] [:L30 release-errors] [:Custody custody-errors] [:O12 host-origin-errors]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates))))
@@ -1873,11 +1909,7 @@
   (when (and (get-in before [:model :cps-exit?]) (not refusal) (not observation)
              (not (process-loss? action)))
     (let [w (:w action)
-          effective (loop [a action]
-                      (case (:t a)
-                        :t21 (if-let [body (:body a)] (recur body) a)
-                        :queued (if-let [body (:action (first (:queue (m/wr before (:w a)))))] (recur body) a)
-                        a))
+          effective (custody-effective-delivery before action)
           completing (when (and (= :t07 (:t effective))
                                 (= :running (:status (m/run before (:w effective) (:r effective))))
                                 (= (:r effective) (m/current before (:w effective) (first (:r effective)))))
@@ -1920,6 +1952,20 @@
                             (or (not= (:owner row) (:owner current))
                                 (not (set/subset? (:cells row #{}) (:cells current #{})))))]
               {:n n :ticket-conservation {:before row :after current :physical-return? return?}}))))))
+
+(defn original-resource-edge-check
+  "Preserve original physical/receipt/registration authority on compound edges.
+  Only classify the primitive through finite BEFORE controls; never substitute
+  the inner transition witness for the actual before/after resource proof."
+  [edge]
+  (let [edge (assoc edge :action (custody-effective-delivery (:before edge) (:action edge)))]
+    (vec (keep identity
+               [(when-let [bad (seq (release-edge-errors edge))] {:id :TL24 :evidence (vec bad)})
+                (when-let [bad (seq (timer-edge-errors edge))] {:id :TL23 :evidence (vec bad)})
+                (when-let [bad (seq (mailbox-edge-errors edge))] {:id :TL22 :evidence (vec bad)})
+                (when-let [bad (seq (cleanup-edge-errors edge))] {:id :TL21 :evidence (vec bad)})
+                (when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
+                (when-let [bad (seq (released-join-evidence-errors edge))] {:id :TL19 :evidence (vec bad)})]))))
 
 (declare normalization-errors)
 
@@ -2068,6 +2114,60 @@
                                 (not (contains? live [:run w r])))]
                  {:w w :r r :spin (:spin rr) :status (:status rr)})))))))
 
+(declare edge-check)
+
+(defn queued-action-front [before action]
+  (when (= :queued (:t action))
+    (let [thread (get-in before [:env :threads (:th action)])
+          world (if (:run thread) (:world thread) (:w action))
+          event (first (get-in before [:worlds world :queue]))]
+      (when (:action event) {:world world :event event}))))
+
+(defn queued-action-composition-errors
+  "Composition witness, not a second implementation of the inner transition.
+  Head removal is independent; inner footprint/O12 checks remain independent.
+  Existing outer normalization hooks witness exact residual storage/diagnostics."
+  [{:keys [before action after] :as edge}]
+  (when-let [{:keys [world event]} (queued-action-front before action)]
+    (let [mid (-> before (assoc :events [])
+                  (update-in [:worlds world :queue] #(vec (rest %))))
+          inner-action (cond-> (:action event)
+                         (and (contains? action :fresh-runs)
+                              (not (contains? (:action event) :fresh-runs)))
+                         (assoc :fresh-runs (:fresh-runs action)))
+          {inner :state refusal :refusal} (m/attempt mid inner-action)]
+      (if refusal
+        [{:id :QueuedAction :evidence {:inner-refused refusal :front event}}]
+        (let [prefix (vec (:events inner)) actual-events (vec (:events after))
+              prefix? (and (<= (count prefix) (count actual-events))
+                           (= prefix (subvec actual-events 0 (count prefix))))
+              suffix (if prefix? (subvec actual-events (count prefix)) [])
+              wrapper-before (assoc inner :events [])
+              ;; These are exactly the existing wrapper hooks, deliberately
+              ;; reused as a normalization witness. Compare ALL residual state,
+              ;; including every world queue/tail, outside, clock, cap and cut.
+              expected (lifecycle/refresh
+                        (m/refresh-timer-anchors
+                         (m/release-fixpoint before wrapper-before world)) m/release-ready?)
+              wrapper-after (assoc after :events suffix)
+              inner-errors (edge-check {:before mid :action inner-action :after inner})
+              wrapper-errors (ordinary-edge-check {:before wrapper-before
+                                                   ;; Checker-only phase: normalizing the
+                                                   ;; wrapper does not dispatch its next head.
+                                                   :action (assoc action :t ::queued-normalization :w world)
+                                                   :after wrapper-after})]
+          (vec (concat
+                (original-resource-edge-check edge)
+                (check inner)
+                inner-errors
+                (when-not prefix?
+                  [{:id :QueuedAction :evidence {:inner-event-prefix {:expected prefix :actual actual-events}}}])
+                (when (not= expected wrapper-after)
+                  [{:id :QueuedAction :evidence {:wrapper-conservation
+                                                 {:changed-top-fields (vec (writes expected wrapper-after))
+                                                  :expected-events (:events expected) :actual-suffix suffix}}}])
+                wrapper-errors)))))))
+
 (defn execution-edge-check [{:keys [before action after refusal] :as edge}]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (let [aborted (for [[c cut] (:cuts before)
@@ -2082,6 +2182,8 @@
                           (concat (check b) (ordinary-edge-check {:before a :action {:t :t25 :c c} :after b})))
                         (map vector parts (rest parts) aborted))
                 (execution-edge-check (assoc edge :before (last parts))))))
+        (queued-action-front before action)
+        (queued-action-composition-errors edge)
         (= :t21 (:t action))
         (let [w (first (get-in before [:cuts (:c action) :participants :worlds]))
               sub (or (:body action) (when (seq (:queue (m/wr before w))) {:t :queued :w w}))
@@ -2193,8 +2295,105 @@
           {:premature-or-missing-composed-join w})
         (cleanup-target-errors after))))))
 
+(defn host-copy-entity-proof
+  "BEFORE selection only. HOST roots keep eligible descriptors/entities alive
+  through immediate Rule L, even if unrelated copied caches are reclaimed."
+  [basis cut?]
+  (if cut? (set (keys (:entities basis)))
+      (let [parked (set (for [[r row] (:runs basis) :when (= :parked (:status row))] r))
+            owners (loop [frontier parked found parked]
+                     (let [children (set (for [[id row] (:scopes basis)
+                                               :when (contains? frontier (:parent row))] id))
+                           fresh (set/difference children found)]
+                       (if (empty? fresh) found
+                           (recur fresh (set/union found fresh)))))]
+        (set/union (set (for [[_ row] (:runs basis) :when (= :parked (:status row))] (:spin row)))
+                   (set (for [[e row] (:entities basis)
+                              :when (or (contains? owners (:owner row))
+                                        (contains? parked (:creator row)))] e))))))
+
+(defn host-origin-edge-errors [{:keys [before action after refusal]}]
+  (when-not refusal
+    (let [{leaf-before :before action :action} (custody-effective-context before action)
+          copy? (#{:t19 :t23} (:t action))
+          v (:v action)
+          actor-thread (get-in before [:env :threads (:th action)])
+          requested-world (or (when (:run actor-thread) (:world actor-thread)) (:w action)
+                              (get-in before [:env :threads (get action :th :host) :world]))
+          registration (when (= :queued (:t action))
+                         (let [event (first (get-in leaf-before [:worlds requested-world :queue]))]
+                           (when (:register-host event) event)))
+          source (if (= :t23 (:t action))
+                   (first (sort (get-in before [:cuts (:c action) :participants :worlds])))
+                   requested-world)
+          basis (if (= :t23 (:t action))
+                  (get-in before [:cuts (:c action) :basis source])
+                  (get-in before [:worlds source]))
+          ;; The unpublished child's sole new edge is established by this
+          ;; action. Do not trust AFTER lineage to authorize its own copy.
+          child-proof (assoc-in (assoc-in before [:lineages v] {:parent source})
+                                [:known-worlds] (conj (:known-worlds before) v))
+          hosts (fn [rows] (into {} (filter #(= :host (first (:creditor (val %)))) rows)))
+          actual (when copy? (hosts (get-in after [:worlds v :obligations])))
+          selected-entities (when copy? (host-copy-entity-proof basis (= :t23 (:t action))))
+          expected (when copy?
+                     (into {} (for [[o ob] (hosts (:obligations basis))
+                                    :when (and (contains? selected-entities (nth (:debtor ob) 2 nil))
+                                               (= :causal-follow (get-in ob [:filter :mode]))
+                                               (host-origin-ancestor? child-proof (get-in ob [:filter :origin]) v))]
+                                [o ob])))
+          direct-hosts (when (= :t04 (:t action))
+                         (concat (for [[w world] (:worlds after) [o ob] (:obligations world)
+                                       :when (and (= :host (first (:creditor ob)))
+                                                  (nil? (get-in before [:worlds w :obligations o])))] [w o ob])
+                                 (for [[w _] (:worlds after) event (queued-events after w)
+                                       :when (and (:register-host event)
+                                                  (not (some #(= (:register-host event) (:register-host %))
+                                                             (queued-events before w))))]
+                                   [w (:register-host event) (:ob event)])))]
+      (vec
+       (concat
+        (when registration
+          (let [w requested-world o (:register-host registration)
+                expected (:ob registration) entity (get-in before [:worlds w :entities (:e registration)])
+                runs (for [[r row] (get-in before [:worlds w :runs])
+                           :when (= (:e registration) (:spin row))] [r row])
+                current (first (last (sort-by (comp second first) runs)))
+                work? (some #(#{:running :parked} (:status (second %))) runs)
+                reactive? (some #(and (= [:run w current] (:creditor %)) (:standing? %)
+                                      (#{:track :await-reactive} (:kind %)))
+                                (vals (get-in before [:worlds w :obligations])))
+                install? (and entity (= :live (get-in before [:worlds w :status]))
+                              (or (not (and (:completed? entity) (not work?)))
+                                  (and (:standing? expected) reactive?)))
+                actual (get-in after [:worlds w :obligations o])]
+            (concat
+             (when (or (not= (:caller-world registration) (get-in expected [:filter :origin]))
+                       (not= (when install? expected) actual))
+               [{:host-registration-install {:world w :o o :caller (:caller-world registration)
+                                             :expected (when install? expected) :actual actual}}])
+             (for [[target _] (:worlds after) event (queued-events after target)
+                   :when (= o (:register-host event))]
+               {:host-registration-replaced {:world target :o o :event event}}))))
+        (when (and copy? (not= (set (keys expected)) (set (keys actual))))
+          [{:host-copy-selection {:world v :expected (set (keys expected)) :actual (set (keys actual))}}])
+        (for [[o old] expected :let [ob (get actual o)]
+              :when (and ob (not= (:filter old) (:filter ob)))]
+          {:host-copy-filter-rewritten {:world v :o o}})
+        (for [[w o ob] direct-hosts
+              :when (not= requested-world (get-in ob [:filter :origin]))]
+          {:host-registration-origin {:placement w :o o :filter (:filter ob)}})
+        (for [event (:events after) :when (and (= :host-delivery (:event event)) (contains? event :causal?))
+              :let [w (:world event) o (:o event) ob (get-in before [:worlds w :obligations o])]
+              :when (and ob (or (:descriptor? ob) (= :inherited (:origin ob)))
+                         (or (not= :causal-follow (get-in ob [:filter :mode]))
+                             (not (host-origin-ancestor? before (get-in ob [:filter :origin]) w))))]
+          {:host-copy-egress {:world w :o o :filter (:filter ob)}}))))))
+
 (defn edge-check [{:keys [after refusal action] :as edge}]
   (vec (concat (execution-edge-check edge)
+               (when-let [bad (seq (host-origin-edge-errors edge))]
+                 [{:id :O12 :evidence bad}])
                (when-let [bad (seq (cleanup-target-edge-errors edge))]
                  [{:id :CleanupTargets :evidence bad}])
                (when-let [bad (seq (fork-entry-errors edge))]

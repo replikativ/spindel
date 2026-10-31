@@ -2225,9 +2225,28 @@
              (get-in (header ctx w) [:lineage :parent]))
         (recur ctx (get-in (header ctx w) [:lineage :parent]) e)))
 
+(defn- host-filter! [action w]
+  (let [f (get action :filter (get action :delivery-filter {:mode :local}))]
+    (require! (and (map? f) (#{:local :causal-follow} (:mode f))
+                   (or (not (contains? f :origin)) (= w (:origin f))))
+              ::invalid-host-filter {:world w :filter f})
+    (assoc f :origin w)))
+
+(defn- causal-world? [ctx origin w parent]
+  (and (contains? (:known-worlds (root-state ctx)) origin)
+       (loop [candidate w visited #{} initial? true]
+         (cond
+           (nil? candidate) false
+           (contains? visited candidate) false
+           (= origin candidate) true
+           :else (recur (if (and initial? parent) parent
+                            (get-in (root-state ctx) [:lineages candidate :parent]))
+                        (conj visited candidate) false)))))
+
 (defn- invoke! [ctx {:keys [w e tok mode host] :or {mode :deref host :caller} :as action}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
   (let [scope (owner ctx w action)
+        delivery-filter (host-filter! action w)
         h (get-in (root-state ctx) [:env :handles tok])
         source (read-source ctx w e)
         _ (require! (not (#{:deferred :mailbox} (:kind (read-row ctx source :entities e))))
@@ -2260,7 +2279,7 @@
       (let [o (allocate! ctx :o)
             ob {:kind mode :debtor [:entity dw e] :creditor [:host host]
                 :standing? (= mode :callback) :cont nil :token nil :order 0 :slot :armed
-                :filter (get action :filter (get action :delivery-filter {:mode :local :origin w}))}]
+                :filter delivery-filter}]
         (if join?
           (enqueue! ctx dw {:register-host o :ob ob :tok tok :e e :caller-world w})
           (do
@@ -2497,7 +2516,9 @@
     (doseq [o ids :let [ob (read-row ctx w :obligations o)]]
       (if (= :host (first (:creditor ob)))
         (let [causal? (= :causal-follow (get-in ob [:filter :mode]))]
-          (when-not (and causal? (contains? (:host-delivered (root-state ctx)) [w o]))
+          (when (and (or (not (:descriptor? ob))
+                         (and causal? (causal-world? ctx (get-in ob [:filter :origin]) w nil)))
+                     (not (and causal? (contains? (:host-delivered (root-state ctx)) [w o]))))
             (emit! ctx {:event :host-delivery :world w :e e :o o :value value :causal? causal?})
             (when causal? (root-edit! ctx update :host-delivered (fnil conj #{}) [w o])))
           (when (or (not (:standing? ob))
@@ -2549,7 +2570,8 @@
                                    :when (or (contains? runs (nth (:creditor ob) 2 nil))
                                              (and (= :host (first (:creditor ob)))
                                                   (contains? es (nth (:debtor ob) 2 nil))
-                                                  (= :causal-follow (get-in ob [:filter :mode]))))]
+                                                  (= :causal-follow (get-in ob [:filter :mode]))
+                                                  (causal-world? ctx (get-in ob [:filter :origin]) v w)))]
                                [o (cond-> (copy-row ob)
                                     (= :run (first (:creditor ob)))
                                     (assoc :creditor [:run v (nth (:creditor ob) 2)])

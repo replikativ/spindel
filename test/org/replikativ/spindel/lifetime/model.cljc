@@ -1321,10 +1321,36 @@
                                  [r (if (and (= e (:spin rr)) (= old (:owner rr)))
                                       (assoc rr :owner scope) rr)]))))
       s)))
+(defn host-filter [a w]
+  (let [f (get a :filter (get a :delivery-filter {:mode :local}))]
+    (require! (and (map? f) (#{:local :causal-follow} (:mode f))
+                   (or (not (contains? f :origin)) (= w (:origin f))))
+              ::invalid-host-filter {:world w :filter f})
+    (assoc f :origin w)))
+
+(defn causal-world?
+  "Immutable lineage proof; parent supplies the first edge for an unpublished child."
+  ([s origin w] (causal-world? s origin w nil))
+  ([s origin w parent]
+   (and (contains? (:known-worlds s) origin)
+        (loop [candidate w seen #{} first? true]
+          (cond
+            (nil? candidate) false
+            (contains? seen candidate) false
+            (= candidate origin) true
+            :else (recur (if (and first? parent) parent
+                             (get-in s [:lineages candidate :parent]))
+                         (conj seen candidate) false))))))
+
+(defn host-delivery-allowed? [s ob w]
+  (or (not (:descriptor? ob))
+      (and (= :causal-follow (get-in ob [:filter :mode]))
+           (causal-world? s (get-in ob [:filter :origin]) w))))
+
 (defn t04-invoke
   "T4 invoke: join, cached delivery, or fresh body entry."
   [s {:keys [e tok mode host] :or {mode :deref host :caller} :as a}]
-  (let [w (selected s a) owner (cs s a w)]
+  (let [w (selected s a) owner (cs s a w) delivery-filter (host-filter a w)]
     (executable! s w)
     (require! (or (nil? tok) (get-in s [:env :handles tok])) ::unknown-handle {:tok tok})
     (require! (not (contains? (get-in s [:env :handles tok :dropped] #{}) w))
@@ -1354,7 +1380,7 @@
           [s o] (allocate s :o)
           ob {:kind mode :debtor [:entity dw e] :creditor [:host host]
               :standing? (= mode :callback) :cont nil :token nil :order 0
-              :slot :armed :filter (get a :filter (get a :delivery-filter {:mode :local :origin w}))}]
+              :slot :armed :filter delivery-filter}]
       (if join?
         (enqueue s dw {:register-host o :ob ob :tok tok :e e :caller-world w})
         (cond-> s
@@ -1574,8 +1600,9 @@
       (fn [s [o ob]]
         (if (not= [:entity dw e] (:debtor ob)) s
             (if (= :host (first (:creditor ob)))
-              (cond-> (if (and (= :causal-follow (get-in ob [:filter :mode]))
-                               (contains? (:host-delivered s) [w o])) s
+              (cond-> (if (or (not (host-delivery-allowed? s ob w))
+                              (and (= :causal-follow (get-in ob [:filter :mode]))
+                                   (contains? (:host-delivered s) [w o]))) s
                           (cond-> (emit s {:event :host-delivery :world w :e e :o o
                                            :value value :causal? (= :causal-follow (get-in ob [:filter :mode]))})
                             (= :causal-follow (get-in ob [:filter :mode]))
@@ -2080,9 +2107,10 @@
     (cond-> (-> (copy-row ob w :inherited) (update :creditor endpoint))
       (#{:timer :external} (:kind ob)) (assoc :token nil :dormant? true)
       (= :host (first (:creditor ob))) (assoc :cont nil :descriptor? true))))
-(defn copy-host? [ob]
+(defn copy-host? [s ob v parent]
   (or (not= :host (first (:creditor ob)))
-      (= :causal-follow (get-in ob [:filter :mode]))))
+      (and (= :causal-follow (get-in ob [:filter :mode]))
+           (causal-world? s (get-in ob [:filter :origin]) v parent))))
 
 (defn- deferred-world? [s w world]
   (or (some #(#{:deferred :mailbox} (:kind %)) (vals (:entities world)))
@@ -2121,7 +2149,7 @@
         obs (into {} (for [[o ob] (:obligations (wr s w))
                            :when (or (contains? copies (nth (:creditor ob) 2 nil))
                                      (and (= :host (first (:creditor ob)))
-                                          (contains? es (nth (:debtor ob) 2 nil)) (copy-host? ob)))]
+                                          (contains? es (nth (:debtor ob) 2 nil)) (copy-host? s ob v w)))]
                        [o (cond-> (copy-obligation ob w v)
                             (= :host (first (:creditor ob))) (assoc :debtor [:entity v (nth (:debtor ob) 2)]))]))]
     (let [evidence (copy-evidence s w)]
@@ -2266,7 +2294,7 @@
                                              [r (cond-> (dissoc (copy-row rr w :inherited) :cps-entered?) (parked r)
                                                         (assoc :status :inherited :origin :inherited))])))
                    (update :obligations
-                           #(into {} (for [[id ob] % :when (copy-host? ob)]
+                           #(into {} (for [[id ob] % :when (copy-host? s ob v w)]
                                        [id (cond-> (copy-row ob w :inherited)
                                              (#{:timer :external} (:kind ob)) (assoc :token nil :dormant? true)
                                              (= :host (first (:creditor ob))) (assoc :cont nil :descriptor? true))]))))]
