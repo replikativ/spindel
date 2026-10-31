@@ -2062,8 +2062,53 @@
                        (ordinary-edge-check (assoc edge :before intermediate)))))
         :else (ordinary-edge-check edge)))))
 
-(defn edge-check [edge]
+;; Independent retirement proof. Intentionally does not call model owner-chain, step,
+;; retirement helpers, or inspect the newly stamped anchor to derive expected.
+(defn retirement-before-chain [state world run]
+  (loop [id run seen #{} chain []]
+    (let [row (get-in state [:worlds world :runs id])]
+      (cond
+        (nil? id) (conj chain world)
+        (contains? seen id) chain
+        (= :unwinding (:status row)) (into chain (:anchor row))
+        :else (recur (or (:owner row) (get-in state [:worlds world :scopes id :parent]))
+                     (conj seen id) (conj chain id))))))
+
+(defn retirement-anchor-errors [{:keys [before action after refusal]}]
+  ;; These entrypoints only tear down. Compound rerun/adoption actions need a
+  ;; separate independent intermediate-forest oracle before extending this set.
+  (when (and (not refusal) (#{:t10 :t11 :t13} (:t action)))
+    (vec
+     (concat
+      (for [[w world] (:worlds before)
+            [r prior] (:runs world)
+            :let [current (get-in after [:worlds w :runs r])]
+            :when (and (not= :unwinding (:status prior)) (= :unwinding (:status current)))
+            :let [expected (retirement-before-chain before w r)]
+            :when (not= expected (:anchor current))]
+        {:kind :ordinary-retirement-anchor :world w :run r
+         :expected expected :actual (:anchor current)})
+      (for [[n current] (get-in after [:env :native])
+            :let [[w r] (:owner current)
+                  prior-run (get-in before [:worlds w :runs r])
+                  prior (get-in before [:env :native n])]
+            :when (and prior-run (= :cps-exit (:kind current)) (:retired? current)
+                       (not (:retired? prior)))
+            :let [expected (retirement-before-chain before w r)]
+            :when (not= expected (:anchor current))]
+        {:kind :cleanup-retirement-anchor :ticket n :world w :run r
+         :expected expected :actual (:anchor current)})))))
+
+(defn edge-check [{:keys [after refusal action] :as edge}]
   (vec (concat (execution-edge-check edge)
+               (when-let [bad (seq (retirement-anchor-errors edge))]
+                 [{:id :RetirementAnchor :evidence bad}])
+               (when (and (not refusal) (not= :join (:t action)))
+                 (for [[owner n] (frequencies
+                                  (for [event (:events after) :when (= :run-exit (:event event))]
+                                    [(:world event) (:r event)]))
+                       :when (> n 1)]
+                   {:id :RunExitOnce :evidence {:owner owner :count n}}))
                (when-let [bad (seq (custody-edge-errors edge))]
                  [{:id :CustodyTransition :evidence (vec bad)}]))))
 

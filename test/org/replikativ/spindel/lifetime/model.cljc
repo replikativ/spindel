@@ -59,10 +59,13 @@
       (= :open (get-in s [:worlds w :scopes scope :status]))))
 (defn current [s w e]
   (last (sort-by second (for [[r row] (:runs (wr s w)) :when (= e (:spin row))] r))))
+(def ^:dynamic *retiring-owners* {})
+
 (defn owner-chain [s w r]
   (loop [id r chain [] seen #{}]
     (cond
       (nil? id) (conj chain w)
+      (contains? *retiring-owners* [w id]) (into chain (get *retiring-owners* [w id]))
       (seen id) chain
       (= :unwinding (:status (run s w id))) (into chain (:anchor (run s w id)))
       :else (recur (or (:owner (run s w id))
@@ -662,6 +665,23 @@
                  (conj seen key))))
       false)))
 
+(defn idle-retirement-order
+  "Actual mixed Run/Scope ownership precedence before any idle detach.
+   Entity lifetime remains an owner-release effect, not a scheduling edge."
+  [s w idle]
+  (let [idle (set idle)
+        selected (set (for [[r row] (:runs (wr s w))
+                            :when (and (contains? idle (:spin row)) (#{:completed :stale} (:status row)))] r))
+        dependencies (into {}
+                           (for [r selected :let [execution (rest (butlast (owner-chain s w r)))]]
+                             [r (set/intersection selected (set (filter #(run s w %) execution)))]))]
+    (loop [remaining selected result []]
+      (if (empty? remaining) result
+          (let [ready (sort-by pr-str (filter #(empty? (set/intersection remaining (get dependencies %))) remaining))]
+            (require! (seq ready) ::retirement-precedence-cycle
+                      {:w w :runs remaining :dependencies (select-keys dependencies remaining)})
+            (recur (apply disj remaining ready) (into result ready)))))))
+
 (defn rule-l
   "§4.3 reclamation fixpoint, including idle completed-row normalization."
   [s w]
@@ -674,13 +694,18 @@
                            :when (and (= :spin (:kind er)) (:completed? er)
                                       (not *cache-gc-only?*)
                                       (not (execution-live? s w e)))] e)
-                normalized
-                (reduce (fn [s e]
-                          (let [rs (for [[r rr] (:runs (wr s w)) :when (and (= e (:spin rr)) (#{:completed :stale} (:status rr)))] r)
-                                s (if (signal-dependent? s w e)
-                                    (assoc-in s [:worlds w :entities e :dirty?] true) s)]
-                            (-> (reduce #(t10-supersede %1 {:w w :r %2}) s (sort-by pr-str rs))
-                                (assoc-in [:worlds w :entities e :owner] nil)))) s (sort-by pr-str idle))
+                ;; Preserve all invalidation proofs while the complete BEFORE
+                ;; graph is still available. Parent teardown may remove a child's
+                ;; dependency rows and must not make a cache look independent.
+                signal-dependent (filter #(signal-dependent? s w %) idle)
+                retirement (idle-retirement-order s w idle)
+                marked (reduce #(assoc-in %1 [:worlds w :entities %2 :dirty?] true) s signal-dependent)
+                retired (reduce (fn [state r]
+                                  (if (#{:completed :stale} (:status (run state w r)))
+                                    (t10-supersede state {:w w :r r}) state)) marked retirement)
+                normalized (reduce (fn [state e]
+                                     (if (ent state w e) (assoc-in state [:worlds w :entities e :owner] nil) state))
+                                   retired (sort-by pr-str idle))
                 dead (for [[e er] (:entities (wr normalized w))
                            :when (and (empty? (reasons normalized w e))
                                       (not (and (idle? normalized w e) (seq (:tokens er)))))] e)]
@@ -1654,7 +1679,7 @@
     (cleanup/retain-subtree s w root
                             (into {} (for [[r _] (:runs (wr s w))] [r (owner-chain s w r)]))) s))
 
-(defn retire-run
+(defn- retire-run-body
   "§4.3 run retirement: close child scopes before logical teardown, then retain
   only physical evidence. Nested teardown reaches rule L at the outer boundary."
   [s w r cause logical-effects anchor]
@@ -1666,14 +1691,8 @@
                                  [n (if (and (cleanup/timer-resource? row) (= [w r] (:owner row)))
                                       (assoc row :retired? true :anchor chain) row)])))]
     (binding [*cascading?* true]
-      (let [scopes (loop [parents #{r} found #{}]
-                     (let [children (set (for [[id row] (:scopes (wr s w))
-                                               :when (contains? parents (:parent row))] id))]
-                       (if (empty? children) found
-                           (recur children (into found children)))))
-            s (reduce #(t13-close-scope %1 {:w w :scope %2}) s
+      (let [s (reduce #(t13-close-scope %1 {:w w :scope %2}) s
                       (sort-by pr-str (for [[id row] (:scopes (wr s w)) :when (= r (:parent row))] id)))
-            s (update-in s [:worlds w :scopes] #(apply dissoc % scopes))
             s (logical-effects (end-run-links s w r cause))
             s (update-in s [:worlds w :runs] dissoc r)]
         (if (physical? s w r)
@@ -1696,6 +1715,15 @@
                          #(into {} (for [[id row] %]
                                      [id (cond-> row (= r (:creator row)) (assoc :creator nil))]))))
           s)))))
+
+(defn retire-run
+  "Retire once per synchronous cascade; keep the real row for frozen anchors.
+   Entity release can revisit an executing ancestor through a different owner
+   forest. Its entity effects still run, but the first Run exit cause wins."
+  [s w r cause logical-effects anchor]
+  (if (contains? *retiring-owners* [w r]) s
+      (binding [*retiring-owners* (assoc *retiring-owners* [w r] (or anchor (owner-chain s w r)))]
+        (retire-run-body s w r cause logical-effects anchor))))
 
 (defn owner-release [s w e]
   ;; Entity lifetime dominates every run owner, including completed scopes (V03).
@@ -1898,19 +1926,26 @@
                   (run s w parent) (assoc :order order)))))
 
 (defn close-owned [s w scope]
-  (rule-l
-   (binding [*cascading?* true]
-     (let [s (retain-cleanup-subtree s w scope)
-           children (for [[c cr] (:scopes (wr s w))
-                          :when (and (= scope (:parent cr)) (= :open (:status cr)))] c)
-           s (reduce #(close-owned %1 w %2) s (sort-by pr-str children))
-           runs (for [[r rr] (:runs (wr s w)) :when (= scope (:owner rr))] r)
-           s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str runs))
-           s (claim-owner-custody s w scope)]
-       (cond-> (release-owned s w scope)
-         (not= scope (:root (wr s w)))
-         (-> (update-in [:worlds w :scopes] dissoc scope)
-             (update-in [:worlds w :scope-balance] dec))))) w))
+  (if (contains? *retiring-owners* [w scope]) s
+      (let [root? (= scope (:root (wr s w)))]
+        (binding [*retiring-owners* (assoc *retiring-owners* [w scope] (owner-chain s w scope))]
+          (rule-l
+           (binding [*cascading?* true]
+             ;; Explicit Scope ancestry can disappear during collateral parent
+             ;; retirement. Root has no removable ancestor and retains its old
+             ;; publication order after child cancellation.
+             (let [s (if root? s (claim-owner-custody s w scope))
+                   s (retain-cleanup-subtree s w scope)
+                   children (for [[c cr] (:scopes (wr s w))
+                                  :when (and (= scope (:parent cr)) (= :open (:status cr)))] c)
+                   s (reduce #(close-owned %1 w %2) s (sort-by pr-str children))
+                   runs (for [[r rr] (:runs (wr s w)) :when (= scope (:owner rr))] r)
+                   s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str runs))
+                   s (if root? (claim-owner-custody s w scope) s)]
+               (cond-> (release-owned s w scope)
+                 (not root?)
+                 (-> (update-in [:worlds w :scopes] dissoc scope)
+                     (update-in [:worlds w :scope-balance] dec))))) w)))))
 
 (defn t13-close-scope
   "T13 idempotent close, including implicit fork discard."

@@ -1410,6 +1410,12 @@ while tokens remain, or while a foreign storage acknowledgement is outstanding;
 neither keeps its completed execution machinery alive. Cache validity is
 classified before those outgoing edges are removed.
 
+When several idle caches are normalized together, classify every cache before
+that batch removes dependency edges. Retire actual Run lifetimes in Run/Scope
+owner order, and detach the idle entity owners only after retirement. Entity
+ownership still governs owner-release effects; combining it with Run ownership
+into a scheduling DAG is invalid because their union can contain cycles.
+
 A transaction that falsifies the retention condition for `e` does three things
 in the same transaction:
 - it removes `e`, every index row that names `e`, and every queued event
@@ -1470,10 +1476,22 @@ acting world even when the proof follows a foreign obligation.
    wherever it happens (T7's normalisation and supersession through
    T10, T10, T11, owner release, rule L reclaiming the runs of an
    entity, T13 through T11), is a *retirement*:
+
+   Run retirement and Scope closure enter each owner at most once during a
+   synchronous teardown cascade. The first entry owns its exit cause and
+   teardown effects. Freeze its qualified ancestry IDs at entry and keep that
+   evidence until the entry returns: collateral teardown may remove an ancestor
+   before a later sibling is retired. This evidence constructs cleanup and
+   physical-join anchors; it does not make a removed owner live or authorize new
+   work. The temporary frames are absent from published state and async binding
+   capture. Explicit Scopes claim custody before descendant teardown can remove
+   their parents; Root retains its existing claim order after child teardown.
+
    1. First, every open scope whose parent is `r` is closed with T13,
       recursively, and the `:anchor` of each run that this makes
       `:unwinding` is taken while the full owner chain still exists.
-      Closed scope rows under `r` are then removed.
+      Each Scope removes its own row when its outer close finishes; an enclosing
+      Run must not bulk-remove Scopes still being closed or their pending children.
    2. The logical effects of the removing transition all happen now:
       callbacks, cached result, obligations, teardown.
    3. If a thread executes a slice of `r`, or a native op of `r` is not

@@ -3,6 +3,8 @@
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.engine.kernel :as kernel]
             [org.replikativ.spindel.lifetime.model :as model]
+            [org.replikativ.spindel.lifetime.idle-retirement-test :as idle]
+            [org.replikativ.spindel.lifetime.cleanup :as cleanup]
             [org.replikativ.spindel.lifetime.execution-scope-model-test :as execution-scopes]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.lifetime.first-delivery-test :as handoff]
@@ -842,3 +844,48 @@
           (is (= before after))
           (is (= (view corrupt) (view after)))
           (is (= errors (inv/check after))))))))
+
+(deftest idle-retirement-follows-actual-run-ownership
+  (doseq [[parent child] [[:z-parent :a-child] [:a-parent :z-child]]
+          ownership [:direct :scope :independent]
+          signal? [false true]]
+    (compare-walk! (model/init-state)
+                   (conj (idle/pair-actions parent child ownership signal?)
+                         {:t :t14 :w w :e parent :pin? false})))
+  (doseq [[parent child] [[:z-parent :a-child] [:a-parent :z-child]]]
+    (compare-walk! (model/init-state)
+                   (conj (idle/union-cycle-actions parent child)
+                         {:t :t07 :w w :r [child 1] :value :child}))))
+
+(deftest scope-retirement-keeps-closing-owner-rows-and-claims-once
+  (let [parent :z-parent child :a-child c1 [child 1] scope [:scope :id 0]
+        ticket (cleanup/ticket w c1)]
+    (compare-walk!
+     (model/init-state {:slices? true :cps-exit? true})
+     (into (idle/scope-cycle-actions parent child scope true)
+           [{:t :t13 :w w :scope scope}
+            {:t :t38 :th :active-child}
+            {:t :cleanup-claim :n ticket :th :cleaner}
+            {:t :cleanup-claim :n ticket :th :duplicate-cleaner}
+            {:t :cleanup-cell :th :cleaner :cell [w c1 :cell] :value :cleaned}
+            {:t :cleanup-return :th :cleaner}
+            {:t :t38 :th :cleaner}])))
+  (compare-walk! (idle/scope-cycle-custody-before)
+                 [{:t :t13 :w w :scope [:scope :id 1]}]))
+
+(deftest sibling-retirement-preserves-ancestor-frames
+  (doseq [nested? [false true] cps? [false true]]
+    (let [x1 [:zz-sibling 1] ticket (cleanup/ticket w x1)]
+      (compare-walk!
+       (model/init-state {:slices? true :cps-exit? cps?})
+       (into (idle/sibling-actions nested?)
+             (concat [{:t :t13 :w w :scope [:scope :id 0]}
+                      {:t :join :w w :x [:root w]}
+                      {:t :join :w w :x [:scope :id 0]}
+                      {:t :t38 :th :physical-sibling}]
+                     (when cps?
+                       [{:t :cleanup-claim :n ticket :th :cleaner}
+                        {:t :cleanup-cell :th :cleaner :cell [w x1 :sibling-cell] :value :cleaned}
+                        {:t :cleanup-return :th :cleaner}
+                        {:t :t38 :th :cleaner}])
+                     [{:t :join :w w :x [:root w]}]))))))
