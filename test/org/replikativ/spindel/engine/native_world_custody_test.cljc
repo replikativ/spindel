@@ -29,6 +29,31 @@
     (doseq [field [:custody-live-leaves :custody-holder-buckets :custody-claims :custody-pending]]
       (is (= 0 (get stats field)) (str field)))))
 
+(deftest shared-global-replay-still-checks-every-world-and-edge
+  (let [rt (c/runtime {:audit? true :cps-exit? true})
+        owner (lifetime/open-scope! rt :owner)
+        {child :context} (publish rt owner :child)
+        child-id (world-id child)
+        trace (vec (c/audit-trace rt))
+        last-index (dec (count trace))
+        previous-global (get-in trace [(dec last-index) 2 (world-id rt) :global])
+        family (get-in trace [last-index 2])
+        edits [#(update % child-id dissoc :global)
+               #(assoc-in % [child-id :global] nil)
+               #(assoc-in % [child-id :global :unexpected] true)
+               #(assoc-in % [child-id :global :caps] {})
+               #(assoc-in % [child-id :global] previous-global)
+               #(assoc-in % [child-id :unexpected] nil)]]
+    (is (not= previous-global (get-in family [child-id :global])))
+    (verify-boundaries! rt)
+    ;; Change only one view: sharing elsewhere must never hide a missing key,
+    ;; a distinct wrong global, a stale previous-edge global, or extra state.
+    (doseq [edit edits]
+      (let [corrupted (assoc-in trace [last-index 2] (edit family))]
+        (with-redefs [c/audit-trace (constantly corrupted)]
+          (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                                #"Boundary mismatch" (verify-boundaries! rt))))))))
+
 (deftest transfer-moves-disposal-to-the-new-scope
   (let [rt (c/runtime {:audit? true :cps-exit? true})
         a (lifetime/open-scope! rt :a) b (lifetime/open-scope! rt :b)
@@ -493,7 +518,10 @@
         (lifetime/close-scope! rt b)
         (is (= :released (:status (c/snapshot child))))
         (assert-live-empty! rt)
-        (is (= 0 (:scope-balance (c/snapshot rt))))))
+        (is (= 0 (:scope-balance (c/snapshot rt)))))
+      (when (zero? (mod (inc n) 16))
+        (println "Native custody churn:" (inc n) "/ 128 cycles checked")
+        #?(:clj (flush))))
     (is (= 128 (count @saved)))
     ;; History is intentionally distinct from live custody and cannot be used
     ;; as evidence that live bucket/claim/dispatch storage was reclaimed.
