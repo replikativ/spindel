@@ -420,6 +420,8 @@
 ;; Borrowed only while an admitted custody transaction is on the stack.
 (def ^:private ^:dynamic *custody-frame* nil)
 (def ^:private ^:dynamic *world-release-cancellation* nil)
+;; An atomic delivery remains cancelling after its queue cell has been popped.
+(def ^:private ^:dynamic *following-cancellation* nil)
 (declare read-application-state swap-application-state! cas-application-state!
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
@@ -800,7 +802,11 @@
                        (when (and owner (not (root-owner? owner)))
                          (retain-link! rt next (owner-node owner))))
                      (each! [ob (a run r-obs)]
-                            (when (a ob o-live) (retain-link! rt next (a ob o-debtor))))
+                            (when (a ob o-live)
+                              (let [debtor (a ob o-debtor)]
+                                (when (or (nil? debtor) (identical? rt (a debtor n-runtime))
+                                          (not (following-cancelling? rt ob)))
+                                  (retain-link! rt next debtor)))))
                      (each! [child (a run r-owned)]
                             (when (and (open-owner? (a child n-owner)) (owns-live-kind? child))
                               (retain-link! rt next child)))
@@ -1277,8 +1283,16 @@
                                    (custody-order (values (a node n-runs))
                                                   (fn [r] [(if (work-status? (a r r-status)) 0 1) (run-id r)]))
                                    (values (a node n-runs)))]
-                          (if (work-status? (a child r-status)) (cancel! rt child) (retire! rt child)))
-              (each-copy! [ob (a node n-dependents)] (reject-dependent! rt ob))))
+                          (if (or (work-status? (a child r-status)) (= :inherited (a child r-status)))
+                            (cancel! rt child)
+                            (when (basis-status? (a child r-status)) (retire! rt child))))
+              (each-copy! [ob (a node n-dependents)]
+                          ;; Owner release closes local observations. Foreign
+                          ;; observations have independent debtor admission;
+                          ;; actual T11 and final T34 handle their cancellation.
+                          (when (or (nil? (a ob o-run))
+                                    (identical? rt (a (a ob o-creditor-node) n-runtime)))
+                            (reject-dependent! rt ob)))))
 
 (defn- forget-run! [rt run]
   (when-let [ticket (a run r-exit)] (put ticket x-run nil))
@@ -1289,6 +1303,7 @@
     (when (identical? run (current node))
       (put node n-current (last (sort-by #(a % r-gen) (values (a node n-runs))))))
     (mark! rt node)
+    (when (a (runtime-field rt :counters) 11) (mark-graph! rt node))
     ;; Dead obligations carry their own creditor node/generation. They never
     ;; interpret a recycled run's identity when dispatching an old trigger.
     (fields! [field [r-created r-spawned r-obs r-owned r-backlinks r-childruns r-ancestors]]
@@ -1456,7 +1471,11 @@
                                              (mapcat (fn [run]
                                                        (when-not (= :unwinding (a run r-status))
                                                          (concat [(owner-node (a run r-owner))]
-                                                                 (for [ob (items (a run r-obs)) :when (a ob o-live)] (a ob o-debtor))
+                                                                 (for [ob (items (a run r-obs))
+                                                                       :let [debtor (a ob o-debtor)]
+                                                                       :when (and (a ob o-live)
+                                                                                  (or (nil? debtor) (identical? rt (a debtor n-runtime))
+                                                                                      (not (following-cancelling? rt ob))))] debtor)
                                                                  (filter #(and (open-owner? (a % n-owner)) (owns-live-kind? %))
                                                                          (concat (items (a run r-owned)) (scope-owned-nodes rt run))))))
                                                      (values (a node n-runs))))))
@@ -5696,6 +5715,24 @@
 
 (def ^:private ^:dynamic *custody-terminal-release* false)
 
+(defn- sever-world-retention! [rt nodes]
+  ;; Logical T34 destroys the ordinary arena. Discharge actual graph indexes
+  ;; while both endpoints still exist; a later dirty pass cannot reach this
+  ;; arena after its facade has been replaced by a data tombstone. Physical
+  ;; cleanup owns separate frozen frames/cells and does not borrow these edges.
+  (doseq [node nodes]
+    (each-copy! [target (a node n-links)]
+                (remove! (a target n-supporters) node)
+                (mark! (a target n-runtime) target))
+    (clear-members! (a node n-links))
+    (clear-members! (a node n-link-buffer))
+    (each-copy! [supporter (a node n-supporters)]
+                (remove! (a supporter n-links) node)
+                (remove! (a supporter n-link-buffer) node)
+                (mark-graph! (a supporter n-runtime) supporter)
+                (mark! (a supporter n-runtime) supporter))
+    (clear-members! (a node n-supporters))))
+
 (defn request-world-release! [requested reason]
   (when-not *custody-terminal-release*
     (when (or (active-operation) (active-mailbox-callback))
@@ -5730,7 +5767,9 @@
                                  (let [receipt (when-not *custody-terminal-release*
                                                  (NativeReleaseReceipt. (runtime-field rt :owner-root) #?(:clj (Object.) :cljs (js-obj))))
                                        backend (release-context-backend rt)
-                                       completion (when receipt (lifecycle/completion backend receipt))]
+                                       completion (when receipt (lifecycle/completion backend receipt))
+                                       ordinary-nodes (into (vec (values (runtime-field rt :nodes)))
+                                                            (items (a (runtime-field rt :liveness) 0)))]
                                    (put state 1 reason) (put state 2 receipt) (put state 3 completion)
                                    (when completion (swap! pending-releases assoc (runtime-field rt :owner-root) backend))
                                      ;; Retain before any ownership mutation; raw witnesses keep
@@ -5759,6 +5798,7 @@
                                                    (close-owner! rt scope))))
                                    (custody-claim-owner! rt (runtime-field rt :owner-root))
                                    (following-release! rt)
+                                   (sever-world-retention! rt ordinary-nodes)
                                    (doseq [node (vec (values (runtime-field rt :nodes)))]
                                      (when-let [control (a node n-mailbox)]
                                        (doseq [consumer (vec (concat (values (a control m-pending))
@@ -5768,7 +5808,10 @@
                                            (queue-mailbox-rejection! rt consumer reason :explicit))))
                                      (owner! rt node nil)
                                      (doseq [ob (vec (items (a node n-dependents)))]
-                                       (reject-dependent! rt ob {:reason reason}))
+                                       (if (and (a ob o-run)
+                                                (not (identical? rt (a (a ob o-creditor-node) n-runtime))))
+                                         (following-cancel! rt ob nil)
+                                         (reject-dependent! rt ob {:reason reason})))
                                        ;; Minimal physical run witnesses may still point here.
                                        ;; Ordinary source/body/cache captures do not survive.
                                      (fields! [field [n-body n-descriptor n-value n-public-signal n-deferred n-mailbox
@@ -6181,12 +6224,9 @@
         (#{7 9} (alength ^objects event)) (a event 0)
         :else (a (a event 0) n-runtime)))
 (defn- following-poll-event! [rt dispatch]
-  (if-not (:following (some-> (custody-state rt) deref))
-    ;; Held packets can outlive their reverse edge. Read their buckets too.
-    (if-not (seq (:following-held (some-> (custody-state rt) deref)))
-      (pop! (.-events ^ArenaState dispatch))
-      (following-poll-active! rt dispatch))
-    (following-poll-active! rt dispatch)))
+  ;; The caller already preserves the raw nil-service direct-pop fast path.
+  ;; Pending packets remain authoritative after the last reverse bucket ends.
+  (following-poll-active! rt dispatch))
 (defn- following-poll-active! [rt dispatch]
   (loop []
     (when-let [event (pop! (.-events ^ArenaState dispatch))]
@@ -6205,7 +6245,8 @@
                                   :debtor-world (following-world-id rt (:source payload))
                                   :value (diagnostic-value (:value payload) (:failed? payload))}
                            (:source-change? payload) (assoc :source-change? true))
-             :cancelled {:cancelled [:o (:ob payload)] :value (diagnostic-value (:value payload) true)}
+             :cancelled (cond-> {:cancelled [:o (:ob payload)]}
+                          (contains? payload :value) (assoc :value (diagnostic-value (:value payload) true)))
              :ended {:fdep-ended (let [[e root o] (:fd payload)]
                                    (if (= :bundle e) [:bundle (following-world-id rt root) o]
                                        [e (following-world-id rt root) [:o o]]))}
@@ -6214,8 +6255,9 @@
   (concat (filter #(and (following-event? %) (identical? rt (a % 1))) (following-queued rt))
           (following-held rt :following-outside)))
 (defn- following-cancelling? [rt ob]
-  (some #(let [p (a % 2)] (and (= :cancelled (:kind p)) (= (a ob o-id) (:ob p))))
-        (following-events rt)))
+  (or (identical? ob *following-cancellation*)
+      (some #(let [p (a % 2)] (and (= :cancelled (:kind p)) (= (a ob o-id) (:ob p))))
+            (following-events rt))))
 (defn- following-prune-state! [service root]
   (when (every? empty? (vals (get-in @service [:following root])))
     (vswap! service update :following dissoc root)
@@ -6268,7 +6310,7 @@
         (following-sync! debtor creditor)
         (mark! debtor node)))))
 (defn- following-activate! [rt run]
-  (when (:following (some-> (custody-state rt) deref))
+  (when (or (custody-state rt) (:service *custody-frame*))
     (let [debtors (members)]
       ;; A bundle represents the whole inherited cohort. Install every ordinary
       ;; edge before retiring that cohort, never a partial per-observation view.
@@ -6295,10 +6337,28 @@
 (defn- following-cancel! [source ob cancellation]
   (let [run (a ob o-run) target (when run (a (a run r-node) n-runtime))]
     (if (and target (not (identical? target source)))
-      (do (following-event! target {:kind :cancelled :ob (a ob o-id)
-                                    :value (if cancellation (:reason cancellation)
-                                               (ex-info "Cancelled" {:error :cancelled}))})
-          true)
+      (let [service (custody-state source) node (a ob o-debtor)
+            root (following-root target) entity (a node n-id)]
+        (when service
+          (vswap! service update-in [:following (following-root source) :fdeps]
+                  (fnil disj #{}) [entity root (a ob o-id)]))
+        (following-event! target (cond-> {:kind :cancelled :ob (a ob o-id)}
+                                  cancellation (assoc :value (:reason cancellation))))
+        (when service
+          (let [other? (some (fn [other]
+                              (and (not (identical? other ob)) (a other o-live)
+                                   (identical? node (a other o-debtor)) (a other o-run)
+                                   (= :inherited (a (a other o-run) r-status))
+                                   (not (following-cancelling? target other)))) (all-obligations target))]
+            (when-not other?
+              (vswap! service update-in [:following (following-root source) :fdeps]
+                      (fn [fds]
+                        (set (keep (fn [[tag creditor entities :as fd]]
+                                     (if (and (= :bundle tag) (identical? root creditor))
+                                       (when (seq (disj entities entity)) [:bundle root (disj entities entity)]) fd)) fds)))))
+            (following-prune-state! service (following-root source))))
+        (mark-graph! target (a run r-node))
+        true)
       false)))
 
 (defn- following-copy-evidence [rt copies]
@@ -6380,7 +6440,8 @@
           (boundary! rt (when (runtime-field rt :audit) {:t :t36 :w (runtime-field rt :world)})))
       :cancelled
       (do (when-let [ob (following-ob rt (:ob p))]
-            (reject-dependent! rt ob {:reason (:value p)}))
+            (binding [*following-cancellation* ob]
+              (reject-dependent! rt ob (when (contains? p :value) {:reason (:value p)}))))
           (boundary! rt (when (runtime-field rt :audit) {:t :t36 :w (runtime-field rt :world)})))
 )))
 (defn- following-kept? [rt node]
@@ -6388,21 +6449,21 @@
           (if (= :bundle entity) (contains? members (a node n-id)) (= entity (a node n-id))))
         (:releasing (following-state rt))))
 (defn- following-retention! [rt]
-  (when (:following (some-> (custody-state rt) deref))
+  (when-let [service (or (custody-state rt) (:service *custody-frame*))]
     ;; A foreign supporter is a semantic edge, never an external root. Publish
     ;; both endpoints' dirty graph rows before answering reachability.
-    (doseq [world (values (runtime-field rt :family)) :when (not (custody-data-world? world))]
+    (doseq [world (values (:worlds @service)) :when (not (custody-data-world? world))]
       (invalidate-liveness! world)
       (reconcile-retention! world))))
 (defn- following-release! [rt]
   (when-let [service (custody-state rt)]
       (doseq [world (values (runtime-field rt :family))
               :when (and (not (custody-data-world? world)) (not (identical? rt world)))
-              ob (all-obligations world)
+              ob (sort-by #(a % o-id) (all-obligations world))
               :let [node (a ob o-debtor)]
               :when (and node (identical? rt (a node n-runtime))
                          (following-admitted? rt world ob))]
-        (following-cancel! rt ob *world-release-cancellation*))
+        (following-cancel! rt ob nil))
       (vswap! service update :following dissoc (following-root rt))
       (doseq [key [:following-held :following-outside]]
         (vswap! service update key dissoc (following-root rt))

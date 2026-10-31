@@ -36,7 +36,7 @@
 
 (deftest armed-computation-await-follows-source-without-replaying-prefix
   (let [rt (c/runtime {:audit? true :cps-exit? true}) gate (c/ticket :worker)
-        prefixes (atom []) suffixes (atom []) finalizers (atom []) values (atom [])
+        prefixes (atom []) suffixes (atom []) finalizers (atom []) values (atom []) errors (atom [])
         worker (c/cspin rt :worker
                         (swap! prefixes conj :worker)
                         (try (c/park gate)
@@ -46,7 +46,7 @@
                         (let [value (c/await worker)]
                           (swap! suffixes conj [(world-id ec/*execution-context*) value])
                           value))]
-    (c/observe! rt waiter #(swap! values conj %) #(is false (str %)))
+    (c/observe! rt waiter #(swap! values conj %) #(swap! errors conj %))
     (let [{child :context} (publish rt)
           source-worker-run (first (for [[run row] (:runs (c/snapshot rt)) :when (= :worker (:spin row))] run))
           source-before (get-in (c/snapshot rt) [:runs source-worker-run])
@@ -73,9 +73,13 @@
       (is (= 2 (count @suffixes)))
       (is (= {:worker 1 :waiter 1} (frequencies @prefixes)))
       (is (= [(world-id rt)] @finalizers))
+      ;; This active dormant copy still supports its completed allocation
+      ;; owner; an actual later entity-owner release cancels it without entry.
       (is (= :inherited (get-in (c/snapshot child) [:runs source-worker-run :status])))
       (is (= 42 (get-in (c/snapshot child) [:entities :waiter :result])))
+      (is (empty? @errors))
       (release! rt)
+      (is (= [:finished] @errors))
       (is (= [(world-id rt)] @finalizers))
       (verify-boundaries! rt))))
 
@@ -178,7 +182,10 @@
           :cancel-source
           (do
             (c/cancel-spin! rt waiter)
-            (is (= [(world-id rt)] @finalizers))
+            ;; A real foreign cancellation delivery activates the child
+            ;; continuation before it enters finally; direct child retirement
+            ;; above deliberately has a different no-entry contract.
+            (is (= [(world-id rt) (world-id child)] @finalizers))
             (is (empty? (run-obligations child [:waiter 1])))
             (is (c/join-ready? child [:waiter 1])))
           :release-root
@@ -191,7 +198,8 @@
         (is (empty? (:cleanup-cells (c/snapshot child))))
         (verify-boundaries! rt)
         (when-not (= :release-root operation) (release! rt))
-        (is (= [(world-id rt)] @finalizers))
+        (is (= (if (= :cancel-source operation)
+                 [(world-id rt) (world-id child)] [(world-id rt)]) @finalizers))
         (verify-boundaries! rt)))))
 
 (deftest public-spin-await-uses-the-copied-logical-obligation
