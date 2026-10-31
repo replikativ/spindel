@@ -442,7 +442,9 @@
          custody-state! custody-state custody-publish! custody-project custody-cap-view custody-holder-view
          custody-claim-owner! custody-adopt! custody-dispatch! refresh-custody! refresh-custody-releases! custody-debts? custody-world-phase
          custody-publication-owner custody-release-preflight! custody-event? custody-event-view custody-live? custody-release-ready?
-         custody-data-world? custody-audit-family custody-release-data! custody-targets-view custody-shape! custody-holder custody-reachable-roots custody-owner-holds? custody-order custody-disposal-preflight! custody-resource-ingress! custody-protected-roots custody-automatic-holder?)
+         custody-data-world? custody-audit-family custody-release-data! custody-targets-view custody-shape! custody-holder custody-reachable-roots custody-owner-holds? custody-order custody-disposal-preflight! custody-resource-ingress! custody-protected-roots custody-automatic-holder?
+         following-control-key following-held following-queued following-outside-view following-events following-poll-event! following-poll-active! audit-following! following-kept? following-retention! following-release! following-copy-evidence following-event? following-event! following-event-view following-state following-project
+         following-add! following-end! following-activate! following-publish! following-cancel! following-copy! following-dispatch! following-world following-cancelling?)
 ;; Every public/scoped view shares one revocable world arena. Only value/identity
 ;; fields live on the facade; borrowed family services never become view aliases.
 (defrecord ^:private ArenaState [nodes deliveries events hosts work ready draining counters audit tokens
@@ -711,7 +713,7 @@
 (defn- active-status? [status] (case status (:running :parked :inherited :stale) true false))
 (defn- resumable-status? [status] (case status (:parked :inherited) true false))
 (defn- basis-status? [status] (case status (:completed :stale) true false))
-(defn- fork-busy-status? [status] (case status (:running :unwinding :inherited) true false))
+(defn- fork-busy-status? [status] (case status (:running :unwinding) true false))
 
 (defn- current [node] (a node n-current))
 (defn- open-owner? [owner]
@@ -762,7 +764,10 @@
   (or (not= :spin (a node n-kind)) (not (a node n-complete)) (a node n-kept)))
 
 (defn- retain-link! [rt links target]
-  (when (and target (identical? target (find! (runtime-field rt :nodes) (a target n-id))))
+  (when (and target
+             (or (identical? target (find! (runtime-field rt :nodes) (a target n-id)))
+                 (and (identical? (runtime-field rt :gate) (runtime-field (a target n-runtime) :gate))
+                      (identical? target (find! (runtime-field (a target n-runtime) :nodes) (a target n-id))))))
     (add! links target)))
 
 (defn- retain-scope-links! [rt links scopes]
@@ -825,7 +830,13 @@
                   (put node n-links small) (put node n-link-buffer (members)))
                 (do (put node n-links next) (put node n-link-buffer before)
                     (clear-members! before)))))
-          (when-not present? (put node n-supporters (members))))
+          (when-not present?
+            ;; A removed foreign debtor can still have queued cancellation
+            ;; descriptors. Their live creditor rows must drop the ordinary
+            ;; retention edge before the reverse storage is released.
+            (each! [supporter (a node n-supporters)]
+                   (mark-graph! (a supporter n-runtime) supporter))
+            (put node n-supporters (members))))
         (recur)))))
 
 (defn- dict-has? [m key]
@@ -843,7 +854,9 @@
       (loop []
         (if-let [candidate (pop! pending)]
           (cond
-            (or (a candidate n-external-root) (has? external candidate))
+            (or (a candidate n-external-root) (has? external candidate)
+                (when (a (runtime-field (a candidate n-runtime) :counters) 11)
+                  (following-kept? (a candidate n-runtime) candidate)))
             (do (remember-live-path! external parents candidate) true)
             (or (active-status? (some-> (current candidate) (a r-status))) (has? work candidate))
             (do (remember-live-path! work parents candidate) true)
@@ -866,8 +879,10 @@
 
 (defn- wanted? [node]
   (let [rt (a node n-runtime) live (runtime-field rt :liveness)]
+    (when (a (runtime-field rt :counters) 11) (following-retention! rt))
     (reconcile-retention! rt)
     (or (a node n-external-root)
+        (when (a (runtime-field rt :counters) 11) (following-kept? rt node))
         (active-status? (some-> (current node) (a r-status)))
         (has? (a live 1) node) (has? (a live 2) node)
         (and (not (has? (a live 3) node)) (find-live-root! rt node)))))
@@ -1166,6 +1181,8 @@
     (when-let [consumer (a ob o-mailbox)]
       (when-not (#{:claimed :entered} (a consumer b-state)) (mailbox-detach! rt consumer)))
     (put ob o-live false)
+    (when-let [debtor (a ob o-debtor)]
+      (when-not (identical? rt (a debtor n-runtime)) (following-end! rt ob)))
     (when (= :await-once (a ob o-kind))
       (dissoc! (runtime-field rt :deliveries) (a ob o-id))
       (when-let [operation (find! (runtime-field rt :operations) (a ob o-id))]
@@ -1185,7 +1202,7 @@
           (remove! waiters ob)
           (when (zero? (count! waiters)) (dissoc! (runtime-field rt :tickets) host)))))
     (when-let [node (a ob o-debtor)]
-      (remove! (a node n-dependents) ob) (mark! rt node)
+      (remove! (a node n-dependents) ob) (mark! (a node n-runtime) node)
       (when (#{:atom :deferred :mailbox} (a node n-kind))
         (note-cell-gc-blocker-change! rt (a node n-id)))
       (if-let [creditor (a ob o-creditor-node)]
@@ -1206,17 +1223,19 @@
 (defn- reject-dependent!
   ([rt ob] (reject-dependent! rt ob *world-release-cancellation*))
   ([rt ob cancellation]
-   (if-let [run (a ob o-run)]
+   (when-not (following-cancel! rt ob cancellation)
+    (if-let [run (a ob o-run)]
      (do
        (when (and (= :consumed (a ob o-slot)) (= :await-reactive (a ob o-kind))
                   (#{:running :parked :inherited :completed} (a run r-status)) (identical? run (current (a run r-node))))
          (put run r-validation-lost true)
          (when (a (a run r-node) n-complete) (put (a run r-node) n-dirty true)))
        (when (and (= :armed (a ob o-slot))
-                  (or (= :parked (a run r-status))
+                  (or (resumable-status? (a run r-status))
                       (and (= :running (a run r-status)) (a ob o-mailbox)
                            (= :reserved (a (a ob o-mailbox) b-state)))))
          (put run r-status :running)
+         (following-activate! rt run)
          (put ob o-value (if cancellation (:reason cancellation)
                              (ex-info "Cancelled" {:error :cancelled})))
          (put ob o-delivery-error true) (put ob o-slot :consumed)
@@ -1232,7 +1251,7 @@
        (push! (runtime-field rt :hosts)
               (doto (slots 2) (put 0 (a ob o-failure))
                     (put 1 (if cancellation (:reason cancellation) (ex-info "Cancelled" {})))))))
-   (end-ob! rt ob)))
+   (end-ob! rt ob))))
 
 (defn- release-owned! [rt run]
   (each-copy! [node (if (custody-state rt)
@@ -1366,8 +1385,8 @@
     (note-cell-gc-blocker-change! rt (a node n-id)))
   #?(:clj (.removeIf ^java.util.Collection (runtime-field rt :events)
                      (reify java.util.function.Predicate
-                       (test [_ event] (identical? node (a event 0)))))
-     :cljs (.removeWhere (runtime-field rt :events) (fn [event] (identical? node (a event 0))))))
+                       (test [_ event] (and (not (following-event? event)) (identical? node (a event 0))))))
+     :cljs (.removeWhere (runtime-field rt :events) (fn [event] (and (not (following-event? event)) (identical? node (a event 0)))))))
 
 (defn- signal-dependent? [node]
   ;; Pure one-shot caches have no outgoing reactive registrations. Only idle
@@ -1429,7 +1448,10 @@
 (defn- audit-retention! [rt]
   (each! [node (values (runtime-field rt :nodes))]
          (let [owner (a node n-owner)
-               expected (set (filter some?
+               expected (set (filter (fn [target]
+                                       (and target
+                                            (or (identical? rt (a target n-runtime))
+                                                (identical? target (find! (runtime-field (a target n-runtime) :nodes) (a target n-id))))))
                                      (concat [(owner-node owner)]
                                              (mapcat (fn [run]
                                                        (when-not (= :unwinding (a run r-status))
@@ -1447,16 +1469,17 @@
                               :actual (set (map #(a % n-id) actual))
                               :root external? :actual-root (a node n-external-root)})))
            (each! [target (a node n-links)]
-                  (when-not (and (identical? target (find! (runtime-field rt :nodes) (a target n-id)))
+                  (when-not (and (identical? target (find! (runtime-field (a target n-runtime) :nodes) (a target n-id)))
                                  (has? (a target n-supporters) node))
                     (throw (ex-info "Retention edge has no reverse index" {:id (a node n-id)}))))
            (each! [source (a node n-supporters)]
-                  (when-not (and (identical? source (find! (runtime-field rt :nodes) (a source n-id)))
+                  (when-not (and (identical? source (find! (runtime-field (a source n-runtime) :nodes) (a source n-id)))
                                  (has? (a source n-links) node))
                     (throw (ex-info "Retention reverse index has no edge" {:id (a node n-id)})))))))
 
 (defn- audit-derived-state! [rt]
   (audit-retention! rt)
+  (audit-following! rt)
   (when-not (zero? (count! empty-members))
     (throw (ex-info "Shared empty membership was mutated" {})))
   #?(:cljs
@@ -1491,9 +1514,11 @@
              (throw (ex-info "Reactive-site count mismatch" {:run (a run r-gen) :expected actual :actual (a run r-reactives)}))))))
 
 (defn- boundary-body! [rt action]
+  (when (a (runtime-field rt :counters) 11) (following-retention! rt))
   (reclaim! rt)
   (when (prune-timer-queue! rt) (reclaim! rt))
   (prune-ancestry! rt)
+  (when (a (runtime-field rt :counters) 11) (following-retention! rt))
   (refresh-custody-releases! rt)
   (refresh-release! rt)
   (custody-release-data! rt)
@@ -1899,7 +1924,8 @@
             (mark-graph! rt (a run r-node)))
           (when (reactive-kind? kind) (reactive-delta! run 1)))
     (when debtor
-      (add! (a debtor n-dependents) ob) (mark! rt debtor)
+      (add! (a debtor n-dependents) ob) (mark! (a debtor n-runtime) debtor)
+      (when (and run (not (identical? rt (a debtor n-runtime)))) (following-add! rt ob))
       (when (and (nil? run) (not (a debtor n-external-root))) (mark-graph! rt debtor)))
     ob))
 
@@ -1939,18 +1965,18 @@
   ([rt run order id resolve reject expected-source]
    (locked rt
            (check-running! run)
-           (let [node (or (find! (runtime-field rt :nodes) id)
-                          (throw (ex-info "Foreign or released track is outside this slice" {:id id})))
+           (let [node (or (find! (runtime-field rt :nodes) id) (parent-node rt id)
+                          (throw (ex-info "Released track is outside this slice" {:id id})))
                  _ (when (#{:deferred :mailbox} (a node n-kind))
                      (throw (ex-info "Deferred permits one-shot await only" {:error :unsupported-deferred-obligation})))
-                 _ (when expected-source (public-signal-view! rt expected-source))
+                 _ (when expected-source (public-signal-view! (a node n-runtime) expected-source))
                  ob (ob! rt :track node run order resolve reject)]
              (put ob o-last (a node n-value)) (rank! run node)
              (put (current-activation) 9 nil)
              (when (a node n-public-signal)
                (put (current-activation) 9 (public-track-interval! node ob true)))
              (boundary! rt (when (runtime-field rt :audit) {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                                            :kind :track :order order :debtor [:entity (runtime-field rt :world) id]}))
+                                                            :kind :track :order order :debtor [:entity (runtime-field (a node n-runtime) :world) id]}))
              (a node n-value)))))
 
 (defn- track-id-effect!
@@ -1983,15 +2009,18 @@
   (locked rt
           (check-running! run)
           (check-token! rt token)
-          (when (and (nil? (find! (runtime-field rt :nodes) id)) (parent-node rt id))
-            (throw (ex-info "Foreign await is outside this slice" {:id id})))
           (let [owner (selected-owner rt)
-                node (or (find! (runtime-field rt :nodes) id) (node! rt id :spin owner))]
+                local (find! (runtime-field rt :nodes) id)
+                ancestor (when-not local (parent-node rt id))
+                foreign (when (and ancestor (or (a ancestor n-complete)
+                                               (work-status? (some-> (current ancestor) (a r-status))))) ancestor)
+                node (or local foreign (node! rt id :spin owner))
+                local? (identical? rt (a node n-runtime))]
             (when-not (= :spin (a node n-kind))
               (throw (ex-info "Computation await target has another kind" {:error :not-computation :id id})))
-            (when-not (or (scope-owner? owner) (root-owner? owner)) (adopt! rt node owner))
-            (when-not (a node n-owner) (owner! rt node owner))
-            (when (and (not (work-status? (some-> (current node) (a r-status))))
+            (when (and local? (not (or (scope-owner? owner) (root-owner? owner)))) (adopt! rt node owner))
+            (when (and local? (not (a node n-owner))) (owner! rt node owner))
+            (when (and local? (not (work-status? (some-> (current node) (a r-status))))
                        (or (not (a node n-complete)) (a node n-dirty)))
               ;; A checkpoint may select its saved executable on a genuine
               ;; cold restart. Seat the matching descriptor proof with it;
@@ -2005,16 +2034,17 @@
               ;; debtor's ordinary cache may be released before the queued
               ;; continuation claims a slice, including its n-body field.
               (put ob o-body body)
-              (put run r-status :parked) (when (runtime-field rt :finalization) (put run r-cancel-cont reject)) (touch! rt node token) (rank! run node)
-              (let [ready? (and (a node n-complete) (not (a node n-dirty))
-                                (not (work-status? (some-> (current node) (a r-status)))))]
+              (put run r-status :parked) (when (runtime-field rt :finalization) (put run r-cancel-cont reject)) (touch! (a node n-runtime) node token) (rank! run node)
+              (let [ready? (and (a node n-complete)
+                                (or (not local?) (and (not (a node n-dirty))
+                                                       (not (work-status? (some-> (current node) (a r-status)))))))]
                 ;; T5+T6 share the gate and run no user code between them. Both
                 ;; statuses retain the same standing obligation and ownership;
                 ;; one final Rule L closure suffices. Audit mode still exposes
                 ;; both model states for the independent transition replay.
                 (when (or (not ready?) (runtime-field rt :audit))
                   (boundary! rt (when (runtime-field rt :audit) (cond-> {:t :t05 :w (runtime-field rt :world) :r [(a (a run r-node) n-id) (a run r-gen)]
-                                                                         :kind :await-reactive :order order :debtor [:entity (runtime-field rt :world) id]}
+                                                                         :kind :await-reactive :order order :debtor [:entity (runtime-field (a node n-runtime) :world) id]}
                                                                   token (assoc :tok (a token t-id))))))
                 (when ready?
                   (put ob o-slot :consumed) (put run r-status :running) (put ob o-value (a node n-value))
@@ -2085,7 +2115,7 @@
             (when-let [ob (find! (runtime-field rt :deliveries) (:obligation delivery))]
               (let [run (a ob o-run)]
                 (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
-                  (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
+                  (end-ob! rt ob) (put run r-status :running) (following-activate! rt run) (put ob o-value value)
                   (put ob o-delivery-error failed?)
                   (schedule! rt (a run r-node) ob))))
             (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world)
@@ -2107,7 +2137,7 @@
             (let [run (a ob o-run)]
               (when (and (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                 (put ob o-slot :consumed)
-                (end-ob! rt ob) (put run r-status :running) (put ob o-value value)
+                (end-ob! rt ob) (put run r-status :running) (following-activate! rt run) (put ob o-value value)
                 (put ob o-delivery-error failed?)
                 (schedule! rt (a run r-node) ob))))
           (boundary! rt (when (runtime-field rt :audit) {:t :t06 :w (runtime-field rt :world)
@@ -2496,6 +2526,7 @@
                                    (put 2 (put (runtime-field rt :counters) 2
                                                (inc (max (long (a (runtime-field rt :counters) 1))
                                                          (long (a (runtime-field rt :counters) 2))))))))
+                      (when (a (runtime-field rt :counters) 11) (following-publish! rt node value failed? false))
                       (each-copy! [previous (values (a node n-runs))]
                                   (when (and (not (identical? previous run)) (basis-status? (a previous r-status)))
                                     (retire! rt previous)))
@@ -2525,7 +2556,7 @@
                      (do (remove! (a previous r-obs) ob) (put ob o-run run) (reactive-delta! previous -1) (reactive-delta! run 1)
                          (put ob o-creditor-generation (a run r-gen))
                          (put ob o-creditor-node node) (add-run! run r-obs ob)
-                         (when (= :await-reactive (a ob o-kind))
+                         (when (and (= :await-reactive (a ob o-kind)) (identical? rt (a (a ob o-debtor) n-runtime)))
                            (adopt! rt (a ob o-debtor) run)))
                      (when work? (end-ob! rt ob))))
        (custody-adopt! rt previous run order)
@@ -2545,12 +2576,27 @@
        (schedule! rt node trigger)))))
 
 (defn- subscriber-buffer! [rt node]
-  (let [n (count! (a node n-dependents))
+  (let [foreign? (not (identical? rt (a node n-runtime)))
+        filtered (if foreign?
+                   ;; Copy evidence can precede debtor-side bundle admission.
+                   ;; The creditor's semantic rows, not its reverse index, own
+                   ;; the armed slot that a committed value fact can resume.
+                   (for [run (items (a (runtime-field rt :counters) 6))
+                         ob (items (a run r-obs))
+                         :when (and (a ob o-live) (identical? node (a ob o-debtor)))] ob)
+                   (when (following-state rt)
+                     (filter #(or (nil? (a % o-run))
+                                  (identical? rt (a (a % o-creditor-node) n-runtime)))
+                             (items (a node n-dependents)))))
+        n (if filtered (count filtered) (count! (a node n-dependents)))
         old (a (runtime-field rt :counters) 4)
         buffer (if (< (alength ^objects old) n)
                  (put (runtime-field rt :counters) 4 (slots (max n (* 2 (alength ^objects old))))) old)]
-    #?(:clj (.toArray ^java.util.Collection (a node n-dependents) ^objects buffer)
-       :cljs (.copyInto (a node n-dependents) buffer))
+    (if filtered
+      (loop [remaining (seq filtered) index 0]
+        (when remaining (put buffer index (first remaining)) (recur (next remaining) (inc index))))
+      #?(:clj (.toArray ^java.util.Collection (a node n-dependents) ^objects buffer)
+         :cljs (.copyInto (a node n-dependents) buffer)))
     n))
 
 (defn- process-event! [rt event]
@@ -2560,17 +2606,18 @@
         order (when (runtime-field rt :audit) (mapv #(vector :o (a (a dependents %) o-id)) (range n)))]
     (when (identical? event (a node n-source-event)) (put node n-source-event nil))
     (when (#{:atom :deferred :mailbox} (a node n-kind))
-      (note-cell-gc-blocker-change! rt (a node n-id)))
+      (note-cell-gc-blocker-change! (a node n-runtime) (a node n-id)))
     (try
       (dotimes [index n]
         (let [ob (a dependents index)]
           (if-let [run (a ob o-run)]
-            (if (= :consumed (a ob o-slot))
+            (if (and (= :consumed (a ob o-slot)) (not= :inherited (a run r-status)))
               (reenter! rt (a ob o-creditor-node) ob)
-              (when (and (a ob o-live) (= :parked (a run r-status)))
+              (when (and (a ob o-live) (= :armed (a ob o-slot)) (resumable-status? (a run r-status)))
                 (put ob o-slot :consumed) (put ob o-value value) (put ob o-delivery-error failed?)
                 (when-not (a ob o-standing) (end-ob! rt ob))
                 (put run r-status :running)
+                (following-activate! rt run)
                 (schedule! rt (a ob o-creditor-node) ob)))
             (do (push! (runtime-field rt :hosts)
                        (doto (slots 2) (put 0 (a ob (if failed? o-failure o-success))) (put 1 value)))
@@ -2578,7 +2625,8 @@
                           (and (a node n-complete) (not (reactive? (current node)))))
                   (end-ob! rt ob))))))
       (boundary! rt (when (runtime-field rt :audit) {:t :t08 :w (runtime-field rt :world) :e (a node n-id) :value (diagnostic-value value failed?)
-                                                     :delivery-order order}))
+                                                     :delivery-order order
+                                                     :debtor-world (runtime-field (a node n-runtime) :world)}))
       (finally (dotimes [i n] (put dependents i nil))))))
 
 (defn- poll-ready! [^ArenaState dispatch]
@@ -2694,8 +2742,11 @@
   (locked rt
           (if-let [post (pop! (.-posts dispatch))]
             post
-            (if-let [event (pop! (.-events dispatch))]
-              (do (cond (custody-event? event) (custody-dispatch! (a event 1) event)
+            (if-let [event (if (a (.-counters dispatch) 11)
+                             (following-poll-event! rt dispatch)
+                             (pop! (.-events dispatch)))]
+              (do (cond (following-event? event) (following-dispatch! event)
+                        (custody-event? event) (custody-dispatch! (a event 1) event)
                         (= 9 (alength ^objects event)) (process-mailbox-post! (a event 0) event)
                         (= 7 (alength ^objects event)) (assign-deferred! (a event 0) event)
                         :else (process-event! (a (a event 0) n-runtime) event))
@@ -2816,7 +2867,7 @@
 (def ^:private engine-state-keys
   #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
     :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
-    :seq :serial :clock :handles :threads :gc :principals :global :cleanup-targets :scopes :next-scope :scope-balance :pins
+    :seq :serial :clock :handles :threads :gc :principals :global :cleanup-targets :outside :scopes :next-scope :scope-balance :pins
     :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc :addressing})
 
 (defn- engine-path? [path]
@@ -2979,7 +3030,8 @@
     (put event 2 (put (runtime-field rt :counters) 2
                       (inc (max (long (a (runtime-field rt :counters) 1))
                                 (long (a (runtime-field rt :counters) 2))))))
-    (push! (runtime-field rt :events) event)))
+    (push! (runtime-field rt :events) event)
+    (when (a (runtime-field rt :counters) 11) (following-publish! rt node value false true))))
 
 (defn- write-source!
   ([rt node source value] (write-source! rt node source value true))
@@ -3547,7 +3599,7 @@
                  (when (a (runtime-field rt :managed-cells) 2)
                    {:source-gc (into {} (for [[id allocation] (map-value (a (runtime-field rt :managed-cells) 1))]
                                           [[(runtime-field rt :world) id allocation] true]))})
-                 {:global (global-view rt) :cleanup-targets (custody-targets-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status (if (custody-world-phase rt) :sealed :live)
+                 {:global (global-view rt) :outside (following-outside-view rt) :cleanup-targets (custody-targets-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status (if (custody-world-phase rt) :sealed :live)
                   :admission (if (custody-world-phase rt) :fenced :open)
                   :seal-seq (get-in (some-> (custody-state rt) deref) [:phases (runtime-field rt :owner-root) :seal-seq])
                   :scopes (into {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
@@ -3559,7 +3611,7 @@
                                      (a data s-origin) (assoc :origin (a data s-origin) :source-world (a data s-source-world)))]))
                   :next-scope (if-let [state (scope-state rt)] (a state 2) 0)
                   :scope-balance (if-let [state (scope-state rt)] (a state 3) 0)
-                  :pins #{} :fdeps #{} :releasing #{} :principals #{}
+                  :pins #{} :fdeps (following-project rt :fdeps) :releasing (following-project rt :releasing) :principals #{}
                   :entities (into {} (for [node (values (runtime-field rt :nodes))]
                                        [(a node n-id)
                                         (cond-> {:kind (a node n-kind) :origin (or (a node n-origin) :created) :owner (owner-id (a node n-owner))
@@ -3599,7 +3651,8 @@
                                              (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                              (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
                   :queue (mapv (fn [event]
-                                 (if (custody-event? event) (custody-event-view event)
+                                 (if (following-event? event) (following-event-view rt event)
+                                   (if (custody-event? event) (custody-event-view event)
                                      (case (alength ^objects event)
                                        9 (cond-> {:mailbox-post (:id (a event 1)) :allocation (:id (a event 1))
                                                   :message-id (first (a event 3)) :value (second (a event 3)) :seq (a event 2)}
@@ -3609,12 +3662,13 @@
                                            (a event 5) (assoc :cell (a event 5)))
                                        (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world)
                                                 :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
-                                         (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true)))))
+                                         (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true))))))
                                (filter (fn [event]
-                                         (identical? rt (if (custody-event? event) (a event 2)
+                                         (identical? rt (if (following-event? event) (a event 1)
+                                                     (if (custody-event? event) (a event 2)
                                                             (if (#{7 9} (alength ^objects event)) (a event 0)
-                                                                (a (a event 0) n-runtime)))))
-                                       (items (runtime-field rt :events))))
+                                                                (a (a event 0) n-runtime))))))
+                                       (following-queued rt)))
                   :seq (a (runtime-field rt :counters) 1)
                   :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
                   :threads (let [run (a (runtime-field rt :thread) 0)
@@ -3645,8 +3699,8 @@
                 (release-view rt live)))))
 
 (defn- fork-custody-copy!
-  "Copy the supported parked host-ticket closure, then publish one affine leaf.
-  Entity-debtor/resource bundles remain outside this fork profile."
+  "Copy a parked logical following closure, then publish one affine leaf.
+  Physical resource and operation bundles still require fork recovery."
   [rt world owner cap-id]
   (admit-native-effect!)
   (locked rt
@@ -3663,12 +3717,15 @@
             (when (or (not (empty-dict? (a profile 0)))
                       (not (empty-dict? (a profile 1))) (queued? (a profile 2)))
               (throw (ex-info "Protected CPS participants require fork recovery" {:error :unsupported-finalization-fork}))))
+          (when (some #(or (custody-event? %) (#{7 9} (alength ^objects %))) (items (runtime-field rt :events)))
+            (throw (ex-info "Fork requires supported logical notification evidence" {:error :unsupported-operation :operation :fork-events})))
           (when (find! (runtime-field rt :family) world)
             (throw (ex-info "World ID already used" {:world world})))
-          (when (or (a (runtime-field rt :thread) 0) (queued? (runtime-field rt :events)))
+          (when (a (runtime-field rt :thread) 0)
             (throw (ex-info "Fork requires a parked boundary" {:world (runtime-field rt :world)})))
           (let [copies (vec (filter #(= :parked (a % r-status)) (items (a (runtime-field rt :counters) 6))))
                 run-map (dict) scope-map (dict)
+                evidence (following-copy-evidence rt copies)
                 scope-copies (loop [parents copies found []]
                                (let [children (vec (mapcat #(when-let [children (scope-children rt %)] (items children)) parents))]
                                  (if (empty? children) found (recur children (into found children)))))
@@ -3681,8 +3738,9 @@
               (each! [ob (a run r-obs)]
                      (when (find! (runtime-field rt :operations) (a ob o-id))
                        (throw (ex-info "Native operations require fork recovery" {:world (runtime-field rt :world)})))
-                     (when (or (a ob o-debtor) (not= :await-once (a ob o-kind)))
-                       (throw (ex-info "Entity-debtor bundles are outside this slice" {:world (runtime-field rt :world)}))))
+                     (when (or (not (#{:track :await-once :await-reactive} (a ob o-kind)))
+                               (and (a ob o-debtor) (not (#{:signal :atom :spin} (a (a ob o-debtor) n-kind)))))
+                       (throw (ex-info "Resource bundles require fork recovery" {:error :unsupported-operation :operation :fork-resource}))))
               (add! selected (a run r-node)))
             (each! [node (values (runtime-field rt :nodes))]
                    (when (or (contains? owners (a node n-owner)) (contains? owners (a node n-creator)))
@@ -3785,17 +3843,19 @@
                            (add-run! copy r-spawned descendant) (add-run! descendant r-backlinks copy)))
                   (each! [ob (a run r-obs)]
                          (let [clone (slots 24)]
-                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body o-signal-generation]]
+                           (fields! [field [o-id o-kind o-standing o-resolve o-reject o-order o-slot o-host o-address o-body o-signal-generation o-last]]
                                     (put clone field (a ob field)))
+                           (put clone o-debtor (a ob o-debtor))
                            (put clone o-run copy) (put clone o-live true)
                            (put clone o-creditor-generation (a copy r-gen)) (put clone o-creditor-node (a copy r-node))
                            (put clone o-origin :inherited) (put clone o-source-world (runtime-field rt :world))
                            (add-run! copy r-obs clone)
                            (when (reactive-kind? (a clone o-kind)) (reactive-delta! copy 1))
                            (when (= :await-once (a clone o-kind)) (assoc! (runtime-field child :deliveries) (a clone o-id) clone))
-                           (let [waiters (or (find! (runtime-field child :tickets) (a clone o-host))
+                           (when-not (a clone o-debtor)
+                            (let [waiters (or (find! (runtime-field child :tickets) (a clone o-host))
                                              (assoc! (runtime-field child :tickets) (a clone o-host) (members)))]
-                             (add! waiters clone))))))
+                             (add! waiters clone)))))))
               (put (runtime-field child :trace-address) 0 (a (runtime-field rt :trace-address) 0))
               (reclaim! child)
               (prune-ancestry! child)
@@ -3803,6 +3863,7 @@
               (put (runtime-field child :counters) 7 (a (runtime-field rt :counters) 7))
               (custody-publish! rt child owner cap-id)
               (assoc! (runtime-field rt :family) world child)
+              (following-copy! rt child (map #(find! run-map %) copies) evidence)
               (node! rt [:fork world] :fork owner)
               (each! [node (values (runtime-field child :nodes))]
                      (when (= :atom (a node n-kind))
@@ -3839,7 +3900,12 @@
                 pool (items (a (runtime-field rt :counters) 0))
                 protected-operations (keep #(a % x-operation)
                                            (when-let [profile (runtime-field rt :finalization)] (values (a profile 0))))]
-            {:live-runs (count! runs)
+            {:following-held (reduce + 0 (map count (vals (:following-held (some-> (custody-state rt) deref)))))
+             :following-outside (reduce + 0 (map count (vals (:following-outside (some-> (custody-state rt) deref)))))
+             :following-worlds (count (:following (some-> (custody-state rt) deref)))
+             :following-dependencies (reduce + 0 (map #(count (:fdeps %)) (vals (:following (some-> (custody-state rt) deref)))))
+             :following-releasing (reduce + 0 (map #(count (:releasing %)) (vals (:following (some-> (custody-state rt) deref)))))
+             :live-runs (count! runs)
              :execution-scope-rows (if-let [state (scope-state rt)] (count (map-value (a state 0))) 0)
              :execution-scope-parent-buckets (if-let [state (scope-state rt)] (count (map-value (a state 1))) 0)
              :execution-scope-parent-memberships
@@ -5692,6 +5758,7 @@
                                        (each-copy! [scope (or (scope-children rt (runtime-field rt :owner-root)) empty-members)]
                                                    (close-owner! rt scope))))
                                    (custody-claim-owner! rt (runtime-field rt :owner-root))
+                                   (following-release! rt)
                                    (doseq [node (vec (values (runtime-field rt :nodes)))]
                                      (when-let [control (a node n-mailbox)]
                                        (doseq [consumer (vec (concat (values (a control m-pending))
@@ -5715,9 +5782,11 @@
                                       :cljs (.clear (.-buckets (a (runtime-field rt :managed-cells) 0))))
                                    (let [events (runtime-field rt :events)
                                          retained (vec (filter (fn [event]
-                                                                 (or (custody-event? event)
+                                                                 (or (and (following-event? event) (not (identical? rt (a event 1))))
+                                                                     (custody-event? event)
                                                                      (#{7 9} (alength ^objects event))
-                                                                     (not (identical? rt (a (a event 0) n-runtime)))))
+                                                                     (and (not (following-event? event))
+                                                                          (not (identical? rt (a (a event 0) n-runtime))))))
                                                                (items events)))]
                                      #?(:clj (.clear ^java.util.ArrayDeque events) :cljs (.clear events))
                                      (doseq [event retained] (push! events event)))
@@ -6030,6 +6099,346 @@
         (put (runtime-field rt :counters) 10 index)
         (put (runtime-field rt :counters) 11 state)
         state)))
+;; Following dependencies are arena-local logical obligations with a lazy,
+;; family-gated reverse index. Incarnation keys never escape as authority.
+(defn- following-world [rt root]
+  (some (fn [world]
+          (when (identical? root (if (custody-data-world? world) (:root world)
+                                    (runtime-field world :owner-root))) world))
+        (values (runtime-field rt :family))))
+(defn- following-world-id [rt root]
+  (when-let [world (following-world rt root)]
+    (if (custody-data-world? world) (:world world) (runtime-field world :world))))
+(defn- following-root [rt] (runtime-field rt :owner-root))
+(defn- following-state [rt]
+  (when-let [service (custody-state rt)] (get-in @service [:following (following-root rt)])))
+(defn- following-ob [rt id]
+  (some #(when (and (a % o-live) (= id (a % o-id))) %) (all-obligations rt)))
+(defn- following-event? [event] (= :following (a event 0)))
+(defn- following-control-key [payload]
+  (case (:kind payload)
+    :cancelled [:cancelled (:ob payload)]
+    :ended [:ended (:fd payload)] nil))
+(defn- following-held [rt key]
+  (get-in (some-> (custody-state rt) deref) [key (following-root rt)] []))
+(defn- following-queued [rt]
+  (concat (following-held rt :following-held) (items (runtime-field rt :events))))
+(defn- following-outside-view [rt]
+  (mapv #(hash-map :w (runtime-field rt :world) :event (following-event-view rt %))
+        (following-held rt :following-outside)))
+(defn- following-event! [target payload]
+  (when (= :live (a (runtime-field target :lifecycle) 0))
+    (let [service (custody-state! target) root (following-root target)
+          control (following-control-key payload)
+          old (when control (first (filter #(= control (following-control-key (a % 2))) (following-events target))))]
+      (if old
+        ;; Controls deduplicate across logical queued/held/outside extents.
+        ;; Payload reasons are actual values; audit projects their Failure tag.
+        (when (contains? payload :value) (put old 2 (merge (a old 2) payload)))
+        (let [clock (put (runtime-field target :counters) 2
+                         (inc (max (long (a (runtime-field target :counters) 1))
+                                   (long (a (runtime-field target :counters) 2)))))
+              outside? (and (custody-world-phase target) (nil? control))
+              event (doto (slots 5) (put 0 :following) (put 1 target) (put 2 payload) (put 3 clock))]
+          (when (:source-change? payload)
+            ;; Admission fences form distinct notification segments. A new
+            ;; outside fact cannot erase an older, already queued value fact.
+            (let [same-source? #(and (following-event? %) (identical? target (a % 1))
+                                     (= :completion (:kind (a % 2))) (:source-change? (a % 2))
+                                     (identical? (:source payload) (:source (a % 2)))
+                                     (= (:entity payload) (:entity (a % 2))))]
+              (if outside?
+                (vswap! service update-in [:following-outside root] #(vec (remove same-source? %)))
+                (do
+                  (when (seq (following-held target :following-held))
+                    (vswap! service update-in [:following-held root] #(vec (remove same-source? %)))
+                    (when (empty? (get-in @service [:following-held root]))
+                      (vswap! service update :following-held dissoc root)
+                      (when (empty? (:following-held @service)) (vswap! service dissoc :following-held))))
+                  (doseq [old (vec (filter same-source? (items (runtime-field target :events))))]
+                    #?(:clj (.remove ^java.util.ArrayDeque (runtime-field target :events) old)
+                       :cljs (.remove (runtime-field target :events) old)))))))
+          (if outside?
+            (vswap! service update-in [:following-outside root] (fnil conj []) event)
+            (push! (runtime-field target :events) event)))))))
+(defn- following-blocked? [rt event]
+  (when (and (following-event? event) (custody-world-phase rt))
+    (let [p (a event 2)]
+      (case (:kind p)
+        :completion
+        (some (fn [ob]
+                (let [node (a ob o-debtor) run (a ob o-run)]
+                  (and node run (= :inherited (a run r-status)) (= :armed (a ob o-slot))
+                       (= (:entity p) (a node n-id))
+                       (identical? (:source p) (following-root (a node n-runtime)))))) (all-obligations rt))
+        :cancelled (when-let [ob (following-ob rt (:ob p))]
+                     (let [run (a ob o-run)]
+                       (and run (= :inherited (a run r-status)) (= :armed (a ob o-slot)))))
+        false))))
+(defn- following-event-target [event]
+  (cond (following-event? event) (a event 1)
+        (custody-event? event) (a event 2)
+        (#{7 9} (alength ^objects event)) (a event 0)
+        :else (a (a event 0) n-runtime)))
+(defn- following-poll-event! [rt dispatch]
+  (if-not (:following (some-> (custody-state rt) deref))
+    ;; Held packets can outlive their reverse edge. Read their buckets too.
+    (if-not (seq (:following-held (some-> (custody-state rt) deref)))
+      (pop! (.-events ^ArenaState dispatch))
+      (following-poll-active! rt dispatch))
+    (following-poll-active! rt dispatch)))
+(defn- following-poll-active! [rt dispatch]
+  (loop []
+    (when-let [event (pop! (.-events ^ArenaState dispatch))]
+      (let [target (following-event-target event) service (custody-state target)
+            root (following-root target)]
+        (if (and service (or (seq (following-held target :following-held))
+                             (following-blocked? target event)))
+          (do (vswap! service update-in [:following-held root] (fnil conj []) event)
+              (recur))
+          event)))))
+
+(defn- following-event-view [rt event]
+  (let [payload (a event 2)]
+    (assoc (case (:kind payload)
+             :completion (cond-> {:completion (:entity payload)
+                                  :debtor-world (following-world-id rt (:source payload))
+                                  :value (diagnostic-value (:value payload) (:failed? payload))}
+                           (:source-change? payload) (assoc :source-change? true))
+             :cancelled {:cancelled [:o (:ob payload)] :value (diagnostic-value (:value payload) true)}
+             :ended {:fdep-ended (let [[e root o] (:fd payload)]
+                                   (if (= :bundle e) [:bundle (following-world-id rt root) o]
+                                       [e (following-world-id rt root) [:o o]]))}
+) :seq (a event 3))))
+(defn- following-events [rt]
+  (concat (filter #(and (following-event? %) (identical? rt (a % 1))) (following-queued rt))
+          (following-held rt :following-outside)))
+(defn- following-cancelling? [rt ob]
+  (some #(let [p (a % 2)] (and (= :cancelled (:kind p)) (= (a ob o-id) (:ob p))))
+        (following-events rt)))
+(defn- following-prune-state! [service root]
+  (when (every? empty? (vals (get-in @service [:following root])))
+    (vswap! service update :following dissoc root)
+    (when (empty? (:following @service)) (vswap! service dissoc :following))))
+(defn- following-cleanup! [debtor fd]
+  (when-let [service (custody-state debtor)]
+    (when (and (= :live (a (runtime-field debtor :lifecycle) 0))
+               (not (contains? (:releasing (following-state debtor)) fd)))
+      (vswap! service update-in [:following (following-root debtor) :fdeps] (fnil disj #{}) fd)
+      (vswap! service update-in [:following (following-root debtor) :releasing] (fnil conj #{}) fd)
+      (following-event! debtor {:kind :ended :fd fd}))))
+(defn- following-sync! [debtor creditor]
+  (when-let [service (custody-state debtor)]
+   (let [root (following-root creditor)
+        old (first (filter #(and (= :bundle (first %)) (identical? root (second %)))
+                           (:fdeps (following-state debtor))))
+        entities (set (for [ob (all-obligations creditor)
+                            :let [node (a ob o-debtor) run (a ob o-run)]
+                            :when (and run node (a ob o-live) (= :inherited (a run r-status))
+                                       (identical? debtor (a node n-runtime))
+                                       (not (following-cancelling? creditor ob)))] (a node n-id)))
+        ordinary (set (for [[e target _] (:fdeps (following-state debtor))
+                            :when (and (not= :bundle e) (identical? root target))] e))
+        ended (reduce disj (reduce disj (or (nth old 2 nil) #{}) entities) ordinary)]
+    (when old (vswap! service update-in [:following (following-root debtor) :fdeps] disj old))
+    (when (seq entities)
+      (vswap! service update-in [:following (following-root debtor) :fdeps] (fnil conj #{}) [:bundle root entities]))
+    (when (seq ended) (following-cleanup! debtor [:bundle root ended])))))
+(defn- following-add! [creditor ob]
+  (let [node (a ob o-debtor) debtor (when node (a node n-runtime)) run (a ob o-run)]
+    (when (and run debtor (not (identical? debtor creditor))
+               (= :live (a (runtime-field debtor :lifecycle) 0))
+               (not (following-cancelling? creditor ob)))
+      (let [service (custody-state! debtor) root (following-root creditor)]
+        (if (= :inherited (a run r-status))
+          (let [old (first (filter #(and (= :bundle (first %)) (identical? root (second %)))
+                                   (:fdeps (following-state debtor))))]
+            (when old (vswap! service update-in [:following (following-root debtor) :fdeps] disj old))
+            (vswap! service update-in [:following (following-root debtor) :fdeps] (fnil conj #{})
+                    [:bundle root (conj (or (nth old 2 nil) #{}) (a node n-id))]))
+          (vswap! service update-in [:following (following-root debtor) :fdeps] (fnil conj #{})
+                  [(a node n-id) root (a ob o-id)]))
+        (add! (a node n-dependents) ob)
+        (mark! debtor node) (mark-graph! creditor (a run r-node))))))
+(defn- following-end! [creditor ob]
+  (let [node (a ob o-debtor) debtor (when node (a node n-runtime))]
+    (when (and debtor (not (identical? debtor creditor)))
+      (let [fd [(a node n-id) (following-root creditor) (a ob o-id)]]
+        (when (contains? (:fdeps (following-state debtor)) fd) (following-cleanup! debtor fd))
+        (following-sync! debtor creditor)
+        (mark! debtor node)))))
+(defn- following-activate! [rt run]
+  (when (:following (some-> (custody-state rt) deref))
+    (let [debtors (members)]
+      ;; A bundle represents the whole inherited cohort. Install every ordinary
+      ;; edge before retiring that cohort, never a partial per-observation view.
+      (each! [ob (a run r-obs)]
+             (when (a ob o-live)
+               (following-add! rt ob)
+               (when-let [node (a ob o-debtor)]
+                 (let [debtor (a node n-runtime)]
+                   (when-not (identical? debtor rt) (add! debtors debtor))))))
+      (each! [debtor debtors] (following-sync! debtor rt)))))
+(defn- following-project [rt key]
+  (set (for [[e root o] (get (following-state rt) key)]
+         (if (= :bundle e) [:bundle (following-world-id rt root) o]
+             [e (following-world-id rt root) [:o o]]))))
+(defn- following-publish! [rt node value failed? source-change?]
+  (when (following-state rt)
+    (doseq [root (distinct (for [[e root _] (:fdeps (following-state rt))
+                                :when (or (= e (a node n-id))
+                                          (and (= :bundle e) (contains? _ (a node n-id))))] root))
+            :let [target (following-world rt root)]
+            :when (and target (not (custody-data-world? target)))]
+      (following-event! target {:kind :completion :source (following-root rt) :entity (a node n-id)
+                                :value value :failed? failed? :source-change? source-change?}))))
+(defn- following-cancel! [source ob cancellation]
+  (let [run (a ob o-run) target (when run (a (a run r-node) n-runtime))]
+    (if (and target (not (identical? target source)))
+      (do (following-event! target {:kind :cancelled :ob (a ob o-id)
+                                    :value (if cancellation (:reason cancellation)
+                                               (ex-info "Cancelled" {:error :cancelled}))})
+          true)
+      false)))
+
+(defn- following-copy-evidence [rt copies]
+  (into {} (for [run copies ob (items (a run r-obs))]
+             [(a ob o-id)
+              {:phase (if (following-cancelling? rt ob) :cancelling :admitted)
+               :events (vec (filter
+                             (fn [event]
+                               (if (following-event? event)
+                                 (let [p (a event 2) debtor (a ob o-debtor)]
+                                   (and (identical? rt (a event 1))
+                                        (or (and (= :cancelled (:kind p)) (= (a ob o-id) (:ob p)))
+                                            (and debtor (= :completion (:kind p))
+                                                 (= (a debtor n-id) (:entity p))
+                                                 (identical? (following-root (a debtor n-runtime)) (:source p))))))
+                                 (and (not (custody-event? event)) (= 4 (alength ^objects event))
+                                      (identical? (a ob o-debtor) (a event 0))
+                                      (identical? rt (a (a event 0) n-runtime)))))
+                             (concat (following-held rt :following-held)
+                                     (following-held rt :following-outside) (items (runtime-field rt :events)))))}])))
+(defn- following-copy! [source child copies evidence]
+  ;; Publication has installed the child's service before these requests are
+  ;; visible. Capture facts were read before any source registration changed.
+  (let [events (members)]
+    (doseq [run copies ob (items (a run r-obs))
+            :let [id (a ob o-id) original (following-ob source id) fact (get evidence id)]
+            event (:events fact)]
+      (add! events event))
+    (doseq [[index event] (map-indexed vector (sort-by #(if (following-event? %) (a % 3) (a % 2)) (items events)))]
+      (push! (runtime-field child :events)
+             (doto (slots 5) (put 0 :following) (put 1 child) (put 3 (inc index))
+                   (put 2 (if (following-event? event) (a event 2)
+                              {:kind :completion :source (following-root source) :entity (a (a event 0) n-id)
+                               :value (a event 1) :failed? (a event 3)
+                               :source-change? (#{:signal :atom} (a (a event 0) n-kind))})))))
+    (when (> (count! events) (long (a (runtime-field child :counters) 1)))
+      (put (runtime-field child :counters) 2 (count! events)))
+    (doseq [ob (sort-by #(a % o-id) (mapcat #(items (a % r-obs)) copies))
+            :let [node (a ob o-debtor)] :when node]
+      (let [debtor (a node n-runtime) id (a ob o-id) fact (get evidence id)]
+        (case (:phase fact)
+          :cancelling nil
+          ;; T19 publishes under the same stable family gate and installs
+          ;; the inherited bundle atomically. Queued joins belong T23/T24.
+          (following-add! child ob))))))
+(defn- following-admitted? [debtor creditor ob]
+  (let [root (following-root creditor) id (a ob o-id) node (a ob o-debtor) entity (a node n-id)]
+    (or (identical? debtor creditor)
+        (contains? (:fdeps (following-state debtor)) [entity root id])
+        (some #(and (= :bundle (first %)) (identical? root (second %))
+                    (contains? (nth % 2) entity)) (:fdeps (following-state debtor))))))
+(defn- following-dispatch! [event]
+  (let [rt (a event 1) p (a event 2) kind (:kind p)]
+    (case kind
+      :completion
+      (let [source (following-world rt (:source p))
+            node (or (when (and source (not (custody-data-world? source)))
+                       (find! (runtime-field source :nodes) (:entity p)))
+                     (some #(let [node (a % o-debtor)]
+                              (when (and node (= (:entity p) (a node n-id))
+                                         (identical? (:source p) (following-root (a node n-runtime)))) node))
+                           (all-obligations rt)))]
+        (if node
+          (process-event! rt (doto (slots 4) (put 0 node) (put 1 (:value p))
+                                  (put 2 (a event 3)) (put 3 (:failed? p))))
+          ;; A committed value fact survives removal of the debtor row. Its
+          ;; absence never authorizes synthesizing a source or reexecuting it.
+          (boundary! rt (when (runtime-field rt :audit)
+                          {:t :t08 :w (runtime-field rt :world) :e (:entity p)
+                           :debtor-world (following-world-id rt (:source p))
+                           :value (diagnostic-value (:value p) (:failed? p)) :delivery-order []}))))
+      :ended
+      (do (let [[entity _ members] (:fd p)]
+            (doseq [id (if (= :bundle entity) members [entity])]
+              (when-let [node (find! (runtime-field rt :nodes) id)] (mark! rt node))))
+          (when-let [service (custody-state rt)]
+            (vswap! service update-in [:following (following-root rt) :releasing] disj (:fd p))
+            (following-prune-state! service (following-root rt)))
+          (boundary! rt (when (runtime-field rt :audit) {:t :t36 :w (runtime-field rt :world)})))
+      :cancelled
+      (do (when-let [ob (following-ob rt (:ob p))]
+            (reject-dependent! rt ob {:reason (:value p)}))
+          (boundary! rt (when (runtime-field rt :audit) {:t :t36 :w (runtime-field rt :world)})))
+)))
+(defn- following-kept? [rt node]
+  (some (fn [[entity _ members]]
+          (if (= :bundle entity) (contains? members (a node n-id)) (= entity (a node n-id))))
+        (:releasing (following-state rt))))
+(defn- following-retention! [rt]
+  (when (:following (some-> (custody-state rt) deref))
+    ;; A foreign supporter is a semantic edge, never an external root. Publish
+    ;; both endpoints' dirty graph rows before answering reachability.
+    (doseq [world (values (runtime-field rt :family)) :when (not (custody-data-world? world))]
+      (invalidate-liveness! world)
+      (reconcile-retention! world))))
+(defn- following-release! [rt]
+  (when-let [service (custody-state rt)]
+      (doseq [world (values (runtime-field rt :family))
+              :when (and (not (custody-data-world? world)) (not (identical? rt world)))
+              ob (all-obligations world)
+              :let [node (a ob o-debtor)]
+              :when (and node (identical? rt (a node n-runtime))
+                         (following-admitted? rt world ob))]
+        (following-cancel! rt ob *world-release-cancellation*))
+      (vswap! service update :following dissoc (following-root rt))
+      (doseq [key [:following-held :following-outside]]
+        (vswap! service update key dissoc (following-root rt))
+        (when (empty? (get @service key)) (vswap! service dissoc key)))
+      (when (empty? (:following @service)) (vswap! service dissoc :following))))
+
+(defn- audit-following! [rt]
+  (when-let [service (custody-state rt)]
+    ;; This checks actual reverse storage against live semantic descriptors;
+    ;; projection never repairs or rebuilds a missing registration.
+    (doseq [ob (all-obligations rt)
+            :let [node (a ob o-debtor) run (a ob o-run)]
+            :when (and node run (a ob o-live) (not (identical? rt (a node n-runtime))))]
+      (let [debtor (a node n-runtime)]
+        (when-not (or (following-admitted? debtor rt ob)
+                      (following-cancelling? rt ob))
+          (throw (ex-info "Foreign descriptor has no registration or request"
+                          {:error :following-index :ob (a ob o-id)})))
+        (when (and (following-admitted? debtor rt ob) (not (has? (a node n-dependents) ob)))
+          (throw (ex-info "Admitted foreign descriptor has no source reverse edge"
+                          {:error :following-index :ob (a ob o-id)})))))
+    (doseq [[entity root member] (:fdeps (following-state rt))]
+      (let [creditor (following-world rt root)
+            candidates (when (and creditor (not (custody-data-world? creditor)))
+                         (filter #(let [node (a % o-debtor) run (a % o-run)]
+                                    (and node run (a % o-live) (identical? rt (a node n-runtime))
+                                         (if (= :bundle entity)
+                                           (and (= :inherited (a run r-status))
+                                                (contains? member (a node n-id)))
+                                           (and (= member (a % o-id)) (= entity (a node n-id))))))
+                                 (all-obligations creditor)))
+            represented (set (map #(a (a % o-debtor) n-id) candidates))]
+        (when-not (if (= :bundle entity) (= member represented) (= 1 (count candidates)))
+          (throw (ex-info "Foreign reverse registration has no exact live descriptor"
+                          {:error :following-index :entity entity :members member})))))))
+
 (defn- custody-world-phase [rt]
   (when-let [state (custody-state rt)] (get-in @state [:phases (runtime-field rt :owner-root)])))
 (defn- custody-holder [rt owner]
@@ -6366,22 +6775,15 @@
                                (empty? (:steps (get-in state [:records (:op cap)]))))))
          (throw (ex-info "Settlement executor is outside this custody profile"
                          {:error :unsupported-operation :operation :custody-settlement}))))
-    ;; The bounded native fork profile has no foreign entity handshake.
-    ;; Inspect both directions only when an endpoint is in this closure.
+    ;; Entity dependencies now participate in the shared-family logical
+    ;; coordinator. A genuinely independent arena still requires a gate protocol.
      (doseq [world (values (or (:worlds state) (runtime-field rt :family)))
-             :when (not (custody-data-world? world))
-             ob (all-obligations world)
-             :let [debtor (a ob o-debtor) creditor (a ob o-creditor-node)
-                   debtor-rt (when debtor (a debtor n-runtime))
-                   creditor-rt (when creditor (a creditor n-runtime))
-                   involved? (or (contains? required (runtime-field world :owner-root))
-                                 (and debtor-rt (contains? required (runtime-field debtor-rt :owner-root)))
-                                 (and creditor-rt (contains? required (runtime-field creditor-rt :owner-root))))]
-             :when involved?]
-       (when (or (and debtor-rt (not (same-cell-world? world debtor-rt)))
-                 (and creditor-rt (not (same-cell-world? world creditor-rt))))
-         (throw (ex-info "Foreign entity obligations require the coordinated lifecycle"
-                         {:error :unsupported-operation :operation :world-release-lineage})))))))
+             :when (not (custody-data-world? world)) ob (all-obligations world)
+             :let [debtor (a ob o-debtor)]
+             :when (and debtor (not (identical? (runtime-field world :gate)
+                                               (runtime-field (a debtor n-runtime) :gate))))]
+       (throw (ex-info "Independent-family obligations require a coordinator"
+                       {:error :unsupported-operation :operation :world-release-lineage}))))))
 
 (defn- custody-release-ready? [rt]
   (let [service (or (custody-state rt) (:service *custody-frame*)) state (some-> service deref)

@@ -2336,12 +2336,15 @@
           (edit! ctx w :obligations o assoc :slot :consumed)
           (end-obligation! ctx w o :delivered))
         (edit! ctx w :runs r assoc :status :running)
+        (doseq [id (read-row ctx w :by-run-creditor r)] (add-fdep! ctx w id))
+        (doseq [dw (set (for [id (read-row ctx w :by-run-creditor r)
+                             :let [[_ dw _] (:debtor (read-row ctx w :obligations id))]
+                             :when (and dw (not= dw w))] dw))]
+          (sync-bundle! ctx dw w))
         (doseq [id (read-row ctx w :by-run-creditor r)
                 :let [other (read-row ctx w :obligations id)
                       [_ dw _] (:debtor other)
                       token [:cancel w id]]]
-          (add-fdep! ctx w id)
-          (when (and dw (not= dw w)) (sync-bundle! ctx dw w))
           (when (:dormant? other) (edit! ctx w :obligations id assoc :dormant? false))
           (case (:kind other)
             :timer (edit! ctx w :obligations id assoc :timer-armed? true)
@@ -2667,6 +2670,54 @@
          (every? #(cleanup-terminal? ctx %)
                  (mapcat #(vals (get-in env [:cleanup-targets %])) worlds)))))
 
+(defn- release-logical-profile? [ctx root required]
+  (let [state (root-state ctx) worlds (:known-worlds state)
+        same-family? #(= root (get-in state [:lineages % :root]))
+        logical? (fn [world o ob]
+                   (let [[kind dw e] (:debtor ob)]
+                     (or (not= :entity kind) (= world dw)
+                         (and (= [:run world] (subvec (vec (:creditor ob)) 0 2))
+                              (#{:track :await-once :await-reactive} (:kind ob))
+                              (same-family? world) (same-family? dw)
+                              (or (#{:signal :atom :spin} (:kind (read-row ctx dw :entities e)))
+                                  (and (= :released (:status (header ctx dw)))
+                                       (cancelling? ctx world o ob)))))))
+        involved? (fn [world ob] (or (contains? required world)
+                                     (and (= :entity (first (:debtor ob)))
+                                          (contains? required (second (:debtor ob))))))
+        relevant (for [world worlds [o ob] (store/table-view (:tx ctx) world :obligations)
+                       :when (involved? world ob)] [world o ob])
+        endpoint-worlds (into required (mapcat (fn [[world _ ob]]
+                                               (cons world (when (= :entity (first (:debtor ob)))
+                                                             [(second (:debtor ob))]))) relevant))]
+    (and
+     (every? (fn [[world o ob]]
+               (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))
+                    (logical? world o ob))) relevant)
+     (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
+                     (seq (set/intersection endpoint-worlds (get-in % [:participants :worlds])))) (vals (:cuts state)))
+     ;; Controls at an involved foreign endpoint are still outside this
+     ;; bounded profile, even when that endpoint is outside cap/debt closure.
+     (not-any? #(some % [:start-for :register-host])
+               (mapcat (fn [world] (pending-events ctx world)) endpoint-worlds))
+     (every? (fn [world]
+               (let [row (header ctx world)
+                     supported-entity? #(#{:signal :atom :spin} (:kind (read-row ctx world :entities %)))
+                     dependency? (fn [[entity target members]]
+                                   (and (same-family? target)
+                                        (if (= :bundle entity) (every? supported-entity? members)
+                                            (supported-entity? entity))))]
+                 (and (every? dependency? (:fdeps row))
+                      (every? dependency? (:releasing row))
+                      (every? (fn [event]
+                                (and (not (some event [:start-for :register-host]))
+                                     (or (nil? (:join-bundle event))
+                                         (and (same-family? (:join-bundle event))
+                                              (every? #(and (same-family? (:source-world %))
+                                                            (supported-entity? (:debtor %)))
+                                                      (vals (:members event)))))))
+                              (pending-events ctx world))))) required))))
+
 (defn- local-release-profile! [ctx w]
   (let [state (root-state ctx) caps (merge (:caps state) (get-in state [:durable :caps]))
         terminal? #(#{:merged :discarded :transferred :partitioned} (:disposition %))
@@ -2698,19 +2749,9 @@
       (every? supported? (for [world required [_ debt] (get-in state [:env :cleanup-targets world])]
                            (get caps (:cap debt))))
       (every? (fn [world]
-                (let [row (header ctx world)
-                      local? (fn [endpoint] (or (not= :entity (first endpoint)) (= world (second endpoint))))]
-                  (and row (= root (get-in state [:lineages world :root]))
-                       (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
-                                       (contains? (get-in % [:participants :worlds]) world)) (vals (:cuts state)))
-                       (empty? (:fdeps row)) (empty? (:releasing row))
-                       (every? #(and (local? (:debtor %)) (local? (:creditor %)))
-                               (vals (store/table-view (:tx ctx) world :obligations)))
-                       (not-any? #(some % [:start-for :register-host :join-bundle]) (pending-events ctx world))
-                       (not-any? (fn [v]
-                                   (and (not= v world)
-                                        (some #(= [:entity world] (subvec (vec (:debtor %)) 0 2))
-                                              (vals (store/table-view (:tx ctx) v :obligations))))) (:known-worlds state))))) required))
+                (let [row (header ctx world)]
+                  (and row (= root (get-in state [:lineages world :root]))))) required)
+      (release-logical-profile? ctx root required))
      ::unsupported-world-release {:w w})))
 
 (def ^:private world-index-tables

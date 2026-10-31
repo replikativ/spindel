@@ -166,6 +166,7 @@
                            :threads (get-in expected [:env :threads])
                            :principals (get-in expected [:env :principals])
                            :cleanup-targets (get-in expected [:env :cleanup-targets] {})
+                           :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))
                            :gc (vec (get-in expected [:env :gc] []))
                            :global expected-global)
                  ev (if (contains? actual :native)
