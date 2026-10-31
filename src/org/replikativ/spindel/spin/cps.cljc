@@ -6,7 +6,6 @@
             [org.replikativ.spindel.effects.await]   ;; Load await effect handler
             [org.replikativ.spindel.effects.track]   ;; Load track effect handler
             [is.simm.partial-cps.async :as async]
-            [is.simm.partial-cps.collections :as collections]
             [is.simm.partial-cps.runtime]            ;; Loads Thunk into the runtime ns
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars])
@@ -121,15 +120,10 @@
      (let [r (gensym "resolve")
            e (gensym "reject")
            params {:r r :e e :env env :breakpoints breakpoints
-                   :form-rewriter collections/rewrite
-                   ;; Preserve the established eager lazy-collection extension.
-                   ;; Migrating it to explicit async sequences is a separate change.
-                   :collection-mode :legacy-eager
                    :opaque-scopes #{'org.replikativ.spindel.spin.cps/spin
                                     'org.replikativ.spindel.spin.cps/effect}}
            ;; ioc/invert handles macro expansion internally via expand-macro
            ;; Don't use macroexpand-all as it introduces CLJ-specific code for CLJS targets
-           ;; Partial-CPS applies its optional collection hook after each expansion.
            ;; doseq uses the host macro directly, including bindings/modifiers.
            expanded (cons 'do body)
            ;; Detect target platform at macroexpansion time. A reader

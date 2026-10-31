@@ -241,17 +241,35 @@ patterns.
    breaks the continuation chain, and silently produces wrong
    results. Outside spin bodies (REPL, tests), `@` is fine.
 
-2. **Effects work where the compiler can see them.** `doseq` uses its
-   native macro expansion, including nested bindings and modifiers. Supported
-   collection calls over effectful function literals are lowered by Partial-CPS,
-   including calls introduced by macros. Spindel explicitly retains its eager
-   compatibility policy for `map`, `filter`, `remove`, `keep` and single-binding
-   `for`: these return vectors. `mapv`, `filterv`, explicit-initial-value
-   `reduce` and `run!` are sequential; inputs must be seqable. Both reduction
-   forms respect `reduced`. Unsupported visible suspension fails at compilation;
-   separately compiled callbacks remain opaque. Nest `(spin …)` per item and
-   use `(await (apply parallel child-spins))` for concurrent work.
-   See [CLAUDE.md, Rule 2](CLAUDE.md) for the details.
+2. **Effects work within their execution scope.** Core `doseq` and `loop`
+   support suspension through native macro expansion, including nested `doseq`
+   bindings and modifiers. Higher-order callbacks keep their function boundaries:
+   put effects in a callback's own `spin` and consume the returned spins through
+   an explicit combinator such as `parallel`. Bare effects inside callbacks are
+   rejected at compilation when visible. Lazy core `map` and `for` keep their
+   native semantics; `org.replikativ.spindel.seq.core/for` provides explicit
+   asynchronous sequence processing.
+   See [CLAUDE.md, Rule 2](CLAUDE.md) for examples.
+
+## JVM class-file name limit
+
+Large resumable functions can hit `java.io.IOException: File name too long`
+when exporting class files (including AOT compilation). Clojure includes the
+names of enclosing closures in nested closure class names; CPS transformation
+can expose this limit. The threshold depends on nesting, namespace and function
+names, and the filesystem. Successful REPL evaluation does not guarantee that
+class-file export will succeed.
+
+If this occurs, split the function into smaller, separately transformed async
+or spin helpers, composing them through the usual await/effect API. Moving an
+unchanged nested function into another local closure may retain the same naming
+problem; shortening names only postpones it.
+
+This is tracked upstream as [CLJ-1852](https://ask.clojure.org/index.php/3824/clojure-generated-class-names-length-exceed-file-system-limit).
+Clojure maintainers discussed using a fallback naming strategy when the current
+strategy fails, and in April 2024 listed it for consideration in 1.13. This is
+not a released fix or a guaranteed release commitment. We currently use stock
+Clojure and recommend splitting affected functions.
 
 ## License
 
