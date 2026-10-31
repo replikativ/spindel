@@ -456,9 +456,12 @@
                 (and (= :bundle tag) (= v target) (contains? d e)))
               (:fdeps (wr s w))))))
 
+(def ^:dynamic ^:private *cancel-delivery* nil)
+
 (defn cancelling? [s v o ob]
   (and (= :entity (first (:debtor ob))) (not= v (second (:debtor ob)))
-       (some #(= o (:cancelled %)) (pending-events s v))))
+       (or (= [v o] *cancel-delivery*)
+           (some #(= o (:cancelled %)) (pending-events s v)))))
 
 (defn control-key [event]
   (if (:start-for event) [:start-for (:creditor-world event) (:o event)]
@@ -1426,22 +1429,19 @@
                     (assoc-in s [:worlds w :obligations o :slot] :consumed)
                     (end-obligation s w o :delivered))
                 s (assoc-in s [:worlds w :runs r :status] :running)
-                s (reduce (fn [s [id other]]
-                            (if (not= [:run w r] (:creditor other)) s
-                                (let [s (add-fdep s w id)
-                                      [_ dw _] (:debtor other)
-                                      s (if (and dw (not= dw w)) (sync-bundle s dw w) s)
-                                      token [:cancel w id]]
-                                  (cond-> s
-                                    (:dormant? other) (assoc-in [:worlds w :obligations id :dormant?] false)
-                                    (= :timer (:kind other)) (assoc-in [:worlds w :obligations id :timer-armed?] true)
-                                    (= :external (:kind other))
-                                    (assoc-in [:worlds w :obligations id :token] token)
-                                    (= :external (:kind other))
-                                    (assoc-in [:env :waiters token] {:world w :o id :registered? true :armed? false})
-                                    (= :external (:kind other))
-                                    (assoc-in [:env :native token] {:owner [w r] :state :running :recovery :retry})))))
-                          s (:obligations (wr s w)))]
+                rows (filter (fn [[_ other]] (= [:run w r] (:creditor other))) (:obligations (wr s w)))
+                s (reduce (fn [state [id _]] (add-fdep state w id)) s rows)
+                debtors (set (for [[_ other] rows :let [[_ dw _] (:debtor other)] :when (and dw (not= dw w))] dw))
+                s (reduce #(sync-bundle %1 %2 w) s debtors)
+                s (reduce (fn [state [id other]]
+                            (let [token [:cancel w id]]
+                              (cond-> state
+                                (:dormant? other) (assoc-in [:worlds w :obligations id :dormant?] false)
+                                (= :timer (:kind other)) (assoc-in [:worlds w :obligations id :timer-armed?] true)
+                                (= :external (:kind other)) (assoc-in [:worlds w :obligations id :token] token)
+                                (= :external (:kind other)) (assoc-in [:env :waiters token] {:world w :o id :registered? true :armed? false})
+                                (= :external (:kind other)) (assoc-in [:env :native token] {:owner [w r] :state :running :recovery :retry}))))
+                          s rows)]
             (emit s {:event :resume :world w :r r :o o :one-shot? (not (:standing? ob))
                      :thread-world w :value value}))) s)) s))
 
@@ -1745,7 +1745,8 @@
           s (cond-> (assoc-in s [:worlds w :entities e :owner] nil)
               (= :spin (:kind (ent s w e))) (assoc-in [:worlds w :entities e :dirty?] true))
           runs (vec (for [[r rr] (:runs (wr s w))
-                          :when (and (= e (:spin rr)) (work? rr))] r))
+                          :when (and (= e (:spin rr))
+                                     (#{:running :parked :inherited} (:status rr)))] r))
           s (reduce #(t11-cancel %1 {:w w :r %2}) s (sort-by pr-str runs))
           completed (vec (for [[r rr] (:runs (wr s w))
                                :when (and (= e (:spin rr))
@@ -2629,6 +2630,53 @@
                                      (recur (rest remaining) attempts (conj result next)))
                                    result)))))))))))
 
+(defn- release-logical-profile? [s root required]
+  (let [same-family? #(= root (get-in s [:lineages % :root]))
+        logical? (fn [world o ob]
+                   (let [[kind dw e] (:debtor ob)]
+                     (or (not= :entity kind) (= world dw)
+                         (and (= [:run world] (subvec (vec (:creditor ob)) 0 2))
+                              (#{:track :await-once :await-reactive} (:kind ob))
+                              (same-family? world) (same-family? dw)
+                              (or (#{:signal :atom :spin} (:kind (ent s dw e)))
+                                  (and (= :released (:status (wr s dw)))
+                                       (cancelling? s world o ob)))))))
+        involved? (fn [world ob] (or (contains? required world)
+                                     (and (= :entity (first (:debtor ob)))
+                                          (contains? required (second (:debtor ob))))))
+        relevant (for [[world row] (:worlds s) [o ob] (:obligations row)
+                       :when (involved? world ob)] [world o ob])
+        endpoint-worlds (into required (mapcat (fn [[world _ ob]]
+                                                 (cons world (when (= :entity (first (:debtor ob)))
+                                                               [(second (:debtor ob))]))) relevant))]
+    (and
+     (every? (fn [[world o ob]]
+               (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))
+                    (logical? world o ob))) relevant)
+     (not-any? #(and (active-cuts (:phase %))
+                     (seq (set/intersection endpoint-worlds (get-in % [:participants :worlds])))) (vals (:cuts s)))
+     ;; Controls at an involved foreign endpoint are still outside this
+     ;; bounded profile, even when that endpoint is outside cap/debt closure.
+     (not-any? #(some % [:start-for :register-host])
+               (mapcat (fn [world] (pending-events s world)) endpoint-worlds))
+     (every? (fn [world]
+               (let [row (wr s world)
+                     supported-entity? #(#{:signal :atom :spin} (:kind (ent s world %)))
+                     dependency? (fn [[entity target members]]
+                                   (and (same-family? target)
+                                        (if (= :bundle entity) (every? supported-entity? members)
+                                            (supported-entity? entity))))]
+                 (and (every? dependency? (:fdeps row))
+                      (every? dependency? (:releasing row))
+                      (every? (fn [event]
+                                (and (not (some event [:start-for :register-host]))
+                                     (or (nil? (:join-bundle event))
+                                         (and (same-family? (:join-bundle event))
+                                              (every? #(and (same-family? (:source-world %))
+                                                            (supported-entity? (:debtor %)))
+                                                      (vals (:members event)))))))
+                              (pending-events s world))))) required))))
+
 (defn- local-release-profile! [s w]
   (let [caps (all-caps s) root (get-in s [:lineages w :root])
         required (loop [pending [w] seen #{}]
@@ -2656,18 +2704,9 @@
       (every? supported? (for [world required [_ debt] (get-in s [:env :cleanup-targets world])]
                            (cap s (:cap debt))))
       (every? (fn [world]
-                (let [row (wr s world)
-                      local? (fn [endpoint] (or (not= :entity (first endpoint)) (= world (second endpoint))))]
-                  (and row (= root (get-in s [:lineages world :root]))
-                       (not-any? #(and (active-cuts (:phase %))
-                                       (contains? (get-in % [:participants :worlds]) world)) (vals (:cuts s)))
-                       (empty? (:fdeps row)) (empty? (:releasing row))
-                       (every? #(and (local? (:debtor %)) (local? (:creditor %))) (vals (:obligations row)))
-                       (not-any? #(some % [:start-for :register-host :join-bundle]) (pending-events s world))
-                       (not-any? (fn [[v other]]
-                                   (and (not= v world)
-                                        (some #(= [:entity world] (subvec (vec (:debtor %)) 0 2))
-                                              (vals (:obligations other))))) (:worlds s))))) required))
+                (let [row (wr s world)]
+                  (and row (= root (get-in s [:lineages world :root]))))) required)
+      (release-logical-profile? s root required))
      ::unsupported-world-release {:w w})))
 
 (defn release-request [s {:keys [w caller-th op callback] :as action}]
@@ -2725,8 +2764,11 @@
                 (:join-bundle ev) (admit-join-bundle s w ev)
                 (:fdep-ended ev) (update-in s [:worlds w :releasing] disj (:fdep-ended ev))
                 (:cancelled ev) (let [o (:cancelled ev)]
-                                  (-> s (t06-resume {:w w :o o :value (:value ev ::cancelled)})
-                                      (end-obligation w o :cancel-delivered)))
+                                  ;; Popping the packet does not readmit its
+                                  ;; ended debtor during this atomic handoff.
+                                  (binding [*cancel-delivery* [w o]]
+                                    (-> s (t06-resume {:w w :o o :value (:value ev ::cancelled)})
+                                        (end-obligation w o :cancel-delivered))))
                 (:fork-released ev) (update-in s [:worlds w :entities] dissoc [:fork (:fork-released ev)])
                 :else (refuse ::not-cleanup {:event ev}))]
         (rule-l s w))))
