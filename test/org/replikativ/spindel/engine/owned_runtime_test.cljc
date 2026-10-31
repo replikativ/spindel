@@ -966,13 +966,21 @@
       (verify-boundaries! rt))))
 
 (deftest compact-fork-refusals-publish-no-rows
-  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 1) ticket (c/ticket :outside)
-        spin (c/cspin rt :spin (c/track source) (c/park ticket))]
-    (c/observe! rt spin (fn [_]) #(throw %))
+  (let [rt (c/runtime {:audit? true}) source (c/signal rt :source 1) errors (atom [])
+        spin (c/cspin rt :spin
+                      (c/track source)
+                      ;; Ordinary entity dependencies are now supported. A
+                      ;; real external registration still requires recovery.
+                      (c/await-host (fn [_ _] (fn []))))]
+    (c/observe! rt spin (fn [_]) #(swap! errors conj %))
     (let [before (c/snapshot-family rt)]
       (is (thrown? #?(:clj Exception :cljs js/Error) (c/fork-parked! rt [:w 1])))
       (is (= before (c/snapshot-family rt))))
+    (is (empty? @errors))
     (is (= :spin (:id spin)))
+    (c/cancel-spin! rt spin)
+    (is (= 1 (count @errors)))
+    (is (= "Cancelled" (ex-message (first @errors))))
     (verify-boundaries! rt)))
 
 (deftest compact-fork-finalization-routes-to-both-worlds
