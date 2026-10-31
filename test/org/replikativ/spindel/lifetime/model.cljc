@@ -31,15 +31,15 @@
   ([options] (init-state options [:w 0]))
   ([options w]
    {:worlds {w (world-row w nil :root w)} :registry #{w} :cuts {}
-      :caps {} :records {} :durable {:caps {} :records {}}
-      :custody {:by-holder {} :claims {}} :next-claim 0 :recovery-epoch 0 :process-live? true
-      :env {:handles {} :threads {:host {:world w :scope nil :run nil
-                                         :read-permits #{} :excl-permits []}}
-            :native {} :outside [] :principals (get options :external-principals #{})}
+    :caps {} :records {} :durable {:caps {} :records {}}
+    :custody {:by-holder {} :claims {}} :next-claim 0 :recovery-epoch 0 :process-live? true
+    :env {:handles {} :threads {:host {:world w :scope nil :run nil
+                                       :read-permits #{} :excl-permits []}}
+          :native {} :outside [] :principals (get options :external-principals #{})}
       ;; Instrumentation is data, never a retention reason.
-      :model (merge defaults options) :serial {} :events []
-      :known-worlds #{w} :lineages {w (:lineage (world-row w nil :root w))}
-      :adapter-effects #{} :freed-bases #{} :restarted? false}))
+    :model (merge defaults options) :serial {} :events []
+    :known-worlds #{w} :lineages {w (:lineage (world-row w nil :root w))}
+    :adapter-effects #{} :freed-bases #{} :restarted? false}))
 
 (defn refuse [error data] (throw (ex-info (name error) (assoc data :error error))))
 (defn require! [p error data] (when-not p (refuse error data)))

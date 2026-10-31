@@ -174,11 +174,11 @@
                 actor (c/cspin native :lifecycle
                                (binding [ec/*execution-context* legacy]
                                  (refused-without-effects! native legacy effects :finalize-drain
-                                                          #(ctx/finalize-rebuild-context rebuild))
+                                                           #(ctx/finalize-rebuild-context rebuild))
                                  (refused-without-effects! native legacy effects :restore-drain
-                                                          #(ctx/restore-snapshot snapshot))
+                                                           #(ctx/restore-snapshot snapshot))
                                  (refused-without-effects! native legacy effects :stop
-                                                          #(ctx/stop-context! legacy))
+                                                           #(ctx/stop-context! legacy))
                                  (let [finalized (ctx/finalize-rebuild-context rebuild :drain-events? false)
                                        thawed (ctx/restore-snapshot snapshot :drain-events? false)]
                                    (reset! restored thawed)

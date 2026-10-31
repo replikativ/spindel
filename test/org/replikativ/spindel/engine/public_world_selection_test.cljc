@@ -17,43 +17,42 @@
 
 (deftest legacy-selected-world-await-restores-its-lexical-and-caller-contexts
   (async done
-    (with-redefs [h/create-test-context #(ctx/create-execution-context :engine :simple :executor (ex/synchronous-executor))]
-      (with-ctx [a]
-        (let [b (ctx/fork-context a)
-              events (atom [])
-              label (fn [] (cond (ec/same-world? ec/*execution-context* a) :a
-                                (ec/same-world? ec/*execution-context* b) :b
-                                :else :unknown))
-              df (sync/create-deferred b)
-              target (binding [ec/*execution-context* b]
-                       (spin (swap! events conj [:body (label)])
-                             (let [value (await df)]
-                               (swap! events conj [:body-resumed (label) value])
-                               value)))
-              actor (spin (swap! events conj [:actor-start (label)])
-                          (let [value (binding [ec/*execution-context* b]
-                                        (let [value (await target)]
-                                          (swap! events conj [:inside-binding (label) value])
-                                          value))]
-                            (swap! events conj [:after-binding (label) value])
-                            value))]
-          (run-spin! actor
-                     (fn [value]
-                       (swap! events conj [:callback (label) value])
-                       (is (= 42 value))
-                       (is (= [[:actor-start :a] [:body :b] [:body-resumed :b 42]
-                               [:inside-binding :b 42] [:after-binding :a 42] [:callback :a 42]]
-                              @events))
-                       (done))
-                     (fn [error]
-                       (is false (str error))
-                       (done)))
+         (with-redefs [h/create-test-context #(ctx/create-execution-context :engine :simple :executor (ex/synchronous-executor))]
+           (with-ctx [a]
+             (let [b (ctx/fork-context a)
+                   events (atom [])
+                   label (fn [] (cond (ec/same-world? ec/*execution-context* a) :a
+                                      (ec/same-world? ec/*execution-context* b) :b
+                                      :else :unknown))
+                   df (sync/create-deferred b)
+                   target (binding [ec/*execution-context* b]
+                            (spin (swap! events conj [:body (label)])
+                                  (let [value (await df)]
+                                    (swap! events conj [:body-resumed (label) value])
+                                    value)))
+                   actor (spin (swap! events conj [:actor-start (label)])
+                               (let [value (binding [ec/*execution-context* b]
+                                             (let [value (await target)]
+                                               (swap! events conj [:inside-binding (label) value])
+                                               value))]
+                                 (swap! events conj [:after-binding (label) value])
+                                 value))]
+               (run-spin! actor
+                          (fn [value]
+                            (swap! events conj [:callback (label) value])
+                            (is (= 42 value))
+                            (is (= [[:actor-start :a] [:body :b] [:body-resumed :b 42]
+                                    [:inside-binding :b 42] [:after-binding :a 42] [:callback :a 42]]
+                                   @events))
+                            (done))
+                          (fn [error]
+                            (is false (str error))
+                            (done)))
           ;; Synchronous dispatch has returned from the real unassigned wait.
           ;; Delivery below must resume it, rather than taking an inline cache.
-          (is (= [[:actor-start :a] [:body :b]] @events))
-          (is (false? (:assigned? (rtp/read-public-deferred b df))))
-          (binding [ec/*execution-context* b] (sync/deliver! df 42)))))))
-
+               (is (= [[:actor-start :a] [:body :b]] @events))
+               (is (false? (:assigned? (rtp/read-public-deferred b df))))
+               (binding [ec/*execution-context* b] (sync/deliver! df 42)))))))
 
 (defn- finish-native! [runtime]
   (let [joined (atom []) errors (atom [])]
@@ -86,7 +85,7 @@
                         (swap! events conj [:before (boolean (ec/same-world? ec/*execution-context* b))])
                         (c/park gate)
                         (swap! events conj [:inside (boolean (ec/same-world? ec/*execution-context* b))
-                                           (boolean (ec/same-world? (rtp/context-scope-runner b) a))]))
+                                            (boolean (ec/same-world? (rtp/context-scope-runner b) a))]))
                       (swap! events conj [:after (boolean (ec/same-world? ec/*execution-context* a))])
                       :done)]
     (try
@@ -116,7 +115,7 @@
                           (swap! events conj [:before (label ec/*execution-context*)])
                           (c/park gate)
                           (swap! events conj [:inner (label ec/*execution-context*)
-                                             (label (rtp/context-scope-runner ec/*execution-context*))]))
+                                              (label (rtp/context-scope-runner ec/*execution-context*))]))
                         (swap! events conj [:outer (label ec/*execution-context*)]))
                       (swap! events conj [:after (label ec/*execution-context*)])
                       :done)]
@@ -147,7 +146,7 @@
                               (swap! events conj [:finally (boolean (ec/same-world? ec/*execution-context* b))]))))
                         (catch #?(:clj Exception :cljs :default) error
                           (swap! events conj [:caught (ex-message error)
-                                             (boolean (ec/same-world? ec/*execution-context* a))])))
+                                              (boolean (ec/same-world? ec/*execution-context* a))])))
                       :done)]
     (try
       (c/observe! a task #(swap! values conj %) #(swap! errors conj %))
@@ -171,7 +170,7 @@
                               error (try (rtp/register-computation! b nil :never-entered (fn [_ _])) nil
                                          (catch #?(:clj Exception :cljs :default) error error))]
                           (swap! events conj [:literal (boolean (ec/same-world? ec/*execution-context* b))
-                                             (boolean error)])
+                                              (boolean error)])
                           (is (= before (c/snapshot-family a)))))
                       (swap! events conj [:after (boolean (ec/same-world? ec/*execution-context* a))])
                       :done)]
@@ -209,7 +208,6 @@
       (is (empty? @errors))
       (finally (finish-native! a)))))
 
-
 (deftest literal-legacy-data-context-keeps-native-owner-transport-on-fork
   (let [a (c/runtime {:audit? true :cps-exit? true})
         b (ctx/create-execution-context :engine :simple :executor (ex/synchronous-executor))
@@ -229,8 +227,8 @@
                                   cell (rtp/allocate-runtime-cell! b :application-data {})]
                               (swap! cells conj cell)
                               (swap! events conj [:inside (boolean (ec/same-world? ec/*execution-context* b))
-                                                 (label runner)
-                                                 (identical? current (rtp/bindable-execution-owner runner current))])
+                                                  (label runner)
+                                                  (identical? current (rtp/bindable-execution-owner runner current))])
                               (is (= (lifetime/root-scope b)
                                      (rtp/get-state b [:atoms (:id cell) :lifetime/owner])))))))
                       (swap! events conj [:after (label ec/*execution-context*)])
