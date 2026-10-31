@@ -159,6 +159,44 @@
     (is (= (:ob target) (get-in installed [:worlds a :obligations o])))
     (is (= [:worker 2] (m/current installed a :worker)))))
 
+(deftest pending-current-cancellation-omission-cannot-hide-from-the-oracle
+  (doseq [mode [:deref :callback] outside? [false true]]
+    (let [initial (running-basis mode)
+          target (packet initial) o (:register-host target) key [a o]
+          before (if outside?
+                   (-> initial (assoc-in [:worlds a :queue] [])
+                       (assoc-in [:env :outside] [{:w a :event target}])) initial)
+          action {:t :t11 :w a :r [:worker 1]}
+          after (peek (trace! before [action]))
+          corrupt (-> after
+                      (update :events #(vec (remove (fn [event]
+                                                       (and (= :host-delivery (:event event))
+                                                            (= a (:world event)) (= o (:o event)))) %)))
+                      (update :host-delivered disj key))
+          edge {:before before :action action :after corrupt}
+          errors (inv/causal-host-publication-errors edge)]
+      (is (= (:ob target) (get (inv/causal-host-error-proof before action) key)))
+      (is (some #(= key (:missing-causal-host-outcome %)) errors))
+      (is (some :causal-host-publication-history errors))
+      (is (some #(= :TL1 (:id %)) (inv/edge-check edge))))))
+
+(deftest pending-cancellation-proof-requires-the-current-run-and-first-outcome
+  (let [pending (running-basis :callback)
+        target (packet pending) key [a (:register-host target)]
+        stale (peek (trace! pending [{:t :t09 :w a :e :worker :cause :dirty}]))]
+    (is (nil? (get (inv/causal-host-error-proof stale {:t :t11 :w a :r [:worker 1]}) key)))
+    (is (= (:ob target)
+           (get (inv/causal-host-error-proof stale {:t :t11 :w a :r [:worker 2]}) key))))
+  (let [before (peek (trace! (m/init-state)
+                             (concat [(first cached/reactive-prefix) (h/fork a b)]
+                                     (rest cached/reactive-prefix)
+                                     [{:t :t04 :w b :e :worker :mode :callback :filter {:mode :causal-follow}}
+                                      {:t :unsubscribe :w a :o [:o 0]}])))
+        key [a (:register-host (packet before))]
+        committed (peek (trace! before [{:t :queued :w a}]))]
+    (is (contains? (:host-delivered committed) key))
+    (is (nil? (get (inv/causal-host-error-proof committed {:t :t11 :w a :r [:worker 1]}) key)))))
+
 (deftest t34-keeps-pending-host-release-in-its-original-queue-phase
   ;; The release-profile patch supplies kernel T34 ingress support separately.
   ;; Here the model proves nested T11 cannot consume or reorder these packets.
