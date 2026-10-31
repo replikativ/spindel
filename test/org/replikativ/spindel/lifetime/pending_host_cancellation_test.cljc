@@ -79,13 +79,13 @@
 (deftest pending-cancellation-preserves-queue-and-outside-neighbors
   (doseq [outside? [false true]]
     (let [initial (peek (trace! (m/init-state {:host-registrations 6 :invocations 6})
-                               [{:t :t04 :w a :e :prefix :mode :callback}
-                                {:t :t04 :w a :e :worker :mode :callback}
-                                {:t :t04 :w a :e :suffix :mode :callback}
-                                (h/fork a b)
-                                {:t :t04 :w b :e :prefix :mode :callback}
-                                {:t :t04 :w b :e :worker :mode :callback}
-                                {:t :t04 :w b :e :suffix :mode :callback}]))
+                                [{:t :t04 :w a :e :prefix :mode :callback}
+                                 {:t :t04 :w a :e :worker :mode :callback}
+                                 {:t :t04 :w a :e :suffix :mode :callback}
+                                 (h/fork a b)
+                                 {:t :t04 :w b :e :prefix :mode :callback}
+                                 {:t :t04 :w b :e :worker :mode :callback}
+                                 {:t :t04 :w b :e :suffix :mode :callback}]))
           [prefix target suffix] (:queue (m/wr initial a))
           held (mapv #(hash-map :w a :event %) [prefix target suffix])
           before (if outside? (-> initial (assoc-in [:worlds a :queue] [])
@@ -133,7 +133,7 @@
       (is (= 1 (count events)))
       (is (true? (:causal? (first events))))
       (is (= (if h1-first? {:event :host-delivery :world a :o o :causal? true}
-                   {:event :host-delivery :world a :o o :value ::m/cancelled :causal? true})
+                 {:event :host-delivery :world a :o o :value ::m/cancelled :causal? true})
              (first events)))
       (is (contains? (:host-delivered (peek states)) [a o])))))
 
@@ -177,8 +177,8 @@
           after (peek (trace! before [action]))
           corrupt (-> after
                       (update :events #(vec (remove (fn [event]
-                                                       (and (= :host-delivery (:event event))
-                                                            (= a (:world event)) (= o (:o event)))) %)))
+                                                      (and (= :host-delivery (:event event))
+                                                           (= a (:world event)) (= o (:o event)))) %)))
                       (update :host-delivered disj key))
           edge {:before before :action action :after corrupt}
           errors (inv/causal-host-publication-errors edge)]

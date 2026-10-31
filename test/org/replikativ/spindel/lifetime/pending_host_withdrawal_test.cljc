@@ -79,30 +79,29 @@
     (is (= (:runs (m/wr before a)) (:runs (m/wr after a))))
     (is (= (:clocks before) (:clocks after)))))
 
-
 (defn- sealed-cached-basis
   ([mode neighbor?] (sealed-cached-basis mode neighbor? 42))
   ([mode neighbor? value]
-  (let [initial (h/walk! (m/init-state {:slices? true :host-registrations 5 :invocations 5})
-                        [(h/fork a b) (h/fork b h/c)
-                         {:t :t02 :w b :e :pulse :kind :signal :value 0}
-                         {:t :t04 :w b :e :worker :mode :callback}
-                         {:t :t05 :w b :r [:worker 1] :kind :track :debtor [:entity b :pulse] :order 0}
-                         {:t :t07 :w b :r [:worker 1] :value value}
-                         {:t :queued :w b}] true)
-        sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-cached :kind :discard
-                                   :caller (m/execution-holder a [:root a])})]
-    (is (= :sealed (:status (m/wr sealed b))))
-    (is (= :completed (:status (m/run sealed b [:worker 1]))))
-    (is (= value (:result (m/ent sealed b :worker))))
+   (let [initial (h/walk! (m/init-state {:slices? true :host-registrations 5 :invocations 5})
+                          [(h/fork a b) (h/fork b h/c)
+                           {:t :t02 :w b :e :pulse :kind :signal :value 0}
+                           {:t :t04 :w b :e :worker :mode :callback}
+                           {:t :t05 :w b :r [:worker 1] :kind :track :debtor [:entity b :pulse] :order 0}
+                           {:t :t07 :w b :r [:worker 1] :value value}
+                           {:t :queued :w b}] true)
+         sealed (h/checked initial {:t :t26 :k [:cap b] :op :seal-cached :kind :discard
+                                    :caller (m/execution-holder a [:root a])})]
+     (is (= :sealed (:status (m/wr sealed b))))
+     (is (= :completed (:status (m/run sealed b [:worker 1]))))
+     (is (= value (:result (m/ent sealed b :worker))))
     ;; T26 and enqueueing a HOST into a sealed debtor are model setup. Neither
     ;; enables the kernel's intentionally unsupported cut/seal entry surfaces.
     ;; The live descendant can request this existing cache without entering B.
-    (reduce h/checked sealed
-            (cond-> [{:t :t04 :w h/c :e :worker :mode mode}
-                     {:t :t04 :w h/c :e :worker :mode :callback
-                      :filter {:mode :causal-follow :origin h/c}}]
-              neighbor? (conj {:t :t04 :w h/c :e :worker :mode :callback}))))))
+     (reduce h/checked sealed
+             (cond-> [{:t :t04 :w h/c :e :worker :mode mode}
+                      {:t :t04 :w h/c :e :worker :mode :callback
+                       :filter {:mode :causal-follow :origin h/c}}]
+               neighbor? (conj {:t :t04 :w h/c :e :worker :mode :callback}))))))
 
 (deftest sealed-pending-host-withdrawal-preserves-queue-and-outside-order
   (doseq [mode [:deref :callback] outside? [false true]]
@@ -141,7 +140,6 @@
       (is (= (:clocks before) (:clocks after)))
       (is (= (:queue (m/wr before b)) (:queue (m/wr after b)))))))
 
-
 (deftest sealing-current-work-settles-its-already-pending-hosts-before-withdrawal
   (doseq [mode [:deref :callback]]
     (let [before (basis-at mode b h/c)
@@ -157,7 +155,6 @@
       (is (= (:runs (m/wr sealed b)) (:runs (m/wr after b))))
       (is (= (:clocks sealed) (:clocks after)))
       (is (empty? (:events after))))))
-
 
 (deftest sealed-withdrawal-preserves-application-data-even-with-runtime-enum-names
   (doseq [value [::kernel/cancelled ::m/cancelled {:nested [::kernel/cancelled ::m/released]}]]

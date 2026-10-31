@@ -17,11 +17,11 @@
   (-> state
       (dissoc :uses)
       (update :events #(mapv (fn [event]
-                              (if (and (= :t11 (:t action)) (not (contains? action :cancel-value))
-                                       (= :host-delivery (:event event))
-                                       (#{:org.replikativ.spindel.lifetime.model/cancelled
-                                          :org.replikativ.spindel.engine.kernel/cancelled} (:value event)))
-                                (assoc event :value :error/cancelled) event)) %))))
+                               (if (and (= :t11 (:t action)) (not (contains? action :cancel-value))
+                                        (= :host-delivery (:event event))
+                                        (#{:org.replikativ.spindel.lifetime.model/cancelled
+                                           :org.replikativ.spindel.engine.kernel/cancelled} (:value event)))
+                                 (assoc event :value :error/cancelled) event)) %))))
 
 (defn- checked [before action]
   (let [{after :state refusal :refusal} (m/attempt before action)]
@@ -107,7 +107,6 @@
                               {:t :t05 :w b :r [:waiter 1] :kind :await-reactive
                                :debtor [:entity d :cold] :order 0}])))))
 
-
 (deftest missing-debtor-with-committed-cancellation-is-terminal-control-only
   (let [before (walk (m/init-state)
                      [fork {:t :t04 :w a :e :creator :mode :callback}
@@ -190,7 +189,6 @@
     ;; An explicitly restored outside checkpoint is not silently discarded.
     ;; Real cut capture/permit release is a later native integration stage.
     (refusal held)))
-
 
 (deftest diagnostic-view-never-normalizes-explicit-cancellation-data
   (let [native {:events [{:event :host-delivery :value ::kernel/cancelled}]}
