@@ -1291,18 +1291,43 @@
 (defn deferred-protect [_s action]
   (refuse ::obsolete-deferred-protection {:action action}))
 
+(defn- pending-host-registration [s w o]
+  (let [packets (filter #(= o (:register-host %)) (pending-events s w))
+        packet (first packets)]
+    (when packet
+      (let [ob (:ob packet)]
+        (require! (and (= 1 (count packets))
+                       (= :host (first (:creditor ob)))
+                       (= [:entity w (:e packet)] (:debtor ob))
+                       (= (:caller-world packet) (get-in ob [:filter :origin]))
+                       (contains? (:known-worlds s) (:caller-world packet))
+                       (#{:local :causal-follow} (get-in ob [:filter :mode])))
+                  ::invalid-host-registration {:w w :o o}))
+      packet)))
+
+(defn- withdraw-host-registration [s w packet]
+  (-> s
+      (update-in [:worlds w :queue] #(vec (remove #{packet} %)))
+      (update-in [:env :outside]
+                 #(vec (remove (fn [entry] (and (= w (:w entry)) (= packet (:event entry)))) %)))))
+
 (defn withdraw-deref
-  "Withdraw one local host deref observer without cancelling its computation."
+  "Withdraw one installed or pending host deref without cancelling its computation."
   [s {:keys [w o]}]
-  (if-let [ob (get-in s [:worlds w :obligations o])]
-    (do
-      (require! (= :open (:admission (wr s w))) ::not-admitted {:world w})
-      (require! (and (= :deref (:kind ob)) (not (:standing? ob))
-                     (= :host (first (:creditor ob)))
-                     (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
-                ::not-host-deref {:w w :o o})
-      (end-obligation s w o :creditor-cancelled))
-    s))
+  ;; Custody sealing permits cancellation controls; active cuts retain their
+  ;; existing fence independently of the world's admission field.
+  (require! (not (cut-participant? s w)) ::not-admitted {:world w})
+  (let [installed (get-in s [:worlds w :obligations o])
+        packet (when-not installed (pending-host-registration s w o))]
+    (if-let [ob (or installed (:ob packet))]
+      (do
+        (require! (and (= :deref (:kind ob)) (not (:standing? ob))
+                       (= :host (first (:creditor ob)))
+                       (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
+                  ::not-host-deref {:w w :o o})
+        (if packet (withdraw-host-registration s w packet)
+            (end-obligation s w o :creditor-cancelled)))
+      s)))
 
 (defn adopt-call-target
   "A successor that invokes/awaits a predecessor-owned spin adopts its
@@ -3086,10 +3111,14 @@
                            ::protected-cleanup {:th (:th a)})
                  (assoc-in s [:env :threads (:th a)] (:thread a)))
              :unsubscribe
-             (let [ob (get-in s [:worlds (:w a) :obligations (:o a)])
-                   [_ dw _] (:debtor ob)]
+             (let [w (:w a) o (:o a)
+                   installed (get-in s [:worlds w :obligations o])
+                   packet (when-not installed (pending-host-registration s w o))
+                   ob (or installed (:ob packet))]
                (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o (:o a)})
-               (-> s (end-obligation (:w a) (:o a) :creditor-cancelled) (rule-l (:w a))))
+               (-> (if packet (withdraw-host-registration s w packet)
+                       (end-obligation s w o :creditor-cancelled))
+                   (rule-l w)))
              :signal-write
              (let [w (:w a) e (:e a) er (ent s w e)]
                (require! (not= :released (:status (wr s w))) ::released {:w w})

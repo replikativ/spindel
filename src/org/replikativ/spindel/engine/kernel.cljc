@@ -2096,21 +2096,48 @@
   (when-let [r (current-run ctx w e)]
     (edit! ctx w :runs r assoc :validation-lost? true)))
 
-(defn- withdraw-deref! [ctx {:keys [w o]}]
+(defn- pending-host-registration [ctx w o]
+  (let [packets (filter #(= o (:register-host %)) (pending-events ctx w))
+        packet (first packets)]
+    (when packet
+      (let [ob (:ob packet)]
+        (require! (and (= 1 (count packets))
+                       (= :host (first (:creditor ob)))
+                       (= [:entity w (:e packet)] (:debtor ob))
+                       (= (:caller-world packet) (get-in ob [:filter :origin]))
+                       (contains? (:known-worlds (root-state ctx)) (:caller-world packet))
+                       (#{:local :causal-follow} (get-in ob [:filter :mode])))
+                  ::invalid-host-registration {:w w :o o}))
+      packet)))
+
+(defn- withdraw-host-registration! [ctx w packet]
+  (header-edit! ctx w update :queue #(vec (remove #{packet} %)))
+  (root-edit! ctx update-in [:env :outside]
+              #(vec (remove (fn [entry] (and (= w (:w entry)) (= packet (:event entry)))) %))))
+
+(defn- host-withdraw-admitted! [ctx w]
   ;; Like unsubscribe, withdrawal is an ordinary boundary and cannot cross
   ;; a quiescent cut, including when the observer has already been served.
   (require! (not-any? #(and (= :p1q (:protocol %))
                             (#{:fenced :ready :captured :attached} (:phase %))
                             (contains? (get-in % [:participants :worlds]) w))
                       (vals (:cuts (root-state ctx))))
+            ::not-admitted {:world w}))
+
+(defn- withdraw-deref! [ctx {:keys [w o]}]
+  (require! (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
+                            (contains? (get-in % [:participants :worlds]) w))
+                      (vals (:cuts (root-state ctx))))
             ::not-admitted {:world w})
-  (when-let [ob (read-row ctx w :obligations o)]
-    (require! (= :open (:admission (header ctx w))) ::not-admitted {:world w})
-    (require! (and (= :deref (:kind ob)) (not (:standing? ob))
-                   (= :host (first (:creditor ob)))
-                   (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
-              ::not-host-deref {:w w :o o})
-    (end-obligation! ctx w o :creditor-cancelled)))
+  (let [installed (read-row ctx w :obligations o)
+        packet (when-not installed (pending-host-registration ctx w o))]
+    (when-let [ob (or installed (:ob packet))]
+      (require! (and (= :deref (:kind ob)) (not (:standing? ob))
+                     (= :host (first (:creditor ob)))
+                     (= :entity (first (:debtor ob))) (= w (second (:debtor ob))))
+                ::not-host-deref {:w w :o o})
+      (if packet (withdraw-host-registration! ctx w packet)
+          (end-obligation! ctx w o :creditor-cancelled)))))
 
 (defn- publish-signal! [ctx {:keys [w e]}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
@@ -3316,9 +3343,13 @@
                                       :when (if (= :bundle x) (contains? d e) (= x e))] v))]
                    (enqueue! ctx v {:completion e :debtor-world w :value (:value action) :source-change? true})))))
            :unsubscribe
-           (let [ob (read-row ctx w :obligations o)]
+           (let [installed (read-row ctx w :obligations o)
+                 packet (when-not installed (pending-host-registration ctx w o))
+                 ob (or installed (:ob packet))]
+             (host-withdraw-admitted! ctx w)
              (require! (or (nil? ob) (:standing? ob)) ::not-standing {:o o})
-             (end-obligation! ctx w o :creditor-cancelled))
+             (if packet (withdraw-host-registration! ctx w packet)
+                 (end-obligation! ctx w o :creditor-cancelled)))
            (throw (ex-info "Unsupported kernel transition" {:action action})))
          (when (contains? action :fresh-runs)
            (require! (and (vector? (:fresh-runs action)) (empty? @(:fresh-runs ctx)))

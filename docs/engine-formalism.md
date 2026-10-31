@@ -1645,10 +1645,17 @@ transitions without changing raw T11 lifetime cancellation:
   later invocation or await explicitly enters a cold T9 (`:dirty`, order `-1`)
   when superseding invalidated work; an unwinding copy instead permits a fresh
   T4/T5 entry while its physical cleanup remains outstanding.
-- `withdraw-deref(w, o)` withdraws a local one-shot host dereference observer.
+- `withdraw-deref(w, o)` withdraws an installed one-shot host dereference observer
+  or its pending `register-host` envelope in debtor storage world `w`.
   It cannot cancel the body or withdraw a different obligation kind. A missing
   observer is inert, including after T8 has committed delivery; withdrawal does
   not revoke an already committed callback.
+  Pending withdrawal also removes matching outside storage, preserves other
+  envelopes and their clocks, and is legal after sealing subject to the existing
+  cut fence. Installed withdrawal has the same narrow post-seal cancellation
+  permission; it neither admits execution nor writes application state.
+  `unsubscribe(w, o)` likewise withdraws a pending standing HOST registration;
+  neither operation can substitute for the other's obligation kind.
 - `cancel-computation(w, e, tok, value)` validates the public token and commits
   an error result plus `:cancelled-completion {:run r :result value}` before
   retiring the target's existing generations. An absent target is materialized
@@ -1660,7 +1667,9 @@ transitions without changing raw T11 lifetime cancellation:
   while a fresh generation clears the fence. Old target publications are
   removed before delivery, and already committed T8 callbacks remain valid.
 
-These operations obey the ordinary admission and cut boundaries. Public
+These operations obey the ordinary admission and cut boundaries, except that
+HOST dereference withdrawal remains legal after custody sealing. It still
+refuses an active cut participant; unsubscribe retains its quiescent-cut fence. Public
 cancellation retains raw T11's invalidation of an already-consumed reactive
 parent; it does not install an explicit-cancellation fence on that parent.
 
