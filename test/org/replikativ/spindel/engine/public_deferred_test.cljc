@@ -26,6 +26,30 @@
 (defn- cancel! [rt s reason]
   (rtp/cancel-computation! rt s (spin-core/spin-id s) (spin-core/spin-body s) reason))
 
+#?(:cljs
+   (deftest cljs-core-await-keeps-managed-spin-dependency-and-cancellation
+     (doseq [cancel? [false true]]
+       (let [rt (runtime) values (atom []) errors (atom []) suffixes (atom [])
+             reason (ex-info "cancel core await" {})]
+         (binding [ec/*execution-context* rt]
+           (let [d (sync/deferred)
+                 child (spin (await d))
+                 s (spin (let [value (cljs.core/await child)]
+                           (swap! suffixes conj value)
+                           value))]
+             (s #(swap! values conj %) #(swap! errors conj %))
+             (let [dependencies (filter #(= [:entity owned/w (spin-core/spin-id child)] (:debtor %))
+                                        (vals (:obligations (owned/snapshot rt))))]
+               (is (= 1 (count dependencies)))
+               (is (= #{:run} (set (map (comp first :creditor) dependencies)))))
+             (when cancel? (cancel! rt s reason))
+             (d false)
+             (is (= (if cancel? [] [false]) @values))
+             (is (= (if cancel? [reason] []) @errors))
+             (is (= (if cancel? [] [false]) @suffixes))
+             (is (zero? (pending-count rt d)))))
+         (verify-boundaries! rt)))))
+
 (deftest deferred-single-assignment-preserves-nil-false-and-exception-values
   (doseq [value [nil false 42 (ex-info "successful data" {})
                  {:type spin-core/spin-cancelled :variant :error :payload false}

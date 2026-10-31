@@ -360,3 +360,49 @@
   "Typed release completion, outside the released world's source graph."
   (release-runtime [completion])
   (release-receipt [completion]))
+
+(defprotocol PCompletion
+  "Observation of a committed lifecycle operation, without custody authority."
+  (observe-completion! [completion resolve reject]
+    "Return an idempotent observer detach function. Detaching never cancels
+     the operation. Callbacks run outside mutation gates; success receives nil
+     only after the operation's physical completion contract is satisfied."))
+
+(defprotocol PWorldCustody
+  "Authenticated world custody and disposal through the selected runtime.
+   Supported construction and transfer shapes are backend-specific. Bearers
+   and owner capabilities carry authority; routing contexts select services."
+  (fork-owned-world! [source options]
+    "Publish a child into an authenticated owner and return
+     {:context child :capability bearer}. Refuse unsupported copy shapes before
+     publication; derive acquisition from the actual destination activation.")
+  (transfer-owned-world! [source bearer caller destination acceptor options]
+    "Move custody from the authenticated caller into the accepted destination
+     owner and return a fresh bearer. Consume predecessor authority atomically
+     with publishing the successor; diagnostic holder labels grant no rights.")
+  (discard-owned-world! [routing-context bearer caller options]
+    "Commit authenticated discard and return its stable typed completion.
+     Disposal completes after terminal settlement and target physical release;
+     it does not release the holder world or change local owner-join semantics.")
+  (observe-owned-world-disposal! [backend receipt resolve reject]
+    "Observe an authenticated disposal receipt without acquiring custody.
+     Return an idempotent detach function; detaching never cancels disposal.
+     Callbacks run outside mutation gates; success receives nil after disposal
+     and actual target release have completed."))
+
+;; Legacy and other runtimes must explicitly implement custody before use.
+;; This refusal does not redirect operations to another engine or state store.
+(extend-protocol PWorldCustody
+  #?(:clj Object :cljs default)
+  (fork-owned-world! [_source _options]
+    (throw (ex-info "World custody is not supported by this runtime"
+                    {:error :unsupported-operation :operation :fork-owned-world})))
+  (transfer-owned-world! [_source _bearer _caller _destination _acceptor _options]
+    (throw (ex-info "World custody is not supported by this runtime"
+                    {:error :unsupported-operation :operation :transfer-owned-world})))
+  (discard-owned-world! [_routing-context _bearer _caller _options]
+    (throw (ex-info "World custody is not supported by this runtime"
+                    {:error :unsupported-operation :operation :discard-owned-world})))
+  (observe-owned-world-disposal! [_backend _receipt _resolve _reject]
+    (throw (ex-info "World custody is not supported by this runtime"
+                    {:error :unsupported-operation :operation :observe-owned-world-disposal}))))

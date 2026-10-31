@@ -1604,6 +1604,7 @@
                     :target-world (:world c) :kind kind :settlement-op op :phase :dispatch-pending}]
          (-> state (assoc-in [:custody :claims id] claim)
              (put-cap k (assoc c :holder cleanup-holder :holder-acquisition nil))
+             (assoc-in [:env :cleanup-targets w id] {:target-world (:world c) :cap k :op op})
              (enqueue (:world c) {:custody-dispatch id :cap k :op op}))))
      s (sort-by pr-str (get-in s [:custody :by-holder holder] #{})))))
 
@@ -2629,27 +2630,45 @@
                                    result)))))))))))
 
 (defn- local-release-profile! [s w]
-  (let [world (wr s w) owners (conj (into (set (keys (:runs world))) (keys (:scopes world))) (or (:root world) [:root w]))
-        events (pending-events s w)
-        related? (fn [v] (= w (get-in s [:lineages v :root])))
-        local? (fn [endpoint] (or (not= :entity (first endpoint)) (= w (second endpoint))))]
-    (require! world ::unknown-world {:w w})
-    (require! (and (nil? (get-in world [:lineage :parent]))
-                   (not-any? #(and (not= w %) (related? %)) (:known-worlds s))
-                   (not-any? #(and (active-cuts (:phase %))
-                                   (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts s)))
-                   (not-any? (fn [[_ cap]] (and (not (terminal (:disposition cap)))
-                                                (or (related? (:world cap)) (= w (:world cap))
-                                                    (some #(= (:holder cap) (execution-holder w %)) owners))))
-                             (all-caps s))
-                   (not-any? #(= :fork (:kind %)) (vals (:entities world)))
-                   (empty? (:fdeps world)) (empty? (:releasing world))
-                   (every? #(and (local? (:debtor %)) (local? (:creditor %))) (vals (:obligations world)))
-                   (not-any? #(some % [:start-for :register-host :join-bundle :custody-dispatch :fork-released]) events)
-                   (not-any? (fn [[v other]]
-                               (and (not= v w) (some #(= [:entity w] (subvec (vec (:debtor %)) 0 2))
-                                                     (vals (:obligations other))))) (:worlds s)))
-              ::unsupported-world-release {:w w})))
+  (let [caps (all-caps s) root (get-in s [:lineages w :root])
+        required (loop [pending [w] seen #{}]
+                   (if-let [world (peek pending)]
+                     (if (seen world) (recur (pop pending) seen)
+                         (recur (into (pop pending)
+                                      (concat (for [[_ c] caps
+                                                    :when (and (not (terminal (:disposition c)))
+                                                               (= :execution-owner (first (:holder c)))
+                                                               (= world (second (:holder c))))] (:world c))
+                                              (map :target-world (vals (get-in s [:env :cleanup-targets world])))))
+                                (conj seen world))) seen))
+        supported? (fn [c]
+                     (or (terminal (:disposition c))
+                         (and (empty? (:scope c))
+                              (= root (get-in s [:lineages (:world c) :root]))
+                              (or (= :open (:disposition c))
+                                  (and (= :discard (:kind c)) (empty? (:steps (record s (:op c)))))))))]
+    (require! (wr s w) ::unknown-world {:w w})
+    (require!
+     (and
+      (every? supported? (for [[_ c] caps
+                               :when (and (= :execution-owner (first (:holder c)))
+                                          (contains? required (second (:holder c))))] c))
+      (every? supported? (for [world required [_ debt] (get-in s [:env :cleanup-targets world])]
+                           (cap s (:cap debt))))
+      (every? (fn [world]
+                (let [row (wr s world)
+                      local? (fn [endpoint] (or (not= :entity (first endpoint)) (= world (second endpoint))))]
+                  (and row (= root (get-in s [:lineages world :root]))
+                       (not-any? #(and (active-cuts (:phase %))
+                                       (contains? (get-in % [:participants :worlds]) world)) (vals (:cuts s)))
+                       (empty? (:fdeps row)) (empty? (:releasing row))
+                       (every? #(and (local? (:debtor %)) (local? (:creditor %))) (vals (:obligations row)))
+                       (not-any? #(some % [:start-for :register-host :join-bundle]) (pending-events s world))
+                       (not-any? (fn [[v other]]
+                                   (and (not= v world)
+                                        (some #(= [:entity world] (subvec (vec (:debtor %)) 0 2))
+                                              (vals (:obligations other))))) (:worlds s))))) required))
+     ::unsupported-world-release {:w w})))
 
 (defn release-request [s {:keys [w caller-th op callback] :as action}]
   (lifecycle/caller-worlds! s action)
@@ -2659,7 +2678,7 @@
       (require! (and (nil? (:cleanup-ticket thread)) (not (:retired? thread))
                      (not= :unwinding (:status (run s (:world thread) r))))
                 ::cleanup-only {:action action})))
-  (local-release-profile! s w)
+  (when-not (get-in s [:env :releases w]) (local-release-profile! s w))
   (let [existing (get-in s [:env :releases w]) s (lifecycle/request s action)
         reason (get-in s [:env :releases w :reason])]
     (if existing s
@@ -2667,7 +2686,10 @@
           (t34-release-world s {:w w})))))
 
 (defn release-ready? [s w]
-  (and (= :released (:status (wr s w))) (join-ready? s w w)))
+  (lifecycle/composed-ready? s w
+                             (fn [state world]
+                               (and (= :released (:status (wr state world)))
+                                    (join-ready? state world world)))))
 
 (defn admit-join-bundle [s w event]
   (let [v (:join-bundle event)]

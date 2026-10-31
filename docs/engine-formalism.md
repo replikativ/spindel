@@ -1955,12 +1955,14 @@ never merged, and results return as values.
 **Explicit asynchronous root release (additive typed profile).**
 
 `release-context!` requests logical release immediately and returns an awaitable
-physical completion. It composes T34 with a release ledger outside the world's
-ordinary graph; it does not change the meaning of bare T34 or make the legacy
-stop/close APIs physical completion certificates. The bounded local-root adapter
-preflights unsupported following/fork ownership, active cuts, nonterminal
-capabilities and cross-world obligations before mutation. The full normative
-T34 above retains its broader teardown semantics.
+composed physical completion. It adds observation outside the world's ordinary
+graph without changing bare T34's logical teardown or making legacy stop/close
+APIs completion certificates. The bounded adapter supports same-family,
+empty-system custody disposal over its supported parked-fork shape. It preserves
+existing local cleanup and preflights unsupported settlement, active cuts and
+cross-world obligations before mutation. General cuts, resource settlement,
+cross-family coordination, protected/raw foreign lifecycle waits and durable
+completion recovery remain open; normative T34 retains its broader semantics.
 
 The symbolic ledger is `env.releases[w]`, with diagnostic identity
 `[:world-release w]`, the first reason, phase `:releasing` or `:joined`, an
@@ -1968,21 +1970,46 @@ observer ordinal and observer rows. A joined ledger also contains result nil.
 The native receipt is opaque: the symbolic ID is not a caller capability or an
 ordinary owned Deferred. Observer IDs are receipt-local ordinals.
 
+A lazy value-only `env.cleanup-targets[origin-world][claim-id]` records
+`{:target-world v :cap k :op op}` when each cleanup claim commits, before owner
+deletion and independently of public receipts. It grants no custody authority.
+The debt survives T29's claim removal: T34 of its target may start descendant
+cleanup before the origin requests release. Thus A's receipt still waits for
+A→B→C cleanup after A's B claim is gone, even without a public B receipt.
+These external control rows have one edge per still-outstanding causal claim;
+terminal capability history alone does not keep a ready edge alive.
+
 | Action | Contract |
 |---|---|
-| `release-request` | Authenticate the caller and target, perform the bounded preflight, record the first reason and apply T34 in one transaction. Repeated requests return the same release identity and preserve that reason. There is no second teardown. |
-| `release-observe` | Authenticate the receipt and caller evidence, reject a same-world physical self-join, and register the next observer atomically with the readiness check. Before join it waits; after join it is immediately ready. Registration and the last physical return can occur in either order without losing a notification. |
+| `release-request` | Authenticate the caller and target; on the first request, preflight the supported prospective cleanup closure, record the reason and apply T34 in one transaction. Repeated requests return the same identity/reason without reapplying first-request preflight to a tombstone or performing a second teardown. |
+| `release-observe` | Authenticate the receipt and caller evidence, reject a physical self-join through any world in the required cleanup closure, and register the next observer atomically with the readiness check. Before join it waits; after join it is immediately ready. Registration and the last physical return can occur in either order without losing a notification. |
 | `release-detach` | Detach an issued observer, whether waiting or ready. Repeated detach is inert. A foreign or never-issued observer is refused. Detaching does not cancel release or its cleanup. |
 | `release-notify` | Claim one ready observer once, remove its registration and deliver successful nil outside the gate. It cannot manufacture joined state or be used as an owned execution frame. |
 
-Readiness is refreshed after successful transitions, rather than accepted through
-a caller-supplied completion action. A released world becomes `:joined` only when
-no actual ordinary slice or unjoined native participant remains.
-Selected idle contexts do not block it. Retained protected operations, raw
-Mailbox success/error receipts and timer installation/disposal/callback evidence
-continue to count after ordinary world rows disappear. Retained cleanup and
-exact producer acknowledgements must continue draining until those participants
-finish; logical release does not stop the drain or close a borrowed executor.
+Readiness is refreshed after successful transitions, never supplied by a caller.
+Every world reachable through cleanup debts must be logically released and
+**locally** physically joined, and every debt must have its exact terminal
+cap/op/record evidence. No ordinary slice, protected operation, raw Mailbox
+receipt or timer installation/disposal/callback may remain unjoined in that
+closure. Selected idle contexts do not block it. Retained cleanup and producer
+acknowledgements continue draining; logical release never closes a borrowed
+executor.
+
+Readiness does not depend on target receipt phases or even their existence.
+Self edges and strongly connected components complete once all their real local
+returns and terminal operations finish; they do not wait for one another's
+receipt publication. T27 still requires local target quiescence/join, **not**
+composed readiness. From one consistent ready set, prune only debts whose exact
+operations and target closures are complete, removing empty buckets. Local
+Run/Scope/world `join` remains a local physical observation.
+
+The native prototype also preserves a supported prospective closure for
+Run-held custody, their owned teardown descendants and committed cleanup.
+Deferred/Mailbox/timer ingress or incoming custody that would invalidate that
+closure refuses before mutation. Independent uncommitted Root/Scope custody may
+retain unsupported resources, while explicit close/discard can still refuse
+unchanged. This is a bounded resource-admission restriction, not a general
+custody policy or evidence of full resource integration.
 
 The first request's reason is also the cause of rejections produced by that
 release, including ordinary and raw Mailbox rejection callbacks. Native callbacks
@@ -2012,23 +2039,26 @@ observer remaining registered, or on the observer callback returning. A callback
 failure is reported separately and cannot revise joined state or the application
 result. Completed bookkeeping retains no old graph snapshot; detached and
 claimed observer registrations are removed. T31 remains true process loss: the
-volatile ledger and observers disappear without a fabricated successful join;
-restart does not recover them.
+volatile debt witnesses, ledger and observers disappear without a fabricated
+successful join; the current restart profile does not recover them.
 
-The current release checker adds L30 (receipt/phase/readiness and observer state)
-and TL24 (first-reason, observer, join-event and outside-envelope conservation).
-Its stale-input oracle derives expected removals from prior accepted packets,
-the independently checked physical barrier and surviving allocation holders.
-[Focused release traces](../test/org/replikativ/spindel/lifetime/release_model_test.cljc)
-compare the symbolic model with both map and cell kernel stores;
-[native audit replay and literal tests](../test/org/replikativ/spindel/engine/native_release_test.cljc)
-exercise native execution. Coverage includes
-both observation/last-return orders, detach and self-join refusals, retained
-operation/raw/timer lifetimes, and two accepted producer attempts whose second
-payload becomes disposable before observer delivery. These are explicit finite
-traces, not exhaustive enumeration of the lifecycle × resource × fork/cut
-cross-product or proof of the full engine replacement. Unsupported local-root
-profiles have unchanged-state refusal checks.
+The release checker adds L30 (receipt/readiness and observer state) and TL24
+(reason, observer, join-event and outside-envelope conservation). Independent
+debt checks conserve BEFORE obligations plus expected new claim edges and
+propagate unfinished prerequisites backward; they do not call production
+readiness or let a dropped debt justify early completion. The stale-input oracle
+still checks prior packets, physical evidence and surviving allocation holders.
+[Release traces](../test/org/replikativ/spindel/lifetime/release_model_test.cljc)
+compare supported actions with map/cell kernel stores;
+[composed traces](../test/org/replikativ/spindel/lifetime/composed_release_test.cljc)
+cover the model's settlement chains and cycles. Kernel comparisons use supported
+checkpoints; custody dispatch and T26–T29 execution are not implemented there. [Native custody](../test/org/replikativ/spindel/engine/native_world_custody_test.cljc)
+and [cyclic CPS cleanup](../test/org/replikativ/spindel/engine/native_custody_cycle_test.cljc)
+exercise actual execution and strict audit replay. Coverage includes late
+receipts, transitive self-wait refusal, asynchronous physical return and
+coordinated debt-removal/early-join negative controls. These are finite traces,
+not exhaustive lifecycle × resource × fork/cut enumeration or proof of full
+engine replacement. Unsupported profiles retain unchanged-state refusal checks.
 
 **API mapping.**
 
@@ -2040,7 +2070,9 @@ profiles have unchanged-state refusal checks.
 | `cancel-world-work!` | T15 |
 | `pin!` / `unpin!` | T14 |
 | `release-idle-caches!` | T18 |
-| `release-context!` (typed local-root profile) | `release-request`, followed by external `release-observe` / `release-detach` / `release-notify`; successful completion is nil |
+| `release-context!` (bounded typed profile) | `release-request`, then `release-observe` / `release-detach` / `release-notify`; nil certifies composed cleanup and physical return |
+| `fork-owned-world!` / `transfer-owned-world!` (bounded native profile) | Supported T19 publication / authenticated accepted T32 move; routing and diagnostic labels confer no custody |
+| `discard-owned-world!` (bounded native profile) | T26 discard → local T27 with a real zero-step record → T29 → T34; observer-only `PCompletion` waits for target composed release |
 | `join!` (run, scope or world; timeout) | observation: completes when `subtree(x)` has no `join-busy` run (TL19); on timeout refuses `::join-timeout` listing the runs still busy |
 | `scope-census` | the L13 census |
 | merge / discard / transfer / partition | the ygg settlement API |

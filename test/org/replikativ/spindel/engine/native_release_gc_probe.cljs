@@ -36,11 +36,28 @@
   (when-let [rt (.deref (:world fixture))]
     (binding [ec/*execution-context* rt] ((:ack fixture) nil))))
 
+(defn unreachable-sibling-fixture []
+  (let [source (owned/runtime {:cps-exit? true})
+        source-root (rtp/root-execution-owner source)
+        {sibling :context bearer :capability}
+        (rtp/fork-owned-world! source {:world-id [:w 1] :owner source-root})
+        sibling-root (rtp/root-execution-owner sibling)
+        moved (rtp/transfer-owned-world! source bearer source-root sibling sibling-root
+                                         {:operation-id :move-sibling})
+        payload (js-obj)]
+    (owned/signal sibling :payload payload)
+    (let [completion (rtp/request-world-release! source :old-world)]
+      {:completion completion :bearer moved :owner sibling-root
+       :was-live? (= :live (:status (owned/snapshot sibling)))
+       :source-joined? (= :joined (get-in (owned/snapshot source) [:release :phase]))
+       :payload (js/WeakRef. payload) :world (js/WeakRef. sibling)})))
+
 (defn -main []
   (when-not (fn? (.-gc js/globalThis))
     (throw (js/Error. "Run this probe with --expose-gc")))
   (let [before (owned/pending-release-count)
-        joined (joined-fixture) pending (unfinished-fixture)]
+        joined (joined-fixture) pending (unfinished-fixture)
+        sibling (unreachable-sibling-fixture)]
     (letfn [(check! [remaining]
               (js/setTimeout
                (fn []
@@ -51,10 +68,16 @@
                       (and (nil? (.deref (:payload joined)))
                            (nil? (.deref (:payload pending)))
                            (nil? (.deref (:world pending)))
-                           (nil? (.deref (:completion pending))))
-                      (let [values (atom [])]
+                           (nil? (.deref (:completion pending)))
+                           (nil? (.deref (:payload sibling)))
+                           (nil? (.deref (:world sibling))))
+                      (let [values (atom []) sibling-values (atom [])]
                         ((:completion joined) #(swap! values conj %) #(throw %))
+                        ((:completion sibling) #(swap! sibling-values conj %) #(throw %))
                         (when-not (and (= [nil] @values) (= [true] @(:trace pending))
+                                       (= [nil] @sibling-values)
+                                       (:was-live? sibling) (:source-joined? sibling)
+                                       (some? (:owner sibling)) (some? (:bearer sibling))
                                        (= before (owned/pending-release-count))
                                        (some? (:context joined)) (some? (:cell joined)))
                           (throw (js/Error. "Release completion or kept-alias fixture changed")))

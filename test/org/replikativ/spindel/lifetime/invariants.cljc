@@ -942,24 +942,50 @@
                        :when (and (= [w e kind allocation] [world resource (:kind cell) (:allocation cell)])
                                   (seq (:holders cell)))] cell)))))
 
+(defn cleanup-terminal-proof? [s {:keys [target-world cap op]}]
+  (let [leaf (get (m/all-caps s) cap) record (get (m/all-records s) op)
+        terminal-kind ({:discard :discarded :merge :merged} (:kind record))]
+    (and terminal-kind (= terminal-kind (:disposition leaf))
+         (= target-world (:world leaf)) (= cap (:cap record))
+         (= op (:op leaf) (:op record)) (= (:kind leaf) (:kind record))
+         (true? (:effects-released? record))
+         (every? #(= :done (:status %)) (:steps record)))))
+
+(defn composed-ready-proof
+  "Independent backward badness propagation; no production readiness calls."
+  [s graph]
+  (let [worlds (set (concat (keys (:worlds s)) (keys graph)
+                            (map :target-world (mapcat vals (vals graph)))))
+        bad (set (filter (fn [w]
+                           (or (not= :released (get-in s [:worlds w :status]))
+                               (released-physical? s w)
+                               (some #(not (cleanup-terminal-proof? s %)) (vals (get graph w))))) worlds))]
+    (loop [bad bad]
+      (let [next (into bad (for [[source rows] graph
+                                 :when (some #(contains? bad (:target-world %)) (vals rows))] source))]
+        (if (= bad next) (set/difference worlds bad) (recur next))))))
+
+(declare cleanup-proof-graph cleanup-target-errors)
+
 (defn release-errors [s]
   (vec
-   (for [[w row] (get-in s [:env :releases])
-         :let [joined? (= :joined (:phase row)) physical? (boolean (released-physical? s w))]
-         :when (or (not= (:id row) [:world-release w])
-                   (not= :released (:status (m/wr s w)))
-                   (not (contains? row :reason))
-                   (not (#{:releasing :joined} (:phase row)))
-                   (not (and (integer? (:next-observer row)) (not (neg? (:next-observer row)))))
-                   (not= joined? (contains? row :result)) (and joined? (some? (:result row)))
-                   (= joined? physical?)
-                   (and joined? (some #(obsolete-release-attempt? s w %) (get-in s [:env :outside])))
-                   (not= (set (keys row)) (cond-> #{:id :reason :phase :next-observer :observers} joined? (conj :result)))
-                   (some (fn [[id observer]]
-                           (or (not (and (vector? id) (= 2 (count id)) (= (:id row) (first id))
-                                         (integer? (second id)) (<= 1 (second id) (:next-observer row))))
-                               (not= {:state (if joined? :ready :waiting)} observer))) (:observers row)))]
-     {:w w :release row :physical? physical?})))
+   (concat (cleanup-target-errors s)
+           (for [[w row] (get-in s [:env :releases])
+                 :let [joined? (= :joined (:phase row)) physical? (boolean (released-physical? s w))]
+                 :when (or (not= (:id row) [:world-release w])
+                           (not= :released (:status (m/wr s w)))
+                           (not (contains? row :reason))
+                           (not (#{:releasing :joined} (:phase row)))
+                           (not (and (integer? (:next-observer row)) (not (neg? (:next-observer row)))))
+                           (not= joined? (contains? row :result)) (and joined? (some? (:result row)))
+                           (not= joined? (contains? (composed-ready-proof s (get-in s [:env :cleanup-targets])) w))
+                           (and joined? (some #(obsolete-release-attempt? s w %) (get-in s [:env :outside])))
+                           (not= (set (keys row)) (cond-> #{:id :reason :phase :next-observer :observers} joined? (conj :result)))
+                           (some (fn [[id observer]]
+                                   (or (not (and (vector? id) (= 2 (count id)) (= (:id row) (first id))
+                                                 (integer? (second id)) (<= 1 (second id) (:next-observer row))))
+                                       (not= {:state (if joined? :ready :waiting)} observer))) (:observers row)))]
+             {:w w :release row :physical? physical?}))))
 
 (defn release-edge-errors [{:keys [before action after refusal observation]}]
   (when (and (not refusal) (not observation) (not (process-loss? action)))
@@ -989,7 +1015,8 @@
                         (and (seq removed) (not (and (= world w) (#{:release-detach :release-notify} t)
                                                      (= #{(:observer action)} removed))))
                         (and (= :joined (:phase row)) (not= :joined (:phase current)))
-                        (not= (= :joined (:phase current)) (not (boolean (released-physical? after world)))))]
+                        (not= (= :joined (:phase current))
+                              (contains? (composed-ready-proof after (cleanup-proof-graph {:before before :action action :after after})) world)))]
           {:w world :release-conservation {:before row :after current :action action}})
         (for [[world row] (get-in after [:env :releases])
               :when (nil? (get-in before [:env :releases world]))
@@ -1347,10 +1374,12 @@
 
 (defn custody-edge-errors [{:keys [before action after refusal]}]
   (when-not refusal
-    (let [t (:t action) k (:k action) old (m/cap before k) new (m/cap after k)
+    (let [outer-action action
+          action (custody-effective-delivery before action)
+          t (:t action) k (:k action) old (m/cap before k) new (m/cap after k)
           before-caps (m/all-caps before) after-caps (m/all-caps after)
           restart? (and (= :t31 t) (= :restart (:phase action)))
-          forest (when (not= :t31 t) (custody-reentry-forest before action after))]
+          forest (when (not= :t31 t) (custody-reentry-forest before outer-action after))]
       (vec
        (concat
         (:errors forest)
@@ -1401,7 +1430,7 @@
           (mapcat
            (fn [[id c]]
              (let [next (get after-caps id) source (:holder c)
-                   path (when-not (m/terminal (:disposition c)) (custody-reentry-path before action after c forest))
+                   path (when-not (m/terminal (:disposition c)) (custody-reentry-path before outer-action after c forest))
                    retired? (or (:closed? path) (and (= source (:holder path source))
                                                      (custody-owner-retired? before after source)))
                    close-source (or (:origin path) source)
@@ -2109,8 +2138,65 @@
                  :when (true? (:cps-entered? row))]
              {:world v :run r :copied-run-already-entered true})))))
 
+(defn cleanup-proof-graph [{:keys [before action after]}]
+  (let [delivery (custody-effective-delivery before action)
+        forest (custody-reentry-forest before action after)]
+    (reduce
+     (fn [graph [k cap]]
+       (let [source (:holder cap)
+             path (when-not (m/terminal (:disposition cap)) (custody-reentry-path before action after cap forest))
+             retired? (or (:closed? path)
+                          (and (= source (:holder path source)) (custody-owner-retired? before after source)))
+             origin (or (:origin path) source)
+             next (m/cap after k) [tag id] (:holder next)
+             sealing? (and (= :t26 (:t delivery)) (= k (:k delivery)))
+             operation (if sealing? (:op delivery) (:op cap))]
+         (if (and (not (m/terminal (:disposition cap))) (= :execution-owner (first source))
+                  retired? (= :cleanup tag))
+           (assoc-in graph [(second origin) id]
+                     {:target-world (:world cap) :cap k :op (or operation [:custody-op id])}) graph)))
+     (or (get-in before [:env :cleanup-targets]) {}) (m/all-caps before))))
+
+(defn cleanup-target-errors [s]
+  (let [graph (get-in s [:env :cleanup-targets])]
+    (vec
+     (concat
+      (when (and (contains? (:env s) :cleanup-targets) (empty? graph)) [{:empty-cleanup-target-table true}])
+      (for [[w rows] graph :when (or (empty? rows) (not (contains? (:worlds s) w)))]
+        {:invalid-cleanup-source w})
+      (for [[w rows] graph [id debt] rows
+            :let [cap (m/cap s (:cap debt)) claim (get-in s [:custody :claims id])]
+            :when (or (not= #{:target-world :cap :op} (set (keys debt)))
+                      (not= (:target-world debt) (:world cap)) (nil? (:op debt))
+                      (not= [:cleanup id] (:holder cap))
+                      (if claim
+                        (or (not= w (second (:origin claim)))
+                            (not= (:cap debt) (:cap claim)) (not= (:op debt) (:settlement-op claim)))
+                        (not (cleanup-terminal-proof? s debt))))]
+        {:invalid-cleanup-target {:source w :claim id :debt debt}})))))
+
+(defn cleanup-target-edge-errors [{:keys [before action after refusal] :as edge}]
+  (when (and (not refusal) (not= :t31 (:t action)))
+    (let [graph (cleanup-proof-graph edge)
+          ready (composed-ready-proof after graph)
+          expected (into {} (keep (fn [[w rows]]
+                                    (let [rows (into {} (remove (fn [[_ debt]]
+                                                                  (and (contains? ready (:target-world debt))
+                                                                       (cleanup-terminal-proof? after debt))) rows))]
+                                      (when (seq rows) [w rows]))) graph))]
+      (vec
+       (concat
+        (when (not= expected (get-in after [:env :cleanup-targets] {}))
+          [{:cleanup-target-conservation {:expected expected :actual (get-in after [:env :cleanup-targets])}}])
+        (for [[w row] (get-in after [:env :releases])
+              :when (not= (= :joined (:phase row)) (contains? ready w))]
+          {:premature-or-missing-composed-join w})
+        (cleanup-target-errors after))))))
+
 (defn edge-check [{:keys [after refusal action] :as edge}]
   (vec (concat (execution-edge-check edge)
+               (when-let [bad (seq (cleanup-target-edge-errors edge))]
+                 [{:id :CleanupTargets :evidence bad}])
                (when-let [bad (seq (fork-entry-errors edge))]
                  [{:id :ForkEntry :evidence bad}])
                (when-let [bad (seq (retirement-anchor-errors edge))]

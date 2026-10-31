@@ -80,11 +80,12 @@
         (is (= :parked (get-in after [:runs [:parent 1] :status])))
         (is (= [:scope :id 1] (get-in after [:entities :after :owner])))
         (is (nil? (get-in (c/snapshot rt) [:entities :after]))))
-      (let [before (c/snapshot-family rt)]
-        (binding [ec/*owner-scope* (:nested @caps)]
-          (is (thrown? #?(:clj Exception :cljs js/Error) (c/fork-parked! rt [:w 2]))))
-        (is (= before (c/snapshot-family rt))))
-      (lifetime/close-scope! rt (:prefix @caps))
+      (let [scoped-child (binding [ec/*owner-scope* (:nested @caps)]
+                           (c/fork-parked! rt [:w 2]))]
+        (is (= [:scope :id 1] (get-in (c/snapshot rt) [:entities [:fork [:w 2]] :owner])))
+        (is (= :live (:status (c/snapshot scoped-child))))
+        (lifetime/close-scope! rt (:prefix @caps))
+        (is (= :released (:status (c/snapshot scoped-child)))))
       (is (zero? (:scope-balance (c/snapshot rt))))
       (is (= 2 (:scope-balance (c/snapshot child))))
       (is (= [:scope :id 1] (get-in (c/snapshot child) [:entities :after :owner])))
@@ -241,7 +242,10 @@
         (is (false? (bindable? child @saved)))
         (is (thrown? #?(:clj Exception :cljs js/Error) (lifetime/open-scope! child :foreign-parent @saved)))
         (is (= after (c/snapshot child))))
-      (verify-boundaries! rt))))
+      (verify-boundaries! rt))
+    ;; Snapshot equality here tests refused owner admission, independently of
+    ;; host GC. Keep its observed Spin alive until both snapshots and replay.
+    #?(:clj (java.lang.ref.Reference/reachabilityFence task))))
 
 (deftest public-with-owner-scope-survives-the-reactive-breakpoint
   (let [rt (c/runtime {:audit? true}) driver (c/signal rt :driver 0)
