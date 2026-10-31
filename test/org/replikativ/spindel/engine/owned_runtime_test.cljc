@@ -111,102 +111,106 @@
               :cljs (.set cache value result)))
          result)))))
 
-(defn verify-boundaries! [rt]
-  (let [trace (c/audit-trace rt)
-        total (count trace)
-        now-ms #?(:clj #(quot (System/nanoTime) 1000000) :cljs #(.now js/Date))
-        started (now-ms)
-        last-report (volatile! started)
-        completed (volatile! 0)]
-    (reduce
-     (fn [state [raw-action raw-actual raw-family]]
+(defn verify-boundaries!
+  "Replay every boundary strictly; custom-root fixtures must name their initial world."
+  ([rt] (verify-boundaries! rt {}))
+  ([rt {:keys [initial-world] :or {initial-world c/w}}]
+   (let [trace (c/audit-trace rt)
+         total (count trace)
+         now-ms #?(:clj #(quot (System/nanoTime) 1000000) :cljs #(.now js/Date))
+         started (now-ms)
+         last-report (volatile! started)
+         completed (volatile! 0)]
+     (reduce
+      (fn [state [raw-action raw-actual raw-family]]
      ;; Map iteration order is unspecified by the contract. Replay the
      ;; runtime's witnessed subscriber order without changing logical state.
-       (let [action (model-value raw-action)
-             family (model-value (or raw-family {c/w raw-actual}))
-             order (zipmap (:delivery-order action) (range))
-             state (if (:delivery-order action)
-                     (update-in state [:worlds (:w action) :obligations]
-                                #(into (sorted-map-by
-                                        (fn [x y]
-                                          (let [rank (compare (get order x 1000000000) (get order y 1000000000))]
-                                            (if (zero? rank) (compare x y) rank)))) %)) state)
-             notifications (zipmap (:notification-order action) (range))
-             state (if (:notification-order action)
-                     (update-in state [:env :handles (:tok action) :touched]
-                                #(into (sorted-set-by
-                                        (fn [x y]
-                                          (let [rank (compare (get notifications x 1000000000)
-                                                              (get notifications y 1000000000))]
-                                            (if (zero? rank) (compare x y) rank)))) %)) state)
-             expected (model/step state action)
-             expected-global (assoc (select-keys expected [:registry :known-worlds :lineages :caps :records :custody :next-claim :recovery-epoch :process-live?])
-                                    :generation-clock (get expected :generation-clock {}))
+        (let [action (model-value raw-action)
+              family (model-value (or raw-family {(or (:id raw-actual) (second (:root raw-actual))) raw-actual}))
+              order (zipmap (:delivery-order action) (range))
+              state (if (:delivery-order action)
+                      (update-in state [:worlds (:w action) :obligations]
+                                 #(into (sorted-map-by
+                                         (fn [x y]
+                                           (let [rank (compare (get order x 1000000000) (get order y 1000000000))]
+                                             (if (zero? rank) (compare x y) rank)))) %)) state)
+              notifications (zipmap (:notification-order action) (range))
+              state (if (:notification-order action)
+                      (update-in state [:env :handles (:tok action) :touched]
+                                 #(into (sorted-set-by
+                                         (fn [x y]
+                                           (let [rank (compare (get notifications x 1000000000)
+                                                               (get notifications y 1000000000))]
+                                             (if (zero? rank) (compare x y) rank)))) %)) state)
+              expected (model/step state action)
+              expected-global (assoc (select-keys expected [:registry :known-worlds :lineages :caps :records :custody :next-claim :recovery-epoch :process-live?])
+                                     :generation-clock (get expected :generation-clock {}))
            ;; Actual family views share immutable global maps. Compare each
            ;; distinct identity fully once on THIS edge; never trust equality
            ;; or a comparison cached from another action.
-             global-comparisons #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.))]
-         (is (= (set (keys (:worlds expected))) (set (keys family))))
+              global-comparisons #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.))]
+          (is (= (set (keys (:worlds expected))) (set (keys family))))
        ;; Profiles are world-local; the reference environment is global.
        ;; Check the complete family union and counts before projecting rows so
        ;; an omitted, duplicated or misrouted participant cannot disappear.
-         (doseq [[field path] [[:native [:env :native]] [:cleanup-cells [:env :cleanup-cells]]]]
-           (let [rows (mapcat #(get % field) (vals family))
-                 reference (get-in expected path {})]
-             (is (= reference (into {} rows)))
-             (is (= (count reference) (count rows)))))
-         (doseq [[id actual] family]
-           (let [world (get-in expected [:worlds id])
-                 ev (assoc (select-keys world [:entities :runs :obligations :queue :lineage :root :status
-                                               :admission :seal-seq :scopes :next-scope :scope-balance
-                                               :pins :fdeps :releasing])
-                           :seq (get world :seq 0) :serial (get-in expected [:serial :o] 0)
-                           :clock (get-in expected [:clocks id] 0)
-                           :handles (get-in expected [:env :handles])
-                           :threads (get-in expected [:env :threads])
-                           :principals (get-in expected [:env :principals])
-                           :cleanup-targets (get-in expected [:env :cleanup-targets] {})
-                           :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))
-                           :gc (vec (get-in expected [:env :gc] []))
-                           :global expected-global)
-                 ev (if (contains? actual :native)
-                      (assoc ev :native (into {} (filter (fn [[_ row]] (= id (first (:owner row))))
-                                                         (get-in expected [:env :native])))
-                             :cleanup-cells (into {} (filter (fn [[key _]] (= id (first key)))
-                                                             (get-in expected [:env :cleanup-cells])))) ev)
-                 ev (if (contains? actual :source-gc)
-                      (assoc ev :source-gc
-                             (into {} (filter (fn [[[world _ _] _]] (= world id))
-                                              (get-in expected [:env :source-gc] {})))) ev)
-                 ev (if (= :released (:status world))
-                      (assoc (select-keys ev [:lineage :status :global :threads :native :cleanup-cells :cleanup-targets :gc :handles :principals])
-                             :id id :release (get-in expected [:env :releases id])
-                             :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))) ev)
-                 actual-global (:global actual)
-                 global-matches? (and (contains? actual :global)
-                                      (if #?(:clj (.containsKey ^java.util.IdentityHashMap global-comparisons actual-global)
-                                             :cljs (.has global-comparisons actual-global))
-                                        #?(:clj (.get ^java.util.IdentityHashMap global-comparisons actual-global)
-                                           :cljs (.get global-comparisons actual-global))
-                                        (let [matches? (= expected-global actual-global)]
-                                          #?(:clj (.put ^java.util.IdentityHashMap global-comparisons actual-global matches?)
-                                             :cljs (.set global-comparisons actual-global matches?))
-                                          matches?)))
-                 matches? (and global-matches? (= (dissoc ev :global) (dissoc actual :global)))]
-             (when-not matches?
-               (throw (ex-info "Boundary mismatch" {:action action :world id
-                                                    :difference (vec (take 2 (data/diff ev actual)))})))
-             (is (= true matches?))))
-         (is (empty? (inv/check expected)))
-         (is (empty? (inv/edge-check {:before state :action action :after expected})))
-         (vswap! completed inc)
-         (let [now (now-ms)]
-           (when (>= (- now @last-report) 10000)
-             (println "Native audit replay:" @completed "/" total "boundaries checked;" (- now started) "ms elapsed")
-             #?(:clj (flush))
-             (vreset! last-report now)))
-         expected))
-     (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})) trace)))
+          (doseq [[field path] [[:native [:env :native]] [:cleanup-cells [:env :cleanup-cells]]]]
+            (let [rows (mapcat #(get % field) (vals family))
+                  reference (get-in expected path {})]
+              (is (= reference (into {} rows)))
+              (is (= (count reference) (count rows)))))
+          (doseq [[id actual] family]
+            (let [world (get-in expected [:worlds id])
+                  ev (assoc (select-keys world [:entities :runs :obligations :queue :lineage :root :status
+                                                :admission :seal-seq :scopes :next-scope :scope-balance
+                                                :pins :fdeps :releasing])
+                            :seq (get world :seq 0) :serial (get-in expected [:serial :o] 0)
+                            :clock (get-in expected [:clocks id] 0)
+                            :handles (get-in expected [:env :handles])
+                            :threads (get-in expected [:env :threads])
+                            :principals (get-in expected [:env :principals])
+                            :cleanup-targets (get-in expected [:env :cleanup-targets] {})
+                            :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))
+                            :gc (vec (get-in expected [:env :gc] []))
+                            :global expected-global)
+                  ev (if (contains? actual :native)
+                       (assoc ev :native (into {} (filter (fn [[_ row]] (= id (first (:owner row))))
+                                                          (get-in expected [:env :native])))
+                              :cleanup-cells (into {} (filter (fn [[key _]] (= id (first key)))
+                                                              (get-in expected [:env :cleanup-cells])))) ev)
+                  ev (if (contains? actual :source-gc)
+                       (assoc ev :source-gc
+                              (into {} (filter (fn [[[world _ _] _]] (= world id))
+                                               (get-in expected [:env :source-gc] {})))) ev)
+                  ev (if (= :released (:status world))
+                       (assoc (select-keys ev [:lineage :status :global :threads :native :cleanup-cells :cleanup-targets :gc :handles :principals])
+                              :id id :release (get-in expected [:env :releases id])
+                              :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))) ev)
+                  actual-global (:global actual)
+                  global-matches? (and (contains? actual :global)
+                                       (if #?(:clj (.containsKey ^java.util.IdentityHashMap global-comparisons actual-global)
+                                              :cljs (.has global-comparisons actual-global))
+                                         #?(:clj (.get ^java.util.IdentityHashMap global-comparisons actual-global)
+                                            :cljs (.get global-comparisons actual-global))
+                                         (let [matches? (= expected-global actual-global)]
+                                           #?(:clj (.put ^java.util.IdentityHashMap global-comparisons actual-global matches?)
+                                              :cljs (.set global-comparisons actual-global matches?))
+                                           matches?)))
+                  matches? (and global-matches? (= (dissoc ev :global) (dissoc actual :global)))]
+              (when-not matches?
+                (throw (ex-info "Boundary mismatch" {:action action :world id
+                                                     :difference (vec (take 2 (data/diff ev actual)))})))
+              (is (= true matches?))))
+          (is (empty? (inv/check expected)))
+          (is (empty? (inv/edge-check {:before state :action action :after expected})))
+          (vswap! completed inc)
+          (let [now (now-ms)]
+            (when (>= (- now @last-report) 10000)
+              (println "Native audit replay:" @completed "/" total "boundaries checked;" (- now started) "ms elapsed")
+              #?(:clj (flush))
+              (vreset! last-report now)))
+          expected))
+      (model/init-state (when (contains? (c/snapshot rt) :native) {:slices? true :cps-exit? true})
+                        (model-value initial-world)) trace))))
 
 (deftest completed-ownership-island-becomes-value-only-before-gc
   (doseq [audit? [false true]]

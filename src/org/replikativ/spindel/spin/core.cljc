@@ -1013,17 +1013,21 @@
                 :cljs ctx/ExecutionContext)
   rtp/PComputations
   (register-computation! [ctx target id body]
+    (ec/legacy-graph-entry! ctx)
     (register-legacy-computation! ctx target id body))
   (invoke-computation! [ctx target id body resolve reject _mode]
+    (ec/legacy-graph-entry! ctx)
     (binding [ec/*execution-context* ctx]
       (invoke-legacy-spin target id body resolve reject)))
   (cancel-computation! [ctx target _id _body reason]
+    (ec/legacy-graph-entry! ctx)
     (binding [ec/*execution-context* ctx]
       (cancel-legacy-spin! target reason)))
   (computation-result [ctx _target id]
     (when-let [result (rtp/current-result ctx id)]
       {:variant (:variant result) :payload (:payload result) :clean? (rtp/clean? ctx id)}))
   (deref-computation! [ctx target id body timeout-ms timeout-val]
+    (ec/legacy-graph-entry! ctx)
     #?(:clj (binding [ec/*execution-context* ctx]
               (deref-spin target id body timeout-ms timeout-val))
        :cljs (throw (ex-info "@Spin not supported in CLJS runtime" {})))))
