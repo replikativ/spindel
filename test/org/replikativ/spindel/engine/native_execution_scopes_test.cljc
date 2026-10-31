@@ -242,7 +242,10 @@
         (is (false? (bindable? child @saved)))
         (is (thrown? #?(:clj Exception :cljs js/Error) (lifetime/open-scope! child :foreign-parent @saved)))
         (is (= after (c/snapshot child))))
-      (verify-boundaries! rt))))
+      (verify-boundaries! rt))
+    ;; Snapshot equality here tests refused owner admission, independently of
+    ;; host GC. Keep its observed Spin alive until both snapshots and replay.
+    #?(:clj (java.lang.ref.Reference/reachabilityFence task))))
 
 (deftest public-with-owner-scope-survives-the-reactive-breakpoint
   (let [rt (c/runtime {:audit? true}) driver (c/signal rt :driver 0)
