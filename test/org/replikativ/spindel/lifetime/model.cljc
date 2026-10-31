@@ -9,6 +9,7 @@
 
 (def terminal #{:merged :discarded :transferred :partitioned})
 (def ^:dynamic *release-cancellation* nil)
+(def ^:dynamic ^:private *releasing-worlds* #{})
 
 (def standing #{:track :await-reactive :callback})
 (def work-status #{:running :parked})
@@ -1905,15 +1906,29 @@
                 s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s (sort-by pr-str children))
                 s (if current?
                     (reduce
-                     (fn [s [v o ob]]
-                       (if (not= v w)
-                         (cancel-foreign-debtor s w v o cancellation)
+                     (fn [s [v o ob packet]]
+                       (cond
+                         ;; H0 already joined the entity; H1 must not outlive
+                         ;; its current Run's cancellation. T34 retains its
+                         ;; existing queued-request release phase instead.
+                         packet
+                         (let [packet (pending-host-registration s w o)]
+                           (-> s (withdraw-host-registration w packet)
+                               (deliver-host w o ob {:event :host-delivery :world w :o o
+                                                     :value (if cancellation (:value cancellation) ::cancelled)})))
+                         (not= v w) (cancel-foreign-debtor s w v o cancellation)
+                         :else
                          (let [s (if (= :run (first (:creditor ob)))
                                    (t06-resume s {:w v :o o :value (if cancellation (:value cancellation) ::cancelled)}) s)]
                            (end-obligation s v o :cancel-delivered cancellation))))
-                     s (cond->> (for [[v world] (:worlds s) [o ob] (:obligations world)
-                                      :when (and (= [:entity w e] (:debtor ob))
-                                                 (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])
+                     s (cond->> (concat
+                                 (when-not (contains? *releasing-worlds* w)
+                                   (for [packet (pending-events s w)
+                                         :when (and (:register-host packet) (= e (:e packet)))]
+                                     [w (:register-host packet) (:ob packet) packet]))
+                                 (for [[v world] (:worlds s) [o ob] (:obligations world)
+                                       :when (and (= [:entity w e] (:debtor ob))
+                                                  (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob]))
                          cancellation (sort-by #(second (second %))))) s)
                 s (if (and current? (= :stale (:status (run s w (:pred rr)))))
                     (t10-supersede s {:w w :r (:pred rr)}) s)
@@ -2594,7 +2609,8 @@
 (defn t34-release-world
   "T34 local teardown and publication of a lineage-only tombstone."
   [s {:keys [w]}]
-  (let [world (wr s w) caps (caps-of s w)]
+  (binding [*releasing-worlds* (conj *releasing-worlds* w)]
+   (let [world (wr s w) caps (caps-of s w)]
     (if (or (nil? world) (= :released (:status world))) s
         (do
           (require! (not-any? #(#{:settling :incomplete} (:disposition (val %))) caps)
@@ -2689,7 +2705,7 @@
                                    (if (attempt? next)
                                      (recur (rest remaining) (rest attempts) (conj result (first attempts)))
                                      (recur (rest remaining) attempts (conj result next)))
-                                   result)))))))))))
+                                   result))))))))))))
 
 (defn- release-logical-profile? [s root required]
   (let [same-family? #(= root (get-in s [:lineages % :root]))

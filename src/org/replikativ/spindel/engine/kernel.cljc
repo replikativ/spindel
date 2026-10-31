@@ -1096,6 +1096,8 @@
          (release-owned! ctx w r))
        chain))))
 
+(declare pending-host-registration withdraw-host-registration!)
+
 (defn- cancel-run!
   ([ctx w r anchor] (cancel-run! ctx w r anchor (:release-cancellation ctx)))
   ([ctx w r anchor cancellation]
@@ -1110,17 +1112,35 @@
             (doseq [child (sort-by pr-str (read-row ctx w :runs-by-owner r))]
               (cancel-run! ctx w child (into [child] chain)))
             (when current?
+              ;; A pending H1 still represents H0's committed entity join.
+              ;; During T34, leave these packets for its existing queue phase.
+              (when (and (not cancellation) (not (contains? (:releasing-worlds ctx) w)))
+                (doseq [packet (filter #(and (:register-host %) (= e (:e %))) (pending-events ctx w))]
+                  (let [o (:register-host packet)
+                        packet (pending-host-registration ctx w o)]
+                    (withdraw-host-registration! ctx w packet)
+                    (deliver-host! ctx w o (:ob packet)
+                                   {:event :host-delivery :world w :o o
+                                    :value (if cancellation (:value cancellation) ::cancelled)}))))
               (if cancellation
                ;; Explicit public cancellation has one stable settlement order
                ;; across host/parent observers, independent of index set order.
                 (doseq [[v o] (sort-by #(second (second %))
                                        (concat (map #(vector w %) (entity-obligations ctx w w e))
-                                               (foreign-creditors ctx w e)))]
+                                               (foreign-creditors ctx w e)
+                                               (when-not (contains? (:releasing-worlds ctx) w)
+                                                 (for [packet (pending-events ctx w)
+                                                       :when (and (:register-host packet) (= e (:e packet)))]
+                                                   [w (:register-host packet)]))))]
                   (if (= v w)
-                    (let [ob (read-row ctx w :obligations o)]
-                      (when (= :run (first (:creditor ob)))
-                        (resume! ctx {:w w :o o :value (:value cancellation)}))
-                      (end-obligation! ctx w o :cancel-delivered cancellation))
+                    (if-let [ob (read-row ctx w :obligations o)]
+                      (do (when (= :run (first (:creditor ob)))
+                            (resume! ctx {:w w :o o :value (:value cancellation)}))
+                          (end-obligation! ctx w o :cancel-delivered cancellation))
+                      (let [packet (pending-host-registration ctx w o)]
+                        (withdraw-host-registration! ctx w packet)
+                        (deliver-host! ctx w o (:ob packet)
+                                       {:event :host-delivery :world w :o o :value (:value cancellation)})))
                     (cancel-foreign-debtor! ctx w v o cancellation)))
                 (do
                   (doseq [o (entity-obligations ctx w w e)]
@@ -2830,7 +2850,8 @@
    :by-debtor-world :runs-by-spin :runs-by-owner :spawned-by :created-by :entities-by-owner :scopes-by-parent])
 
 (defn- release-world! [ctx {:keys [w]}]
-  (when-let [world (header ctx w)]
+  (let [ctx (update ctx :releasing-worlds (fnil conj #{}) w)]
+   (when-let [world (header ctx w)]
     (when-not (= :released (:status world))
       (let [caps (filter #(= w (:world (val %))) (merge (:caps (root-state ctx)) (get-in (root-state ctx) [:durable :caps])))]
         (require! (not-any? #(#{:settling :incomplete} (:disposition (val %))) caps) ::settlement-open {:w w})
@@ -2912,7 +2933,7 @@
         (root-edit! ctx assoc-in [:clocks w]
                     (max (get (header ctx w) :seq 0) (get-in (root-state ctx) [:clocks w] 0)))
         (put! ctx w :header :world (assoc (select-keys world [:id :lineage]) :status :released))
-        (root-edit! ctx update :registry disj w)))))
+        (root-edit! ctx update :registry disj w))))))
 
 (defn- release-row! [ctx {:keys [w release] :as action}]
   (let [row (get-in (root-state ctx) [:env :releases w])]
