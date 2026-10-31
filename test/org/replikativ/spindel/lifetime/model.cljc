@@ -2097,7 +2097,8 @@
   (let [order (holder-acquisition! s (execution-holder w scope) acceptance)
         child (assoc (world-row v w :following (get-in s [:worlds w :lineage :root])) :seq (get-in s [:worlds w :seq] 0))
         copies (into {} (for [[r rr] (:runs (wr s w)) :when (= :parked (:status rr))]
-                          [r (assoc (copy-row rr w :inherited) :status :inherited :owner (:root child))]))
+                          [r (assoc (dissoc (copy-row rr w :inherited) :cps-entered?)
+                                    :status :inherited :owner (:root child))]))
         scopes (loop [parents (set (keys copies)) found {}]
                  (let [children (into {} (for [[id sr] (:scopes (wr s w))
                                                :when (contains? parents (:parent sr))]
@@ -2260,7 +2261,7 @@
                                     :mode mode :cut nil :basis nil})
 
                    (update :runs #(into {} (for [[r rr] %]
-                                             [r (cond-> (copy-row rr w :inherited) (parked r)
+                                             [r (cond-> (dissoc (copy-row rr w :inherited) :cps-entered?) (parked r)
                                                         (assoc :status :inherited :origin :inherited))])))
                    (update :obligations
                            #(into {} (for [[id ob] % :when (copy-host? ob)]

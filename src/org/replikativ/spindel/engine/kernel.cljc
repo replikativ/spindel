@@ -2512,7 +2512,7 @@
         copy-row #(assoc (cells/value %) :origin :inherited :source-world w)
         runs (into {} (for [[r rr] (store/table-view (:tx ctx) w :runs)
                             :when (= :parked (:status rr))]
-                        [r (assoc (copy-row rr) :status :inherited :owner [:root v])]))
+                        [r (assoc (dissoc (copy-row rr) :cps-entered?) :status :inherited :owner [:root v])]))
         scopes (loop [parents (set (keys runs)) found {}]
                  (let [children (into {} (for [[id sr] (store/table-view (:tx ctx) w :scopes)
                                                :when (contains? parents (:parent sr))]

@@ -119,6 +119,14 @@
                                           (if (zero? rank) (compare x y) rank)))) %)) state)
            expected (model/step state action)]
        (is (= (set (keys (:worlds expected))) (set (keys family))))
+       ;; Profiles are world-local; the reference environment is global.
+       ;; Check the complete family union and counts before projecting rows so
+       ;; an omitted, duplicated or misrouted participant cannot disappear.
+       (doseq [[field path] [[:native [:env :native]] [:cleanup-cells [:env :cleanup-cells]]]]
+         (let [rows (mapcat #(get % field) (vals family))
+               reference (get-in expected path {})]
+           (is (= reference (into {} rows)))
+           (is (= (count reference) (count rows)))))
        (doseq [[id actual] family]
          (let [world (get-in expected [:worlds id])
                ev (assoc (select-keys world [:entities :runs :obligations :queue :lineage :root :status
@@ -133,8 +141,10 @@
                          :global (assoc (select-keys expected [:registry :known-worlds :lineages :caps :custody :next-claim :recovery-epoch :process-live?])
                                         :generation-clock (get expected :generation-clock {})))
                ev (if (contains? actual :native)
-                    (assoc ev :native (get-in expected [:env :native])
-                           :cleanup-cells (get-in expected [:env :cleanup-cells] {})) ev)
+                    (assoc ev :native (into {} (filter (fn [[_ row]] (= id (first (:owner row))))
+                                                       (get-in expected [:env :native])))
+                           :cleanup-cells (into {} (filter (fn [[key _]] (= id (first key)))
+                                                           (get-in expected [:env :cleanup-cells])))) ev)
                ev (if (contains? actual :source-gc)
                     (assoc ev :source-gc
                            (into {} (filter (fn [[[world _ _] _]] (= world id))

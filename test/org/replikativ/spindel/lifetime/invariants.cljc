@@ -2099,8 +2099,20 @@
         {:kind :cleanup-retirement-anchor :ticket n :world w :run r
          :expected expected :actual (:anchor current)})))))
 
+(defn fork-entry-errors [{:keys [before action after refusal]}]
+  ;; A copied continuation is not execution in the new world's incarnation.
+  ;; Inspect the newly attached rows directly, independently of copy helpers.
+  (let [v (:v action)]
+    (when (and (not refusal) (#{:t19 :t23} (:t action))
+               (not (contains? (:worlds before) v)))
+      (vec (for [[r row] (get-in after [:worlds v :runs])
+                 :when (true? (:cps-entered? row))]
+             {:world v :run r :copied-run-already-entered true})))))
+
 (defn edge-check [{:keys [after refusal action] :as edge}]
   (vec (concat (execution-edge-check edge)
+               (when-let [bad (seq (fork-entry-errors edge))]
+                 [{:id :ForkEntry :evidence bad}])
                (when-let [bad (seq (retirement-anchor-errors edge))]
                  [{:id :RetirementAnchor :evidence bad}])
                (when (and (not refusal) (not= :join (:t action)))
