@@ -39,6 +39,15 @@ Scope closure owns its recursive row/index removal; ancestor retirement must not
 delete a pending child Scope. Frame allocation on reactive retirement remains a
 performance cost to measure.
 
+The native backend can omit a Run's own frame when its owned-entity, child-Run
+and child-Scope indexes are all empty. It checks an existing in-flight frame
+first, since recursive teardown may already have emptied those indexes.
+Retention, registration cancellation and index cleanup on this path queue work;
+they cannot retire another owner or invoke user code before returning. A needed
+physical anchor therefore comes from unchanged ancestry or an active ancestor's
+frame. Recursive Runs and Scope closes keep their entry frames. Adding a
+synchronous retirement edge requires revisiting this fast-path proof.
+
 ## Engine flow and visibility
 
 This is the target flow. The experimental kernel implements the local

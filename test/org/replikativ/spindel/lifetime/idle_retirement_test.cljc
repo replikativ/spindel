@@ -345,3 +345,79 @@
           (is (nil? (m/run done w x1)))
           (is (empty? (get-in done [:env :cleanup-cells]))))))))
 
+(deftest outer-run-frame-outlives-its-nested-scope-frame
+  (doseq [cps? [false true]]
+    (testing (str "ordinary/CPS physical retention " cps?)
+      (let [b :b p :p x :x y :y
+            b1 [b 1] b2 [b 2] p1 [p 1] x1 [x 1] y1 [y 1]
+            s [:scope :id 0] cell [w y1 :y-cell] ticket (cleanup/ticket w y1)
+            prefix [{:t :t04 :w w :e b :mode :deref}
+   ;; Entity P is allocated by B1, but P1 is independently Root-owned.
+                    {:t :t01 :w w :e p :r b1 :order 0}
+                    {:t :t04 :w w :e p :scope root :mode :deref}
+                    {:t :t04 :w w :e x :scope p1 :mode :deref}
+                    {:t :t12 :w w :scope s :parent x1 :kind :explicit}
+                    {:t :t07 :w w :r b1 :value :b-one}
+                    {:t :t08 :w w :e b :debtor-world w :value :b-one}
+                    {:t :invalidate-computation :w w :e b}
+                    {:t :t04 :w w :e b :scope s :mode :deref}
+   ;; B2 adopts Entity P. Actual Run ancestry remains P1 -> X1 -> S -> B2.
+                    {:t :t01 :w w :e p :r b2 :order 0}
+                    {:t :t07 :w w :r b2 :value :b-two}
+                    {:t :t08 :w w :e b :debtor-world w :value :b-two}
+   ;; Y is X's direct child, outside S, and physically executing at close.
+                    {:t :t04 :w w :e y :scope x1 :mode :deref}
+                    {:t :slice-enter :w w :r y1 :th :physical-y}
+                    {:t :t02 :w w :scope y1 :e :y-cell :kind :atom :value :payload}]
+            before (reduce checked (m/init-state {:slices? true :cps-exit? cps?}) prefix)
+            expected [y1 x1 p1 root w]
+            _ (is (= root (:owner (m/run before w p1))))
+            _ (is (= b2 (:owner (m/ent before w p))))
+            _ (is (= p1 (:owner (m/run before w x1))))
+            _ (is (= x1 (get-in before [:worlds w :scopes s :parent])))
+            _ (is (= s (:owner (m/run before w b2))))
+            _ (is (= x1 (:owner (m/run before w y1))))
+            _ (is (= expected (m/owner-chain before w y1)))
+            action {:t :t11 :w w :r x1}
+            after (checked before action)
+            exits (filter #(= :run-exit (:event %)) (:events after))]
+        ;; X first closes S. S cancels B2, whose Entity P release cancels P1;
+        ;; that recursively revisits active X. S then finishes and its frame
+        ;; pops BEFORE X proceeds to cancel Y. Only X's own frame can supply
+        ;; the now absent P1 suffix; borrowing S would add a false owner edge.
+        (is (every? #(nil? (m/run after w %)) [p1 x1 b2]))
+        (is (= :unwinding (:status (m/run after w y1))))
+        (is (= expected (:anchor (m/run after w y1))))
+        (is (not-any? #{s} (:anchor (m/run after w y1))))
+        (is (= 0 (:scope-balance (m/wr after w))))
+        (is (= #{root} (set (keys (:scopes (m/wr after w))))))
+        (is (= {[w x1] 1 [w b2] 1 [w p1] 1 [w y1] 1}
+               (frequencies (map #(vector (:world %) (:r %)) exits))))
+        (is (every? #(= :cancelled (:cause %)) exits))
+        (is (false? (m/join-ready? after w root)))
+        (is (false? (m/join-ready? after w x1)))
+        (is (true? (m/join-ready? after w s)))
+        (when cps?
+          (is (= expected (get-in after [:env :native ticket :anchor])))
+          (is (= #{ticket} (get-in after [:env :cleanup-cells cell :holders])))
+          (is (= :payload (get-in after [:env :cleanup-cells cell :result]))))
+        (let [returned (checked after {:t :t38 :th :physical-y})
+              done (if cps?
+                     (let [claimed (checked returned {:t :cleanup-claim :n ticket :th :cleaner})
+                           duplicate (m/attempt claimed {:t :cleanup-claim :n ticket :th :duplicate})
+                           cleaned (checked claimed {:t :cleanup-cell :th :cleaner :cell cell :value :cleaned})
+                           returning (checked cleaned {:t :cleanup-return :th :cleaner})]
+                       (is (some? (:refusal duplicate)))
+                       (is (= claimed (:state duplicate)))
+                       (is (= :cleaned (get-in returning [:env :cleanup-cells cell :result])))
+                       (is (false? (m/join-ready? returning w root)))
+                       (is (false? (m/join-ready? returning w x1)))
+                       (is (true? (m/join-ready? returning w s)))
+                       (checked returning {:t :t38 :th :cleaner})) returned)]
+          (is (nil? (m/run done w y1)))
+          (is (nil? (get-in done [:env :native ticket])))
+          (is (empty? (get-in done [:env :cleanup-cells])))
+          (is (m/join-ready? done w root))
+          (is (m/join-ready? done w x1))
+          (is (m/join-ready? done w s))
+          (is (= 0 (:scope-balance (m/wr done w)))))))))
