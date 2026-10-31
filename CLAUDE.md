@@ -61,40 +61,39 @@ throws.
 (spin (let [iv (track some-signal)] (* 2 (iv/get-new iv))))
 ```
 
-### Rule 2 — Effects only work where the macro can see them
+### Rule 2 — Effects stay within their execution scope
 
-The `spin` macro CPS-transforms code it sees *lexically*. For the common
-higher-order calls it rewrites the call into a loop when the **fn
-literal** passed to it performs an effect (`await`, `track`, `sample`, …):
-`map`, `mapv`, `filter`, `filterv`, `remove`, `keep`, `reduce` with an
-initial value, `run!`, and `doseq` / `for` over a single binding. The
-rewritten call is eager and returns a vector; a call whose fn performs no
-effect is left alone and keeps its laziness.
+Core `doseq` and `loop` use native macro expansion and can suspend within a
+spin. `doseq` supports nested bindings, destructuring and modifiers.
+Higher-order callbacks retain ordinary function boundaries: `spin` does not
+inline callback bodies or make lazy collection operations eager. Visible bare
+effects in opaque functions and methods fail at compilation, including sites
+introduced by macros. Separately compiled hidden effects remain a runtime
+boundary.
 
 ```clojure
-;; ✅ rewritten into a loop: the fn literal awaits
-(spin (mapv (fn [x] (await (fetch x))) items))
-(spin (reduce (fn [acc x] (+ acc (await (fetch x)))) 0 items))
-(spin (for [x data] (await (fetch-spin x))))
-
-;; ❌ still invisible: a named function, partial, comp, juxt, several
-;;    collections, for/doseq with :when/:let or several bindings
-(spin (map fetch-and-await items))   ; fetch-and-await's body isn't lexical
-
-;; ✅ nest a (spin …) per item, splice with `parallel` for concurrency.
-;;    Each (spin …) is its own CPS scope — the await inside the
-;;    closure is lexical *within* that inner spin.
-(require '[org.replikativ.spindel.spin.combinators :refer [parallel]])
+;; Sequential work in the enclosing execution scope.
 (spin
-  (let [child-spins (map (fn [x] (spin (await (fetch x)))) items)]
-    (await (apply parallel child-spins))))
+  (doseq [x items :when (eligible? x)]
+    (await (fetch x))))
+
+;; Callback owns its effects; parallel explicitly consumes the spins.
+(defn fetch-item [x] (spin (await (fetch x))))
+(spin (await (apply parallel (mapv fetch-item items))))
+
+;; Invalid: an ordinary callback cannot suspend its caller.
+(spin (mapv (fn [x] (await (fetch x))) items))
 ```
 
-The rewrite is sequential, like `loop`/`recur`. For concurrency, nest a
-`(spin …)` per item as above; for streaming, use the async-sequence
-primitives in `spindel.seq.{core,combinators}`. The rewrite lives in
-`spin/cps.cljc` (`rewrite-hofs`); extend it there rather than adding
-`map-spins`-style helpers.
+`parallel` is in `org.replikativ.spindel.spin.combinators`. It requires at
+least one child; handle an empty input collection separately. It specifies
+concurrency, ordering and cancellation independently of core collection syntax.
+Use `org.replikativ.spindel.seq.core/for` for explicit asynchronous lazy
+comprehensions, consumed with `anext` or async-sequence combinators. Those
+combinators await their source; their ordinary reducer callbacks do not gain
+implicit suspension. Incremental `imap`/`ifor-each` retain their existing
+contracts and do not inline callback effects. Do not add a collection rewrite
+walker to bypass these scope boundaries.
 
 ### Rule 3 — Runtime access via protocols only; never the `:state` field
 

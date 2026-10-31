@@ -215,10 +215,14 @@
    and counts its body runs per item in `runs`."
   [s runs]
   (spin (let [{st :new} (track s)]
-          (mapv (fn [i] (await (spin (let [{v :new} (track s)]
-                                       (swap! runs update i (fnil inc 0))
-                                       [i (:x v)]))))
-                (:items st)))))
+          (loop [items (seq (:items st)) results []]
+            (if items
+              (let [i (first items)
+                    value (await (spin (let [{v :new} (track s)]
+                                         (swap! runs update i (fnil inc 0))
+                                         [i (:x v)])))]
+                (recur (next items) (conj results value)))
+              results)))))
 
 (defn- removed-child-scenario
   "Mount the list [0 1 2], then apply `change` (which drops item 2).
@@ -441,9 +445,13 @@
         (let [[items par] (binding [ec/*execution-context* p]
                             (let [items (sig/signal [0 1 2])
                                   par (spin (let [{xs :new} (track items)]
-                                              (mapv (fn [i] (await (spin (let [{v :new} (track items)]
-                                                                           [i (count v)]))))
-                                                    xs)))]
+                                              (loop [remaining (seq xs) results []]
+                                                (if remaining
+                                                  (let [i (first remaining)
+                                                        value (await (spin (let [{v :new} (track items)]
+                                                                             [i (count v)])))]
+                                                    (recur (next remaining) (conj results value)))
+                                                  results))))]
                               @par
                               (simple/await-drain-complete! p)
                               [items par]))
