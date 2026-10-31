@@ -1259,52 +1259,64 @@
       (when (< #?(:clj (.size ^java.util.ArrayDeque pool) :cljs (.-length pool)) 32)
         (push! pool run)))))
 
+(defn- retire-body! [rt run cancellation chain]
+  (let [node (a run r-node)
+        _ (retain-cleanup! rt run cancellation)
+        physical? (or (a run r-physical) (a run r-exit) (pos? (long (or (a run r-timers) 0))))
+        anchor (when physical? (or chain (run-anchor rt run)))]
+    (each-copy! [scope (or (scope-children rt run) empty-members)] (close-owner! rt scope))
+    (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
+    (each-copy! [child (a run r-childruns)] (cancel! rt child))
+    (release-owned! rt run)
+    (each! [owner (a run r-backlinks)] (remove! (a owner r-spawned) run))
+    (each! [child (a run r-spawned)] (remove! (a child r-backlinks) run))
+    (each! [node (a run r-created)]
+           (remove! (a node n-created-by) run)
+           (when (identical? run (a node n-creator))
+       ;; A surviving cache keeps the logical creator ID, not the old run's
+       ;; mutable ownership graph.
+             (if physical? (creator! rt node nil)
+                 (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
+    (when-let [owner (a run r-owner)]
+      (when-not (root-owner? owner)
+        (let [parent (owner-node owner)]
+          (when (and parent (not (identical? parent (owner-node (a node n-owner))))
+                     (not (any! (values (a node n-runs))
+                                #(and (not (identical? run %)) (not= :unwinding (a % r-status))
+                                      (identical? parent (owner-node (a % r-owner)))))))
+            (mark-graph! rt node))
+          (remove! (a (owner-storage owner) r-childruns) run)
+          (when parent (mark! rt parent)))))
+    (if physical?
+      (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
+          (put run r-anchor anchor)
+          (add! (a (runtime-field rt :counters) 8) (a run r-node))
+          (each! [successor (values (a (a run r-node) n-runs))]
+                 (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
+          (clear-members! (a run r-ancestors))
+          (clear-members! (a run r-created))
+          (clear-members! (a run r-spawned))
+          (clear-members! (a run r-backlinks))
+          (put run r-cancel-cont nil))
+      (forget-run! rt run))
+    (mark! rt (a run r-node))))
+
 (defn- retire!
   ([rt run] (retire! rt run nil))
   ([rt run cancellation]
+   ;; Test the existing frame before inspecting sets that its cascade may have
+   ;; emptied. A leaf has no synchronous recursive owner-retirement edge.
+   ;; Retention/registration cleanup only queue work; new synchronous teardown
+   ;; or ownership paths must revisit this predicate.
    (when (and (not (contains? *retiring-owners* run))
               (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
-     (binding [*retiring-owners* (assoc *retiring-owners* run (run-anchor rt run))]
-       (let [node (a run r-node)
-             _ (retain-cleanup! rt run cancellation)
-             physical? (or (a run r-physical) (a run r-exit) (pos? (long (or (a run r-timers) 0))))
-             anchor (when physical? (get *retiring-owners* run))]
-         (each-copy! [scope (or (scope-children rt run) empty-members)] (close-owner! rt scope))
-         (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
-         (each-copy! [child (a run r-childruns)] (cancel! rt child))
-         (release-owned! rt run)
-         (each! [owner (a run r-backlinks)] (remove! (a owner r-spawned) run))
-         (each! [child (a run r-spawned)] (remove! (a child r-backlinks) run))
-         (each! [node (a run r-created)]
-                (remove! (a node n-created-by) run)
-                (when (identical? run (a node n-creator))
-            ;; A surviving cache keeps the logical creator ID, not the old run's
-            ;; mutable ownership graph.
-                  (if physical? (creator! rt node nil)
-                      (put node n-creator [(a (a run r-node) n-id) (a run r-gen)]))))
-         (when-let [owner (a run r-owner)]
-           (when-not (root-owner? owner)
-             (let [parent (owner-node owner)]
-               (when (and parent (not (identical? parent (owner-node (a node n-owner))))
-                          (not (any! (values (a node n-runs))
-                                     #(and (not (identical? run %)) (not= :unwinding (a % r-status))
-                                           (identical? parent (owner-node (a % r-owner)))))))
-                 (mark-graph! rt node))
-               (remove! (a (owner-storage owner) r-childruns) run)
-               (when parent (mark! rt parent)))))
-         (if physical?
-           (do (put run r-status :unwinding) (put run r-owner nil) (put run r-pred nil)
-               (put run r-anchor anchor)
-               (add! (a (runtime-field rt :counters) 8) (a run r-node))
-               (each! [successor (values (a (a run r-node) n-runs))]
-                      (when (= (a run r-gen) (a successor r-pred)) (put successor r-pred nil)))
-               (clear-members! (a run r-ancestors))
-               (clear-members! (a run r-created))
-               (clear-members! (a run r-spawned))
-               (clear-members! (a run r-backlinks))
-               (put run r-cancel-cont nil))
-           (forget-run! rt run))
-         (mark! rt (a run r-node)))))))
+     (let [scopes (scope-children rt run)]
+       (if (and (zero? (count! (a run r-owned)))
+                (zero? (count! (a run r-childruns)))
+                (or (nil? scopes) (zero? (count! scopes))))
+         (retire-body! rt run cancellation nil)
+         (binding [*retiring-owners* (assoc *retiring-owners* run (run-anchor rt run))]
+           (retire-body! rt run cancellation (get *retiring-owners* run))))))))
 
 (defn- cancel! [rt run]
   (when (and (not (contains? *retiring-owners* run))
