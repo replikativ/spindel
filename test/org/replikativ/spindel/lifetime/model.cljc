@@ -9,6 +9,7 @@
 
 (def terminal #{:merged :discarded :transferred :partitioned})
 (def ^:dynamic *release-cancellation* nil)
+(def ^:dynamic ^:private *releasing-worlds* #{})
 
 (def standing #{:track :await-reactive :callback})
 (def work-status #{:running :parked})
@@ -522,7 +523,7 @@
           :else s)
     (and (control-key event)
          (some #(= (control-key event) (control-key %)) (pending-events s w)))
-    (if (:value event)
+    (if (contains? event :value)
       (-> s (update-in [:worlds w :queue]
                        #(mapv (fn [queued] (if (= (control-key event) (control-key queued))
                                              (merge queued event) queued)) %))
@@ -1905,15 +1906,29 @@
                 s (reduce #(t11-cancel %1 {:w w :r %2 :anchor (into [%2] chain)}) s (sort-by pr-str children))
                 s (if current?
                     (reduce
-                     (fn [s [v o ob]]
-                       (if (not= v w)
-                         (cancel-foreign-debtor s w v o cancellation)
+                     (fn [s [v o ob packet]]
+                       (cond
+                         ;; H0 already joined the entity; H1 must not outlive
+                         ;; its current Run's cancellation. T34 retains its
+                         ;; existing queued-request release phase instead.
+                         packet
+                         (let [packet (pending-host-registration s w o)]
+                           (-> s (withdraw-host-registration w packet)
+                               (deliver-host w o ob {:event :host-delivery :world w :o o
+                                                     :value (if cancellation (:value cancellation) ::cancelled)})))
+                         (not= v w) (cancel-foreign-debtor s w v o cancellation)
+                         :else
                          (let [s (if (= :run (first (:creditor ob)))
                                    (t06-resume s {:w v :o o :value (if cancellation (:value cancellation) ::cancelled)}) s)]
                            (end-obligation s v o :cancel-delivered cancellation))))
-                     s (cond->> (for [[v world] (:worlds s) [o ob] (:obligations world)
-                                      :when (and (= [:entity w e] (:debtor ob))
-                                                 (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob])
+                     s (cond->> (concat
+                                 (when-not (contains? *releasing-worlds* w)
+                                   (for [packet (pending-events s w)
+                                         :when (and (:register-host packet) (= e (:e packet)))]
+                                     [w (:register-host packet) (:ob packet) packet]))
+                                 (for [[v world] (:worlds s) [o ob] (:obligations world)
+                                       :when (and (= [:entity w e] (:debtor ob))
+                                                  (or (= w v) (known-foreign-obligation? s w v o ob)))] [v o ob]))
                          cancellation (sort-by #(second (second %))))) s)
                 s (if (and current? (= :stale (:status (run s w (:pred rr)))))
                     (t10-supersede s {:w w :r (:pred rr)}) s)
@@ -2594,132 +2609,168 @@
 (defn t34-release-world
   "T34 local teardown and publication of a lineage-only tombstone."
   [s {:keys [w]}]
-  (let [world (wr s w) caps (caps-of s w)]
-    (if (or (nil? world) (= :released (:status world))) s
-        (do
-          (require! (not-any? #(#{:settling :incomplete} (:disposition (val %))) caps)
-                    ::settlement-open {:w w})
-          (require! (or (nil? (get-in world [:lineage :parent]))
-                        (every? #(terminal (:disposition (val %))) caps)) ::capability-open {:w w})
-          (let [s (cleanup/retain-subtree s w (:root world)
-                                          (into {} (for [[r _] (:runs world)] [r (owner-chain s w r)])))
-                s (if *release-cancellation*
-                    (update-in s [:env :native]
-                               #(into {} (for [[id row] %]
-                                           [id (if (and (= w (first (:owner row))) (cleanup/exit? row)
-                                                        (not (contains? row :cancel-value)))
-                                                 (assoc row :cancel-value (:value *release-cancellation*)) row)]))) s)
-                s (reduce (fn [s [c cut]]
-                            (if (and (active-cuts (:phase cut))
-                                     (contains? (get-in cut [:participants :worlds]) w))
-                              (t25-cut-fail s {:c c}) s)) s (:cuts s))
+  (binding [*releasing-worlds* (conj *releasing-worlds* w)]
+    (let [world (wr s w) caps (caps-of s w)]
+      (if (or (nil? world) (= :released (:status world))) s
+          (do
+            (require! (not-any? #(#{:settling :incomplete} (:disposition (val %))) caps)
+                      ::settlement-open {:w w})
+            (require! (or (nil? (get-in world [:lineage :parent]))
+                          (every? #(terminal (:disposition (val %))) caps)) ::capability-open {:w w})
+            (let [s (cleanup/retain-subtree s w (:root world)
+                                            (into {} (for [[r _] (:runs world)] [r (owner-chain s w r)])))
+                  s (if *release-cancellation*
+                      (update-in s [:env :native]
+                                 #(into {} (for [[id row] %]
+                                             [id (if (and (= w (first (:owner row))) (cleanup/exit? row)
+                                                          (not (contains? row :cancel-value)))
+                                                   (assoc row :cancel-value (:value *release-cancellation*)) row)]))) s)
+                  s (reduce (fn [s [c cut]]
+                              (if (and (active-cuts (:phase cut))
+                                       (contains? (get-in cut [:participants :worlds]) w))
+                                (t25-cut-fail s {:c c}) s)) s (:cuts s))
               ;; Release host creditors before the cascade can cancel them.
-                s (reduce (fn [s [o ob]]
-                            (if (= :host (first (:creditor ob)))
-                              (let [[_ dw e] (:debtor ob)]
-                                (if (cleanup/mailbox-control s dw e e)
-                                  (-> (queue-mailbox-rejection s dw e o
-                                                               (if *release-cancellation* (:value *release-cancellation*)
-                                                                   :org.replikativ.spindel.engine.protocols/released))
-                                      (end-obligation w o :creditor-cancelled))
-                                  (-> s (end-obligation w o :creditor-cancelled)
-                                      (deliver-host w o ob {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))) s))
-                          s (:obligations world))
+                  s (reduce (fn [s [o ob]]
+                              (if (= :host (first (:creditor ob)))
+                                (let [[_ dw e] (:debtor ob)]
+                                  (if (cleanup/mailbox-control s dw e e)
+                                    (-> (queue-mailbox-rejection s dw e o
+                                                                 (if *release-cancellation* (:value *release-cancellation*)
+                                                                     :org.replikativ.spindel.engine.protocols/released))
+                                        (end-obligation w o :creditor-cancelled))
+                                    (-> s (end-obligation w o :creditor-cancelled)
+                                        (deliver-host w o ob {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))) s))
+                            s (:obligations world))
               ;; Drop dormant copies without rejecting into any other copy.
-                s (reduce (fn [s [r rr]]
-                            (if (= :inherited (:status rr))
-                              (-> s (end-run-links w r :cancelled)
-                                  (update-in [:worlds w :runs] dissoc r)) s))
-                          s (:runs world))
-                s (close-owned s w (:root world))
-                s (reduce (fn [s [v o]] (enqueue s v {:cancelled o}))
-                          s (for [[v vw] (:worlds s) :when (not= w v)
-                                  [o ob] (:obligations vw)
-                                  :when (and (= [:entity w] (subvec (:debtor ob) 0 2))
-                                             (known-foreign-obligation? s w v o ob))] [v o]))
-                s (reduce (fn [s [o ob]]
-                            (cond-> (end-obligation s w o :creditor-cancelled)
-                              (= :host (first (:creditor ob)))
-                              (deliver-host w o ob {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))
-                          s (:obligations (wr s w)))
-                s (reduce (fn [s ev]
-                            (cond (:start-for ev) (enqueue s (:creditor-world ev) {:cancelled (:o ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
-                                  (:register-host ev) (deliver-host s w (:register-host ev) (:ob ev)
-                                                                    {:event :host-delivery :world w
-                                                                     :o (:register-host ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
-                                  :else s)) s (:queue (wr s w)))
-                parent (get-in world [:lineage :parent])
-                s (if (and parent (ent s parent [:fork w]))
-                    (enqueue s parent {:fork-released w}) s)
+                  s (reduce (fn [s [r rr]]
+                              (if (= :inherited (:status rr))
+                                (-> s (end-run-links w r :cancelled)
+                                    (update-in [:worlds w :runs] dissoc r)) s))
+                            s (:runs world))
+                  s (close-owned s w (:root world))
+                  s (reduce (fn [s [v o]] (enqueue s v {:cancelled o}))
+                            s (for [[v vw] (:worlds s) :when (not= w v)
+                                    [o ob] (:obligations vw)
+                                    :when (and (= [:entity w] (subvec (:debtor ob) 0 2))
+                                               (known-foreign-obligation? s w v o ob))] [v o]))
+                  s (reduce (fn [s [o ob]]
+                              (cond-> (end-obligation s w o :creditor-cancelled)
+                                (= :host (first (:creditor ob)))
+                                (deliver-host w o ob {:event :host-delivery :world w :o o :value (if *release-cancellation* (:value *release-cancellation*) ::released)})))
+                            s (:obligations (wr s w)))
+                  s (reduce (fn [s ev]
+                              (cond (:start-for ev) (enqueue s (:creditor-world ev) {:cancelled (:o ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
+                                    (:register-host ev) (deliver-host s w (:register-host ev) (:ob ev)
+                                                                      {:event :host-delivery :world w
+                                                                       :o (:register-host ev) :value (if *release-cancellation* (:value *release-cancellation*) ::released)})
+                                    :else s)) s (:queue (wr s w)))
+                  parent (get-in world [:lineage :parent])
+                  s (if (and parent (ent s parent [:fork w]))
+                      (enqueue s parent {:fork-released w}) s)
                 ;; The world becomes a value-only tombstone. Physical
                 ;; participants retain just the ancestry needed for joins.
-                s (update-in s [:env :threads]
-                             #(into {} (for [[th thread] %]
-                                         [th (cond-> thread
-                                               (and (= w (:world thread)) (:run thread))
-                                               (assoc :anchor (owner-chain s w (:run thread))))])))
-                s (update-in s [:env :native]
-                             #(into {} (for [[n native] %]
-                                         [n (cond-> native
+                  s (update-in s [:env :threads]
+                               #(into {} (for [[th thread] %]
+                                           [th (cond-> thread
+                                                 (and (= w (:world thread)) (:run thread))
+                                                 (assoc :anchor (owner-chain s w (:run thread))))])))
+                  s (update-in s [:env :native]
+                               #(into {} (for [[n native] %]
+                                           [n (cond-> native
                                               ;; Raw receipts froze their ancestry at first
                                               ;; physical claim (or queued rejection). Their
                                               ;; ordinary owner row may already be gone.
-                                              (and (= w (first (:owner native))) (not= :joined (:state native))
-                                                   (not (cleanup/mailbox-callback? native)))
-                                              (assoc :anchor (owner-chain s w (second (:owner native))))
-                                              (and (= w (first (:owner native))) (cleanup/mailbox-callback? native))
-                                              (assoc :retired? true))])))]
-            (-> s
+                                                (and (= w (first (:owner native))) (not= :joined (:state native))
+                                                     (not (cleanup/mailbox-callback? native)))
+                                                (assoc :anchor (owner-chain s w (second (:owner native))))
+                                                (and (= w (first (:owner native))) (cleanup/mailbox-callback? native))
+                                                (assoc :retired? true))])))]
+              (-> s
                 ;; Run creation and enqueue share an order. Preserve its high
                 ;; water mark before the value-only tombstone drops :seq.
-                (assoc-in [:clocks w] (max (:seq (wr s w) 0) (get-in s [:clocks w] 0)))
-                (assoc-in [:worlds w] (assoc (select-keys world [:id :lineage]) :status :released))
-                (update :registry disj w)
-                (update-in [:env :outside]
-                           (fn [outside]
-                             (let [attempt? #(and (= w (:w %)) (or (:deferred-assignment (:event %)) (:mailbox-post (:event %))))
-                                   held (into (vec (remove #(and (= w (:w %)) (not (attempt? %))) outside))
-                                              (for [event (:queue (wr s w)) :when (or (:deferred-assignment event) (:mailbox-post event))]
-                                                {:w w :event event}))
-                                   ordered (sort-by #(get-in % [:event :seq]) (filter attempt? held))]
+                  (assoc-in [:clocks w] (max (:seq (wr s w) 0) (get-in s [:clocks w] 0)))
+                  (assoc-in [:worlds w] (assoc (select-keys world [:id :lineage]) :status :released))
+                  (update :registry disj w)
+                  (update-in [:env :outside]
+                             (fn [outside]
+                               (let [attempt? #(and (= w (:w %)) (or (:deferred-assignment (:event %)) (:mailbox-post (:event %))))
+                                     held (into (vec (remove #(and (= w (:w %)) (not (attempt? %))) outside))
+                                                (for [event (:queue (wr s w)) :when (or (:deferred-assignment event) (:mailbox-post event))]
+                                                  {:w w :event event}))
+                                     ordered (sort-by #(get-in % [:event :seq]) (filter attempt? held))]
                                ;; Replace only this world's attempt slots. Other
                                ;; worlds retain their relative positions/order.
-                               (loop [remaining held attempts ordered result []]
-                                 (if-let [next (first remaining)]
-                                   (if (attempt? next)
-                                     (recur (rest remaining) (rest attempts) (conj result (first attempts)))
-                                     (recur (rest remaining) attempts (conj result next)))
-                                   result)))))))))))
+                                 (loop [remaining held attempts ordered result []]
+                                   (if-let [next (first remaining)]
+                                     (if (attempt? next)
+                                       (recur (rest remaining) (rest attempts) (conj result (first attempts)))
+                                       (recur (rest remaining) attempts (conj result next)))
+                                     result))))))))))))
 
 (defn- release-logical-profile? [s root required]
   (let [same-family? #(= root (get-in s [:lineages % :root]))
+        computation? (fn [world e] (or (nil? (ent s world e)) (= :spin (:kind (ent s world e)))))
+        pending-computation? (fn [world o ob]
+                               (let [[_ source e] (:debtor ob)]
+                                 (and (#{:await-once :await-reactive} (:kind ob)) (computation? source e)
+                                      (some #(and (= e (:start-for %)) (= world (:creditor-world %)) (= o (:o %)))
+                                            (pending-events s source)))))
+        control-endpoints (fn [event]
+                            (cond (:start-for event) [(:creditor-world event)]
+                                  (:register-host event) [(:caller-world event)]
+                                  :else []))
+        supported-control? (fn [world event]
+                             (cond
+                               (:start-for event)
+                               (and (same-family? world) (same-family? (:creditor-world event))
+                                    (wr s (:creditor-world event))
+                                    (computation? world (:start-for event)))
+                               (:register-host event)
+                               (let [ob (:ob event)]
+                                 (and (same-family? world) (same-family? (:caller-world event))
+                                      (wr s (:caller-world event))
+                                      (= [:entity world (:e event)] (:debtor ob))
+                                      (= :host (first (:creditor ob))) (#{:deref :callback} (:kind ob))
+                                      (= (:caller-world event) (get-in ob [:filter :origin]))
+                                      (#{:local :causal-follow} (get-in ob [:filter :mode]))
+                                      (= :spin (:kind (ent s world (:e event))))))
+                               :else true))
         logical? (fn [world o ob]
-                   (let [[kind dw e] (:debtor ob)]
+                   (let [[kind dw e] (:debtor ob) er (ent s dw e)]
                      (or (not= :entity kind) (= world dw)
                          (and (= [:run world] (subvec (vec (:creditor ob)) 0 2))
                               (#{:track :await-once :await-reactive} (:kind ob))
                               (same-family? world) (same-family? dw)
-                              (or (#{:signal :atom :spin} (:kind (ent s dw e)))
-                                  (and (= :released (:status (wr s dw)))
-                                       (cancelling? s world o ob)))))))
+                              (or (#{:signal :atom :spin} (:kind er))
+                                  ;; An exact committed cancellation permits terminal
+                                  ;; control only; no former entity kind is inferred.
+                                  (and (nil? er) (or (pending-computation? world o ob)
+                                                     (cancelling? s world o ob))))))))
         involved? (fn [world ob] (or (contains? required world)
                                      (and (= :entity (first (:debtor ob)))
                                           (contains? required (second (:debtor ob))))))
         relevant (for [[world row] (:worlds s) [o ob] (:obligations row)
                        :when (involved? world ob)] [world o ob])
-        endpoint-worlds (into required (mapcat (fn [[world _ ob]]
-                                                 (cons world (when (= :entity (first (:debtor ob)))
-                                                               [(second (:debtor ob))]))) relevant))]
+        endpoints (into required (mapcat (fn [[world _ ob]]
+                                           (cons world (when (= :entity (first (:debtor ob)))
+                                                         [(second (:debtor ob))]))) relevant))
+        endpoint-worlds (loop [pending (vec endpoints) seen #{}]
+                          (if-let [world (peek pending)]
+                            (if (contains? seen world) (recur (pop pending) seen)
+                                (recur (into (pop pending) (mapcat control-endpoints (pending-events s world)))
+                                       (conj seen world))) seen))]
     (and
      (every? (fn [[world o ob]]
                (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))
                     (logical? world o ob))) relevant)
      (not-any? #(and (active-cuts (:phase %))
                      (seq (set/intersection endpoint-worlds (get-in % [:participants :worlds])))) (vals (:cuts s)))
-     ;; Controls at an involved foreign endpoint are still outside this
-     ;; bounded profile, even when that endpoint is outside cap/debt closure.
-     (not-any? #(some % [:start-for :register-host])
-               (mapcat (fn [world] (pending-events s world)) endpoint-worlds))
+     ;; This increment routes only actual source FIFO controls at T34.
+     ;; Cut-held outside starts/HOSTs keep their previous unsupported bound.
+     (not-any? #(and (contains? endpoint-worlds (:w %))
+                     (some (:event %) [:start-for :register-host]))
+               (get-in s [:env :outside]))
+     (every? (fn [world] (every? #(supported-control? world %) (pending-events s world))) endpoint-worlds)
      (every? (fn [world]
                (let [row (wr s world)
                      supported-entity? #(#{:signal :atom :spin} (:kind (ent s world %)))
@@ -2730,12 +2781,11 @@
                  (and (every? dependency? (:fdeps row))
                       (every? dependency? (:releasing row))
                       (every? (fn [event]
-                                (and (not (some event [:start-for :register-host]))
-                                     (or (nil? (:join-bundle event))
-                                         (and (same-family? (:join-bundle event))
-                                              (every? #(and (same-family? (:source-world %))
-                                                            (supported-entity? (:debtor %)))
-                                                      (vals (:members event)))))))
+                                (or (nil? (:join-bundle event))
+                                    (and (same-family? (:join-bundle event))
+                                         (every? #(and (same-family? (:source-world %))
+                                                       (supported-entity? (:debtor %)))
+                                                 (vals (:members event))))))
                               (pending-events s world))))) required))))
 
 (defn- local-release-profile! [s w]
