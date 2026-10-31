@@ -1,7 +1,6 @@
 (ns org.replikativ.spindel.lifetime.pending-host-cancellation-test
   (:require #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])
-            [clojure.walk :as walk]
             [org.replikativ.spindel.lifetime.model :as m]
             [org.replikativ.spindel.lifetime.invariants :as inv]
             [org.replikativ.spindel.lifetime.host-origin-model-test :as h]
@@ -10,13 +9,17 @@
 
 (def a h/a)
 (def b h/b)
-(defn- view [s]
-  (walk/postwalk
-   (fn [x]
-     (if (and (keyword? x) (#{"cancelled" "released"} (name x))
-              (#{"org.replikativ.spindel.engine.kernel" "org.replikativ.spindel.lifetime.model"} (namespace x)))
-       (keyword "error" (name x)) x))
-   (dissoc s :uses)))
+(defn- view [s action]
+  ;; Only raw T11's generated HOST cancellation enum differs by namespace.
+  ;; Application values (including public cancellation reasons) stay exact.
+  (cond-> (dissoc s :uses)
+    (= :t11 (:t action))
+    (update :events
+            (fn [events]
+              (mapv (fn [event]
+                      (if (and (= :host-delivery (:event event))
+                               (#{::m/cancelled ::kernel/cancelled} (:value event)))
+                        (assoc event :value ::m/cancelled) event)) events)))))
 
 (defn- trace! [initial actions]
   (let [engines (mapv #(kernel/restore initial {:cells? %}) [false true])]
@@ -35,7 +38,7 @@
                (is false (str "Unexpected kernel failure for " (pr-str action) ": " error))
                (throw error)))
            (let [actual (kernel/snapshot engine)]
-             (is (= (view after) (view actual)) (pr-str action))
+             (is (= (view after action) (view actual action)) (pr-str action))
              (is (empty? (inv/check actual)))
              (is (empty? (inv/edge-check {:before before :action action :after actual})))))
          (conj states after))) [initial] actions)))
@@ -96,7 +99,8 @@
       (is (not (contains? (:host-delivered (peek states)) [a o]))))))
 
 (deftest explicit-cancellation-retains-its-custom-reason
-  (doseq [reason [:custom-reason nil false]]
+  (doseq [reason [:custom-reason nil false ::m/cancelled ::kernel/cancelled
+                  {:nested [::m/cancelled ::kernel/cancelled ::m/released ::kernel/released]}]]
     (let [before (peek (trace! (m/init-state)
                                [{:t :t01 :w a :e :worker :tok :worker-handle}
                                 {:t :t04 :w a :e :worker :tok :worker-handle :mode :callback}
@@ -112,7 +116,8 @@
     (let [before (peek (trace! (m/init-state)
                                (concat [(first cached/reactive-prefix) (h/fork a b)]
                                        (rest cached/reactive-prefix)
-                                       [{:t :t04 :w b :e :worker :mode :callback :filter {:mode :causal-follow}}])))
+                                       [{:t :t04 :w b :e :worker :mode :callback :filter {:mode :causal-follow}}
+                                        {:t :unsubscribe :w a :o [:o 0]}])))
           o (:register-host (packet before))
           actions (if h1-first? [{:t :queued :w a} {:t :t11 :w a :r [:worker 1]}]
                       [{:t :t11 :w a :r [:worker 1]}])
@@ -125,7 +130,7 @@
              (first events)))
       (is (contains? (:host-delivered (peek states)) [a o])))))
 
-(deftest stale-predecessor-cancellation-keeps-the-committed-join
+(deftest completed-predecessor-cancellation-keeps-the-committed-join
   (let [before (peek (trace! (m/init-state)
                              (concat [(first cached/reactive-prefix) (h/fork a b)]
                                      (rest cached/reactive-prefix)
@@ -135,11 +140,24 @@
         target (packet before) o (:register-host target)
         states (trace! before [{:t :t11 :w a :r [:worker 1]} {:t :queued :w a}])
         retired (second states) installed (peek states)]
-    (is (= :stale (:status (m/run before a [:worker 1]))))
+    (is (= :completed (:status (m/run before a [:worker 1]))))
     (is (= target (packet retired)))
     (is (empty? (outcomes states o)))
     (is (= (:ob target) (get-in installed [:worlds a :obligations o])))
     (is (= (m/current before a :worker) (m/current installed a :worker)))))
+
+(deftest stale-predecessor-cancellation-keeps-the-committed-join
+  (let [pending (running-basis :callback)
+        before (peek (trace! pending [{:t :t09 :w a :e :worker :cause :dirty}]))
+        target (packet before) o (:register-host target)
+        states (trace! before [{:t :t11 :w a :r [:worker 1]} {:t :queued :w a}])
+        retired (second states) installed (peek states)]
+    (is (= :stale (:status (m/run before a [:worker 1]))))
+    (is (= [:worker 2] (m/current before a :worker)))
+    (is (= target (packet retired)))
+    (is (empty? (outcomes states o)))
+    (is (= (:ob target) (get-in installed [:worlds a :obligations o])))
+    (is (= [:worker 2] (m/current installed a :worker)))))
 
 (deftest t34-keeps-pending-host-release-in-its-original-queue-phase
   ;; The release-profile patch supplies kernel T34 ingress support separately.
