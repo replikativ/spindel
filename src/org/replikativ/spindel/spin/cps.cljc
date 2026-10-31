@@ -97,186 +97,13 @@
                                           assoc :is.simm.partial-cps.ioc/eager-arguments true)
                            var-sym (symbol (str *ns*) (name vname))]
                        [sym var-sym]))]
-       (merge async/breakpoints
-              (into {} entries)))))
-
-#?(:clj
-   (do
-     (def ^:private hof-names
-       #{"map" "mapv" "filter" "filterv" "remove" "keep" "reduce" "run!" "doseq" "for"})
-
-     (defn- core-name
-       "The clojure.core / cljs.core function name `sym` resolves to, or nil —
-       also when a binding inside the spin body shadows it."
-       [ctx sym]
-       (when (and (symbol? sym) (not (contains? (:locals ctx) sym)))
-         (let [v (ioc/var-name (:env ctx) sym)]
-           (when (and v (#{"clojure.core" "cljs.core"} (namespace v)))
-             (name v)))))
-
-     (defn- form-name
-       "The name of the special form or clojure.core / cljs.core macro or
-       function `op` stands for, or nil."
-       [ctx op]
-       (if (and (symbol? op) (special-symbol? op)) (name op) (core-name ctx op)))
-
-     (defn- bound-names
-       "The local names a binding form (a symbol or destructuring pattern) binds."
-       [binding]
-       (set (take-nth 2 (destructure [binding nil]))))
-
-     (defn- occurs? [sym body]
-       (some #{sym} (tree-seq coll? seq body)))
-
-     (defn- fn-literal
-       "[params body] of a single-arity fn literal, else nil — also for a
-       variadic one and for a named one that refers to itself."
-       [form]
-       (when (and (seq? form) (#{'fn 'fn*} (first form)))
-         (let [[_ & more] form
-               self (when (symbol? (first more)) (first more))
-               more (if self (rest more) more)]
-           (when (and (vector? (first more))
-                      (not (some #{'&} (first more)))
-                      (not (and self (occurs? self (rest more)))))
-             [(first more) (rest more)]))))
-
-     (defn- effectful? [ctx body]
-       (ioc/has-breakpoints? (cons 'do body) ctx))
-
-     (declare rewrite-hofs)
-
-     (defn- inline-call
-       "A fn literal's body applied in place, `bindings` [param arg …] binding
-       its params: a loop when the body recurs, so the recur still targets it."
-       [bindings body]
-       (if (occurs? 'recur body)
-         `(loop ~bindings ~@body)
-         `(let ~bindings ~@body)))
-
-     (defn- seq-loop
-       "A loop over `coll` from `init`: `step` gets [element-sym out-sym] and
-       returns the next out, evaluated before the walk advances. With
-       `reduced?`, a reduced out ends the loop with its value."
-       ([coll init step] (seq-loop coll init step false))
-       ([coll init step reduced?]
-        (let [s (gensym "s") out (gensym "out") x (gensym "x") v (gensym "v")]
-          `(loop [~out ~init ~s (seq ~coll)]
-             (if ~s
-               (let [~x (first ~s)
-                     ~v ~(step x out)]
-                 ~(if reduced?
-                    `(if (reduced? ~v) (deref ~v) (recur ~v (next ~s)))
-                    `(recur ~v (next ~s))))
-               ~out)))))
-
-     (defn- with-locals [ctx bindings]
-       (update ctx :locals (fnil into #{}) (mapcat bound-names bindings)))
-
-     (defn- rewrite-hof
-       "The loop for a higher-order call whose fn literal performs effects, or
-       nil when the call is not one of those."
-       [form ctx]
-       (let [[op & args] form
-             hof (core-name ctx op)]
-         (when (hof-names hof)
-           (case hof
-             ("doseq" "for")
-             (let [[bindings & body] args]
-               (when (and (vector? bindings) (= 2 (count bindings)) (effectful? ctx body))
-                 (let [[params coll] bindings
-                       body (map #(rewrite-hofs % (with-locals ctx [params])) body)
-                       coll (rewrite-hofs coll ctx)]
-                   (if (= hof "for")
-                     (seq-loop coll [] (fn [x out] `(conj ~out (let [~params ~x] ~@body))))
-                     (seq-loop coll nil (fn [x _] `(let [~params ~x] ~@body nil)))))))
-
-             "reduce"
-             (let [[f init coll] args
-                   [params body] (fn-literal f)]
-               (when (and params (= 3 (count args)) (= 2 (count params)) (effectful? ctx body))
-                 (let [[acc-p x-p] params
-                       body (map #(rewrite-hofs % (with-locals ctx params)) body)]
-                   (seq-loop (rewrite-hofs coll ctx) (rewrite-hofs init ctx)
-                             (fn [x out] (inline-call [acc-p out x-p x] body))
-                             true))))
-
-             ;; map mapv filter filterv remove keep run!
-             (let [[f coll & more] args
-                   [params body] (fn-literal f)]
-               (when (and params (empty? more) (= 1 (count params)) (effectful? ctx body))
-                 (let [body (map #(rewrite-hofs % (with-locals ctx params)) body)
-                       coll (rewrite-hofs coll ctx)
-                       [p] params
-                       call (fn [x] (inline-call [p x] body))]
-                   (case hof
-                     ("map" "mapv") (seq-loop coll [] (fn [x out] `(conj ~out ~(call x))))
-                     ("filter" "filterv") (seq-loop coll [] (fn [x out] `(if ~(call x) (conj ~out ~x) ~out)))
-                     "remove" (seq-loop coll [] (fn [x out] `(if ~(call x) ~out (conj ~out ~x))))
-                     "keep" (seq-loop coll [] (fn [x out] `(let [v# ~(call x)] (if (nil? v#) ~out (conj ~out v#)))))
-                     "run!" (seq-loop coll nil (fn [x _] `(do ~(call x) nil)))))))))))
-
-     (defn- rewrite-bindings
-       "A let-style binding vector with its inits rewritten in order, each in
-       the scope of the names bound before it, and the scope after the last:
-       [bindings ctx]. With `seq?`, a doseq / for binding vector."
-       [bindings ctx seq?]
-       (reduce (fn [[out ctx] [b init]]
-                 (cond
-                   (and seq? (= :let b)) (let [[bs ctx] (rewrite-bindings init ctx false)]
-                                           [(conj out b bs) ctx])
-                   (and seq? (keyword? b)) [(conj out b (rewrite-hofs init ctx)) ctx]
-                   :else [(conj out b (rewrite-hofs init ctx)) (with-locals ctx [b])]))
-               [[] ctx]
-               (partition 2 bindings)))
-
-     (def ^:private let-forms
-       #{"let" "let*" "loop" "loop*" "when-let" "if-let" "when-some" "if-some"
-         "when-first" "with-open" "dotimes"})
-
-     (defn- rewrite-scoped
-       "A binding form rewritten with its locals in scope, or nil when `form` is
-       not one."
-       [form ctx]
-       (let [[op bindings & body] form
-             op-name (form-name ctx op)
-             scoped (fn [bindings ctx]
-                      (apply list op bindings (map #(rewrite-hofs % ctx) body)))]
-         (cond
-           (= 'catch op)
-           (let [[cls local & body] (rest form)]
-             (apply list op cls local (map #(rewrite-hofs % (with-locals ctx [local])) body)))
-
-           (not (vector? bindings)) nil
-
-           (let-forms op-name) (apply scoped (rewrite-bindings bindings ctx false))
-           (#{"doseq" "for"} op-name) (apply scoped (rewrite-bindings bindings ctx true))
-           (= "letfn" op-name) (scoped bindings (with-locals ctx (map first bindings)))
-           (= "letfn*" op-name) (scoped bindings (with-locals ctx (take-nth 2 bindings))))))
-
-     (defn ^:no-doc rewrite-hofs
-       "Rewrite, in a spin body, the higher-order calls (map, mapv, filter,
-       filterv, remove, keep, reduce with an initial value, run!, and doseq
-       and for over one binding) whose fn literal performs an effect (await,
-       track, sample, …) into loops the CPS transformation sees through —
-       eagerly, into vectors, in the order the call evaluates. A call whose
-       function performs none keeps its laziness; a name bound inside the
-       body is not taken for the core function it shadows; nested spins, fns
-       and quoted forms are left alone."
-       [form ctx]
-       (cond
-         (seq? form)
-         (let [op (first form)]
-           (cond
-             (#{'quote 'fn 'fn*} op) form
-             (= "spin" (some-> (ioc/var-name (:env ctx) op) name)) form
-             :else (with-meta (or (rewrite-hof form ctx)
-                                  (rewrite-scoped form ctx)
-                                  (apply list (map #(rewrite-hofs % ctx) form)))
-                     (meta form))))
-         (vector? form) (with-meta (mapv #(rewrite-hofs % ctx) form) (meta form))
-         (map? form) (with-meta (into {} (map (fn [[k v]] [(rewrite-hofs k ctx) (rewrite-hofs v ctx)])) form) (meta form))
-         :else form))))
+       (let [effects (into {} entries)
+             await-handler (get effects 'org.replikativ.spindel.effects.await/await)]
+         ;; cljs >= 1.12 has a core await macro. Its syntax must select the
+         ;; managed effect inside spin, rather than Partial-CPS's generic CPS
+         ;; await, or cancellation and dependency subscriptions are bypassed.
+         (cond-> (merge async/breakpoints effects)
+           await-handler (assoc 'cljs.core/await await-handler))))))
 
 #?(:clj
    (defn ^:no-doc build-cps-fn
@@ -292,11 +119,13 @@
      [body breakpoints env]
      (let [r (gensym "resolve")
            e (gensym "reject")
-           params {:r r :e e :env env :breakpoints breakpoints}
+           params {:r r :e e :env env :breakpoints breakpoints
+                   :opaque-scopes #{'org.replikativ.spindel.spin.cps/spin
+                                    'org.replikativ.spindel.spin.cps/effect}}
            ;; ioc/invert handles macro expansion internally via expand-macro
            ;; Don't use macroexpand-all as it introduces CLJ-specific code for CLJS targets
-           ;; higher-order calls over effectful fn literals become loops
-           expanded (rewrite-hofs (cons 'do body) {:breakpoints breakpoints :env env})
+           ;; doseq uses the host macro directly, including bindings/modifiers.
+           expanded (cons 'do body)
            ;; Detect target platform at macroexpansion time. A reader
            ;; conditional in the syntax-quoted body wouldn't help: the
            ;; macro's source is read once (in CLJ), so #?(:clj … :cljs …)
@@ -337,7 +166,7 @@
            (free-vars/free-variables-or-all env (cons 'do body)))))
 
 #?(:clj
-   (defmacro spin
+   (defmacro ^{:partial-cps/scope true} spin
      "Create a cached, reactive spin that automatically tracks dependencies and re-executes when dependencies change.
 
       TEMPLATE MODEL: Each invocation creates a NEW spin instance.
@@ -382,7 +211,7 @@
               (spin-core/make-spin ~cps-fn spin-id# ~captured))))))
 
    #?(:clj
-      (defmacro effect
+      (defmacro ^{:partial-cps/scope true} effect
         "Create an effect-only spin for reactive side effects without rendering.
 
       Automatically tracks dependencies and re-executes when they change,

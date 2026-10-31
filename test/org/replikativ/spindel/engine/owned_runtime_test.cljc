@@ -1342,13 +1342,16 @@
     (is (= [2 3] @values))
     (verify-boundaries! a) (verify-boundaries! b)))
 
-(deftest compact-rewritten-hof-restores-lexical-bindings
+(deftest compact-loop-restores-lexical-bindings
   (let [rt (c/runtime {:audit? true}) ticket (c/ticket :outside) values (atom [])
         spin (c/cspin rt :spin
-                      (mapv (fn [x]
-                              (binding [*tag* x]
-                                [(c/park ticket) *tag*]))
-                            [:first :second]))]
+                      (loop [items (seq [:first :second]) results []]
+                        (if items
+                          (let [x (first items)
+                                value (binding [*tag* x]
+                                        [(c/park ticket) *tag*])]
+                            (recur (next items) (conj results value)))
+                          results)))]
     (c/observe! rt spin #(swap! values conj %) #(throw %))
     (c/resume-ticket! rt (c/pending-ticket rt ticket) 1)
     (is (= :outside *tag*))

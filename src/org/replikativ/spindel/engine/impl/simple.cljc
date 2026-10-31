@@ -3566,7 +3566,28 @@
                                            state (if displaced
                                                    (detach-continuation
                                                     rt-state spin-id cont-id displaced true)
-                                                   rt-state)]
+                                                   rt-state)
+                                           ;; A later body registration proves the
+                                           ;; active prefix delivery advanced. A fork
+                                           ;; before this transaction must still replay
+                                           ;; an inherited claim over an OLD suffix.
+                                           ;; Saved bodies can advance in descendants,
+                                           ;; so the claim's world need not be current.
+                                           state (if (or (:body-slice? cont')
+                                                         (= :track (:kind cont')))
+                                                   (reduce-kv
+                                                    (fn [state id earlier]
+                                                      (let [claim (resume-claimed-key earlier)]
+                                                        (if (and (not= id cont-id)
+                                                                 (:body-slice? earlier)
+                                                                 (< (:order earlier) order)
+                                                                 claim
+                                                                 (not= (::advanced-claim-id earlier) (:id claim)))
+                                                          (assoc-in state [:await-conts spin-id id ::advanced-claim-id]
+                                                                    (:id claim))
+                                                          state)))
+                                                    state await-conts)
+                                                   state)]
                                        (-> state
                                            (update :engine/retired-conts
                                                    dissoc [spin-id cont-id])
@@ -3662,7 +3683,8 @@
 
 (defn- earliest-affected-await
   "Choose the first invalid prefix of a body slice, in this world's view.
-  An inherited in-flight claim has not delivered its captured suffix here."
+  An inherited claim is consumed only when a later body registration proves
+  that specific delivery advanced before the fork."
   [context rt-state spin-id cont]
   (when (and (:body-slice? cont) (::earlier-await? cont))
     (reduce-kv (fn [first-affected _ earlier]
@@ -3675,7 +3697,9 @@
                             (or (not (await-result-ready? child (:result child)))
                                 (::refresh? earlier)
                                 (and (resume-claimed-key earlier)
-                                     (not (claim-held? context earlier)))
+                                     (not (claim-held? context earlier))
+                                     (not= (::advanced-claim-id earlier)
+                                           (:id (resume-claimed-key earlier))))
                                 (not (identical? (:result child) (::delivered earlier))))))
                    earlier
                    first-affected))
@@ -3849,7 +3873,7 @@
                                               {:world (:fork-id context) :id (random-uuid)})
                                       cont' (cond-> (-> cont
                                                         (assoc ::delivered result)
-                                                        (dissoc ::refresh? ::retry?))
+                                                        (dissoc ::refresh? ::retry? ::advanced-claim-id))
                                               inline? (dissoc resume-claimed-key)
                                               (and inline? (:body-slice? cont)) (assoc ::resumed? (:fork-id context))
                                               (not inline?) (assoc resume-claimed-key claim))]
@@ -3897,7 +3921,7 @@
                            (do
                              (vreset! retry? (::retry? cont))
                              (assoc conts cont-id
-                                    (cond-> (dissoc cont resume-claimed-key ::retry?)
+                                    (cond-> (dissoc cont resume-claimed-key ::retry? ::advanced-claim-id)
                                       (:body-slice? cont) (assoc ::resumed? (:fork-id context)))))
                            conts))))
     (when @retry?
