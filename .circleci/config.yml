@@ -3,12 +3,53 @@ version: 2.1
 orbs:
   tools: replikativ/clj-tools@0
 
+jobs:
+  prepare:
+    executor: tools/clojurecli
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - spindel-ci-deps-v1-{{ checksum "deps.edn" }}-{{ checksum ".circleci/config.yml" }}
+            - spindel-ci-deps-v1-
+            - deps-{{ checksum "deps.edn" }}
+            - deps-
+      - run:
+          name: Prepare each job's dependency graph
+          command: |
+            clojure -P -M
+            clojure -P -M:test
+            clojure -P -M:format
+            clojure -P -T:build
+            clojure -P -M:cljs
+      - save_cache:
+          key: spindel-ci-deps-v1-{{ checksum "deps.edn" }}-{{ checksum ".circleci/config.yml" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.gitlibs
+      - restore_cache:
+          keys:
+            - npm-{{ checksum "package-lock.json" }}
+            - npm-
+      - run: npm ci
+      - save_cache:
+          key: npm-{{ checksum "package-lock.json" }}
+          paths:
+            - /home/circleci/.npm
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - .m2
+            - .gitlibs
+            - .npm
+            - replikativ
+
 workflows:
   build-test-and-deploy:
     jobs:
-      - tools/setup:
+      - prepare:
+          name: tools/setup
           context: docker-deploy
-          setup_cljs: true
       - tools/build:
           context: docker-deploy
           build_cljs: true
