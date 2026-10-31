@@ -412,8 +412,14 @@
 (def ^:const z-phase 6) (def ^:const z-install 7) (def ^:const z-handle-state 8)
 (def ^:const z-handle 9) (def ^:const z-frames 10)
 (deftype ^:private NativeReleaseReceipt [owner token])
+(deftype ^:private NativeWorldCapability [family id token])
+(deftype ^:private NativeDiscardReceipt [target token])
+(defrecord ^:private CustodyHolder [root world kind id])
 (defonce ^:private pending-releases (atom {}))
 (defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
+;; Borrowed only while an admitted custody transaction is on the stack.
+(def ^:private ^:dynamic *custody-frame* nil)
+(def ^:private ^:dynamic *world-release-cancellation* nil)
 (declare read-application-state swap-application-state! cas-application-state!
          allocate-cell! cell-present? read-cell-value read-cell-meta read-cell-watches
          swap-cell! cas-cell! add-cell-watch! remove-cell-watch! collect-home-cell! retry-cell-gc! next-trace-address!
@@ -431,7 +437,12 @@
          await-public-computation! await-public-finalization! prepare-computation! canonical-runtime public-slice! invoke-public-computation! weak-descriptor
          root-execution-owner current-execution-owner open-execution-scope! bindable-execution-owner
          capture-execution-owner restore-execution-owner
-         close-execution-scope! execution-owner-joined? selected-owner close-owner! check-scope-close! owner-capability)
+         close-execution-scope! execution-owner-joined? selected-owner close-owner! check-scope-close! owner-capability
+         fork-owned-world! transfer-owned-world! discard-owned-world! observe-owned-world-disposal!
+         custody-state! custody-state custody-publish! custody-project custody-cap-view custody-holder-view
+         custody-claim-owner! custody-adopt! custody-dispatch! refresh-custody! refresh-custody-releases! custody-debts? custody-world-phase
+         custody-publication-owner custody-release-preflight! custody-event? custody-event-view custody-live? custody-release-ready?
+         custody-data-world? custody-audit-family custody-release-data! custody-targets-view custody-shape! custody-holder custody-reachable-roots custody-owner-holds? custody-order custody-disposal-preflight! custody-resource-ingress! custody-protected-roots custody-automatic-holder?)
 ;; Every public/scoped view shares one revocable world arena. Only value/identity
 ;; fields live on the facade; borrowed family services never become view aliases.
 (defrecord ^:private ArenaState [nodes deliveries events hosts work ready draining counters audit tokens
@@ -447,6 +458,13 @@
   (restore-execution-owner [this captured current] (restore-execution-owner this captured current))
   (close-execution-scope! [this scope] (close-execution-scope! this scope))
   (execution-owner-joined? [this owner] (execution-owner-joined? this owner))
+  rtp/PWorldCustody
+  (fork-owned-world! [this options] (fork-owned-world! this options))
+  (transfer-owned-world! [this bearer caller destination acceptor options]
+    (transfer-owned-world! this bearer caller destination acceptor options))
+  (discard-owned-world! [this bearer caller options] (discard-owned-world! this bearer caller options))
+  (observe-owned-world-disposal! [this receipt resolve reject]
+    (observe-owned-world-disposal! this receipt resolve reject))
   rtp/PWorldLifecycle
   (request-world-release! [this reason] (request-world-release! this reason))
   (observe-world-release! [this receipt resolve reject] (observe-world-release! this receipt resolve reject))
@@ -568,7 +586,7 @@
                                 (compare (long (a x n-rank)) (long (a y n-rank))))))
                    :cljs (array))
                 (atom false)
-                (doto (slots 11)
+                (doto (slots 12)
                   (put 9 (when audit? (queue))) (put 8 (members)) (put 0 (queue))
                   (put 4 (slots 32)) (put 5 (slots 14)) (put 1 0) (put 2 0)
                   (put 3 (when audit? (id-dict))) (put 6 (members)) (put 7 (id-dict)))
@@ -600,7 +618,8 @@
      rt)))
 
 (defn- world-open! [rt]
-  (when-not (= :live (a (runtime-field rt :lifecycle) 0))
+  (when-not (and (= :live (a (runtime-field rt :lifecycle) 0))
+                 (not (custody-world-phase rt)))
     (throw (ex-info "Execution world is released" {:error :world-released}))))
 
 (defn release-context-backend [rt]
@@ -1185,7 +1204,7 @@
           (mark-graph! rt node))))))
 
 (defn- reject-dependent!
-  ([rt ob] (reject-dependent! rt ob nil))
+  ([rt ob] (reject-dependent! rt ob *world-release-cancellation*))
   ([rt ob cancellation]
    (if-let [run (a ob o-run)]
      (do
@@ -1216,7 +1235,9 @@
    (end-ob! rt ob)))
 
 (defn- release-owned! [rt run]
-  (each-copy! [node (a (owner-storage run) r-owned)]
+  (each-copy! [node (if (custody-state rt)
+                      (custody-order (a (owner-storage run) r-owned) #(a % n-id))
+                      (a (owner-storage run) r-owned))]
               (when-let [control (a node n-mailbox)]
                 (doseq [consumer (vec (concat (values (a control m-pending)) (values (a control m-reservations))))]
                   (refresh-mailbox-owner! rt consumer (a node n-owner))
@@ -1233,7 +1254,10 @@
                 (doseq [consumer (values (a control m-physical))]
                   (when-let [receipt (a consumer b-receipt)] (put receipt 20 true))))
               (when (= :spin (a node n-kind)) (put node n-dirty true))
-              (each-copy! [child (values (a node n-runs))]
+              (each-copy! [child (if (custody-state rt)
+                                   (custody-order (values (a node n-runs))
+                                                  (fn [r] [(if (work-status? (a r r-status)) 0 1) (run-id r)]))
+                                   (values (a node n-runs)))]
                           (if (work-status? (a child r-status)) (cancel! rt child) (retire! rt child)))
               (each-copy! [ob (a node n-dependents)] (reject-dependent! rt ob))))
 
@@ -1260,13 +1284,19 @@
         (push! pool run)))))
 
 (defn- retire-body! [rt run cancellation chain]
-  (let [node (a run r-node)
+  (let [cancellation (or cancellation *world-release-cancellation*)
+        node (a run r-node)
+        _ (when (a (runtime-field rt :counters) 11) (custody-claim-owner! rt run))
         _ (retain-cleanup! rt run cancellation)
         physical? (or (a run r-physical) (a run r-exit) (pos? (long (or (a run r-timers) 0))))
         anchor (when physical? (or chain (run-anchor rt run)))]
-    (each-copy! [scope (or (scope-children rt run) empty-members)] (close-owner! rt scope))
+    (each-copy! [scope (if (custody-state rt)
+                         (custody-order (or (scope-children rt run) empty-members) owner-id)
+                         (or (scope-children rt run) empty-members))] (close-owner! rt scope))
     (each-copy! [ob (a run r-obs)] (end-ob! rt ob))
-    (each-copy! [child (a run r-childruns)] (cancel! rt child))
+    (each-copy! [child (if (custody-state rt)
+                         (custody-order (a run r-childruns) run-id)
+                         (a run r-childruns))] (cancel! rt child))
     (release-owned! rt run)
     (each! [owner (a run r-backlinks)] (remove! (a owner r-spawned) run))
     (each! [child (a run r-spawned)] (remove! (a child r-backlinks) run))
@@ -1311,7 +1341,8 @@
    (when (and (not (contains? *retiring-owners* run))
               (has? (a (runtime-field rt :counters) 6) run) (not= :unwinding (a run r-status)))
      (let [scopes (scope-children rt run)]
-       (if (and (zero? (count! (a run r-owned)))
+       (if (and (not (custody-owner-holds? rt run))
+                (zero? (count! (a run r-owned)))
                 (zero? (count! (a run r-childruns)))
                 (or (nil? scopes) (zero? (count! scopes))))
          (retire-body! rt run cancellation nil)
@@ -1459,11 +1490,13 @@
            (when-not (= actual (or (a run r-reactives) 0))
              (throw (ex-info "Reactive-site count mismatch" {:run (a run r-gen) :expected actual :actual (a run r-reactives)}))))))
 
-(defn- boundary! [rt action]
+(defn- boundary-body! [rt action]
   (reclaim! rt)
   (when (prune-timer-queue! rt) (reclaim! rt))
   (prune-ancestry! rt)
+  (refresh-custody-releases! rt)
   (refresh-release! rt)
+  (custody-release-data! rt)
   (when-let [audit (runtime-field rt :audit)]
     (audit-derived-state! rt)
     (let [pending (a (runtime-field rt :counters) 9)
@@ -1482,8 +1515,24 @@
                          action))))]
       #?(:clj (.clear ^java.util.ArrayDeque pending) :cljs (.clear pending))
       (when recording?
-        (swap! audit conj [action (snapshot rt) (snapshot-family rt)]))))
-  (retry-cell-gc! rt))
+        (swap! audit conj [action (snapshot rt) (custody-audit-family rt)]))))
+  (retry-cell-gc! rt)
+  (refresh-custody! rt))
+
+(defn- boundary! [rt action]
+  ;; The current action may join/revoke this facade during maintenance. Borrow
+  ;; its actual family for this stack frame so the audit includes THIS action's
+  ;; physical census, not the preceding boundary. Late receipt-only actions
+  ;; have no active service and keep their separate data-history projection.
+  (if *custody-frame*
+    (boundary-body! rt action)
+    (if-let [service (custody-state rt)]
+      (binding [*custody-frame* {:service service :family (:worlds @service)}]
+        (boundary-body! rt action))
+      (if (and (runtime-field rt :audit) (= :releasing (a (runtime-field rt :lifecycle) 0)))
+        (binding [*custody-frame* {:family (runtime-field rt :family)}]
+          (boundary-body! rt action))
+        (boundary-body! rt action)))))
 
 (defn- touch! [rt node token]
   (when token (add! (a node n-tokens) token) (add! (a token t-touched) (runtime-field rt :world))))
@@ -1575,8 +1624,8 @@
                         ;; WeakHashMap's reference queue otherwise drains only
                         ;; on the next lookup, retaining stale token metadata.
                          (.size ^java.util.WeakHashMap (:host-tokens home))
-                         (first (values (:worlds home))))
-                  :cljs (first (values (:worlds home))))]
+                         (first (remove custody-data-world? (values (:worlds home)))))
+                  :cljs (first (remove custody-data-world? (values (:worlds home)))))]
     (when target (collect-token! target token))))
 
 (defn- collect-token! [rt token]
@@ -1585,7 +1634,7 @@
             (put token t-reachable false)
             (each! [world (a token t-touched)]
                    (when-let [target (find! (runtime-field rt :family) world)]
-                     (when (find! (runtime-field target :nodes) (a token t-spin))
+                     (when (and (not (custody-data-world? target)) (find! (runtime-field target :nodes) (a token t-spin)))
                        (push! (runtime-field rt :gc) (doto (slots 2) (put 0 target) (put 1 token))))))
             (boundary! rt (when (runtime-field rt :audit) {:t :t16 :tok (a token t-id)
                                                            :notification-order (mapv #(-> (a % 0) :world)
@@ -2253,6 +2302,7 @@
           timer (locked rt
                         (let [run (a frame 1)]
                           (check-running! run)
+                          (custody-resource-ingress! rt)
                           (when-not (and (a run r-physical) (= :running (a run r-status))
                                          (identical? run (current (a run r-node))))
                             (throw (ex-info "Timer installer is not current" {:error :cancelled})))
@@ -2478,6 +2528,7 @@
                          (when (= :await-reactive (a ob o-kind))
                            (adopt! rt (a ob o-debtor) run)))
                      (when work? (end-ob! rt ob))))
+       (custody-adopt! rt previous run order)
        (each-copy! [scope (or (scope-children rt previous) empty-members)]
                    (when (< (long (a (owner-storage scope) s-order)) (long order))
                      (scope-parent! rt scope run)
@@ -2530,9 +2581,9 @@
                                                      :delivery-order order}))
       (finally (dotimes [i n] (put dependents i nil))))))
 
-(defn- poll-ready! [rt]
-  #?(:clj (.poll ^java.util.PriorityQueue (runtime-field rt :ready))
-     :cljs (let [heap (runtime-field rt :ready) n (.-length heap)]
+(defn- poll-ready! [^ArenaState dispatch]
+  #?(:clj (.poll ^java.util.PriorityQueue (.-ready dispatch))
+     :cljs (let [heap (.-ready dispatch) n (.-length heap)]
              (when (pos? n)
                (let [head (aget heap 0) tail (.pop heap) n (dec n)]
                  (when (pos? n)
@@ -2630,62 +2681,76 @@
           (finish-slice! rt run activation)
           (dotimes [i 14] (put activation i nil)))))))
 
-(defn- next-dispatch! [rt]
+(defn- next-custody-cleanup! [^ArenaState dispatch]
+  (when-let [service (let [state (a (.-counters dispatch) 11)] (when-not (map? state) state))]
+    (some (fn [world]
+            (when-not (custody-data-world? world)
+              (when-let [profile (runtime-field world :finalization)]
+                (when-let [ticket (pop! (a profile 2))]
+                  (doto (slots 3) (put 0 :cleanup) (put 1 ticket) (put 2 world))))))
+          (values (:worlds @service)))))
+
+(defn- next-dispatch! [rt ^ArenaState dispatch]
   (locked rt
-          (if-let [post (pop! (runtime-field rt :posts))]
+          (if-let [post (pop! (.-posts dispatch))]
             post
-            (if-let [event (pop! (runtime-field rt :events))]
-              (do (cond (= 9 (alength ^objects event)) (process-mailbox-post! (a event 0) event)
+            (if-let [event (pop! (.-events dispatch))]
+              (do (cond (custody-event? event) (custody-dispatch! (a event 1) event)
+                        (= 9 (alength ^objects event)) (process-mailbox-post! (a event 0) event)
                         (= 7 (alength ^objects event)) (assign-deferred! (a event 0) event)
                         :else (process-event! (a (a event 0) n-runtime) event))
                   :event)
-              (or (when-let [profile (runtime-field rt :finalization)]
+              (or (when-let [profile (.-finalization dispatch)]
                     (when-let [ticket (pop! (a profile 2))]
                       (doto (slots 3) (put 0 :cleanup) (put 1 ticket) (put 2 rt))))
-                  (poll-ready! rt) (pop! (runtime-field rt :hosts)))))))
+                  (next-custody-cleanup! dispatch)
+                  (poll-ready! dispatch) (pop! (.-hosts dispatch)))))))
 
-(defn drain! [rt]
-  (when (compare-and-set! (runtime-field rt :draining) false true)
-    (binding [cps/*in-trampoline* false]
-      (let [failure
-            (try
-              (loop [failure nil]
-                (if-let [entry (next-dispatch! rt)]
-                  (if (and (not= :event entry) (= 1 (alength ^objects entry)))
+(defn drain!
+  ([rt] (drain! rt @(runtime-field rt :arena-cell)))
+  ([rt ^ArenaState dispatch]
+   (let [draining (.-draining dispatch)]
+     (when (compare-and-set! draining false true)
+       (binding [cps/*in-trampoline* false]
+         (let [failure
+               (try
+                 (loop [failure nil]
+                   (if-let [entry (next-dispatch! rt dispatch)]
+                     (if (and (not= :event entry) (= 1 (alength ^objects entry)))
                     ;; Logical cancellation is already committed. A failed
                     ;; detach must not strand other cancellation/delivery work.
-                    (let [error (try ((a entry 0)) nil
-                                     (catch #?(:clj Throwable :cljs :default) error [error]))]
-                      (recur (or failure error)))
-                    (if (and (not= :event entry) (= 2 (alength ^objects entry)))
+                       (let [error (try ((a entry 0)) nil
+                                        (catch #?(:clj Throwable :cljs :default) error [error]))]
+                         (recur (or failure error)))
+                       (if (and (not= :event entry) (= 2 (alength ^objects entry)))
                       ;; Host observers own their exceptions. Finish committed
                       ;; deliveries, including reentrant registrations, before
                       ;; reporting the first error to the drain's caller.
-                      (let [callback (a entry 0) value (a entry 1)
-                            error (try
-                                    (callback value)
-                                    nil
-                                    (catch #?(:clj Throwable :cljs :default) error [error]))]
-                        (recur (or failure error)))
-                      (do
-                        (when-not (= :event entry)
-                          (if (= 3 (alength ^objects entry))
-                            (invoke-cleanup! (a entry 2) (a entry 1))
-                            (execute! (a entry n-runtime) entry)))
-                        (recur failure))))
-                  failure))
-              (finally (reset! (runtime-field rt :draining) false)))]
-        (let [later-failure
-              (try
-                (when (locked rt (or (queued? (runtime-field rt :posts)) (queued? (runtime-field rt :events)) (queued? (runtime-field rt :hosts))
-                                     (when-let [profile (runtime-field rt :finalization)] (queued? (a profile 2)))
-                                     #?(:clj (not (.isEmpty ^java.util.PriorityQueue (runtime-field rt :ready)))
-                                        :cljs (pos? (.-length (runtime-field rt :ready))))))
-                  (drain! rt))
-                nil
-                (catch #?(:clj Throwable :cljs :default) error [error]))]
+                         (let [callback (a entry 0) value (a entry 1)
+                               error (try
+                                       (callback value)
+                                       nil
+                                       (catch #?(:clj Throwable :cljs :default) error [error]))]
+                           (recur (or failure error)))
+                         (do
+                           (when-not (= :event entry)
+                             (if (= 3 (alength ^objects entry))
+                               (invoke-cleanup! (a entry 2) (a entry 1))
+                               (execute! (a entry n-runtime) entry)))
+                           (recur failure))))
+                     failure))
+                 (finally (reset! draining false)))]
+           (let [later-failure
+                 (try
+                   (when (locked rt (or (queued? (runtime-field rt :posts)) (queued? (runtime-field rt :events)) (queued? (runtime-field rt :hosts))
+                                        (when-let [profile (runtime-field rt :finalization)] (queued? (a profile 2)))
+                                        #?(:clj (not (.isEmpty ^java.util.PriorityQueue (runtime-field rt :ready)))
+                                           :cljs (pos? (.-length (runtime-field rt :ready))))))
+                     (drain! rt))
+                   nil
+                   (catch #?(:clj Throwable :cljs :default) error [error]))]
           ;; A tagged error also preserves JavaScript's `throw null/false`.
-          (when-let [error (or failure later-failure)] (throw (first error))))))))
+             (when-let [error (or failure later-failure)] (throw (first error))))))))))
 
 (defn- observe-token! [rt id token body success failure]
   (let [ob (locked rt
@@ -2751,7 +2816,7 @@
 (def ^:private engine-state-keys
   #{:nodes :spin-tracking :subscriptions :track-subscriptions :await-conts
     :entities :runs :obligations :queue :lineage :root :status :admission :seal-seq
-    :seq :serial :clock :handles :threads :gc :principals :global :scopes :next-scope :scope-balance :pins
+    :seq :serial :clock :handles :threads :gc :principals :global :cleanup-targets :scopes :next-scope :scope-balance :pins
     :fdeps :releasing :cuts :caps :registry :native :cleanup-cells :atoms :listeners :source-gc :addressing})
 
 (defn- engine-path? [path]
@@ -2954,7 +3019,7 @@
   ;; the requested record is retained separately only for listener bindings.
   (locked requested
           (let [rt (find! (runtime-field requested :family) (runtime-field requested :world))]
-            (when-not (and rt (same-cell-world? requested rt))
+            (when-not (and rt (not (custody-data-world? rt)) (same-cell-world? requested rt))
               (throw (ex-info "Unknown execution world" {:error :unknown-world})))
             rt)))
 
@@ -3114,6 +3179,7 @@
       (throw (ex-info "Resource callbacks cannot allocate sources" {:error :cleanup-only})))
     (locked rt
             (check-cell-caller! rt)
+            (when (contains? #{:deferred :mailbox} kind) (custody-resource-ingress! rt))
             (let [frame (current-activation)
                   run (when (and frame (same-cell-world? rt (a frame 0))) (a frame 1))
                   order (if run (put frame 2 (inc (long (a frame 2)))) 0)
@@ -3278,7 +3344,7 @@
         (any! (runtime-field rt :events) #(identical? node (a % 0)))
         ;; A live following world with no local row still needs this backing.
         (some (fn [world]
-                (and (not (same-cell-world? rt world))
+                (and (not (custody-data-world? world)) (not (same-cell-world? rt world))
                      (when-let [[backing _ _] (cell-backing world id)]
                        (same-cell-world? rt backing))))
               (values (runtime-field rt :family))))))
@@ -3309,15 +3375,16 @@
 
 (defn- retry-family-cell-id! [rt id]
   (each! [world (values (runtime-field rt :family))]
-         (let [aux-table (a (runtime-field world :managed-cells) 0)
-               aux (find! aux-table id)]
+         (when-not (custody-data-world? world)
+           (let [aux-table (a (runtime-field world :managed-cells) 0)
+                 aux (find! aux-table id)]
            ;; A borrowed watch registration cannot keep a retired backing
            ;; allocation or its callbacks alive after ordinary ownership exit.
-           (when (and aux (nil? (find! (runtime-field world :nodes) id)))
-             (let [[_ node backing-aux] (cell-backing world id)]
-               (when-not (and node backing-aux (= (a aux 0) (a backing-aux 0)))
-                 (dissoc! aux-table id))))
-           (retry-world-cell-gc! world id))))
+             (when (and aux (nil? (find! (runtime-field world :nodes) id)))
+               (let [[_ node backing-aux] (cell-backing world id)]
+                 (when-not (and node backing-aux (= (a aux 0) (a backing-aux 0)))
+                   (dissoc! aux-table id))))
+             (retry-world-cell-gc! world id)))))
 
 (defn- retry-cell-gc! [rt]
   ;; Ordinary publication with no dirty IDs performs no world or cell scans.
@@ -3396,7 +3463,7 @@
             (check-token! rt (:token handle))
             (let [node (find! (runtime-field rt :nodes) (:id handle)) run (when node (current node))
                   id (when run [(a node n-id) (a run r-gen)])]
-              (when run (cancel! rt run))
+              (when run (check-scope-close! rt run) (cancel! rt run))
               (boundary! rt (when (runtime-field rt :audit) {:t :t11 :w (runtime-field rt :world) :r id}))))
     (drain! rt)))
 
@@ -3446,21 +3513,26 @@
              @result)))
 
 (defn- global-view [rt]
-  (let [worlds (values (runtime-field rt :family))]
-    {:registry (set (for [world worlds :when (= :live (a (runtime-field world :lifecycle) 0))]
-                      (runtime-field world :world))) :known-worlds (set (map :world worlds))
-     :lineages (into {} (for [world worlds] [(runtime-field world :world) (runtime-field world :lineage)]))
-     :caps (map-value (a (runtime-field rt :counters) 7))
-     ;; This bounded profile only creates Root-held fork caps. The index is
-     ;; actual shared storage; claims, settlement and process recovery refuse.
-     :custody {:by-holder (if-let [index (a (runtime-field rt :counters) 10)]
-                            (into {} (for [[holder bucket] (map-value index)]
-                                       [holder (set (items bucket))]))
-                            {})
-               :claims {}}
-     :next-claim 0 :recovery-epoch 0 :process-live? true
-     :generation-clock (into {} (for [world worlds :let [clock (a (runtime-field world :counters) 3)] :when clock [id n] (map-value clock)]
-                                  [[(runtime-field world :world) id] n]))}))
+  (if-let [retired (when-not *custody-frame*
+                     (:custody-retired (a (runtime-field rt :counters) 11)))]
+    retired
+    (let [family (or (:family *custody-frame*) (runtime-field rt :family))
+          worlds (values family) service (or (custody-state rt) (:service *custody-frame*))
+          state (some-> service deref)
+          wid (fn [world] (if (custody-data-world? world) (:world world) (runtime-field world :world)))
+          lineage (fn [world] (if (custody-data-world? world) (:lineage world) (runtime-field world :lineage)))]
+      {:registry (set (for [world worlds :when (and (not (custody-data-world? world))
+                                                    (= :live (a (runtime-field world :lifecycle) 0)))] (wid world)))
+       :known-worlds (set (map wid worlds))
+       :lineages (into {} (for [world worlds] [(wid world) (lineage world)]))
+       :caps (into {} (for [[id cap] (map-value (or (:caps state) (a (runtime-field rt :counters) 7)))]
+                        [id (custody-cap-view cap)]))
+       :custody (:custody (custody-project rt)) :records (:records (custody-project rt))
+       :next-claim (:next-claim (custody-project rt)) :recovery-epoch 0 :process-live? true
+       :generation-clock (into {} (mapcat (fn [world]
+                                            (if (custody-data-world? world) (:generation-clock world)
+                                                (for [[id n] (when-let [clock (a (runtime-field world :counters) 3)] (map-value clock))]
+                                                  [[(wid world) id] n]))) worlds))})))
 
 (defn- all-obligations [rt]
   ;; Internal graph links already own reactive registrations. Only ticket
@@ -3475,7 +3547,9 @@
                  (when (a (runtime-field rt :managed-cells) 2)
                    {:source-gc (into {} (for [[id allocation] (map-value (a (runtime-field rt :managed-cells) 1))]
                                           [[(runtime-field rt :world) id allocation] true]))})
-                 {:global (global-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status :live :admission :open :seal-seq nil
+                 {:global (global-view rt) :cleanup-targets (custody-targets-view rt) :lineage (runtime-field rt :lineage) :root (runtime-field rt :root) :status (if (custody-world-phase rt) :sealed :live)
+                  :admission (if (custody-world-phase rt) :fenced :open)
+                  :seal-seq (get-in (some-> (custody-state rt) deref) [:phases (runtime-field rt :owner-root) :seal-seq])
                   :scopes (into {(runtime-field rt :root) {:kind (if (runtime-field rt :parent) :fork :world-root) :parent nil :status :open}}
                                 (for [scope (when-let [state (scope-state rt)] (values (a state 0)))
                                       :let [data (owner-storage scope) parent (a data s-parent)]]
@@ -3525,19 +3599,21 @@
                                              (a ob o-source-world) (assoc :source-world (a ob o-source-world))
                                              (nil? (a ob o-run)) (assoc :filter {:mode :local :origin (runtime-field rt :world)}))]))
                   :queue (mapv (fn [event]
-                                 (case (alength ^objects event)
-                                   9 (cond-> {:mailbox-post (:id (a event 1)) :allocation (:id (a event 1))
-                                              :message-id (first (a event 3)) :value (second (a event 3)) :seq (a event 2)}
-                                       (a event 5) (assoc :cell (a event 5)) (a event 7) (assoc :repost? true))
-                                   7 (cond-> {:deferred-assignment (:id (a event 1)) :allocation (:id (a event 1))
-                                              :value (a event 3) :seq (a event 2)}
-                                       (a event 5) (assoc :cell (a event 5)))
-                                   (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world)
-                                            :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
-                                     (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true))))
+                                 (if (custody-event? event) (custody-event-view event)
+                                     (case (alength ^objects event)
+                                       9 (cond-> {:mailbox-post (:id (a event 1)) :allocation (:id (a event 1))
+                                                  :message-id (first (a event 3)) :value (second (a event 3)) :seq (a event 2)}
+                                           (a event 5) (assoc :cell (a event 5)) (a event 7) (assoc :repost? true))
+                                       7 (cond-> {:deferred-assignment (:id (a event 1)) :allocation (:id (a event 1))
+                                                  :value (a event 3) :seq (a event 2)}
+                                           (a event 5) (assoc :cell (a event 5)))
+                                       (cond-> {:completion (a (a event 0) n-id) :debtor-world (runtime-field rt :world)
+                                                :value (diagnostic-value (a event 1) (a event 3)) :seq (a event 2)}
+                                         (#{:signal :atom} (a (a event 0) n-kind)) (assoc :source-change? true)))))
                                (filter (fn [event]
-                                         (identical? rt (if (#{7 9} (alength ^objects event)) (a event 0)
-                                                            (a (a event 0) n-runtime))))
+                                         (identical? rt (if (custody-event? event) (a event 2)
+                                                            (if (#{7 9} (alength ^objects event)) (a event 0)
+                                                                (a (a event 0) n-runtime)))))
                                        (items (runtime-field rt :events))))
                   :seq (a (runtime-field rt :counters) 1)
                   :serial (a (runtime-field rt :serial) 0) :clock (a (runtime-field rt :counters) 2)
@@ -3568,16 +3644,12 @@
             (if (= :live (a (runtime-field rt :lifecycle) 0)) live
                 (release-view rt live)))))
 
-(defn fork-parked!
-  "Prototype T19 for quiescent host-ticket bundles. Copies the ownership
-  closure into independent mutable slots. Entity-debtor bundles and scoped
-  affine custody remain outside this bounded fork profile."
-  [rt world]
+(defn- fork-custody-copy!
+  "Copy the supported parked host-ticket closure, then publish one affine leaf.
+  Entity-debtor/resource bundles remain outside this fork profile."
+  [rt world owner cap-id]
   (admit-native-effect!)
   (locked rt
-          (when-not (root-owner? (selected-owner rt))
-            (throw (ex-info "Scoped affine fork ownership is not implemented"
-                            {:error :unsupported-operation :operation :fork-execution-owner})))
           (when-not (empty-dict? (a (runtime-field rt :timers) 0))
             (throw (ex-info "Timer fork recovery is not implemented" {:error :unsupported-operation :operation :fork-timer})))
           (when (or (some #(= :mailbox (a % n-kind)) (values (runtime-field rt :nodes)))
@@ -3729,25 +3801,15 @@
               (prune-ancestry! child)
               (put (runtime-field child :counters) 1 (a (runtime-field rt :counters) 1))
               (put (runtime-field child :counters) 7 (a (runtime-field rt :counters) 7))
-              (let [cap-id [:cap world]
-                    holder [:execution-owner (runtime-field rt :world) :root (runtime-field rt :root)]
-                    index (or (a (runtime-field rt :counters) 10)
-                              (put (runtime-field rt :counters) 10 (id-dict)))
-                    bucket (or (find! index holder) (assoc! index holder (members)))]
-                (assoc! (a (runtime-field rt :counters) 7) cap-id
-                        {:world world :scope #{} :holder holder :holder-acquisition nil
-                         :disposition :open :published? true
-                         :op nil :pred nil :successors [] :durable? false :bases {}})
-                (add! bucket cap-id)
-                (put (runtime-field child :counters) 10 index))
+              (custody-publish! rt child owner cap-id)
               (assoc! (runtime-field rt :family) world child)
-              (node! rt [:fork world] :fork (runtime-field rt :owner-root))
+              (node! rt [:fork world] :fork owner)
               (each! [node (values (runtime-field child :nodes))]
                      (when (= :atom (a node n-kind))
                        (note-cell-gc-blocker-change! child (a node n-id)))
                      (each! [token (a node n-tokens)] (add! (a token t-touched) world)))
-              (boundary! rt (when (runtime-field rt :audit) {:t :t19 :w (runtime-field rt :world) :v world :k [:cap world]
-                                                             :scope (runtime-field rt :root) :systems #{}}))
+              (boundary! rt (when (runtime-field rt :audit) {:t :t19 :w (runtime-field rt :world) :v world :k cap-id
+                                                             :scope (owner-id owner) :systems #{}}))
               ;; T19 first publishes the independent rows. The allocation-wide
               ;; host fact remains valid for clones made after its one-shot
               ;; callback, so publish a receipt for each surviving copied cell.
@@ -3761,7 +3823,15 @@
 
 (defn snapshot-family [rt]
   (locked rt
-          (into {} (for [world (values (runtime-field rt :family))] [(runtime-field world :world) (snapshot world)]))))
+          (let [family (or (:family *custody-frame*) (runtime-field rt :family))
+                global (global-view rt)
+                environment (select-keys (snapshot rt) [:handles :threads :gc :principals :cleanup-targets])]
+            (into {} (for [[id world] (map-value family)]
+                       [id (if (custody-data-world? world)
+                             (merge environment {:id id :status :released :lineage (:lineage world)
+                                                 :release (some-> (:release-data world) deref)
+                                                 :native {} :cleanup-cells {} :outside [] :global global})
+                             (assoc (snapshot world) :global global))])))))
 
 (defn storage-stats [rt]
   (locked rt
@@ -3780,6 +3850,13 @@
              :execution-scope-run-memberships
              (if-let [state (scope-state rt)]
                (reduce + 0 (map #(count! (a (owner-storage %) s-runs)) (values (a state 0)))) 0)
+             :custody-live-leaves (count (filter custody-live? (values (a (runtime-field rt :counters) 7))))
+             :custody-terminal-caps (count (remove custody-live? (values (a (runtime-field rt :counters) 7))))
+             :custody-holder-buckets (if-let [index (a (runtime-field rt :counters) 10)] (count (map-value index)) 0)
+             :custody-claims (count (:claims (some-> (custody-state rt) deref)))
+             :custody-pending (count (:pending (some-> (custody-state rt) deref)))
+             :custody-records (count (:records (some-> (custody-state rt) deref)))
+             :custody-targets (reduce + 0 (map count (vals (:targets (some-> (custody-state rt) deref)))))
              :timer-resources (count (map-value (a (runtime-field rt :timers) 0)))
              :timer-frames (reduce + 0 (map #(count (a % z-frames)) (values (a (runtime-field rt :timers) 0))))
              :protected-operations (count protected-operations)
@@ -4040,6 +4117,9 @@
   (try
     (admit-world-switch! requested)
     (let [rt (canonical-runtime requested)
+          _ (locked rt
+                    (when-let [node (find! (runtime-field rt :nodes) id)]
+                      (doseq [run (values (a node n-runs))] (check-scope-close! rt run))))
           token (portable-token! rt target id false)]
       (loop []
         (let [witness (prepare-computation! rt id body false token)
@@ -4058,6 +4138,7 @@
                                   dirty? (boolean (or (a node n-dirty)
                                                       (some-> (current node) (a r-validation-lost))))
                                   cancellation {:node node :reason reason}]
+                              (doseq [run runs] (check-scope-close! rt run))
                               ;; Publish provenance before retiring anything:
                               ;; finally and incoming callbacks observe this
                               ;; first result, including pre-invocation cancel.
@@ -4140,7 +4221,7 @@
                 (recur))))))
       (finally #?(:clj (java.lang.ref.Reference/reachabilityFence target) :cljs nil)))
     (cond
-      (satisfies? rtp/PWorldRelease target)
+      (satisfies? rtp/PCompletion target)
       (lifecycle-await! requested target resolve reject)
       (satisfies? rtp/PMailbox target)
       (await-public-mailbox! requested target resolve reject false)
@@ -5369,9 +5450,9 @@
   (let [world (runtime-field rt :world)
         outside (mapv (fn [event] {:w world :event event})
                       (filter #(or (:deferred-assignment %) (:mailbox-post %)) (:queue live)))]
-    (merge (select-keys live [:global :threads :native :cleanup-cells :gc :handles :principals])
+    (merge (select-keys live [:global :threads :native :cleanup-cells :gc :handles :principals :cleanup-targets])
            {:id world :lineage (runtime-field rt :lineage) :status :released
-            :release (release-observer-row rt) :outside outside})))
+            :release (when (a (runtime-field rt :lifecycle) 3) (release-observer-row rt)) :outside outside})))
 
 (defn- release-notify! [rt id]
   (let [callback (locked rt
@@ -5397,20 +5478,28 @@
 
 (defn- revoke-release-arena! [rt]
   (let [old @(runtime-field rt :arena-cell)
-        family (id-dict) counters (doto (slots 11)
+        original-family (:family old)
+        retired-global (global-view rt)
+        _ (custody-release-data! rt)
+        tombstone {:custody-tombstone true :world (runtime-field rt :world) :lineage (:lineage old)
+                   :root (runtime-field rt :owner-root) :release-data (a (:lifecycle old) 6)
+                   :generation-clock (into {} (for [[id n] (when-let [clock (a (:counters old) 3)] (map-value clock))]
+                                                [[(runtime-field rt :world) id] n]))}
+        family (id-dict) counters (doto (slots 12)
                                     (put 0 (queue)) (put 1 (a (:counters old) 1)) (put 2 (a (:counters old) 2))
                                     (put 3 (a (:counters old) 3)) (put 4 (slots 32)) (put 5 (slots 14))
                                     (put 6 (members)) (put 7 (id-dict)) (put 8 (members))
-                                    (put 9 (when (:audit old) (queue))))
+                                    (put 9 (when (:audit old) (queue)))
+                                    (put 11 {:custody-retired retired-global}))
         empty-profile (when (:finalization old)
                         (doto (slots 5) (put 0 (id-dict)) (put 1 (id-dict)) (put 2 (queue)) (put 3 (id-dict))))
         state (map->ArenaState
-               {:nodes (id-dict) :deliveries (dict) :events (:events old) :hosts (:hosts old) :posts (:posts old)
+               {:nodes (id-dict) :deliveries (dict) :events (queue) :hosts (queue) :posts (queue)
                 :work (queue) :ready #?(:clj (java.util.PriorityQueue. 11 (reify java.util.Comparator
                                                                             (compare [_ x y] (compare (long (a x n-rank)) (long (a y n-rank))))))
                                         :cljs (array))
-                :draining (:draining old) :counters counters :audit (:audit old) :tokens (:tokens old)
-                :serial (:serial old)
+                :draining (atom false) :counters counters :audit (:audit old) :tokens (:tokens old)
+                :serial (doto (slots 2) (put 0 (a (:serial old) 0)) (put 1 (a (:serial old) 1)))
                 :thread (doto (slots 5)
                           ;; Keep only value-only thread history, never an old
                           ;; physical run or cleanup ticket after joining.
@@ -5429,6 +5518,7 @@
                 :trace-address (slots 1)
                 :timers (doto (slots 3) (put 0 (id-dict)) (put 1 timer-transport/default-transport) (put 2 (queue)))
                 :lifecycle (:lifecycle old)})]
+    (assoc! original-family (runtime-field rt :world) tombstone)
     (vreset! (runtime-field rt :arena-cell) state)
     (assoc! family (runtime-field rt :world) (release-context-backend rt))))
 
@@ -5461,15 +5551,19 @@
 (defn- refresh-release! [rt]
   (let [state (runtime-field rt :lifecycle)]
     (when (and (= :releasing (a state 0))
+               (not (custody-debts? rt))
                (not-any? #(a % r-physical) (items (a (runtime-field rt :counters) 6)))
                (empty-dict? (a (runtime-field rt :timers) 0))
                (or (nil? (runtime-field rt :finalization))
                    (empty-dict? (a (runtime-field rt :finalization) 0))))
       (prune-release-packets! rt)
       (put state 0 :joined)
+      ;; Publish onto the admitted shared FIFO before detaching the facade.
+      ;; Only the queued closure retains this minimal observer backend; the
+      ;; completed receipt never retains the old queues or sibling arenas.
+      (doseq [[id observer] (map-value (a state 5))] (queue-release-observer! rt id observer))
       (revoke-release-arena! rt)
-      (swap! pending-releases dissoc (runtime-field rt :owner-root))
-      (doseq [[id observer] (map-value (a state 5))] (queue-release-observer! rt id observer)))))
+      (swap! pending-releases dissoc (runtime-field rt :owner-root)))))
 
 (defn- release-authenticate! [rt receipt]
   (when-not (and (instance? NativeReleaseReceipt receipt)
@@ -5478,8 +5572,9 @@
 
 (defn- release-wait-admission! [rt]
   (when-let [frame (current-activation)]
-    (when (same-cell-world? rt (a frame 0))
-      (throw (ex-info "Release cannot wait for its own physical frame" {:error :self-release-join})))
+    (when (contains? (locked rt (custody-reachable-roots rt false))
+                     (runtime-field (a frame 0) :owner-root))
+      (throw (ex-info "Release cannot await a physical frame in its cleanup closure" {:error :self-release-join})))
     (when (or (active-operation) (active-mailbox-callback))
       (throw (ex-info "Protected resource lifecycle waits require typed integration"
                       {:error :unsupported-operation :operation :protected-release-wait})))
@@ -5533,90 +5628,145 @@
     (doseq [ticket (values (a profile 0)) :when (= :mailbox-callback (a ticket x-kind))]
       (put ticket 20 true))))
 
+(def ^:private ^:dynamic *custody-terminal-release* false)
+
 (defn request-world-release! [requested reason]
-  (when (or (active-operation) (active-mailbox-callback))
-    (throw (ex-info "Resource callbacks cannot release worlds" {:error :cleanup-only})))
-  (admit-world-switch! requested)
-  (let [rt (canonical-runtime requested)
+  (when-not *custody-terminal-release*
+    (when (or (active-operation) (active-mailbox-callback))
+      (throw (ex-info "Resource callbacks cannot release worlds" {:error :cleanup-only})))
+    (admit-world-switch! requested))
+  (let [rt (canonical-runtime requested) dispatch @(runtime-field rt :arena-cell)
         completion (locked rt
                            (let [state (runtime-field rt :lifecycle)]
-                             (if (not= :live (a state 0)) (a state 3)
-                                 (do
-                                   (when-let [frame (current-activation)]
+                             (if (not= :live (a state 0))
+                               (or (a state 3)
+                                   (when-not *custody-terminal-release*
+                                     (let [receipt (NativeReleaseReceipt. (runtime-field rt :owner-root) #?(:clj (Object.) :cljs (js-obj)))
+                                           completion (lifecycle/completion (release-context-backend rt) receipt)]
+                                       (put state 2 receipt) (put state 3 completion)
+                                       (boundary! rt (when (runtime-field rt :audit)
+                                                       {:t :release-request :w (runtime-field rt :world)
+                                                        :release (release-id rt) :reason (diagnostic-value (a state 1) true)}))
+                                       completion)))
+                               (do
+                                 (when-let [frame (current-activation)]
                                      ;; Foreign caller admission occurred before this
                                      ;; gate; never acquire its independent gate here.
-                                     (when (identical? (runtime-field rt :gate)
-                                                       (runtime-field (a frame 0) :gate))
-                                       (check-running! (a frame 1))))
-                                   (when (or (runtime-field rt :parent)
-                                             (> (count (map-value (runtime-field rt :family))) 1)
-                                             (not (empty-dict? (a (runtime-field rt :counters) 7))))
-                                     (throw (ex-info "World release requires an isolated local root"
-                                                     {:error :unsupported-operation :operation :world-release-lineage})))
-                                   (let [receipt (NativeReleaseReceipt. (runtime-field rt :owner-root) #?(:clj (Object.) :cljs (js-obj)))
-                                         backend (release-context-backend rt)
-                                         completion (lifecycle/completion backend receipt)]
-                                     (put state 1 reason) (put state 2 receipt) (put state 3 completion)
-                                     (swap! pending-releases assoc (runtime-field rt :owner-root) backend)
+                                   (when (identical? (runtime-field rt :gate)
+                                                     (runtime-field (a frame 0) :gate))
+                                     (check-running! (a frame 1))))
+                                 (custody-release-preflight! rt)
+                                 (when (and (runtime-field rt :parent)
+                                            (some #(and (identical? (runtime-field rt :owner-root) (:target-root %))
+                                                        (custody-live? %))
+                                                  (values (a (runtime-field rt :counters) 7))))
+                                   (throw (ex-info "A child requires affine terminal settlement" {:error :capability-open})))
+                                 (let [receipt (when-not *custody-terminal-release*
+                                                 (NativeReleaseReceipt. (runtime-field rt :owner-root) #?(:clj (Object.) :cljs (js-obj))))
+                                       backend (release-context-backend rt)
+                                       completion (when receipt (lifecycle/completion backend receipt))]
+                                   (put state 1 reason) (put state 2 receipt) (put state 3 completion)
+                                   (when completion (swap! pending-releases assoc (runtime-field rt :owner-root) backend))
                                      ;; Retain before any ownership mutation; raw witnesses keep
                                      ;; their immutable first-claim ancestry.
-                                     (retain-world-cleanup! rt reason)
-                                     (put state 0 :releasing)
-                                     (doseq [ob (vec (all-obligations rt)) :when (nil? (a ob o-run))]
+                                   (retain-world-cleanup! rt reason)
+                                   (put state 0 :releasing)
+                                   (doseq [ob (vec (all-obligations rt)) :when (nil? (a ob o-run))]
+                                     (reject-dependent! rt ob {:reason reason}))
+                                   (if (custody-state rt)
+                                     (binding [*world-release-cancellation* {:reason reason}]
+                                       ;; The reference closes explicit Scopes before selecting
+                                       ;; surviving direct Root Runs; collateral Run release may
+                                       ;; remove other candidates during that Scope cascade.
+                                       (each-copy! [scope (custody-order
+                                                           (or (scope-children rt (runtime-field rt :owner-root)) empty-members)
+                                                           owner-id)]
+                                                   (close-owner! rt scope))
+                                       (doseq [run (sort-by (comp pr-str run-id)
+                                                            (filter #(identical? (runtime-field rt :owner-root) (a % r-owner))
+                                                                    (vec (items (a (runtime-field rt :counters) 6)))))]
+                                         (cancel! rt run)))
+                                     (do
+                                       (doseq [run (sort-by #(a % r-gen) > (vec (items (a (runtime-field rt :counters) 6))))]
+                                         (retire! rt run {:reason reason :node (a run r-node)}))
+                                       (each-copy! [scope (or (scope-children rt (runtime-field rt :owner-root)) empty-members)]
+                                                   (close-owner! rt scope))))
+                                   (custody-claim-owner! rt (runtime-field rt :owner-root))
+                                   (doseq [node (vec (values (runtime-field rt :nodes)))]
+                                     (when-let [control (a node n-mailbox)]
+                                       (doseq [consumer (vec (concat (values (a control m-pending))
+                                                                     (values (a control m-reservations))))]
+                                         (refresh-mailbox-owner! rt consumer (a node n-owner))
+                                         (when (and (= :host (a consumer b-kind)) (#{:pending :reserved} (a consumer b-state)))
+                                           (queue-mailbox-rejection! rt consumer reason :explicit))))
+                                     (owner! rt node nil)
+                                     (doseq [ob (vec (items (a node n-dependents)))]
                                        (reject-dependent! rt ob {:reason reason}))
-                                     (doseq [run (sort-by #(a % r-gen) > (vec (items (a (runtime-field rt :counters) 6))))]
-                                       (retire! rt run {:reason reason :node (a run r-node)}))
-                                     (each-copy! [scope (or (scope-children rt (runtime-field rt :owner-root)) empty-members)]
-                                                 (close-owner! rt scope))
-                                     (doseq [node (vec (values (runtime-field rt :nodes)))]
-                                       (when-let [control (a node n-mailbox)]
-                                         (doseq [consumer (vec (concat (values (a control m-pending))
-                                                                       (values (a control m-reservations))))]
-                                           (refresh-mailbox-owner! rt consumer (a node n-owner))
-                                           (when (and (= :host (a consumer b-kind)) (#{:pending :reserved} (a consumer b-state)))
-                                             (queue-mailbox-rejection! rt consumer reason :explicit))))
-                                       (owner! rt node nil)
-                                       (doseq [ob (vec (items (a node n-dependents)))]
-                                         (reject-dependent! rt ob {:reason reason}))
                                        ;; Minimal physical run witnesses may still point here.
                                        ;; Ordinary source/body/cache captures do not survive.
-                                       (fields! [field [n-body n-descriptor n-value n-public-signal n-deferred n-mailbox
-                                                        n-creator n-creator-source n-resume]] (put node field nil))
-                                       (clear-members! (a node n-tokens)))
-                                     (doseq [id (keys (map-value (a (runtime-field rt :managed-cells) 1)))]
-                                       (clear-cell-gc-receipt! rt id))
-                                     #?(:clj (.clear ^java.util.Map (runtime-field rt :nodes))
-                                        :cljs (.clear (.-buckets (runtime-field rt :nodes))))
-                                     #?(:clj (.clear ^java.util.Map (a (runtime-field rt :managed-cells) 0))
-                                        :cljs (.clear (.-buckets (a (runtime-field rt :managed-cells) 0))))
-                                     (let [events (runtime-field rt :events)
-                                           retained (vec (filter #(#{7 9} (alength ^objects %)) (items events)))]
-                                       #?(:clj (.clear ^java.util.ArrayDeque events) :cljs (.clear events))
-                                       (doseq [event retained] (push! events event)))
-                                     #?(:clj (do (.clear ^java.util.ArrayDeque (runtime-field rt :work))
-                                                 (.clear ^java.util.PriorityQueue (runtime-field rt :ready))
-                                                 (.clear ^java.util.ArrayDeque (runtime-field rt :gc)))
-                                        :cljs (do (.clear (runtime-field rt :work))
-                                                  (set! (.-length (runtime-field rt :ready)) 0)
-                                                  (.clear (runtime-field rt :gc))))
-                                     (let [live (runtime-field rt :liveness)]
-                                       #?(:clj (.clear ^java.util.ArrayDeque (a live 0)) :cljs (.clear (a live 0)))
-                                       (fields! [slot [1 2 3]] (clear-members! (a live slot))))
-                                     (reset! (runtime-field rt :extension-state) {:values {} :shadowed #{} :map-groups #{}})
+                                     (fields! [field [n-body n-descriptor n-value n-public-signal n-deferred n-mailbox
+                                                      n-creator n-creator-source n-resume]] (put node field nil))
+                                     (clear-members! (a node n-tokens)))
+                                   (doseq [id (keys (map-value (a (runtime-field rt :managed-cells) 1)))]
+                                     (clear-cell-gc-receipt! rt id))
+                                   #?(:clj (.clear ^java.util.Map (runtime-field rt :nodes))
+                                      :cljs (.clear (.-buckets (runtime-field rt :nodes))))
+                                   #?(:clj (.clear ^java.util.Map (a (runtime-field rt :managed-cells) 0))
+                                      :cljs (.clear (.-buckets (a (runtime-field rt :managed-cells) 0))))
+                                   (let [events (runtime-field rt :events)
+                                         retained (vec (filter (fn [event]
+                                                                 (or (custody-event? event)
+                                                                     (#{7 9} (alength ^objects event))
+                                                                     (not (identical? rt (a (a event 0) n-runtime)))))
+                                                               (items events)))]
+                                     #?(:clj (.clear ^java.util.ArrayDeque events) :cljs (.clear events))
+                                     (doseq [event retained] (push! events event)))
+                                   #?(:clj (do (.clear ^java.util.ArrayDeque (runtime-field rt :work))
+                                               (.removeIf ^java.util.PriorityQueue (runtime-field rt :ready)
+                                                          (reify java.util.function.Predicate
+                                                            (test [_ node] (identical? rt (a node n-runtime)))))
+                                               (.removeIf ^java.util.ArrayDeque (runtime-field rt :gc)
+                                                          (reify java.util.function.Predicate
+                                                            (test [_ event] (identical? rt (a event 0))))))
+                                      :cljs (do (.clear (runtime-field rt :work))
+                                                (let [heap (runtime-field rt :ready)
+                                                      retained (.filter heap (fn [node] (not (identical? rt (a node n-runtime)))))]
+                                                  (set! (.-length heap) 0)
+                                                  (doseq [node (array-seq retained)]
+                                                    (ready-add! rt node)))
+                                                (.removeWhere (runtime-field rt :gc) (fn [event] (identical? rt (a event 0))))))
+                                   (let [live (runtime-field rt :liveness)]
+                                     #?(:clj (.clear ^java.util.ArrayDeque (a live 0)) :cljs (.clear (a live 0)))
+                                     (fields! [slot [1 2 3]] (clear-members! (a live slot))))
+                                   (reset! (runtime-field rt :extension-state) {:values {} :shadowed #{} :map-groups #{}})
+                                   (when *custody-terminal-release*
+                                     (when-let [parent (runtime-field rt :parent)]
+                                       (when (find! (runtime-field parent :nodes) [:fork (runtime-field rt :world)])
+                                         (let [n (put (runtime-field parent :counters) 2
+                                                      (inc (max (long (a (runtime-field parent :counters) 1))
+                                                                (long (a (runtime-field parent :counters) 2)))))]
+                                           (push! (runtime-field parent :events)
+                                                  (doto (slots 5) (put 0 :fork-released) (put 1 parent) (put 2 parent)
+                                                        (put 3 (runtime-field rt :world)) (put 4 n)))))))
+                                   (when-not *custody-terminal-release*
                                      (boundary! rt (when (runtime-field rt :audit)
                                                      {:t :release-request :w (runtime-field rt :world)
-                                                      :release (release-id rt) :reason (diagnostic-value reason true)}))
-                                     completion)))))]
-    (drain! rt)
+                                                      :release (release-id rt) :reason (diagnostic-value reason true)})))
+                                   completion)))))]
+    (when-not *custody-terminal-release*
+      (drain! rt dispatch)
+      (drain! rt))
     completion))
 
 (defn- lifecycle-await! [requested completion resolve reject]
-  (let [rt (canonical-runtime requested) target (rtp/release-runtime completion)]
-    (when-not (instance? OwnedRuntime target)
+  (let [rt (canonical-runtime requested)
+        release? (satisfies? rtp/PWorldRelease completion)
+        target (when release? (rtp/release-runtime completion))]
+    (when (and release? (not (instance? OwnedRuntime target)))
       (throw (ex-info "Lifecycle await requires a native completion" {:error :unsupported-operation})))
     (when-not (and (current-activation) (same-cell-world? rt (a (current-activation) 0)))
       (throw (ex-info "Lifecycle await requires ordinary execution" {:error :unsupported-operation})))
-    (release-wait-admission! target)
+    (when release? (release-wait-admission! target))
     (locked rt (check-running! (a (current-activation) 1)))
     (let [resolve (cps-runtime/scope-continuation resolve) reject (cps-runtime/scope-continuation reject)]
       (await-host-effect! (fn [ready failed] (lifecycle/observe! completion ready failed)) resolve reject)
@@ -5798,23 +5948,38 @@
                                :kind kind :order order}))
               capability))))
 
-(defn- check-scope-close! [rt owner]
-  ;; Scope disposal of affine worlds needs authenticated custody. Until that
-  ;; integration exists the whole local cascade refuses before any mutation.
-  (when-not (root-owner? owner)
-    (each! [node (a (owner-storage owner) r-owned)]
-           (when (= :fork (a node n-kind))
-             (throw (ex-info "Execution scope contains unsupported affine cleanup"
-                             {:error :unsupported-affine-scope-close}))))
-    (each! [run (owner-child-runs owner)] (check-scope-close! rt run)))
-  (each! [scope (or (scope-children rt owner) empty-members)] (check-scope-close! rt scope)))
+(defn- check-scope-close! [rt initial-owner]
+  (when-let [service (custody-state rt)]
+    (let [index (:index @service) caps (:caps @service)
+          ids (loop [todo [initial-owner] seen #{} found #{}]
+                (if-let [owner (peek todo)]
+                  (if (contains? seen owner) (recur (pop todo) seen found)
+                      (let [bucket (find! index (custody-holder rt owner))
+                            nodes (when-not (root-owner? owner) (items (a (owner-storage owner) r-owned)))
+                            scopes (items (or (scope-children rt owner) empty-members))
+                            runs (items (owner-child-runs owner))
+                            collateral (mapcat #(values (a % n-runs)) nodes)
+                            predecessor (when (and (not (root-owner? owner)) (not (scope-owner? owner))
+                                                   (identical? owner (current (a owner r-node))))
+                                          (let [p (find! (a (a owner r-node) n-runs) (a owner r-pred))]
+                                            (when (and p (= :stale (a p r-status))) [p])))]
+                        (recur (into (pop todo) (concat scopes runs collateral predecessor))
+                               (conj seen owner) (into found (if bucket (items bucket) []))))) found))
+          leaves (map #(find! caps %) ids)]
+      (doseq [cap leaves] (custody-shape! rt cap))
+      (custody-release-preflight! rt (set (map :target-root leaves))))))
 
 (defn- close-owner! [rt scope]
   (when (and (not (contains? *retiring-owners* scope)) (a (owner-storage scope) s-open))
     (binding [*retiring-owners* (assoc *retiring-owners* scope (run-anchor rt scope))]
+      (custody-claim-owner! rt scope)
       (retain-cleanup! rt scope)
-      (each-copy! [child (or (scope-children rt scope) empty-members)] (close-owner! rt child))
-      (each-copy! [run (owner-child-runs scope)] (cancel! rt run))
+      (each-copy! [child (if (custody-state rt)
+                           (custody-order (or (scope-children rt scope) empty-members) owner-id)
+                           (or (scope-children rt scope) empty-members))] (close-owner! rt child))
+      (each-copy! [run (if (custody-state rt)
+                         (custody-order (owner-child-runs scope) run-id)
+                         (owner-child-runs scope))] (cancel! rt run))
       (release-owned! rt scope)
       (let [data (owner-storage scope) state (scope-state rt) parent (a data s-parent)
             node (owner-node parent)]
@@ -5848,3 +6013,545 @@
   (let [rt (canonical-runtime requested) id (owner-cap-id rt capability)
         id (if (and (vector? id) (= :run (first id))) [(nth id 2) (nth id 3)] id)]
     (join-ready? rt id)))
+
+;; Family-local affine custody. This service is allocated only by publication;
+;; saved authority contains identities and IDs, never borrowed arena storage.
+(defn- custody-order [members key-fn]
+  (let [ordered (sort-by (comp pr-str key-fn) (items members))]
+    #?(:clj (java.util.ArrayList. ^java.util.Collection ordered)
+       :cljs (into-array ordered))))
+(defn- custody-state [rt]
+  (let [state (a (runtime-field rt :counters) 11)]
+    (when-not (map? state) state)))
+(defn- custody-state! [rt]
+  (or (custody-state rt)
+      (let [index (or (a (runtime-field rt :counters) 10) (id-dict))
+            state (volatile! {:claims {} :records {} :next-claim 0 :pending {} :targets {} :phases {} :worlds (runtime-field rt :family) :caps (a (runtime-field rt :counters) 7) :index index :refreshing? false})]
+        (put (runtime-field rt :counters) 10 index)
+        (put (runtime-field rt :counters) 11 state)
+        state)))
+(defn- custody-world-phase [rt]
+  (when-let [state (custody-state rt)] (get-in @state [:phases (runtime-field rt :owner-root)])))
+(defn- custody-holder [rt owner]
+  (->CustodyHolder (runtime-field rt :owner-root) (runtime-field rt :world)
+                   (cond (root-owner? owner) :root (scope-owner? owner) :scope :else :run)
+                   (owner-id owner)))
+(defn- custody-owner-holds? [rt owner]
+  (when (a (runtime-field rt :counters) 11)
+    (when-let [bucket (find! (a (runtime-field rt :counters) 10) (custody-holder rt owner))]
+      (pos? (count! bucket)))))
+(defn- custody-holder-view [holder]
+  (if (instance? CustodyHolder holder)
+    [:execution-owner (:world holder) (:kind holder) (:id holder)] holder))
+(defn- custody-cap-view [cap]
+  (select-keys cap [:world :scope :holder :holder-acquisition :disposition :published?
+                    :op :pred :successors :durable? :bases :kind]))
+(defn- custody-project [rt]
+  (let [service (or (custody-state rt) (:service *custody-frame*))
+        state (some-> service deref)]
+    {:custody {:by-holder (if-let [index (or (:index state) (a (runtime-field rt :counters) 10))]
+                            (into {} (for [[holder bucket] (map-value index)]
+                                       [(custody-holder-view holder) (set (items bucket))])) {})
+               :claims (into {} (for [[id claim] (:claims state)]
+                                  [id (dissoc claim :origin-key)]))}
+     :records (or (:records state) {}) :next-claim (or (:next-claim state) 0)}))
+(defn- custody-live? [cap]
+  (contains? #{:open :sealed :settling :incomplete} (:disposition cap)))
+(defn- custody-put! [rt id cap]
+  (let [state (some-> (or (custody-state rt) (:service *custody-frame*)) deref)
+        caps (or (:caps state) (a (runtime-field rt :counters) 7))
+        index (or (:index state) (a (runtime-field rt :counters) 10))
+        previous (find! caps id)]
+    (when (and previous (custody-live? previous))
+      (when-let [bucket (find! index (:holder-key previous))]
+        (remove! bucket id)
+        (when (zero? (count! bucket)) (dissoc! index (:holder-key previous)))))
+    (assoc! caps id cap)
+    (when (custody-live? cap)
+      (add! (or (find! index (:holder-key cap)) (assoc! index (:holder-key cap) (members))) id))
+    cap))
+(defn- custody-operation-reserved? [rt op]
+  (or (nil? op)
+      (contains? (:records @(custody-state! rt)) op)
+      (some #(= op (:op %)) (values (a (runtime-field rt :counters) 7)))
+      (some #(= op (:settlement-op %)) (vals (:claims @(custody-state! rt))))))
+(defn- custody-fresh-operation! [rt op]
+  (when (custody-operation-reserved? rt op)
+    (throw (ex-info "Operation identity is already reserved" {:error :op-exists :op op})))
+  op)
+(defn- custody-owner-acquisition [rt owner]
+  (world-open! rt)
+  (cond (or (root-owner? owner) (scope-owner? owner)) nil
+        :else
+        (let [node (a owner r-node) status (a owner r-status)]
+          (when-not (and (identical? owner (current node))
+                         (or (#{:running :parked} status) (and (= :completed status) (reactive? owner))))
+            (throw (ex-info "Custody destination is not an admitted current owner" {:error :invalid-destination})))
+          (if (= :running status)
+            (let [frame (current-activation)]
+              (when-not (and frame (same-cell-world? rt (a frame 0)) (identical? owner (a frame 1)))
+                (throw (ex-info "Custody acceptance requires destination activation" {:error :missing-destination-order})))
+              (inc (long (a frame 2))))
+            :exact-run))))
+(defn- custody-commit-order! [order]
+  (when (integer? order) (put (current-activation) 2 order)))
+(defn- custody-publication-owner [rt options]
+  (let [owner (if-let [cap (:owner options)] (resolve-owner rt cap) (selected-owner rt))]
+    (custody-owner-acquisition rt owner)
+    owner))
+(defn- custody-publish! [rt child owner id]
+  (let [service (custody-state! rt) holder (custody-holder rt owner)
+        order (custody-owner-acquisition rt owner) token #?(:clj (Object.) :cljs (js-obj))]
+    (put (runtime-field child :counters) 10 (a (runtime-field rt :counters) 10))
+    (put (runtime-field child :counters) 11 service)
+    (custody-put! rt id {:world (runtime-field child :world) :target-root (runtime-field child :owner-root)
+                         :scope #{} :holder (custody-holder-view holder) :holder-key holder
+                         :holder-acquisition order :disposition :open :published? true
+                         :op nil :pred nil :successors [] :durable? false :bases {} :token token})
+    (custody-commit-order! order)
+    (NativeWorldCapability. (runtime-field rt :family-id) id token)))
+(defn- custody-bearer! [rt bearer phases]
+  (when-not (and (instance? NativeWorldCapability bearer)
+                 (identical? (runtime-field rt :family-id) (.-family ^NativeWorldCapability bearer)))
+    (throw (ex-info "Capability belongs to another family" {:error :stale-capability})))
+  (let [id (.-id ^NativeWorldCapability bearer) cap (find! (a (runtime-field rt :counters) 7) id)]
+    (when-not (and cap (identical? (:token cap) (.-token ^NativeWorldCapability bearer))
+                   (contains? phases (:disposition cap)))
+      (throw (ex-info "Capability has been consumed" {:error :stale-capability})))
+    [id cap]))
+(defn- custody-caller! [rt cap caller]
+  (let [owner (resolve-owner rt caller) holder (custody-holder rt owner)]
+    (when (and (not (or (root-owner? owner) (scope-owner? owner)))
+               (not (or (#{:running :parked} (a owner r-status))
+                        (and (= :completed (a owner r-status)) (reactive? owner)))))
+      (throw (ex-info "Caller Run is not admitted" {:error :stale-capability})))
+    (when-not (= holder (:holder-key cap))
+      (throw (ex-info "Caller does not hold this capability" {:error :stale-capability})))
+    holder))
+(defn fork-owned-world! [requested options]
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) world (get options :world-id [:w (random-uuid)])]
+    (when (or (not= #{} (get options :systems #{})) (not= :following (get options :mode :following))
+              (seq (dissoc options :world-id :owner :systems :mode)))
+      (throw (ex-info "Native fork options are outside this profile" {:error :unsupported-operation :operation :fork-options})))
+    (locked rt
+            (world-open! rt)
+            (let [owner (custody-publication-owner rt options) id [:cap (random-uuid)]
+                  child (fork-custody-copy! rt world owner id)
+                  cap (find! (a (runtime-field rt :counters) 7) id)]
+              {:context child :capability (NativeWorldCapability. (runtime-field rt :family-id) id (:token cap))}))))
+(defn fork-parked! [rt world]
+  (:context (fork-owned-world! rt {:world-id world})))
+(defn transfer-owned-world! [requested bearer caller destination acceptor options]
+  (admit-native-effect!)
+  (when (seq (dissoc options :operation-id))
+    (throw (ex-info "Unsupported custody transfer options" {:error :unsupported-operation})))
+  (when-not (and (instance? OwnedRuntime requested) (instance? OwnedRuntime destination)
+                 (identical? (:family-id requested) (:family-id destination)))
+    (throw (ex-info "Independent-family custody requires a coordinator" {:error :unsupported-operation :operation :cross-family-custody})))
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) dest (canonical-runtime destination)]
+    (locked rt
+            (check-native-caller! rt)
+            (let [[id cap] (custody-bearer! rt bearer #{:open})
+                  from (custody-caller! rt cap caller) owner (resolve-owner dest acceptor)
+                  holder (custody-holder dest owner) order (custody-owner-acquisition dest owner)
+                  _ (when (seq (:scope cap))
+                      (throw (ex-info "Nonempty settlement scopes require later integration" {:error :unsupported-operation})))
+                  _ (when (or (custody-automatic-holder? rt holder)
+                              (contains? (custody-protected-roots rt) (runtime-field dest :owner-root)))
+                      (custody-disposal-preflight! rt cap))
+                  op (get options :operation-id [:transfer (random-uuid)])
+                  _ (custody-fresh-operation! rt op) successor [:cap (random-uuid)]
+                  token #?(:clj (Object.) :cljs (js-obj)) service (custody-state! rt)]
+              (vswap! service assoc-in [:records op]
+                      {:op op :cap id :kind :transfer :payload-hash {:successor successor :holder (custody-holder-view holder)}
+                       :steps [] :bases {} :effects-released? true})
+              (custody-put! rt id (assoc cap :disposition :transferred :op op :successors [successor]))
+              (custody-put! rt successor (assoc cap :holder-key holder :holder (custody-holder-view holder)
+                                                :holder-acquisition order :pred id :op nil :successors [] :token token))
+              (custody-commit-order! order)
+              (boundary! rt (when (runtime-field rt :audit)
+                              (cond-> {:t :t32 :k id :successor successor :op op
+                                       :caller (custody-holder-view from) :holder (custody-holder-view holder)
+                                       :acceptor (custody-holder-view holder)}
+                                (integer? order) (assoc :acceptance {:th :engine :order order}))))
+              (NativeWorldCapability. (runtime-field rt :family-id) successor token)))))
+
+(declare observe-disposal-backend!)
+(deftype ^:private NativeDisposalBackend [state]
+  rtp/PWorldCustody
+  (fork-owned-world! [_ _] (throw (ex-info "Completion grants no custody" {:error :unsupported-operation})))
+  (transfer-owned-world! [_ _ _ _ _ _] (throw (ex-info "Completion grants no custody" {:error :unsupported-operation})))
+  (discard-owned-world! [_ _ _ _] (throw (ex-info "Completion grants no custody" {:error :unsupported-operation})))
+  (observe-owned-world-disposal! [_ receipt resolve reject] (observe-disposal-backend! state receipt resolve reject)))
+(defn- disposal-notify! [state id]
+  (let [observer (loop []
+                   (let [before @state observer (when (:done? before) (get-in before [:observers id]))]
+                     (when observer
+                       (if (compare-and-set! state before (update before :observers dissoc id))
+                         observer (recur)))))]
+    (when-let [[resolve context] observer]
+      (host-callback-scope context #(binding [cps/*in-trampoline* false]
+                                      (cps/with-trampoline (cps/invoke-continuation resolve %))) nil))))
+
+(defn- observe-disposal-backend! [state receipt resolve _reject]
+  (let [before @state]
+    (when-not (identical? receipt (:receipt before))
+      (throw (ex-info "Foreign disposal receipt" {:error :foreign-disposal-receipt})))
+    (when-let [frame (current-activation)]
+      (let [target (:runtime before)
+            roots (if target (locked target (custody-reachable-roots target false))
+                      #{(.-target ^NativeDiscardReceipt receipt)})]
+        (when (contains? roots (runtime-field (a frame 0) :owner-root))
+          (throw (ex-info "Disposal cannot await a physical frame in its target cleanup closure" {:error :self-discard-join}))))
+      (when (or (active-operation) (active-mailbox-callback))
+        (throw (ex-info "Protected callbacks cannot observe ordinary disposal" {:error :cleanup-only})))
+      (locked (a frame 0) (check-running! (a frame 1))))
+    (let [id (random-uuid) resolve (cps-runtime/scope-continuation resolve)]
+      (swap! state assoc-in [:observers id] [resolve ec/*execution-context*])
+      (when (:done? @state) (disposal-notify! state id))
+      (fn [] (swap! state update :observers dissoc id) nil))))
+(defn observe-owned-world-disposal! [_ _ _ _]
+  (throw (ex-info "Disposal observations require their typed backend" {:error :foreign-disposal-receipt})))
+(defn- custody-target! [rt cap]
+  (let [target (find! (runtime-field rt :family) (:world cap))]
+    (when-not (and target (identical? (:target-root cap) (runtime-field target :owner-root)))
+      (throw (ex-info "Capability target is unavailable" {:error :missing-world})))
+    target))
+(defn- custody-shape! [rt cap]
+  (let [target (custody-target! rt cap)]
+    (when (or (seq (:scope cap))
+              (and (not= :open (:disposition cap))
+                   (or (not= :discard (:kind cap))
+                       (seq (:steps (get-in @(custody-state! rt) [:records (:op cap)])))))
+              (not (empty-dict? (a (runtime-field target :timers) 0)))
+              (some #(contains? #{:deferred :mailbox} (a % n-kind)) (values (runtime-field target :nodes))))
+      (throw (ex-info "Target resources require later custody integration"
+                      {:error :unsupported-operation :operation :custody-resource-profile})))))
+(defn- custody-disposal-preflight! [rt cap]
+  (custody-shape! rt cap)
+  (custody-release-preflight! rt [(:target-root cap)]))
+
+(defn- custody-automatic-holder? [rt holder]
+  (when (instance? CustodyHolder holder)
+    (case (:kind holder)
+      :run true
+      :scope
+      (let [service (custody-state rt) world (find! (:worlds @service) (:world holder))
+            state (when (and world (not (custody-data-world? world))
+                             (identical? (:root holder) (runtime-field world :owner-root)))
+                    (scope-state world))
+            scope (when state (find! (a state 0) (:id holder)))]
+        (when-not scope
+          (throw (ex-info "Custody holder Scope is absent" {:error :invalid-custody-holder})))
+        (loop [owner (owner-parent scope)]
+          (cond (nil? owner) false
+                (root-owner? owner) false
+                (scope-owner? owner) (recur (owner-parent owner))
+                :else true)))
+      false)))
+
+(defn- custody-protected-roots [rt]
+  (when-let [service (custody-state rt)]
+    (let [state @service caps (:caps state)
+          seeds (set (concat
+                      (for [[_ claim] (:claims state) :let [cap (find! caps (:cap claim))]] (:target-root cap))
+                      (for [[_ debts] (:targets state) [_ debt] debts] (:target-root debt))
+                      (for [[id _] (:pending state) :let [cap (find! caps id)] :when (custody-live? cap)] (:target-root cap))
+                      (for [cap (values caps)
+                            :when (and (custody-live? cap) (custody-automatic-holder? rt (:holder-key cap)))]
+                        (:target-root cap))))]
+      (custody-reachable-roots rt true seeds))))
+
+(defn- custody-resource-ingress! [rt]
+  ;; Called under the shared family gate before resource/cursor/transport
+  ;; admission. No scan or additional allocation in worlds without custody.
+  (when (and (custody-state rt)
+             (contains? (custody-protected-roots rt) (runtime-field rt :owner-root)))
+    (throw (ex-info "New resources are outside preserved custody cleanup profile"
+                    {:error :unsupported-operation :operation :custody-resource-ingress}))))
+
+(defn- custody-pending! [rt id cap]
+  (let [service (custody-state! rt)]
+    (or (get-in @service [:pending id])
+        (let [target (custody-target! rt cap)
+              receipt (NativeDiscardReceipt. (:target-root cap) #?(:clj (Object.) :cljs (js-obj)))
+              state (atom {:receipt receipt :done? false :observers {} :runtime target :service service})
+              completion (lifecycle/discard-completion (NativeDisposalBackend. state) receipt)
+              pending {:cap id :target target :state state :completion completion :phase :preparing}]
+          (vswap! service assoc-in [:pending id] pending)
+          (assoc! (a (runtime-field rt :counters) 7) id (assoc cap :completion completion))
+          pending))))
+(defn- custody-event? [event] (contains? #{:custody :fork-released} (a event 0)))
+(defn- custody-event-view [event]
+  (if (= :fork-released (a event 0))
+    {:fork-released (a event 3) :seq (a event 4)}
+    (let [rt (a event 1) id (a event 3) claim (get-in @(custody-state rt) [:claims id])]
+      {:custody-dispatch id :cap (or (:cap claim) (a event 5))
+       :op (or (:settlement-op claim) (a event 6)) :seq (a event 4)})))
+
+(defn- custody-claim-owner! [rt owner]
+  (when-let [service (custody-state rt)]
+    (let [holder (custody-holder rt owner) bucket (find! (a (runtime-field rt :counters) 10) holder)]
+      (doseq [id (sort-by pr-str (if bucket (vec (items bucket)) []))]
+        (let [cap (find! (a (runtime-field rt :counters) 7) id)
+              [claim-id op] (loop [n (:next-claim @service)]
+                              (let [claim [:custody-claim n] op (or (:op cap) [:custody-op claim])]
+                                (if (or (contains? (:claims @service) claim)
+                                        (and (nil? (:op cap)) (custody-operation-reserved? rt op)))
+                                  (recur (inc n))
+                                  (do (vswap! service assoc :next-claim (inc n)) [claim op]))))
+              claim {:cap id :holder [:cleanup claim-id] :origin (custody-holder-view holder) :origin-key holder
+                     :anchor (mapv (fn [local]
+                                     [:execution-owner (runtime-field rt :world)
+                                      (cond (= local (runtime-field rt :root)) :root
+                                            (and (vector? local) (= 3 (count local))
+                                                 (= [:scope :id] (subvec local 0 2))) :scope :else :run) local])
+                                   (butlast (run-anchor rt owner)))
+                     :target-world (:world cap) :kind :discard :settlement-op op :phase :dispatch-pending}
+              target (custody-target! rt cap)]
+          (custody-pending! rt id cap)
+          (vswap! service assoc-in [:claims claim-id] claim)
+          (vswap! service assoc-in [:targets (:root holder) claim-id]
+                  {:origin-world (runtime-field rt :world) :target-world (:world cap)
+                   :target-root (:target-root cap) :cap id :op op})
+          (custody-put! rt id (assoc (find! (a (runtime-field rt :counters) 7) id)
+                                     :holder [:cleanup claim-id] :holder-key [:cleanup claim-id] :holder-acquisition nil))
+          (let [seqno (put (runtime-field target :counters) 2
+                           (inc (max (long (a (runtime-field target :counters) 1))
+                                     (long (a (runtime-field target :counters) 2)))))]
+            (push! (runtime-field rt :events)
+                   (doto (slots 8) (put 0 :custody) (put 1 rt) (put 2 target) (put 3 claim-id) (put 4 seqno)
+                         (put 5 id) (put 6 op) (put 7 (:token cap))))))))))
+(defn- custody-adopt! [rt previous successor order]
+  (when-let [_ (custody-state rt)]
+    (let [holder (custody-holder rt previous) dest (custody-holder rt successor)
+          bucket (find! (a (runtime-field rt :counters) 10) holder)]
+      (doseq [id (if bucket (vec (items bucket)) [])
+              :let [cap (find! (a (runtime-field rt :counters) 7) id) acquisition (:holder-acquisition cap)]
+              :when (and (integer? acquisition) (< acquisition order))]
+        (custody-put! rt id (assoc cap :holder-key dest :holder (custody-holder-view dest)))))))
+(defn- custody-reachable-roots
+  ([rt prospective?] (custody-reachable-roots rt prospective? [(runtime-field rt :owner-root)]))
+  ([rt prospective? seeds]
+   (let [service (or (custody-state rt) (:service *custody-frame*)) state (some-> service deref)
+         caps (:caps state)]
+     (loop [todo (vec seeds) seen #{}]
+       (if-let [root (peek todo)]
+         (if (contains? seen root) (recur (pop todo) seen)
+             (let [held (when (and prospective? caps)
+                          (for [cap (values caps)
+                                :when (and (custody-live? cap) (instance? CustodyHolder (:holder-key cap))
+                                           (identical? root (:root (:holder-key cap))))] (:target-root cap)))
+                   debts (map :target-root (vals (get-in state [:targets root])))]
+               (recur (into (pop todo) (concat held debts)) (conj seen root)))) seen)))))
+
+(defn- custody-release-preflight!
+  ([rt] (custody-release-preflight! rt [(runtime-field rt :owner-root)]))
+  ([rt seeds]
+   (let [service (custody-state rt) state (some-> service deref)
+         required (custody-reachable-roots rt true seeds)
+         caps (or (:caps state) (a (runtime-field rt :counters) 7))
+         selected (concat
+                   (for [cap (values caps)
+                         :when (and (instance? CustodyHolder (:holder-key cap))
+                                    (contains? required (:root (:holder-key cap))))] cap)
+                   (for [root required [_ debt] (get-in state [:targets root])] (find! caps (:cap debt))))]
+     (doseq [cap selected :when (custody-live? cap)]
+       (custody-shape! rt cap)
+       (when-not (and (empty? (:scope cap))
+                      (or (= :open (:disposition cap))
+                          (and (= :discard (:kind cap))
+                               (empty? (:steps (get-in state [:records (:op cap)]))))))
+         (throw (ex-info "Settlement executor is outside this custody profile"
+                         {:error :unsupported-operation :operation :custody-settlement}))))
+    ;; The bounded native fork profile has no foreign entity handshake.
+    ;; Inspect both directions only when an endpoint is in this closure.
+     (doseq [world (values (or (:worlds state) (runtime-field rt :family)))
+             :when (not (custody-data-world? world))
+             ob (all-obligations world)
+             :let [debtor (a ob o-debtor) creditor (a ob o-creditor-node)
+                   debtor-rt (when debtor (a debtor n-runtime))
+                   creditor-rt (when creditor (a creditor n-runtime))
+                   involved? (or (contains? required (runtime-field world :owner-root))
+                                 (and debtor-rt (contains? required (runtime-field debtor-rt :owner-root)))
+                                 (and creditor-rt (contains? required (runtime-field creditor-rt :owner-root))))]
+             :when involved?]
+       (when (or (and debtor-rt (not (same-cell-world? world debtor-rt)))
+                 (and creditor-rt (not (same-cell-world? world creditor-rt))))
+         (throw (ex-info "Foreign entity obligations require the coordinated lifecycle"
+                         {:error :unsupported-operation :operation :world-release-lineage})))))))
+
+(defn- custody-release-ready? [rt]
+  (let [service (or (custody-state rt) (:service *custody-frame*)) state (some-> service deref)
+        caps (:caps state) worlds (:worlds state)]
+    (loop [todo [rt] seen #{}]
+      (if-let [world (peek todo)]
+        (let [data? (custody-data-world? world)
+              root (if data? (:root world) (runtime-field world :owner-root)) todo (pop todo)]
+          (cond
+            (contains? seen root) (recur todo seen)
+            (and (not data?)
+                 (or (= :live (a (runtime-field world :lifecycle) 0))
+                     (not (join-ready? world (runtime-field world :root))))) false
+            :else
+            (let [debts (vals (get-in state [:targets root]))
+                  destinations (map #(when worlds (find! worlds (:target-world %))) debts)]
+              (if (or (some nil? destinations)
+                      (some (fn [debt]
+                              (let [cap (when caps (find! caps (:cap debt)))
+                                    record (get-in state [:records (:op debt)])]
+                                (not (and (= :discarded (:disposition cap)) (= (:op debt) (:op cap))
+                                          (= (:cap debt) (:cap record)) (:effects-released? record))))) debts))
+                false
+                (recur (into todo destinations) (conj seen root)))))) true))))
+(defn- custody-debts? [rt] (not (custody-release-ready? rt)))
+(defn- custody-targets-view [rt]
+  (let [service (or (custody-state rt) (:service *custody-frame*))]
+    (into {} (for [[_ debts] (:targets (some-> service deref)) :when (seq debts)]
+               [(:origin-world (val (first debts)))
+                (into {} (for [[id debt] debts] [id (select-keys debt [:target-world :cap :op])]))]))))
+
+(defn- custody-seal! [rt id cap op action]
+  (let [service (custody-state! rt) target (custody-target! rt cap)
+        pending (custody-pending! rt id cap)]
+    ;; Seal before cancellation can claim this cap through its own target Run.
+    (custody-put! rt id (assoc (find! (a (runtime-field rt :counters) 7) id)
+                               :disposition :sealed :kind :discard :op op))
+    (vswap! service assoc-in [:phases (:target-root cap)]
+            {:seal-seq nil :cap id})
+    (doseq [run (vec (items (a (runtime-field target :counters) 6)))
+            :when (work-status? (a run r-status))] (cancel! target run))
+    (vswap! service assoc-in [:phases (:target-root cap) :seal-seq]
+            (max (long (a (runtime-field target :counters) 1)) (long (a (runtime-field target :counters) 2))))
+    (boundary! target (when (runtime-field target :audit) action))
+    pending))
+(defn discard-owned-world! [requested bearer caller options]
+  (admit-native-effect!)
+  (when (seq (dissoc options :operation-id))
+    (throw (ex-info "Unsupported discard options" {:error :unsupported-operation})))
+  (admit-world-switch! requested)
+  (let [rt (canonical-runtime requested) dispatch @(runtime-field rt :arena-cell)
+        completion (locked rt
+                           (check-native-caller! rt)
+                           (let [[id cap] (custody-bearer! rt bearer #{:open :sealed :settling :discarded})]
+                             (if (and (:completion cap) (not= :open (:disposition cap)))
+                               (do (when (and (contains? options :operation-id)
+                                              (not= (:operation-id options) (:op cap)))
+                                     (throw (ex-info "Discard operation changed" {:error :changed-operation})))
+                                   (:completion cap))
+                               (let [_ (custody-disposal-preflight! rt cap)
+                                     _ (custody-caller! rt cap caller)
+                                     op (get options :operation-id [:discard (random-uuid)])
+                                     _ (custody-fresh-operation! rt op)]
+                                 (:completion (custody-seal! rt id cap op
+                                                             {:t :t26 :k id :op op :kind :discard :caller (:holder cap)}))))))]
+    (drain! rt dispatch)
+    (drain! rt)
+    completion))
+(defn- custody-dispatch! [rt event]
+  (if (= :fork-released (a event 0))
+    (do (when-let [node (find! (runtime-field rt :nodes) [:fork (a event 3)])]
+          (owner! rt node nil) (mark! rt node))
+        (boundary! rt (when (runtime-field rt :audit) {:t :t36 :w (runtime-field rt :world)})))
+    (let [claim-id (a event 3) service (custody-state! rt) claim (get-in @service [:claims claim-id])
+          target (a event 2)]
+      (if-not claim
+        (let [cap (find! (a (runtime-field rt :counters) 7) (a event 5))
+              record (get-in @service [:records (a event 6)])]
+          (when-not (and (= :discarded (:disposition cap)) (= [:cleanup claim-id] (:holder-key cap))
+                         (= (a event 6) (:op cap)) (= (a event 5) (:cap record))
+                         (:effects-released? record) (identical? (a event 7) (:token cap)))
+            (throw (ex-info "Custody dispatch lost its claim" {:error :invalid-custody-claim})))
+          (boundary! target (when (runtime-field target :audit) {:t :queued :w (runtime-field target :world)})))
+        (let [id (:cap claim) cap (find! (a (runtime-field rt :counters) 7) id)]
+          (when-not (and (= [:cleanup claim-id] (:holder-key cap)) (= :dispatch-pending (:phase claim))
+                         (= id (a event 5)) (= (:settlement-op claim) (a event 6))
+                         (identical? (a event 7) (:token cap)))
+            (throw (ex-info "Custody dispatch does not own its leaf" {:error :invalid-custody-claim})))
+          (vswap! service assoc-in [:claims claim-id :phase] :active)
+          (if (= :open (:disposition cap))
+            (custody-seal! rt id cap (:settlement-op claim) {:t :queued :w (runtime-field target :world)})
+            (boundary! target (when (runtime-field target :audit) {:t :queued :w (runtime-field target :world)}))))))))
+
+(defn- refresh-custody-releases! [rt]
+  ;; End-of-action publication is independent of settlement advancement. In
+  ;; particular T29 must expose debt pruning and ALL newly joined receipts in
+  ;; its own audit boundary, even while the settlement driver is reentrant.
+  (when-let [service (or (custody-state rt) (:service *custody-frame*))]
+    (let [worlds (vec (values (:worlds @service)))
+          ready (set (for [world worlds
+                           :when (or (custody-data-world? world) (custody-release-ready? world))]
+                       (if (custody-data-world? world) (:root world) (runtime-field world :owner-root))))]
+      (vswap! service update :targets
+              (fn [targets]
+                (into {} (keep (fn [[origin debts]]
+                                 (let [remaining (into {} (remove (fn [[_ debt]]
+                                                                    (contains? ready (:target-root debt))) debts))]
+                                   (when (seq remaining) [origin remaining]))) targets))))
+      (doseq [world worlds :when (not (custody-data-world? world))]
+        (refresh-release! world)
+        (custody-release-data! world)))))
+
+(defn- refresh-custody! [rt]
+  (when-let [service (or (custody-state rt) (:service *custody-frame*))]
+    (when-not (:refreshing? @service)
+      (vswap! service assoc :refreshing? true)
+      (try
+        (binding [*custody-frame* {:service service :family (:worlds @service)}]
+          (loop []
+            (let [before (:pending @service)]
+              (doseq [[id pending] before
+                      :let [cap (find! (:caps @service) id) target (:target pending)]
+                      :when (and (= :preparing (:phase pending)) (= :sealed (:disposition cap))
+                                 (or (not= :cleanup (first (:holder cap)))
+                                     (= :active (get-in @service [:claims (second (:holder cap)) :phase])))
+                                 (join-ready? target (runtime-field target :root)))]
+                (let [op (:op cap)
+                      record {:op op :cap id :kind :discard :payload-hash nil :steps [] :bases {} :effects-released? false}]
+                  (vswap! service assoc-in [:records op] record)
+                  (custody-put! rt id (assoc cap :disposition :settling))
+                  (boundary! target (when (runtime-field target :audit)
+                                      {:t :t27 :k id :op op :steps [] :bases {} :payload nil}))
+                  (custody-put! rt id (assoc (find! (:caps @service) id) :disposition :discarded))
+                  (vswap! service assoc-in [:records op :effects-released?] true)
+                  (vswap! service update :claims
+                          #(into {} (remove (fn [[_ claim]] (= id (:cap claim))) %)))
+                ;; Keep causal target debt until its composed release, not T29.
+                  (vswap! service assoc-in [:pending id :phase] :releasing)
+                  (binding [*custody-terminal-release* true] (request-world-release! target :discard))
+                  (refresh-release! target)
+                  (boundary! target (when (runtime-field target :audit) {:t :t29 :op op}))))
+              (refresh-custody-releases! rt)
+              (doseq [[id pending] (:pending @service)
+                      :when (and (= :releasing (:phase pending))
+                                 (custody-release-ready? (:target pending)))]
+                (let [cell (:state pending)]
+                  (vswap! service update :pending dissoc id)
+                  (swap! cell #(-> % (assoc :done? true) (dissoc :runtime :service)))
+                  (doseq [observer (keys (:observers @cell))]
+                    (push! (runtime-field rt :posts) (doto (slots 1) (put 0 #(disposal-notify! cell observer)))))))
+              (refresh-custody-releases! rt)
+              (when (not= before (:pending @service)) (recur)))))
+        (finally (vswap! service assoc :refreshing? false))))))
+
+(defn- custody-data-world? [world] (and (map? world) (true? (:custody-tombstone world))))
+(defn- custody-release-data! [rt]
+  (let [state (runtime-field rt :lifecycle)]
+    (when (or (a state 6) (not= :live (a state 0)))
+      (when-not (a state 6) (put state 6 (volatile! nil)))
+      (vreset! (a state 6) (when (a state 3) (release-observer-row rt))))))
+(defn- custody-audit-family [rt]
+  (custody-release-data! rt)
+  (if (or *custody-frame* (not= :joined (a (runtime-field rt :lifecycle) 0)))
+    (snapshot-family rt)
+    (let [prior (some-> (runtime-field rt :audit) deref last (nth 2 nil))
+          local (snapshot rt)]
+      (if (and prior (contains? prior (runtime-field rt :world)))
+        (let [family (assoc prior (runtime-field rt :world)
+                            (merge (select-keys (first (vals prior)) [:global :handles :threads :gc :principals :cleanup-targets])
+                                   (dissoc local :global :handles :threads :gc :principals :cleanup-targets)))
+              registry (set (for [[id world] family :when (not= :released (:status world))] id))]
+          (into {} (for [[id world] family] [id (assoc-in world [:global :registry] registry)])))
+        (snapshot-family rt)))))

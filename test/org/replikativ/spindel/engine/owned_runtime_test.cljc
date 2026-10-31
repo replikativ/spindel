@@ -80,20 +80,36 @@
              :else (do (.clear q) (reset! expected []))))
          (check)))))
 
-(defn- model-value [value]
-  ;; The executable model uses symbolic identifiers and error values. Keep
-  ;; equality/collision and actual exception identity tests on the runtime too.
-  (cond
-    (uuid? value) [:token (str value)]
-    (inst? value) [:instant (inst-ms value)]
-    (instance? EqualID value) [:equal-id (.-id ^EqualID value)]
-    (satisfies? rtp/PMailbox value) [:mailbox-reference (:id (rtp/mailbox-payload value))]
-    (satisfies? rtp/PMailboxNext value) [:mailbox-next (model-value (rtp/mailbox-next-target value))]
-    (instance? #?(:clj org.replikativ.spindel.engine.impl.owned.Failure :cljs c/Failure) value)
-    [:failure (ex-message (:error value)) (model-value (ex-data (:error value)))]
-    (instance? #?(:clj Throwable :cljs js/Error) value)
-    [:exception (ex-message value) (model-value (ex-data value))]
-    :else (walk/walk model-value identity value)))
+(defn- model-value
+  ([value] (model-value value #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.))))
+  ([value cache]
+   ;; A family snapshot shares immutable global tables between world views.
+   ;; Normalize each identity once within this conversion, never across edges.
+   ;; JS primitives skip caching so SameValueZero cannot merge signed zeros.
+   (let [cacheable? #?(:clj true
+                       :cljs (and (some? value)
+                                  (not (or (number? value) (string? value) (boolean? value)))))]
+     (if (and cacheable? #?(:clj (.containsKey ^java.util.IdentityHashMap cache value)
+                            :cljs (.has cache value)))
+       #?(:clj (.get ^java.util.IdentityHashMap cache value) :cljs (.get cache value))
+       (let [convert #(model-value % cache)
+             ;; The executable model uses symbolic IDs and error values. Keep
+             ;; actual exception and opaque identity checks on the runtime too.
+             result (cond
+                      (uuid? value) [:token (str value)]
+                      (inst? value) [:instant (inst-ms value)]
+                      (instance? EqualID value) [:equal-id (.-id ^EqualID value)]
+                      (satisfies? rtp/PMailbox value) [:mailbox-reference (:id (rtp/mailbox-payload value))]
+                      (satisfies? rtp/PMailboxNext value) [:mailbox-next (convert (rtp/mailbox-next-target value))]
+                      (instance? #?(:clj org.replikativ.spindel.engine.impl.owned.Failure :cljs c/Failure) value)
+                      [:failure (ex-message (:error value)) (convert (ex-data (:error value)))]
+                      (instance? #?(:clj Throwable :cljs js/Error) value)
+                      [:exception (ex-message value) (convert (ex-data value))]
+                      :else (walk/walk convert identity value))]
+         (when cacheable?
+           #?(:clj (.put ^java.util.IdentityHashMap cache value result)
+              :cljs (.set cache value result)))
+         result)))))
 
 (defn verify-boundaries! [rt]
   (reduce
@@ -137,8 +153,9 @@
                          :handles (get-in expected [:env :handles])
                          :threads (get-in expected [:env :threads])
                          :principals (get-in expected [:env :principals])
+                         :cleanup-targets (get-in expected [:env :cleanup-targets] {})
                          :gc (vec (get-in expected [:env :gc] []))
-                         :global (assoc (select-keys expected [:registry :known-worlds :lineages :caps :custody :next-claim :recovery-epoch :process-live?])
+                         :global (assoc (select-keys expected [:registry :known-worlds :lineages :caps :records :custody :next-claim :recovery-epoch :process-live?])
                                         :generation-clock (get expected :generation-clock {})))
                ev (if (contains? actual :native)
                     (assoc ev :native (into {} (filter (fn [[_ row]] (= id (first (:owner row))))
@@ -150,12 +167,12 @@
                            (into {} (filter (fn [[[world _ _] _]] (= world id))
                                             (get-in expected [:env :source-gc] {})))) ev)
                ev (if (= :released (:status world))
-                    (assoc (select-keys ev [:lineage :status :global :threads :native :cleanup-cells :gc :handles :principals])
+                    (assoc (select-keys ev [:lineage :status :global :threads :native :cleanup-cells :cleanup-targets :gc :handles :principals])
                            :id id :release (get-in expected [:env :releases id])
-                           :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))) ev)
-               difference (take 2 (data/diff ev actual))]
+                           :outside (vec (filter #(= id (:w %)) (get-in expected [:env :outside])))) ev)]
            (when-not (= ev actual)
-             (throw (ex-info "Boundary mismatch" {:action action :world id :difference (vec difference)})))
+             (throw (ex-info "Boundary mismatch" {:action action :world id
+                                                  :difference (vec (take 2 (data/diff ev actual)))})))
            (is (= true (= ev actual)))))
        (is (empty? (inv/check expected)))
        (is (empty? (inv/edge-check {:before state :action action :after expected})))
@@ -352,8 +369,8 @@
        ;; Force an arrival between the empty observation and releasing the
        ;; drain claim, without adding a production scheduling hook.
        (with-redefs-fn
-         {dispatch-var (fn [runtime]
-                         (let [entry (dispatch runtime)]
+         {dispatch-var (fn [runtime borrowed-dispatch]
+                         (let [entry (dispatch runtime borrowed-dispatch)]
                            (when (and (nil? entry) (compare-and-set! injected? false true))
                              (c/observe! rt s (fn [_] (throw later-error)) #(throw %)))
                            entry))}

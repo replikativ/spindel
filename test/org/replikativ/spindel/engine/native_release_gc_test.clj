@@ -38,6 +38,36 @@
         (is (= [nil] @joined)))
       (finally (Reference/reachabilityFence fixture)))))
 
+(defn- unreachable-sibling-fixture []
+  (let [source (owned/runtime {:cps-exit? true})
+        source-root (rtp/root-execution-owner source)
+        {sibling :context bearer :capability}
+        (rtp/fork-owned-world! source {:world-id [:w 1] :owner source-root})
+        sibling-root (rtp/root-execution-owner sibling)
+        moved (rtp/transfer-owned-world! source bearer source-root sibling sibling-root
+                                         {:operation-id :move-sibling})
+        payload (Object.)]
+    (owned/signal sibling :payload payload)
+    (let [completion (rtp/request-world-release! source :old-world)]
+      {:completion completion :bearer moved :owner sibling-root
+       :was-live? (= :live (:status (owned/snapshot sibling)))
+       :source-joined? (= :joined (get-in (owned/snapshot source) [:release :phase]))
+       :weak-payload (WeakReference. payload) :weak-world (WeakReference. sibling)})))
+
+(deftest completed-receipt-and-data-capabilities-do-not-pin-a-live-sibling-arena
+  (let [before (owned/pending-release-count)
+        fixture (unreachable-sibling-fixture)]
+    (try
+      (is (:was-live? fixture))
+      (is (:source-joined? fixture))
+      (is (= before (owned/pending-release-count)))
+      (is (collect! (:weak-payload fixture)))
+      (is (collect! (:weak-world fixture)))
+      (let [values (atom [])]
+        (lifecycle/observe! (:completion fixture) #(swap! values conj %) #(throw %))
+        (is (= [nil] @values)))
+      (finally (Reference/reachabilityFence fixture)))))
+
 (defn- unfinished-fixture []
   (let [rt (context/create-execution-context {:engine :owned})
         payload (Object.) trace (atom [])]

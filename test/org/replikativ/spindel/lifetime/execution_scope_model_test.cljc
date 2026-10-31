@@ -138,7 +138,15 @@
   (let [state (reduce checked (m/init-state) scoped-fork-close)]
     (is (nil? (get-in state [:worlds w :scopes s0])))
     (is (= [{:custody-dispatch [:custody-claim 0] :cap [:cap 0] :op [:custody-op [:custody-claim 0]] :seq 1}] (:queue (m/wr state v))))
-    (refuses state {:t :release-request :w w :reason :done :release [:world-release w]} ::m/unsupported-world-release))
+    (let [released (checked state {:t :release-request :w w :reason :done :release [:world-release w]})
+          op [:custody-op [:custody-claim 0]]
+          done (reduce checked released [{:t :queued :w v}
+                                         {:t :t27 :k [:cap 0] :op op :payload :empty :bases {} :steps []}
+                                         {:t :t29 :op op}])]
+      (is (= :released (:status (m/wr released w))))
+      (is (= :releasing (get-in released [:env :releases w :phase])))
+      (is (= (get-in state [:env :cleanup-targets]) (get-in released [:env :cleanup-targets])))
+      (is (= :joined (get-in done [:env :releases w :phase])))))
   (testing "an unrelated independent family's outstanding capability is not this root's authority"
     (let [other [:w 9]
           state (checked (independent-world-state)
@@ -159,7 +167,10 @@
 (deftest explicit-release-profile-remembers-family-provenance-without-owner-history
   (let [state (related-tombstone-state)]
     (is (empty? (inv/check state)))
-    (refuses state {:t :release-request :w w :reason :done :release [:world-release w]} ::m/unsupported-world-release)))
+    (let [released (checked state {:t :release-request :w w :reason :done :release [:world-release w]})]
+      (is (= :joined (get-in released [:env :releases w :phase])))
+      (is (= (:known-worlds state) (:known-worlds released)))
+      (is (= (:lineages state) (:lineages released))))))
 
 (defn scope-adoption-actions [cause order]
   (let [parent [:spin 0] run [parent 1] source [:signal 0]

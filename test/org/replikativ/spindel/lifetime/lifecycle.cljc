@@ -45,10 +45,43 @@
               {:id release :reason (get action :reason :org.replikativ.spindel.engine.protocols/released)
                :phase :releasing :next-observer 0 :observers {}})))
 
+(defn cleanup-worlds
+  "Finite causal closure; cycles carry evidence, not recursive wait handles."
+  [s w]
+  (loop [pending [w] seen #{}]
+    (if-let [world (peek pending)]
+      (if (contains? seen world) (recur (pop pending) seen)
+          (recur (into (pop pending) (map :target-world (vals (get-in s [:env :cleanup-targets world]))))
+                 (conj seen world))) seen)))
+
+(defn cleanup-terminal? [s {:keys [target-world cap op]}]
+  (let [c (or (get-in s [:caps cap]) (get-in s [:durable :caps cap]))
+        record (or (get-in s [:records op]) (get-in s [:durable :records op]))]
+    (and (= target-world (:world c)) (= op (:op c)) (= cap (:cap record))
+         (= op (:op record)) (= (:kind c) (:kind record))
+         (= (:disposition c) (case (:kind record) :discard :discarded :merge :merged nil))
+         (true? (:effects-released? record)) (every? #(= :done (:status %)) (:steps record)))))
+
+(defn composed-ready? [s w local-ready?]
+  (let [worlds (cleanup-worlds s w)]
+    (and (every? #(local-ready? s %) worlds)
+         (every? #(cleanup-terminal? s %)
+                 (mapcat #(vals (get-in s [:env :cleanup-targets %])) worlds)))))
+
+(defn prune-cleanup-targets [s ready-worlds]
+  (let [targets (into {} (keep (fn [[w debts]]
+                                 (let [pending (into {} (remove (fn [[_ debt]]
+                                                                  (and (contains? ready-worlds (:target-world debt))
+                                                                       (cleanup-terminal? s debt))) debts))]
+                                   (when (seq pending) [w pending])))
+                               (get-in s [:env :cleanup-targets])))]
+    (if (seq targets) (assoc-in s [:env :cleanup-targets] targets)
+        (update s :env dissoc :cleanup-targets))))
+
 (defn observe [s {:keys [w release observer] :as action}]
   (let [row (receipt! s action) callers (caller-worlds! s action)
         expected [release (inc (:next-observer row))]]
-    (require! (not (contains? callers w)) ::release-self-join {:action action})
+    (require! (not-any? (cleanup-worlds s w) callers) ::release-self-join {:action action})
     (require! (= observer expected) ::not-release-observer {:action action})
     (-> s (update-in [:env :releases w :next-observer] inc)
         (assoc-in [:env :releases w :observers observer]
@@ -92,13 +125,15 @@
                    (get-in s [:env :cleanup-cells])))))
 
 (defn refresh [s ready?]
-  (reduce
-   (fn [s [w row]]
-     (if (and (= :releasing (:phase row)) (ready? s w))
-       (-> s (update-in [:env :outside] #(vec (remove (partial stale-producer? s w) %)))
-           (assoc-in [:env :releases w :phase] :joined)
-           (assoc-in [:env :releases w :result] nil)
-           (update-in [:env :releases w :observers]
-                      #(into {} (for [[id observer] %] [id (assoc observer :state :ready)])))
-           (update :events conj {:event :release-joined :world w :release (:id row)})) s))
-   s (get-in s [:env :releases])))
+  (let [ready-worlds (set (filter #(ready? s %) (keys (:worlds s))))
+        s (prune-cleanup-targets s ready-worlds)]
+    (reduce
+     (fn [s [w row]]
+       (if (and (= :releasing (:phase row)) (contains? ready-worlds w))
+         (-> s (update-in [:env :outside] #(vec (remove (partial stale-producer? s w) %)))
+             (assoc-in [:env :releases w :phase] :joined)
+             (assoc-in [:env :releases w :result] nil)
+             (update-in [:env :releases w :observers]
+                        #(into {} (for [[id observer] %] [id (assoc observer :state :ready)])))
+             (update :events conj {:event :release-joined :world w :release (:id row)})) s))
+     s (get-in s [:env :releases]))))

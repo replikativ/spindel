@@ -759,11 +759,11 @@ User-authored fields/bindings/metadata and explicitly requested audit history ar
 outside engine storage reclamation claims. Borrowed executors are never closed
 by this operation.
 
-The first executable release profile is restricted to isolated root worlds;
-unsupported fork/cut authority is refused before mutation. General fork release,
-composed scope cleanup and protected/raw waits on foreign lifecycle receipts
-remain replacement gates. The legacy stop/close APIs are distinct from the new
-asynchronous completion, and the default engine has not changed.
+The native release profile includes the same-family, empty-system custody
+operations described below. General fork release, resource settlement and
+protected/raw waits on foreign lifecycle receipts remain replacement gates.
+The legacy stop/close APIs are distinct from the new asynchronous completion,
+and the default engine has not changed.
 
 ## Native execution owners
 
@@ -797,10 +797,67 @@ not copy affine custody.
 `PExecutionScopes/execution-owner-joined?` is a local boolean observation of
 logical work and physical participants. It does not certify settlement or
 cleanup in another world. Scope operations requiring unsupported affine cleanup
-refuse before mutation. Authenticated affine custody, composed close completion
-and general fork/cut integration remain separate replacement gates. The legacy
-engine retains its existing scope metadata operations; the new close and local
-join operations require the native runtime.
+refuse before mutation. The legacy engine retains its existing scope metadata
+operations; the new close and local join operations require the native runtime.
+
+## Native world custody and composed release
+
+`PWorldCustody/fork-owned-world!` publishes a following child together with an
+opaque affine capability. Its current profile supports parked same-family
+worlds with an empty system set. The bearer contains identity data, not an arena
+reference. `transfer-owned-world!` requires the actual caller and an accepting
+destination owner. Transfer consumes the old bearer and fully moves custody:
+closing the old owner cannot revoke the moved child. Custody transferred into a
+Run belongs to that exact generation; an explicit Scope provides continuity
+across reruns. Reactive prefix adoption uses the actual acquisition order.
+
+Owner retirement claims its remaining capabilities before removing ownership
+rows, then queues disposal through the engine's ordinary control FIFO. Claim
+ancestry consists of immutable owner IDs. It preserves teardown relationships
+through collateral owner removal without retaining mutable owner storage.
+Root teardown visits child Scopes and their Runs before claiming Root custody.
+
+`discard-owned-world!` returns a typed observer-only completion. It seals the
+target before cancellation and waits for real local physical return before
+committing its empty-system settlement record. Discard completion and world
+release completion implement `PCompletion`; the former grants no authority to
+release a different world. Detaching an observer does not cancel disposal.
+
+A release completion also waits for cleanup caused by its retired holders,
+including transitive targets. These causal debts are recorded when claims
+commit, independently of public receipts and terminal claim history. A target
+may complete local settlement and start its own descendant cleanup before its
+origin requests release. The original debt remains until that composed work is
+ready. Readiness checks the reachable cleanup closure's local returns and exact
+terminal operations; it does not require each target's public receipt to join
+first. Self custody and cycles therefore finish without circular receipt waits.
+A physical participant cannot await a completion whose closure needs its own
+return.
+
+At completion, the live family registry keeps a data-only world tombstone. A
+retained receipt uses an isolated revoked facade rather than retaining the
+live family, its shared queues or sibling arenas. Explicit unfinished release
+work still has a bounded coordinator until its required cleanup finishes.
+Audit snapshots are intentionally retained diagnostic data, not production
+heap bounds.
+
+This is a bounded implementation of the custody contract, not general fork
+integration. Nonempty system settlement, resource-bearing descendants,
+cross-family transfer, coordinated cuts and durable recovery remain unsupported.
+Cleanup entry points preflight the actual prospective custody/debt closure
+before mutation; capabilities moved elsewhere do not pull unrelated worlds into
+that closure. Automatic Run retirement cannot ask its caller to retry a close.
+The bounded profile therefore preserves a supported closure for custody held
+by Runs and their owned teardown descendants, and for committed cleanup work.
+Resource admission and incoming custody transfers refuse before mutation when
+they would invalidate that closure. Independent Root/Scope custody can retain
+unsupported resources while an explicit close remains able to refuse unchanged.
+This admission restriction must be removed with full resource integration before
+the replacement becomes the default.
+
+The executable model and its independent edge checks cover causal
+debt conservation and cycle readiness; native CPS tests and retained-heap probes
+separately check physical execution and arena retention on both platforms.
 
 ## Replacement acceptance
 

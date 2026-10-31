@@ -708,6 +708,8 @@
                      :anchor (mapv #(execution-holder w %) (butlast (owner-chain ctx w owner)))
                      :target-world (:world cap) :kind kind :settlement-op op :phase :dispatch-pending})
         (put-cap! ctx k (assoc cap :holder cleanup-holder :holder-acquisition nil))
+        (root-edit! ctx assoc-in [:env :cleanup-targets w id]
+                    {:target-world (:world cap) :cap k :op op})
         (enqueue-custody! ctx (:world cap) {:custody-dispatch id :cap k :op op})))))
 
 (defn- physical? [ctx w r]
@@ -2638,33 +2640,78 @@
 
 (defn- release-id [w] [:world-release w])
 
+(defn- cleanup-worlds [ctx w]
+  (loop [pending [w] seen #{}]
+    (if-let [world (peek pending)]
+      (if (contains? seen world) (recur (pop pending) seen)
+          (recur (into (pop pending)
+                       (map :target-world (vals (get-in (root-state ctx) [:env :cleanup-targets world]))))
+                 (conj seen world))) seen)))
+
+(defn- cleanup-terminal? [ctx {:keys [target-world cap op]}]
+  (let [state (root-state ctx)
+        c (or (get-in state [:caps cap]) (get-in state [:durable :caps cap]))
+        record (or (get-in state [:records op]) (get-in state [:durable :records op]))]
+    (and (= target-world (:world c)) (= op (:op c)) (= cap (:cap record))
+         (= op (:op record)) (= (:kind c) (:kind record))
+         (= (:disposition c) (case (:kind record) :discard :discarded :merge :merged nil))
+         (true? (:effects-released? record)) (every? #(= :done (:status %)) (:steps record)))))
+
+(defn- composed-release-ready? [ctx w]
+  (let [worlds (cleanup-worlds ctx w) env (:env (root-state ctx))]
+    (and (every? (fn [world]
+                   (and (= :released (:status (header ctx world)))
+                        (not-any? #(and (= world (:world %)) (:run %)) (vals (:threads env)))
+                        (not-any? #(and (= world (first (:owner %))) (not= :joined (:state %))) (vals (:native env)))))
+                 worlds)
+         (every? #(cleanup-terminal? ctx %)
+                 (mapcat #(vals (get-in env [:cleanup-targets %])) worlds)))))
+
 (defn- local-release-profile! [ctx w]
-  (let [world (header ctx w) state (root-state ctx)
-        owners (conj (into (set (keys (store/table-view (:tx ctx) w :runs)))
-                           (keys (store/table-view (:tx ctx) w :scopes))) (or (:root world) [:root w]))
-        caps (merge (:caps state) (get-in state [:durable :caps]))
-        related? (fn [v] (= w (get-in state [:lineages v :root])))
-        local? (fn [endpoint] (or (not= :entity (first endpoint)) (= w (second endpoint))))]
-    (require! world ::unknown-world {:w w})
-    (require! (and (nil? (get-in world [:lineage :parent]))
-                   (not-any? #(and (not= w %) (related? %)) (:known-worlds state))
-                   (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
-                                   (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts state)))
-                   (not-any? (fn [[_ cap]] (and (not (#{:merged :discarded :transferred :partitioned} (:disposition cap)))
-                                                (or (related? (:world cap)) (= w (:world cap))
-                                                    (some #(= (:holder cap) (execution-holder w %)) owners)))) caps)
-                   (not-any? #(= :fork (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
-                   (empty? (:fdeps world)) (empty? (:releasing world))
-                   (every? #(and (local? (:debtor %)) (local? (:creditor %)))
-                           (vals (store/table-view (:tx ctx) w :obligations)))
-                   (not-any? #(some % [:start-for :register-host :join-bundle :custody-dispatch :fork-released])
-                             (pending-events ctx w))
-                   (not-any? (fn [v]
-                               (and (not= v w)
-                                    (some #(= [:entity w] (subvec (vec (:debtor %)) 0 2))
-                                          (vals (store/table-view (:tx ctx) v :obligations)))))
-                             (:known-worlds state)))
-              ::unsupported-world-release {:w w})))
+  (let [state (root-state ctx) caps (merge (:caps state) (get-in state [:durable :caps]))
+        terminal? #(#{:merged :discarded :transferred :partitioned} (:disposition %))
+        root (get-in state [:lineages w :root])
+        required (loop [pending [w] seen #{}]
+                   (if-let [world (peek pending)]
+                     (if (seen world) (recur (pop pending) seen)
+                         (recur (into (pop pending)
+                                      (concat (for [[_ c] caps
+                                                    :when (and (not (terminal? c))
+                                                               (= :execution-owner (first (:holder c)))
+                                                               (= world (second (:holder c))))] (:world c))
+                                              (map :target-world (vals (get-in state [:env :cleanup-targets world])))))
+                                (conj seen world))) seen))
+        supported? (fn [c]
+                     (or (terminal? c)
+                         (and (empty? (:scope c))
+                              (= root (get-in state [:lineages (:world c) :root]))
+                              (or (= :open (:disposition c))
+                                  (and (= :discard (:kind c))
+                                       (empty? (:steps (or (get-in state [:records (:op c)])
+                                                           (get-in state [:durable :records (:op c)])))))))))]
+    (require! (header ctx w) ::unknown-world {:w w})
+    (require!
+     (and
+      (every? supported? (for [[_ c] caps
+                               :when (and (= :execution-owner (first (:holder c)))
+                                          (contains? required (second (:holder c))))] c))
+      (every? supported? (for [world required [_ debt] (get-in state [:env :cleanup-targets world])]
+                           (get caps (:cap debt))))
+      (every? (fn [world]
+                (let [row (header ctx world)
+                      local? (fn [endpoint] (or (not= :entity (first endpoint)) (= world (second endpoint))))]
+                  (and row (= root (get-in state [:lineages world :root]))
+                       (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
+                                       (contains? (get-in % [:participants :worlds]) world)) (vals (:cuts state)))
+                       (empty? (:fdeps row)) (empty? (:releasing row))
+                       (every? #(and (local? (:debtor %)) (local? (:creditor %)))
+                               (vals (store/table-view (:tx ctx) world :obligations)))
+                       (not-any? #(some % [:start-for :register-host :join-bundle]) (pending-events ctx world))
+                       (not-any? (fn [v]
+                                   (and (not= v world)
+                                        (some #(= [:entity world] (subvec (vec (:debtor %)) 0 2))
+                                              (vals (store/table-view (:tx ctx) v :obligations))))) (:known-worlds state))))) required))
+     ::unsupported-world-release {:w w})))
 
 (def ^:private world-index-tables
   [:by-run-creditor :by-host-creditor :by-entity-creditor :by-local-debtor :by-foreign-debtor
@@ -2673,6 +2720,11 @@
 (defn- release-world! [ctx {:keys [w]}]
   (when-let [world (header ctx w)]
     (when-not (= :released (:status world))
+      (let [caps (filter #(= w (:world (val %))) (merge (:caps (root-state ctx)) (get-in (root-state ctx) [:durable :caps])))]
+        (require! (not-any? #(#{:settling :incomplete} (:disposition (val %))) caps) ::settlement-open {:w w})
+        (require! (or (nil? (get-in world [:lineage :parent]))
+                      (every? #(#{:merged :discarded :transferred :partitioned} (:disposition (val %))) caps))
+                  ::capability-open {:w w}))
       (local-release-profile! ctx w)
       (let [root (:root world) cancellation (:release-cancellation ctx)
             released-value (if cancellation (:value cancellation) ::released)
@@ -2692,6 +2744,12 @@
             (when mailbox? (queue-mailbox-rejection! ctx w e [:host o] raw-reason))
             (end-obligation! ctx w o :creditor-cancelled)
             (when-not mailbox? (emit! ctx {:event :host-delivery :world w :o o :value released-value}))))
+        ;; Dormant copies never entered this world; drop their links without
+        ;; rejecting into another copy or manufacturing finalizer work.
+        (doseq [[r rr] (store/table-view (:tx ctx) w :runs) :when (= :inherited (:status rr))]
+          (doseq [o (read-row ctx w :by-run-creditor r)] (end-obligation! ctx w o :creditor-cancelled))
+          (when (:diagnostics? ctx) (emit! ctx {:event :run-exit :world w :r r :cause :cancelled :t :t11}))
+          (remove-run! ctx w r))
         (doseq [scope (sort-by pr-str (read-row ctx w :scopes-by-parent root))] (close-scope! ctx w scope))
         (doseq [r (sort-by pr-str (read-row ctx w :runs-by-owner root))] (cancel-run! ctx w r nil))
         (claim-owner-custody! ctx w root)
@@ -2711,6 +2769,8 @@
                                      (assoc :anchor (owner-chain ctx w (second (:owner row))))
                                      (and (= w (first (:owner row))) (= :mailbox-callback (:kind row)))
                                      (assoc :retired? true))])))
+        (when-let [parent (get-in world [:lineage :parent])]
+          (when (read-row ctx parent :entities [:fork w]) (enqueue! ctx parent {:fork-released w})))
         ;; Keep authenticated producer attempts in original world sequence;
         ;; preserve all other worlds' relative slots in the outside lane.
         (let [attempt? #(and (= w (:w %)) (or (:deferred-assignment (:event %)) (:mailbox-post (:event %))))
@@ -2772,7 +2832,7 @@
       (require! (and (nil? (:cleanup-ticket thread)) (not (:retired? thread))
                      (not= :unwinding (:status (read-row ctx (:world thread) :runs r))))
                 ::cleanup-only {:action action})))
-  (local-release-profile! ctx w)
+  (when-not (get-in (root-state ctx) [:env :releases w]) (local-release-profile! ctx w))
   (require! (= release (release-id w)) ::invalid-release-receipt {:action action})
   (if (get-in (root-state ctx) [:env :releases w])
     (release-row! ctx action)
@@ -2784,7 +2844,7 @@
 
 (defn- observe-release! [ctx {:keys [w release observer] :as action}]
   (let [row (release-row! ctx action) callers (release-caller-worlds! ctx action)]
-    (require! (not (contains? callers w)) ::release-self-join {:action action})
+    (require! (not-any? (cleanup-worlds ctx w) callers) ::release-self-join {:action action})
     (require! (= observer [release (inc (:next-observer row))]) ::not-release-observer {:action action})
     (root-edit! ctx update-in [:env :releases w :next-observer] inc)
     (root-edit! ctx assoc-in [:env :releases w :observers observer]
@@ -2824,21 +2884,27 @@
                    (get-in (root-state ctx) [:env :cleanup-cells])))))
 
 (defn- refresh-releases! [ctx]
-  (doseq [[w row] (get-in (root-state ctx) [:env :releases])
-          :when (and (= :releasing (:phase row)) (= :released (:status (header ctx w)))
-                     (not-any? #(and (= w (:world %)) (:run %))
-                               (vals (get-in (root-state ctx) [:env :threads])))
-                     (not-any? #(and (= w (first (:owner %))) (not= :joined (:state %)))
-                               (vals (get-in (root-state ctx) [:env :native]))))]
-    (root-edit! ctx update-in [:env :outside]
-                #(vec (remove (partial stale-release-producer? ctx w) %)))
-    (root-edit! ctx update-in [:env :releases w]
-                #(-> % (assoc :phase :joined :result nil)
-                     (update :observers (fn [observers]
-                                          (into {} (for [[id observer] observers] [id (assoc observer :state :ready)]))))))
-    (emit! ctx {:event :release-joined :world w :release (:id row)})
-    (doseq [observer (keys (:observers row))]
-      (command! ctx {:op :release-ready :world w :release (:id row) :observer observer}))))
+  (let [ready (set (filter #(composed-release-ready? ctx %) (:known-worlds (root-state ctx))))
+        debts (get-in (root-state ctx) [:env :cleanup-targets])]
+    (when (seq debts)
+      (let [remaining (into {} (keep (fn [[w rows]]
+                                       (let [rows (into {} (remove (fn [[_ debt]]
+                                                                     (and (contains? ready (:target-world debt))
+                                                                          (cleanup-terminal? ctx debt))) rows))]
+                                         (when (seq rows) [w rows]))) debts))]
+        (if (seq remaining) (root-edit! ctx assoc-in [:env :cleanup-targets] remaining)
+            (root-edit! ctx update :env dissoc :cleanup-targets))))
+    (doseq [[w row] (get-in (root-state ctx) [:env :releases])
+            :when (and (= :releasing (:phase row)) (contains? ready w))]
+      (root-edit! ctx update-in [:env :outside]
+                  #(vec (remove (partial stale-release-producer? ctx w) %)))
+      (root-edit! ctx update-in [:env :releases w]
+                  #(-> % (assoc :phase :joined :result nil)
+                       (update :observers (fn [observers]
+                                            (into {} (for [[id observer] observers] [id (assoc observer :state :ready)]))))))
+      (emit! ctx {:event :release-joined :world w :release (:id row)})
+      (doseq [observer (keys (:observers row))]
+        (command! ctx {:op :release-ready :world w :release (:id row) :observer observer})))))
 
 (defn- admit-action!
   "Check actor/resource admission before any transition mutates the store."

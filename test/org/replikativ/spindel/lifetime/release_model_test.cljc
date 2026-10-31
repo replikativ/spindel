@@ -240,10 +240,39 @@
         pending (-> remote
                     (m/step {:t :t04 :w w :e :worker :mode :callback})
                     (m/step {:t :t05 :w w :r r :kind :await-once :debtor [:entity foreign :remote]}))]
-    (doseq [[before action] [[followed request] [followed child-request] [cut request] [pending request]]]
-      (refuses before action ::m/unsupported-world-release)
+    (doseq [[before action error] [[followed child-request ::m/capability-open]
+                                   [cut request ::m/unsupported-world-release]
+                                   [pending request ::m/unsupported-world-release]]]
+      (refuses before action error)
       (is (= :live (:status (m/wr before (:w action)))))
-      (is (nil? (get-in before [:env :releases (:w action)]))))))
+      (is (nil? (get-in before [:env :releases (:w action)]))))
+    ;; The old blanket lineage refusal is replaced by a real composed wait.
+    ;; Logical release of the holder cannot certify a child's physical return.
+    (let [check (fn [before action]
+                  (let [after (m/step before action)]
+                    (is (empty? (inv/check after)))
+                    (is (empty? (inv/edge-check {:before before :action action :after after})))
+                    after))
+          busy (reduce check followed [{:t :t04 :w foreign :e :child :mode :deref}
+                                       {:t :slice-enter :w foreign :r [:child 1] :th :child-worker}])
+          released (check busy request)
+          sealed (check released {:t :queued :w foreign})
+          op (:op (m/cap sealed :fork))]
+      (is (= :released (:status (m/wr released w))))
+      (is (= :releasing (get-in released [:env :releases w :phase])))
+      (is (m/join-ready? released w root))
+      (is (seq (get-in released [:env :cleanup-targets w])))
+      ;; Kernel T27 is explicitly unsupported; keep this preparation proof
+      ;; model-only instead of asking the shared kernel walk to execute it.
+      (let [attempt (m/attempt sealed {:t :t27 :k :fork :op op :payload :empty :bases {} :steps []})]
+        (is (= ::m/not-joined (get-in attempt [:refusal :error])))
+        (is (= sealed (:state attempt))))
+      (let [returned (check sealed {:t :t38 :th :child-worker})
+            done (reduce check returned [{:t :t27 :k :fork :op op :payload :empty :bases {} :steps []}
+                                         {:t :t29 :op op}])]
+        (is (= :releasing (get-in returned [:env :releases w :phase])))
+        (is (= :joined (get-in done [:env :releases w :phase])))
+        (is (nil? (get-in done [:env :cleanup-targets])))))))
 
 (deftest release-retains-protected-input-transform-and-waits-for-actual-cleanup-return
   (let [n (cleanup/ticket w r) op [n 1] startup [op 1] reg [op 1] callback [op 2]

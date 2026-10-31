@@ -80,11 +80,12 @@
         (is (= :parked (get-in after [:runs [:parent 1] :status])))
         (is (= [:scope :id 1] (get-in after [:entities :after :owner])))
         (is (nil? (get-in (c/snapshot rt) [:entities :after]))))
-      (let [before (c/snapshot-family rt)]
-        (binding [ec/*owner-scope* (:nested @caps)]
-          (is (thrown? #?(:clj Exception :cljs js/Error) (c/fork-parked! rt [:w 2]))))
-        (is (= before (c/snapshot-family rt))))
-      (lifetime/close-scope! rt (:prefix @caps))
+      (let [scoped-child (binding [ec/*owner-scope* (:nested @caps)]
+                           (c/fork-parked! rt [:w 2]))]
+        (is (= [:scope :id 1] (get-in (c/snapshot rt) [:entities [:fork [:w 2]] :owner])))
+        (is (= :live (:status (c/snapshot scoped-child))))
+        (lifetime/close-scope! rt (:prefix @caps))
+        (is (= :released (:status (c/snapshot scoped-child)))))
       (is (zero? (:scope-balance (c/snapshot rt))))
       (is (= 2 (:scope-balance (c/snapshot child))))
       (is (= [:scope :id 1] (get-in (c/snapshot child) [:entities :after :owner])))
