@@ -11,7 +11,7 @@
 (def root [:root w]) (def cap [:cap 0])
 (def invoke {:t :t04 :w w :e e :mode :callback})
 (def following {:t :t19 :w w :v v :k cap :scope root})
-(def seal {:t :t26 :caller root :k cap :op :op :kind :merge})
+(def seal {:t :t26 :caller (m/execution-holder w root) :k cap :op :op :kind :merge})
 (def prepare-op
   {:t :t27 :k cap :op :op :payload :p :bases {:a :base-a :b :base-b}
    :steps [{:id 0 :kind :system-merge :system :a :recovery :retry}
@@ -178,7 +178,7 @@
            :F04 [invoke {:t :t14 :w w :e e :pin? true} {:t :t14 :w w :e e :pin? false}]
            :F05 [following {:t :t31} {:t :t31 :phase :restart}]
            :F06 [following seal prepare-op {:t :t28 :op :op :i 0 :outcome :fail}
-                 {:t :t30 :op :op :k cap :caller root :payload :p} {:t :t28 :op :op :i 0 :outcome :ok}]
+                 {:t :t30 :op :op :k cap :caller (m/execution-holder w root) :payload :p} {:t :t28 :op :op :i 0 :outcome :ok}]
            :F11 [invoke {:t :t09 :w w :e e} {:t :t11 :w w :r [e 2]}]
            :F16 [invoke {:t :t07 :w w :r r} {:t :t11 :w w :r r}]
            :F20 [invoke {:t :t02 :w w :e [:signal 0]}
@@ -334,7 +334,7 @@
       (is (some #(= [:bundle child #{[:signal 0]}] %) (:fdeps (m/wr (:state admitted) w)))))
     (is (:refusal (m/attempt s {:t :t06 :w child :o timer})))
     (let [s (:state (execute s [{:t :t24 :c [:cut 0]} {:t :t15 :w child}
-                                {:t :t26 :caller [:root v] :k [:cap 1] :op :seal :kind :discard}]))]
+                                {:t :t26 :caller (m/execution-holder v [:root v]) :k [:cap 1] :op :seal :kind :discard}]))]
       (is (:refusal (m/attempt s {:t :t06 :w child :o timer}))))
     (let [failed (execute s [{:t :t25 :c [:cut 0]}])]
       (is (empty? (violations failed)) (pr-str (violations failed)))
@@ -359,7 +359,7 @@
   (let [result (execute [following seal prepare-op
                          {:t :t28 :op :op :i 0 :outcome :unknown :committed? true}
                          {:t :t31} {:t :t31 :phase :restart}
-                         {:t :t30 :op :op :k cap :caller root :payload :p}
+                         {:t :t30 :op :op :k cap :caller [:recovery :durable 1] :payload :p}
                          {:t :t28 :op :op :i 0 :outcome :ok}
                          {:t :t28 :op :op :i 1 :outcome :ok} {:t :t29 :op :op}])]
     (is (empty? (violations result)) (pr-str (violations result)))
@@ -367,7 +367,7 @@
     (is (= #{[:op 0] [:op 1]} (:adapter-effects (:state result)))))
   (let [s (:state (execute [following seal prepare-op]))]
     (doseq [a [{:t :t30 :op :op :k cap :caller :intruder :payload :p}
-               {:t :t30 :op :op :k cap :caller root :payload :changed}]]
+               {:t :t30 :op :op :k cap :caller (m/execution-holder w root) :payload :changed}]]
       (is (:refusal (m/attempt s a)))
       (is (= s (:state (m/attempt s a)))))))
 
@@ -403,7 +403,7 @@
     {:t :t34 :w w}]
    :mixed-partition
    [(assoc following :systems #{:a :memory})
-    {:t :t33 :k cap :op :split :successors [{:k [:cap 1] :scope #{:a}} {:k [:cap 2] :scope #{:memory}}]}
+    {:t :t33 :caller (m/execution-holder w root) :k cap :op :split :successors [{:k [:cap 1] :scope #{:a}} {:k [:cap 2] :scope #{:memory}}]}
     {:t :t31} {:t :t31 :phase :restart}]})
 
 (defn first-failure
@@ -460,11 +460,11 @@
                       (drop 2 (cut-actions :frozen)))
                 (conj (vec (butlast (cut-actions :frozen))) {:t :t25 :c [:cut 0]})
                 [following seal prepare-op {:t :t28 :op :op :i 0 :outcome :fail}
-                 {:t :t30 :op :op :k cap :caller root :payload :p}
+                 {:t :t30 :op :op :k cap :caller (m/execution-holder w root) :payload :p}
                  {:t :t28 :op :op :i 0 :outcome :ok} {:t :t28 :op :op :i 1 :outcome :ok}
                  {:t :t29 :op :op} {:t :t31} {:t :t31 :phase :restart}]
-                [following {:t :t32 :k cap :successor [:cap 1] :holder :h :op :transfer}]
-                [following {:t :t33 :k cap :op :partition :successors [{:k [:cap 1] :scope #{:a}} {:k [:cap 2] :scope #{:b}}]}]
+                [following {:t :t32 :caller (m/execution-holder w root) :k cap :successor [:cap 1] :holder (m/execution-holder w root) :acceptor (m/execution-holder w root) :op :transfer}]
+                [following {:t :t33 :caller (m/execution-holder w root) :k cap :op :partition :successors [{:k [:cap 1] :scope #{:a}} {:k [:cap 2] :scope #{:b}}]}]
                 [following seal (assoc prepare-op :steps []) {:t :t29 :op :op} {:t :t36 :w w}]
                 [following {:t :t04 :w v :e e}
                  {:t :t05 :w v :r r :kind :await-once :debtor [:entity w [:spin 1]]}
@@ -630,14 +630,25 @@
     (is (empty? (:findings report)) (pr-str (:findings report)))))
 
 (deftest inherited-forks-are-read-only-references
-  (let [fixture (execute [invoke (assoc following :scope r)
-                          {:t :t05 :w w :r r :kind :timer :debtor [:host :executor]}
+  (let [fixture (execute [invoke {:t :slice-enter :w w :r r :th :creator}
+                          (assoc following :scope r :acceptance {:th :creator :order 1})
+                          {:t :t05 :w w :r r :kind :timer :order 2 :debtor [:host :executor]}
+                          {:t :t38 :th :creator}
                           {:t :t19 :w w :v [:w 2] :k [:cap 1] :scope root}])
         s (:state fixture)]
+    (is (not-any? :refusal (:trace fixture)))
     (is (empty? (violations fixture)) (pr-str (violations fixture)))
-    (is (true? (:reference? (m/ent s [:w 2] [:fork v])))))
+    (is (true? (:reference? (m/ent s [:w 2] [:fork v]))))
+    (is (= (m/execution-holder w r) (:holder (m/cap s cap))))
+    (is (nil? (get-in s [:custody :by-holder (m/execution-holder [:w 2] r)])))
+    (let [closed (m/step s {:t :t11 :w [:w 2] :r r})]
+      (is (empty? (inv/check closed)))
+      (is (= :open (:disposition (m/cap closed cap))))
+      (is (= (m/execution-holder w r) (:holder (m/cap closed cap))))
+      (is (empty? (:queue (m/wr closed v))))
+      (is (empty? (get-in closed [:custody :claims])))))
   (let [fixture (execute (concat [following] (cut-actions :frozen)
-                                 [{:t :t26 :caller root :k [:cap 1] :kind :discard :op :references}
+                                 [{:t :t26 :caller (m/execution-holder w root) :k [:cap 1] :kind :discard :op :references}
                                   {:t :t27 :k [:cap 1] :op :references :steps [] :bases {} :payload :p}
                                   {:t :t29 :op :references} {:t :t36 :w w}]))
         s (:state fixture)]
@@ -844,12 +855,31 @@
 (deftest ownerless-settling-fork
   (let [result (execute [{:t :t12 :w w :scope [:scope :id 0] :parent root}
                          (assoc following :scope [:scope :id 0])
-                         (assoc seal :caller [:scope :id 0])
+                         (assoc seal :caller (m/execution-holder w [:scope :id 0]))
                          {:t :t13 :w w :scope [:scope :id 0]}])
         s (:state result)]
     (is (not-any? :refusal (:trace result)))
     (is (nil? (:owner (m/ent s w [:fork v]))))
     (is (= #{:settle} (m/reasons s w [:fork v])))
+    (is (nil? (get-in s [:worlds w :scopes [:scope :id 0]])))
+    (let [[id claim] (first (get-in s [:custody :claims]))]
+      (is (= 1 (count (get-in s [:custody :claims]))))
+      (is (= (m/execution-holder w [:scope :id 0]) (:origin claim)))
+      (is (= :merge (:kind claim)))
+      (is (= :op (:settlement-op claim)))
+      (is (= [:cleanup id] (:holder (m/cap s cap))))
+      (let [progress (execute s [{:t :queued :w v}
+                                 {:t :t27 :k cap :op :op :payload :retained :bases (:bases (m/cap s cap))
+                                  :steps [{:id 0 :kind :system-merge :system :a :recovery :retry}]}
+                                 {:t :t28 :op :op :i 0 :outcome :fail-permanent}])
+            pending (:state progress)]
+        (is (not-any? :refusal (:trace progress)))
+        (is (empty? (violations progress)))
+        (is (= :incomplete (:disposition (m/cap pending cap))))
+        (is (= :merge (:kind (m/record pending :op))))
+        (is (= :active (get-in pending [:custody :claims id :phase])))
+        (is (= #{:settle} (m/reasons pending w [:fork v])))
+        (is (= #{cap} (get-in pending [:custody :by-holder [:cleanup id]])))))
     (is (empty? (violations result)) (pr-str (violations result)))))
 
 (deftest rejected-start-reports-released
@@ -881,12 +911,12 @@
 (deftest lost-world-capabilities-require-restart
   (let [s (:state (execute [(assoc following :systems #{:a :memory}) {:t :t31}]))
         actions [seal
-                 {:t :t32 :k cap :op :transfer :successor [:cap 1] :holder :other}
-                 {:t :t33 :k cap :op :partition
+                 {:t :t32 :caller (m/execution-holder w root) :k cap :op :transfer :successor [:cap 1] :holder (m/execution-holder w root) :acceptor (m/execution-holder w root)}
+                 {:t :t33 :caller (m/execution-holder w root) :k cap :op :partition
                   :successors [{:k [:cap 1] :scope #{:a}} {:k [:cap 2] :scope #{:memory}}]}]]
     (doseq [a actions]
       (let [{after :state refusal :refusal} (m/attempt s a)]
-        (is (= ::m/missing-world (:error refusal)))
+        (is (= ::m/process-lost (:error refusal)))
         (is (= s after))))
     (let [result (execute s [{:t :t31 :phase :restart}])]
       (is (empty? (violations result)) (pr-str (violations result)))
@@ -1021,8 +1051,8 @@
   (let [result (execute (butlast (cut-actions :frozen)))
         s (:state result) k [:cap 1]
         attempts [(assoc seal :k k :kind :discard)
-                  {:t :t32 :k k :successor [:cap 2] :holder root :op :transfer}
-                  {:t :t33 :k k :op :partition
+                  {:t :t32 :caller (m/execution-holder w root) :k k :successor [:cap 2] :holder (m/execution-holder w root) :acceptor (m/execution-holder w root) :op :transfer}
+                  {:t :t33 :caller (m/execution-holder w root) :k k :op :partition
                    :successors [{:k [:cap 2] :scope #{:a}} {:k [:cap 3] :scope #{:b}}]}]]
     (is (empty? (violations result)))
     (is (false? (:published? (m/cap s k))))

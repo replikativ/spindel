@@ -27,6 +27,18 @@ state. Dispatch after publication may be repeated and must claim each
 obligation/event before invoking user code. Retries of an immutable state
 builder cannot perform effects.
 
+Logical teardown also needs a private ancestry lifetime. Entity ownership and
+Run/Scope ownership can lead a cascade back through an owner already being
+retired. A temporary owner frame suppresses repeated teardown and preserves the
+first entry's immutable ancestry IDs until that entry returns. Later siblings
+can then construct correct physical-join and cleanup anchors after collateral
+ancestor removal. Ancestry values contain IDs; native frame keys borrow owner
+objects only for the synchronous call. Frames confer no admission or custody
+authority and are neither published nor transported into async callbacks.
+Scope closure owns its recursive row/index removal; ancestor retirement must not
+delete a pending child Scope. Frame allocation on reactive retirement remains a
+performance cost to measure.
+
 ## Engine flow and visibility
 
 This is the target flow. The experimental kernel implements the local

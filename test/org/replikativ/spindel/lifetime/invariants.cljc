@@ -134,7 +134,7 @@
                          (and (= :released (:status (m/wr s (second e))))
                               (queued? s w :fork-released (second e)))))] {:index :fork :w w :e e})
     (for [[w world] (:worlds s) ev (:queue world)
-          :when (and (:discard ev) (nil? (m/cap s (:discard ev))))]
+          :when (and (:custody-dispatch ev) (nil? (m/cap s (:cap ev))))]
       {:index :queue :w w :event ev})
     (for [[w v d] (bundles s) :when (not (and ((:registry s) v) (every? #(m/ent s w %) d)))]
       {:index :bundle :w w :v v :debtors d})
@@ -459,7 +459,7 @@
         (for [[k cap] (m/all-caps s)
               :when (or (not= (:durable? cap) (m/durable-scope? s (:scope cap)))
                         (not= (:durable? cap) (contains? (get-in s [:durable :caps]) k))
-                        (and (:restarted? s) (:durable? cap) (#{:open :sealed} (:disposition cap))))]
+                        (and (:restarted? s) (:durable? cap) (= :open (:disposition cap))))]
           {:k k :durability cap})
         (for [[op rec] (m/all-records s)
               :when (not= (:durable? (m/cap s (:cap rec))) (contains? (get-in s [:durable :records]) op))]
@@ -1031,11 +1031,456 @@
                                                     (not= reason (:value event)))]
                {:host-result-lost-release-reason event})))))))))
 
+(defn custody-owner-chain
+  "Read the pre-edge forest directly; no ownership/claim implementation helper."
+  [state w owner]
+  (let [world (get-in state [:worlds w])]
+    (loop [id owner seen #{} result []]
+      (if (or (nil? id) (contains? seen id)) result
+          (let [rr (get-in world [:runs id]) scope (get-in world [:scopes id])
+                kind (cond (= id (:root world)) :root scope :scope :else :run)]
+            (recur (if rr (:owner rr) (:parent scope)) (conj seen id)
+                   (conj result [:execution-owner w kind id])))))))
+
+(defn custody-owner-retired? [before after holder]
+  (when (= :execution-owner (first holder))
+    (let [[_ w kind id] holder old (get-in before [:worlds w]) next (get-in after [:worlds w])]
+      (and old (not= :released (:status old))
+           (if (= :run kind)
+             (let [row (get-in old [:runs id]) actual (get-in next [:runs id])]
+               (and row (not= :unwinding (:status row))
+                    (or (nil? actual) (= :unwinding (:status actual)) (= :released (:status next)))))
+             (and (= :open (get-in old [:scopes id :status]))
+                  (or (not= :open (get-in next [:scopes id :status])) (= :released (:status next)))))))))
+
+(defn custody-admitted? [state holder]
+  (when (and (vector? holder) (= :execution-owner (first holder)))
+    (let [[_ w kind id] holder world (get-in state [:worlds w]) row (get-in world [:runs id])
+          generations (for [[r rr] (:runs world) :when (= (:spin row) (:spin rr))] (second r))
+          reactive? (some (fn [[_ ob]] (and (= [:run w id] (:creditor ob)) (:standing? ob)
+                                            (#{:track :await-reactive} (:kind ob)))) (:obligations world))]
+      (and world (not= :released (:status world))
+           (if (= kind :run)
+             (and row (= (second id) (reduce max -1 generations))
+                  (or (#{:running :parked} (:status row)) (and (= :completed (:status row)) reactive?)))
+             (= :open (get-in world [:scopes id :status])))))))
+
+(defn custody-actor? [state holder]
+  (and (vector? holder)
+       (case (first holder)
+         :execution-owner (custody-admitted? state holder)
+         :external (contains? (get-in state [:env :principals] #{}) holder)
+         :cleanup (contains? (get-in state [:custody :claims]) (second holder))
+         :recovery (and (:restarted? state) (= holder [:recovery :durable (:recovery-epoch state)]))
+         false)))
+
+(defn custody-destination-acquisition [state holder acceptance]
+  (if (= :external (first holder))
+    (when (contains? (get-in state [:env :principals] #{}) holder) {:acquisition nil})
+    (when (custody-admitted? state holder)
+      (let [[_ w kind id] holder world (get-in state [:worlds w]) row (get-in world [:runs id])]
+        (when (and (= :live (:status world)) (= :open (:admission world)))
+          (if (not= :run kind) {:acquisition nil}
+              (if (not= :running (:status row)) {:acquisition :exact-run}
+                  (let [{:keys [th order]} acceptance frame (get-in state [:env :threads th])]
+                    (when (and (= w (:world frame)) (= id (:run frame)) (:executing? frame)
+                               (not (:retired? frame)) (nil? (:cleanup-ticket frame))
+                               (integer? order) (<= 0 order)) {:acquisition order})))))))))
+
+(defn custody-loss-consistent? [state]
+  (and (false? (:process-live? state)) (false? (:restarted? state))
+       (not-any? seq (map #(get state %) [:worlds :cuts :registry :caps :records]))
+       (not-any? seq (vals (:custody state)))
+       (= (:env state) {:handles {} :threads {} :native {} :waiters {} :gc [] :outside [] :principals #{}})))
+
+(defn custody-terminal-envelope? [state w event]
+  (let [cap (get (m/all-caps state) (:cap event)) record (get (m/all-records state) (:op event))]
+    (and (#{:merged :discarded} (:disposition cap)) (= w (:world cap))
+         (= [:cleanup (:custody-dispatch event)] (:holder cap))
+         (= (:op event) (:op cap)) (= (:cap event) (:cap record)))))
+
+(defn custody-effective-delivery [before action]
+  (loop [action action]
+    (let [thread (get-in before [:env :threads (get action :th :host)])
+          action (cond-> action
+                   (or (nil? (:w action)) (and (:th action) (:run thread))) (assoc :w (:world thread)))]
+      (case (:t action)
+        :t21 (recur (or (:body action)
+                        {:t :queued :w (first (get-in before [:cuts (:c action) :participants :worlds]))}))
+        :queued (let [event (first (get-in before [:worlds (:w action) :queue]))]
+                  (cond (:action event) (recur (:action event))
+                        (:completion event) (assoc event :t :t08 :w (:w action) :e (:completion event))
+                        :else action))
+        action))))
+
+(defn custody-reentry-triggers [before action]
+  (let [action (custody-effective-delivery before action) w (:w action)]
+    (case (:t action)
+      :t09 [{:world w :spin (:e action) :order (get action :order -1)}]
+      :t08 (let [debtor [:entity (or (:debtor-world action) w) (:e action)]
+                 pending (queued-events before w)]
+             (vec (for [[o ob] (get-in before [:worlds w :obligations])
+                        :let [[kind _ r] (:creditor ob)
+                              cancelling? (and (not= w (second debtor)) (some #(= o (:cancelled %)) pending))]
+                        :when (and (= :run kind) (:standing? ob) (= :consumed (:slot ob))
+                                   (= debtor (:debtor ob)) (not cancelling?)
+                                   (not= :inherited (get-in before [:worlds w :runs r :status])))]
+                    {:world w :spin (first r) :order (:order ob)})))
+      [])))
+
+(defn custody-forest-ref [forest id]
+  [:execution-owner (:world forest)
+   (cond (= id (:root forest)) :root (contains? (:scopes forest) id) :scope :else :run) id])
+
+(defn custody-forest-anchor [forest owner]
+  (loop [id owner seen #{} chain []]
+    (if (or (nil? id) (contains? seen id)) chain
+        (recur (if-let [run (get-in forest [:runs id])] (:owner run)
+                       (get-in forest [:scopes id :parent]))
+               (conj seen id) (conj chain (custody-forest-ref forest id))))))
+
+(defn custody-forest-retire
+  "Freeze the effective mixed ancestry before deleting any of this closure."
+  [forest roots]
+  (let [owners (loop [owners (set roots)]
+                 (let [owned-spins (set (for [[e row] (:entities forest)
+                                              :when (and (= :spin (:kind row)) (contains? owners (:owner row)))] e))
+                       children (concat
+                                 (for [[id row] (:scopes forest) :when (contains? owners (:parent row))] id)
+                                 (for [[r row] (:runs forest)
+                                       :when (and (not= :unwinding (:status row))
+                                                  (or (contains? owners (:owner row)) (contains? owned-spins (:spin row))))] r))
+                       next (into owners children)]
+                   (if (= owners next) owners (recur next))))
+        anchors (into {} (for [id owners :when (or (contains? (:runs forest) id) (contains? (:scopes forest) id))]
+                           [(custody-forest-ref forest id) (custody-forest-anchor forest id)]))]
+    [(-> forest
+         (update :runs #(into {} (for [[r row] % :when (not (contains? owners r))]
+                                   [r (cond-> (update row :ancestors (fn [ids] (set/difference (or ids #{}) owners)))
+                                        (contains? owners (:pred row)) (assoc :pred nil))])))
+         (update :scopes #(apply dissoc % owners))
+         (update :entities #(into {} (for [[e row] %]
+                                       [e (cond-> row (contains? owners (:owner row)) (assoc :owner nil)
+                                                  (contains? owners (:creator row)) (assoc :creator nil))]))))
+     anchors]))
+
+(defn custody-forest-adopt-entity [forest entity old-owner new-owner creation?]
+  (let [creator (get-in forest [:entities entity :creator])]
+    (-> forest
+        (assoc-in [:entities entity :owner] new-owner)
+        (cond-> creator (assoc-in [:entities entity :creator] new-owner)
+                creation? (update-in [:runs new-owner :creations] (fnil conj #{}) entity)
+                creation? (update-in [:runs old-owner :creations] disj entity))
+        (update :runs #(into {} (for [[r row] %]
+                                  [r (if (and (= entity (:spin row)) (= old-owner (:owner row)))
+                                       (assoc row :owner new-owner) row)]))))))
+
+(defn custody-reentry-forest
+  "Ordered independent owner projection across ALL Spins in one delivery.
+   No cap result, reverse index or model transition is used to construct it."
+  [before action after]
+  (let [triggers (custody-reentry-triggers before action) w (:world (first triggers))
+        relevant? (some (fn [[_ c]]
+                          (let [[tag world kind id] (:holder c)]
+                            (and (not (m/terminal (:disposition c))) (= :execution-owner tag) (= w world)
+                                 (or (= :run kind)
+                                     (some #(= :run (nth % 2)) (custody-owner-chain before w id)))))) (m/all-caps before))]
+    (when (and (seq triggers) relevant?)
+      (let [world (get-in before [:worlds w]) effective (custody-effective-delivery before action)
+            allocation (if (contains? action :fresh-runs) action effective)
+            explicit? (contains? allocation :fresh-runs)
+            initial {:world w :root (:root world) :runs (:runs world) :scopes (:scopes world)
+                     :entities (:entities world) :obligations (:obligations world)
+                     :clocks (into {} (for [[[world spin] n] (:generation-clock before) :when (= world w)] [spin n]))
+                     :max-generation (reduce max 0 (vals (:generation-clock before)))
+                     :steps [] :errors []}
+            forest
+            (reduce
+             (fn [forest [i {:keys [spin order]}]]
+               (let [old (last (sort-by second (for [[r row] (:runs forest) :when (= spin (:spin row))] r)))
+                     row (get-in forest [:runs old])
+                     stale (for [[r rr] (:runs forest) :when (and (= spin (:spin rr)) (= :stale (:status rr)))] r)
+                     [forest stale-anchors] (custody-forest-retire forest stale)
+                     inherited (for [[r rr] (:runs forest) :when (and (= spin (:spin rr)) (= :inherited (:status rr)))] r)
+                     [forest inherited-anchors] (custody-forest-retire forest inherited)
+                     retired (merge stale-anchors inherited-anchors)
+                     previous (get-in forest [:runs old])
+                     pred (last (sort-by second (for [[r rr] (:runs forest) :when (= spin (:spin rr))] r)))
+                     base (max (or (second pred) 0) (get-in forest [:clocks spin] 0))
+                     declaration (when explicit? (nth (:fresh-runs allocation) i nil))
+                     stamp (if explicit? (nth declaration 2 nil) (inc base))
+                     valid-stamp? (and (integer? stamp) (> stamp base)
+                                       (or (not explicit?) (and (= w (first declaration)) (= spin (second declaration))
+                                                                (> stamp (:max-generation forest)))))
+                     stamp (if valid-stamp? stamp (inc base)) fresh [spin stamp]
+                     forest (-> forest
+                                (assoc-in [:clocks spin] stamp)
+                                (update :max-generation max stamp)
+                                (assoc-in [:runs fresh] {:spin spin :owner (:owner row) :status :running :creations #{}
+                                                         :ancestors (cond-> (get-in forest [:runs pred :ancestors] #{}) pred (conj pred))})
+                                (cond-> (#{:running :parked} (:status previous)) (assoc-in [:runs old :status] :stale))
+                                (cond-> (not valid-stamp?) (update :errors conj {:invalid-reentry-allocation {:declaration declaration :spin spin}})))
+                     ;; Prefix reactive calls can adopt a portable entity even
+                     ;; when it is absent from the predecessor's creations.
+                     forest (reduce (fn [forest [o ob]]
+                                      (if (not= [:run w old] (:creditor ob)) forest
+                                          (if (and previous
+                                                   (or (and (= :track (:kind ob)) (<= (:order ob) order))
+                                                       (and (= :await-reactive (:kind ob)) (:standing? ob)
+                                                            (= :consumed (:slot ob)) (< (:order ob) order))))
+                                            (let [[kind dw entity] (:debtor ob)
+                                                  owner (get-in forest [:entities entity :owner])
+                                                  adopt? (and (= :await-reactive (:kind ob)) (= :entity kind) (= dw w)
+                                                              (contains? (get-in forest [:runs fresh :ancestors]) owner))]
+                                              (cond-> (assoc-in forest [:obligations o :creditor] [:run w fresh])
+                                                adopt? (custody-forest-adopt-entity entity owner fresh
+                                                                                    (= owner (get-in forest [:entities entity :creator])))))
+                                            (if (#{:running :parked} (:status previous))
+                                              (update forest :obligations dissoc o) forest)))) forest (:obligations forest))
+                     forest (update forest :scopes
+                                    #(into {} (for [[id scope] %]
+                                                [id (if (and (= old (:parent scope)) (< (get scope :order 0) order))
+                                                      (assoc scope :parent fresh) scope)])))
+                     prefix (filter #(< (get-in forest [:entities % :order] 0) order) (:creations previous))
+                     forest (reduce #(custody-forest-adopt-entity %1 %2 old fresh true) forest prefix)]
+                 (update forest :steps conj {:spin spin :order order :old old :new fresh :previous? (some? previous)
+                                             :retired retired}))) initial (map-indexed vector triggers))
+            expected (mapv (fn [{:keys [spin new]}] [spin new]) (:steps forest))
+            entries (mapv #(vector (:e %) (:r %)) (filter #(and (= :body-entry (:event %)) (= w (:world %))) (:events after)))
+            touched (set (map :spin triggers))
+            valid? (and (= expected entries)
+                        (or (not explicit?) (= (count triggers) (count (:fresh-runs allocation))))
+                        (every? #(= (get-in forest [:clocks %]) (get-in after [:generation-clock [w %]])) touched))]
+        (cond-> forest
+          (not valid?) (update :errors conj {:invalid-reentry-evidence {:expected expected :entries entries
+                                                                        :expected-clocks (select-keys (:clocks forest) touched)}}))))))
+
+(defn custody-reentry-path [before action after c forest]
+  (let [[tag w kind id :as source] (:holder c)]
+    (when (and forest (= :execution-owner tag) (= w (:world forest)))
+      (reduce (fn [{:keys [holder closed?] :as path} {:keys [old new order previous? retired]}]
+                (cond
+                  closed? path
+                  (contains? retired holder) (assoc path :closed? true :origin holder :anchor (get retired holder))
+                  (and (= :run (nth holder 2)) (= old (nth holder 3)) previous?
+                       (integer? (:holder-acquisition c)) (< (:holder-acquisition c) order))
+                  (assoc path :holder [:execution-owner w :run new])
+                  :else path)) {:holder source :closed? false} (:steps forest)))))
+
+(defn custody-errors
+  "Independent live-cap census; reverse membership is never its own oracle."
+  [s]
+  (let [caps (m/all-caps s) live (remove #(m/terminal (:disposition (val %))) caps)
+        process? (not= false (:process-live? s))
+        expected (if process? (reduce (fn [index [k c]] (update index (:holder c) (fnil conj #{}) k)) {} live) {})
+        claims (get-in s [:custody :claims])]
+    (vec
+     (concat
+      (when-let [duplicate (seq (set/intersection (set (keys (:caps s))) (set (keys (get-in s [:durable :caps])))))]
+        [{:duplicate-cap-storage (set duplicate)}])
+      (when-let [duplicate (seq (set/intersection (set (keys (:records s))) (set (keys (get-in s [:durable :records])))))]
+        [{:duplicate-operation-storage (set duplicate)}])
+      (when-not (boolean? (:process-live? s)) [{:invalid-process-state (:process-live? s)}])
+      (when (and (false? (:process-live? s)) (not (custody-loss-consistent? s)))
+        [{:inconsistent-process-loss true}])
+      (let [operations (concat
+                        (for [[k c] caps :when (some? (:op c))] [(:op c) k])
+                        (for [[op record] (m/all-records s)] [op (:cap record)])
+                        (for [[_ claim] claims] [(:settlement-op claim) (:cap claim)]))]
+        (for [[op owners] (group-by first operations)
+              :when (or (nil? op) (> (count (set (map second owners))) 1))]
+          {:operation-reservation-collision {:op op :owners (set (map second owners))}}))
+      (when (or (not (integer? (:next-claim s))) (neg? (:next-claim s))
+                (not (integer? (:recovery-epoch s))) (neg? (:recovery-epoch s)))
+        [{:invalid-custody-allocator [(:next-claim s) (:recovery-epoch s)]}])
+      (for [id (concat (keys claims)
+                       (for [[_ c] caps :when (and (vector? (:holder c)) (= :cleanup (first (:holder c))))] (second (:holder c))))
+            :when (not (and (vector? id) (= 2 (count id)) (= :custody-claim (first id))
+                            (integer? (second id)) (<= 0 (second id)) (integer? (:next-claim s)) (< (second id) (:next-claim s))))]
+        {:invalid-claim-identity id})
+      (when (not= expected (get-in s [:custody :by-holder]))
+        [{:index-conservation {:expected expected :actual (get-in s [:custody :by-holder])}}])
+      (for [[k c] caps :when (not (m/holder-ref? (:holder c)))] {:k k :malformed-holder (:holder c)})
+      (for [[k c] live :when process? :let [holder (:holder c)]
+            :when (case (when (vector? holder) (first holder))
+                    :execution-owner (let [[_ w kind id] holder]
+                                       (or (nil? (m/wr s w)) (= :released (:status (m/wr s w)))
+                                           (if (= :run kind)
+                                             (or (nil? (m/run s w id)) (= :unwinding (:status (m/run s w id))))
+                                             (not= :open (get-in s [:worlds w :scopes id :status])))))
+                    :external (not (contains? (get-in s [:env :principals] #{}) holder))
+                    :cleanup (not= k (:cap (get claims (second holder))))
+                    :recovery (not= holder [:recovery :durable (:recovery-epoch s)])
+                    true)]
+        {:k k :inactive-custodian holder})
+      (for [[k c] live :when (and (vector? (:holder c)) (= :execution-owner (first (:holder c))) (= :run (nth (:holder c) 2 nil))
+                                  (not (or (= :exact-run (:holder-acquisition c))
+                                           (and (integer? (:holder-acquisition c)) (not (neg? (:holder-acquisition c)))))))]
+        {:k k :invalid-acquisition (:holder-acquisition c)})
+      (for [[id claim] claims :let [c (get caps (:cap claim))]
+            :when (or (nil? c) (m/terminal (:disposition c))
+                      (not= [:cleanup id] (:holder c)) (not= [:cleanup id] (:holder claim))
+                      (not= (:world c) (:target-world claim))
+                      (not (#{:dispatch-pending :active} (:phase claim)))
+                      (and (not= :open (:disposition c))
+                           (or (not= (:op c) (:settlement-op claim)) (not= (:kind c) (:kind claim)))))]
+        {:claim id :invalid-claim claim :cap c})
+      (for [[id claim] claims :when (= :dispatch-pending (:phase claim))
+            :let [matching (filter #(and (= id (:custody-dispatch %)) (= (:cap claim) (:cap %))
+                                         (= (:settlement-op claim) (:op %)))
+                                   (queued-events s (:target-world claim)))]
+            :when (not= 1 (count matching))]
+        {:claim id :pending-dispatch-count (count matching)})
+      (for [[w world] (:worlds s) event (queued-events s w) :when (:custody-dispatch event)
+            :let [claim (get claims (:custody-dispatch event))]
+            :when (if claim
+                    (or (not= w (:target-world claim)) (not= (:cap event) (:cap claim))
+                        (not= (:op event) (:settlement-op claim)))
+                    (not (custody-terminal-envelope? s w event)))]
+        {:w w :uncommitted-envelope event})))))
+
+(defn custody-operation-reserved? [state op exempt]
+  (or (nil? op) (contains? (m/all-records state) op)
+      (some #(= op (:op %)) (vals (m/all-caps state)))
+      (some (fn [[id claim]] (and (not= id exempt) (= op (:settlement-op claim))))
+            (get-in state [:custody :claims]))))
+
+(defn custody-edge-errors [{:keys [before action after refusal]}]
+  (when-not refusal
+    (let [t (:t action) k (:k action) old (m/cap before k) new (m/cap after k)
+          before-caps (m/all-caps before) after-caps (m/all-caps after)
+          restart? (and (= :t31 t) (= :restart (:phase action)))
+          forest (when (not= :t31 t) (custody-reentry-forest before action after))]
+      (vec
+       (concat
+        (:errors forest)
+        (when (and (not (#{:t31 :join} t))
+                   (or (not (true? (:process-live? before)))
+                       (not= (select-keys before [:process-live? :restarted? :recovery-epoch])
+                             (select-keys after [:process-live? :restarted? :recovery-epoch]))))
+          [{:unavailable-process-mutation action}])
+        (when (#{:t26 :t32 :t33} t)
+          (let [caller (:caller action)
+                claim-id (when (and (= :t26 t) (= :cleanup (first caller))) (second caller))
+                claim (get-in before [:custody :claims claim-id])
+                valid-claim? (and (= caller (:holder old)) (= k (:cap claim))
+                                  (= (:op action) (:settlement-op claim)) (= (get action :kind :merge) (:kind claim)))]
+            (concat
+             (when (or (not= caller (:holder old)) (not (custody-actor? before caller))
+                       (and claim-id (not valid-claim?))) [{:unauthenticated-operation action}])
+             (when (custody-operation-reserved? before (:op action) (when valid-claim? claim-id))
+               [{:reused-operation (:op action)}]))))
+        (when (#{:t32 :t33} t)
+          (let [successors (if (= :t32 t) [(:successor action)] (mapv :k (:successors action)))
+                leaves (map #(m/cap after %) successors)
+                destination (when (= :t32 t) (custody-destination-acquisition before (:holder action) (:acceptance action)))]
+            (concat
+             (when (or (not= (:caller action) (:holder old)) (not (custody-actor? before (:caller action)))
+                       (not (#{:execution-owner :external} (first (:caller action))))
+                       (and (= :t32 t) (or (not= (:holder action) (:acceptor action)) (nil? destination))))
+               [{:unauthenticated-consumption action}])
+             (when (or (not= (set successors) (set/difference (set (keys after-caps)) (set (keys before-caps))))
+                       (not= (if (= :t32 t) :transferred :partitioned) (:disposition new))
+                       (not= successors (:successors new)))
+               [{:bad-consumption {:old k :successors successors :action action}}])
+             (when (or (not= (:scope old) (apply set/union #{} (map :scope leaves)))
+                       (not= (count (:scope old)) (reduce + 0 (map (comp count :scope) leaves)))
+                       (some #(not= (:world old) (:world %)) leaves) (some #(not= k (:pred %)) leaves))
+               [{:lost-authority {:k k :leaves leaves}}])
+             (for [[id leaf] (map vector successors leaves)
+                   :let [expected-holder (if (= :t32 t) (:holder action) (:holder old))
+                         expected-acquisition (if (= :t32 t) (:acquisition destination) (:holder-acquisition old))
+                         expected-bases (if (= :t32 t) (:bases old) (select-keys (:bases old) (:scope leaf)))]
+                   :when (or (not= expected-holder (:holder leaf))
+                             (not= expected-acquisition (:holder-acquisition leaf)) (not= expected-bases (:bases leaf)))]
+               {:bad-successor-custody {:k id :expected-holder expected-holder :expected-acquisition expected-acquisition
+                                        :expected-bases expected-bases :actual leaf}})
+             (for [[id c] before-caps :when (and (not= id k) (not= c (get after-caps id)))] {:unrelated-cap-mutated id}))))
+        ;; Read BEFORE caps and owner forests, never the stored reverse bucket.
+        (when (not= :t31 t)
+          (mapcat
+           (fn [[id c]]
+             (let [next (get after-caps id) source (:holder c)
+                   path (when-not (m/terminal (:disposition c)) (custody-reentry-path before action after c forest))
+                   retired? (or (:closed? path) (and (= source (:holder path source))
+                                                     (custody-owner-retired? before after source)))
+                   close-source (or (:origin path) source)
+                   close-anchor (or (:anchor path)
+                                    (when (= :execution-owner (first source))
+                                      (custody-owner-chain before (second source) (nth source 3))))
+                   terminalizing? (and (= :t29 t) (= id (:cap (m/record before (:op action)))))
+                   rollback? (and (not (:published? c)) (nil? next)
+                                  (some (fn [[cut-id cut]]
+                                          (and (= (:world c) (:child cut))
+                                               (#{:fenced :ready :captured :attached} (:phase cut))
+                                               (= :failed (get-in after [:cuts cut-id :phase])))) (:cuts before)))
+                   captures (for [[claim-id claim] (get-in after [:custody :claims]) :when (= id (:cap claim))] [claim-id claim])]
+               (cond
+                 (m/terminal (:disposition c))
+                 (when (not= c next) [{:terminal-history-changed id}])
+                 rollback? []
+                 terminalizing? []
+                 retired?
+                 (let [[claim-id claim] (first captures)
+                       sealing? (and (= :t26 t) (= id k))
+                       expected-op (if sealing? (:op action) (:op c))
+                       expected-kind (if sealing? (get action :kind :merge) (:kind c))]
+                   (concat
+                    (when (or (not= 1 (count captures)) (not= [:cleanup claim-id] (:holder next))
+                              (not= close-source (:origin claim)) (some? (:holder-acquisition next))
+                              (not= (:world c) (:target-world claim))
+                              (not= (select-keys c [:world :scope :bases]) (select-keys next [:world :scope :bases]))
+                              (not= (if sealing? :sealed (:disposition c)) (:disposition next))
+                              (not= expected-op (:op next)) (not= expected-kind (:kind next))
+                              (not= close-anchor (:anchor claim)))
+                      [{:lost-close-custody {:k id :source source :claims (vec captures) :actual next}}])
+                    (when (if (or sealing? (not= :open (:disposition c)))
+                            (or (not= expected-op (:settlement-op claim)) (not= expected-kind (:kind claim)))
+                            (not= :discard (:kind claim)))
+                      [{:changed-close-disposition {:k id :claim claim}}])
+                    (when (and (some? expected-op) (not= (m/record before expected-op) (m/record after expected-op)))
+                      [{:changed-close-record id}])))
+                 path
+                 (when (or (not= (:holder path) (:holder next)) (not= (dissoc c :holder) (dissoc next :holder)))
+                   [{:wrong-prefix-custody {:k id :expected (:holder path) :actual (:holder next)}}])
+                 :else
+                 (when (or (not= source (:holder next)) (not= (:holder-acquisition c) (:holder-acquisition next))
+                           (not= (:bases c) (:bases next)))
+                   [{:unrelated-custody-changed {:k id :before c :after next}}])))) before-caps))
+        (when (= :t31 t)
+          (concat
+           (when (and (not restart?)
+                      (or (not (custody-loss-consistent? after))
+                          (not= (:recovery-epoch before) (:recovery-epoch after))
+                          (not= (get-in before [:durable :caps]) (get-in after [:durable :caps]))))
+             [{:invalid-process-loss-edge true}])
+           (when (and restart? (or (not (custody-loss-consistent? before))
+                                   (not (true? (:process-live? after)))
+                                   (not= (inc (:recovery-epoch before)) (:recovery-epoch after))))
+             [{:unearned-recovery-takeover true}])
+           (when restart?
+             (for [[id c] (get-in before [:durable :caps]) :when (not (m/terminal (:disposition c)))
+                   :let [next (get after-caps id)]
+                   :when (or (not= [:recovery :durable (:recovery-epoch after)] (:holder next))
+                             (some? (:holder-acquisition next)) (not= (:bases c) (:bases next))
+                             (and (not= :open (:disposition c))
+                                  (or (not= (:op c) (:op next)) (not= (:kind c) (:kind next)))))]
+               {:missing-recovery-custody id}))
+           (for [[id rec] (get-in before [:durable :records])
+                 :let [expected (if (:successors rec)
+                                  (update rec :successors
+                                          #(mapv (fn [desc]
+                                                   (if (and (not (:durable? desc))
+                                                            (or (not restart?) (nil? (get after-caps (:k desc)))))
+                                                     (assoc desc :disposition :discarded :vanished? true) desc)) %)) rec)]
+                 :when (not= expected (m/record after id))]
+             {:recovery-record-rewritten id}))))))))
+
 (def predicates
   [[:L1 l01] [:L2 l02] [:L3 l03] [:L4 l04] [:L5 l05] [:L6 l06] [:ScopeForest scope-errors]
    [:L7 l07] [:L8 l08] [:L9 l09] [:L10 l10] [:L11 l11] [:L12 l12]
    [:L13 l13] [:L14 l14] [:L15 l15] [:L16 l16] [:L17 l17] [:L18 l18]
-   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors] [:L30 release-errors]])
+   [:L19 l19] [:L20 l20] [:L21 l21] [:L22 l22] [:L23 l23] [:L24 l24] [:L25 l25] [:L26 l26] [:L27 cleanup/errors] [:L28 mailbox-errors] [:L29 timer-errors] [:L30 release-errors] [:Custody custody-errors]])
 (defn check "§4.5 vector of violated L-ids with evidence." [s]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (vec (keep (fn [[id predicate]] (ev id (predicate s))) predicates))))
@@ -1560,7 +2005,7 @@
                                   (not= (:components %) (vec (sort (:components %)))))) events)
               {:id :TL14 :evidence {:events events}})
             (when (or (some #(and (= :resume (:event %)) (not= (:world %) (:thread-world %))) events)
-                      (and (= :t35 t) (nil? (get-in before [:env :threads (get action :th :foreign) :world]))
+                      (and (true? (:process-live? before)) (= :t35 t) (nil? (get-in before [:env :threads (get action :th :foreign) :world]))
                            (not (and refusal (= ::m/no-world (:error refusal)) (= before after)))))
               {:id :TL15 :evidence {:action action :events events}})
             (when (seq (l13 after)) {:id :TL16 :evidence (l13 after)})
@@ -1594,7 +2039,7 @@
                                 (not (contains? live [:run w r])))]
                  {:w w :r r :spin (:spin rr) :status (:status rr)})))))))
 
-(defn edge-check [{:keys [before action after refusal] :as edge}]
+(defn execution-edge-check [{:keys [before action after refusal] :as edge}]
   (binding [m/*liveness-cache* (or m/*liveness-cache* (volatile! nil))]
     (let [aborted (for [[c cut] (:cuts before)
                         :when (and (not= :t25 (:t action)) (m/active-cuts (:phase cut))
@@ -1607,15 +2052,65 @@
                 (mapcat (fn [[a b c]]
                           (concat (check b) (ordinary-edge-check {:before a :action {:t :t25 :c c} :after b})))
                         (map vector parts (rest parts) aborted))
-                (edge-check (assoc edge :before (last parts))))))
+                (execution-edge-check (assoc edge :before (last parts))))))
         (= :t21 (:t action))
         (let [w (first (get-in before [:cuts (:c action) :participants :worlds]))
               sub (or (:body action) (when (seq (:queue (m/wr before w))) {:t :queued :w w}))
               intermediate (if sub (m/step before sub) before)]
           (vec (concat (when sub (concat (check intermediate)
-                                         (edge-check {:before before :action sub :after intermediate})))
+                                         (execution-edge-check {:before before :action sub :after intermediate})))
                        (ordinary-edge-check (assoc edge :before intermediate)))))
         :else (ordinary-edge-check edge)))))
+
+;; Independent retirement proof. Intentionally does not call model owner-chain, step,
+;; retirement helpers, or inspect the newly stamped anchor to derive expected.
+(defn retirement-before-chain [state world run]
+  (loop [id run seen #{} chain []]
+    (let [row (get-in state [:worlds world :runs id])]
+      (cond
+        (nil? id) (conj chain world)
+        (contains? seen id) chain
+        (= :unwinding (:status row)) (into chain (:anchor row))
+        :else (recur (or (:owner row) (get-in state [:worlds world :scopes id :parent]))
+                     (conj seen id) (conj chain id))))))
+
+(defn retirement-anchor-errors [{:keys [before action after refusal]}]
+  ;; These entrypoints only tear down. Compound rerun/adoption actions need a
+  ;; separate independent intermediate-forest oracle before extending this set.
+  (when (and (not refusal) (#{:t10 :t11 :t13} (:t action)))
+    (vec
+     (concat
+      (for [[w world] (:worlds before)
+            [r prior] (:runs world)
+            :let [current (get-in after [:worlds w :runs r])]
+            :when (and (not= :unwinding (:status prior)) (= :unwinding (:status current)))
+            :let [expected (retirement-before-chain before w r)]
+            :when (not= expected (:anchor current))]
+        {:kind :ordinary-retirement-anchor :world w :run r
+         :expected expected :actual (:anchor current)})
+      (for [[n current] (get-in after [:env :native])
+            :let [[w r] (:owner current)
+                  prior-run (get-in before [:worlds w :runs r])
+                  prior (get-in before [:env :native n])]
+            :when (and prior-run (= :cps-exit (:kind current)) (:retired? current)
+                       (not (:retired? prior)))
+            :let [expected (retirement-before-chain before w r)]
+            :when (not= expected (:anchor current))]
+        {:kind :cleanup-retirement-anchor :ticket n :world w :run r
+         :expected expected :actual (:anchor current)})))))
+
+(defn edge-check [{:keys [after refusal action] :as edge}]
+  (vec (concat (execution-edge-check edge)
+               (when-let [bad (seq (retirement-anchor-errors edge))]
+                 [{:id :RetirementAnchor :evidence bad}])
+               (when (and (not refusal) (not= :join (:t action)))
+                 (for [[owner n] (frequencies
+                                  (for [event (:events after) :when (= :run-exit (:event event))]
+                                    [(:world event) (:r event)]))
+                       :when (> n 1)]
+                   {:id :RunExitOnce :evidence {:owner owner :count n}}))
+               (when-let [bad (seq (custody-edge-errors edge))]
+                 [{:id :CustodyTransition :evidence (vec bad)}]))))
 
 (defn check-trace
   "§4.6. Trace is [{:before s :action a :after s' :refusal optional} ...].

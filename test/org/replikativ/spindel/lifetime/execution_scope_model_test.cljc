@@ -137,7 +137,7 @@
 (deftest scoped-fork-discard-survives-owner-row-reclamation
   (let [state (reduce checked (m/init-state) scoped-fork-close)]
     (is (nil? (get-in state [:worlds w :scopes s0])))
-    (is (= [{:discard [:cap 0] :seq 1}] (:queue (m/wr state v))))
+    (is (= [{:custody-dispatch [:custody-claim 0] :cap [:cap 0] :op [:custody-op [:custody-claim 0]] :seq 1}] (:queue (m/wr state v))))
     (refuses state {:t :release-request :w w :reason :done :release [:world-release w]} ::m/unsupported-world-release))
   (testing "an unrelated independent family's outstanding capability is not this root's authority"
     (let [other [:w 9]

@@ -83,9 +83,11 @@
                            :entities {} :runs {} :obligations {} :releasing #{}
                            :fdeps #{} :pins #{} :queue []}}
                :registry #{w} :known-worlds #{w} :lineages {w lineage}
+               :caps {} :records {} :durable {:caps {} :records {}}
+               :custody {:by-holder {} :claims {}} :next-claim 0 :recovery-epoch 0 :process-live? true
                :env {:handles {} :threads {:host {:world w :scope nil :run nil
                                                   :read-permits #{} :excl-permits []}}
-                     :native {} :outside []}
+                     :native {} :outside [] :principals (set (:external-principals options))}
                :serial {} :events []} options))))
 
 (defn query-row
@@ -589,14 +591,124 @@
 
 (defn- owner-chain [ctx w r]
   (loop [id r chain [] seen #{}]
-    (cond
-      (nil? id) (conj chain w)
-      (seen id) chain
-      (= :unwinding (:status (read-row ctx w :runs id)))
-      (into chain (:anchor (read-row ctx w :runs id)))
-      :else (recur (or (:owner (read-row ctx w :runs id))
-                       (:parent (read-row ctx w :scopes id)))
-                   (conj chain id) (conj seen id)))))
+    (let [frozen (get (some-> (:retiring-owners ctx) deref) [w id])]
+      (cond
+        (nil? id) (conj chain w)
+        frozen (into chain frozen)
+        (seen id) chain
+        (= :unwinding (:status (read-row ctx w :runs id)))
+        (into chain (:anchor (read-row ctx w :runs id)))
+        :else (recur (or (:owner (read-row ctx w :runs id))
+                         (:parent (read-row ctx w :scopes id)))
+                     (conj chain id) (conj seen id))))))
+
+(defn- execution-holder [w owner]
+  [:execution-owner w
+   (cond (= owner [:root w]) :root
+         (and (vector? owner) (= 3 (count owner)) (= [:scope :id] (subvec owner 0 2))
+              (integer? (nth owner 2)) (not (neg? (nth owner 2)))) :scope
+         :else :run)
+   owner])
+
+(defn- holder-acquisition! [ctx w owner acceptance]
+  (let [holder (execution-holder w owner)
+        run? (= :run (nth holder 2))
+        row (when run? (read-row ctx w :runs owner))]
+    (require! (and (header ctx w) (not= :released (:status (header ctx w)))
+                   (if run?
+                     (and row (= owner (current-run ctx w (:spin row)))
+                          (or (#{:running :parked} (:status row))
+                              (and (= :completed (:status row)) (reactive? ctx w owner))))
+                     (open? ctx w owner)))
+              ::invalid-destination {:holder holder})
+    (when run?
+      (if (= :running (:status row))
+        (let [{:keys [th order]} acceptance
+              thread (get-in (root-state ctx) [:env :threads th])]
+          (require! (and (= w (:world thread)) (= owner (:run thread)) (:executing? thread)
+                         (not (:retired? thread)) (nil? (:cleanup-ticket thread))
+                         (integer? order) (not (neg? order)))
+                    ::missing-destination-order {:holder holder :acceptance acceptance})
+          order)
+        :exact-run))))
+
+(defn- cap-row [ctx k]
+  (let [state (root-state ctx)]
+    (or (get-in state [:durable :caps k]) (get-in state [:caps k]))))
+
+(defn- terminal-cap? [cap]
+  (contains? #{:merged :discarded :transferred :partitioned} (:disposition cap)))
+
+(defn- remove-custody! [ctx k holder]
+  (let [members (disj (get-in (root-state ctx) [:custody :by-holder holder] #{}) k)]
+    (if (seq members)
+      (root-edit! ctx assoc-in [:custody :by-holder holder] members)
+      (root-edit! ctx update-in [:custody :by-holder] dissoc holder))))
+
+(defn- put-cap! [ctx k cap]
+  (let [old (cap-row ctx k)
+        durable? (boolean (seq (set/intersection (:scope cap)
+                                                 (get-in (root-state ctx) [:model :durable-systems]))))]
+    (when (and old (not (terminal-cap? old)))
+      (remove-custody! ctx k (:holder old)))
+    (root-edit! ctx update :caps dissoc k)
+    (root-edit! ctx update-in [:durable :caps] dissoc k)
+    (root-edit! ctx assoc-in (if durable? [:durable :caps k] [:caps k]) (assoc cap :durable? durable?))
+    (when-not (terminal-cap? cap)
+      (root-edit! ctx update-in [:custody :by-holder (:holder cap)] (fnil conj #{}) k))))
+
+(defn- fresh-cap! [ctx k]
+  (let [records (merge (:records (root-state ctx)) (get-in (root-state ctx) [:durable :records]))]
+    (require! (and k (nil? (cap-row ctx k))
+                   (not-any? #(some (fn [desc] (= k (:k desc))) (:successors %)) (vals records)))
+              ::cap-id-reused {:k k})))
+
+(defn- operation-reserved? [ctx op]
+  (let [state (root-state ctx)]
+    (or (contains? (:records state) op)
+        (contains? (get-in state [:durable :records]) op)
+        (some #(= op (:op %)) (vals (:caps state)))
+        (some #(= op (:op %)) (vals (get-in state [:durable :caps])))
+        (some #(= op (:settlement-op %)) (vals (get-in state [:custody :claims]))))))
+
+(defn- allocate-custody-claim! [ctx open?]
+  (loop [ordinal (:next-claim (root-state ctx))]
+    (let [id [:custody-claim ordinal]]
+      (if (or (contains? (get-in (root-state ctx) [:custody :claims]) id)
+              (and open? (operation-reserved? ctx [:custody-op id])))
+        (recur (inc ordinal))
+        (do (root-edit! ctx assoc :next-claim (inc ordinal)) id)))))
+
+(defn- enqueue-custody! [ctx w event]
+  ;; This committed control message may enter a sealed target. Active cuts
+  ;; retain it outside the world until their existing admission fence lifts.
+  (when-not (= :released (:status (header ctx w)))
+    (let [state (root-state ctx)
+          sequence (inc (max (get (header ctx w) :seq 0) (get-in state [:clocks w] 0)))
+          held? (and (= :fenced (:admission (header ctx w)))
+                     (some #(and (#{:fenced :ready :captured :attached} (:phase %))
+                                 (contains? (get-in % [:participants :worlds]) w))
+                           (vals (:cuts state))))
+          event (assoc event :seq sequence)]
+      (root-edit! ctx assoc-in [:clocks w] sequence)
+      (if held?
+        (root-edit! ctx update-in [:env :outside] conj {:w w :event event})
+        (header-edit! ctx w update :queue conj event)))))
+
+(defn- claim-owner-custody! [ctx w owner]
+  (let [holder (execution-holder w owner)]
+    (doseq [k (sort-by pr-str (get-in (root-state ctx) [:custody :by-holder holder] #{}))]
+      (let [cap (cap-row ctx k)
+            id (allocate-custody-claim! ctx (= :open (:disposition cap)))
+            cleanup-holder [:cleanup id]
+            op (if (= :open (:disposition cap)) [:custody-op id] (:op cap))
+            kind (if (= :open (:disposition cap)) :discard (:kind cap))]
+        (root-edit! ctx assoc-in [:custody :claims id]
+                    {:cap k :holder cleanup-holder :origin holder
+                     :anchor (mapv #(execution-holder w %) (butlast (owner-chain ctx w owner)))
+                     :target-world (:world cap) :kind kind :settlement-op op :phase :dispatch-pending})
+        (put-cap! ctx k (assoc cap :holder cleanup-holder :holder-acquisition nil))
+        (enqueue-custody! ctx (:world cap) {:custody-dispatch id :cap k :op op})))))
 
 (defn- physical? [ctx w r]
   (let [env (:env (root-state ctx))]
@@ -805,11 +917,12 @@
                                     [id (cond-> row
                                           (and (= :mailbox-callback (:kind row)) (= w (first (:owner row)))
                                                (= e (:allocation row))) (assoc :retired? true))]) rows)))))
-    (doseq [r (read-row ctx w :runs-by-spin e)]
-      (case (:status (read-row ctx w :runs r))
-        (:running :parked) (cancel-run! ctx w r nil)
-        (:completed :stale) (supersede! ctx w r)
-        nil))
+    (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
+            :when (#{:running :parked} (:status (read-row ctx w :runs r)))]
+      (cancel-run! ctx w r nil))
+    (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
+            :when (#{:completed :stale} (:status (read-row ctx w :runs r)))]
+      (supersede! ctx w r))
     (doseq [o (entity-obligations ctx w w e)]
       (let [ob (read-row ctx w :obligations o)]
         (when (= :run (first (:creditor ob)))
@@ -824,63 +937,63 @@
         (end-obligation! ctx w o :cancel-delivered (:release-cancellation ctx))))))
 
 (defn- release-owned! [ctx w scope]
-  (doseq [e (read-row ctx w :entities-by-owner scope)]
+  (doseq [e (sort-by pr-str (read-row ctx w :entities-by-owner scope))]
     (release-entity! ctx w e)))
 
 (defn- retire-run! [ctx w r cause effects anchor]
-  (retain-cleanup! ctx w r)
-  (let [rr (if (physical? ctx w r) (cells/value (read-row ctx w :runs r)) (read-row ctx w :runs r))
-        chain (or anchor (owner-chain ctx w r))
-        scopes (loop [parents [r] found #{}]
-                 (if-let [parent (first parents)]
-                   (let [children (read-row ctx w :scopes-by-parent parent)]
-                     (recur (into (vec (rest parents)) children) (into found children)))
-                   found))]
-    (root-edit! ctx update-in [:env :native]
-                #(into {} (for [[n row] %]
-                            [n (if (and (= :timer-resource (:kind row)) (= [w r] (:owner row)))
-                                 (assoc row :retired? true :anchor chain) row)])))
-    (doseq [s (read-row ctx w :scopes-by-parent r)]
-      (close-scope! ctx w s))
-    (doseq [s scopes]
-      (let [row (read-row ctx w :scopes s)]
-        (index-remove! ctx w :scopes-by-parent (:parent row) s)
-        (delete! ctx w :scopes s)))
-    (doseq [o (read-row ctx w :by-run-creditor r)]
-      (end-obligation! ctx w o :creditor-cancelled))
-    (root-edit! ctx update-in [:env :native]
-                (fn [ops]
-                  (into {} (map (fn [[n row]]
-                                  [n (if (and (= [w r] (:owner row)) (not= :joined (:state row))
-                                              (not (protected-native? row)) (not (#{:mailbox-callback :timer-resource} (:kind row))))
-                                       (assoc row :state :cancel-requested) row)])) ops)))
-    (when (:diagnostics? ctx)
-      (emit! ctx {:event :run-exit :world w :r r :cause cause
-                  :t (if (= cause :superseded) :t10 :t11)}))
-    (effects)
-    (remove-run! ctx w r)
-    (when (physical? ctx w r)
-      (put! ctx w :runs r
-            (assoc rr :status :unwinding :owner nil :anchor chain :retired? true
-                   :creations #{} :spawned #{} :pred nil :ancestors #{}))
-      (index-add! ctx w :runs-by-spin (:spin rr) r)
-      (index-add! ctx w :runs-by-owner nil r)
-      (root-edit! ctx update-in [:env :threads]
-                  (fn [threads]
-                    (into {} (map (fn [[id row]]
-                                    [id (cond-> row (and (= w (:world row)) (= r (:run row)))
-                                                (assoc :retired? true))])) threads)))
-      (root-edit! ctx update-in [:env :native]
-                  (fn [ops]
-                    (into {} (map (fn [[id row]]
-                                    [id (cond-> row (= [w r] (:owner row)) (assoc :retired? true))])) ops)))
-      (doseq [id (read-row ctx w :runs-by-spin (:spin rr))
-              :let [row (read-row ctx w :runs id)]
-              :when (= r (:pred row))]
-        (edit! ctx w :runs id assoc :pred nil))
-      (doseq [e (:creations rr)
-              :when (= r (:creator (read-row ctx w :entities e)))]
-        (edit! ctx w :entities e assoc :creator nil)))))
+  ;; Cascading entity release may revisit this Run while its ancestry row is
+  ;; still needed. The outer retirement owns its cause and all Run effects.
+  (let [key [w r] retiring (:retiring-owners ctx)]
+    (when-not (contains? @retiring key)
+      (vswap! retiring assoc key (or anchor (owner-chain ctx w r)))
+      (try
+        (claim-owner-custody! ctx w r)
+        (retain-cleanup! ctx w r)
+        (let [rr (if (physical? ctx w r) (cells/value (read-row ctx w :runs r)) (read-row ctx w :runs r))
+              chain (get @retiring key)]
+          (root-edit! ctx update-in [:env :native]
+                      #(into {} (for [[n row] %]
+                                  [n (if (and (= :timer-resource (:kind row)) (= [w r] (:owner row)))
+                                       (assoc row :retired? true :anchor chain) row)])))
+          (doseq [s (sort-by pr-str (read-row ctx w :scopes-by-parent r))]
+            (close-scope! ctx w s))
+          (doseq [o (read-row ctx w :by-run-creditor r)]
+            (end-obligation! ctx w o :creditor-cancelled))
+          (root-edit! ctx update-in [:env :native]
+                      (fn [ops]
+                        (into {} (map (fn [[n row]]
+                                        [n (if (and (= [w r] (:owner row)) (not= :joined (:state row))
+                                                    (not (protected-native? row)) (not (#{:mailbox-callback :timer-resource} (:kind row))))
+                                             (assoc row :state :cancel-requested) row)])) ops)))
+          (when (:diagnostics? ctx)
+            (emit! ctx {:event :run-exit :world w :r r :cause cause
+                        :t (if (= cause :superseded) :t10 :t11)}))
+          (effects)
+          (remove-run! ctx w r)
+          (when (physical? ctx w r)
+            (put! ctx w :runs r
+                  (assoc rr :status :unwinding :owner nil :anchor chain :retired? true
+                         :creations #{} :spawned #{} :pred nil :ancestors #{}))
+            (index-add! ctx w :runs-by-spin (:spin rr) r)
+            (index-add! ctx w :runs-by-owner nil r)
+            (root-edit! ctx update-in [:env :threads]
+                        (fn [threads]
+                          (into {} (map (fn [[id row]]
+                                          [id (cond-> row (and (= w (:world row)) (= r (:run row)))
+                                                      (assoc :retired? true))])) threads)))
+            (root-edit! ctx update-in [:env :native]
+                        (fn [ops]
+                          (into {} (map (fn [[id row]]
+                                          [id (cond-> row (= [w r] (:owner row)) (assoc :retired? true))])) ops)))
+            (doseq [id (read-row ctx w :runs-by-spin (:spin rr))
+                    :let [row (read-row ctx w :runs id)]
+                    :when (= r (:pred row))]
+              (edit! ctx w :runs id assoc :pred nil))
+            (doseq [e (:creations rr)
+                    :when (= r (:creator (read-row ctx w :entities e)))]
+              (edit! ctx w :entities e assoc :creator nil))))
+        (finally
+          (vswap! retiring dissoc key))))))
 
 (defn- foreign-creditors [ctx w e]
   (set
@@ -936,7 +1049,7 @@
       (retire-run!
        ctx w r :superseded
        (fn []
-         (doseq [child (read-row ctx w :runs-by-owner r)]
+         (doseq [child (sort-by pr-str (read-row ctx w :runs-by-owner r))]
            (cancel-run! ctx w child (into [child] chain)))
          (doseq [e (read-row ctx w :entities-by-owner r)
                  :when (#{:cache-row :keyed-entry} (:kind (read-row ctx w :entities e)))]
@@ -956,7 +1069,7 @@
          (retire-run!
           ctx w r :cancelled
           (fn []
-            (doseq [child (read-row ctx w :runs-by-owner r)]
+            (doseq [child (sort-by pr-str (read-row ctx w :runs-by-owner r))]
               (cancel-run! ctx w child (into [child] chain)))
             (when current?
               (if cancellation
@@ -993,27 +1106,27 @@
                 (= scope [:root w])) ::invalid-scope-id {:scope scope})
   (if (= scope (:root (header ctx w)))
     (release-world! ctx {:w w})
-    (when (and (not= :released (:status (header ctx w))) (open? ctx w scope))
-      (retain-cleanup! ctx w scope)
-      (doseq [s (read-row ctx w :scopes-by-parent scope)]
-        (close-scope! ctx w s))
-      (doseq [r (read-row ctx w :runs-by-owner scope)]
-        (cancel-run! ctx w r nil))
-      (doseq [e (read-row ctx w :entities-by-owner scope)
-              :let [row (read-row ctx w :entities e)]
-              :when (and (= :fork (:kind row)) (not (:reference? row)))
-              [k cap] (merge (:caps (root-state ctx)) (get-in (root-state ctx) [:durable :caps]))
-              :when (and (= (second e) (:world cap)) (= :open (:disposition cap)))]
-        (enqueue! ctx (second e) {:discard k}))
-      (release-owned! ctx w scope)
-      (let [parent (:parent (read-row ctx w :scopes scope))]
-        (index-remove! ctx w :scopes-by-parent parent scope)
-        (delete! ctx w :scopes scope)
-        (header-edit! ctx w update :scope-balance dec)))))
+    (when (and (not (contains? @(:retiring-owners ctx) [w scope]))
+               (not= :released (:status (header ctx w))) (open? ctx w scope))
+      (vswap! (:retiring-owners ctx) assoc [w scope] (owner-chain ctx w scope))
+      (try
+        (claim-owner-custody! ctx w scope)
+        (retain-cleanup! ctx w scope)
+        (doseq [s (sort-by pr-str (read-row ctx w :scopes-by-parent scope))]
+          (close-scope! ctx w s))
+        (doseq [r (sort-by pr-str (read-row ctx w :runs-by-owner scope))]
+          (cancel-run! ctx w r nil))
+        (release-owned! ctx w scope)
+        (let [parent (:parent (read-row ctx w :scopes scope))]
+          (index-remove! ctx w :scopes-by-parent parent scope)
+          (delete! ctx w :scopes scope)
+          (header-edit! ctx w update :scope-balance dec))
+        (finally
+          (vswap! (:retiring-owners ctx) dissoc [w scope]))))))
 
 (defn- remove-entity! [ctx w e]
   (when-let [er (read-row ctx w :entities e)]
-    (doseq [r (read-row ctx w :runs-by-spin e)]
+    (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))]
       (cancel-run! ctx w r nil))
     (index-remove! ctx w :entities-by-owner (:owner er) e)
     (delete! ctx w :entities e)
@@ -1054,6 +1167,29 @@
                  (conj seen key))))
       false)))
 
+(defn- idle-retirement-order [ctx w idle]
+  ;; Only execution-owner ancestry orders Runs. Entity lifetime release is
+  ;; preserved separately by keeping every idle entity owner until phase three.
+  (let [idle (set idle)
+        selected (set (for [[r row] (store/table-view (:tx ctx) w :runs)
+                            :when (and (contains? idle (:spin row))
+                                       (#{:completed :stale} (:status row)))] r))
+        dependencies
+        (into {}
+              (for [r selected
+                    :let [execution (rest (butlast (owner-chain ctx w r)))]]
+                [r (set/intersection selected
+                                     (set (filter #(read-row ctx w :runs %)
+                                                  execution)))]))]
+    (loop [remaining selected result []]
+      (if (empty? remaining) result
+          (let [ready (sort-by pr-str
+                               (filter #(empty? (set/intersection remaining (get dependencies %)))
+                                       remaining))]
+            (require! (seq ready) ::retirement-precedence-cycle
+                      {:w w :runs remaining :dependencies (select-keys dependencies remaining)})
+            (recur (apply disj remaining ready) (into result ready)))))))
+
 (defn- rule-l! [ctx]
   ;; The reference sweep is deliberately simple and local. Foreign index
   ;; releases enqueue their debtor-world acknowledgement; they never sweep it.
@@ -1064,24 +1200,27 @@
               idle (vec (for [[e er] (store/table-view (:tx ctx) w :entities)
                               :when (and (= :spin (:kind er)) (:completed? er)
                                          (not (:cache-gc-only? ctx))
-                                         (not (execution-live? ctx w e)))] e))]
-          (doseq [e idle
-                  :let [er (read-row ctx w :entities e)
-                        runs (vec (read-row ctx w :runs-by-spin e))]]
-            (when (or (:owner er)
-                      (some #(#{:completed :stale} (:status (read-row ctx w :runs %))) runs))
-              (vreset! changed? true))
-            (when (signal-dependent? ctx w e)
-              (when-not (:dirty? er) (vreset! changed? true))
-              (edit-entity! ctx w e assoc :dirty? true))
-            (doseq [r runs :when (#{:completed :stale} (:status (read-row ctx w :runs r)))]
-              (supersede! ctx w r))
-            (when (read-row ctx w :entities e)
-              (edit-entity! ctx w e assoc :owner nil)))
+                                         (not (execution-live? ctx w e)))] e))
+              ;; Realize proofs and the complete Run plan before mutating the
+              ;; graph: parent cancellation may remove a child's dependencies.
+              signal-dependent (vec (filter #(signal-dependent? ctx w %) idle))
+              retirement (idle-retirement-order ctx w idle)]
+          (doseq [e signal-dependent]
+            (when-not (:dirty? (read-row ctx w :entities e)) (vreset! changed? true))
+            (edit-entity! ctx w e assoc :dirty? true))
+          (doseq [r retirement
+                  :when (#{:completed :stale} (:status (read-row ctx w :runs r)))]
+            (vreset! changed? true)
+            (supersede! ctx w r))
+          (doseq [e (sort-by pr-str idle)
+                  :let [er (read-row ctx w :entities e)]
+                  :when er]
+            (when (:owner er) (vreset! changed? true))
+            (edit-entity! ctx w e assoc :owner nil))
           (let [dead (vec (for [[e er] (store/table-view (:tx ctx) w :entities)
                                 :when (and (not (wanted? ctx w e))
                                            (not (and (= :spin (:kind er)) (:completed? er) (seq (:tokens er)))))] e))]
-            (doseq [e dead] (vreset! changed? true) (remove-entity! ctx w e)))
+            (doseq [e (sort-by pr-str dead)] (vreset! changed? true) (remove-entity! ctx w e)))
           (when @changed? (recur)))))))
 
 (defn- handle-unreachable! [ctx tok]
@@ -1856,7 +1995,7 @@
   (require! (not (#{:deferred :mailbox} (:kind (read-row ctx w :entities e)))) ::not-computation {:w w :e e})
   (require! (= :live (:status (header ctx w))) ::sealed {:world w})
   (require! (open? ctx w scope) ::closed-scope {:world w :scope scope})
-  (doseq [r (read-row ctx w :runs-by-spin e)
+  (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
           :when (= :inherited (:status (read-row ctx w :runs r)))]
     (cancel-run! ctx w r nil))
   (let [current (current-run ctx w e)
@@ -1905,7 +2044,7 @@
         (edit-entity! ctx w e assoc :owner scope))
       (when lexical?
         (edit! ctx w :runs scope update :creations conj e))
-      (doseq [r (read-row ctx w :runs-by-spin e)
+      (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
               :when (= previous (:owner (read-row ctx w :runs r)))]
         (move-run-owner! ctx w r scope)))))
 
@@ -1929,7 +2068,7 @@
                                     :owner scope :creator scope :kept? (reactive? ctx w scope) :order order)))
       (edit! ctx w :runs scope update :creations conj e))
     (when adopt?
-      (doseq [r (read-row ctx w :runs-by-spin e)
+      (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
               :when (= previous-creator (:owner (read-row ctx w :runs r)))]
         (move-run-owner! ctx w r scope)))
     (touch! ctx w e tok)))
@@ -2019,7 +2158,7 @@
   (let [r (current-run ctx w e)
         rr (read-row ctx w :runs r)]
     (require! rr ::missing-run {:e e})
-    (doseq [p (read-row ctx w :runs-by-spin e)
+    (doseq [p (sort-by pr-str (read-row ctx w :runs-by-spin e))
             :when (= :stale (:status (read-row ctx w :runs p)))]
       (supersede! ctx w p))
     (let [trigger (when resume-o (read-row ctx w :obligations resume-o))
@@ -2053,6 +2192,10 @@
         (index-remove! ctx w :scopes-by-parent r scope)
         (edit! ctx w :scopes scope assoc :parent r2)
         (index-add! ctx w :scopes-by-parent r2 scope))
+      (doseq [k (get-in (root-state ctx) [:custody :by-holder (execution-holder w r)] #{})
+              :let [cap (cap-row ctx k) acquisition (:holder-acquisition cap)]
+              :when (and previous (integer? acquisition) (< acquisition order))]
+        (put-cap! ctx k (assoc cap :holder (execution-holder w r2))))
       (doseq [child (:creations previous)
               :when (< (get (read-row ctx w :entities child) :order 0) order)]
         (if (:creator (read-row ctx w :entities child))
@@ -2315,7 +2458,7 @@
       (doseq [v (set (for [[x v d] (:fdeps (header ctx w))
                            :when (if (= :bundle x) (contains? d e) (= x e))] v))]
         (enqueue! ctx v {:completion e :debtor-world w :value value}))
-      (doseq [pred (read-row ctx w :runs-by-spin e) :when (not= r pred)]
+      (doseq [pred (sort-by pr-str (read-row ctx w :runs-by-spin e)) :when (not= r pred)]
         (when (#{:completed :stale} (:status (read-row ctx w :runs pred)))
           (supersede! ctx w pred)))
       (doseq [child (read-row ctx w :entities-by-owner r)
@@ -2353,10 +2496,8 @@
                          :order (:order ob) :resume-o o})
           (resume! ctx {:w w :o o :value value}))))))
 
-(defn- fork-following! [ctx {:keys [w v k scope systems] :or {systems #{:a :b}}}]
+(defn- fork-following! [ctx {:keys [w v k scope systems acceptance] :or {systems #{:a :b}}}]
   (require! (= :live (:status (header ctx w))) ::not-live {:world w})
-  (require! (open? ctx w scope) ::closed-scope {:scope scope})
-  (require! (not (contains? (:known-worlds (root-state ctx)) v)) ::world-id-reused {:world v})
   (require! (not (or (some #(#{:deferred :mailbox} (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
                      (some (fn [[key row]] (and (= w (first key)) (#{:deferred :mailbox} (:kind row))))
                            (get-in (root-state ctx) [:env :cleanup-cells]))
@@ -2364,7 +2505,11 @@
                                                  (or (:operation ticket) (= :timer-resource (:kind ticket)))))
                            (get-in (root-state ctx) [:env :native]))))
             ::unsupported-deferred-fork {:w w})
-  (let [copy-row #(assoc (cells/value %) :origin :inherited :source-world w)
+  (require! (open? ctx w scope) ::closed-scope {:scope scope})
+  (let [acquisition (holder-acquisition! ctx w scope acceptance)
+        _ (require! (not (contains? (:known-worlds (root-state ctx)) v)) ::world-id-reused {:world v})
+        _ (fresh-cap! ctx k)
+        copy-row #(assoc (cells/value %) :origin :inherited :source-world w)
         runs (into {} (for [[r rr] (store/table-view (:tx ctx) w :runs)
                             :when (= :parked (:status rr))]
                         [r (assoc (copy-row rr) :status :inherited :owner [:root v])]))
@@ -2419,9 +2564,9 @@
                :entities entities :runs runs :obligations obligations
                :releasing #{} :fdeps #{} :pins #{} :queue queue :seq (get (header ctx w) :seq 0)}
         last-seq (reduce max (:seq child) (keep :seq queue))
-        durable? (boolean (seq (set/intersection systems (get-in (root-state ctx) [:model :durable-systems]))))
-        cap {:world v :scope systems :holder scope :disposition :open :published? true
-             :op nil :pred nil :successors [] :durable? durable?
+        cap {:world v :scope systems :holder (execution-holder w scope)
+             :holder-acquisition acquisition
+             :disposition :open :published? true :op nil :pred nil :successors []
              :bases (into {} (for [system systems] [system [:base v system]]))}]
     (doseq [[table rows] (encode-world child) [id row] rows]
       (put! ctx v table id row))
@@ -2433,9 +2578,7 @@
     (root-edit! ctx update :known-worlds (fnil conj #{}) v)
     (root-edit! ctx assoc-in [:lineages v] (:lineage child))
     (put-entity! ctx w [:fork v] (entity-row :fork scope))
-    (root-edit! ctx update :caps dissoc k)
-    (root-edit! ctx update-in [:durable :caps] dissoc k)
-    (root-edit! ctx assoc-in (if durable? [:durable :caps k] [:caps k]) cap)
+    (put-cap! ctx k cap)
     (doseq [[e er] entities]
       (when (= :spin (:kind er))
         (let [covering (set (for [[tok h] (get-in (root-state ctx) [:env :handles])
@@ -2509,12 +2652,12 @@
                                    (contains? (get-in % [:participants :worlds]) w)) (vals (:cuts state)))
                    (not-any? (fn [[_ cap]] (and (not (#{:merged :discarded :transferred :partitioned} (:disposition cap)))
                                                 (or (related? (:world cap)) (= w (:world cap))
-                                                    (contains? owners (:holder cap))))) caps)
+                                                    (some #(= (:holder cap) (execution-holder w %)) owners)))) caps)
                    (not-any? #(= :fork (:kind %)) (vals (store/table-view (:tx ctx) w :entities)))
                    (empty? (:fdeps world)) (empty? (:releasing world))
                    (every? #(and (local? (:debtor %)) (local? (:creditor %)))
                            (vals (store/table-view (:tx ctx) w :obligations)))
-                   (not-any? #(some % [:start-for :register-host :join-bundle :discard :fork-released])
+                   (not-any? #(some % [:start-for :register-host :join-bundle :custody-dispatch :fork-released])
                              (pending-events ctx w))
                    (not-any? (fn [v]
                                (and (not= v w)
@@ -2549,8 +2692,9 @@
             (when mailbox? (queue-mailbox-rejection! ctx w e [:host o] raw-reason))
             (end-obligation! ctx w o :creditor-cancelled)
             (when-not mailbox? (emit! ctx {:event :host-delivery :world w :o o :value released-value}))))
-        (doseq [scope (read-row ctx w :scopes-by-parent root)] (close-scope! ctx w scope))
-        (doseq [r (read-row ctx w :runs-by-owner root)] (cancel-run! ctx w r nil))
+        (doseq [scope (sort-by pr-str (read-row ctx w :scopes-by-parent root))] (close-scope! ctx w scope))
+        (doseq [r (sort-by pr-str (read-row ctx w :runs-by-owner root))] (cancel-run! ctx w r nil))
+        (claim-owner-custody! ctx w root)
         (release-owned! ctx w root)
         (doseq [o (keys (store/table-view (:tx ctx) w :obligations))]
           (end-obligation! ctx w o :creditor-cancelled))
@@ -2791,9 +2935,13 @@
     (store/transact!
      kernel
      (fn [tx]
+       (let [process-live? (:process-live? (read-row {:tx tx} environment :state :root))]
+         (require! (boolean? process-live?) ::invalid-process-state {:process-live? process-live?})
+         (require! (or process-live? (= :t31 t)) ::process-lost {:action action}))
        (let [diagnostics? (get (store/options kernel) :diagnostics? true)
              ctx {:tx tx :events (when diagnostics? (volatile! [])) :work (volatile! [])
-                  :work-set (volatile! #{}) :commands (volatile! []) :result (volatile! nil)
+                  :work-set (volatile! #{}) :retiring-owners (volatile! {})
+                  :commands (volatile! []) :result (volatile! nil)
                   :fresh-runs (when (contains? action :fresh-runs) (volatile! (:fresh-runs action)))
                   :diagnostics? diagnostics? :immediate-await? (= t :await)
                   :cache-gc-only? (= t :t17)}
@@ -2897,6 +3045,8 @@
            (let [event (first (:queue (header ctx w)))]
              (require! event ::empty-queue {:w w})
              (cond
+               (:custody-dispatch event)
+               (require! false ::unsupported-custody-dispatch {:w w :event event})
                (:completion event) (deliver! ctx (assoc event :w w :e (:completion event)))
                (:deferred-assignment event) (assign-deferred! ctx (assoc event :w w :e (:deferred-assignment event)))
                (:mailbox-post event) (process-mailbox-post! ctx (assoc event :w w :e (:mailbox-post event)))

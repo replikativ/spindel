@@ -7,6 +7,14 @@ L1–L25 scans and finite-trace TL monitors check every explored edge,
 including refusals. Logical copied rows are expanded; physical O(1) attach
 cost and implementation lockstep are outside this model.
 
+`RunExitOnce` additionally rejects repeated Run exits within one transition.
+`RetirementAnchor` derives ancestry independently from the before-state for
+direct T10/T11/T13 teardown and checks newly unwinding Runs and retired cleanup
+tickets. Compound delivery/reentry paths require their own intermediate-owner
+proof; this check does not claim to cover them. Shared idle-retirement tests
+exercise mixed ownership cycles, sibling teardown, physical cleanup cells and
+coherently shortened-anchor negative controls.
+
 From the repository root, run the regression and generative checks:
 
 ```sh

@@ -17,7 +17,7 @@
   {:t :t22, :c [:cut 0]}
   {:t :t23, :c [:cut 0], :v [:w 2], :k [:cap 1], :mode :frozen}
   {:t :t26,
-   :caller [:root [:w 0]],
+   :caller [:execution-owner [:w 0] :root [:root [:w 0]]],
    :k [:cap 0],
    :op :gone,
    :kind :discard}

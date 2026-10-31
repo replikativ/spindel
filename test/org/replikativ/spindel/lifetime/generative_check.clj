@@ -44,7 +44,7 @@
                            (when (< i 20) [{:t :t01 :w w :e e :tok tok}])
                            [{:t :t04 :w w :e e :tok (when (< i 20) tok) :mode :callback}])))
                       (range 50))
-        settle [{:t :t26 :caller bfs/root :k [:cap 0] :op :large :kind :discard}
+        settle [{:t :t26 :caller (m/execution-holder bfs/w bfs/root) :k [:cap 0] :op :large :kind :discard}
                 {:t :t27 :k [:cap 0] :op :large :payload :p :bases {:a :base}
                  :steps (mapv (fn [i] {:id i :kind :stamp :system :a :recovery :retry}) (range 5))}]]
     (bfs/execute (m/init-state {:worlds 10 :world-ids 10 :spins 50 :generations 4 :scopes 4
@@ -188,7 +188,7 @@
         :when (not (m/terminal (:disposition cap)))]
     (cond
       (= :incomplete (:disposition cap))
-      {:t :t30 :op op :k (:cap record) :caller (:holder cap) :payload (:payload-hash record)}
+      {:t :t30 :op op :k (:cap record) :caller (some #{(:holder cap)} (m/custody-actors s)) :payload (:payload-hash record)}
       (every? #(= :done (:status %)) (:steps record)) {:t :t29 :op op}
       :else {:t :t28 :op op :i (first (keep-indexed #(when (not= :done (:status %2)) %1) (:steps record))) :outcome :ok})))
 
@@ -197,7 +197,7 @@
                (mapcat (fn [i]
                          (let [k [:cap i] op [:op i]]
                            [{:t :t19 :w bfs/w :v [:w (inc i)] :k k :scope bfs/root :systems #{:a :b}}
-                            {:t :t26 :k k :op op :caller bfs/root :kind :merge}
+                            {:t :t26 :k k :op op :caller (m/execution-holder bfs/w bfs/root) :kind :merge}
                             (assoc bfs/prepare-op :k k :op op)
                             {:t :t28 :op op :i 0 :outcome :unknown :committed? true}])) (range 2)))
         initial (:state setup)

@@ -110,7 +110,7 @@
                          {:t :slice-enter :w v :r r :th :worker}
                          {:t :t05 :w v :r r :kind :track :debtor [:entity v :driver] :order 0}
                          {:t :t07 :w v :r r :value 0}])
-        seal {:t :t26 :caller [:root w] :k cap :op op :kind :merge}
+        seal {:t :t26 :caller (m/execution-holder w [:root w]) :k cap :op op :kind :merge}
         prepare {:t :t27 :k cap :op op :steps [] :bases {} :payload :tail}
         sealed (checked fixture seal)
         refused (m/attempt sealed prepare)]

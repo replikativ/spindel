@@ -33,7 +33,7 @@
    :scope [:scope :id 0],
    :participants
    {:worlds #{[:w 1]}, :components #{}, :systems #{:memory}}}
-  {:t :t26, :caller [:root [:w 0]], :k [:cap 0], :op :op, :kind :merge}
+  {:t :t26, :caller [:execution-owner [:w 0] :root [:root [:w 0]]], :k [:cap 0], :op :op, :kind :merge}
   {:t :t38, :th :host}
   {:w [:w 1], :t :join, :x [[:spin 0] 1]}
   {:w [:w 1], :t :join, :x [:scope :id 0]}
@@ -45,7 +45,7 @@
    {:worlds #{[:w 1]}, :components #{}, :systems #{:memory}}}
   {:t :t25, :c [:cut 1]}
   {:t :t26,
-   :caller [:root [:w 0]],
+   :caller [:execution-owner [:w 0] :root [:root [:w 0]]],
    :k [:cap 0],
    :op :op,
    :kind :merge}]}
