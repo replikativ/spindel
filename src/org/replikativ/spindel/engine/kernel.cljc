@@ -566,12 +566,6 @@
                      (not (contains? live [:run w r]))))
               (read-row ctx w :runs-by-spin e)))))
 
-(defn- wanted? [ctx w e]
-  (let [live (rooted-liveness ctx)]
-    (or (contains? live [:entity w e])
-        (pending-extent? ctx w e live)
-        (dependency-reason? (header ctx w) e))))
-
 (defn- reasons [ctx w e]
   (let [live (rooted-liveness ctx)]
     (cond-> #{}
@@ -583,7 +577,19 @@
           (some #(and (:register-host %) (= e (:e %))) (pending-events ctx w))) (conj :obl)
       (dependency-reason? (header ctx w) e) (conj :dep)
       (scope-reason? ctx w e live) (conj :scope)
-      (contains? (:pins (header ctx w)) e) (conj :pin))))
+      (contains? (:pins (header ctx w)) e) (conj :pin)
+      (and (= :fork (:kind (read-row ctx w :entities e)))
+           (not (:reference? (read-row ctx w :entities e)))
+           (some #(and (= (second e) (:world %))
+                       (#{:sealed :settling :incomplete} (:disposition %)))
+                 (vals (merge (:caps (root-state ctx)) (get-in (root-state ctx) [:durable :caps])))))
+      (conj :settle))))
+
+(defn- wanted? [ctx w e]
+  ;; Execution reachability alone is not a storage reason. In particular, an
+  ;; unadmitted foreign start may reach an ownerless cold entity, while its
+  ;; executable request (not that entity row) survives until T37 recreates it.
+  (boolean (seq (reasons ctx w e))))
 
 (defn- owner [ctx w action]
   (let [thread (get-in (root-state ctx) [:env :threads (get action :th :host)])]
