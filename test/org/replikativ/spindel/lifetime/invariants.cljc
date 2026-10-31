@@ -2486,6 +2486,20 @@
                     (when (and release? (not= :released (:status world)))
                       (for [packet (:queue world) :when (:register-host packet)]
                         [[w (:register-host packet)] (:ob packet)]))
+                    ;; H0 committed an ENTITY join before H1 installed the
+                    ;; HOST row. Its current Run's direct T11 must reject the
+                    ;; original registration even if delivery is omitted from
+                    ;; AFTER. T34 retains its separate queue-phase proof above.
+                    (when (= :t11 (:t a))
+                      (for [packet (queued-events s w)
+                            :let [ob (:ob packet)]
+                            :when (and (:register-host packet)
+                                       (= :host (first (:creditor ob)))
+                                       (= [:entity w (:e packet)] (:debtor ob))
+                                       (= (:caller-world packet) (get-in ob [:filter :origin]))
+                                       (contains? (:known-worlds s) (:caller-world packet))
+                                       (rejected? ob))]
+                        [[w (:register-host packet)] ob]))
                     (when (and (:register-host queued)
                                (or (nil? (get-in world [:entities (:e queued)]))
                                    (not= :live (:status world))))
