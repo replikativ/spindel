@@ -1,0 +1,7629 @@
+{
+  "mode": "candidate",
+  "run-id": "1",
+  "environment": {
+    "java": "25.0.1",
+    "vm": "Java HotSpot(TM) 64-Bit Server VM",
+    "clojure": "1.12.0",
+    "heap-bytes": 402653184,
+    "processors": 2,
+    "jvm-args": [
+      "-XX:ThreadPriorityPolicy=1",
+      "-XX:+UnlockExperimentalVMOptions",
+      "-XX:+EnableJVMCIProduct",
+      "-XX:+EnableJVMCI",
+      "-XX:-UnlockExperimentalVMOptions",
+      "-XX:-OmitStackTraceInFastThrow",
+      "-Xmx384m",
+      "-Xss4m",
+      "-XX:ActiveProcessorCount=2",
+      "-Xbatch",
+      "-javaagent:target/bytecode-agent.jar",
+      "-Dclojure.basis=.cpcache/3644074924.basis"
+    ],
+    "sources": {
+      "org/replikativ/spindel/spin/cps.cljc": "file:$USER_HOME/.gitlibs/libs/org.replikativ/spindel/176fda415b0c783bdffb697ca58ff598e9a29c7f/src/org/replikativ/spindel/spin/cps.cljc",
+      "is/simm/partial_cps/ioc.clj": "file:$USER_HOME/.gitlibs/libs/org.replikativ/partial-cps/247fed8d6d5a2db4bccc1929ba3182a4e952a6b5/src/is/simm/partial_cps/ioc.clj",
+      "org/replikativ/foerster/core.cljc": "file:$USER_HOME/.gitlibs/libs/org.replikativ/foerster/c3c5d0acb34ef813525c16946b1f1019e06c5e13/src/org/replikativ/foerster/core.cljc"
+    },
+    "allocation-supported?": true
+  },
+  "compile": [
+    {
+      "kind": "straight-await",
+      "size": 8,
+      "rows": [
+        {
+          "lower": {
+            "ns": 23228477,
+            "thread-bytes": 627152,
+            "total-bytes": 626840,
+            "jit-ms": 22
+          },
+          "compile": {
+            "ns": 5690640,
+            "thread-bytes": 6709424,
+            "total-bytes": 6709424,
+            "jit-ms": 0,
+            "classes": 52,
+            "class-bytes": 95780,
+            "max-class-filename": 219
+          }
+        },
+        {
+          "lower": {
+            "ns": 477192,
+            "thread-bytes": 487736,
+            "total-bytes": 487736,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 5308144,
+            "thread-bytes": 6710928,
+            "total-bytes": 6710928,
+            "jit-ms": 0,
+            "classes": 52,
+            "class-bytes": 95780,
+            "max-class-filename": 219
+          }
+        },
+        {
+          "lower": {
+            "ns": 443758,
+            "thread-bytes": 487736,
+            "total-bytes": 487736,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 5259828,
+            "thread-bytes": 6710048,
+            "total-bytes": 6710048,
+            "jit-ms": 0,
+            "classes": 52,
+            "class-bytes": 95780,
+            "max-class-filename": 219
+          }
+        },
+        {
+          "lower": {
+            "ns": 407267,
+            "thread-bytes": 487736,
+            "total-bytes": 487736,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 5287574,
+            "thread-bytes": 6709928,
+            "total-bytes": 6709928,
+            "jit-ms": 0,
+            "classes": 52,
+            "class-bytes": 95780,
+            "max-class-filename": 219
+          }
+        },
+        {
+          "lower": {
+            "ns": 462601,
+            "thread-bytes": 487736,
+            "total-bytes": 487736,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 5228875,
+            "thread-bytes": 6711864,
+            "total-bytes": 6711864,
+            "jit-ms": 0,
+            "classes": 52,
+            "class-bytes": 95780,
+            "max-class-filename": 219
+          }
+        }
+      ],
+      "lowered-nodes": 1058,
+      "classes": 52,
+      "class-bytes": 95780,
+      "max-class-filename": 219
+    },
+    {
+      "kind": "straight-await",
+      "size": 32,
+      "rows": [
+        {
+          "lower": {
+            "ns": 67492348,
+            "thread-bytes": 2840344,
+            "total-bytes": 2840344,
+            "jit-ms": 66
+          },
+          "compile": {
+            "ns": 20803337,
+            "thread-bytes": 26473504,
+            "total-bytes": 26473504,
+            "jit-ms": 0,
+            "classes": 196,
+            "class-bytes": 449104,
+            "max-class-filename": 627
+          }
+        },
+        {
+          "lower": {
+            "ns": 1295395,
+            "thread-bytes": 2840344,
+            "total-bytes": 2840344,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 27437682,
+            "thread-bytes": 26478984,
+            "total-bytes": 26478984,
+            "jit-ms": 7,
+            "classes": 196,
+            "class-bytes": 449104,
+            "max-class-filename": 627
+          }
+        },
+        {
+          "lower": {
+            "ns": 1305577,
+            "thread-bytes": 2840344,
+            "total-bytes": 2840344,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 49530505,
+            "thread-bytes": 26478560,
+            "total-bytes": 26478560,
+            "jit-ms": 0,
+            "classes": 196,
+            "class-bytes": 449104,
+            "max-class-filename": 627
+          }
+        },
+        {
+          "lower": {
+            "ns": 4728323,
+            "thread-bytes": 2840344,
+            "total-bytes": 2840344,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 47571957,
+            "thread-bytes": 26481960,
+            "total-bytes": 26481960,
+            "jit-ms": 0,
+            "classes": 196,
+            "class-bytes": 449104,
+            "max-class-filename": 627
+          }
+        },
+        {
+          "lower": {
+            "ns": 1438502,
+            "thread-bytes": 2840344,
+            "total-bytes": 2840344,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 64379919,
+            "thread-bytes": 26478944,
+            "total-bytes": 26478944,
+            "jit-ms": 0,
+            "classes": 196,
+            "class-bytes": 449104,
+            "max-class-filename": 627
+          }
+        }
+      ],
+      "lowered-nodes": 4130,
+      "classes": 196,
+      "class-bytes": 449104,
+      "max-class-filename": 627
+    },
+    {
+      "kind": "straight-await",
+      "size": 96,
+      "rows": [
+        {
+          "lower": {
+            "ns": 6011591,
+            "thread-bytes": 15879832,
+            "total-bytes": 15879832,
+            "jit-ms": 1
+          },
+          "compile": {
+            "ns": 188979534,
+            "thread-bytes": 83842720,
+            "total-bytes": 83842720,
+            "jit-ms": 22,
+            "classes": 580,
+            "class-bytes": 1965776,
+            "max-class-filename": 1715
+          }
+        },
+        {
+          "lower": {
+            "ns": 60724856,
+            "thread-bytes": 15879832,
+            "total-bytes": 15879832,
+            "jit-ms": 55
+          },
+          "compile": {
+            "ns": 105433461,
+            "thread-bytes": 83845080,
+            "total-bytes": 83845080,
+            "jit-ms": 29,
+            "classes": 580,
+            "class-bytes": 1965776,
+            "max-class-filename": 1715
+          }
+        },
+        {
+          "lower": {
+            "ns": 11137375,
+            "thread-bytes": 15879832,
+            "total-bytes": 15879832,
+            "jit-ms": 5
+          },
+          "compile": {
+            "ns": 78709432,
+            "thread-bytes": 84560048,
+            "total-bytes": 84560048,
+            "jit-ms": 0,
+            "classes": 580,
+            "class-bytes": 2061616,
+            "max-class-filename": 1911
+          }
+        },
+        {
+          "lower": {
+            "ns": 13338728,
+            "thread-bytes": 15879832,
+            "total-bytes": 15879832,
+            "jit-ms": 9
+          },
+          "compile": {
+            "ns": 154452914,
+            "thread-bytes": 84722128,
+            "total-bytes": 84722128,
+            "jit-ms": 0,
+            "classes": 580,
+            "class-bytes": 2083302,
+            "max-class-filename": 1911
+          }
+        },
+        {
+          "lower": {
+            "ns": 12038670,
+            "thread-bytes": 15879832,
+            "total-bytes": 15879832,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 149728198,
+            "thread-bytes": 84728440,
+            "total-bytes": 84728440,
+            "jit-ms": 64,
+            "classes": 580,
+            "class-bytes": 2083302,
+            "max-class-filename": 1911
+          }
+        }
+      ],
+      "lowered-nodes": 12322,
+      "classes": 580,
+      "class-bytes": 2061616,
+      "max-class-filename": 1911
+    },
+    {
+      "kind": "nested-mapv",
+      "size": 2,
+      "rows": [
+        {
+          "lower": {
+            "ns": 3607495,
+            "thread-bytes": 496576,
+            "total-bytes": 496576,
+            "jit-ms": 2
+          },
+          "compile": {
+            "ns": 2680777,
+            "thread-bytes": 2656232,
+            "total-bytes": 2656232,
+            "jit-ms": 0,
+            "classes": 24,
+            "class-bytes": 38355,
+            "max-class-filename": 146
+          }
+        },
+        {
+          "lower": {
+            "ns": 598243,
+            "thread-bytes": 495776,
+            "total-bytes": 495776,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 2480990,
+            "thread-bytes": 2657240,
+            "total-bytes": 2657240,
+            "jit-ms": 0,
+            "classes": 24,
+            "class-bytes": 38355,
+            "max-class-filename": 146
+          }
+        },
+        {
+          "lower": {
+            "ns": 583503,
+            "thread-bytes": 496600,
+            "total-bytes": 496600,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 2345761,
+            "thread-bytes": 2655752,
+            "total-bytes": 2655752,
+            "jit-ms": 0,
+            "classes": 24,
+            "class-bytes": 38355,
+            "max-class-filename": 146
+          }
+        },
+        {
+          "lower": {
+            "ns": 625886,
+            "thread-bytes": 497192,
+            "total-bytes": 497192,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 3943409,
+            "thread-bytes": 3049448,
+            "total-bytes": 3049448,
+            "jit-ms": 0,
+            "classes": 24,
+            "class-bytes": 38355,
+            "max-class-filename": 146
+          }
+        },
+        {
+          "lower": {
+            "ns": 598020,
+            "thread-bytes": 497904,
+            "total-bytes": 497904,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 2303361,
+            "thread-bytes": 2653312,
+            "total-bytes": 2653312,
+            "jit-ms": 1,
+            "classes": 24,
+            "class-bytes": 38355,
+            "max-class-filename": 146
+          }
+        }
+      ],
+      "lowered-nodes": 520,
+      "classes": 24,
+      "class-bytes": 38355,
+      "max-class-filename": 146
+    },
+    {
+      "kind": "nested-mapv",
+      "size": 4,
+      "rows": [
+        {
+          "lower": {
+            "ns": 1041269,
+            "thread-bytes": 1013184,
+            "total-bytes": 1013184,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 3907179,
+            "thread-bytes": 4355808,
+            "total-bytes": 4355808,
+            "jit-ms": 0,
+            "classes": 40,
+            "class-bytes": 64699,
+            "max-class-filename": 186
+          }
+        },
+        {
+          "lower": {
+            "ns": 6233506,
+            "thread-bytes": 1013760,
+            "total-bytes": 1013760,
+            "jit-ms": 6
+          },
+          "compile": {
+            "ns": 4177558,
+            "thread-bytes": 4356448,
+            "total-bytes": 4356448,
+            "jit-ms": 0,
+            "classes": 40,
+            "class-bytes": 64699,
+            "max-class-filename": 186
+          }
+        },
+        {
+          "lower": {
+            "ns": 1009329,
+            "thread-bytes": 1014776,
+            "total-bytes": 1014776,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 4466888,
+            "thread-bytes": 4350080,
+            "total-bytes": 4350080,
+            "jit-ms": 0,
+            "classes": 40,
+            "class-bytes": 64699,
+            "max-class-filename": 186
+          }
+        },
+        {
+          "lower": {
+            "ns": 1510580,
+            "thread-bytes": 1015360,
+            "total-bytes": 1015360,
+            "jit-ms": 1
+          },
+          "compile": {
+            "ns": 6575855,
+            "thread-bytes": 4350856,
+            "total-bytes": 4350856,
+            "jit-ms": 2,
+            "classes": 40,
+            "class-bytes": 64699,
+            "max-class-filename": 186
+          }
+        },
+        {
+          "lower": {
+            "ns": 1041477,
+            "thread-bytes": 1015296,
+            "total-bytes": 1015296,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 3977008,
+            "thread-bytes": 4350472,
+            "total-bytes": 4350472,
+            "jit-ms": 0,
+            "classes": 40,
+            "class-bytes": 64699,
+            "max-class-filename": 186
+          }
+        }
+      ],
+      "lowered-nodes": 920,
+      "classes": 40,
+      "class-bytes": 64699,
+      "max-class-filename": 186
+    },
+    {
+      "kind": "nested-mapv",
+      "size": 8,
+      "rows": [
+        {
+          "lower": {
+            "ns": 12401529,
+            "thread-bytes": 2403648,
+            "total-bytes": 2403648,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 6370264,
+            "thread-bytes": 7805368,
+            "total-bytes": 7805368,
+            "jit-ms": 0,
+            "classes": 72,
+            "class-bytes": 121227,
+            "max-class-filename": 266
+          }
+        },
+        {
+          "lower": {
+            "ns": 3948613,
+            "thread-bytes": 2405416,
+            "total-bytes": 2405416,
+            "jit-ms": 2
+          },
+          "compile": {
+            "ns": 6297665,
+            "thread-bytes": 7807192,
+            "total-bytes": 7807192,
+            "jit-ms": 0,
+            "classes": 72,
+            "class-bytes": 121227,
+            "max-class-filename": 266
+          }
+        },
+        {
+          "lower": {
+            "ns": 2627473,
+            "thread-bytes": 2405056,
+            "total-bytes": 2405056,
+            "jit-ms": 1
+          },
+          "compile": {
+            "ns": 6551892,
+            "thread-bytes": 7804592,
+            "total-bytes": 7804592,
+            "jit-ms": 0,
+            "classes": 72,
+            "class-bytes": 121227,
+            "max-class-filename": 266
+          }
+        },
+        {
+          "lower": {
+            "ns": 2301455,
+            "thread-bytes": 2403192,
+            "total-bytes": 2403192,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 6510416,
+            "thread-bytes": 7802232,
+            "total-bytes": 7802232,
+            "jit-ms": 0,
+            "classes": 72,
+            "class-bytes": 121227,
+            "max-class-filename": 266
+          }
+        },
+        {
+          "lower": {
+            "ns": 1875854,
+            "thread-bytes": 2403720,
+            "total-bytes": 2403720,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 7505170,
+            "thread-bytes": 7813448,
+            "total-bytes": 7813448,
+            "jit-ms": 0,
+            "classes": 72,
+            "class-bytes": 121227,
+            "max-class-filename": 266
+          }
+        }
+      ],
+      "lowered-nodes": 1720,
+      "classes": 72,
+      "class-bytes": 121227,
+      "max-class-filename": 266
+    },
+    {
+      "kind": "doseq",
+      "size": 1,
+      "rows": [
+        {
+          "lower": {
+            "ns": 945674,
+            "thread-bytes": 760664,
+            "total-bytes": 760664,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 4065068,
+            "thread-bytes": 4652456,
+            "total-bytes": 4652456,
+            "jit-ms": 0,
+            "classes": 36,
+            "class-bytes": 54593,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 938934,
+            "thread-bytes": 760312,
+            "total-bytes": 760312,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 4100407,
+            "thread-bytes": 4655640,
+            "total-bytes": 4655736,
+            "jit-ms": 0,
+            "classes": 36,
+            "class-bytes": 54593,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 975621,
+            "thread-bytes": 760544,
+            "total-bytes": 760544,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 3946870,
+            "thread-bytes": 4653984,
+            "total-bytes": 4653984,
+            "jit-ms": 0,
+            "classes": 36,
+            "class-bytes": 54593,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 12178562,
+            "thread-bytes": 760496,
+            "total-bytes": 760496,
+            "jit-ms": 11
+          },
+          "compile": {
+            "ns": 4282475,
+            "thread-bytes": 4656936,
+            "total-bytes": 4656936,
+            "jit-ms": 0,
+            "classes": 36,
+            "class-bytes": 54593,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 803417,
+            "thread-bytes": 759640,
+            "total-bytes": 759640,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 4770753,
+            "thread-bytes": 4654800,
+            "total-bytes": 4654800,
+            "jit-ms": 1,
+            "classes": 36,
+            "class-bytes": 54593,
+            "max-class-filename": 126
+          }
+        }
+      ],
+      "lowered-nodes": 800,
+      "classes": 36,
+      "class-bytes": 54593,
+      "max-class-filename": 126
+    },
+    {
+      "kind": "mapv",
+      "size": 1,
+      "rows": [
+        {
+          "lower": {
+            "ns": 338787,
+            "thread-bytes": 256752,
+            "total-bytes": 256752,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 1555898,
+            "thread-bytes": 1805432,
+            "total-bytes": 1805432,
+            "jit-ms": 0,
+            "classes": 16,
+            "class-bytes": 25476,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 313923,
+            "thread-bytes": 256296,
+            "total-bytes": 256296,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 1633190,
+            "thread-bytes": 1805224,
+            "total-bytes": 1805224,
+            "jit-ms": 0,
+            "classes": 16,
+            "class-bytes": 25476,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 308335,
+            "thread-bytes": 256448,
+            "total-bytes": 256448,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 1620906,
+            "thread-bytes": 1806040,
+            "total-bytes": 1806040,
+            "jit-ms": 0,
+            "classes": 16,
+            "class-bytes": 25476,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 429759,
+            "thread-bytes": 256440,
+            "total-bytes": 256440,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 1649548,
+            "thread-bytes": 1805128,
+            "total-bytes": 1805128,
+            "jit-ms": 0,
+            "classes": 16,
+            "class-bytes": 25476,
+            "max-class-filename": 126
+          }
+        },
+        {
+          "lower": {
+            "ns": 607029,
+            "thread-bytes": 256512,
+            "total-bytes": 256512,
+            "jit-ms": 0
+          },
+          "compile": {
+            "ns": 1683527,
+            "thread-bytes": 1806448,
+            "total-bytes": 1806448,
+            "jit-ms": 0,
+            "classes": 16,
+            "class-bytes": 25476,
+            "max-class-filename": 126
+          }
+        }
+      ],
+      "lowered-nodes": 320,
+      "classes": 16,
+      "class-bytes": 25476,
+      "max-class-filename": 126
+    }
+  ],
+  "runtime": [
+    {
+      "thread-bytes-per-op": [
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 2145.725742,
+      "n": 16,
+      "warm-stable?": false,
+      "ns-per-op": [
+        330.1470280200055,
+        454.1810239091352,
+        262.87161091228836,
+        203.53992416732476,
+        210.0483055261522,
+        178.24408152292622,
+        273.06859664745645
+      ],
+      "total-bytes-per-op": [
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981,
+        480.0109772557981
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 20465,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 11451,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 272937,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 2319637,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 4096,
+          "ns": 50378211,
+          "jit-ms": 49
+        },
+        {
+          "iterations": 2439,
+          "ns": 38834827,
+          "jit-ms": 38
+        },
+        {
+          "iterations": 1884,
+          "ns": 447996,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 15072,
+          "ns": 13680965,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33050,
+          "ns": 8387204,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 118215,
+          "ns": 458532010,
+          "jit-ms": 433
+        },
+        {
+          "iterations": 7734,
+          "ns": 1474866,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 61872,
+          "ns": 736799288,
+          "jit-ms": 726
+        },
+        {
+          "iterations": 2519,
+          "ns": 410467,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 20152,
+          "ns": 3261648,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 161216,
+          "ns": 63378374,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 76311,
+          "ns": 23925065,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 95687,
+          "ns": 46405613,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 61859,
+          "ns": 19021272,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 97562,
+          "ns": 16072738,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 182100,
+          "ns": 37038399,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 147495,
+          "ns": 33685577,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 131357,
+          "ns": 21796692,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 180793,
+          "ns": 54601266,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 99334,
+          "ns": 35484218,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 83981,
+          "ns": 39786922,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 63323,
+          "ns": 26612594,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 71383,
+          "ns": 18806310,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 113870,
+          "ns": 19144167,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 178440,
+          "ns": 36445189,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 146883,
+          "ns": 34179273,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 128922,
+          "ns": 22907916,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 168835,
+          "ns": 40083869,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 126361,
+          "ns": 41522040,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 91296,
+          "ns": 30501593,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 89794,
+          "ns": 35514100,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75852,
+          "ns": 13820182,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 164654,
+          "ns": 33330904,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 148199,
+          "ns": 25016450,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 177721,
+          "ns": 38613853,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 138075,
+          "ns": 23199194,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-mapv",
+      "repetitions": 178551
+    },
+    {
+      "thread-bytes-per-op": [
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1019.012957,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        339.424122047556,
+        341.9121085571362,
+        394.6562659151869,
+        341.72166955262054,
+        340.212474111296,
+        343.9817222920133,
+        306.97341527178895
+      ],
+      "total-bytes-per-op": [
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417,
+        2112.0221822338417
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 45880,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 8,
+          "ns": 376323,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 103363,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 4730047,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 3247,
+          "ns": 68474854,
+          "jit-ms": 67
+        },
+        {
+          "iterations": 1422,
+          "ns": 411290,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 11376,
+          "ns": 47552731,
+          "jit-ms": 42
+        },
+        {
+          "iterations": 7176,
+          "ns": 2104493,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 57408,
+          "ns": 511794272,
+          "jit-ms": 489
+        },
+        {
+          "iterations": 3365,
+          "ns": 1010204,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 26920,
+          "ns": 7831097,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 103127,
+          "ns": 54247987,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 57030,
+          "ns": 35693659,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 47932,
+          "ns": 30431233,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 47252,
+          "ns": 34022246,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 41665,
+          "ns": 28560358,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43765,
+          "ns": 20324492,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64599,
+          "ns": 31281445,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 61952,
+          "ns": 25283420,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 73509,
+          "ns": 26574099,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 82985,
+          "ns": 28444078,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 87524,
+          "ns": 29885110,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 87860,
+          "ns": 29830276,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-persistent",
+      "repetitions": 88359
+    },
+    {
+      "thread-bytes-per-op": [
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 507.234497,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        85.26195204520918,
+        63.02171826893601,
+        64.73337420641796,
+        64.01221971948624,
+        74.79461274973677,
+        60.86655382141128,
+        60.82455672695447
+      ],
+      "total-bytes-per-op": [
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836,
+        88.00435387205836
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 21999,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 534600,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 92177,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 2957478,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 4096,
+          "ns": 21448394,
+          "jit-ms": 20
+        },
+        {
+          "iterations": 5729,
+          "ns": 34621584,
+          "jit-ms": 35
+        },
+        {
+          "iterations": 4964,
+          "ns": 315681,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39712,
+          "ns": 341736726,
+          "jit-ms": 333
+        },
+        {
+          "iterations": 3486,
+          "ns": 207423,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 27888,
+          "ns": 1659849,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 223104,
+          "ns": 16324640,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 410001,
+          "ns": 29909578,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 411240,
+          "ns": 29988400,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 411399,
+          "ns": 27415968,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-doseq",
+      "repetitions": 450174
+    },
+    {
+      "thread-bytes-per-op": [
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 784.467275,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        41.453747461557846,
+        40.78440591357641,
+        41.666428150801316,
+        40.61770488445456,
+        48.159422926360584,
+        40.98012772052948,
+        40.396672097282135
+      ],
+      "total-bytes-per-op": [
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227,
+        24.002641192633227
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 24799,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 1564836,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 64,
+          "ns": 295592,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 2716574,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 4096,
+          "ns": 805480,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 32768,
+          "ns": 59396225,
+          "jit-ms": 58
+        },
+        {
+          "iterations": 16550,
+          "ns": 483970735,
+          "jit-ms": 483
+        },
+        {
+          "iterations": 1025,
+          "ns": 47412,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8200,
+          "ns": 317456,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 65600,
+          "ns": 2808823,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 524800,
+          "ns": 20475284,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 768927,
+          "ns": 29383284,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 785065,
+          "ns": 31138936,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 756350,
+          "ns": 36286960,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 625307,
+          "ns": 25576799,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 733446,
+          "ns": 29482009,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 746332,
+          "ns": 30469340,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 734835,
+          "ns": 29706731,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-reduce",
+      "repetitions": 742089
+    },
+    {
+      "thread-bytes-per-op": [
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 984.566,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        1016.2840076402153,
+        860.8289633616947,
+        1017.7624934884528,
+        1017.6942524743879,
+        1018.7342941482897,
+        931.2493835735371,
+        869.5669387046362
+      ],
+      "total-bytes-per-op": [
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075,
+        4272.0680673728075
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 320117,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 255838,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 3439120,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 512,
+          "ns": 92096206,
+          "jit-ms": 89
+        },
+        {
+          "iterations": 166,
+          "ns": 198417,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1328,
+          "ns": 77145628,
+          "jit-ms": 75
+        },
+        {
+          "iterations": 516,
+          "ns": 612403,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 4128,
+          "ns": 167235271,
+          "jit-ms": 162
+        },
+        {
+          "iterations": 740,
+          "ns": 644240,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 5920,
+          "ns": 8109990,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 21898,
+          "ns": 27784943,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 23643,
+          "ns": 443062127,
+          "jit-ms": 418
+        },
+        {
+          "iterations": 1600,
+          "ns": 1645793,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 12800,
+          "ns": 17519236,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 21918,
+          "ns": 19491906,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33734,
+          "ns": 33773638,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 29964,
+          "ns": 31169810,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 28839,
+          "ns": 29320123,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 29507,
+          "ns": 30741194,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "mapv",
+      "repetitions": 28795
+    },
+    {
+      "thread-bytes-per-op": [
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 512.846844,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        920.417906580798,
+        1093.7168184173513,
+        1111.4785698423273,
+        969.5138426234362,
+        921.5557776297284,
+        1082.9643200829078,
+        1089.3691983122362
+      ],
+      "total-bytes-per-op": [
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773,
+        4360.072544229773
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 5592477,
+          "jit-ms": 6
+        },
+        {
+          "iterations": 5,
+          "ns": 57534,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 40,
+          "ns": 51679631,
+          "jit-ms": 51
+        },
+        {
+          "iterations": 23,
+          "ns": 85678,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 184,
+          "ns": 1551785,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1472,
+          "ns": 40116833,
+          "jit-ms": 39
+        },
+        {
+          "iterations": 1100,
+          "ns": 1027524,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8800,
+          "ns": 38071760,
+          "jit-ms": 24
+        },
+        {
+          "iterations": 6934,
+          "ns": 6310513,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32964,
+          "ns": 35097483,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 28176,
+          "ns": 30203418,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 27986,
+          "ns": 24801095,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33852,
+          "ns": 35158262,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 28885,
+          "ns": 31090674,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 27871,
+          "ns": 29463222,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 28378,
+          "ns": 31271217,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 27224,
+          "ns": 24713480,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33047,
+          "ns": 35759732,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 27724,
+          "ns": 30077290,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 27652,
+          "ns": 29625911,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 28001,
+          "ns": 31091325,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-vector",
+      "repetitions": 27018
+    },
+    {
+      "thread-bytes-per-op": [
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1072.977082,
+      "n": 16,
+      "warm-stable?": false,
+      "ns-per-op": [
+        761.1376125059213,
+        910.0799680246329,
+        761.2712576977735,
+        915.5145369493131,
+        761.0128789673141,
+        915.8937115111322,
+        772.2937884888678
+      ],
+      "total-bytes-per-op": [
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967,
+        2440.058029369967
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 26969,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 464495,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 64,
+          "ns": 2376923,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 512,
+          "ns": 46833235,
+          "jit-ms": 45
+        },
+        {
+          "iterations": 327,
+          "ns": 389497,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2616,
+          "ns": 18935920,
+          "jit-ms": 17
+        },
+        {
+          "iterations": 4144,
+          "ns": 32087355,
+          "jit-ms": 28
+        },
+        {
+          "iterations": 3874,
+          "ns": 2909376,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 30992,
+          "ns": 31846313,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 29195,
+          "ns": 22174861,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39497,
+          "ns": 35413936,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33458,
+          "ns": 25741536,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38993,
+          "ns": 33517390,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 34900,
+          "ns": 26763688,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39120,
+          "ns": 34867514,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33658,
+          "ns": 30837367,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32744,
+          "ns": 25468778,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38569,
+          "ns": 35263950,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32811,
+          "ns": 26618849,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36978,
+          "ns": 34009762,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32618,
+          "ns": 28031105,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 34909,
+          "ns": 35637942,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 29386,
+          "ns": 23204294,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37992,
+          "ns": 37244420,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 30602,
+          "ns": 27352686,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33563,
+          "ns": 32051735,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 31414,
+          "ns": 24267380,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38834,
+          "ns": 35212380,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33085,
+          "ns": 25505117,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38915,
+          "ns": 34852330,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33497,
+          "ns": 30556971,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32886,
+          "ns": 25030831,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39414,
+          "ns": 35081594,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33704,
+          "ns": 25461882,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39711,
+          "ns": 35582128,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33481,
+          "ns": 25375942,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39581,
+          "ns": 34707440,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 34212,
+          "ns": 31218788,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32876,
+          "ns": 24964417,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 39507,
+          "ns": 35089986,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "doseq",
+      "repetitions": 33776
+    },
+    {
+      "thread-bytes-per-op": [
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1065.731963,
+      "n": 16,
+      "warm-stable?": false,
+      "ns-per-op": [
+        883.4580424257015,
+        684.9836824224915,
+        724.9475162507022,
+        827.8526870502635,
+        681.1500682128241,
+        886.9416312227484,
+        802.7934622689457
+      ],
+      "total-bytes-per-op": [
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435,
+        2848.0524302490435
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 18796,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 6452134,
+          "jit-ms": 6
+        },
+        {
+          "iterations": 37,
+          "ns": 1192134,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 296,
+          "ns": 58901714,
+          "jit-ms": 58
+        },
+        {
+          "iterations": 150,
+          "ns": 144015,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1200,
+          "ns": 17006386,
+          "jit-ms": 15
+        },
+        {
+          "iterations": 2116,
+          "ns": 15755808,
+          "jit-ms": 14
+        },
+        {
+          "iterations": 4028,
+          "ns": 29211371,
+          "jit-ms": 22
+        },
+        {
+          "iterations": 4136,
+          "ns": 2831145,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33088,
+          "ns": 22592351,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43936,
+          "ns": 35422529,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37210,
+          "ns": 30026868,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37176,
+          "ns": 25428091,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43860,
+          "ns": 35317009,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37256,
+          "ns": 29940880,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37329,
+          "ns": 30107161,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37196,
+          "ns": 25254162,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 44185,
+          "ns": 34702385,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38197,
+          "ns": 30557216,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37500,
+          "ns": 25266122,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 44526,
+          "ns": 35040624,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38120,
+          "ns": 30787345,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37145,
+          "ns": 29845828,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37336,
+          "ns": 25208799,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 44432,
+          "ns": 35001871,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38082,
+          "ns": 30691284,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37224,
+          "ns": 25051072,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 44577,
+          "ns": 35049319,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38155,
+          "ns": 30659661,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37334,
+          "ns": 30090566,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37221,
+          "ns": 25291315,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 44150,
+          "ns": 34911261,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37939,
+          "ns": 31329270,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36329,
+          "ns": 29477297,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36973,
+          "ns": 25261685,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43907,
+          "ns": 35163162,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37459,
+          "ns": 30073924,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37366,
+          "ns": 25499673,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43960,
+          "ns": 34442725,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38289,
+          "ns": 30727005,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-sum",
+      "repetitions": 37383
+    },
+    {
+      "thread-bytes-per-op": [
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1056.648456,
+      "n": 16,
+      "warm-stable?": false,
+      "ns-per-op": [
+        831.6424498067678,
+        828.0121359223301,
+        826.6399754925063,
+        828.5422989914224,
+        721.7439909510792,
+        822.2397963992836,
+        827.8954896785748
+      ],
+      "total-bytes-per-op": [
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476,
+        2848.0461871995476
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 21030,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 68809,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 1479863,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 512,
+          "ns": 34534643,
+          "jit-ms": 33
+        },
+        {
+          "iterations": 444,
+          "ns": 383983,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3552,
+          "ns": 33954074,
+          "jit-ms": 31
+        },
+        {
+          "iterations": 3138,
+          "ns": 23612794,
+          "jit-ms": 21
+        },
+        {
+          "iterations": 3986,
+          "ns": 2704915,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 31888,
+          "ns": 21887245,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43707,
+          "ns": 35461157,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36975,
+          "ns": 30763590,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36057,
+          "ns": 29970711,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36092,
+          "ns": 25007602,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43297,
+          "ns": 31942744,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 40663,
+          "ns": 31843044,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38309,
+          "ns": 26353101,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43610,
+          "ns": 35156609,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37213,
+          "ns": 30702967,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36360,
+          "ns": 30310556,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 35987,
+          "ns": 24542545,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43989,
+          "ns": 35825721,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36835,
+          "ns": 30506927,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36222,
+          "ns": 24887782,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43662,
+          "ns": 35141575,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37273,
+          "ns": 29767312,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37564,
+          "ns": 31247794,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36063,
+          "ns": 24760210,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43694,
+          "ns": 35309723,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37123,
+          "ns": 30695984,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36281,
+          "ns": 24868068,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43768,
+          "ns": 34742010,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37794,
+          "ns": 30644307,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36999,
+          "ns": 30665277,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36196,
+          "ns": 25007090,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 43422,
+          "ns": 33787914,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38554,
+          "ns": 31741095,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36439,
+          "ns": 25457373,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 42941,
+          "ns": 34558498,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37276,
+          "ns": 29833867,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37483,
+          "ns": 26497947,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "reduce",
+      "repetitions": 42436
+    },
+    {
+      "thread-bytes-per-op": [
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1046.368145,
+      "n": 16,
+      "warm-stable?": false,
+      "ns-per-op": [
+        525.6677032910571,
+        499.9737418534844,
+        438.0553692636361,
+        501.71381054111794,
+        501.5154141539793,
+        442.2161226642148,
+        497.92265880634955
+      ],
+      "total-bytes-per-op": [
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942,
+        1448.0265015278942
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 4393,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 17701,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 130747,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 2856696,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 4096,
+          "ns": 1768381,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32768,
+          "ns": 35350871,
+          "jit-ms": 22
+        },
+        {
+          "iterations": 27808,
+          "ns": 16341654,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 51049,
+          "ns": 20218855,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75744,
+          "ns": 35135343,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64673,
+          "ns": 25827622,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75120,
+          "ns": 34980778,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64423,
+          "ns": 30585852,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 63189,
+          "ns": 25134671,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75420,
+          "ns": 35092862,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64474,
+          "ns": 25760636,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75084,
+          "ns": 34604811,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 65092,
+          "ns": 29509320,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 66174,
+          "ns": 26339858,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75369,
+          "ns": 34586661,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 65374,
+          "ns": 31082998,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 63096,
+          "ns": 24951031,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75863,
+          "ns": 35381059,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64325,
+          "ns": 30602897,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 63057,
+          "ns": 25260139,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 74889,
+          "ns": 34579862,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64970,
+          "ns": 25758491,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75668,
+          "ns": 35055836,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64754,
+          "ns": 28509881,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 68138,
+          "ns": 27241998,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 75036,
+          "ns": 34601894,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 65056,
+          "ns": 31022962,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 62910,
+          "ns": 25614476,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 73680,
+          "ns": 35025537,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 63108,
+          "ns": 30762539,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 61543,
+          "ns": 24933235,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 74049,
+          "ns": 35214406,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 63084,
+          "ns": 25511885,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 74181,
+          "ns": 35410265,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 62847,
+          "ns": 30633407,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 61547,
+          "ns": 24965635,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "pure-mapv",
+      "repetitions": 73958
+    },
+    {
+      "thread-bytes-per-op": [
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1101.018013,
+      "n": 1024,
+      "warm-stable?": false,
+      "ns-per-op": [
+        11446.760947274352,
+        13837.486148346738,
+        11580.679177837355,
+        11539.580875781949,
+        12224.647899910635,
+        11448.897676496872,
+        11588.077747989277
+      ],
+      "total-bytes-per-op": [
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817,
+        27320.87578194817
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 18231,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 79688,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 659895,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 5864786,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2619,
+          "ns": 35567581,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2209,
+          "ns": 25326834,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2616,
+          "ns": 29855651,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2628,
+          "ns": 34534651,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2282,
+          "ns": 26131438,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2619,
+          "ns": 34481534,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2278,
+          "ns": 25806253,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2648,
+          "ns": 34982189,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2270,
+          "ns": 26006042,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2618,
+          "ns": 35605802,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2205,
+          "ns": 25051230,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2640,
+          "ns": 30457429,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2600,
+          "ns": 34866862,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2237,
+          "ns": 25562156,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2625,
+          "ns": 33376628,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2359,
+          "ns": 26908123,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2630,
+          "ns": 34784946,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2268,
+          "ns": 25930342,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2623,
+          "ns": 30196642,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2605,
+          "ns": 35148625,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2223,
+          "ns": 25603638,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2604,
+          "ns": 31152001,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2507,
+          "ns": 28671457,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2623,
+          "ns": 35481044,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2217,
+          "ns": 25507265,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2607,
+          "ns": 30038378,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2603,
+          "ns": 34822586,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2242,
+          "ns": 25787957,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2608,
+          "ns": 33390103,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2343,
+          "ns": 26853849,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2617,
+          "ns": 35324911,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2222,
+          "ns": 25484316,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2615,
+          "ns": 30273261,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2591,
+          "ns": 34771986,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2235,
+          "ns": 25713997,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2607,
+          "ns": 34937706,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-mapv",
+      "repetitions": 2238
+    },
+    {
+      "thread-bytes-per-op": [
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 895.053192,
+      "n": 1024,
+      "warm-stable?": true,
+      "ns-per-op": [
+        30757.80888888889,
+        26783.480888888887,
+        27225.508444444444,
+        32015.995555555557,
+        25786.64711111111,
+        32626.244444444445,
+        25827.04
+      ],
+      "total-bytes-per-op": [
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222,
+        195417.7422222222
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 45507,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 8111602,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 29,
+          "ns": 591975,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 232,
+          "ns": 4959443,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1403,
+          "ns": 39698220,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1060,
+          "ns": 27613500,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1151,
+          "ns": 29670466,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1163,
+          "ns": 33403845,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1044,
+          "ns": 27301301,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1147,
+          "ns": 34198701,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1006,
+          "ns": 26418187,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1142,
+          "ns": 28720485,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1192,
+          "ns": 31846682,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1122,
+          "ns": 28949871,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1162,
+          "ns": 34509727,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1010,
+          "ns": 25466619,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1189,
+          "ns": 30602068,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1165,
+          "ns": 34416606,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1015,
+          "ns": 26940783,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1130,
+          "ns": 33636516,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1007,
+          "ns": 26392773,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1144,
+          "ns": 29559048,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1161,
+          "ns": 34272713,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1016,
+          "ns": 26795272,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1137,
+          "ns": 30300429,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1125,
+          "ns": 33435058,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1009,
+          "ns": 27666499,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1094,
+          "ns": 29595717,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1108,
+          "ns": 33982733,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 978,
+          "ns": 26922830,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1089,
+          "ns": 29300376,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1115,
+          "ns": 30475170,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1097,
+          "ns": 29252470,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-persistent",
+      "repetitions": 1125
+    },
+    {
+      "thread-bytes-per-op": [
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1078.307626,
+      "n": 1024,
+      "warm-stable?": false,
+      "ns-per-op": [
+        3716.512050739958,
+        3746.52177589852,
+        3693.689781536293,
+        3729.1300916138125,
+        4317.218463706836,
+        3576.9004933051447,
+        3714.2551092318536
+      ],
+      "total-bytes-per-op": [
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903,
+        26264.276250880903
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 12199,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 24373,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 198227,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 3839548,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 4000,
+          "ns": 17092225,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7020,
+          "ns": 26127856,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8060,
+          "ns": 25763504,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 9385,
+          "ns": 37979239,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7413,
+          "ns": 27328710,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8137,
+          "ns": 34736113,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7027,
+          "ns": 26130012,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8067,
+          "ns": 29322096,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8253,
+          "ns": 29872272,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8288,
+          "ns": 35075643,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7088,
+          "ns": 25454309,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8353,
+          "ns": 29207096,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8579,
+          "ns": 34981001,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7357,
+          "ns": 27238227,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8102,
+          "ns": 28363720,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8569,
+          "ns": 35056141,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7333,
+          "ns": 27104464,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8116,
+          "ns": 32744009,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7435,
+          "ns": 27298521,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8170,
+          "ns": 29635647,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8270,
+          "ns": 34129427,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7269,
+          "ns": 25993641,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8389,
+          "ns": 30063655,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8371,
+          "ns": 33463115,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7504,
+          "ns": 27611025,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8153,
+          "ns": 28535193,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8571,
+          "ns": 36999076,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 6949,
+          "ns": 24942780,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8357,
+          "ns": 30069882,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8337,
+          "ns": 34392649,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7272,
+          "ns": 26952588,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8094,
+          "ns": 29254279,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8300,
+          "ns": 33297147,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7478,
+          "ns": 28854777,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 7774,
+          "ns": 28205739,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8268,
+          "ns": 34957501,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-doseq",
+      "repetitions": 7095
+    },
+    {
+      "thread-bytes-per-op": [
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1056.61197,
+      "n": 1024,
+      "warm-stable?": false,
+      "ns-per-op": [
+        909.3648352807744,
+        788.9577453643869,
+        785.5071875082425,
+        778.6423126632026,
+        904.5773217629837,
+        781.6593252973914,
+        783.9002452984464
+      ],
+      "total-bytes-per-op": [
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923,
+        1152.0516973069923
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 2452,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 6199,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 48488,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 372653,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 4096,
+          "ns": 3234637,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32768,
+          "ns": 26144283,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37600,
+          "ns": 29769613,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37890,
+          "ns": 35419814,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32092,
+          "ns": 25437900,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37847,
+          "ns": 29994424,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37854,
+          "ns": 34373482,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33037,
+          "ns": 26053168,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38041,
+          "ns": 30039772,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37990,
+          "ns": 30103423,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37859,
+          "ns": 33593184,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 33809,
+          "ns": 26589479,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38145,
+          "ns": 30113149,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38001,
+          "ns": 30024544,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37969,
+          "ns": 31851074,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 35762,
+          "ns": 28131299,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38137,
+          "ns": 30190142,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37896,
+          "ns": 35152930,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32340,
+          "ns": 25539284,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37988,
+          "ns": 30061222,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37910,
+          "ns": 30356134,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37465,
+          "ns": 37902903,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 29653,
+          "ns": 23552323,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37770,
+          "ns": 29980751,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37794,
+          "ns": 30279046,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37445,
+          "ns": 34781761,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32297,
+          "ns": 25673906,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37739,
+          "ns": 30002382,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37736,
+          "ns": 29610465,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38232,
+          "ns": 35582087,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 32234,
+          "ns": 25451275,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 37994,
+          "ns": 29785581,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38267,
+          "ns": 36346293,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 31585,
+          "ns": 24856188,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 38121,
+          "ns": 31210667,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 36642,
+          "ns": 28993593,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "native-reduce",
+      "repetitions": 37913
+    },
+    {
+      "thread-bytes-per-op": [
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 770.70097,
+      "n": 1024,
+      "warm-stable?": true,
+      "ns-per-op": [
+        46533.66544789763,
+        55997.53016453382,
+        55518.58500914077,
+        55593.50639853748,
+        55082.26325411334,
+        50333.23034734918,
+        55143.36928702011
+      ],
+      "total-bytes-per-op": [
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872,
+        278243.5831809872
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 148907,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 47353401,
+          "jit-ms": 46
+        },
+        {
+          "iterations": 5,
+          "ns": 372106,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 40,
+          "ns": 3293196,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 320,
+          "ns": 69216424,
+          "jit-ms": 48
+        },
+        {
+          "iterations": 138,
+          "ns": 6364816,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 650,
+          "ns": 35056198,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 556,
+          "ns": 30797239,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 541,
+          "ns": 29948491,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 541,
+          "ns": 30160113,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 538,
+          "ns": 29868202,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 540,
+          "ns": 30076066,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 538,
+          "ns": 30009866,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 537,
+          "ns": 29692873,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 542,
+          "ns": 49726494,
+          "jit-ms": 19
+        },
+        {
+          "iterations": 326,
+          "ns": 20424139,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 478,
+          "ns": 27044691,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 530,
+          "ns": 29613919,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 536,
+          "ns": 24874625,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 646,
+          "ns": 36458774,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 531,
+          "ns": 29712345,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 536,
+          "ns": 29825683,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 539,
+          "ns": 24834973,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 651,
+          "ns": 36932364,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 528,
+          "ns": 29522160,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 536,
+          "ns": 29874223,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 538,
+          "ns": 29498682,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "mapv",
+      "repetitions": 547
+    },
+    {
+      "thread-bytes-per-op": [
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1165.363704,
+      "n": 1024,
+      "warm-stable?": false,
+      "ns-per-op": [
+        55451.33701657459,
+        55142.29097605893,
+        55768.16574585636,
+        55542.82320441989,
+        55593.97053406998,
+        55425.45672191529,
+        55337.00368324125
+      ],
+      "total-bytes-per-op": [
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726,
+        278243.60957642726
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 147111,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 34865259,
+          "jit-ms": 34
+        },
+        {
+          "iterations": 6,
+          "ns": 475048,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 48,
+          "ns": 4947123,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 291,
+          "ns": 67239078,
+          "jit-ms": 47
+        },
+        {
+          "iterations": 129,
+          "ns": 6092787,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 635,
+          "ns": 34901118,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 545,
+          "ns": 30406347,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 537,
+          "ns": 30560485,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 527,
+          "ns": 29432069,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 537,
+          "ns": 29790615,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 540,
+          "ns": 30091452,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 538,
+          "ns": 29799679,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 541,
+          "ns": 30063661,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 539,
+          "ns": 46043189,
+          "jit-ms": 16
+        },
+        {
+          "iterations": 351,
+          "ns": 21907870,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 480,
+          "ns": 27279816,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 527,
+          "ns": 24471449,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 646,
+          "ns": 40647786,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 476,
+          "ns": 22558841,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 633,
+          "ns": 40681937,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 466,
+          "ns": 21725027,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 643,
+          "ns": 36298662,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 531,
+          "ns": 29887903,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 532,
+          "ns": 24880765,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 641,
+          "ns": 43306506,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 444,
+          "ns": 21057962,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 632,
+          "ns": 39640934,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 478,
+          "ns": 22238232,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 644,
+          "ns": 39644208,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 487,
+          "ns": 22790435,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 641,
+          "ns": 41327121,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 465,
+          "ns": 21725337,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 642,
+          "ns": 40462931,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 475,
+          "ns": 22203422,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 641,
+          "ns": 35978851,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 534,
+          "ns": 30349924,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 527,
+          "ns": 26159725,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 604,
+          "ns": 32760248,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 553,
+          "ns": 30522791,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-vector",
+      "repetitions": 543
+    },
+    {
+      "thread-bytes-per-op": [
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1165.346012,
+      "n": 1024,
+      "warm-stable?": false,
+      "ns-per-op": [
+        47379.07585139319,
+        40638.66253869969,
+        48705.22291021672,
+        40826.4907120743,
+        48925.64860681115,
+        40762.69814241486,
+        48281.95665634675
+      ],
+      "total-bytes-per-op": [
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756,
+        138851.03405572756
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 188130,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 41366776,
+          "jit-ms": 40
+        },
+        {
+          "iterations": 5,
+          "ns": 361553,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 40,
+          "ns": 3099867,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 320,
+          "ns": 71124100,
+          "jit-ms": 52
+        },
+        {
+          "iterations": 134,
+          "ns": 5414948,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 742,
+          "ns": 30124485,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 738,
+          "ns": 34206352,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 647,
+          "ns": 31587876,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 614,
+          "ns": 25294006,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 728,
+          "ns": 35617865,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 613,
+          "ns": 25254922,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 728,
+          "ns": 34200223,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 638,
+          "ns": 50239404,
+          "jit-ms": 18
+        },
+        {
+          "iterations": 380,
+          "ns": 15518304,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 734,
+          "ns": 34936736,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 630,
+          "ns": 25720008,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 734,
+          "ns": 34982059,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 629,
+          "ns": 25571647,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 737,
+          "ns": 35176389,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 628,
+          "ns": 30693242,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 613,
+          "ns": 24801933,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 741,
+          "ns": 35355332,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 628,
+          "ns": 25378190,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 742,
+          "ns": 35605113,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 625,
+          "ns": 30659418,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 611,
+          "ns": 24512288,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 747,
+          "ns": 34747349,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 644,
+          "ns": 26078838,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 740,
+          "ns": 35017692,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 633,
+          "ns": 31061056,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 611,
+          "ns": 24620895,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 744,
+          "ns": 34599926,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 645,
+          "ns": 26055002,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 742,
+          "ns": 35186638,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 632,
+          "ns": 30971120,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 612,
+          "ns": 24684994,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 743,
+          "ns": 35580549,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 626,
+          "ns": 25251862,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 743,
+          "ns": 34498925,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "doseq",
+      "repetitions": 646
+    },
+    {
+      "thread-bytes-per-op": [
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 561.688784,
+      "n": 1024,
+      "warm-stable?": true,
+      "ns-per-op": [
+        48118.60450160772,
+        48298.44855305466,
+        47358.43569131833,
+        47578.471061093245,
+        42545.22347266881,
+        47450.95337620579,
+        48242.06270096463
+      ],
+      "total-bytes-per-op": [
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193,
+        251371.15112540193
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 129156,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 76716636,
+          "jit-ms": 76
+        },
+        {
+          "iterations": 3,
+          "ns": 204331,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 24,
+          "ns": 1762359,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 192,
+          "ns": 60262548,
+          "jit-ms": 51
+        },
+        {
+          "iterations": 95,
+          "ns": 9445034,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 301,
+          "ns": 11833990,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 763,
+          "ns": 35773259,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 639,
+          "ns": 30587824,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 626,
+          "ns": 30274256,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 620,
+          "ns": 29848960,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 623,
+          "ns": 30086823,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 621,
+          "ns": 29867340,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 623,
+          "ns": 30130088,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 620,
+          "ns": 46535748,
+          "jit-ms": 17
+        },
+        {
+          "iterations": 399,
+          "ns": 21305224,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 561,
+          "ns": 27568061,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 610,
+          "ns": 29397856,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 622,
+          "ns": 30022250,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 621,
+          "ns": 29937041,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-sum",
+      "repetitions": 622
+    },
+    {
+      "thread-bytes-per-op": [
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 600.379372,
+      "n": 1024,
+      "warm-stable?": true,
+      "ns-per-op": [
+        40561.06166219839,
+        33245.15549597855,
+        40268.60991957105,
+        40525.277479892764,
+        40253.47855227882,
+        35380.24664879357,
+        33441.099195710456
+      ],
+      "total-bytes-per-op": [
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445,
+        169530.6273458445
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 139917,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 35996660,
+          "jit-ms": 35
+        },
+        {
+          "iterations": 6,
+          "ns": 385756,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 48,
+          "ns": 4464952,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 322,
+          "ns": 59003846,
+          "jit-ms": 47
+        },
+        {
+          "iterations": 163,
+          "ns": 5534759,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 883,
+          "ns": 35307968,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 750,
+          "ns": 29888242,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 752,
+          "ns": 30253545,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 745,
+          "ns": 29976929,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 745,
+          "ns": 30104656,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 742,
+          "ns": 24775408,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 898,
+          "ns": 54768604,
+          "jit-ms": 19
+        },
+        {
+          "iterations": 491,
+          "ns": 21100895,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 698,
+          "ns": 28446443,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 736,
+          "ns": 29819176,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 740,
+          "ns": 24615776,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 901,
+          "ns": 31850349,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 848,
+          "ns": 33114017,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 768,
+          "ns": 30668908,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 751,
+          "ns": 29635222,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 760,
+          "ns": 30527344,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "reduce",
+      "repetitions": 746
+    },
+    {
+      "thread-bytes-per-op": [
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1115.083339,
+      "n": 1024,
+      "warm-stable?": false,
+      "ns-per-op": [
+        11885.857279236277,
+        11828.053937947494,
+        14524.129832935561,
+        12055.637708830549,
+        14250.41431980907,
+        11992.25107398568,
+        11672.927446300717
+      ],
+      "total-bytes-per-op": [
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187,
+        28248.935560859187
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 24874,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 2068791,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 64,
+          "ns": 764805,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 512,
+          "ns": 6698163,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2293,
+          "ns": 32916885,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2089,
+          "ns": 25154473,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2491,
+          "ns": 56362843,
+          "jit-ms": 22
+        },
+        {
+          "iterations": 1325,
+          "ns": 15779662,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2519,
+          "ns": 29995595,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2519,
+          "ns": 35083415,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2154,
+          "ns": 25778255,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2506,
+          "ns": 34728156,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2164,
+          "ns": 25743839,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2521,
+          "ns": 35193875,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2148,
+          "ns": 25660329,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2511,
+          "ns": 29770618,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2530,
+          "ns": 35287604,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2150,
+          "ns": 25572381,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2522,
+          "ns": 35190971,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2149,
+          "ns": 25670092,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2511,
+          "ns": 34849947,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2161,
+          "ns": 25711979,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2521,
+          "ns": 30061296,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2515,
+          "ns": 35069547,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2151,
+          "ns": 25544033,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2526,
+          "ns": 35087870,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2159,
+          "ns": 25681043,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2522,
+          "ns": 35319519,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2142,
+          "ns": 25521183,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2517,
+          "ns": 30100641,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2508,
+          "ns": 34621896,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2173,
+          "ns": 25892663,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2517,
+          "ns": 35247698,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2142,
+          "ns": 25522058,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2517,
+          "ns": 34994064,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2157,
+          "ns": 25726720,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2515,
+          "ns": 30002907,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2514,
+          "ns": 34793734,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2167,
+          "ns": 25754057,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2524,
+          "ns": 36134858,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "pure-mapv",
+      "repetitions": 2095
+    }
+  ],
+  "deferred": [
+    {
+      "thread-bytes-per-op": [
+        1344.3000961846747,
+        1344.484770759859,
+        1344.4026931708881,
+        1344.4642513626163,
+        1344.0333440205195,
+        1344.4437319653734,
+        1344.484770759859
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 742.809698,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        6397.190445655659,
+        7028.223789676178,
+        6405.771721705675,
+        6419.678101955755,
+        8093.691567810196,
+        6442.08368066688,
+        6467.475152292402
+      ],
+      "total-bytes-per-op": [
+        18072.49503045848,
+        18073.202949663355,
+        18072.57710804745,
+        18072.597627444695,
+        18072.895158704712,
+        18072.56684834883,
+        18072.587367746073
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 340874,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 4588366,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 34,
+          "ns": 5740792,
+          "jit-ms": 4
+        },
+        {
+          "iterations": 118,
+          "ns": 7883439,
+          "jit-ms": 5
+        },
+        {
+          "iterations": 299,
+          "ns": 116739508,
+          "jit-ms": 111
+        },
+        {
+          "iterations": 51,
+          "ns": 445263,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 408,
+          "ns": 25466301,
+          "jit-ms": 22
+        },
+        {
+          "iterations": 320,
+          "ns": 10124325,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 632,
+          "ns": 7249866,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 1743,
+          "ns": 22523402,
+          "jit-ms": 8
+        },
+        {
+          "iterations": 1547,
+          "ns": 14724978,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 2101,
+          "ns": 191162372,
+          "jit-ms": 173
+        },
+        {
+          "iterations": 219,
+          "ns": 1398589,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1752,
+          "ns": 11283450,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3105,
+          "ns": 21909426,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2834,
+          "ns": 18142807,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3124,
+          "ns": 24882262,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2511,
+          "ns": 16017170,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3135,
+          "ns": 20162691,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3109,
+          "ns": 23284712,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2670,
+          "ns": 17130375,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3117,
+          "ns": 20045982,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3109,
+          "ns": 22640914,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2746,
+          "ns": 17589844,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3122,
+          "ns": 20131372,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3101,
+          "ns": 25404948,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2441,
+          "ns": 15647038,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3120,
+          "ns": 19977894,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3123,
+          "ns": 21799632,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2865,
+          "ns": 18371106,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "mapv",
+      "repetitions": 3119
+    },
+    {
+      "thread-bytes-per-op": [
+        1284.548809124455,
+        1288.4776920496477,
+        1288.5850385776585,
+        1288.49916135525,
+        1288.5420999664543,
+        1288.5635692720564,
+        1286.1160684334116
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 812.988412,
+      "n": 16,
+      "warm-stable?": false,
+      "ns-per-op": [
+        8756.684669573968,
+        6638.750419322375,
+        6658.363971821536,
+        7185.367997316337,
+        6683.713854411271,
+        6707.878564240188,
+        7272.129822207313
+      ],
+      "total-bytes-per-op": [
+        17778.850050318684,
+        17776.59577323046,
+        17776.638711841664,
+        17776.756793022476,
+        17776.638711841664,
+        17776.649446494466,
+        17775.812143575982
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 26870,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 496362,
+          "jit-ms": 16
+        },
+        {
+          "iterations": 64,
+          "ns": 24277156,
+          "jit-ms": 21
+        },
+        {
+          "iterations": 52,
+          "ns": 469859,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 416,
+          "ns": 71968476,
+          "jit-ms": 67
+        },
+        {
+          "iterations": 115,
+          "ns": 766592,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 920,
+          "ns": 6218472,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2958,
+          "ns": 19926657,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2968,
+          "ns": 75159777,
+          "jit-ms": 56
+        },
+        {
+          "iterations": 789,
+          "ns": 4998060,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3157,
+          "ns": 26218844,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2408,
+          "ns": 15478035,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3111,
+          "ns": 19922715,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3123,
+          "ns": 21985184,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2841,
+          "ns": 18188647,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3123,
+          "ns": 19869899,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3143,
+          "ns": 21914589,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2868,
+          "ns": 18288810,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3136,
+          "ns": 26016171,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2410,
+          "ns": 15256459,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3159,
+          "ns": 20114450,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3141,
+          "ns": 21978484,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2858,
+          "ns": 18254043,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3131,
+          "ns": 19870034,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3151,
+          "ns": 25395491,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2481,
+          "ns": 16531934,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3001,
+          "ns": 19904427,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3015,
+          "ns": 22112700,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2726,
+          "ns": 18032526,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3023,
+          "ns": 20291837,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2979,
+          "ns": 26888425,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2215,
+          "ns": 14715669,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3010,
+          "ns": 20059829,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3001,
+          "ns": 20028802,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2996,
+          "ns": 22039803,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2718,
+          "ns": 18232897,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2981,
+          "ns": 20030155,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2976,
+          "ns": 25304572,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2352,
+          "ns": 15841331,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2969,
+          "ns": 19913369,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-vector",
+      "repetitions": 2981
+    },
+    {
+      "thread-bytes-per-op": [
+        1432.2995073891625,
+        1430.5550082101806,
+        1432.4045977011494,
+        1432.4676518883416,
+        1430.9963875205256,
+        1432.5307060755338,
+        1432.5307060755338
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 551.481708,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        6590.969458128079,
+        7381.19934318555,
+        6572.626929392447,
+        6583.866338259441,
+        8342.624630541872,
+        6525.644334975369,
+        6530.449589490969
+      ],
+      "total-bytes-per-op": [
+        17200.499178981936,
+        17199.626929392445,
+        17200.56223316913,
+        17200.61477832512,
+        17201.718226600984,
+        17200.593760262727,
+        17200.62528735632
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 27917,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 152058,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 2801662,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 456,
+          "ns": 101499339,
+          "jit-ms": 97
+        },
+        {
+          "iterations": 89,
+          "ns": 634617,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 712,
+          "ns": 5002139,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2846,
+          "ns": 20834014,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2732,
+          "ns": 69544274,
+          "jit-ms": 44
+        },
+        {
+          "iterations": 785,
+          "ns": 5110510,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3072,
+          "ns": 21116995,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2909,
+          "ns": 19121942,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3042,
+          "ns": 22152739,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2746,
+          "ns": 18047831,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3043,
+          "ns": 19962003,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3048,
+          "ns": 21717922,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2806,
+          "ns": 20062127,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 2797,
+          "ns": 29408030,
+          "jit-ms": 10
+        },
+        {
+          "iterations": 1902,
+          "ns": 12484134,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3047,
+          "ns": 22743682,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 2679,
+          "ns": 17596181,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3044,
+          "ns": 20096875,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3029,
+          "ns": 25765736,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2351,
+          "ns": 15357603,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3061,
+          "ns": 20007295,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3059,
+          "ns": 21873653,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2796,
+          "ns": 18360430,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "doseq",
+      "repetitions": 3045
+    },
+    {
+      "thread-bytes-per-op": [
+        1288.227383015598,
+        1287.606239168111,
+        1288.5157712305027,
+        1288.4935875216638,
+        1287.1847487001733,
+        1287.5175043327556,
+        1288.5823223570192
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 663.284184,
+      "n": 16,
+      "warm-stable?": true,
+      "ns-per-op": [
+        6929.296360485268,
+        7786.610051993068,
+        7031.88006932409,
+        7119.070363951473,
+        9087.442634315425,
+        6879.79410745234,
+        7102.682495667244
+      ],
+      "total-bytes-per-op": [
+        16328.493587521663,
+        16329.447487001733,
+        16328.626689774697,
+        16328.637781629117,
+        16329.403119584056,
+        16328.837435008665,
+        16328.648873483535
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 26847,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 103584,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 1677603,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 512,
+          "ns": 58381605,
+          "jit-ms": 54
+        },
+        {
+          "iterations": 175,
+          "ns": 1175946,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1400,
+          "ns": 14217568,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1969,
+          "ns": 13236822,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2975,
+          "ns": 60695701,
+          "jit-ms": 41
+        },
+        {
+          "iterations": 980,
+          "ns": 6221402,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3150,
+          "ns": 25472255,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2473,
+          "ns": 15646994,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3160,
+          "ns": 20019419,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3156,
+          "ns": 20103918,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3139,
+          "ns": 25510420,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2460,
+          "ns": 15895350,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3095,
+          "ns": 19727697,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3137,
+          "ns": 21837390,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2873,
+          "ns": 18298014,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3140,
+          "ns": 20146947,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3117,
+          "ns": 24875494,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2506,
+          "ns": 16064269,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3119,
+          "ns": 19744038,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3159,
+          "ns": 22151499,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2852,
+          "ns": 18061026,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3158,
+          "ns": 19971484,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3162,
+          "ns": 25580831,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2472,
+          "ns": 15665539,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3155,
+          "ns": 20063482,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3145,
+          "ns": 20079709,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3132,
+          "ns": 24910974,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2514,
+          "ns": 16190659,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3105,
+          "ns": 20099866,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 3089,
+          "ns": 21715329,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 2844,
+          "ns": 19714503,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-sum",
+      "repetitions": 2885
+    },
+    {
+      "thread-bytes-per-op": [
+        1311.8699186991869,
+        1311.8699186991869,
+        1311.8699186991869,
+        1311.8699186991869,
+        1311.3495934959349,
+        1311.8699186991869,
+        1311.8699186991869
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 702.282798,
+      "n": 256,
+      "warm-stable?": true,
+      "ns-per-op": [
+        77599.42276422764,
+        97499.01219512195,
+        75392.89430894308,
+        68121.75609756098,
+        85997.09756097561,
+        68347.05284552845,
+        86132.16260162601
+      ],
+      "total-bytes-per-op": [
+        283151.8699186992,
+        283153.9512195122,
+        283153.0406504065,
+        283151.8699186992,
+        283154.2113821138,
+        283151.8699186992,
+        283155.38211382116
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 217226,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 686943,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 60249707,
+          "jit-ms": 55
+        },
+        {
+          "iterations": 21,
+          "ns": 1406925,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 168,
+          "ns": 17023441,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 197,
+          "ns": 13575968,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 290,
+          "ns": 24790971,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 233,
+          "ns": 15838672,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 294,
+          "ns": 20028727,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 293,
+          "ns": 21708444,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 269,
+          "ns": 18300411,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 293,
+          "ns": 24987340,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 234,
+          "ns": 15986415,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 292,
+          "ns": 21633602,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 269,
+          "ns": 18238337,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 294,
+          "ns": 24782933,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 237,
+          "ns": 15896600,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 298,
+          "ns": 21797626,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 273,
+          "ns": 18528915,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 294,
+          "ns": 21532298,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 273,
+          "ns": 18516574,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 294,
+          "ns": 24922479,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 235,
+          "ns": 36575060,
+          "jit-ms": 20
+        },
+        {
+          "iterations": 128,
+          "ns": 10327344,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 247,
+          "ns": 40763682,
+          "jit-ms": 24
+        },
+        {
+          "iterations": 121,
+          "ns": 8159249,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 296,
+          "ns": 24725062,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 239,
+          "ns": 16141682,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 296,
+          "ns": 21680800,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 273,
+          "ns": 19942619,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 273,
+          "ns": 25981590,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 210,
+          "ns": 15843733,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 21355150,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 248,
+          "ns": 18961551,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 261,
+          "ns": 21174722,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "mapv",
+      "repetitions": 246
+    },
+    {
+      "thread-bytes-per-op": [
+        1295.250936329588,
+        1295.250936329588,
+        1294.7715355805244,
+        1295.250936329588,
+        1295.250936329588,
+        1295.250936329588,
+        1295.0112359550562
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 594.143891,
+      "n": 256,
+      "warm-stable?": true,
+      "ns-per-op": [
+        81446.4382022472,
+        76418.56928838951,
+        92206.41947565544,
+        74198.86891385767,
+        82371.58801498127,
+        72097.4382022472,
+        89521.51685393258
+      ],
+      "total-bytes-per-op": [
+        279056.6891385768,
+        279055.2509363296,
+        279059.92509363295,
+        279055.2509363296,
+        279055.97003745317,
+        279055.2509363296,
+        279059.92509363295
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 208344,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 678007,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 54144679,
+          "jit-ms": 49
+        },
+        {
+          "iterations": 23,
+          "ns": 1566140,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 184,
+          "ns": 13214103,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 278,
+          "ns": 22891065,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 242,
+          "ns": 16307490,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 296,
+          "ns": 22376665,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 264,
+          "ns": 19539479,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 270,
+          "ns": 25348386,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 213,
+          "ns": 16017731,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 24709482,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 214,
+          "ns": 16140562,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 20032045,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 264,
+          "ns": 21539048,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 245,
+          "ns": 18443251,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 24971010,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 212,
+          "ns": 15991503,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 24406232,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 217,
+          "ns": 16366578,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 22095862,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 239,
+          "ns": 17474074,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 273,
+          "ns": 18498738,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 295,
+          "ns": 24529955,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 240,
+          "ns": 16235324,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 295,
+          "ns": 52074413,
+          "jit-ms": 24
+        },
+        {
+          "iterations": 113,
+          "ns": 8522834,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 21638952,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 244,
+          "ns": 18511814,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 263,
+          "ns": 19670125,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-vector",
+      "repetitions": 267
+    },
+    {
+      "thread-bytes-per-op": [
+        1478.0124223602484,
+        1478.0124223602484,
+        1478.0124223602484,
+        1478.0124223602484,
+        1478.0124223602484,
+        1478.0124223602484,
+        1478.0124223602484
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 837.797541,
+      "n": 256,
+      "warm-stable?": false,
+      "ns-per-op": [
+        67471.6801242236,
+        62816.76708074534,
+        78276.63043478261,
+        62106.5,
+        78438.35093167702,
+        62135.48757763975,
+        67742.23291925466
+      ],
+      "total-bytes-per-op": [
+        264591.1055900621,
+        264590.01242236025,
+        264593.68944099377,
+        264590.01242236025,
+        264590.8074534162,
+        264590.01242236025,
+        264590.01242236025
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 344388,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 749802,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 106502912,
+          "jit-ms": 101
+        },
+        {
+          "iterations": 12,
+          "ns": 956210,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 96,
+          "ns": 7222201,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 23808961,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 222,
+          "ns": 14080385,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 315,
+          "ns": 21638578,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 291,
+          "ns": 19986573,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 291,
+          "ns": 25475081,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 228,
+          "ns": 16443201,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 277,
+          "ns": 19442334,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 284,
+          "ns": 25475512,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 222,
+          "ns": 14061700,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 315,
+          "ns": 22909915,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 274,
+          "ns": 19226078,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 285,
+          "ns": 25404504,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 224,
+          "ns": 15850148,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 282,
+          "ns": 21625841,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 260,
+          "ns": 18874623,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 275,
+          "ns": 19580238,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 280,
+          "ns": 19638707,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 285,
+          "ns": 20067633,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 284,
+          "ns": 25195707,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 225,
+          "ns": 43919987,
+          "jit-ms": 28
+        },
+        {
+          "iterations": 102,
+          "ns": 6751245,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 302,
+          "ns": 23266956,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 259,
+          "ns": 17979267,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 288,
+          "ns": 25410887,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 226,
+          "ns": 15720624,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 287,
+          "ns": 24986414,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 229,
+          "ns": 16025433,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 285,
+          "ns": 22338746,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 255,
+          "ns": 18233704,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 279,
+          "ns": 24151265,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 231,
+          "ns": 14549384,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 317,
+          "ns": 22100906,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 286,
+          "ns": 17796879,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 321,
+          "ns": 21763451,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 294,
+          "ns": 18241161,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "doseq",
+      "repetitions": 322
+    },
+    {
+      "thread-bytes-per-op": [
+        1295.3333333333333,
+        1295.3333333333333,
+        1294.8484848484848,
+        1295.3333333333333,
+        1295.3333333333333,
+        1295.3333333333333,
+        1295.3333333333333
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 797.061983,
+      "n": 256,
+      "warm-stable?": false,
+      "ns-per-op": [
+        59328.693181818184,
+        59608.632575757576,
+        78468.24621212122,
+        59533.59848484849,
+        65970.08333333333,
+        59525.829545454544,
+        80234.41287878787
+      ],
+      "total-bytes-per-op": [
+        251751.33333333334,
+        251751.33333333334,
+        251756.30303030304,
+        251751.33333333334,
+        251752.66666666666,
+        251751.33333333334,
+        251756.0606060606
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 185086,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 8,
+          "ns": 607431,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 64,
+          "ns": 56067794,
+          "jit-ms": 52
+        },
+        {
+          "iterations": 22,
+          "ns": 1335452,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 176,
+          "ns": 11581736,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 303,
+          "ns": 22858383,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 15842188,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 334,
+          "ns": 21765388,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 306,
+          "ns": 18279411,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 334,
+          "ns": 21656283,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 308,
+          "ns": 18387161,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 335,
+          "ns": 25245066,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 265,
+          "ns": 15856985,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 334,
+          "ns": 21662804,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 308,
+          "ns": 18502181,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 332,
+          "ns": 24838973,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 267,
+          "ns": 15956910,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 334,
+          "ns": 24936083,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 267,
+          "ns": 15937752,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 335,
+          "ns": 21757735,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 307,
+          "ns": 18361053,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 334,
+          "ns": 45940321,
+          "jit-ms": 21
+        },
+        {
+          "iterations": 145,
+          "ns": 8596238,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 337,
+          "ns": 25096547,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 268,
+          "ns": 15962826,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 335,
+          "ns": 25037369,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 267,
+          "ns": 15861722,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 336,
+          "ns": 21685050,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 309,
+          "ns": 18264197,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 338,
+          "ns": 25571217,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 264,
+          "ns": 15661889,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 337,
+          "ns": 21799769,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 309,
+          "ns": 18351387,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 336,
+          "ns": 25395121,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 264,
+          "ns": 15687535,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 336,
+          "ns": 25020675,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 268,
+          "ns": 15888284,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 337,
+          "ns": 21808126,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 309,
+          "ns": 18310860,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 337,
+          "ns": 25500995,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-sum",
+      "repetitions": 264
+    }
+  ],
+  "inference": [
+    {
+      "thread-bytes-per-op": [
+        58436496.0,
+        58405352.0,
+        58468320.0,
+        58407560.0,
+        58408576.0
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1668.272467,
+      "observations": 4,
+      "warm-stable?": false,
+      "ns-per-op": [
+        34697180.0,
+        28936810.0,
+        37516972.0,
+        28840051.0,
+        28948011.0
+      ],
+      "total-bytes-per-op": [
+        58436760.0,
+        58405352.0,
+        58468488.0,
+        58407560.0,
+        58408576.0
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 35672502,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29011352,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 41097886,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 1,
+          "ns": 28857392,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 31703264,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 1,
+          "ns": 37766370,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 33739959,
+          "jit-ms": 5
+        },
+        {
+          "iterations": 1,
+          "ns": 29077852,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35430734,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 31585770,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 1,
+          "ns": 158302645,
+          "jit-ms": 119
+        },
+        {
+          "iterations": 1,
+          "ns": 31148154,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 1,
+          "ns": 82276836,
+          "jit-ms": 52
+        },
+        {
+          "iterations": 1,
+          "ns": 36785638,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28678417,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 31456723,
+          "jit-ms": 3
+        },
+        {
+          "iterations": 1,
+          "ns": 41603278,
+          "jit-ms": 6
+        },
+        {
+          "iterations": 1,
+          "ns": 58168671,
+          "jit-ms": 29
+        },
+        {
+          "iterations": 1,
+          "ns": 38181870,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29415875,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29481781,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35273064,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 1,
+          "ns": 28904566,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29071081,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35346048,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29015271,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 53907140,
+          "jit-ms": 9
+        },
+        {
+          "iterations": 1,
+          "ns": 31220374,
+          "jit-ms": 16
+        },
+        {
+          "iterations": 1,
+          "ns": 28881564,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36469192,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 50096497,
+          "jit-ms": 19
+        },
+        {
+          "iterations": 1,
+          "ns": 30614380,
+          "jit-ms": 10
+        },
+        {
+          "iterations": 1,
+          "ns": 35329157,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28913913,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 37341998,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 88081238,
+          "jit-ms": 58
+        },
+        {
+          "iterations": 1,
+          "ns": 28727114,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 37985072,
+          "jit-ms": 2
+        },
+        {
+          "iterations": 1,
+          "ns": 28800529,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 94851300,
+          "jit-ms": 65
+        }
+      ],
+      "kind": "mapv",
+      "repetitions": 1,
+      "executor": "inline",
+      "particles": 64
+    },
+    {
+      "thread-bytes-per-op": [
+        58478256.0,
+        58393968.0,
+        58401832.0,
+        58393264.0,
+        58392248.0
+      ],
+      "jit-ms": [
+        0,
+        19,
+        0,
+        1,
+        272
+      ],
+      "warm-ms": 1557.767393,
+      "observations": 4,
+      "warm-stable?": false,
+      "ns-per-op": [
+        28899034.0,
+        57424105.0,
+        28819358.0,
+        29582988.0,
+        308586723.0
+      ],
+      "total-bytes-per-op": [
+        58478256.0,
+        58394136.0,
+        58401832.0,
+        58393264.0,
+        58392512.0
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 100759915,
+          "jit-ms": 71
+        },
+        {
+          "iterations": 1,
+          "ns": 37385956,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28922632,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28788141,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36505862,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29561834,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 64120343,
+          "jit-ms": 34
+        },
+        {
+          "iterations": 1,
+          "ns": 36461842,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28806577,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 34044489,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28907768,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28850730,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 37168400,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29200770,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29076076,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36367469,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 103443041,
+          "jit-ms": 74
+        },
+        {
+          "iterations": 1,
+          "ns": 38412848,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 80331626,
+          "jit-ms": 51
+        },
+        {
+          "iterations": 1,
+          "ns": 29418559,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 37174917,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 62881302,
+          "jit-ms": 34
+        },
+        {
+          "iterations": 1,
+          "ns": 28952755,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35739568,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28728526,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36796341,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28725013,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28860898,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 32881446,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 30022931,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 28844405,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35200582,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28705845,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 37225308,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28688295,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 53175690,
+          "jit-ms": 24
+        },
+        {
+          "iterations": 1,
+          "ns": 36167547,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28774146,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28798896,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 34888104,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "doseq",
+      "repetitions": 1,
+      "executor": "inline",
+      "particles": 64
+    },
+    {
+      "thread-bytes-per-op": [
+        58354832.0,
+        58402056.0,
+        58355904.0,
+        58408008.0,
+        58362448.0
+      ],
+      "jit-ms": [
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "warm-ms": 1494.134518,
+      "observations": 4,
+      "warm-stable?": false,
+      "ns-per-op": [
+        37306406.0,
+        29276035.0,
+        29203736.0,
+        36761586.0,
+        28861684.0
+      ],
+      "total-bytes-per-op": [
+        58355000.0,
+        58402056.0,
+        58355904.0,
+        58408272.0,
+        58362448.0
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 30066232,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 35166141,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 55538778,
+          "jit-ms": 25
+        },
+        {
+          "iterations": 1,
+          "ns": 37321326,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28538695,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28595226,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36380054,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28742909,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28918503,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 35069074,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28666705,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36897204,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 29053672,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28690697,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36284339,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 189563613,
+          "jit-ms": 160
+        },
+        {
+          "iterations": 1,
+          "ns": 36827532,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 30345199,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 28650676,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 33516460,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28767315,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28640396,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35401748,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28646054,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36753264,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28761153,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28666125,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 37279429,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28767834,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28772763,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35375518,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28655482,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 36530071,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28619816,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 50629419,
+          "jit-ms": 22
+        },
+        {
+          "iterations": 1,
+          "ns": 58786242,
+          "jit-ms": 22
+        },
+        {
+          "iterations": 1,
+          "ns": 29489273,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28823212,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 35181880,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 28754489,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-vector",
+      "repetitions": 1,
+      "executor": "inline",
+      "particles": 64
+    },
+    {
+      "thread-bytes-per-op": [
+        233432280.0,
+        233808128.0,
+        233640472.0,
+        233506440.0,
+        233545680.0
+      ],
+      "jit-ms": [
+        53,
+        0,
+        220,
+        1,
+        0
+      ],
+      "warm-ms": 1942.558787,
+      "observations": 4,
+      "warm-stable?": true,
+      "ns-per-op": [
+        176636701.0,
+        134278833.0,
+        354367866.0,
+        129407266.0,
+        128165256.0
+      ],
+      "total-bytes-per-op": [
+        233432368.0,
+        233808216.0,
+        233640560.0,
+        233506528.0,
+        233545768.0
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 143050753,
+          "jit-ms": 11
+        },
+        {
+          "iterations": 1,
+          "ns": 144202122,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 141059746,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 181411038,
+          "jit-ms": 36
+        },
+        {
+          "iterations": 1,
+          "ns": 192862646,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 208240948,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 145983229,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 133933276,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 136740493,
+          "jit-ms": 17
+        },
+        {
+          "iterations": 1,
+          "ns": 132428113,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 131658090,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 129055653,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 121932680,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "mapv",
+      "repetitions": 1,
+      "executor": "inline",
+      "particles": 256
+    },
+    {
+      "thread-bytes-per-op": [
+        233922704.0,
+        233607848.0,
+        233497624.0,
+        233566752.0,
+        233501688.0
+      ],
+      "jit-ms": [
+        0,
+        108,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1460.738525,
+      "observations": 4,
+      "warm-stable?": true,
+      "ns-per-op": [
+        121026464.0,
+        240878225.0,
+        127605988.0,
+        129325082.0,
+        135754677.0
+      ],
+      "total-bytes-per-op": [
+        233929400.0,
+        233614544.0,
+        233504320.0,
+        233573448.0,
+        233508384.0
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 156726589,
+          "jit-ms": 12
+        },
+        {
+          "iterations": 1,
+          "ns": 264973988,
+          "jit-ms": 125
+        },
+        {
+          "iterations": 1,
+          "ns": 166027382,
+          "jit-ms": 29
+        },
+        {
+          "iterations": 1,
+          "ns": 134499892,
+          "jit-ms": 1
+        },
+        {
+          "iterations": 1,
+          "ns": 118629624,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 118214309,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 131477432,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 124949685,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 123181780,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 122057844,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "doseq",
+      "repetitions": 1,
+      "executor": "inline",
+      "particles": 256
+    },
+    {
+      "thread-bytes-per-op": [
+        233663544.0,
+        233422144.0,
+        233666320.0,
+        233486912.0,
+        233276712.0
+      ],
+      "jit-ms": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "warm-ms": 1759.737411,
+      "observations": 4,
+      "warm-stable?": true,
+      "ns-per-op": [
+        123727104.0,
+        121585243.0,
+        121429690.0,
+        119644430.0,
+        134641522.0
+      ],
+      "total-bytes-per-op": [
+        233670240.0,
+        233428840.0,
+        233673016.0,
+        233493608.0,
+        233283408.0
+      ],
+      "warm-blocks": [
+        {
+          "iterations": 1,
+          "ns": 124740456,
+          "jit-ms": 5
+        },
+        {
+          "iterations": 1,
+          "ns": 171121622,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 140807301,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 130681382,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 322641664,
+          "jit-ms": 196
+        },
+        {
+          "iterations": 1,
+          "ns": 117133731,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 118175889,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 118593410,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 135403030,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 130917790,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 125567297,
+          "jit-ms": 0
+        },
+        {
+          "iterations": 1,
+          "ns": 123953839,
+          "jit-ms": 0
+        }
+      ],
+      "kind": "loop-vector",
+      "repetitions": 1,
+      "executor": "inline",
+      "particles": 256
+    }
+  ],
+  "inference-prewarm-ms": 19610.921689
+}

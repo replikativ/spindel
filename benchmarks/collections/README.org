@@ -1,0 +1,101 @@
+#+title: Collection lowering measurements
+
+* Scope
+
+This standalone project measures the collection/compiler drafts against their
+immediate parents, keeping the Spindel engine and Foerster revisions fixed.
+It is a JVM microbenchmark and small inference workload, not a comparison with
+another probabilistic programming system or a claim about ClojureScript speed.
+
+Dependencies are exact Git revisions in deps.edn. No sibling checkout or local
+Maven install is needed. The candidate is the implementation commit, before
+the addition of this benchmark directory.
+
+* Run
+
+Requires a JDK with javac/jar, Linux taskset and GNU time, Python 3, and the
+Clojure CLI. The runtime counters use com.sun.management.ThreadMXBean.
+
+#+begin_src sh
+cd benchmarks/collections
+python3 run.py --output /tmp/collection-results --pairs 3 --cpu 2
+python3 summarize.py /tmp/collection-results
+#+end_src
+
+The runner builds a small Java instrumentation agent, then executes workers
+serially in alternating baseline/candidate order. Three pairs therefore use six
+fresh JVMs, never simultaneous measurement workers. Each uses a 384 MiB heap,
+4 MiB stacks, an affinity mask of one logical CPU, ActiveProcessorCount=2 and
+-Xbatch. Blocking JIT compilation helps distinguish warm-up from samples; it
+is an explicitly controlled configuration, not ordinary application startup.
+Whole-process time and RSS are receipts, not steady-state throughput claims.
+
+Use =:repl= together with a mode alias to explore the harness. Build the agent
+with run.py first; both measured mode aliases require its jar. The experiment
+was developed in a separate resident REPL before worker measurements.
+Pass =--pairs 0= to build only the agent, without running measurement workers.
+
+* Workloads and validation
+
+- Compilation: lower and evaluate functions with 8, 32 or 96 straight-line
+  awaits, nested mapv bodies, and the doseq/mapv collection forms. Lowering and
+  Clojure bytecode generation are timed separately; two untimed repetitions
+  precede five measured repetitions. Sizes count defined JVM classes and their
+  actual byte arrays, not JIT machine code. The agent adds a small shared
+  instrumentation cost to both versions' compilation measurements.
+- Immediate callbacks: native mapv, native persistent accumulation, doseq and
+  reduce controls; CPS collection forms and explicit CPS loops, at 16 and
+  1,024 values. All results are checked and retained through a volatile sink.
+  Native mapv uses its ordinary transient implementation, while resumable
+  collection lowering uses persistent accumulation.
+- Deferred callbacks: each awaited value is scheduled on a dedicated single
+  executor thread, including genuine unwinding before continuation resumption.
+  This is queue scheduling with an initial cross-thread handoff and completion
+  back to a waiting caller, not a simulated network delay or one thread switch
+  for every element. Results are checked at 16 and 256 values.
+- Inference: four observations and forced resampling at every barrier, 64 and
+  256 particles, a fixed seed, and an inline executor. Three equivalent model
+  shapes use mapv, doseq or an explicit loop. Every execution checks that the
+  caller's managed atom remains empty and each particle's result agrees with
+  its own four-element atom state. Timings include context creation, query
+  consumption, validation and cleanup. Compiled models are reused; shared
+  inference machinery is warmed before per-case calibration.
+
+Runtime block sizes adapt to approximately 20--50 ms. Warm-up is bounded and
+its raw blocks are retained. =warm-stable?= requires at least eight blocks,
+500 ms cumulative warm-up, no recorded JIT activity in the last four blocks,
+and less than 10% spread in their per-operation times. It is a heuristic, not a
+proof of stationarity. Raw sample JIT activity is also recorded. Cases failing
+this criterion must not be presented as settled steady-state measurements.
+
+Seven blocks are sampled per collection case and five per inference case.
+Summaries first take each process's median, then report the median of three
+paired candidate/baseline ratios. Values above one mean more time or bytes.
+This small number of processes is exploratory evidence, not a confidence
+interval or a general performance guarantee.
+
+Allocation counters record caller-thread and JVM-wide Java heap allocation.
+The latter includes worker-thread allocation and any background Java activity;
+the former alone substantially undercounts deferred cases. These counters do
+not measure retained heap, native allocation, or peak memory. Instrumentation
+and result-consumption overhead is common to both versions.
+
+* Compiler export probe
+
+An initial attempt to measure bytecode by binding *compile-files* failed while
+writing generated classes for the 32-await case: the generated basename
+exceeded the filesystem's filename limit. Ordinary eval compilation succeeded.
+The Java agent avoids that export limitation and records maximum generated
+class filename length separately. This exposes a possible AOT naming boundary;
+the synthetic anonymous factory is not a universal site-count limit for real
+programs. The failed probe is retained separately from final worker results.
+The =aot-probe= namespace reproduces class-file export separately, for example
+=clojure -M:candidate -m aot-probe /tmp/aot-probe.json=.
+
+* Receipts
+
+The output directory contains per-worker raw samples, warm-up records, source
+URIs, JVM flags, process resource receipts and a manifest with harness hashes.
+No startup, class-file IO or experiment logging is included in timed runtime
+blocks. CPU frequency and other users' machine activity are not controlled.
+Do not import these numbers into the paper without their workload boundaries.

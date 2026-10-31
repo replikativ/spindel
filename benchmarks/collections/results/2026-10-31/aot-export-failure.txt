@@ -1,0 +1,3 @@
+Initial baseline bytecode-export probe: java.io.IOException: File name too long
+Ordinary eval compiled successfully. This probe was excluded from the paired workers.
+Both revisions reproduce the export failure at 32 and 96 sites; see aot_probe.clj.
