@@ -1657,20 +1657,6 @@
                       b (if (= :durable field) (get-in after [:durable :records]) (:records after))]
                 :when (not= a b)] {:cut c :records field})))))
 
-(defn original-resource-edge-check
-  "Preserve original physical/receipt/registration authority on compound edges.
-  Only classify the primitive through finite BEFORE controls; never substitute
-  the inner transition witness for the actual before/after resource proof."
-  [edge]
-  (let [edge (assoc edge :action (custody-effective-delivery (:before edge) (:action edge)))]
-    (vec (keep identity
-               [(when-let [bad (seq (release-edge-errors edge))] {:id :TL24 :evidence (vec bad)})
-                (when-let [bad (seq (timer-edge-errors edge))] {:id :TL23 :evidence (vec bad)})
-                (when-let [bad (seq (mailbox-edge-errors edge))] {:id :TL22 :evidence (vec bad)})
-                (when-let [bad (seq (cleanup-edge-errors edge))] {:id :TL21 :evidence (vec bad)})
-                (when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
-                (when-let [bad (seq (released-join-evidence-errors edge))] {:id :TL19 :evidence (vec bad)})]))))
-
 (declare edge-check)
 
 (defn owner-release-errors
@@ -1966,6 +1952,20 @@
                             (or (not= (:owner row) (:owner current))
                                 (not (set/subset? (:cells row #{}) (:cells current #{})))))]
               {:n n :ticket-conservation {:before row :after current :physical-return? return?}}))))))
+
+(defn original-resource-edge-check
+  "Preserve original physical/receipt/registration authority on compound edges.
+  Only classify the primitive through finite BEFORE controls; never substitute
+  the inner transition witness for the actual before/after resource proof."
+  [edge]
+  (let [edge (assoc edge :action (custody-effective-delivery (:before edge) (:action edge)))]
+    (vec (keep identity
+               [(when-let [bad (seq (release-edge-errors edge))] {:id :TL24 :evidence (vec bad)})
+                (when-let [bad (seq (timer-edge-errors edge))] {:id :TL23 :evidence (vec bad)})
+                (when-let [bad (seq (mailbox-edge-errors edge))] {:id :TL22 :evidence (vec bad)})
+                (when-let [bad (seq (cleanup-edge-errors edge))] {:id :TL21 :evidence (vec bad)})
+                (when-let [bad (seq (join-errors edge))] {:id :TL19 :evidence (vec bad)})
+                (when-let [bad (seq (released-join-evidence-errors edge))] {:id :TL19 :evidence (vec bad)})]))))
 
 (declare normalization-errors)
 
