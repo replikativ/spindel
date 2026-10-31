@@ -229,6 +229,7 @@
                 :cljs ctx/ExecutionContext)
   rtp/PSignalTracking
   (track-public-signal! [context signal-ref spin-id source-loc resolve reject]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (legacy-track-handler signal-ref spin-id source-loc resolve reject))))
 

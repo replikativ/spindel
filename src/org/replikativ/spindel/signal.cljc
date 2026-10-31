@@ -562,33 +562,42 @@
                 :cljs ctx/ExecutionContext)
   rtp/PSignals
   (register-public-signal! [context signal-ref]
+    (ec/legacy-graph-entry! context)
     (register-legacy-signal! context signal-ref))
   (public-signal-state [context signal-ref]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (ensure-legacy-signal-initialized! signal-ref)
       (rtp/get-state context [:nodes (:id signal-ref)])))
   (public-signal-value [context signal-ref]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (ensure-legacy-signal-initialized! signal-ref)
       (when-let [node (rtp/get-state context [:nodes (:id signal-ref)])]
         (nodes/get-value node))))
   (swap-public-signal! [context signal-ref f args publish? committed observe-change?]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (swap-legacy-signal! signal-ref f args publish? committed observe-change?)))
   (cas-public-signal! [context signal-ref old-value new-value publish?]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (cas-legacy-signal! signal-ref old-value new-value publish?)))
   (clear-public-signal-deltas! [context signal-ref]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (clear-legacy-signal-deltas! signal-ref)))
   (public-signal-watches [context signal-ref]
     (rtp/get-state context [:listeners (:id signal-ref)]))
   (add-public-signal-watch! [context signal-ref key f]
+    (ec/legacy-graph-entry! context)
     (rtp/swap-state! context [:listeners (:id signal-ref)] #(assoc % key f))
     signal-ref)
   (remove-public-signal-watch! [context signal-ref key]
+    (ec/legacy-graph-entry! context)
     (rtp/swap-state! context [:listeners (:id signal-ref)] #(dissoc % key))
     signal-ref)
   (publish-public-signals! [context ids]
+    (ec/legacy-graph-entry! context)
     (doseq [id (distinct ids)]
       (rtp/enqueue! context {:type :signal-change :id id}))))

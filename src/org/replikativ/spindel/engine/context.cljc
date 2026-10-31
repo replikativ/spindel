@@ -118,14 +118,32 @@
   ;; Implement runtime protocols by delegating to simple.cljc functions
   ;; This allows ExecutionContext to be used anywhere runtime is expected
 
+  rtp/PContextScope
+  ;; A literal legacy view can be selected within native execution. This
+  ;; query transports lexical data only; it does not admit mixed-engine awaits.
+  (context-scope-runner [_] (owned/context-scope-runner-view))
+
   rtp/PExecutionScopes
   (root-execution-owner [this] (lifetime/legacy-root-scope this))
-  (current-execution-owner [this] (lifetime/legacy-current-scope this))
-  (open-execution-scope! [this kind parent] (lifetime/legacy-open-scope! this kind parent))
+  (current-execution-owner [this]
+    (if (owned/context-scope-runner-view)
+      ;; Generic application cells in an explicitly selected legacy view must
+      ;; not borrow a native Run or collide with a same-named legacy Run.
+      (if (and (vector? ec/*owner-scope*) (= fork-id (second ec/*owner-scope*)))
+        (lifetime/legacy-current-scope this)
+        (lifetime/legacy-root-scope this))
+      (lifetime/legacy-current-scope this)))
+  (open-execution-scope! [this kind parent]
+    (ec/legacy-graph-entry! this) (lifetime/legacy-open-scope! this kind parent))
   (bindable-execution-owner [this owner] (lifetime/legacy-bindable-scope this owner))
-  (capture-execution-owner [this owner] (lifetime/legacy-capture-execution-owner this owner))
+  (capture-execution-owner [this owner]
+    (if-let [runner (owned/context-scope-runner-view)]
+      (rtp/capture-execution-owner runner owner)
+      (lifetime/legacy-capture-execution-owner this owner)))
   (restore-execution-owner [this captured current]
-    (lifetime/legacy-restore-execution-owner this captured current))
+    (if-let [runner (owned/context-scope-runner-view)]
+      (rtp/restore-execution-owner runner captured current)
+      (lifetime/legacy-restore-execution-owner this captured current)))
   (close-execution-scope! [_ _]
     (throw (ex-info "Legacy execution scope close is unsupported" {:error :unsupported-execution-scope-close})))
   (execution-owner-joined? [_ _]
@@ -133,6 +151,7 @@
 
   rtp/PTraceAddressing
   (next-trace-address! [this prefix source-loc]
+    (ec/legacy-graph-entry! this)
     (addressing/legacy-next-address! this prefix source-loc))
 
   rtp/PRuntimeCells
@@ -149,26 +168,34 @@
 
   rtp/PGraph
   (record-deps! [this spin-id]
+    (ec/legacy-graph-entry! this)
     (simple/record-deps! this spin-id))
   (clear-deps! [this spin-id]
+    (ec/legacy-graph-entry! this)
     (simple/clear-deps! this spin-id))
   (ordered-observers [this signal-id]
     (graph/ordered-observers (backend/backend-deref backend) signal-id))
 
   rtp/PDepsTracking
   (track-signal-dep! [this spin-id signal-id]
+    (ec/legacy-graph-entry! this)
     (simple/track-signal-dep! this spin-id signal-id))
   (track-spin-dep! [this parent-spin-id child-spin-id]
+    (ec/legacy-graph-entry! this)
     (simple/track-spin-dep! this parent-spin-id child-spin-id))
 
   rtp/PSpinLifecycle
   (register-spin! [this spin-id spin-meta]
+    (ec/legacy-graph-entry! this)
     (simple/register-spin! this spin-id spin-meta))
   (mark-dirty! [this spin-id]
+    (ec/legacy-graph-entry! this)
     (simple/mark-dirty! this spin-id))
   (cache-result! [this spin-id result]
+    (ec/legacy-graph-entry! this)
     (simple/cache-result! this spin-id result))
   (cache-result! [this spin-id result run]
+    (ec/legacy-graph-entry! this)
     (simple/cache-result! this spin-id result run))
   (current-result [this spin-id]
     (simple/current-result this spin-id))
@@ -179,18 +206,23 @@
 
   rtp/PContinuation
   (add-continuation! [this spin-id cont]
+    (ec/legacy-graph-entry! this)
     (simple/add-continuation! this spin-id cont))
   (remove-continuation! [this spin-id cont-id]
+    (ec/legacy-graph-entry! this)
     (simple/remove-continuation! this spin-id cont-id))
   (remove-continuation! [this spin-id cont-id opts]
+    (ec/legacy-graph-entry! this)
     (simple/remove-continuation! this spin-id cont-id opts))
   (earliest-continuation [this spin-id signal-id]
     (simple/earliest-continuation this spin-id signal-id))
   (resume-continuation! [this spin-id cont resume-fn]
+    (ec/legacy-graph-entry! this)
     (simple/resume-continuation! this spin-id cont resume-fn))
 
   rtp/PEngine
   (enqueue! [this event]
+    (ec/legacy-graph-entry! this)
     ;; Queue event and trigger async drain (like atoms.cljc:89-96)
     (simple/enqueue-event! this event)
     ;; Trigger drain - the CAS in drain-events! will skip if already draining
@@ -405,6 +437,7 @@
 
   Returns: nil"
   [context]
+  (ec/legacy-graph-entry! context)
   (when (nil? (:parent-ctx context))
     (when-let [running (:running context)]
       (reset! running false))
@@ -837,6 +870,7 @@
    the thrown HOST exception for explicit retry, never semantic world state.
    Published components belong to the child, not to its constructor."
   [parent-ctx & {:keys [fork-owner fork-observer forkable-components] :as opts}]
+  (ec/legacy-graph-entry! parent-ctx)
   (let [ids (or forkable-components (rtp/get-state parent-ctx [:world/forkable-components]))
         ;; A component may return a different implementation from fork-value;
         ;; its source protocol set cannot predict the child's cleanup needs.
@@ -1153,6 +1187,8 @@
 
   Returns: New ExecutionContext with AtomBackend ready for use"
   [snapshot-ctx & {:keys [drain-events?] :or {drain-events? true}}]
+  (when drain-events?
+    (ec/legacy-graph-entry! snapshot-ctx))
   (when-not (= :immutable (backend/backend-type (:backend snapshot-ctx)))
     (throw (ex-info "Can only restore from immutable snapshot"
                     {:backend-type (backend/backend-type (:backend snapshot-ctx))})))

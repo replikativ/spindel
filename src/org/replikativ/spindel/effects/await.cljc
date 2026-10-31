@@ -866,9 +866,11 @@
                 :cljs ctx/ExecutionContext)
   rtp/PComputationAwait
   (await-computation! [ctx target _id _body caller-id source-loc resolve reject]
+    (ec/legacy-graph-entry! ctx)
     (binding [ec/*execution-context* ctx]
       (await-legacy-handler target caller-id source-loc resolve reject)))
   (await-computation-finalization! [ctx operation caller-id source-loc resolve reject]
+    (ec/legacy-graph-entry! ctx)
     (binding [ec/*execution-context* ctx]
       (await-legacy-finalization-handler operation caller-id source-loc resolve reject))))
 

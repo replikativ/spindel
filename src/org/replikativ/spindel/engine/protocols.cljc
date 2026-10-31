@@ -22,6 +22,17 @@
   #?(:clj Object :cljs default)
   (world-identity [ctx] (:backend ctx)))
 
+(defprotocol PContextScope
+  "Transient runner selection for lexical context transport. No Run or arena
+   is captured; nil denotes execution without a native activation."
+  (context-scope-runner [context]))
+
+(extend-protocol PContextScope
+  #?(:clj Object :cljs default)
+  (context-scope-runner [_] nil)
+  nil
+  (context-scope-runner [_] nil))
+
 (defprotocol PExecutionScopes
   "World-local execution ownership; physical join observes only this world."
   (root-execution-owner [context])

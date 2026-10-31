@@ -124,12 +124,15 @@
                 :cljs ctx/ExecutionContext)
   rtp/PSynchronization
   (create-public-deferred! [context _id]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (ratom/create-atom {:assigned? false :value nil :pending []})))
   (claim-public-deferred! [context deferred value]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (claim-legacy-deferred! deferred value)))
   (deliver-public-deferred! [context deferred value]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (deliver-legacy-deferred! deferred value)))
   (read-public-deferred [context deferred]
@@ -137,6 +140,7 @@
       (let [state @(rtp/deferred-payload deferred)]
         {:assigned? (boolean (:assigned? state)) :value (:value state)})))
   (invoke-public-deferred! [context deferred resolve reject]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (invoke-legacy-deferred! deferred resolve reject))))
 
@@ -305,19 +309,24 @@
                 :cljs ctx/ExecutionContext)
   rtp/PMailboxSynchronization
   (create-public-mailbox! [context _id]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (ratom/create-atom {:queue empty-queue :waiters []})))
   (post-public-mailbox! [context mailbox message]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (post-legacy-mailbox! mailbox message)))
   (take-public-mailbox-now! [context mailbox spin-id]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (let [value (take-legacy-mailbox-now! mailbox spin-id)]
         {:available? (not (identical? nothing value)) :value value})))
   (invoke-public-mailbox! [context mailbox succeed fail]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (invoke-legacy-mailbox! mailbox succeed fail)))
   (invoke-public-mailbox-next! [context mailbox succeed fail]
+    (ec/legacy-graph-entry! context)
     (binding [ec/*execution-context* context]
       (invoke-legacy-mailbox-next! mailbox succeed fail))))
 

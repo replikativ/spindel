@@ -416,6 +416,8 @@
 (deftype ^:private NativeDiscardReceipt [target token])
 (defrecord ^:private CustodyHolder [root world kind id])
 (defonce ^:private pending-releases (atom {}))
+(defn ^:no-doc context-scope-runner-view []
+  (when-let [frame (current-activation)] (a frame 0)))
 (defrecord RuntimeFamily [gate worlds host-tokens cell-gc])
 ;; Borrowed only while an admitted custody transaction is on the stack.
 (def ^:private ^:dynamic *custody-frame* nil)
@@ -537,6 +539,8 @@
   (next-trace-address! [this prefix source-loc] (next-trace-address! this prefix source-loc))
   rtp/PWorldIdentity
   (world-identity [_] owner-root)
+  rtp/PContextScope
+  (context-scope-runner [_] (context-scope-runner-view))
   rtp/PRuntimeCells
   (allocate-runtime-cell! [this value options] (allocate-cell! this value options))
   (runtime-cell-present? [this id] (cell-present? this id))

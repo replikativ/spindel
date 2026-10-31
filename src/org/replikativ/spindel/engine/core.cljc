@@ -68,23 +68,65 @@
     (assoc current :bindings (:bindings saved))
     saved))
 
-(defn capture-context-scope
-  "Pure lexical scope data for a trampoline bounce. No runtime is retained."
-  [context]
-  (:bindings context))
+(defn ^:no-doc legacy-graph-entry! [context]
+  ;; Data-only selection and generic application cells remain valid. A legacy
+  ;; Run/producer adapter cannot borrow a still-active native physical frame.
+  (when (rtp/context-scope-runner context)
+    (throw (ex-info "Legacy graph execution inside native execution is unsupported"
+                    {:error :unsupported-operation :operation :native-legacy-graph-entry}))))
 
-(defn restore-context-scope
-  "Restore scope data onto the context selected by the runner."
-  [captured current]
+(deftype ^:private LiteralContextScope [view bindings])
+(deftype ^:private RunnerContextExit [bindings])
+
+(defn capture-context-scope
+  "Capture lexical data, preserving raw binding identity for normal scopes.
+   An explicit foreign selection alone retains its revocable context view."
+  [context]
+  (let [runner (when context (rtp/context-scope-runner context))]
+    (if (and runner (not (same-world? context runner)))
+      (LiteralContextScope. context (:bindings context))
+      (:bindings context))))
+
+(defn- restore-runner-bindings [captured current]
   (when current
     (if (and (contains? current :bindings)
              (identical? captured (:bindings current)))
       current
       (assoc current :bindings captured))))
 
+(defn restore-context-scope
+  "Restore scope onto the runner, or the explicit literal selected view.
+   A revoked literal remains a revoked view and grants no effect admission."
+  [captured current]
+  (if (instance? LiteralContextScope captured)
+    (.-view ^LiteralContextScope captured)
+    (restore-runner-bindings captured current)))
+
+(defn capture-context-binding
+  "Classify the saved outer selection at binding entry, before initializers.
+   Runner exits carry only lexical data; legacy/host captures stay unchanged."
+  [saved]
+  (let [runner (when saved (rtp/context-scope-runner saved))]
+    (if runner
+      (if (same-world? saved runner)
+        (RunnerContextExit. (:bindings saved))
+        (LiteralContextScope. saved (:bindings saved)))
+      saved)))
+
+(defn restore-context-binding [captured current entered]
+  (cond
+    (instance? RunnerContextExit captured)
+    (let [runner (when current (rtp/context-scope-runner current))]
+      (when-not runner
+        (throw (ex-info "Native runner context is missing at binding exit"
+                        {:error ::missing-context-runner})))
+      (restore-runner-bindings (.-bindings ^RunnerContextExit captured) runner))
+    (instance? LiteralContextScope captured) (.-view ^LiteralContextScope captured)
+    :else (restore-scope captured current entered)))
+
 #?(:clj
    (do
-     (ioc/register-binding-restorer! `*execution-context* `restore-scope)
+     (ioc/register-binding-restorer! `*execution-context* `restore-context-binding `capture-context-binding)
      (ioc/register-binding-scope! `*execution-context*
                                   `capture-context-scope `restore-context-scope)))
 
