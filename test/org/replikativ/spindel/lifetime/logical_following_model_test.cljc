@@ -51,6 +51,41 @@
         (is (= "unsupported-world-release" (some-> failure :error name)) (pr-str failure))
         (is (= original (kernel/snapshot implementation)))))))
 
+(deftest releasing-an-owned-entity-drops-its-dormant-root-owned-run
+  (let [parent [:waiter 1] child [:worker 1]
+        before (reduce checked (m/init-state {:slices? true :cps-exit? true})
+                       [{:t :t04 :w w :e :waiter :mode :callback}
+                        {:t :t05 :w w :r parent :kind :await-reactive
+                         :debtor [:entity w :worker] :order 0}
+                        {:t :t05 :w w :r child :kind :await-once
+                         :debtor [:host :gate] :order 0}
+                        fork])
+        action {:t :t11 :w v :r parent}
+        source-run (m/run before w child)
+        after (checked before action)]
+    (is (= parent (:owner (m/ent before v :worker))))
+    (is (= [:root v] (:owner (m/run before v child))))
+    (is (= :inherited (:status (m/run before v child))))
+    (is (nil? (m/run after v child)))
+    (is (nil? (get-in after [:worlds v :obligations [:o 2]])))
+    (is (= source-run (m/run after w child)))
+    (is (empty? (filter #(= [v child] (:owner %)) (vals (get-in after [:env :native])))))
+    (let [{late-state :state refusal :refusal}
+          (m/attempt after {:t :t06 :w v :o [:o 2] :value :late})]
+      (is (nil? refusal))
+      (is (= (normalize after) (normalize late-state))))
+    ;; Reinstall the old transition's orphan without weakening either oracle.
+    (let [orphaned (-> after
+                       (assoc-in [:worlds v :entities :worker]
+                                 (assoc (m/ent before v :worker) :owner nil :dirty? true))
+                       (assoc-in [:worlds v :runs child] (m/run before v child))
+                       (assoc-in [:worlds v :obligations [:o 2]]
+                                 (get-in before [:worlds v :obligations [:o 2]])))]
+      (is (some #(= :L1 (:id %)) (inv/check orphaned)))
+      (is (some #(= :TL7 (:id %))
+                (inv/edge-check {:before before :action action :after orphaned}))))
+    (parity before action after)))
+
 (deftest release-admits-logical-bundles-individual-edges-and-releasing-extents
   (let [bundle (followed)
         activated (checked bundle {:t :t06 :w v :o [:o 3] :value :ready})

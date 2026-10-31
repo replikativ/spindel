@@ -929,7 +929,7 @@
                                           (and (= :mailbox-callback (:kind row)) (= w (first (:owner row)))
                                                (= e (:allocation row))) (assoc :retired? true))]) rows)))))
     (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
-            :when (#{:running :parked} (:status (read-row ctx w :runs r)))]
+            :when (#{:running :parked :inherited} (:status (read-row ctx w :runs r)))]
       (cancel-run! ctx w r nil))
     (doseq [r (sort-by pr-str (read-row ctx w :runs-by-spin e))
             :when (#{:completed :stale} (:status (read-row ctx w :runs r)))]
