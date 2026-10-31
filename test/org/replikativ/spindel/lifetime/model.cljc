@@ -523,7 +523,7 @@
           :else s)
     (and (control-key event)
          (some #(= (control-key event) (control-key %)) (pending-events s w)))
-    (if (:value event)
+    (if (contains? event :value)
       (-> s (update-in [:worlds w :queue]
                        #(mapv (fn [queued] (if (= (control-key event) (control-key queued))
                                              (merge queued event) queued)) %))
@@ -2709,33 +2709,68 @@
 
 (defn- release-logical-profile? [s root required]
   (let [same-family? #(= root (get-in s [:lineages % :root]))
+        computation? (fn [world e] (or (nil? (ent s world e)) (= :spin (:kind (ent s world e)))))
+        pending-computation? (fn [world o ob]
+                               (let [[_ source e] (:debtor ob)]
+                                 (and (#{:await-once :await-reactive} (:kind ob)) (computation? source e)
+                                      (some #(and (= e (:start-for %)) (= world (:creditor-world %)) (= o (:o %)))
+                                            (pending-events s source)))))
+        control-endpoints (fn [event]
+                            (cond (:start-for event) [(:creditor-world event)]
+                                  (:register-host event) [(:caller-world event)]
+                                  :else []))
+        supported-control? (fn [world event]
+                             (cond
+                               (:start-for event)
+                               (and (same-family? world) (same-family? (:creditor-world event))
+                                    (wr s (:creditor-world event))
+                                    (computation? world (:start-for event)))
+                               (:register-host event)
+                               (let [ob (:ob event)]
+                                 (and (same-family? world) (same-family? (:caller-world event))
+                                      (wr s (:caller-world event))
+                                      (= [:entity world (:e event)] (:debtor ob))
+                                      (= :host (first (:creditor ob))) (#{:deref :callback} (:kind ob))
+                                      (= (:caller-world event) (get-in ob [:filter :origin]))
+                                      (#{:local :causal-follow} (get-in ob [:filter :mode]))
+                                      (= :spin (:kind (ent s world (:e event))))))
+                               :else true))
         logical? (fn [world o ob]
-                   (let [[kind dw e] (:debtor ob)]
+                   (let [[kind dw e] (:debtor ob) er (ent s dw e)]
                      (or (not= :entity kind) (= world dw)
                          (and (= [:run world] (subvec (vec (:creditor ob)) 0 2))
                               (#{:track :await-once :await-reactive} (:kind ob))
                               (same-family? world) (same-family? dw)
-                              (or (#{:signal :atom :spin} (:kind (ent s dw e)))
-                                  (and (= :released (:status (wr s dw)))
-                                       (cancelling? s world o ob)))))))
+                              (or (#{:signal :atom :spin} (:kind er))
+                                  ;; An exact committed cancellation permits terminal
+                                  ;; control only; no former entity kind is inferred.
+                                  (and (nil? er) (or (pending-computation? world o ob)
+                                                    (cancelling? s world o ob))))))))
         involved? (fn [world ob] (or (contains? required world)
                                      (and (= :entity (first (:debtor ob)))
                                           (contains? required (second (:debtor ob))))))
         relevant (for [[world row] (:worlds s) [o ob] (:obligations row)
                        :when (involved? world ob)] [world o ob])
-        endpoint-worlds (into required (mapcat (fn [[world _ ob]]
-                                                 (cons world (when (= :entity (first (:debtor ob)))
-                                                               [(second (:debtor ob))]))) relevant))]
+        endpoints (into required (mapcat (fn [[world _ ob]]
+                                           (cons world (when (= :entity (first (:debtor ob)))
+                                                         [(second (:debtor ob))]))) relevant))
+        endpoint-worlds (loop [pending (vec endpoints) seen #{}]
+                          (if-let [world (peek pending)]
+                            (if (contains? seen world) (recur (pop pending) seen)
+                                (recur (into (pop pending) (mapcat control-endpoints (pending-events s world)))
+                                       (conj seen world))) seen))]
     (and
      (every? (fn [[world o ob]]
                (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))
                     (logical? world o ob))) relevant)
      (not-any? #(and (active-cuts (:phase %))
                      (seq (set/intersection endpoint-worlds (get-in % [:participants :worlds])))) (vals (:cuts s)))
-     ;; Controls at an involved foreign endpoint are still outside this
-     ;; bounded profile, even when that endpoint is outside cap/debt closure.
-     (not-any? #(some % [:start-for :register-host])
-               (mapcat (fn [world] (pending-events s world)) endpoint-worlds))
+     ;; This increment routes only actual source FIFO controls at T34.
+     ;; Cut-held outside starts/HOSTs keep their previous unsupported bound.
+     (not-any? #(and (contains? endpoint-worlds (:w %))
+                     (some (:event %) [:start-for :register-host]))
+               (get-in s [:env :outside]))
+     (every? (fn [world] (every? #(supported-control? world %) (pending-events s world))) endpoint-worlds)
      (every? (fn [world]
                (let [row (wr s world)
                      supported-entity? #(#{:signal :atom :spin} (:kind (ent s world %)))
@@ -2746,12 +2781,11 @@
                  (and (every? dependency? (:fdeps row))
                       (every? dependency? (:releasing row))
                       (every? (fn [event]
-                                (and (not (some event [:start-for :register-host]))
-                                     (or (nil? (:join-bundle event))
-                                         (and (same-family? (:join-bundle event))
-                                              (every? #(and (same-family? (:source-world %))
-                                                            (supported-entity? (:debtor %)))
-                                                      (vals (:members event)))))))
+                                (or (nil? (:join-bundle event))
+                                    (and (same-family? (:join-bundle event))
+                                         (every? #(and (same-family? (:source-world %))
+                                                       (supported-entity? (:debtor %)))
+                                                 (vals (:members event))))))
                               (pending-events s world))))) required))))
 
 (defn- local-release-profile! [s w]

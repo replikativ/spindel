@@ -715,7 +715,7 @@
         (recur (inc ordinal))
         (do (root-edit! ctx assoc :next-claim (inc ordinal)) id)))))
 
-(defn- enqueue-custody! [ctx w event]
+(defn- enqueue-retirement-control! [ctx w event]
   ;; This committed control message may enter a sealed target. Active cuts
   ;; retain it outside the world until their existing admission fence lifts.
   (when-not (= :released (:status (header ctx w)))
@@ -730,6 +730,23 @@
       (if held?
         (root-edit! ctx update-in [:env :outside] conj {:w w :event event})
         (header-edit! ctx w update :queue conj event)))))
+
+
+(defn- enqueue-release-cancellation! [ctx w event]
+  ;; T34 may observe the same pending registration through the ordinary
+  ;; foreign-obligation index and its source request. Upgrade that one fact in
+  ;; place, retaining its original queue/outside slot and clock.
+  (when-not (= :released (:status (header ctx w)))
+    (let [same? #(and (contains? % :cancelled) (= (:cancelled event) (:cancelled %)))
+          existing? (some same? (pending-events ctx w))]
+      (if existing?
+        (when (contains? event :value)
+          (header-edit! ctx w update :queue #(mapv (fn [queued] (if (same? queued) (merge queued event) queued)) %))
+          (root-edit! ctx update-in [:env :outside]
+                      #(mapv (fn [held]
+                               (if (and (= w (:w held)) (same? (:event held)))
+                                 (update held :event merge event) held)) %)))
+        (enqueue-retirement-control! ctx w event)))))
 
 (defn- claim-owner-custody! [ctx w owner]
   (let [holder (execution-holder w owner)]
@@ -746,7 +763,7 @@
         (put-cap! ctx k (assoc cap :holder cleanup-holder :holder-acquisition nil))
         (root-edit! ctx assoc-in [:env :cleanup-targets w id]
                     {:target-world (:world cap) :cap k :op op})
-        (enqueue-custody! ctx (:world cap) {:custody-dispatch id :cap k :op op})))))
+        (enqueue-retirement-control! ctx (:world cap) {:custody-dispatch id :cap k :op op})))))
 
 (defn- physical? [ctx w r]
   (let [env (:env (root-state ctx))]
@@ -2762,35 +2779,70 @@
                  (mapcat #(vals (get-in env [:cleanup-targets %])) worlds)))))
 
 (defn- release-logical-profile? [ctx root required]
-  (let [state (root-state ctx) worlds (:known-worlds state)
+  (let [state (root-state ctx)
         same-family? #(= root (get-in state [:lineages % :root]))
+        computation? (fn [world e] (or (nil? (read-row ctx world :entities e)) (= :spin (:kind (read-row ctx world :entities e)))))
+        pending-computation? (fn [world o ob]
+                               (let [[_ source e] (:debtor ob)]
+                                 (and (#{:await-once :await-reactive} (:kind ob)) (computation? source e)
+                                      (some #(and (= e (:start-for %)) (= world (:creditor-world %)) (= o (:o %)))
+                                            (pending-events ctx source)))))
+        control-endpoints (fn [event]
+                            (cond (:start-for event) [(:creditor-world event)]
+                                  (:register-host event) [(:caller-world event)]
+                                  :else []))
+        supported-control? (fn [world event]
+                             (cond
+                               (:start-for event)
+                               (and (same-family? world) (same-family? (:creditor-world event))
+                                    (header ctx (:creditor-world event))
+                                    (computation? world (:start-for event)))
+                               (:register-host event)
+                               (let [ob (:ob event)]
+                                 (and (same-family? world) (same-family? (:caller-world event))
+                                      (header ctx (:caller-world event))
+                                      (= [:entity world (:e event)] (:debtor ob))
+                                      (= :host (first (:creditor ob))) (#{:deref :callback} (:kind ob))
+                                      (= (:caller-world event) (get-in ob [:filter :origin]))
+                                      (#{:local :causal-follow} (get-in ob [:filter :mode]))
+                                      (= :spin (:kind (read-row ctx world :entities (:e event))))))
+                               :else true))
         logical? (fn [world o ob]
-                   (let [[kind dw e] (:debtor ob)]
+                   (let [[kind dw e] (:debtor ob) er (read-row ctx dw :entities e)]
                      (or (not= :entity kind) (= world dw)
                          (and (= [:run world] (subvec (vec (:creditor ob)) 0 2))
                               (#{:track :await-once :await-reactive} (:kind ob))
                               (same-family? world) (same-family? dw)
-                              (or (#{:signal :atom :spin} (:kind (read-row ctx dw :entities e)))
-                                  (and (= :released (:status (header ctx dw)))
-                                       (cancelling? ctx world o)))))))
+                              (or (#{:signal :atom :spin} (:kind er))
+                                  ;; An exact committed cancellation permits terminal
+                                  ;; control only; no former entity kind is inferred.
+                                  (and (nil? er) (or (pending-computation? world o ob)
+                                                    (cancelling? ctx world o))))))))
         involved? (fn [world ob] (or (contains? required world)
                                      (and (= :entity (first (:debtor ob)))
                                           (contains? required (second (:debtor ob))))))
-        relevant (for [world worlds [o ob] (store/table-view (:tx ctx) world :obligations)
+        relevant (for [world (:known-worlds state) [o ob] (store/table-view (:tx ctx) world :obligations)
                        :when (involved? world ob)] [world o ob])
-        endpoint-worlds (into required (mapcat (fn [[world _ ob]]
-                                                 (cons world (when (= :entity (first (:debtor ob)))
-                                                               [(second (:debtor ob))]))) relevant))]
+        endpoints (into required (mapcat (fn [[world _ ob]]
+                                           (cons world (when (= :entity (first (:debtor ob)))
+                                                         [(second (:debtor ob))]))) relevant))
+        endpoint-worlds (loop [pending (vec endpoints) seen #{}]
+                          (if-let [world (peek pending)]
+                            (if (contains? seen world) (recur (pop pending) seen)
+                                (recur (into (pop pending) (mapcat control-endpoints (pending-events ctx world)))
+                                       (conj seen world))) seen))]
     (and
      (every? (fn [[world o ob]]
                (and (or (not= :entity (first (:creditor ob))) (= world (second (:creditor ob))))
                     (logical? world o ob))) relevant)
      (not-any? #(and (#{:fenced :ready :captured :attached} (:phase %))
                      (seq (set/intersection endpoint-worlds (get-in % [:participants :worlds])))) (vals (:cuts state)))
-     ;; Controls at an involved foreign endpoint are still outside this
-     ;; bounded profile, even when that endpoint is outside cap/debt closure.
-     (not-any? #(some % [:start-for :register-host])
-               (mapcat (fn [world] (pending-events ctx world)) endpoint-worlds))
+     ;; This increment routes only actual source FIFO controls at T34.
+     ;; Cut-held outside starts/HOSTs keep their previous unsupported bound.
+     (not-any? #(and (contains? endpoint-worlds (:w %))
+                     (some (:event %) [:start-for :register-host]))
+               (get-in state [:env :outside]))
+     (every? (fn [world] (every? #(supported-control? world %) (pending-events ctx world))) endpoint-worlds)
      (every? (fn [world]
                (let [row (header ctx world)
                      supported-entity? #(#{:signal :atom :spin} (:kind (read-row ctx world :entities %)))
@@ -2801,12 +2853,11 @@
                  (and (every? dependency? (:fdeps row))
                       (every? dependency? (:releasing row))
                       (every? (fn [event]
-                                (and (not (some event [:start-for :register-host]))
-                                     (or (nil? (:join-bundle event))
-                                         (and (same-family? (:join-bundle event))
-                                              (every? #(and (same-family? (:source-world %))
-                                                            (supported-entity? (:debtor %)))
-                                                      (vals (:members event)))))))
+                                (or (nil? (:join-bundle event))
+                                    (and (same-family? (:join-bundle event))
+                                         (every? #(and (same-family? (:source-world %))
+                                                       (supported-entity? (:debtor %)))
+                                                 (vals (:members event))))))
                               (pending-events ctx world))))) required))))
 
 (defn- local-release-profile! [ctx w]
@@ -2893,9 +2944,18 @@
                 [o ob] (store/table-view (:tx ctx) v :obligations)
                 :when (and (= [:entity w] (subvec (:debtor ob) 0 2))
                            (known-foreign-obligation? ctx w v o ob))]
-          (enqueue! ctx v {:cancelled o}))
+          (enqueue-release-cancellation! ctx v {:cancelled o}))
         (doseq [o (keys (store/table-view (:tx ctx) w :obligations))]
           (end-obligation! ctx w o :creditor-cancelled))
+        ;; Pending HOSTs and starts are control-owned until admission, not
+        ;; installed obligation rows. Preserve the model's T34 queue phase.
+        (doseq [event (:queue (header ctx w))]
+          (cond
+            (:start-for event) (enqueue-release-cancellation! ctx (:creditor-world event)
+                                        {:cancelled (:o event) :value released-value})
+            (:register-host event) (deliver-host! ctx w (:register-host event) (:ob event)
+                                                  {:event :host-delivery :world w
+                                                   :o (:register-host event) :value released-value})))
         (root-edit! ctx update-in [:env :threads]
                     #(into {} (for [[th row] %]
                                 [th (cond-> row
