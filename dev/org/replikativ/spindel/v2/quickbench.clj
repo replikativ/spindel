@@ -1,7 +1,7 @@
 (ns org.replikativ.spindel.v2.quickbench
   "Quick v2 perf probe (ns/update), same graphs as missionary_comparison."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin track await]]
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await]]
             [org.replikativ.spindel.incremental.interval :as iv])
   (:import [java.lang.management ManagementFactory]))
 
@@ -100,3 +100,36 @@
         (let [i (instructions #(dotimes [_ n] (upd)))]
           (doseq [c cancels] (c))
           (long (/ i n)))))))
+
+;; ---------------------------------------------------------------------------
+;; Fork costs (G3): instructions per fork by world size, per update in a fork,
+;; per savepoint particle (instantiate + activate + result)
+
+(defn fork-probe [size n]
+  (let [w (v2/world)]
+    (binding [v2/*world* w]
+      (let [x (v2/signal 0)
+            cs (mapv (fn [_] (spin (iv/get-new (track x)))) (range size))
+            _ (doseq [c cs] (v2/observe! c (fn [_ _])))
+            _ (dotimes [_ 2000] (v2/fork! w))
+            fork-i (long (/ (instructions #(dotimes [_ n] (v2/fork! w))) n))
+            ;; first update in a fresh fork: every row on the path is copied
+            first-i (long (/ (instructions #(dotimes [i n] (let [f (v2/fork! w)] (v2/write! (v2/in-world f x) i)))) n))
+            f (v2/fork! w)
+            fx (v2/in-world f x)
+            _ (dotimes [i 2000] (v2/write! fx i))
+            steady-i (long (/ (instructions #(dotimes [i n] (v2/write! fx i))) n))
+            base-i (long (/ (instructions #(dotimes [i n] (v2/write! x i))) n))]
+        {:size size :fork fork-i :fork+first-update first-i :steady-update-in-fork steady-i
+         :update-in-parent base-i}))))
+
+(defn particle-probe [n]
+  (let [w (v2/world)
+        pub (promise)]
+    (v2/install-handlers! w {:choose (fn [p] (deliver pub p))})
+    (binding [v2/*world* w]
+      (let [t (task (inc (v2/savepoint :choose nil)))
+            p (deref pub 1000 nil)
+            run1 (fn [i] (let [c (v2/instantiate p)] (v2/activate! c i) (v2/value (v2/in-world c t))))]
+        (dotimes [i 2000] (run1 i))
+        {:particle (long (/ (instructions #(dotimes [i n] (run1 i))) n))}))))

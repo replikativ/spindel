@@ -154,14 +154,47 @@
      [w x]
      (let [r (with-meta (gensym "r") {:tag 'objects})
            o (gensym "o")
-           ww (with-meta (gensym "w") {:tag 'objects})]
-       `(let [~o ~x]
-          (if ~(if (rw/cljs? &env) `(cljs.core/array? ~o) `(instance? ~(symbol "[Ljava.lang.Object;") ~o))
-            (let [~r ~o ~ww ~w]
-              (if (identical? (aget ~r (unchecked-dec-int (alength ~r))) (aget ~ww rw/W-EPOCH))
-                ~r
-                (resolve-row ~ww ~r)))
-            ~o)))))
+           ww (with-meta (gensym "w") {:tag 'objects})
+           h (with-meta (gensym "h") {:tag 'objects})
+           i (gensym "i")
+           cljs? (rw/cljs? &env)
+           arr? (fn [v] (if cljs? `(cljs.core/array? ~v) `(instance? ~(symbol "[Ljava.lang.Object;") ~v)))
+           ;; path compression: a reference read from a field of an owned row,
+           ;; or from a list, is written back resolved, so later reads in this
+           ;; world take the fast path (lists reached through owned rows and
+           ;; world queues are this world's copies)
+           field? (and (seq? x) (= 'g (first x)) (= 3 (count x)))
+           elem? (and (seq? x) (= 'anth (first x)) (= 3 (count x)))
+           slow (fn [write-back]
+                  `(let [c# (resolve-row ~ww ~r)] ~write-back c#))]
+       (cond
+         field?
+         `(let [~h ~(second x) ~o (aget ~h ~(nth x 2))]
+            (if ~(arr? o)
+              (let [~r ~o ~ww ~w]
+                (if (identical? (aget ~r (unchecked-dec-int (alength ~r))) (aget ~ww rw/W-EPOCH))
+                  ~r
+                  (let [c# (resolve-row ~ww ~r)]
+                    (when (identical? (aget ~h (unchecked-dec-int (alength ~h))) (aget ~ww rw/W-EPOCH))
+                      (aset ~h ~(nth x 2) c#))
+                    c#)))
+              ~o))
+         elem?
+         `(let [l# ~(second x) ~i ~(nth x 2) ~o (anth l# ~i)]
+            (if ~(arr? o)
+              (let [~r ~o ~ww ~w]
+                (if (identical? (aget ~r (unchecked-dec-int (alength ~r))) (aget ~ww rw/W-EPOCH))
+                  ~r
+                  (let [c# (resolve-row ~ww ~r)] (aput! l# ~i c#) c#)))
+              ~o))
+         :else
+         `(let [~o ~x]
+            (if ~(arr? o)
+              (let [~r ~o ~ww ~w]
+                (if (identical? (aget ~r (unchecked-dec-int (alength ~r))) (aget ~ww rw/W-EPOCH))
+                  ~r
+                  (resolve-row ~ww ~r)))
+              ~o))))))
 
 (declare own-copy!)
 
