@@ -152,6 +152,9 @@
 
 (defn- opaque-item [w x]
   (cond (and (vector? x) (= :opaque (first x)) (== 2 (count x))) (intern-opaque! w (second x))
+        ;; captures: element-wise, so equal captures (§1.6) give equal vectors
+        (and (vector? x) (= :opaque-seq (first x)) (== 2 (count x)))
+        (mapv #(intern-opaque! w %) (second x))
         (vector? x) (mapv #(opaque-item w %) x)
         :else x))
 
@@ -1249,7 +1252,7 @@
           (let [child (new-comp! w (run-scope! w r) 0 at inputs body 0)]
             (aadd! (g w rw/W-RQ) child)
             (let [h (handle! w child)]
-              (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque inputs] [:opaque body]])
+              (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
               h))
           (let [key (creation-key! r site)
                 child (adopt! c key)]
@@ -1268,14 +1271,14 @@
                             (mark-from! child)
                             (maybe-schedule! child)))))
                   (let [h (handle! w child)]
-                    (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque inputs] [:opaque body]])
+                    (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
                     h))
               ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
               (let [child (new-comp! w c key at inputs body 0)]
                 (aadd! (g c rw/C-BASIS) child)
                 (ref-inc! child)
                 (let [h (handle! w child)]
-                  (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque inputs] [:opaque body]])
+                  (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
                   h)))))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)]
@@ -1283,7 +1286,7 @@
         (let [c (new-comp! w (g w rw/W-ROOT) 0 0 inputs body 1)]
           (bind-handle! h c)
           (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
-          (commit! w [:create-comp-top (g (g w rw/W-ROOT) rw/ID) (g c rw/ID) [:opaque inputs] [:opaque body]])))
+          (commit! w [:create-comp-top (g (g w rw/W-ROOT) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]])))
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
@@ -1314,7 +1317,7 @@
             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS)))
               (do (s! old rw/AT at)
                   (let [h (handle! w old)]
-                    (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID)])
+                    (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
                     h))
               (do (when old                       ; changed captures: replace it
                     (let [basis (g x rw/C-BASIS)
@@ -1327,7 +1330,7 @@
                     (ref-inc! k)
                     (start-task! w k)
                     (let [h (handle! w k)]
-                      (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID)])
+                      (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
                       h)))))
           (let [s (current-scope! w r)
                 k (new-task! w s 0 at inputs body 0)]
@@ -1335,7 +1338,7 @@
             (ref-inc! k)
             (start-task! w k)
             (let [h (handle! w k)]
-              (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID)])
+              (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
               h)))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)]

@@ -145,11 +145,12 @@
               (tbl rw/T-SCOPE (fn [s] {:parent (id (f s rw/S-PARENT)) :kind (f s rw/S-KIND) :open (f s rw/S-OPEN)})))
      :tasks (tbl rw/T-TASK
                  (fn [k] {:owner (owner-id (f k rw/OWNER)) :run (id (f k rw/K-RUN))
+                          :inputs (mapv #(intern! w %) (f k rw/K-INPUTS))
                           :result (when (f k rw/K-DONE)
                                     [(if (f k rw/K-ERR) :err :ok) (intern! w (f k rw/K-RESULT))])
                           :handles (f k rw/HANDLES)}))
      :comps (tbl rw/T-COMP
-                 (fn [c] {:owner (owner-id (f c rw/OWNER)) :inputs (intern! w (f c rw/C-INPUTS))
+                 (fn [c] {:owner (owner-id (f c rw/OWNER)) :inputs (mapv #(intern! w %) (f c rw/C-INPUTS))
                           :body (intern! w (f c rw/C-BODY)) :run (id (f c rw/C-RUN))
                           :epoch (f c rw/C-EPOCH) :done-epoch (f c rw/C-DONE-EPOCH)
                           :pending (f c rw/C-PENDING) :rank (f c rw/C-RANK) :version (f c rw/VERSION)
