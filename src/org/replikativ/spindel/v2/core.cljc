@@ -252,6 +252,11 @@
   (let [c (aclone r)]
     (aset c (unchecked-dec-int (alength c)) (aget ^objects w rw/W-EPOCH))
     (copy-containers! c)
+    ;; F1: a resource's physical controller (timer, thread, external
+    ;; callbacks) belongs to the world that set it; a copy elsewhere drops it
+    (when (and (== rw/T-RES (long (aget c rw/TYPE)))
+               (not= (aget c rw/Z-ORIGIN) (aget ^objects w rw/ID)))
+      (aset c rw/Z-CTL nil))
     (aset ^objects w rw/W-FWD (assoc (aget ^objects w rw/W-FWD) (aget c rw/ID) c))
     (when-let [reg (aget ^objects w rw/W-REG)]
       (when (some? (hs/mget reg (aget c rw/ID))) (hs/mput! reg (aget c rw/ID) c)))
@@ -1462,9 +1467,32 @@
 ;; A host handle (§1): weak, never a liveness reason. `cell` holds the row
 ;; (set when the creating item commits); `dropped` makes T19 happen once,
 ;; by `release!` or by the Cleaner after the handle is collected (M3c).
+(declare host-call! write! deliver! post! handle-swap! handle-claim!)
+
 (deftype Handle [w ^objects cell dropped]
+  ;; @h is the host read (B7 outside bodies). On a signal or cell, reset! and
+  ;; swap! write it; invoking a deferred delivers it (true when this call won),
+  ;; invoking a mailbox posts to it (M6 R8).
   #?@(:clj [clojure.lang.IDeref
-            (deref [this] (value this))]))
+            (deref [this] (value this))
+            clojure.lang.IAtom
+            (reset [this v] (write! this v) v)
+            (swap [this f] (handle-swap! this #(f %)))
+            (swap [this f a] (handle-swap! this #(f % a)))
+            (swap [this f a b] (handle-swap! this #(f % a b)))
+            (swap [this f a b xs] (handle-swap! this #(apply f % a b xs)))
+            (compareAndSet [this o n] (handle-swap! this #(if (identical? % o) n %) (fn [old _] (identical? old o))))
+            clojure.lang.IFn
+            (invoke [this v] (handle-claim! this v))
+            (applyTo [this args] (if (== 1 (count args)) (handle-claim! this (first args))
+                                     (throw (clojure.lang.ArityException. (count args) "Handle"))))]
+      :cljs [IReset (-reset! [this v] (write! this v) v)
+             ISwap
+             (-swap! [this f] (handle-swap! this #(f %)))
+             (-swap! [this f a] (handle-swap! this #(f % a)))
+             (-swap! [this f a b] (handle-swap! this #(f % a b)))
+             (-swap! [this f a b xs] (handle-swap! this #(apply f % a b xs)))
+             IFn (-invoke [this v] (handle-claim! this v))]))
 
 
 (declare host! handle-drop! href)
@@ -2103,7 +2131,7 @@
 (defn- consume! [x]
   (if (mailbox? x)
     (hs/dq-poll! (deque x rw/X-VALUE))
-    (do (s! x rw/X-VALUE (dec (gl x rw/X-VALUE))) true)))
+    (do (s! x rw/X-VALUE (dec (gl x rw/X-VALUE))) :acquired)))
 
 (defn consume-effect!
   "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
@@ -2178,17 +2206,21 @@
   "T1 at top level: a counting semaphore with `n` permits (§4.3)."
   ([n] (semaphore *world* n))
   ([w n] (create-source-top! w rw/SRC-SEMAPHORE (long n)
-                             #(s! % rw/X-WAITERS (hs/deque)))))
+                             #(do (s! % rw/X-WAITERS (hs/deque)) (s! % rw/X-MAX (long n))))))
 
 (defn sem-release!
   "Gives the permit to the first armed waiter, or returns it (§4.3)."
   [h]
   (gated (world-of h)
     (let [x (row-of h) w (cw)]
-      (if (closed? x)
+      (cond
+        (closed? x) (refuse! w [:release (g x rw/ID)])
+        ;; Z#62: no release beyond the maximum (nobody waits at the maximum)
+        (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
         (refuse! w [:release (g x rw/ID)])
+        :else
         (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
-            (when-not (serve-waiter! w x true)
+            (when-not (serve-waiter! w x :acquired)
               (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
             (commit! w [:release (g x rw/ID)])))))
   nil)
@@ -2381,6 +2413,29 @@
   ([r] (resolve-ref (current-world) r))
   ([w r] (new-handle w (aget ^objects (.-cell ^Ref r) 0))))
 
+(defn- handle-swap!
+  "swap! on a signal or cell handle: read and write in one host item."
+  ([h f] (handle-swap! h f (fn [_ n] n)))
+  ([h f ret]
+   (let [w (world-of h)]
+     (host-call! w #(let [x (row-of h)]
+                      (when-not (and (source? x) (<= (gl x rw/X-KIND) rw/SRC-CELL))
+                        (throw (invalid-op :swap "swap!/reset! is for signals and cells")))
+                      (let [old (g x rw/X-VALUE) n (f old)]
+                        (write! h n)
+                        (ret old n)))))))
+
+(defn- handle-claim!
+  "(d v) delivers a deferred (true when this call delivered it); (mb v)
+   posts to a mailbox."
+  [h v]
+  (let [w (world-of h)]
+    (host-call! w #(let [x (row-of h)]
+                     (cond
+                       (deferred? x) (if (final? x) (do (deliver! h v) false) (do (deliver! h v) true))
+                       (mailbox? x) (do (post! h v) nil)
+                       :else (throw (invalid-op :invoke "only deferreds and mailboxes are invokable")))))))
+
 (defn- check-state-value! [v]
   (when (instance? Handle v)
     (throw (ex-info "a handle in world state: store (world-ref h)" {:spindel/invalid :world-state}))))
@@ -2538,6 +2593,13 @@
 
 (declare sp-deliver!)
 
+(defn- set-ctl!
+  "A resource's physical controller, owned by world `w` (copies elsewhere
+   drop it, F1)."
+  [w z ctl]
+  (s! z rw/Z-CTL ctl)
+  (s! z rw/Z-ORIGIN (g w rw/ID)))
+
 (defn- activate-dormant!
   "§8.1: a fork's inherited armed resources, at its first turn. A timer
    re-arms for its remaining time; any other resource (offload, external
@@ -2562,7 +2624,7 @@
           (if (and (= :timer (g z rw/Z-KIND)) (g z rw/Z-DEADLINE))
             (let [left (max 0 (- (long (g z rw/Z-DEADLINE)) (hs/now-ms)))]
               (hs/oset-add! (armed-set w) (id-of z) z)
-              (s! z rw/Z-CTL (hs/schedule! left (fn [] (join! w z [nil false])))))
+              (set-ctl! w z (hs/schedule! left (fn [] (join! w z [nil false])))))
             (do (resource-fire! w z [(forked-ex) true])
                 (resource-ack! w z))))))))
 
@@ -2613,6 +2675,17 @@
         (s! w rw/W-DORMANT (seq (remove #(== id (id-of %)) zs)))
         true))))
 
+(defn- external-cancel!
+  "R2: tells an external operation to cancel. True when it provably will not
+   complete (its cancel fn answered :joined): the resource joins now."
+  [{:keys [cancel flag ^objects cell]}]
+  (if (hs/flag? flag)
+    false                                   ; its completion is in flight and acks
+    (let [r (when cancel (try (cancel) (catch #?(:clj Throwable :cljs :default) _ nil)))]
+      (if (and (= :joined r) (hs/flag-cas! flag false true))
+        (do (aset cell 0 nil) (aset cell 1 nil) true)
+        false))))
+
 (defn- cancel-resource!
   "T14: an armed resource is told to cancel. One that provably never started
    (or whose timer was unscheduled) joins at once; a running offload is
@@ -2625,7 +2698,10 @@
           ;; §8.1: an inherited resource still dormant here holds the source's
           ;; controller; it joins at once and never touches that controller
           joined? (or (take-dormant! w z)
-                      (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl)))]
+                      (cond (nil? ctl) true
+                            (hs/timer? ctl) (hs/unschedule! ctl)
+                            (:external ctl) (external-cancel! ctl)
+                            :else (hs/ctl-cancel! ctl)))]
       ;; the acknowledgement is its own item, after the cancelling one
       (when joined? (aadd! (g w rw/W-CLEANUP) [z])))))
 
@@ -2664,7 +2740,7 @@
      r :offload k ek
      (fn [w z]
        (let [ctl (hs/offload-ctl)]
-         (s! z rw/Z-CTL ctl)
+         (set-ctl! w z ctl)
          (hs/execute! (g w rw/W-EXEC)
                       (fn []
                         (when (hs/ctl-start! ctl)
@@ -2681,7 +2757,41 @@
      r :timer k ek
      (fn [w z]
        (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
-       (s! z rw/Z-CTL (hs/schedule! ms (fn [] (join! w z [nil false]))))))
+       (set-ctl! w z (hs/schedule! ms (fn [] (join! w z [nil false]))))))
+    (unwind! ek)))
+
+(defn external-effect!
+  "R2 `(external f)`: parks on an external operation. After the commit, under
+   the gate, `(f complete!)` is called once; it must be finite and must not
+   block, and returns nil or a cancel fn. `(complete! v)` / `(complete! e
+   true)` may be called from any thread, once (later calls do nothing), and
+   drops its references to the world once used. On cancel the cancel fn is
+   called (also under the gate): `:joined` means the operation will not
+   complete and the resource joins at once; anything else waits for the
+   physical completion, whose value is dropped. If `f` throws, the effect
+   fails with that error."
+  [f k ek]
+  (if-let [r (valid-run)]
+    (arm-and-park!
+     r :external k ek
+     (fn [w z]
+       (let [cell (doto (object-array 2) (aset 0 w) (aset 1 z))
+             flag (hs/flag false)
+             complete! (fn complete!
+                         ([v] (complete! v false))
+                         ([v err?]
+                          (when (hs/flag-cas! flag false true)
+                            (let [w (aget cell 0) z (aget cell 1)]
+                              (aset cell 0 nil) (aset cell 1 nil)
+                              (when w (join! w z [v (boolean err?)]))))
+                          nil))
+             ctl {:external true :flag flag :cell cell}]
+         (set-ctl! w z ctl)
+         (let [res (try [(f complete!) nil] (catch #?(:clj Throwable :cljs :default) t [nil t]))]
+           (if-let [t (second res)]
+             (complete! t true)
+             (when (fn? (first res))
+               (set-ctl! w z (assoc ctl :cancel (first res)))))))))
     (unwind! ek)))
 
 (defn release-world!
@@ -3049,6 +3159,8 @@
 
 (defn offload [_] (throw (ex-info "offload outside a body" {})))
 
+(defn external [_] (throw (ex-info "external outside a body" {})))
+
 (defn sleep [_] (throw (ex-info "sleep outside a body" {})))
 
 (defn track [_] (throw (ex-info "track outside a body" {})))
@@ -3077,6 +3189,8 @@
        (fn [_] `(fork-effect! ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
        (fn [[f]] `(offload-effect! ~f ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-external [_ctx r e]
+       (fn [[f]] `(external-effect! ~f ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-sleep [_ctx r e]
        (fn [[ms]] `(sleep-effect! ~ms ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-consume [_ctx r e]
@@ -3088,6 +3202,7 @@
         'org.replikativ.spindel.v2.core/await-any `bp-await-any
         'org.replikativ.spindel.v2.core/take! `bp-consume
         'org.replikativ.spindel.v2.core/offload `bp-offload
+        'org.replikativ.spindel.v2.core/external `bp-external
         'org.replikativ.spindel.v2.core/fork `bp-fork
         'org.replikativ.spindel.v2.core/savepoint `bp-savepoint
         'org.replikativ.spindel.v2.core/sleep `bp-sleep

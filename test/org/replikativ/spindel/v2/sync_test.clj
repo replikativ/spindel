@@ -73,7 +73,8 @@
     (let [w (vworld)]
       (binding [v2/*world* w]
         (let [d (v2/deferred)
-              s (v2/semaphore 0)
+              s (v2/semaphore 1)
+              _ (v2/value (task (acquire! s)) 1000 ::timeout)   ; taken: 0 left, max 1 (Z#62)
               log (atom [])
               t (task (try (await d)
                            (swap! log conj :body)
@@ -172,7 +173,7 @@
               (is (= [[:ok :one] [:ok :two]] [(outcome a) (outcome b)]))))
           (testing "await on a semaphore is refused; acquire! still works"
             (is (= :await (invalid (task (await s)))))
-            (is (= [:ok true] (outcome (task (acquire! s))))))
+            (is (= [:ok :acquired] (outcome (task (acquire! s))))))
           (testing "group awaits with a consuming member are refused"
             (is (= :all (invalid (task (v2/await-all [d m])))))
             (is (= :any (invalid (task (v2/await-any [s d]))))))
@@ -202,5 +203,5 @@
           (is (= [:ok :left] (outcome (task (take! m)))) "a closed mailbox still hands out its backlog")
           (is (closed (task (take! m))) "then fails at once")
           (is (closed (task (await m))) "await on a mailbox is take (Z#54)")
-          (is (= [:ok true] (outcome (task (acquire! s)))) "a closed semaphore still hands out its permits")
+          (is (= [:ok :acquired] (outcome (task (acquire! s)))) "a closed semaphore still hands out its permits")
           (is (closed (task (acquire! s)))))))))

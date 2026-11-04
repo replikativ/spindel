@@ -165,7 +165,18 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#60 (§3.4, A#6): validation visits each idle computation at most once
     per demand and terminates by the acyclicity of validity entries, not by
     rank (ranks track live dep edges only); invariant I14 states the
-    acyclicity.
+    acyclicity;
+  - Z#62 (§4.3, M6 parity): `semaphore(n)` starts with `n` permits and has
+    maximum `n`; a release at the maximum is refused; a granted acquire
+    delivers `:acquired`;
+  - Z#63 (T15, T17, T18, §8.1; M6 R2): resource kind `external`. Its arm
+    calls the host registration after the commit; its completion is a
+    one-shot completion item (fire, then ack), accepted after release; its
+    cancel calls the host cancel, which either answers `joined` (ack at once)
+    or leaves the physical completion outstanding (it acks later, its value
+    dropped). A resource's physical controller belongs to the world that set
+    it: a copy in any other world holds none (F1), and an inherited external
+    resource is dormant (§8.1).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -626,7 +637,7 @@ They are never dependencies. All operations are atomic commits (D0).
 | signal, cell | `write(X, v)` (T2), `track` (dep edge) |
 | deferred | `deliver(X, v)` once: fires all `wait` edges and finalizes the deferred; `await` in a computation is a dep edge that is consumed at once if the deferred is final |
 | mailbox | `post(X, v)` appends to the queue; `take(X)` is a wait edge; FIFO, each message is delivered to exactly one waiter atomically; cancelling a waiter removes it from the queue order; on a closed, empty mailbox `take` fails at once with `err ::closed` (Z#57) |
-| semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count; cancelling a waiter removes it; on a closed semaphore without permits `acquire` fails at once with `err ::closed` (Z#57) |
+| semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count, up to the maximum (Z#62); cancelling a waiter removes it; on a closed semaphore without permits `acquire` fails at once with `err ::closed` (Z#57) |
 
 **Operation by kind (Z#54).** `track` applies to signals and cells only.
 `await` on a mailbox is `take`. `await` on a semaphore, `await-all` or

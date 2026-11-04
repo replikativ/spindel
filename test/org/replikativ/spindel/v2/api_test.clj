@@ -130,3 +130,114 @@
           (is (= [:ok 100] (outcome (v2/in-world child t))) "the child's copy")
           (v2/deliver! gate :go)
           (is (= [:ok 1] (outcome t)) "the parent's own"))))))
+
+;; --- R8 signal reset!/swap!, invokable deferreds and mailboxes, semaphore parity
+
+(deftest signals-reset-and-swap
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [x (v2/signal 1)
+              c (spin (* 10 (iv/get-new (track x))))
+              seen (atom [])]
+          (v2/observe! c (fn [v _] (swap! seen conj v)))
+          (is (= 5 (reset! x 5)))
+          (is (= 6 (swap! x inc)))
+          (is (= 8 (swap! x + 2)))
+          (is (true? (compare-and-set! x 8 9)))
+          (is (false? (compare-and-set! x 8 10)))
+          (is (= 9 @x))
+          (is (= [10 50 60 80 90] @seen) "every write is a T2 with its delivery")
+          (is (= :swap (:spindel/invalid (try (swap! (v2/deferred) inc) nil (catch Exception e (ex-data e)))))
+              "swap! is for signals and cells"))))))
+
+(deftest invokable-deferreds-and-mailboxes
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred) mb (v2/mailbox)
+              t (task [(await d) (v2/take! mb)])]
+          (is (true? (d :first)) "the first delivery wins")
+          (is (false? (d :second)) "later ones do not")
+          (is (nil? (mb :msg)))
+          (is (= [:ok [:first :msg]] (outcome t))))))))
+
+(deftest semaphores-have-a-maximum
+  ;; Z#62: (semaphore n) starts with n permits and never exceeds n
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [s (v2/semaphore 1)]
+          (is (= [:ok :acquired] (outcome (task (v2/acquire! s)))))
+          (v2/sem-release! s)
+          (v2/sem-release! s)                         ; at the maximum: refused
+          (is (= [:ok :acquired] (outcome (task (v2/acquire! s)))))
+          (is (= :pending (v2/value (task (v2/acquire! s)) 100 :pending))
+              "only one permit existed, so a third acquire waits"))))))
+
+;; --- R2 external waits
+
+(defn- census [w]
+  (v2/call-in! w #(frequencies (map (fn [r] (aget ^objects r org.replikativ.spindel.v2.rows/TYPE))
+                                    (vals (aget ^objects w org.replikativ.spindel.v2.rows/W-REG))))))
+
+(defn- runs-and-res [w]
+  (let [c (census w)]
+    [(get c org.replikativ.spindel.v2.rows/T-RUN 0) (get c org.replikativ.spindel.v2.rows/T-RES 0)]))
+
+(deftest external-completes-from-any-thread
+  (checked
+    (let [w (vworld) cb (promise)]
+      (binding [v2/*world* w]
+        (let [t (task (inc (v2/external (fn [complete!] (deliver cb complete!) nil))))
+              complete! (deref cb 1000 nil)]
+          @(future (complete! 41))
+          (complete! 99)                                      ; a second completion does nothing
+          (is (= [:ok 42] (outcome t)))
+          (is (wait-until #(= [0 0] (runs-and-res w))) "joined and retired"))))))
+
+(deftest external-errors-and-throws
+  (checked
+    (let [w (vworld) cb (promise)]
+      (binding [v2/*world* w]
+        (let [t (task (v2/external (fn [complete!] (deliver cb complete!) nil)))]
+          ((deref cb 1000 nil) (ex-info "io failed" {:io true}) true)
+          (is (= [:err {:io true}] (outcome t))))
+        (is (= [:err {:reg true}]
+               (outcome (task (v2/external (fn [_] (throw (ex-info "no" {:reg true})))))))
+            "a throwing registration fails the effect")))))
+
+(deftest external-cancel-protocol
+  (checked
+    (let [w (vworld) cancels (atom []) cbs (atom [])]
+      (binding [v2/*world* w]
+        (testing ":joined from the cancel fn joins at once"
+          (let [t (task (v2/external (fn [c] (swap! cbs conj c) (fn [] (swap! cancels conj :a) :joined))))]
+            (is (wait-until #(= 1 (count @cbs))))
+            (v2/cancel-task! t)
+            (is (= [:a] @cancels))
+            (is (wait-until #(= [0 0] (runs-and-res w))) "joined without a completion")
+            ((first @cbs) :late)                              ; a completion after joining does nothing
+            (is (:spindel/cancelled (second (outcome t))))))
+        (testing "otherwise the physical completion joins"
+          (let [t (task (v2/external (fn [c] (swap! cbs conj c) (fn [] (swap! cancels conj :b) :in-flight))))]
+            (is (wait-until #(= 2 (count @cbs))))
+            (v2/cancel-task! t)
+            (Thread/sleep 20)
+            (is (= [1 1] (runs-and-res w)) "the run waits in cleanup for the in-flight operation")
+            ((second @cbs) :done)
+            (is (wait-until #(= [0 0] (runs-and-res w))) "the completion joined it")))))))
+
+(deftest external-in-a-fork-is-dormant
+  ;; §8.1: an inherited external wait fails with ::forked in the child; the
+  ;; child's copy holds no controller of the parent (F1)
+  (checked
+    (let [w (vworld) cb (promise)]
+      (binding [v2/*world* w]
+        (let [t (task (try (v2/external (fn [c] (deliver cb c) nil))
+                           (catch Exception e (if (:spindel/forked (ex-data e)) :forked (throw e)))))
+              complete! (deref cb 1000 nil)
+              c (v2/fork! w)]
+          (is (= [:ok :forked] (outcome (v2/in-world c t))))
+          (complete! :parent-value)
+          (is (= [:ok :parent-value] (outcome t)) "the parent's completion is its own"))))))

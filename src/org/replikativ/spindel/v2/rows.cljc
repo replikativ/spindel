@@ -152,16 +152,18 @@
 (def ^:const X-VALUE 13)
 (def ^:const X-OPEN 14)
 (def ^:const X-WAITERS 15)   ; mailbox/semaphore: FIFO of waiting wait edges
-(def ^:const X-SIZE 16)
+(def ^:const X-MAX 16)       ; semaphore: its maximum permit count (Z#62)
+(def ^:const X-SIZE 17)
 
 ;; Resource (§1, T15-T18)
-(def ^:const Z-KIND 12)      ; :offload :timer
+(def ^:const Z-KIND 12)      ; :offload :timer :external
 (def ^:const Z-PHASE 13)     ; 0 armed, 1 fired, 2 cancelling
 (def ^:const Z-RESULT 14)
 (def ^:const Z-ERR 15)
 (def ^:const Z-CTL 16)       ; host control: offload wrapper or ScheduledFuture
 (def ^:const Z-DEADLINE 17)  ; timers: wall-clock deadline (ms), for re-arming in a fork (§8.1)
-(def ^:const Z-SIZE 18)
+(def ^:const Z-ORIGIN 18)    ; id of the world whose controller Z-CTL is (copies elsewhere drop it, F1)
+(def ^:const Z-SIZE 19)
 
 (def ^:const Z-ARMED 1)
 (def ^:const Z-FIRED 2)
