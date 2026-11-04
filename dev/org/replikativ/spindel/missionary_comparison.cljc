@@ -30,7 +30,8 @@
             [org.replikativ.spindel.engine.impl.owned :as c #?@(:cljs [:include-macros true])]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.signal :as sig]
-            [org.replikativ.spindel.spin.cps :refer [spin]])
+            [org.replikativ.spindel.spin.cps :refer [spin]]
+            [org.replikativ.spindel.v2.core :as v2 #?@(:cljs [:include-macros true])])
   #?(:clj (:import [com.sun.management ThreadMXBean]
                    [java.lang.management ManagementFactory])))
 
@@ -109,7 +110,8 @@
     :fanout (vec (repeat 100 n))
     :chain [(+ n 50)]
     :diamond [(* 5 n) (* 25 n)]
-    :fanin [(* 50 n)]))
+    :fanin [(* 50 n)]
+    :child [(* 2 n)]))
 
 (defn- kernel-graph [rt kind source]
   (let [leaf (fn [id] (k/kspin rt id (iv/get-new (k/track source))))]
@@ -164,6 +166,67 @@
                            (if-let [child (first children)]
                              (recur (next children) (+ total (c/await child)))
                              total)))]))))
+
+
+(declare measure-updates run-missionary-graph)
+
+(defn- v2-graph [kind source]
+  (let [leaf (fn [] (v2/spin (iv/get-new (v2/track source))))]
+    (case kind
+      :switch-reactive (let [left (v2/spin (* 2 (iv/get-new (v2/track source))))
+                             right (v2/spin (* 3 (iv/get-new (v2/track source))))]
+                         [(v2/spin (let [n (iv/get-new (v2/track source))]
+                                    (v2/await (if (even? n) left right))))])
+      :switch (let [left (v2/spin 10) right (v2/spin 20)]
+                [(v2/spin (let [n (iv/get-new (v2/track source))]
+                           (+ n (v2/await (if (even? n) left right)))))])
+      :fanout (mapv (fn [_] (leaf)) (range 100))
+      :chain [(reduce (fn [prev _] (v2/spin (inc (v2/await prev)))) (leaf) (range 50))]
+      :diamond (let [b (v2/spin (* 2 (iv/get-new (v2/track source))))
+                     c (v2/spin (* 3 (iv/get-new (v2/track source))))
+                     d (v2/spin (+ (v2/await b) (v2/await c)))
+                     e (v2/spin (* 2 (v2/await d)))
+                     f (v2/spin (* 3 (v2/await d)))
+                     g (v2/spin (+ (v2/await e) (v2/await f)))]
+                 [d g])
+      :fanin (let [children (mapv (fn [_] (leaf)) (range 50))]
+               [(v2/spin (loop [children children total 0]
+                          (if-let [child (first children)]
+                            (recur (next children) (+ total (v2/await child)))
+                            total)))])
+      ;; a computation that creates and awaits a fresh owned child per run
+      :child (let [root (v2/spin (let [n (iv/get-new (v2/track source))
+                                      child (v2/spin (* 2 n))]
+                                  (v2/await child)))]
+               [root]))))
+
+(defn- run-v2 [kind n warmup]
+  (let [w (v2/world)]
+    (binding [v2/*world* w]
+      (let [source (v2/signal w 0)
+            roots (v2-graph kind source)
+            values (mapv (fn [_] (volatile! nil)) roots)
+            counts (mapv (fn [_] (volatile! 0)) roots)
+            failure (volatile! nil)
+            cancels (mapv (fn [root value seen]
+                            (v2/observe! root (fn [v err?] (if err? (vreset! failure v) (do (vreset! value v) (vswap! seen inc))))))
+                          roots values counts)
+            input (volatile! 0)]
+        (try
+          (let [measurement (measure-updates #(v2/write! source (vswap! input inc)) warmup n)
+                observed (mapv deref values)
+                seen (mapv deref counts)
+                expected (expected-values kind (+ n warmup))]
+            (when-not (and (nil? @failure) (= expected observed)
+                           (= (vec (repeat (count roots) (inc (+ n warmup)))) seen))
+              (throw (ex-info "v2 result mismatch"
+                              {:kind kind :expected expected :observed observed :seen seen :error @failure})))
+            measurement)
+          (finally (doseq [c cancels] (c))))))))
+
+(defn- missionary-child-graph [kind source]
+  (case kind
+    :child [(m/signal (m/cp (let [n (m/?< source)] (m/?< (m/signal (m/cp (* 2 n)))))))]))
 
 (defn- measure-updates [update! warmup n]
   (dotimes [_ warmup] (update!))
@@ -381,16 +444,60 @@
        (java.lang.ref.Reference/reachabilityFence retained)
        measurement)))
 
+
+(defn- run-v2-lifecycle [kind n warmup]
+  (let [w (v2/world)
+        last-value (volatile! nil)
+        input (volatile! 0)
+        ok (fn [x] (vreset! last-value x))
+        fail (fn [e] (throw e))
+        step! (case kind
+                :l0 (fn [] (let [i (vswap! input inc)] (v2/value-async (binding [v2/*world* w] (v2/task i)) (fn [v err?] (if err? (fail v) (ok v))))))
+                :task-await (fn [] (let [i (vswap! input inc)
+                                         d (v2/deferred w)
+                                         t (binding [v2/*world* w] (v2/task (inc (v2/await d))))]
+                                     (v2/value-async t (fn [v err?] (if err? (fail v) (ok v))))
+                                     (v2/deliver! d i))))
+        measurement (measure-updates step! warmup n)]
+    (when-not (= (cond-> (+ n warmup) (= kind :task-await) inc) @last-value)
+      (throw (ex-info "v2 lifecycle mismatch" {:kind kind :observed @last-value})))
+    measurement))
+
+(defn- run-missionary-lifecycle [kind n warmup]
+  (let [last-value (volatile! nil)
+        input (volatile! 0)
+        ok (fn [x] (vreset! last-value x))
+        fail (fn [e] (throw e))
+        step! (case kind
+                :l0 (fn [] (let [i (vswap! input inc)] ((m/sp i) ok fail)))
+                :task-await (fn [] (let [i (vswap! input inc)
+                                         d (m/dfv)]
+                                     ((m/sp (inc (m/? d))) ok fail)
+                                     (d i))))
+        measurement (measure-updates step! warmup n)]
+    (when-not (= (cond-> (+ n warmup) (= kind :task-await) inc) @last-value)
+      (throw (ex-info "missionary lifecycle mismatch" {:kind kind :observed @last-value})))
+    measurement))
+
 (defn run-case!
   "Run one matched graph, verifying final values and delivery counts."
   [implementation kind n warmup]
   (when (and (#{:switch :switch-reactive} kind) (= implementation :missionary))
     (throw (ex-info "Dynamic dependency switching requires missionary-cp; latest has a fixed input graph"
                     {:kind kind :implementation implementation})))
-  (if (= kind :l0)
+  (cond
+    (and (#{:l0 :task-await} kind) (#{:v2 :missionary-cp} implementation))
+    ((case implementation :v2 run-v2-lifecycle :missionary-cp run-missionary-lifecycle) kind n warmup)
+    (= kind :child)
+    ((case implementation
+       :v2 run-v2
+       :missionary-cp (fn [kind n warmup] (run-missionary-graph missionary-child-graph kind n warmup))) kind n warmup)
+    (= kind :l0)
     #?(:clj ((case implementation :spindel run-spindel-l0 :missionary run-missionary-l0) n warmup)
        :cljs (throw (ex-info "L0 blocking comparison is JVM-only" {})))
+    :else
     ((case implementation
+       :v2 run-v2
        :spindel #?(:clj run-spindel :cljs (throw (ex-info "Use spindel-observed on JS" {})))
        :spindel-observed run-spindel-observed
        :owned-public run-owned-public
@@ -415,7 +522,7 @@
                                                 "fanout,chain,diamond,fanin") #","))]
     #?(:clj (let [^ThreadMXBean bean (ManagementFactory/getThreadMXBean)]
               (.setThreadAllocatedMemoryEnabled bean true)))
-    (when (and (some #{:l0} kinds) (some #{:kernel :kernel-cells :compact :owned-public :spindel-observed :missionary-cp} implementations))
+    (when (and (some #{:l0 :task-await} kinds) (some #{:kernel :kernel-cells :compact :owned-public :spindel-observed :spindel :missionary} implementations))
       (throw (ex-info "Experimental engines require explicit reactive benchmark kinds"
                       {:kinds kinds :engines implementations})))
     (doseq [kind kinds trial (range repeats)

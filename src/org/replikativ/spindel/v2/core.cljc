@@ -2069,16 +2069,39 @@
                   (and (var? v)
                        (#{'org.replikativ.spindel.v2.core/spin 'org.replikativ.spindel.v2.core/task}
                         (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v)))))))))
+     (defn- has-finally?
+       "Whether a form contains a `try` with a `finally` outside closures."
+       [form]
+       (and (seq? form)
+            (or (and (= 'try (first form)) (some #(and (seq? %) (= 'finally (first %))) form))
+                (and (not (opaque-head? (first form))) (some has-finally? form)))))
+     (def ^:private ^:dynamic *env* nil)
+     (defn- user-macro
+       "The macro var a form calls, unless it is a local, a special form, our
+        own body macro, or the target is ClojureScript."
+       [h]
+       (when (and (symbol? h) (not (contains? *env* h)) (not (special-symbol? h))
+                  (not (:ns *env*)))
+         (let [v (resolve h)]
+           (when (and (var? v) (:macro (meta v)) (not (opaque-head? h))
+                      (not (#{'org.replikativ.spindel.v2.core/with-scope}
+                            (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v))))))
+             v))))
      (defn- register-finally
-       "Body contract (§7): each literal `try` with a `finally` registers its
-        region with the run, so cancellation can unwind through it (T14).
-        Nested bodies and closures are left alone (they register their own)."
+       "Body contract (§7): each `try` with a `finally` registers its region
+        with the run, so cancellation can unwind through it (T14). A user
+        macro whose expansion has one (`with-open`, `binding`, ...) is
+        expanded so its region registers too (JVM). Nested bodies and
+        closures are left alone (they register their own)."
        [form]
        (cond
          (seq? form)
-         (let [h (first form)]
+         (let [h (first form)
+               mv (user-macro h)
+               expanded (when mv (apply @mv form *env* (rest form)))]
            (cond
              (opaque-head? h) form
+             (and expanded (has-finally? expanded)) (register-finally expanded)
              (= 'try h)
              (let [clauses (map register-finally (rest form))
                    [body cfs] (split-with (complement catch-or-finally?) clauses)]
@@ -2100,7 +2123,7 @@
        (let [r (gensym "r") e (gensym "e")
              params {:r r :e e :env env :breakpoints breakpoints
                      :opaque-scopes #{`spin `task}}]
-         `(fn [~r ~e] ~(ioc/invert params (register-finally (cons 'do body))))))
+         `(fn [~r ~e] ~(ioc/invert params (binding [*env* env] (register-finally (cons 'do body)))))))
      (defn- site-of [form]
        (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta form)) (:column (meta form))])))
      (defmacro spin

@@ -108,3 +108,17 @@
           (v2/cancel-task! t)
           (is (= [:child] @log))
           (is (= 0 (:runs (census w)))))))))
+
+(defmacro with-cleanup [log & body]
+  `(try ~@body (finally (swap! ~log conj :macro-finally))))
+
+(deftest macro-generated-finally-runs-on-cancel
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              log (atom [])
+              t (task (with-cleanup log (await d)))]
+          (v2/cancel-task! t)
+          (is (= [:macro-finally] @log) "a finally region from a user macro is registered")
+          (is (= 0 (:runs (census w)))))))))
