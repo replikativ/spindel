@@ -22,7 +22,7 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare create-source-top-host! row-of world-of cancel-resource! demand! settle! pending-zero! rule-r! complete! validate!
+(declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
          deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
@@ -107,6 +107,7 @@
      (s! w rw/W-RESUME (alist))
      (s! w rw/W-START (alist))
      (s! w rw/W-CLEANUP (alist))
+     (s! w rw/W-ACKS (alist))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS (hs/vmap))
@@ -1754,8 +1755,11 @@
   (let [ready (g w rw/W-READY)
         resume (g w rw/W-RESUME)
         start (g w rw/W-START)
-        cleanup (g w rw/W-CLEANUP)]
+        cleanup (g w rw/W-CLEANUP)
+        acks (g w rw/W-ACKS)]
     (cond
+      ;; T15 for a resource that joined at its cancel (Z#55)
+      (pos? (acount acks)) (do (resource-ack! w (pop-first! w acks)) (rule-r! w) true)
       (pos? (acount cleanup))
       (let [[r ek ex] (pop-first! w cleanup)]
         (s! r rw/R-SLICE true)
@@ -1821,7 +1825,7 @@
   (or (not (hs/mpsc-empty? (ingress w)))
       (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
       (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))
-      (pos? (acount (g w rw/W-CALLBACKS)))))
+      (pos? (acount (g w rw/W-ACKS))) (pos? (acount (g w rw/W-CALLBACKS)))))
 
 (defn- handoff!
   "H2: after releasing the gate, queued work is never stranded: schedule the
@@ -2306,8 +2310,9 @@
         (hs/remove-at! zs i)
         (when (zero? (acount zs)) (s! r rw/R-RES nil))
         (unregister! w z)
-        (commit! w [:resource-ack (g z rw/ID)])
-        (retire-check! w r)))))
+        ;; T15, then T13 within the item (Z#55)
+        (retire-check! w r)
+        (commit! w [:resource-ack (g z rw/ID)])))))
 
 (defn- cancel-resource!
   "T14: an armed resource is told to cancel. One that provably never started
@@ -2319,15 +2324,16 @@
     (hs/oset-del! (armed-set w) (id-of z))
     (let [ctl (g z rw/Z-CTL)
           joined? (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl))]
-      (when joined? (resource-ack! w z)))))
+      ;; the acknowledgement is its own item, after the cancelling one
+      (when joined? (aadd! (g w rw/W-ACKS) z)))))
 
 (defn- arm-and-park!
-  "T17 then T6 on the new resource: the run waits for its fire."
+  "T17 then T6 on the new resource, one effect and one commit (Z#55): the
+   resource, its activation and the wait edge, in that id order."
   [r kind k ek start!]
   (let [w (cw)
         at (next-at! r)
         z (new-resource! w r kind at)
-        _ (commit! w [:arm (g r rw/ID) kind (g z rw/ID)])
         aid (alloc-id! w)
         members (object-array 1)
         a (new-activation! w aid r :one k ek members (object-array 1) 1)
@@ -2335,7 +2341,7 @@
     (aset members 0 e)
     (park! r a)
     (s! a rw/A-INLINE false)
-    (commit! w [:await (g r rw/ID) [(g z rw/ID)] :one [:opaque k] aid []])
+    (commit! w [:arm (g r rw/ID) kind [:opaque k] (g z rw/ID)])
     (notify-blocked! (rv w (g r rw/R-OF)) 0)
     (start! w z)
     nil))
@@ -2476,7 +2482,7 @@
     (s! c rw/W-SCHEDULED (hs/flag false))
     (s! c rw/W-DRAINING false)
     (s! c rw/W-CALLBACKS (alist))
-    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
+    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ rw/W-ACKS]]
       (s! c i (hs/lcopy (g w i))))
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
     (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))

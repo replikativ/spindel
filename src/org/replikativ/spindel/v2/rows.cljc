@@ -85,7 +85,8 @@
 (def ^:const W-SAVEPOINTS 29)  ; pending savepoint activations, ordered set by ID
 (def ^:const W-SP-DORMANT 30)  ; a fork's inherited pending savepoints (fail err ::forked)
 (def ^:const W-PENDING-ACT 31) ; an instantiated fork's pending activation (S3)
-(def ^:const W-SIZE 32)
+(def ^:const W-ACKS 32)        ; resources joined at cancel, acknowledged as their own item (Z#55)
+(def ^:const W-SIZE 33)
 
 ;; Scope
 (def ^:const S-PARENT 2)
