@@ -57,7 +57,6 @@
 
 (def ^:dynamic *world* nil)
 
-
 (defn- alloc-id!
   "A fresh id from the family counter, shared by a world and its forks."
   ^long [w]
@@ -126,8 +125,8 @@
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
        (s! w rw/W-INTERN #?(:clj (let [n (long-array 1)] (aset n 0 2)   ; reserved: 1 ::cancelled, 2 ::closed
-                                     [(doto (java.util.HashMap.) (.put ::cancelled 1) (.put ::closed 2)) (java.util.WeakHashMap.) n])
-                       :cljs nil))
+                                      [(doto (java.util.HashMap.) (.put ::cancelled 1) (.put ::closed 2)) (java.util.WeakHashMap.) n])
+                            :cljs nil))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
@@ -537,14 +536,14 @@
    running run's cursor on the same next site."
   [w e]
   (when (linked? w e)
-  (let [c (rv w (g e rw/E-CRED))
-        ins (g c rw/C-INS)
-        i (idx-of ins e)]
-    (when-not (neg? i)
-      (hs/remove-at! ins i)
-      (when-let [r (rv w (g c rw/C-RUN))]
-        (when (> (gl r rw/R-CURSOR) i) (s! r rw/R-CURSOR (dec (gl r rw/R-CURSOR))))))
-    (unlink! w e))))
+    (let [c (rv w (g e rw/E-CRED))
+          ins (g c rw/C-INS)
+          i (idx-of ins e)]
+      (when-not (neg? i)
+        (hs/remove-at! ins i)
+        (when-let [r (rv w (g c rw/C-RUN))]
+          (when (> (gl r rw/R-CURSOR) i) (s! r rw/R-CURSOR (dec (gl r rw/R-CURSOR))))))
+      (unlink! w e))))
 
 ;; ---------------------------------------------------------------------------
 ;; Mark and settle (§4.5)
@@ -651,26 +650,26 @@
    either way (Z#20). Wait edges are consumed."
   [w d]
   (when (pos? (acount (g d rw/OUTS)))
-  (let [outs (acopy (g d rw/OUTS))
-        ver (g d rw/VERSION)]
-    (dotimes [i (acount outs)]
-      (let [e (rv w (anth outs i))
-            k (gl e rw/E-KIND)]
-        (cond
-          (== k rw/EK-DEP)
-          (do (if-let [a (g e rw/E-ACT)]
-                (fill! w e a)
-                (when (not= ver (g e rw/E-SEEN)) (fire-dep! w e)))
-              (unmark! w e))
-          (== k rw/EK-OBSERVE) (deliver-observe! w e)
-          (== k rw/EK-WAIT) (fire-wait! w e))))
+    (let [outs (acopy (g d rw/OUTS))
+          ver (g d rw/VERSION)]
+      (dotimes [i (acount outs)]
+        (let [e (rv w (anth outs i))
+              k (gl e rw/E-KIND)]
+          (cond
+            (== k rw/EK-DEP)
+            (do (if-let [a (g e rw/E-ACT)]
+                  (fill! w e a)
+                  (when (not= ver (g e rw/E-SEEN)) (fire-dep! w e)))
+                (unmark! w e))
+            (== k rw/EK-OBSERVE) (deliver-observe! w e)
+            (== k rw/EK-WAIT) (fire-wait! w e))))
     ;; T10: dep edges on a final debtor are removed after their delivery.
-    (when (and (final? d) (pos? (acount (g d rw/OUTS))))
-      (let [outs (acopy (g d rw/OUTS))]
-        (dotimes [i (acount outs)]
-          (let [e (rv w (anth outs i))]
-            (when (and (== rw/EK-DEP (gl e rw/E-KIND)) (g e rw/E-ARMED) (nil? (g e rw/E-ACT)))
-              (remove-dep! w e)))))))))
+      (when (and (final? d) (pos? (acount (g d rw/OUTS))))
+        (let [outs (acopy (g d rw/OUTS))]
+          (dotimes [i (acount outs)]
+            (let [e (rv w (anth outs i))]
+              (when (and (== rw/EK-DEP (gl e rw/E-KIND)) (g e rw/E-ARMED) (nil? (g e rw/E-ACT)))
+                (remove-dep! w e)))))))))
 
 (defn- pending-zero! [w c]
   (cond
@@ -773,23 +772,23 @@
   [w scope child strong?]
   (if (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
     (do (release-child! w child) child)
-  (let [sid (id-of scope)
-        h (doto (object-array 3)
-            (aset 0 (when strong? child)) (aset 1 (hs/weak child)) (aset 2 (hs/flag false)))
-        m (or (g w rw/W-OWNED) (let [m (hs/vmap)] (s! w rw/W-OWNED m) m))
-        ^objects e (or (hs/mget m sid) (let [e (object-array [(alist) 16])]
-                                         (hs/mput! m sid e) e))
-        l (aget e 0)]
+    (let [sid (id-of scope)
+          h (doto (object-array 3)
+              (aset 0 (when strong? child)) (aset 1 (hs/weak child)) (aset 2 (hs/flag false)))
+          m (or (g w rw/W-OWNED) (let [m (hs/vmap)] (s! w rw/W-OWNED m) m))
+          ^objects e (or (hs/mget m sid) (let [e (object-array [(alist) 16])]
+                                           (hs/mput! m sid e) e))
+          l (aget e 0)]
     ;; dead holders (released, or collected) are pruned when the list doubles
-    (when (>= (acount l) (long (aget e 1)))
-      (loop [i (dec (acount l))]
-        (when-not (neg? i)
-          (when (holder-dead? (anth l i)) (hs/remove-at! l i))
-          (recur (dec i))))
-      (aset e 1 #?(:clj (num (max 16 (* 2 (acount l)))) :cljs (max 16 (* 2 (acount l))))))
-    (aadd! l h)
-    (s! child rw/W-HOLDER h)
-    child)))
+      (when (>= (acount l) (long (aget e 1)))
+        (loop [i (dec (acount l))]
+          (when-not (neg? i)
+            (when (holder-dead? (anth l i)) (hs/remove-at! l i))
+            (recur (dec i))))
+        (aset e 1 #?(:clj (num (max 16 (* 2 (acount l)))) :cljs (max 16 (* 2 (acount l))))))
+      (aadd! l h)
+      (s! child rw/W-HOLDER h)
+      child)))
 
 (defn- release-owned!
   "F2: the owner scope `sid` closed: each live child is released (T21) through
@@ -800,12 +799,12 @@
     (when-let [^objects e (hs/mget m sid)]
       (hs/mdel! m sid)
       (let [l (aget e 0)]
-      (dotimes [i (acount l)]
-        (let [^objects h (anth l i)
-              c (holder-child h)]
-          (aset h 0 nil)
-          (when (and c (hs/flag-cas! (aget h 2) false true))
-            (release-child! w c))))))))
+        (dotimes [i (acount l)]
+          (let [^objects h (anth l i)
+                c (holder-child h)]
+            (aset h 0 nil)
+            (when (and c (hs/flag-cas! (aget h 2) false true))
+              (release-child! w c))))))))
 
 (defn- close-scope!
   "T16: cancels the work owned by the subtree, closes its scopes and the
@@ -1213,27 +1212,27 @@
   [x k ek]
   (if-not (and (source? x) (<= (gl x rw/X-KIND) rw/SRC-CELL))
     (ek (invalid-op :track "track is for signals and cells"))
-  (if-let [r (valid-run)]
-    (let [w (cw)
-          c (rv w (g r rw/R-OF))
-          at (next-at! r)]
-      (if-not (comp? c)
+    (if-let [r (valid-run)]
+      (let [w (cw)
+            c (rv w (g r rw/R-OF))
+            at (next-at! r)]
+        (if-not (comp? c)
         ;; Inside a task: a snapshot read with no edge (Q1, Z#19).
-        (do (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] 0])
-            (k (iv/->Interval nil (g x rw/X-VALUE) nil)))
-        (let [[e reused?] (site-edge! w r c x at (reentrant-k r k) ek)
-              v (g x rw/X-VALUE)
-              old (if reused?
-                    (g e rw/E-BASE)
-                    (when-let [b (adoption-baseline! w c at x)] (g b rw/E-BASE)))]
-          (s! e rw/E-BASE v)
-          (s! e rw/E-SEEN (g x rw/VERSION))
-          (s! e rw/E-ARMED true)
+          (do (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] 0])
+              (k (iv/->Interval nil (g x rw/X-VALUE) nil)))
+          (let [[e reused?] (site-edge! w r c x at (reentrant-k r k) ek)
+                v (g x rw/X-VALUE)
+                old (if reused?
+                      (g e rw/E-BASE)
+                      (when-let [b (adoption-baseline! w c at x)] (g b rw/E-BASE)))]
+            (s! e rw/E-BASE v)
+            (s! e rw/E-SEEN (g x rw/VERSION))
+            (s! e rw/E-ARMED true)
           ;; Z#48: a closed (final) source delivers once; its edge is consumed
-          (when (final? x) (remove-dep! w e))
-          (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] (if reused? 0 (g e rw/ID))])
-          (k (iv/->Interval old v nil)))))
-    (unwind! ek))))
+            (when (final? x) (remove-dep! w e))
+            (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] (if reused? 0 (g e rw/ID))])
+            (k (iv/->Interval old v nil)))))
+      (unwind! ek))))
 
 (defn- new-activation! [w aid r mode k ek ^objects members ^objects slots remaining]
   (let [a (rw/new-row (g w rw/W-EPOCH) rw/A-SIZE)]
@@ -1334,92 +1333,92 @@
   [ds mode k ek]
   (if-not (valid-run)
     (unwind! ek)
-  (let [r (valid-run)]
-    (let [w (cw)
-          x (rv w (g r rw/R-OF))
-          at (next-at! r)
-          aid (alloc-id! w)
-          n (count ds)
-          members (object-array n)
-          slots (object-array n)
-          in-comp? (comp? x)
-          refused (volatile! nil)
+    (let [r (valid-run)]
+      (let [w (cw)
+            x (rv w (g r rw/R-OF))
+            at (next-at! r)
+            aid (alloc-id! w)
+            n (count ds)
+            members (object-array n)
+            slots (object-array n)
+            in-comp? (comp? x)
+            refused (volatile! nil)
           ;; group sites restart (Y#3); `one` sites re-enter when allowed (§2)
-          kk (when (= mode :one) (reentrant-k r k))]
+            kk (when (= mode :one) (reentrant-k r k))]
       ;; Reactivation of valid idle debtors first, then member edges in
       ;; debtor-list order (the model's allocation order).
-      (dotimes [i n]
-        (let [d (row-of (nth ds i))]
-          (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))))
+        (dotimes [i n]
+          (let [d (row-of (nth ds i))]
+            (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))))
       ;; Member edges; a repeated debtor shares its edge.
-      (dotimes [i n]
-        (let [d (row-of (nth ds i))
-              prev (loop [j 0] (when (< j i)
-                                 (let [m (rv w (aget members j))]
-                                   (if (and m (identical? d (rv w (g m rw/E-DEBTOR)))) m (recur (inc j))))))]
-          (cond
-            prev (aset members i prev)
-            in-comp? (let [[e _] (site-edge! w r x d at kk ek)]
-                       (if (nil? e)
-                         (vreset! refused d)
-                         (do (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
-                             (aset members i e))))
-            (and (source? d) (not (deferred? d))) nil       ; a task reads a signal once
-            (settled? d) (alloc-id! w)                      ; consumed at once (Z#28)
-            :else (aset members i (link! w rw/EK-WAIT nil d at)))))
-      (if-let [d @refused]
-        (do (refuse! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
-            (ek (cycle-ex x d)))
-      ;; Fast path: settled members fill their slots in this commit.
-      (let [remaining (volatile! n)
-            winner (volatile! nil)]
         (dotimes [i n]
           (let [d (row-of (nth ds i))
-                e (rv w (aget members i))]
-            (when (and (nil? @winner) (or (nil? e) (settled? d)))
-              (when e (s! e rw/E-SEEN (g d rw/VERSION)))
-              (aset slots i (debtor-result d))
-              (aset members i nil)
-              (vswap! remaining dec)
-              (when (= mode :any) (vreset! winner i)))))
-        (if (or (zero? @remaining) (some? @winner))
-          (do
+                prev (loop [j 0] (when (< j i)
+                                   (let [m (rv w (aget members j))]
+                                     (if (and m (identical? d (rv w (g m rw/E-DEBTOR)))) m (recur (inc j))))))]
+            (cond
+              prev (aset members i prev)
+              in-comp? (let [[e _] (site-edge! w r x d at kk ek)]
+                         (if (nil? e)
+                           (vreset! refused d)
+                           (do (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
+                               (aset members i e))))
+              (and (source? d) (not (deferred? d))) nil       ; a task reads a signal once
+              (settled? d) (alloc-id! w)                      ; consumed at once (Z#28)
+              :else (aset members i (link! w rw/EK-WAIT nil d at)))))
+        (if-let [d @refused]
+          (do (refuse! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
+              (ek (cycle-ex x d)))
+      ;; Fast path: settled members fill their slots in this commit.
+          (let [remaining (volatile! n)
+                winner (volatile! nil)]
+            (dotimes [i n]
+              (let [d (row-of (nth ds i))
+                    e (rv w (aget members i))]
+                (when (and (nil? @winner) (or (nil? e) (settled? d)))
+                  (when e (s! e rw/E-SEEN (g d rw/VERSION)))
+                  (aset slots i (debtor-result d))
+                  (aset members i nil)
+                  (vswap! remaining dec)
+                  (when (= mode :any) (vreset! winner i)))))
+            (if (or (zero? @remaining) (some? @winner))
+              (do
             ;; complete at once: unfilled any-losers and final dep edges go
-            (dotimes [i n]
-              (when-let [e (rv w (aget members i))]
-                (aset members i nil)
-                (when (and (== rw/EK-WAIT (gl e rw/E-KIND)) (linked? w e)) (unlink! w e))))
-            (when in-comp?
-              (doseq [d ds] (let [d (row-of d)]
-                              (when (final? d)
-                                (let [ins (g x rw/C-INS)]
-                                  (dotimes [i (acount ins)]
-                                    (let [e (rv w (anth ins i))]
-                                      (when (and (identical? d (rv w (g e rw/E-DEBTOR))) (== at (gl e rw/E-AT)))
-                                        (remove-dep! w e)))))))))
-            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode [:opaque k] aid (mine-of w r ds)])
-            (continue! (group-result mode slots @winner) k ek))
-          (let [a (new-activation! w aid r mode k ek members slots @remaining)]
-            (dotimes [i n]
-              (when-let [e (rv w (aget members i))]
-                (if (== rw/EK-DEP (gl e rw/E-KIND))
-                  (s! e rw/E-ACT a)
-                  (s! e rw/E-CRED a))))
-            (park! r a)
-            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode [:opaque k] aid (mine-of w r ds)])
-            (notify-blocked! x 0)
+                (dotimes [i n]
+                  (when-let [e (rv w (aget members i))]
+                    (aset members i nil)
+                    (when (and (== rw/EK-WAIT (gl e rw/E-KIND)) (linked? w e)) (unlink! w e))))
+                (when in-comp?
+                  (doseq [d ds] (let [d (row-of d)]
+                                  (when (final? d)
+                                    (let [ins (g x rw/C-INS)]
+                                      (dotimes [i (acount ins)]
+                                        (let [e (rv w (anth ins i))]
+                                          (when (and (identical? d (rv w (g e rw/E-DEBTOR))) (== at (gl e rw/E-AT)))
+                                            (remove-dep! w e)))))))))
+                (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode [:opaque k] aid (mine-of w r ds)])
+                (continue! (group-result mode slots @winner) k ek))
+              (let [a (new-activation! w aid r mode k ek members slots @remaining)]
+                (dotimes [i n]
+                  (when-let [e (rv w (aget members i))]
+                    (if (== rw/EK-DEP (gl e rw/E-KIND))
+                      (s! e rw/E-ACT a)
+                      (s! e rw/E-CRED a))))
+                (park! r a)
+                (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode [:opaque k] aid (mine-of w r ds)])
+                (notify-blocked! x 0)
             ;; Demanded debtors run on the host stack (I10).
-            (dotimes [i n]
-              (when-not (act-done? a)
-                (demand! w (row-of (nth ds i)))))
-            (if (and (g a rw/A-RESUMED) (== rw/ACT-ACTIVE (gl r rw/R-ACT)) (run-current? w r))
-              (do (s! r rw/R-SLICE true)
-                  (set-active! r)
-                  (commit! w [:schedule (g r rw/ID)])
-                  (continue! (g a rw/A-RESULT) k ek))
-              (do (s! a rw/A-INLINE false)
-                  (when (g a rw/A-RESUMED) (aadd! (g w rw/W-RESUME) a))
-                  nil))))))))))
+                (dotimes [i n]
+                  (when-not (act-done? a)
+                    (demand! w (row-of (nth ds i)))))
+                (if (and (g a rw/A-RESUMED) (== rw/ACT-ACTIVE (gl r rw/R-ACT)) (run-current? w r))
+                  (do (s! r rw/R-SLICE true)
+                      (set-active! r)
+                      (commit! w [:schedule (g r rw/ID)])
+                      (continue! (g a rw/A-RESULT) k ek))
+                  (do (s! a rw/A-INLINE false)
+                      (when (g a rw/A-RESUMED) (aadd! (g w rw/W-RESUME) a))
+                      nil))))))))))
 
 (declare consume-effect!)
 
@@ -1493,7 +1492,6 @@
              (-swap! [this f a b] (handle-swap! this #(f % a b)))
              (-swap! [this f a b xs] (handle-swap! this #(apply f % a b xs)))
              IFn (-invoke [this v] (handle-claim! this v))]))
-
 
 (declare host! handle-drop! href)
 
@@ -1648,10 +1646,10 @@
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)]
       (gated w
-        (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
-          (bind-handle! h c)
-          (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
-          (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]])))
+             (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
+               (bind-handle! h c)
+               (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
+               (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]])))
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
@@ -1708,13 +1706,13 @@
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)]
       (gated w
-        (let [s (rv w (g w rw/W-ROOT))
-              k (new-task! w s 0 0 inputs body 1)]
-          (bind-handle! h k)
-          (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
-          (ref-inc! k)
-          (start-task! w k)
-          (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
+             (let [s (rv w (g w rw/W-ROOT))
+                   k (new-task! w s 0 0 inputs body 1)]
+               (bind-handle! h k)
+               (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
+               (ref-inc! k)
+               (start-task! w k)
+               (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
       h)))
 
 ;; ---------------------------------------------------------------------------
@@ -2019,7 +2017,6 @@
   [w f]
   (ingress* w f false))
 
-
 (defn- world-of
   "The world a host operation on `h` acts on. Inside a slice it is the
    slice's world (Z#44: such operations are effects of the running run, and
@@ -2106,12 +2103,12 @@
 (defn- create-source-top-host! [w kind v init]
   (let [h (top-handle w)]
     (gated w
-      (let [x (new-source! w kind v (rv w (g w rw/W-ROOT)) 0 0)]
-        (when init (init x))
-        (bind-handle! h x)
-        (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
-                    ([:signal :cell :deferred :mailbox :semaphore] kind)
-                    [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)])))
+           (let [x (new-source! w kind v (rv w (g w rw/W-ROOT)) 0 0)]
+             (when init (init x))
+             (bind-handle! h x)
+             (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
+                         ([:signal :cell :deferred :mailbox :semaphore] kind)
+                         [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)])))
     h))
 
 (defn signal
@@ -2193,13 +2190,13 @@
   "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
   [h v]
   (gated (world-of h)
-    (let [x (row-of h) w (cw)]
-      (if (closed? x)
-        (refuse! w [:post (g x rw/ID) [:opaque v]])
-        (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
-            (when-not (serve-waiter! w x v)
-              (hs/dq-push! (deque x rw/X-VALUE) v))
-            (commit! w [:post (g x rw/ID) [:opaque v]])))))
+         (let [x (row-of h) w (cw)]
+           (if (closed? x)
+             (refuse! w [:post (g x rw/ID) [:opaque v]])
+             (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
+                 (when-not (serve-waiter! w x v)
+                   (hs/dq-push! (deque x rw/X-VALUE) v))
+                 (commit! w [:post (g x rw/ID) [:opaque v]])))))
   nil)
 
 (defn semaphore
@@ -2212,17 +2209,17 @@
   "Gives the permit to the first armed waiter, or returns it (§4.3)."
   [h]
   (gated (world-of h)
-    (let [x (row-of h) w (cw)]
-      (cond
-        (closed? x) (refuse! w [:release (g x rw/ID)])
+         (let [x (row-of h) w (cw)]
+           (cond
+             (closed? x) (refuse! w [:release (g x rw/ID)])
         ;; Z#62: no release beyond the maximum (nobody waits at the maximum)
-        (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
-        (refuse! w [:release (g x rw/ID)])
-        :else
-        (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
-            (when-not (serve-waiter! w x :acquired)
-              (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
-            (commit! w [:release (g x rw/ID)])))))
+             (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
+             (refuse! w [:release (g x rw/ID)])
+             :else
+             (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
+                 (when-not (serve-waiter! w x :acquired)
+                   (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
+                 (commit! w [:release (g x rw/ID)])))))
   nil)
 
 (defn deferred
@@ -2235,31 +2232,31 @@
    A second delivery is refused."
   [h v]
   (gated (world-of h)
-    (let [x (row-of h) w (cw)]
-      (if (final? x)
-        (refuse! w [:deliver (g x rw/ID) [:opaque v]])
-        (do (s! x rw/X-VALUE v)
-            (s! x rw/VERSION 1)
-            (settle! w x)
-            (commit! w [:deliver (g x rw/ID) [:opaque v]])))))
+         (let [x (row-of h) w (cw)]
+           (if (final? x)
+             (refuse! w [:deliver (g x rw/ID) [:opaque v]])
+             (do (s! x rw/X-VALUE v)
+                 (s! x rw/VERSION 1)
+                 (settle! w x)
+                 (commit! w [:deliver (g x rw/ID) [:opaque v]])))))
   v)
 
 (defn write!
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
   [h v]
   (gated (world-of h)
-    (let [x (row-of h) w (cw)]
-      (if (closed? x)
-        (refuse! w [:write (g x rw/ID) [:opaque v]])
-        (do
-      (s! x rw/X-VALUE v)
-      (s! x rw/VERSION (inc (gl x rw/VERSION)))
-      (let [outs (acopy (g x rw/OUTS))]
-        (dotimes [i (acount outs)]
-          (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
-            (cond (== k rw/EK-DEP) (fire-dep! w e)
-                  (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-      (commit! w [:write (g x rw/ID) [:opaque v]])))))
+         (let [x (row-of h) w (cw)]
+           (if (closed? x)
+             (refuse! w [:write (g x rw/ID) [:opaque v]])
+             (do
+               (s! x rw/X-VALUE v)
+               (s! x rw/VERSION (inc (gl x rw/VERSION)))
+               (let [outs (acopy (g x rw/OUTS))]
+                 (dotimes [i (acount outs)]
+                   (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
+                     (cond (== k rw/EK-DEP) (fire-dep! w e)
+                           (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
+               (commit! w [:write (g x rw/ID) [:opaque v]])))))
   v)
 
 (defn unborn-ex []
@@ -2272,43 +2269,43 @@
         ev (volatile! nil)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
     (gated w
-      (let [d (row-of h)
-            e (link! w rw/EK-OBSERVE cb d 0)]
-        (vreset! ev e)
-        (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-        (deliver-observe! w e)
-        (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
-        (demand! w d)))
+           (let [d (row-of h)
+                 e (link! w rw/EK-OBSERVE cb d 0)]
+             (vreset! ev e)
+             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+             (deliver-observe! w e)
+             (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
+             (demand! w d)))
     (fn []
       (gated w
-        (when-let [e @ev]
-          (when (linked? w e)
-            (unlink! w e)
-            (commit! w [:unobserve (g e rw/ID)]))))
+             (when-let [e @ev]
+               (when (linked? w e)
+                 (unlink! w e)
+                 (commit! w [:unobserve (g e rw/ID)]))))
       nil)))
 
 (defn pin!
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
   (gated (world-of h)
-    (let [x (row-of h) w (cw)
-          pins (g w rw/W-PINS)
-          n (long (or (second (hs/mget pins (id-of x))) 0))]
-      (hs/mput! pins (id-of x) [x (inc n)])
-      (ref-inc! x)
-      (commit! w [:pin (g x rw/ID)])))
+         (let [x (row-of h) w (cw)
+               pins (g w rw/W-PINS)
+               n (long (or (second (hs/mget pins (id-of x))) 0))]
+           (hs/mput! pins (id-of x) [x (inc n)])
+           (ref-inc! x)
+           (commit! w [:pin (g x rw/ID)])))
   h)
 
 (defn unpin! [h]
   (gated (world-of h)
-    (let [x (row-of h) w (cw)
-          pins (g w rw/W-PINS)
-          n (long (or (second (hs/mget pins (id-of x))) 0))]
-      (if (zero? n)
-        (refuse! w [:unpin (g x rw/ID)])
-        (do (if (== n 1) (hs/mdel! pins (id-of x)) (hs/mput! pins (id-of x) [x (dec n)]))
-            (ref-dec! w x)
-            (commit! w [:unpin (g x rw/ID)])))))
+         (let [x (row-of h) w (cw)
+               pins (g w rw/W-PINS)
+               n (long (or (second (hs/mget pins (id-of x))) 0))]
+           (if (zero? n)
+             (refuse! w [:unpin (g x rw/ID)])
+             (do (if (== n 1) (hs/mdel! pins (id-of x)) (hs/mput! pins (id-of x) [x (dec n)]))
+                 (ref-dec! w x)
+                 (commit! w [:unpin (g x rw/ID)])))))
   h)
 
 (defn- handle-drop!
@@ -2335,11 +2332,11 @@
   "T14 from the host on a task."
   [h]
   (gated (world-of h)
-    (let [k (row-of h) w (cw)]
-      (if-let [r (let [r (rv w (g k rw/K-RUN))] (when (and r (not (g r rw/R-SLICE))) r))]
-        (do (cancel! w r ::cancelled)
-            (commit! w [:cancel (g r rw/ID)]))
-        (refuse! w [:cancel (g k rw/ID)]))))
+         (let [k (row-of h) w (cw)]
+           (if-let [r (let [r (rv w (g k rw/K-RUN))] (when (and r (not (g r rw/R-SLICE))) r))]
+             (do (cancel! w r ::cancelled)
+                 (commit! w [:cancel (g r rw/ID)]))
+             (refuse! w [:cancel (g k rw/ID)]))))
   nil)
 
 (defn- holding-gate?
@@ -2530,36 +2527,36 @@
   (let [w (world-of h)
         ev (volatile! nil)]
     (gated w
-      (let [d (row-of h)]
-        (cond
-          (g w rw/W-UNBORN)
-          (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
-          (consuming? d)
-          (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
-          (and (source? d) (not (deferred? d)))
-          (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-          :else
+           (let [d (row-of h)]
+             (cond
+               (g w rw/W-UNBORN)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
+               (consuming? d)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
+               (and (source? d) (not (deferred? d)))
+               (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+               :else
           ;; T22 allocates the host-wait edge first (the model's order); a
           ;; debtor that is settled consumes it at once, so no edge row is made.
-          (let [eid (alloc-id! w)
-                idle? (and (comp? d) (g d rw/C-IDLE))]
-            (if (and (not idle?) (settled? d))
-              (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-                  (commit! w [:host-await (g d rw/ID) eid]))
-              (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
-                (vreset! ev e)
-                (when idle? (validate! w d))
-                (if (settled? d)
-                  (do (fire-wait! w e)
-                      (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
-                  (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
-                      (demand! w d)))))))))
+               (let [eid (alloc-id! w)
+                     idle? (and (comp? d) (g d rw/C-IDLE))]
+                 (if (and (not idle?) (settled? d))
+                   (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+                       (commit! w [:host-await (g d rw/ID) eid]))
+                   (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
+                     (vreset! ev e)
+                     (when idle? (validate! w d))
+                     (if (settled? d)
+                       (do (fire-wait! w e)
+                           (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
+                       (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
+                           (demand! w d)))))))))
     (fn []
       (gated w
-        (when-let [e @ev]
-          (when (linked? w e)
-            (unlink! w e)
-            (commit! w [:host-unawait (g e rw/ID)]))))
+             (when-let [e @ev]
+               (when (linked? w e)
+                 (unlink! w e)
+                 (commit! w [:host-unawait (g e rw/ID)]))))
       nil)))
 
 (defn value
@@ -2582,7 +2579,6 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Resources (T15, T17, T18): offload and timers
-
 
 (defn- armed-set [w]
   (or (g w rw/W-ARMED) (let [s (hs/oset)] (s! w rw/W-ARMED s) s)))
@@ -2724,7 +2720,6 @@
     (start! w z)
     nil))
 
-
 (defn- join! [w z res]
   ;; the callback captured the row before any later fork: resolve it in `w`
   ;; a completion, not an admission: accepted after release (T21, L2)
@@ -2820,25 +2815,25 @@
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
       (do (commit! w [:release-world]) (s! w rw/W-RELEASED true))
-    (let [ex (released-ex)
-          roots (g w rw/W-ROOTS)]
-      (doseq [e (map #(rv w %) (hs/mvals roots))]
-        (when (linked? w e)
-          (let [cb (rv w (g e rw/E-CRED))]
-            (unlink! w e)
-            (aadd! (g w rw/W-CALLBACKS) [cb [ex true]]))))
-      (let [pins (g w rw/W-PINS)]
-        (doseq [[x n] (hs/mvals pins)] (dotimes [_ n] (ref-dec! w (rv w x))))
-        (hs/mclear! pins))
-      (close-scope! w (rv w (g w rw/W-ROOT)))
+      (let [ex (released-ex)
+            roots (g w rw/W-ROOTS)]
+        (doseq [e (map #(rv w %) (hs/mvals roots))]
+          (when (linked? w e)
+            (let [cb (rv w (g e rw/E-CRED))]
+              (unlink! w e)
+              (aadd! (g w rw/W-CALLBACKS) [cb [ex true]]))))
+        (let [pins (g w rw/W-PINS)]
+          (doseq [[x n] (hs/mvals pins)] (dotimes [_ n] (ref-dec! w (rv w x))))
+          (hs/mclear! pins))
+        (close-scope! w (rv w (g w rw/W-ROOT)))
       ;; host admissions are revoked: released handles hold no row (T21)
-      (when-let [reg (g w rw/W-REG)]
-        (doseq [x (hs/mvals reg)]
-          (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x rw/TYPE)) (pos? (gl x rw/HANDLES)))
-            (s! x rw/HANDLES 0)
-            (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
-      (commit! w [:release-world])
-      (s! w rw/W-RELEASED true)))))
+        (when-let [reg (g w rw/W-REG)]
+          (doseq [x (hs/mvals reg)]
+            (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x rw/TYPE)) (pos? (gl x rw/HANDLES)))
+              (s! x rw/HANDLES 0)
+              (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
+        (commit! w [:release-world])
+        (s! w rw/W-RELEASED true)))))
 
 (defn open-scope!
   "T16 open: an explicit scope, child of the run's current scope, a root
@@ -2869,22 +2864,22 @@
   [h s]
   (let [w (world-of h)]
     (gated w
-      (let [k (row-of h)
-            old (rv w (g k rw/OWNER))]
-        (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
-                (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
-          (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
-          (do
-            (hs/oset-del! (g old rw/S-TASKS) (id-of k))
-            (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
+           (let [k (row-of h)
+                 old (rv w (g k rw/OWNER))]
+             (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
+                     (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
+               (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
+               (do
+                 (hs/oset-del! (g old rw/S-TASKS) (id-of k))
+                 (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
             ;; the run scope's parent follows the owner (Z#26)
-            (when-let [rs (when-let [kr (rv w (g k rw/K-RUN))] (rv w (g kr rw/R-SROW)))]
-              (remove-row! (g old rw/S-CHILDREN) rs)
-              (s! rs rw/S-PARENT s)
-              (aadd! (g s rw/S-CHILDREN) rs))
-            (s! k rw/OWNER s)
-            (remove-scope-if-empty! w old)
-            (commit! w [:detach (g k rw/ID) (g s rw/ID)])))))
+                 (when-let [rs (when-let [kr (rv w (g k rw/K-RUN))] (rv w (g kr rw/R-SROW)))]
+                   (remove-row! (g old rw/S-CHILDREN) rs)
+                   (s! rs rw/S-PARENT s)
+                   (aadd! (g s rw/S-CHILDREN) rs))
+                 (s! k rw/OWNER s)
+                 (remove-scope-if-empty! w old)
+                 (commit! w [:detach (g k rw/ID) (g s rw/ID)])))))
     h))
 
 (defn root-scope [w] (g w rw/W-ROOT))
@@ -2942,12 +2937,12 @@
   [w]
   (let [res (volatile! nil)]
     (gated w
-      (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-      (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-      (let [c (fork-world* w)]
-        (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
-        (commit! w [:fork-host (g c rw/ID)])
-        (vreset! res c)))
+           (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
+           (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+           (let [c (fork-world* w)]
+             (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+             (commit! w [:fork-host (g c rw/ID)])
+             (vreset! res c)))
     (handoff! @res)
     @res))
 
@@ -2996,11 +2991,11 @@
   #?@(:clj [clojure.lang.ILookup
             (valAt [this k] (.valAt this k nil))
             (valAt [_ k nf] (case k :world world :act act :site site :payload payload
-                                    :basis basis :state state nf))]
+                                  :basis basis :state state nf))]
       :cljs [ILookup
              (-lookup [this k] (-lookup this k nil))
              (-lookup [_ k nf] (case k :world world :act act :site site :payload payload
-                                       :basis basis :state state nf))]))
+                                     :basis basis :state state nf))]))
 
 (declare abandon-act!)
 
@@ -3089,20 +3084,20 @@
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
       (gated w
-        (let [a (sp-act w (:act pub))]
-          (if (and a (sp-deliver! w a [v false]))
-            (commit! w [:resume-savepoint (:act pub) [:opaque v]])
-            (refuse! w [:resume-savepoint (:act pub) [:opaque v]])))))
+             (let [a (sp-act w (:act pub))]
+               (if (and a (sp-deliver! w a [v false]))
+                 (commit! w [:resume-savepoint (:act pub) [:opaque v]])
+                 (refuse! w [:resume-savepoint (:act pub) [:opaque v]])))))
     nil))
 
 (defn- abandon-act! [w aid state]
   (when (compare-and-set! state :pending :abandoned)
     (gated w
-      (when-let [a (sp-act w aid)]
-        (let [r (rv w (g a rw/A-RUN))]
-          (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps aid))
-          (cancel! w r ::abandoned)
-          (commit! w [:abandon-savepoint aid])))))
+           (when-let [a (sp-act w aid)]
+             (let [r (rv w (g a rw/A-RUN))]
+               (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps aid))
+               (cancel! w r ::abandoned)
+               (commit! w [:abandon-savepoint aid])))))
   nil)
 
 (defn abandon!
@@ -3130,31 +3125,31 @@
    is born here: the root scope of the publication's world owns it (F2)."
   [w v]
   (gated w
-    (when-let [pw (g w rw/W-PUB-WORLD)]
-      (s! w rw/W-PUB-WORLD nil)
+         (when-let [pw (g w rw/W-PUB-WORLD)]
+           (s! w rw/W-PUB-WORLD nil)
       ;; F2: the owner's table is the publication world's; its gate is only
       ;; tried, never waited for. A released owner releases the instance.
-      (try (host! pw #(own-child! pw (rv pw (g pw rw/W-ROOT)) w false))
-           (catch #?(:clj Exception :cljs :default) _
-             (release-world* w))))                 ; still unborn: nothing runs
-    (let [aid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
+           (try (host! pw #(own-child! pw (rv pw (g pw rw/W-ROOT)) w false))
+                (catch #?(:clj Exception :cljs :default) _
+                  (release-world* w))))                 ; still unborn: nothing runs
+         (let [aid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
           ;; looked up before the dormant pass below empties the dormant list
-          a (when aid
-              (rv w (get (g w rw/W-FWD) aid
-                         (some #(when (== (id-of %) (long aid)) %)
-                               (concat (g w rw/W-SP-DORMANT)
-                                       (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))]
-      (when (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))
-        (s! w rw/W-UNBORN false)
+               a (when aid
+                   (rv w (get (g w rw/W-FWD) aid
+                              (some #(when (== (id-of %) (long aid)) %)
+                                    (concat (g w rw/W-SP-DORMANT)
+                                            (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))]
+           (when (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))
+             (s! w rw/W-UNBORN false)
         ;; inherited resources and savepoints: this item is the first turn's
         ;; work, so they are activated here, not at a later turn entry
-        (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w)))
-      (when aid
-        (s! w rw/W-PENDING-ACT nil)
-        (do
-          (if (and a (sp-deliver! w a [v false]))
-            (commit! w [:activate aid [:opaque v]])
-            (refuse! w [:activate aid [:opaque v]]))))))
+             (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w)))
+           (when aid
+             (s! w rw/W-PENDING-ACT nil)
+             (do
+               (if (and a (sp-deliver! w a [v false]))
+                 (commit! w [:activate aid [:opaque v]])
+                 (refuse! w [:activate aid [:opaque v]]))))))
   w)
 
 (defn offload [_] (throw (ex-info "offload outside a body" {})))
@@ -3255,10 +3250,10 @@
                (if (some #(= 'finally (first %)) cfs)
                  (with-meta
                    `(~'try (do (enter-finally!) ~@body)
-                     ~@(map (fn [c] (if (= 'finally (first c))
-                                      (list* 'finally `(exit-finally!) (rest c))
-                                      c))
-                            cfs))
+                           ~@(map (fn [c] (if (= 'finally (first c))
+                                            (list* 'finally `(exit-finally!) (rest c))
+                                            c))
+                                  cfs))
                    (meta form))
                  (with-meta (cons 'try clauses) (meta form))))
              :else (with-meta (apply list (map register-finally form)) (meta form))))
@@ -3296,7 +3291,7 @@
        (let [s (gensym "scope")]
          `(let [~s (open-scope!)]
             (~'try (do (enter-finally!) ~@body)
-              (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+                   (~'finally (exit-finally!) (close-scope-fx! ~s))))))
      (defmacro task
        "A task (T4): started at once; structured child of the creating run."
        [& body]

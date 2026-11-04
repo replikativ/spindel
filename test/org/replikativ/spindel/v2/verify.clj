@@ -57,20 +57,20 @@
   "The least set containing the roots and closed under `successors`."
   [w]
   (binding [*reg* (f w rw/W-REG)]
-  (live* w)))
+    (live* w)))
 
 (defn- live* [w]
   (let [reg (rows w)
         roots (map canon (concat [(f w rw/W-ROOT)]
                       ;; open explicit scopes (§3.1)
-                      (filter #(and (== rw/T-SCOPE (t %)) (= :explicit (f % rw/S-KIND)) (f % rw/S-OPEN)) reg)
-                      (map first (vals (f w rw/W-PINS)))
+                                 (filter #(and (== rw/T-SCOPE (t %)) (= :explicit (f % rw/S-KIND)) (f % rw/S-OPEN)) reg)
+                                 (map first (vals (f w rw/W-PINS)))
                       ;; observe edges, and host awaits (pending host promises)
-                      (filter #(and (== rw/T-EDGE (t %))
-                                    (let [k (long (f % rw/E-KIND))]
-                                      (or (== k rw/EK-OBSERVE)
-                                          (and (== k rw/EK-WAIT) (fn? (f % rw/E-CRED))))))
-                              reg)))
+                                 (filter #(and (== rw/T-EDGE (t %))
+                                               (let [k (long (f % rw/E-KIND))]
+                                                 (or (== k rw/EK-OBSERVE)
+                                                     (and (== k rw/EK-WAIT) (fn? (f % rw/E-CRED))))))
+                                         reg)))
         seen (java.util.IdentityHashMap.)]
     (loop [todo (vec roots)]
       (when-let [x (peek todo)]
@@ -99,19 +99,19 @@
    that scope's subtree as storage."
   [w]
   (binding [*reg* (f w rw/W-REG)]
-  (let [seen (java.util.IdentityHashMap.)]
-    (loop [todo (vec (map canon
-                          (mapcat #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
+    (let [seen (java.util.IdentityHashMap.)]
+      (loop [todo (vec (map canon
+                            (mapcat #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
                                      ;; the run row, its scope subtree, its entity as a tombstone
-                                     (concat (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]) (f % rw/R-RES)))
-                                  (rows w))))]
-      (when-let [x (peek todo)]
-        (let [todo (pop todo)]
-          (if (.containsKey seen x)
-            (recur todo)
-            (do (.put seen x true)
-                (recur (into todo (when (== rw/T-SCOPE (t x)) (map canon (f x rw/S-CHILDREN))))))))))
-    seen)))
+                                       (concat (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]) (f % rw/R-RES)))
+                                    (rows w))))]
+        (when-let [x (peek todo)]
+          (let [todo (pop todo)]
+            (if (.containsKey seen x)
+              (recur todo)
+              (do (.put seen x true)
+                  (recur (into todo (when (== rw/T-SCOPE (t x)) (map canon (f x rw/S-CHILDREN))))))))))
+      seen)))
 
 (defn violations
   "Rows the engine keeps that the reference does not, and non-idle
