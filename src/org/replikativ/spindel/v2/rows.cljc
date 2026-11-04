@@ -124,6 +124,18 @@
 (def ^:const X-WAITERS 14)   ; mailbox/semaphore: FIFO of waiting wait edges
 (def ^:const X-SIZE 15)
 
+;; Resource (§1, T15-T18)
+(def ^:const Z-KIND 11)      ; :offload :timer
+(def ^:const Z-PHASE 12)     ; 0 armed, 1 fired, 2 cancelling
+(def ^:const Z-RESULT 13)
+(def ^:const Z-ERR 14)
+(def ^:const Z-CTL 15)       ; host control: offload wrapper or ScheduledFuture
+(def ^:const Z-SIZE 16)
+
+(def ^:const Z-ARMED 0)
+(def ^:const Z-FIRED 1)
+(def ^:const Z-CANCELLING 2)
+
 ;; Run
 (def ^:const R-WORLD 2)
 (def ^:const R-OF 3)

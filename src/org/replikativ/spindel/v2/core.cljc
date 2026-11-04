@@ -21,7 +21,7 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare demand! settle! pending-zero! rule-r! complete! validate!
+(declare cancel-resource! demand! settle! pending-zero! rule-r! complete! validate!
          deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
@@ -160,6 +160,7 @@
 (defn- task? [row] (== rw/T-TASK (gl row rw/TYPE)))
 (defn- source? [row] (== rw/T-SOURCE (gl row rw/TYPE)))
 (defn- act? [row] (== rw/T-ACT (gl row rw/TYPE)))
+(defn- res? [row] (== rw/T-RES (gl row rw/TYPE)))
 
 (defn- live? [c]
   (and (not (g c rw/C-IDLE))
@@ -197,6 +198,7 @@
   (cond (comp? d) (live? d)
         (task? d) (boolean (g d rw/K-DONE))
         (deferred? d) (pos? (gl d rw/VERSION))
+        (res? d) (== rw/Z-FIRED (gl d rw/Z-PHASE))
         :else true))
 
 (defn- hot? [row] (pos? (gl row rw/HOT)))
@@ -233,7 +235,7 @@
                        (if (< i (alength ms))
                          (if-let [e (aget ms i)]
                            (let [d (g e rw/E-DEBTOR)]
-                             (if (or (source? d) (blocked? d (inc (long depth))))
+                             (if (or (source? d) (res? d) (blocked? d (inc (long depth))))
                                (recur (inc i) true)
                                false))
                            (recur (inc i) any?))
@@ -374,6 +376,7 @@
   [d]
   (cond (comp? d) [(g d rw/C-RESULT) (boolean (g d rw/C-ERR))]
         (task? d) [(g d rw/K-RESULT) (boolean (g d rw/K-ERR))]
+        (res? d) [(g d rw/Z-RESULT) (boolean (g d rw/Z-ERR))]
         :else [(g d rw/X-VALUE) false]))
 
 (defn- act-done? [a]
@@ -583,6 +586,9 @@
      (when-let [a (drop-activation! w r)]
        (when (pos? (fins r))
          (aadd! (g w rw/W-CLEANUP) [r (g a rw/A-E) (cancelled-ex reason)])))
+     ;; Resources are told to cancel; they join through their acknowledgement.
+     (when-let [zs (g r rw/R-RES)]
+       (doseq [z (vec zs)] (cancel-resource! w z)))
      ;; children: runs owned by the run scope
      (when-let [s (g r rw/R-SROW)]
        (let [ts (acopy (g s rw/S-TASKS))]
@@ -1644,6 +1650,15 @@
         (refuse! w [:cancel (g k rw/ID)]))))
   nil)
 
+(defn call-in!
+  "Runs `(f)` as a host item of `w` and returns its value (JVM, blocking;
+   tooling and tests). Inside the world it runs at once."
+  [w f]
+  #?(:clj (let [p (promise)]
+            (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
+            (let [[v t] @p] (if t (throw t) v)))
+     :cljs (f)))
+
 (defn value-async
   "T22/H3: demands `h` through a host wait edge and calls `(cb v err?)` once
    it settles. Returns a fn that withdraws the wait (host-unawait)."
@@ -1685,6 +1700,135 @@
           (let [[v err?] res] (if err? (throw v) v))))
       :cljs (throw (ex-info "blocking value is JVM-only; use value-async" {})))))
 
+;; ---------------------------------------------------------------------------
+;; Resources (T15, T17, T18): offload and timers
+
+#?(:clj
+   (def ^:private timer-exec
+     (delay (doto (java.util.concurrent.ScheduledThreadPoolExecutor.
+                   1 (reify java.util.concurrent.ThreadFactory
+                       (newThread [_ r] (doto (Thread. ^Runnable r "spindel-v2-timer") (.setDaemon true)))))
+              (.setRemoveOnCancelPolicy true)))))
+
+(defn- new-resource!
+  "T17: an outstanding resource owned by `r`, with `at = R.effect-index`."
+  [w r kind at]
+  (let [z (debtor-row w rw/T-RES rw/Z-SIZE r 0 at 0)]
+    (s! z rw/Z-KIND kind)
+    (s! z rw/Z-PHASE rw/Z-ARMED)
+    (aadd! (or (g r rw/R-RES) (let [l (alist)] (s! r rw/R-RES l) l)) z)
+    (register! w z)))
+
+(defn- resource-fire!
+  "T18: an armed resource fires once; its wait edges fire (Z#6)."
+  [w z res]
+  (if (== rw/Z-ARMED (gl z rw/Z-PHASE))
+    (let [[v err?] res]
+      (s! z rw/Z-PHASE rw/Z-FIRED)
+      (s! z rw/Z-RESULT v)
+      (s! z rw/Z-ERR (boolean err?))
+      (let [outs (acopy (g z rw/OUTS))]
+        (dotimes [i (acount outs)] (fire-wait! w (anth outs i))))
+      (commit! w [:resource-fire (g z rw/ID) (if err? :err :ok) [:opaque v]]))
+    (refuse! w [:resource-fire (g z rw/ID)])))
+
+(defn- resource-ack!
+  "T15: the resource has joined; its run may retire (T13)."
+  [w z]
+  (if (pos? (acount (g z rw/OUTS)))
+    (refuse! w [:resource-ack (g z rw/ID)])
+    (let [r (g z rw/OWNER)
+          zs (g r rw/R-RES)
+          i #?(:clj (.indexOf ^java.util.ArrayList zs z) :cljs (.indexOf zs z))]
+      (when-not (neg? i)
+        #?(:clj (.remove ^java.util.ArrayList zs (int i)) :cljs (.splice zs i 1))
+        (when (zero? (acount zs)) (s! r rw/R-RES nil))
+        (unregister! w z)
+        (commit! w [:resource-ack (g z rw/ID)])
+        (retire-check! w r)))))
+
+(defn- cancel-resource!
+  "T14: an armed resource is told to cancel. One that provably never started
+   (or whose timer was unscheduled) joins at once; a running offload is
+   interrupted and joins when its function returns."
+  [w z]
+  (when (== rw/Z-ARMED (gl z rw/Z-PHASE))
+    (s! z rw/Z-PHASE rw/Z-CANCELLING)
+    (let [ctl (g z rw/Z-CTL)
+          joined? #?(:clj (if (instance? java.util.concurrent.Future ctl)
+                            (.cancel ^java.util.concurrent.Future ctl false)
+                            (let [{:keys [^java.util.concurrent.atomic.AtomicInteger state thread]} ctl]
+                              (if (.compareAndSet state 0 2)
+                                true
+                                (do (some-> ^Thread @thread .interrupt) false))))
+                     :cljs false)]
+      (when joined? (resource-ack! w z)))))
+
+(defn- arm-and-park!
+  "T17 then T6 on the new resource: the run waits for its fire."
+  [r kind k ek start!]
+  (let [w (g r rw/R-WORLD)
+        at (next-at! r)
+        z (new-resource! w r kind at)
+        _ (commit! w [:arm (g r rw/ID) kind (g z rw/ID)])
+        aid (alloc-id! w)
+        members (object-array 1)
+        a (new-activation! w aid r :one k ek members (object-array 1) 1)
+        e (link! w rw/EK-WAIT a z 0)]
+    (aset members 0 e)
+    (park! r a)
+    (s! a rw/A-INLINE false)
+    (commit! w [:await (g r rw/ID) [(g z rw/ID)] :one aid])
+    (notify-blocked! (g r rw/R-OF) 0)
+    (start! w z)
+    nil))
+
+(defn- exec-of ^java.util.concurrent.Executor [w] (g w rw/W-EXEC))
+
+(defn- join! [w z res]
+  (host! w #(do (resource-fire! w z res) (resource-ack! w z))))
+
+(defn offload-effect!
+  "`(offload f)`: runs the plain function `f` on the world's executor,
+   outside every world (§4.3). `f` must not call into the world
+   synchronously; it may enqueue ingress."
+  [f k ek]
+  (if-let [r (valid-run)]
+    (arm-and-park!
+     r :offload k ek
+     (fn [w z]
+       #?(:clj
+          (let [state (java.util.concurrent.atomic.AtomicInteger. 0)
+                thread (volatile! nil)]
+            (s! z rw/Z-CTL {:state state :thread thread})
+            (.execute ^java.util.concurrent.Executor (exec-of w)
+                      ^Runnable
+                      (fn []
+                        (when (.compareAndSet state 0 1)
+                          (vreset! thread (Thread/currentThread))
+                          (let [res (try [(f) false] (catch Throwable t [t true]))]
+                            (vreset! thread nil)
+                            (Thread/interrupted)
+                            (join! w z res))))))
+          :cljs (js/setTimeout #(join! w z (try [(f) false] (catch :default t [t true]))) 0))))
+    (unwind! ek)))
+
+(defn sleep-effect!
+  "`(sleep ms)`: a timer resource."
+  [ms k ek]
+  (if-let [r (valid-run)]
+    (arm-and-park!
+     r :timer k ek
+     (fn [w z]
+       #?(:clj (s! z rw/Z-CTL (.schedule ^java.util.concurrent.ScheduledExecutorService @timer-exec
+                                         ^Runnable (fn [] (join! w z [nil false]))
+                                         (long ms) java.util.concurrent.TimeUnit/MILLISECONDS))
+          :cljs (js/setTimeout #(join! w z [nil false]) ms))))
+    (unwind! ek)))
+
+(defn offload [_] (throw (ex-info "offload outside a body" {})))
+(defn sleep [_] (throw (ex-info "sleep outside a body" {})))
+
 (defn track [_] (throw (ex-info "track outside a body" {})))
 (defn await [_] (throw (ex-info "await outside a body" {})))
 (defn await-all [_] (throw (ex-info "await-all outside a body" {})))
@@ -1705,6 +1849,10 @@
        (fn [[xs]] `(await-all-effect! ~xs ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-any [_ctx r e]
        (fn [[xs]] `(await-any-effect! ~xs ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
+       (fn [[f]] `(offload-effect! ~f ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-sleep [_ctx r e]
+       (fn [[ms]] `(sleep-effect! ~ms ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-consume [_ctx r e]
        (fn [[x]] `(consume-effect! (row-of ~x) ~r ~e)))
      (def ^:private breakpoints
@@ -1713,6 +1861,8 @@
         'org.replikativ.spindel.v2.core/await-all `bp-await-all
         'org.replikativ.spindel.v2.core/await-any `bp-await-any
         'org.replikativ.spindel.v2.core/take! `bp-consume
+        'org.replikativ.spindel.v2.core/offload `bp-offload
+        'org.replikativ.spindel.v2.core/sleep `bp-sleep
         'org.replikativ.spindel.v2.core/acquire! `bp-consume})
      (declare register-finally)
      (defn- catch-or-finally? [x] (and (seq? x) (#{'catch 'finally} (first x))))

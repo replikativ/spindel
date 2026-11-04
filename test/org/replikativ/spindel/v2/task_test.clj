@@ -17,7 +17,7 @@
      (is (empty? @*divergences*) (str "Rule R divergences: " (vec (take 3 @*divergences*))))))
 
 (defn- census [w]
-  (let [fr (frequencies (map #(aget ^objects % rw/TYPE) (vals (aget ^objects w rw/W-REG))))]
+  (let [fr (v2/call-in! w #(frequencies (map (fn [r] (aget ^objects r rw/TYPE)) (vals (aget ^objects w rw/W-REG)))))]
     {:comps (get fr rw/T-COMP 0) :tasks (get fr rw/T-TASK 0) :runs (get fr rw/T-RUN 0)
      :edges (get fr rw/T-EDGE 0) :acts (get fr rw/T-ACT 0) :scopes (get fr rw/T-SCOPE 0)
      :sources (get fr rw/T-SOURCE 0)}))

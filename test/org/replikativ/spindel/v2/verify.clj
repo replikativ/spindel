@@ -28,7 +28,8 @@
     rw/T-RUN (when-not (== rw/ACT-DONE (long (f row rw/R-ACT)))
                (concat [(f row rw/R-OF)]
                        (some-> (f row rw/R-ACTV) list)
-                       (some-> (f row rw/R-SROW) list)))
+                       (some-> (f row rw/R-SROW) list)
+                       (f row rw/R-RES)))
     rw/T-ACT (let [x (f (f row rw/A-RUN) rw/R-OF)]
                (concat (when (== rw/T-COMP (t x))
                          (filter #(identical? row (f % rw/E-ACT)) (f x rw/C-INS)))
@@ -81,7 +82,7 @@
   (let [seen (java.util.IdentityHashMap.)]
     (loop [todo (vec (mapcat #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
                                 ;; the run row, its scope subtree, its entity as a tombstone
-                                (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]))
+                                (concat (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]) (f % rw/R-RES)))
                              (rows w)))]
       (when-let [x (peek todo)]
         (let [todo (pop todo)]
