@@ -122,3 +122,35 @@
           (v2/cancel-task! t)
           (is (= [:macro-finally] @log) "a finally region from a user macro is registered")
           (is (= 0 (:runs (census w)))))))))
+
+(defn- waiter-on-closed [mk op]
+  ;; the source is owned by k's run scope; cancelling k closes it (T16) while
+  ;; a task and a computation wait on it
+  (let [w (vworld)]
+    (binding [v2/*world* w]
+      (let [src (promise) gk (v2/deferred)
+            k (task (deliver src (mk)) (await gk))
+            x (deref src 1000 nil)
+            t (case op
+                :take (task (take! x))
+                :acquire (task (acquire! x))
+                :await (task (await x)))
+            c (case op
+                :take (spin (try (take! x) (catch Exception e [:caught (ex-data e)])))
+                :acquire (spin (try (acquire! x) (catch Exception e [:caught (ex-data e)])))
+                :await (spin (try (await x) (catch Exception e [:caught (ex-data e)]))))
+            seen (atom [])]
+        (v2/observe! c (fn [v _] (swap! seen conj v)))
+        (v2/cancel-task! k)
+        (v2/value (v2/signal 0) 100 nil)
+        {:task (let [[tag v] (outcome t)] [tag (if (= :err tag) (ex-data v) v)])
+         :comp @seen}))))
+
+(deftest waiters-on-a-closed-source-get-an-error
+  ;; Z#53: a closed source without a value wakes its waiters with err ::closed
+  (checked
+    (doseq [[mk op] [[v2/mailbox :take] [#(v2/semaphore 0) :acquire] [v2/deferred :await]]]
+      (testing (name op)
+        (let [{:keys [task comp]} (waiter-on-closed mk op)]
+          (is (= [:err {:spindel/closed true}] task))
+          (is (= [[:caught {:spindel/closed true}]] comp)))))))

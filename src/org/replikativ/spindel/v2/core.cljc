@@ -121,8 +121,8 @@
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
-       (s! w rw/W-INTERN #?(:clj (let [n (long-array 1)] (aset n 0 1)   ; Nat 1 is ::cancelled
-                                     [(doto (java.util.HashMap.) (.put ::cancelled 1)) (java.util.WeakHashMap.) n])
+       (s! w rw/W-INTERN #?(:clj (let [n (long-array 1)] (aset n 0 2)   ; reserved: 1 ::cancelled, 2 ::closed
+                                     [(doto (java.util.HashMap.) (.put ::cancelled 1) (.put ::closed 2)) (java.util.WeakHashMap.) n])
                        :cljs nil))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
@@ -145,6 +145,11 @@
   (ex-info "cancelled" {:spindel/cancelled reason}))
 
 (defn cancelled? [t] (some? (:spindel/cancelled (ex-data t))))
+
+(defn closed-ex
+  "The error a waiter on a closed source without a value receives (Z#53)."
+  []
+  (ex-info "source closed" {:spindel/closed true}))
 
 #?(:clj
    (defmacro rv
@@ -269,7 +274,9 @@
   #?(:clj (if (nil? x)
             0
             (let [[^java.util.Map strong ^java.util.Map weak ^longs n] (g w rw/W-INTERN)
-                  x (if (cancelled? x) ::cancelled x)   ; reserved: 1 (see world)
+                  x (cond (cancelled? x) ::cancelled          ; reserved: 1 (see world)
+                          (:spindel/closed (ex-data x)) ::closed   ; reserved: 2
+                          :else x)
                   ^java.util.Map m (if (by-identity? x) weak strong)]
               (or (.get m x)
                   (let [v (aset n 0 (inc (aget n 0)))] (.put m x v) v))))
@@ -560,6 +567,14 @@
   (cond (comp? d) [(g d rw/C-RESULT) (boolean (g d rw/C-ERR))]
         (task? d) [(g d rw/K-RESULT) (boolean (g d rw/K-ERR))]
         (res? d) [(g d rw/Z-RESULT) (boolean (g d rw/Z-ERR))]
+        (g d rw/X-OPEN) [(g d rw/X-VALUE) false]
+        ;; Z#53: a closed source keeps a signal's or cell's value and a
+        ;; delivered deferred's; a mailbox, a semaphore or an undelivered
+        ;; deferred has none, so its waiters get an error
+        (let [kind (gl d rw/X-KIND)]
+          (or (== kind rw/SRC-MAILBOX) (== kind rw/SRC-SEMAPHORE)
+              (and (== kind rw/SRC-DEFERRED) (zero? (gl d rw/VERSION)))))
+        [(closed-ex) true]
         :else [(g d rw/X-VALUE) false]))
 
 (defn- act-done? [a]
