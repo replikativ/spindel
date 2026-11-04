@@ -77,7 +77,9 @@
 (def ^:const S-TASKS 5)      ; running tasks owned by the scope
 (def ^:const S-CHILDREN 6)   ; child scopes (explicit scopes, run scopes of owned tasks)
 (def ^:const S-WORLD 7)
-(def ^:const S-SIZE 8)
+(def ^:const S-SOURCES 8)    ; weak refs to sources owned by the scope, closed with it (T16, Z#18)
+(def ^:const S-PRUNE 9)      ; prune threshold for S-SOURCES
+(def ^:const S-SIZE 10)
 
 ;; Debtor rows (computation, source, task)
 (def ^:const WORLD 2)

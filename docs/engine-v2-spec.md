@@ -70,7 +70,16 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     then starts by T5;
   - Z#34: a filled activation resumes its run in the filling commit; the
     run's next slice, like a new run's first, is a scheduling choice
-    (`schedule r`); T12 includes the slice's exit.
+    (`schedule r`); T12 includes the slice's exit;
+  - Z#35: a cleanup slice unwinds the run's open finally regions innermost
+    first, in one slice (the CPS error path runs them in sequence); each
+    region's exit is a `finally-exit` item, so L2's measure still drops by
+    one per finalizer;
+  - Z#36: `deliver` is not a write: no computation consumed the undelivered
+    deferred, so delivery marks nothing; it fires and finalizes (§4.3);
+  - Z#37: host cancel of a run that holds the slice is refused (D0); posts,
+    releases and writes to a closed source are refused; release-world drops
+    every handle count to 0 (T21).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3

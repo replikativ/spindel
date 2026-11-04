@@ -182,3 +182,15 @@
           (is (= :parent-done (v2/value t 1000 ::timeout)))
           (v2/deliver! d :late)
           (is (= :late (v2/value @child 1000 ::timeout)) "the detached child was not cancelled"))))))
+
+(deftest task-owned-sources-close-at-retirement
+  ;; Z#18 (strict ownership): a source created by a task run is owned by its
+  ;; run scope and closed when that run retires, even if it was handed out.
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [out (atom nil)
+              t (task (reset! out (v2/signal 1)) :done)]
+          (is (= :done (v2/value t 1000 ::timeout)))
+          (v2/write! @out 2)
+          (is (= 1 (v2/value @out)) "the closed signal refused the write"))))))

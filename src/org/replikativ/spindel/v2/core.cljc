@@ -101,7 +101,9 @@
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
-       (s! w rw/W-INTERN #?(:clj [(java.util.HashMap.) (java.util.WeakHashMap.) (long-array 1)] :cljs nil))
+       (s! w rw/W-INTERN #?(:clj (let [n (long-array 1)] (aset n 0 1)   ; Nat 1 is ::cancelled
+                                     [(doto (java.util.HashMap.) (.put ::cancelled 1)) (java.util.WeakHashMap.) n])
+                       :cljs nil))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
@@ -145,6 +147,7 @@
   #?(:clj (if (nil? x)
             0
             (let [[^java.util.Map strong ^java.util.Map weak ^longs n] (g w rw/W-INTERN)
+                  x (if (cancelled? x) ::cancelled x)   ; reserved: 1 (see world)
                   ^java.util.Map m (if (by-identity? x) weak strong)]
               (or (.get m x)
                   (let [v (aset n 0 (inc (aget n 0)))] (.put m x v) v))))
@@ -211,11 +214,13 @@
        (not (current? c (g c rw/C-RUN)))))
 
 (defn- deferred? [d] (and (source? d) (== rw/SRC-DEFERRED (gl d rw/X-KIND))))
+(defn- closed? [d] (and (source? d) (not (g d rw/X-OPEN))))
 
 (defn- final?
   "D1, for the kinds implemented so far."
   [d]
   (cond (task? d) (boolean (g d rw/K-DONE))
+        (closed? d) true
         (deferred? d) (pos? (gl d rw/VERSION))
         :else false))
 
@@ -562,11 +567,18 @@
         (when-not (neg? i) (hs/remove-at! cs i))
         (remove-scope-if-empty! w p)))))
 
+(declare close-source!)
+
 (defn- close-scope!
-  "T16: cancels the work owned by the subtree, closes its scopes."
+  "T16: cancels the work owned by the subtree, closes its scopes and the
+   sources they own."
   [w s]
   (when (g s rw/S-OPEN)
     (s! s rw/S-OPEN false)
+    (when-let [xs (g s rw/S-SOURCES)]
+      (s! s rw/S-SOURCES nil)
+      (dotimes [i (acount xs)]
+        (when-let [x (hs/deref-weak (anth xs i))] (close-source! w x))))
     (let [ts (acopy (g s rw/S-TASKS))]
       (dotimes [i (acount ts)]
         (when-let [r (g (anth ts i) rw/K-RUN)] (cancel! w r ::cancelled))))
@@ -1627,6 +1639,28 @@
     (s! x rw/X-OPEN true)
     (register! w x)))
 
+(defn- own-source!
+  "Records a source owned by scope `sc`, weakly: the scope closes it if it
+   still exists (T16), but never keeps it alive (§5.2, G1). Dead entries are
+   pruned when the list doubles."
+  [sc x]
+  (let [l (or (g sc rw/S-SOURCES) (let [l (alist)] (s! sc rw/S-SOURCES l) (s! sc rw/S-PRUNE 8) l))]
+    (aadd! l (hs/weak x))
+    (when (> (acount l) (gl sc rw/S-PRUNE))
+      (let [live (alist)]
+        (dotimes [i (acount l)]
+          (let [r (anth l i)] (when (hs/deref-weak r) (aadd! live r))))
+        (s! sc rw/S-SOURCES live)
+        (s! sc rw/S-PRUNE (max 8 (* 2 (acount live))))))))
+
+(defn- close-source!
+  "A closed source is final and read-only (T16, R#15): its dep edges are
+   removed after their current delivery (T10)."
+  [w x]
+  (when (g x rw/X-OPEN)
+    (s! x rw/X-OPEN false)
+    (settle! w x)))
+
 (defn- create-source-in-run!
   "T1 inside a run: owned by the computation (in its basis, adopted by later
    runs in creation order) or by the task run's current scope, which retains
@@ -1653,7 +1687,9 @@
               (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
                           [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
               h))))
-      (let [s (new-source! w kind v (current-scope! w r) 0 at)]
+      (let [sc (current-scope! w r)
+            s (new-source! w kind v sc 0 at)]
+        (own-source! sc s)
         (s! s rw/HANDLES 0)
         (when init (init s))
         (aadd! (g w rw/W-RQ) s)
@@ -1750,10 +1786,12 @@
   [h v]
   (gated (world-of h)
     (let [x (row-of h) w (g x rw/WORLD)]
-      (s! x rw/VERSION (inc (gl x rw/VERSION)))
-      (when-not (serve-waiter! w x v)
-        (hs/dq-push! (deque x rw/X-VALUE) v))
-      (commit! w [:post (g x rw/ID) [:opaque v]])))
+      (if (closed? x)
+        (refuse! w [:post (g x rw/ID) [:opaque v]])
+        (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
+            (when-not (serve-waiter! w x v)
+              (hs/dq-push! (deque x rw/X-VALUE) v))
+            (commit! w [:post (g x rw/ID) [:opaque v]])))))
   nil)
 
 (defn semaphore
@@ -1767,10 +1805,12 @@
   [h]
   (gated (world-of h)
     (let [x (row-of h) w (g x rw/WORLD)]
-      (s! x rw/VERSION (inc (gl x rw/VERSION)))
-      (when-not (serve-waiter! w x true)
-        (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
-      (commit! w [:release (g x rw/ID)])))
+      (if (closed? x)
+        (refuse! w [:release (g x rw/ID)])
+        (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
+            (when-not (serve-waiter! w x true)
+              (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
+            (commit! w [:release (g x rw/ID)])))))
   nil)
 
 (defn deferred
@@ -1797,6 +1837,9 @@
   [h v]
   (gated (world-of h)
     (let [x (row-of h) w (g x rw/WORLD)]
+      (if (closed? x)
+        (refuse! w [:write (g x rw/ID) [:opaque v]])
+        (do
       (s! x rw/X-VALUE v)
       (s! x rw/VERSION (inc (gl x rw/VERSION)))
       (let [outs (acopy (g x rw/OUTS))]
@@ -1804,7 +1847,7 @@
           (let [e (anth outs i) k (gl e rw/E-KIND)]
             (cond (== k rw/EK-DEP) (fire-dep! w e)
                   (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-      (commit! w [:write (g x rw/ID) [:opaque v]])))
+      (commit! w [:write (g x rw/ID) [:opaque v]])))))
   v)
 
 (defn observe!
@@ -1877,7 +1920,7 @@
   [h]
   (gated (world-of h)
     (let [k (row-of h) w (g k rw/WORLD)]
-      (if-let [r (g k rw/K-RUN)]
+      (if-let [r (let [r (g k rw/K-RUN)] (when (and r (not (g r rw/R-SLICE))) r))]
         (do (cancel! w r ::cancelled)
             (commit! w [:cancel (g r rw/ID)]))
         (refuse! w [:cancel (g k rw/ID)]))))
@@ -2056,6 +2099,12 @@
         (doseq [[x n] (hs/mentries pins)] (dotimes [_ n] (ref-dec! x)))
         (hs/mclear! pins))
       (close-scope! w (g w rw/W-ROOT))
+      ;; host admissions are revoked: released handles hold no row (T21)
+      (when-let [reg (g w rw/W-REG)]
+        (doseq [x (hs/mvals reg)]
+          (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x rw/TYPE)) (pos? (gl x rw/HANDLES)))
+            (s! x rw/HANDLES 0)
+            (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
       (commit! w [:release-world])
       (s! w rw/W-RELEASED true)))
   (fn [] (when-let [reg (g w rw/W-REG)] (hs/msize reg))))
