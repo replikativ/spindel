@@ -18,7 +18,7 @@
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.rows :refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]]
-                            [org.replikativ.spindel.v2.core :refer [gated commit!]])))
+                            [org.replikativ.spindel.v2.core :refer [gated commit! rv]])))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -95,7 +95,7 @@
    (test only); `:hook` runs after every commit in verify mode."
   ([] (world {}))
   ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
-   (let [ep (Object.)
+   (let [ep #?(:clj (Object.) :cljs (js-obj))
          w (rw/new-row ep rw/W-SIZE)
          next #?(:clj (java.util.concurrent.atomic.AtomicLong. 1)
                  :cljs (doto (long-array 1) (aset 0 1)))]
@@ -156,7 +156,7 @@
            o (gensym "o")
            ww (with-meta (gensym "w") {:tag 'objects})]
        `(let [~o ~x]
-          (if ~(if (rw/cljs? &env) `(array? ~o) `(instance? ~(symbol "[Ljava.lang.Object;") ~o))
+          (if ~(if (rw/cljs? &env) `(cljs.core/array? ~o) `(instance? ~(symbol "[Ljava.lang.Object;") ~o))
             (let [~r ~o ~ww ~w]
               (if (identical? (aget ~r (unchecked-dec-int (alength ~r))) (aget ~ww rw/W-EPOCH))
                 ~r
@@ -2324,8 +2324,8 @@
       (when (pos? (long (or (g w rw/W-ARMED) 0)))
         (throw (ex-info "fork with armed resources is not supported yet (dormant resources, §8.1)" {})))
       (let [c (aclone ^objects w)]
-        (s! w rw/W-EPOCH (Object.))
-        (s! c rw/W-EPOCH (Object.))
+        (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
+        (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
         (s! c rw/ID (alloc-id! w))
         (s! c rw/W-LOCK (hs/lock))
         (s! c rw/W-INGRESS (hs/mpsc))
