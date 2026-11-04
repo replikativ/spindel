@@ -800,9 +800,40 @@
                 x)
             (recur (inc i))))))))
 
+(defn- raise-rank!
+  "I12 by height adjustment: `c` must rank above `d`. Raising propagates to
+   c's creditors; reaching `d` again means the new edge closes a cycle."
+  [c d]
+  (let [need (inc (gl d rw/C-RANK))]
+    (if (>= (gl c rw/C-RANK) need)
+      true
+      (loop [todo [[c need]] seen #{}]
+        (if-let [[x n] (peek todo)]
+          (let [todo (pop todo)]
+            (cond
+              (identical? x d) false
+              (>= (gl x rw/C-RANK) (long n)) (recur todo seen)
+              :else
+              (do (s! x rw/C-RANK n)
+                  (let [outs (g x rw/OUTS)]
+                    (recur (loop [i 0 todo todo]
+                             (if (< i (acount outs))
+                               (let [e (anth outs i)]
+                                 (recur (inc i)
+                                        (if (== rw/EK-DEP (gl e rw/E-KIND))
+                                          (conj todo [(g e rw/E-CRED) (inc (long n))])
+                                          todo)))
+                               todo))
+                           seen)))))
+          true)))))
+
+(defn cycle-ex [c d]
+  (ex-info "dependency cycle" {:spindel/cycle [(g c rw/ID) (g d rw/ID)]}))
+
 (defn- site-edge!
   "The dep edge of `c` at site `at` on `d`: reused when the prefix already
-   has it, otherwise created. Returns [edge reused?]."
+   has it, otherwise created. Returns [edge reused?]. A new edge that would
+   close a computation cycle is refused (I12): returns [nil false]."
   [w r c d at k ek]
   (let [ins (g c rw/C-INS)
         cur (gl r rw/R-CURSOR)]
@@ -813,12 +844,14 @@
       (let [e (anth ins cur)]
         (s! e rw/E-CONT k) (s! e rw/E-ERRK ek)
         [e true])
-      (let [_ (loop []                          ; a diverged prefix: drop the rest
-                (when (> (acount ins) cur) (unlink! w (apop! ins)) (recur)))
-            e (link! w rw/EK-DEP c d at)]
-        (s! e rw/E-CONT k) (s! e rw/E-ERRK ek)
-        (aadd! ins e)
-        [e false]))))
+      (do (loop []                              ; a diverged prefix: drop the rest
+            (when (> (acount ins) cur) (unlink! w (apop! ins)) (recur)))
+          (if (and (comp? d) (or (identical? c d) (not (raise-rank! c d))))
+            (do (s! r rw/R-CURSOR cur) [nil false])
+            (let [e (link! w rw/EK-DEP c d at)]
+              (s! e rw/E-CONT k) (s! e rw/E-ERRK ek)
+              (aadd! ins e)
+              [e false]))))))
 
 (defn- reentrant-k
   "§2: `cont` is the continuation only for `one` awaits in a run without
@@ -951,6 +984,7 @@
           members (object-array n)
           slots (object-array n)
           in-comp? (comp? x)
+          refused (volatile! nil)
           ;; group sites restart (Y#3); `one` sites re-enter when allowed (§2)
           kk (when (= mode :one) (reentrant-k r k))]
       ;; Member edges in debtor-list order; a repeated debtor shares its edge.
@@ -963,11 +997,16 @@
           (cond
             prev (aset members i prev)
             in-comp? (let [[e _] (site-edge! w r x d at kk ek)]
-                       (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
-                       (aset members i e))
+                       (if (nil? e)
+                         (vreset! refused d)
+                         (do (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
+                             (aset members i e))))
             (and (source? d) (not (deferred? d))) nil       ; a task reads a signal once
             (settled? d) (alloc-id! w)                      ; consumed at once (Z#28)
             :else (aset members i (link! w rw/EK-WAIT nil d 0)))))
+      (if-let [d @refused]
+        (do (refuse! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
+            (ek (cycle-ex x d)))
       ;; Fast path: settled members fill their slots in this commit.
       (let [remaining (volatile! n)
             winner (volatile! nil)]
@@ -1015,7 +1054,7 @@
                 (s! r rw/R-SLICE true)
                 (set-active! r)
                 (continue! res k ek))
-              (do (s! a rw/A-INLINE false) nil)))))))))
+              (do (s! a rw/A-INLINE false) nil))))))))))
 
 (defn await-effect!
   "T6 with mode `one`."
@@ -1077,9 +1116,11 @@
    one live handle object."
   [w row]
   (or #?(:clj (when-let [^java.lang.ref.WeakReference ref (g row rw/HREF)] (.get ref)) :cljs nil)
-      (let [h (new-handle w row)]
+      (let [h (new-handle w row)
+            again? (some? (g row rw/HREF))]
         (s! row rw/HANDLES (inc (gl row rw/HANDLES)))
         #?(:clj (s! row rw/HREF (java.lang.ref.WeakReference. h)))
+        (when again? (commit! w [:handle-new (g row rw/ID)]))
         h)))
 
 (defn- top-handle
@@ -1967,10 +2008,10 @@
        "A cached reactive computation (T3). Inside a body it is created in the
         running computation's basis and adopted by later runs."
        [& body]
-       (let [frees (vec (sort (free-vars/free-variables-or-all &env (cons 'do body))))]
+       (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
          `(create-comp! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))
      (defmacro task
        "A task (T4): started at once; structured child of the creating run."
        [& body]
-       (let [frees (vec (sort (free-vars/free-variables-or-all &env (cons 'do body))))]
+       (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
          `(spawn! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))))

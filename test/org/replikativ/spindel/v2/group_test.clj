@@ -88,3 +88,21 @@
           (v2/write! x 1)
           (is (= [0 :go] @seen))
           (u))))))
+
+(deftest dependency-cycle-is-refused
+  ;; I12: an await that would close a computation cycle fails with ::cycle.
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [x (v2/signal 0)
+              cell (atom nil)
+              a (spin (if (pos? (iv/get-new (track x)))
+                        (try (await @cell) (catch Exception e (if (:spindel/cycle (ex-data e)) :cycle (throw e))))
+                        :base))
+              b (spin [:b (await a)])
+              _ (reset! cell b)
+              seen (atom [])
+              u (v2/observe! b (fn [v _] (swap! seen conj v)))]
+          (v2/write! x 1)
+          (is (= [[:b :base] [:b :cycle]] @seen))
+          (u))))))

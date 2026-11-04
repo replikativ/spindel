@@ -145,10 +145,22 @@
   (let [reg (rows w)
         by (group-by t reg)
         tbl (fn [type f] (into (sorted-map) (map (fn [r] [(id r) (f r)])) (get by type)))]
-    {:scopes (merge (tbl rw/T-SCOPE (fn [s] {:parent (id (f s rw/S-PARENT)) :kind (f s rw/S-KIND) :open (f s rw/S-OPEN)}))
-                    ;; run scopes are materialized lazily; their ids come from the run
-                    (into {} (map (fn [r] [(f r rw/R-SCOPE) {:parent nil :kind :run :open true}]))
-                          (get by rw/T-RUN)))
+    {:scopes (merge
+              ;; run scopes not materialized yet (their ids come from the run, Z#26 parent)
+              (into {} (map (fn [r] (let [x (f r rw/R-OF)
+                                          o (f x rw/OWNER)]
+                                      [(f r rw/R-SCOPE)
+                                       {:parent (when (and (== rw/T-TASK (t x)) (instance? (Class/forName "[Ljava.lang.Object;") o)
+                                                           (== rw/T-SCOPE (t o)))
+                                                  (id o))
+                                        :kind :run :open true}])))
+                    (get by rw/T-RUN))
+              (tbl rw/T-SCOPE (fn [s] {:parent (id (f s rw/S-PARENT)) :kind (f s rw/S-KIND) :open (f s rw/S-OPEN)})))
+     :tasks (tbl rw/T-TASK
+                 (fn [k] {:owner (owner-id (f k rw/OWNER)) :run (id (f k rw/K-RUN))
+                          :result (when (f k rw/K-DONE)
+                                    [(if (f k rw/K-ERR) :err :ok) (intern! w (f k rw/K-RESULT))])
+                          :handles (f k rw/HANDLES)}))
      :comps (tbl rw/T-COMP
                  (fn [c] {:owner (owner-id (f c rw/OWNER)) :inputs (intern! w (f c rw/C-INPUTS))
                           :body (intern! w (f c rw/C-BODY)) :run (id (f c rw/C-RUN))
@@ -170,7 +182,9 @@
                          :act ([:active :parked :done] (f r rw/R-ACT))
                          :mode ([:normal :unwinding] (f r rw/R-MODE))
                          :slice (f r rw/R-SLICE) :effect-index (f r rw/R-EIDX)
-                         :finalizers [] :resources []}))
+                         ;; the engine counts open regions; the model's list is opaque
+                         :finalizers (vec (repeat (long (or (f r rw/R-FINS) 0)) 0))
+                         :resources (mapv id (f r rw/R-RES))}))
      :sources (tbl rw/T-SOURCE
                    (fn [x] {:owner (owner-id (f x rw/OWNER))
                             :kind ([:signal :cell :deferred :mailbox :semaphore] (f x rw/X-KIND))
@@ -191,15 +205,22 @@
                                         (when (== rw/T-SOURCE (t (f e rw/E-DEBTOR)))
                                           [(intern! w (f e rw/E-BASE)) (f e rw/E-SEEN)]))})))
      :acts (tbl rw/T-ACT
-                (fn [a] (let [c (f (f a rw/A-RUN) rw/R-OF)]
+                (fn [a] (let [^objects ms (f a rw/A-MEMBERS)]
                           {:run (id (f a rw/A-RUN)) :mode (f a rw/A-MODE)
-                           :members (vec (for [e (f c rw/C-INS) :when (identical? a (f e rw/E-ACT))]
-                                           [(id e) (f e rw/E-SLOT)]))
+                           :members (vec (for [i (range (alength ms)) :let [e (aget ms i)] :when e]
+                                           [(id e) i]))
                            :slots (mapv (fn [s] (when s (let [[v err?] s] [(if err? :err :ok) (intern! w v)])))
                                         (f a rw/A-SLOTS))
                            :remaining (f a rw/A-REMAINING)
                            :cont (intern! w (f a rw/A-R))})))
-     :res {} :cleanup {} :pubs {} :forks {}
+     :res (tbl rw/T-RES
+               (fn [z] {:owner (id (f z rw/OWNER)) :kind (f z rw/Z-KIND) :at (f z rw/AT)
+                        :phase (condp == (long (f z rw/Z-PHASE))
+                                 rw/Z-ARMED :armed rw/Z-FIRED :fired rw/Z-CANCELLING :cancelling)}))
+     :cleanup (into (sorted-map)
+                    (keep (fn [r] (when (== rw/ACT-DONE (long (f r rw/R-ACT))) [(id r) {:rows []}])))
+                    (get by rw/T-RUN))
+     :pubs {} :forks {}
      :pins (into (sorted-map) (map (fn [[x n]] [(id x) n])) (f w rw/W-PINS))
      :pending-act nil
      :released false
