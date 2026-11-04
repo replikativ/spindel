@@ -18,7 +18,7 @@
            `(let [~s ~row] (clojure.lang.RT/aset ~s (int ~i) (clojure.lang.RT/box ~v))))))
      (defmacro gl [row i] `(long (g ~row ~i)))
      (defn- al [] (with-meta (gensym "l") {:tag 'java.util.ArrayList}))
-     (defmacro alist [] (if (cljs? &env) `(cljs.core/array) `(java.util.ArrayList.)))
+     (defmacro alist [] (if (cljs? &env) `(cljs.core/array) `(java.util.ArrayList. 4)))
      (defmacro acount [l] (if (cljs? &env) `(.-length ~l) (let [x (al)] `(let [~x ~l] (.size ~x)))))
      (defmacro anth [l i] (if (cljs? &env) `(aget ~l ~i) (let [x (al)] `(let [~x ~l] (.get ~x (int ~i))))))
      (defmacro aadd! [l v] (if (cljs? &env) `(.push ~l ~v) (let [x (al)] `(let [~x ~l] (.add ~x (clojure.lang.RT/box ~v))))))

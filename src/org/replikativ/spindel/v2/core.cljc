@@ -318,14 +318,21 @@
 ;; ---------------------------------------------------------------------------
 ;; Edges
 
+(declare link-id!)
+
 (defn- link!
   "A new edge on `debtor`. It retains the debtor (§3.2) and demands it when
    its creditor is demanded."
   [w kind cred debtor at]
+  (link-id! w (alloc-id! w) kind cred debtor at))
+
+(defn- link-id!
+  "`link!` with an id allocated earlier (to keep the model's id order)."
+  [w id kind cred debtor at]
   (let [e (object-array rw/E-SIZE)
         outs (g debtor rw/OUTS)]
     (s! e rw/TYPE rw/T-EDGE)
-    (s! e rw/ID (alloc-id! w))
+    (s! e rw/ID id)
     (s! e rw/E-KIND kind)
     (s! e rw/E-CRED cred)
     (s! e rw/E-DEBTOR debtor)
@@ -479,6 +486,7 @@
    are unmarked; unfilled members of a current activation are delivered
    either way (Z#20). Wait edges are consumed."
   [w d]
+  (when (pos? (acount (g d rw/OUTS)))
   (let [outs (acopy (g d rw/OUTS))
         ver (g d rw/VERSION)]
     (dotimes [i (acount outs)]
@@ -493,12 +501,12 @@
           (== k rw/EK-OBSERVE) (deliver-observe! w e)
           (== k rw/EK-WAIT) (fire-wait! w e))))
     ;; T10: dep edges on a final debtor are removed after their delivery.
-    (when (final? d)
+    (when (and (final? d) (pos? (acount (g d rw/OUTS))))
       (let [outs (acopy (g d rw/OUTS))]
         (dotimes [i (acount outs)]
           (let [e (anth outs i)]
             (when (and (== rw/EK-DEP (gl e rw/E-KIND)) (g e rw/E-ARMED) (nil? (g e rw/E-ACT)))
-              (remove-dep! w e))))))))
+              (remove-dep! w e)))))))))
 
 (defn- pending-zero! [c]
   (cond
@@ -1178,7 +1186,7 @@
             (deref [this] (value this))]))
 
 
-(declare host! handle-drop!)
+(declare host! handle-drop! href)
 
 (defn- new-handle
   "A fresh handle object for `w`; T19 is enqueued when it is collected. The
@@ -1202,13 +1210,20 @@
   "The row's live handle, or a new one (+1 handle, Z#29). A row has at most
    one live handle object."
   [w row]
-  (or (hs/deref-weak (g row rw/HREF))
+  (or (let [r (g row rw/HREF)] (if (instance? Handle r) r (hs/deref-weak r)))
       (let [h (new-handle w row)
             again? (some? (g row rw/HREF))]
         (s! row rw/HANDLES (inc (gl row rw/HANDLES)))
-        (s! row rw/HREF (hs/weak h))
+        (s! row rw/HREF (href w h))
         (when again? (commit! w [:handle-new (g row rw/ID)]))
         h)))
+
+(defn- href
+  "How a row holds its live handle: weakly in verify mode, where collection
+   drives T19 (Cleaner), strongly otherwise, where nothing depends on it and
+   the host GC frees row and handle together."
+  [w h]
+  (if (some? (g w rw/W-REG)) (hs/weak h) h))
 
 (defn- top-handle
   "A handle returned before its creating item commits (H1)."
@@ -1219,7 +1234,7 @@
   "The creating item commits: the handle names its row, which holds it weakly."
   [h row]
   (aset ^objects (.-cell ^Handle h) 0 row)
-  (s! row rw/HREF (hs/weak h)))
+  (s! row rw/HREF (href (.-w ^Handle h) h)))
 
 (defn row-of
   "The row behind a handle."
@@ -1945,14 +1960,21 @@
       (let [d (row-of h)]
         (if (and (source? d) (not (deferred? d)))
           (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-          (let [e (link! w rw/EK-WAIT cb d 0)]
-            (vreset! ev e)
-            (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-            (if (settled? d)
-              (do (fire-wait! w e)
-                  (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
-              (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
-                  (demand! w d)))))))
+          ;; T22 allocates the host-wait edge first (the model's order); a
+          ;; debtor that is settled consumes it at once, so no edge row is made.
+          (let [eid (alloc-id! w)
+                idle? (and (comp? d) (g d rw/C-IDLE))]
+            (if (and (not idle?) (settled? d))
+              (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+                  (commit! w [:host-await (g d rw/ID) eid]))
+              (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
+                (vreset! ev e)
+                (when idle? (validate! w d))
+                (if (settled? d)
+                  (do (fire-wait! w e)
+                      (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
+                  (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
+                      (demand! w d)))))))))
     (fn []
       (gated w
         (when-let [e @ev]
@@ -2257,6 +2279,16 @@
              params {:r r :e e :env env :breakpoints breakpoints
                      :opaque-scopes #{`spin `task}}]
          `(fn [~r ~e] ~(ioc/invert params (binding [*env* env] (register-finally (cons 'do body)))))))
+     (def empty-inputs (object-array 0))
+     (defn- inputs-form
+       "The captured values as an array, built without an intermediate vector."
+       [frees]
+       (if (empty? frees)
+         `empty-inputs
+         (let [a (with-meta (gensym "in") {:tag 'objects})]
+           `(let [~a (object-array ~(count frees))]
+              ~@(map-indexed (fn [i x] `(aset ~a ~i ~x)) frees)
+              ~a))))
      (defn- site-of [form]
        (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta form)) (:column (meta form))])))
      (defmacro spin
@@ -2264,7 +2296,7 @@
         running computation's basis and adopted by later runs."
        [& body]
        (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
-         `(create-comp! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))
+         `(create-comp! ~(site-of &form) ~(inputs-form frees) ~(body-fn &env body))))
      (defmacro with-scope
        "An explicit scope (T16): tasks spawned inside are owned by it and are
         cancelled when it closes, at normal exit, on error or on cancel."
@@ -2277,4 +2309,4 @@
        "A task (T4): started at once; structured child of the creating run."
        [& body]
        (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
-         `(spawn! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))))
+         `(spawn! ~(site-of &form) ~(inputs-form frees) ~(body-fn &env body))))))
