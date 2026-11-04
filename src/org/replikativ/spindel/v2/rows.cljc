@@ -96,7 +96,8 @@
 (def ^:const S-WORLD 7)
 (def ^:const S-SOURCES 8)    ; weak refs to sources owned by the scope, closed with it (T16, Z#18)
 (def ^:const S-PRUNE 9)      ; prune threshold for S-SOURCES
-(def ^:const S-SIZE 10)
+(def ^:const S-HELD 10)      ; a run scope whose run is not retired (Z#52)
+(def ^:const S-SIZE 11)
 
 ;; Debtor rows (computation, source, task)
 (def ^:const WORLD 2)

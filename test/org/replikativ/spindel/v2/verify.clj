@@ -117,11 +117,18 @@
   [w]
   (let [lv (live w)
         _ (.putAll ^java.util.IdentityHashMap lv ^java.util.Map (cleanup-rows w))]
-    (vec (for [row (rows w)
-               :when (not (.containsKey ^java.util.IdentityHashMap lv row))
-               :when (not (admitted? row))]
-           {:type (t row) :id (f row rw/ID)
-            :idle (when (== rw/T-COMP (t row)) (f row rw/C-IDLE))}))))
+    (into
+     (vec (for [row (rows w)
+                :when (not (.containsKey ^java.util.IdentityHashMap lv row))
+                :when (not (admitted? row))]
+            {:type (t row) :id (f row rw/ID)
+             :idle (when (== rw/T-COMP (t row)) (f row rw/C-IDLE))}))
+     ;; the reverse: a row the reference retains that the engine removed
+     (let [reg (f w rw/W-REG)]
+       (for [row (keys lv)
+             :when (instance? (Class/forName "[Ljava.lang.Object;") row)
+             :when (not (.containsKey ^java.util.Map reg (f row rw/ID)))]
+         {:type (t row) :id (f row rw/ID) :removed true})))))
 
 (defn checking-hook
   "A world hook that records Rule R divergences per commit into `acc`."

@@ -1,7 +1,7 @@
 (ns org.replikativ.spindel.v2.task-test
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await offload]]
             [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.incremental.interval :as iv]))
@@ -194,3 +194,45 @@
           (is (= :done (v2/value t 1000 ::timeout)))
           (v2/write! @out 2)
           (is (= 1 (v2/value @out)) "the closed signal refused the write"))))))
+
+(defn- hold-until [started p]
+  ;; an offload that acknowledges its cancellation only once `p` is delivered
+  (fn []
+    (deliver started true)
+    (while (not (realized? p)) (try (Thread/sleep 1) (catch InterruptedException _)))
+    :held))
+
+(defn i1-detach-trace!
+  "Z#52 (the model's I1 counterexample): a cleanup entry keeps its run scope's
+   current ancestors. Run R of an inner task stays in cleanup on an offload;
+   its outer task is detached into an explicit scope, which then closes."
+  [w hold]
+  (let [sa (promise) inner (promise) started (promise)
+        ga (v2/deferred) gk (v2/deferred)
+        a (task (let [s (v2/open-scope!)]
+                  (deliver sa s)
+                  (await ga)
+                  (v2/close-scope-fx! s)
+                  :a))
+        k (task (deliver inner (task (v2/signal 0) (offload (hold-until started hold))))
+                (await gk))]
+    (deref started 1000 nil)
+    (v2/cancel-task! (deref inner 1000 nil))      ; inner run: cleanup, waits on the ack
+    (v2/detach! k (deref sa 1000 nil))            ; k's run scope moves under the explicit scope
+    (v2/deliver! ga :close)                       ; closing it cancels k
+    (v2/value a 1000 ::timeout)
+    {:a a :k k}))
+
+(deftest cleanup-retains-current-ancestors
+  (checked
+    (let [w (vworld) hold (promise)]
+      (binding [v2/*world* w]
+        (let [{:keys [a k]} (i1-detach-trace! w hold)]
+          (is (= [:ok :a] (outcome a)))
+          (is (= :spindel/cancelled (first (keys (second (outcome k))))))
+          (is (= 5 (:scopes (census w)))
+              "the inner run scope and its current chain stay: k's run scope, the explicit scope, a's run scope, root")
+          (deliver hold true)
+          (Thread/sleep 100)
+          (v2/value (v2/signal 0) 100 nil)
+          (is (= 1 (:scopes (census w))) "the ack retires the inner run and the chain goes"))))))

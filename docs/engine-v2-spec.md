@@ -119,7 +119,13 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#51 (I5, §3.4): reactivation takes no dep edge on a debtor that became
     final while the computation was idle; a matching version keeps the
     result valid and the edge is consumed, as T6/T10/Z#48. In `slice-exit r`
-    (Z#49), T13 retires the run within the item, as T12 does (Z#34).
+    (Z#49), T13 retires the run within the item, as T12 does (Z#34);
+  - Z#52 (I1, Z#38/Z#41): the ancestors a cleanup entry retains are its run
+    scope's current chain through the parent fields, recomputed by each Rule R
+    pass; a `detach` that re-parents a scope in the chain moves retention to
+    the new parent. A run scope is removed no earlier than its run's
+    retirement (T13 step 4), even when an ancestor's close empties its
+    subtree first.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -441,6 +447,9 @@ retired has an entry `cleanup[R]`, kept outside `live`:
 - **The rows it retains as storage:**
   - its run row;
   - its run scope and that scope's subtree;
+  - the current ancestor chain of its run scope, followed through the
+    scopes' parent fields at each Rule R pass, not stored with the entry,
+    so it follows a `detach` (Z#38, Z#52);
   - its outstanding resources;
   - its finalizers;
   - its body entity as a tombstone when the entity has no other reason;

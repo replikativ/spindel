@@ -693,6 +693,7 @@
             owner (rv w (g x rw/OWNER))
             parent (when (and (task? x) owner (== rw/T-SCOPE (gl owner rw/TYPE))) owner)
             s (new-scope w (g r rw/R-SCOPE) :run parent)]
+        (s! s rw/S-HELD true)
         (s! r rw/R-SROW s)
         s)))
 
@@ -705,9 +706,11 @@
       (run-scope! w r))))
 
 (defn- remove-scope-if-empty!
-  "T16/Z#18: a closed scope row goes once its subtree has no rows left."
+  "T16/Z#18: a closed scope row goes once its subtree has no rows left. A run
+   scope stays while its run is in cleanup (T13 step 4, Z#52)."
   [w s]
   (when (and (not (g s rw/S-OPEN))
+             (not (g s rw/S-HELD))
              (zero? (hs/oset-count (g s rw/S-TASKS)))
              (zero? (acount (g s rw/S-CHILDREN))))
     (unregister! w s)
@@ -744,7 +747,9 @@
       (when (identical? r (rv w (g x rw/C-RUN))) (s! x rw/C-RUN nil))
       (when (identical? r (rv w (g x rw/K-RUN))) (s! x rw/K-RUN nil)))
     (s! r rw/R-MODE 2)                       ; retired
-    (when-let [s (rv w (g r rw/R-SROW))] (close-scope! w s))
+    (when-let [s (rv w (g r rw/R-SROW))]
+      (s! s rw/S-HELD false)
+      (close-scope! w s))
     (unregister! w r)))
 
 (defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
