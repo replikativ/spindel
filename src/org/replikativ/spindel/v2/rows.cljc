@@ -90,7 +90,9 @@
 (def ^:const W-UNBORN 34)      ; an instance before activate! (E4)
 (def ^:const W-AFTER 35)       ; child worlds to schedule after the gate is released (E3)
 (def ^:const W-PUB-WORLD 36)   ; an unborn instance's publication world, its owner at activation
-(def ^:const W-SIZE 37)
+(def ^:const W-STATE 37)       ; app world state: one persistent map, forked by value (M6 R1)
+(def ^:const W-ATOMS 38)       ; fork-safe atoms: atom id -> value, forked by value (M6 R6)
+(def ^:const W-SIZE 39)
 
 ;; Scope
 (def ^:const S-PARENT 2)

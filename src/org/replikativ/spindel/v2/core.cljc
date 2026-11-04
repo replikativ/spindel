@@ -9,7 +9,7 @@
    world gate, performs its transition, then drains: task starts,
    resumptions, eligible dispatches and Rule R, until nothing is left. Host
    callbacks run after the drain."
-  (:refer-clojure :exclude [await])
+  (:refer-clojure :exclude [await atom])
   (:require [org.replikativ.spindel.v2.rows :as rw
              #?@(:clj [:refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
             [org.replikativ.spindel.incremental.interval :as iv]
@@ -120,6 +120,8 @@
      (s! w rw/W-RELEASED false)
      (s! w rw/W-UNBORN false)
      (s! w rw/W-AFTER (alist))
+     (s! w rw/W-STATE {})
+     (s! w rw/W-ATOMS {})
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
@@ -2308,14 +2310,163 @@
         (refuse! w [:cancel (g k rw/ID)]))))
   nil)
 
-(defn call-in!
-  "Runs `(f)` as a host item of `w` and returns its value (JVM, blocking;
-   tooling and tests). Inside the world it runs at once."
+(defn- holding-gate?
+  "This thread is processing a world (a slice, a host item or a callback)."
+  []
+  (when-let [c (cw)] (hs/held? (g c rw/W-LOCK))))
+
+(defn host-call!
+  "R5: runs `(f)` as a host item of `w` and returns its value. Inside `w`
+   (its slice, item or callback) it runs at once. Elsewhere the JVM caller
+   waits outside the gate; a thread processing another world may not wait
+   (B7: use send-world!). On CLJS the item is processed synchronously; a
+   world that is not inline cannot answer synchronously."
   [w f]
-  #?(:clj (let [p (promise)]
-            (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
-            (let [[v t] @p] (if t (throw t) v)))
-     :cljs (f)))
+  (cond
+    (and (identical? w (cw)) (hs/held? (g w rw/W-LOCK))) (f)
+    (holding-gate?)
+    (throw (ex-info "host-call! while processing another world (B7): use send-world!"
+                    {:spindel/invalid :host-call}))
+    :else
+    #?(:clj (let [p (promise)]
+              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
+              (let [[v t] @p] (if t (throw t) v)))
+       :cljs (let [box (volatile! ::none)]
+               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t]))))
+               (if (= ::none @box)
+                 (throw (ex-info "host-call!: the world did not process the item synchronously" {}))
+                 (let [[v t] @box] (if t (throw t) v)))))))
+
+(defn call-in!
+  "Tooling and tests: host-call!."
+  [w f]
+  (host-call! w f))
+
+(declare current-world)
+
+(defn send-world!
+  "R5: enqueues `(f)` as a host item of `w` and returns nil. Usable from a
+   body or callback of another world: the item is only scheduled after the
+   current gate is left, so no thread processes two worlds at once."
+  [w f]
+  (when (g w rw/W-RELEASED) (throw (released-ex)))
+  (hs/mpsc-add! (g w rw/W-INGRESS) f)
+  (if (holding-gate?)
+    (when-not (identical? w (cw)) (aadd! (g (cw) rw/W-AFTER) w))
+    (handoff! w))
+  nil)
+
+;; ---------------------------------------------------------------------------
+;; World state (M6 R1): application data of a world, outside the reactive
+;; graph, forked by value. Engine references go in as world-neutral refs.
+
+(deftype Ref [^objects cell])
+
+(defn world-ref
+  "A world-neutral reference to the row of handle `h`, for world state:
+   resolving it in a world gives that world's handle (a fork's own copy)."
+  [h]
+  (Ref. (.-cell ^Handle h)))
+
+(defn ref? [x] (instance? Ref x))
+
+(defn current-world
+  "The world an operation acts on: the slice's world inside a body, else the
+   bound *world*."
+  []
+  (if (and (active-run) (cw)) (cw) *world*))
+
+(defn resolve-ref
+  "The handle of `r`'s row in `w` (default: the current world)."
+  ([r] (resolve-ref (current-world) r))
+  ([w r] (new-handle w (aget ^objects (.-cell ^Ref r) 0))))
+
+(defn- check-state-value! [v]
+  (when (instance? Handle v)
+    (throw (ex-info "a handle in world state: store (world-ref h)" {:spindel/invalid :world-state}))))
+
+(defn world-state
+  "The world's application state (a persistent map)."
+  [w]
+  (host-call! w #(g w rw/W-STATE)))
+
+(defn swap-world!
+  "Atomically sets the world state to `(apply f state args)`; returns it. An
+   effect at its site inside a body (not rolled back on re-run)."
+  [w f & args]
+  (host-call! w #(let [old (g w rw/W-STATE)
+                       new (apply f old args)]
+                   (s! w rw/W-STATE new)
+                   (commit! w [:world-state (some-> (active-run) (g rw/ID)) [:opaque old] [:opaque new]])
+                   new)))
+
+(defn reset-world! [w m] (swap-world! w (constantly m)))
+(defn get-in-world [w path] (get-in (world-state w) path))
+(defn assoc-in-world! [w path v] (check-state-value! v) (swap-world! w assoc-in path v))
+(defn update-in-world!
+  [w path f & args]
+  (swap-world! w (fn [m] (let [m (apply update-in m path f args)]
+                           (check-state-value! (get-in m path))
+                           m))))
+
+;; ---------------------------------------------------------------------------
+;; Atoms (M6 R6): clojure.core/atom semantics on a world's private atom
+;; table, forked by value. The wrapper names an id, not a world: it acts on
+;; the current world. Collected wrappers are dropped from the creating world
+;; (forks keep their copy until they are dropped themselves).
+
+(defn- missing-state [id]
+  (ex-info "this world has no state for the atom" {:spindel/missing-state id}))
+
+(defn- atom-op! [id f]
+  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
+    (host-call! w #(let [m (g w rw/W-ATOMS)]
+                     (if (contains? m id)
+                       (let [[v' ret] (f (get m id))]
+                         (when-not (identical? v' (get m id)) (s! w rw/W-ATOMS (assoc m id v')))
+                         ret)
+                       (throw (missing-state id)))))))
+
+(deftype RAtom [^long id]
+  #?@(:clj
+      [clojure.lang.IDeref
+       (deref [this] (let [v (atom-op! id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
+       clojure.lang.IAtom
+       (swap [this f] (atom-op! id (fn [v] (let [n (f v)] [n n]))))
+       (swap [this f a] (atom-op! id (fn [v] (let [n (f v a)] [n n]))))
+       (swap [this f a b] (atom-op! id (fn [v] (let [n (f v a b)] [n n]))))
+       (swap [this f a b xs] (atom-op! id (fn [v] (let [n (apply f v a b xs)] [n n]))))
+       (compareAndSet [this o n] (atom-op! id (fn [v] (if (identical? v o) [n true] [v false]))))
+       (reset [this n] (atom-op! id (fn [_] [n n])))
+       clojure.lang.IAtom2
+       (swapVals [this f] (atom-op! id (fn [v] (let [n (f v)] [n [v n]]))))
+       (swapVals [this f a] (atom-op! id (fn [v] (let [n (f v a)] [n [v n]]))))
+       (swapVals [this f a b] (atom-op! id (fn [v] (let [n (f v a b)] [n [v n]]))))
+       (swapVals [this f a b xs] (atom-op! id (fn [v] (let [n (apply f v a b xs)] [n [v n]]))))
+       (resetVals [this n] (atom-op! id (fn [v] [n [v n]])))]
+      :cljs
+      [IDeref (-deref [_] (atom-op! id (fn [v] [v v])))
+       IReset (-reset! [_ n] (atom-op! id (fn [_] [n n])))
+       ISwap
+       (-swap! [_ f] (atom-op! id (fn [v] (let [n (f v)] [n n]))))
+       (-swap! [_ f a] (atom-op! id (fn [v] (let [n (f v a)] [n n]))))
+       (-swap! [_ f a b] (atom-op! id (fn [v] (let [n (f v a b)] [n n]))))
+       (-swap! [_ f a b xs] (atom-op! id (fn [v] (let [n (apply f v a b xs)] [n n]))))]))
+
+(defn atom
+  "A fork-safe atom in the current world, initialised to `init`."
+  [init]
+  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))
+        id (host-call! w #(let [id (alloc-id! w)]
+                            (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id init))
+                            id))
+        a (RAtom. id)
+        ww (hs/weak w)]
+    ;; holds the world weakly: an atom table may reach the wrapper
+    (hs/on-collect! a (fn [] (when-let [w (hs/deref-weak ww)]
+                               (try (send-world! w #(s! w rw/W-ATOMS (dissoc (g w rw/W-ATOMS) id)))
+                                    (catch #?(:clj Throwable :cljs :default) _ nil)))))
+    a))
 
 (defn value-async
   "T22/H3: demands `h` through a host wait edge and calls `(cb v err?)` once
@@ -2363,6 +2514,8 @@
   ([h] (value h nil nil))
   ([h timeout-ms timeout-val]
    (when (active-run) (throw (ex-info "blocking value inside a body (B7)" {})))
+   ;; R7: a callback runs under the gate; waiting there would deadlock
+   (when (holding-gate?) (throw (ex-info "blocking value while processing a world (B7)" {})))
    #?(:clj
       (let [p (promise)
             unawait (value-async h (fn [v err?] (deliver p [v err?])))
@@ -2746,7 +2899,7 @@
    Dropping it while pending abandons its run (S7): the collection action
    holds the world, the activation id and the state, never the publication."
   [w aid site payload basis]
-  (let [state (atom :pending)
+  (let [state (clojure.core/atom :pending)
         p (Publication. w aid site payload basis state)
         ;; weakly: the world may reach the publication (a handler storing it),
         ;; and a strong reference here would keep that cycle alive forever
