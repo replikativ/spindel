@@ -43,6 +43,13 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   (Z#6–Z#19): resource debtors, slot positions, epoch steps, observe
   firing, refusals, effect indices, creation handles, pin counts, the
   `track` domain and the retirement order.
+- Spec patches after sign-off, from the engine and the model (Z#20–Z#25):
+  - Z#20: a settle, changed or not, delivers to unfilled activation members;
+  - Z#21: suffix baselines keep retaining their debtors until adoption ends;
+  - Z#22: on restart, E's baseline advances when the new run reads it;
+  - Z#23: computations owned by a removed scope get `owner := ⊥`;
+  - Z#24: validity uses the version each edge last consumed;
+  - Z#25: detach also runs after the filter; T13 clears `K.run`; T10 cascades fully.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -212,7 +219,7 @@ trees.
 Family = { stamp : Nat }                         ; fresh-id allocator shared by related worlds (R#5)
 
 World  = { scopes  : S ↦ {parent: S?, kind: root|run|explicit, open: Bool}
-           comps   : C ↦ {owner: S|C, inputs, body, run: R?,
+           comps   : C ↦ {owner: S|C|⊥, inputs, body, run: R?,
                           epoch: Nat,                          ; increments when a rerun is required
                           done-epoch: Nat?,                    ; epoch of the run that set the result
                           pending: Nat,                        ; marked in-edges from dirty computations
@@ -332,7 +339,7 @@ these edges:
 | scope `S` | its parent scope; the task runs it owns; the fork markers it owns |
 | run `R` (`act ≠ done`) | its run scope; its body entity; its activations; its resources; its `savepoint` edges |
 | activation `A` | its member edges |
-| computation `C`, not idle | `C.run` if it is current, or if `C` is `needs-run` and `C.run` is not done (the re-entry predecessor of T11) (Z#1); its `dep` edges; its `basis`; its `adoption` basis |
+| computation `C`, not idle | `C.run` if it is current, or if `C` is `needs-run` and `C.run` is not done (the re-entry predecessor of T11) (Z#1); its `dep` edges; its `basis`; its `adoption` basis; the debtors of its adoption baselines (Z#21) |
 | task `K` | its run |
 | edge `E` | its debtor |
 | publication `P` | its edge |
@@ -383,8 +390,10 @@ After every commit:
       - its `dep` edges are removed;
       - the tasks in its `basis` are cancelled;
       - if it has a result or `handles > 0`, it becomes `idle`, with
-        `validity` taken from the removed edges' `(debtor, debtor.version
-        at registration)`; without a result it stays `fresh` (Z#2);
+        `validity` taken from the removed edges' `(debtor, version)`, where
+        `version` is the debtor version the edge last consumed. An edge that
+        never consumed one makes the validity fail (Z#24). Without a result
+        it stays `fresh` (Z#2);
       - otherwise it is removed.
 
    4. detach (step 2) every source or task whose owner was removed in this
@@ -395,8 +404,10 @@ After every commit:
    `live`; that is why this step loops. It terminates, because each round
    that changes something decreases the number of non-done runs plus
    non-idle computations.
-2. **Detach (W#6, X#5)**, applied inside step 1: every source or task that
-   survives and whose owner is removed gets `owner := ⊥`. A detached source is
+2. **Detach (W#6, X#5)**, applied inside step 1 and once more after step 3
+   (Z#25): every source or task that survives and whose owner is removed
+   gets `owner := ⊥`, and so does every computation (Z#23), without being
+   cancelled. A detached source is
    closed. A detached task has already been cancelled by its owner's
    demotion or scope closure, so it only finishes its cleanup.
 3. **Remove:** every row that is not in the final `live`, not in
@@ -506,7 +517,9 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   `⟨old = baseline.value, new = current value, deltas⟩`. The baseline is then
   advanced.
 - **Re-entry (T11):** T11 moves the baselines of removed suffix edges into
-  `C.adoption.baselines`. A suffix site that the new run tracks again
+  `C.adoption.baselines`, which keep retaining their debtors (Z#21), so a
+  suffix debtor stays cached until the new run awaits it again or
+  completes without it. A suffix site that the new run tracks again
   consumes its entry; otherwise it is a first track. The map is discarded
   together with the adoption basis. It is bounded by the number of suffix
   edges.
@@ -529,6 +542,10 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
    - **Changed:** `D`'s completion changed its version. Its `dep` out-edges
      fire (T9) before they are unmarked, and its `observe` edges deliver
      (Z#9).
+   - **Delivery (Z#20):** in both cases, an out-edge that is an unfilled
+     member of an activation of its creditor's current run is delivered
+     (T9), since that run is waiting for `D`'s coherent result. It is not an
+     invalidation.
    - **Unchanged:** `D` reached `pending = 0` with `done-epoch = epoch` (Y#1).
      A current run that has not completed does not count. It becomes `live` again without running, and its
      marked out-edges are unmarked without firing.
@@ -624,10 +641,10 @@ Transitions are built from a small set of primitive table edits (§11).
 | T7 | `track(R, X)` | **Domain:** `X` is a signal or a cell; otherwise it is refused (Z#17). Inside a computation: a `dep` edge per §4.4, read immediately. Inside a task: a snapshot read with no edge, which allocates nothing (Q1, Z#19). |
 | T8 | `observe(host, d, cb)` / `unobserve` | Adds or removes an `observe` edge with `seen = none`; validates `d` if it is idle. **Initial delivery (Z#15):** if `d` is a source, or a `live` computation, its current `(value, version)` is delivered in the same commit. Otherwise `d` is demanded (T5, or T11) and the first delivery happens when it settles changed. |
 | T9 | `fire(E, result)` | Requires `E` to be `armed`; then `E` becomes `fired`. **`wait` edge:** fill its activation's slot, at the index recorded with the member (Z#7); a member listed at several indices fills all of them. **`dep` edge** of `C`: if `E` is a member of an activation of `C`'s current run, fill the slot (delivery) and re-arm `E` per §4.2. Otherwise this is an invalidation (§4.5.3), and `E` stays `fired` as a re-entry point. **`savepoint` edge (X#6):** fill its activation's slot, resume the run once, and remove the edge; the publication keeps only its basis. **`observe` edge:** per §4.2; it stays `armed` (Z#9). **Slots:** a filled activation resumes per T6. If its run is stale, the slot is not filled (§4.5.4). |
-| T10 | `finalize(d)` | Removes armed `dep` edges on `d` that are not unfilled members of an activation, and cascades. A member edge is removed when its slot fills (X#4). |
-| T11 | `dispatch(C)` (X#2, X#3) | **Requires:** `C` is eligible and `needs-run`. Let `E` be its earliest fired `dep` edge by `at`, or the rerun-source edge for T3. **Predecessor:** the stale run (if any) is cancelled with `cancel(R, replace)` (T14). It unwinds its own finalizers, and its resources join through `cleanup` and T13. Nothing transfers: by the re-entrancy rule (§2), no finalizer or resource predates `E.at`. **Suffix:** `dep` edges with `at > E.at` are removed, their baselines move to `C.adoption.baselines` (§4.4), and the predecessor's creations with `at > E.at` become `C.adoption.basis` (only the latest is kept). **New run:** fresh stamp, `R.epoch := C.epoch`. If `E.cont = restart`, it starts from the body; prefix creations remain in `basis` for adoption. Otherwise it resumes `E.cont` with `E`'s delivery: a track interval (§4.4) or the debtor's result. **Edge:** `E` is consumed: re-armed with its new baseline, or removed if its debtor is final (§4.2). This covers completed and parked predecessors alike. |
+| T10 | `finalize(d)` | Removes armed `dep` edges on `d` that are not unfilled members of an activation, and cascades: a creditor that becomes final is finalized in turn (Z#25). A member edge is removed when its slot fills (X#4). |
+| T11 | `dispatch(C)` (X#2, X#3) | **Requires:** `C` is eligible and `needs-run`. Let `E` be its earliest fired `dep` edge by `at`, or the rerun-source edge for T3. **Predecessor:** the stale run (if any) is cancelled with `cancel(R, replace)` (T14). It unwinds its own finalizers, and its resources join through `cleanup` and T13. Nothing transfers: by the re-entrancy rule (§2), no finalizer or resource predates `E.at`. **Suffix:** `dep` edges with `at > E.at` are removed, their baselines move to `C.adoption.baselines` (§4.4), and the predecessor's creations with `at > E.at` become `C.adoption.basis` (only the latest is kept). **New run:** fresh stamp, `R.epoch := C.epoch`. If `E.cont = restart`, it starts from the body; prefix creations remain in `basis` for adoption, and `E` is re-armed with its old baseline, which advances when the new run reads the site (Z#22). Otherwise it resumes `E.cont` with `E`'s delivery: a track interval (§4.4) or the debtor's result. **Edge:** `E` is consumed: re-armed with its new baseline, or removed if its debtor is final (§4.2). This covers completed and parked predecessors alike. |
 | T12 | `complete(R, result)` | **Requires:** a valid token (§2). `R.act := done`. **Computation, current run:** `result`, `version` and `done-epoch := R.epoch` are set; creations in `basis` that this run did not re-create are released; armed resources are cancelled. Settling follows §4.5.2. **Computation, stale run:** the result is discarded. **Task:** children that were not awaited and not detached are cancelled (Q10); armed resources are cancelled; the result fires the task's `wait` creditors. **Then:** if `R` is not retirable, `cleanup[R]` is created (§3.2), then T13, then T10 if the result is final. |
-| T13 | `retire?(R)` | `R` is retired iff `act = done ∧ ¬slice ∧ finalizers = [] ∧ resources = ∅` (W#3, W#4). **Retiring, in order (Z#18):** (1) if `R` is `C.run`, then `C.run := none`; (2) T16 closes `R.scope`: runs owned by the subtree that are not done are cancelled (normally none, because T12/T14 already cancelled them), open explicit scopes in the subtree are closed, and sources owned by the subtree are closed; (3) the run row and `cleanup[R]` are removed; (4) `R.scope` is removed if its subtree is empty, otherwise it stays closed until its last child row is removed (W#9). Children still unwinding keep the closed scope as their owner. Retirement happens inside the transition, before Rule R; Rule R's normalization retires further runs with the same steps. It is called by every path that can make the predicate true: slice exit, finalizer exit, resource join and completion. |
+| T13 | `retire?(R)` | `R` is retired iff `act = done ∧ ¬slice ∧ finalizers = [] ∧ resources = ∅` (W#3, W#4). **Retiring, in order (Z#18):** (1) if `R` is the entity's run (`C.run` or `K.run`), it is set to none (Z#25); (2) T16 closes `R.scope`: runs owned by the subtree that are not done are cancelled (normally none, because T12/T14 already cancelled them), open explicit scopes in the subtree are closed, and sources owned by the subtree are closed; (3) the run row and `cleanup[R]` are removed; (4) `R.scope` is removed if its subtree is empty, otherwise it stays closed until its last child row is removed (W#9). Children still unwinding keep the closed scope as their owner. Retirement happens inside the transition, before Rule R; Rule R's normalization retires further runs with the same steps. It is called by every path that can make the predicate true: slice exit, finalizer exit, resource join and completion. |
 | T14 | `cancel(R)`, `cancel(R, replace)` | `act := done`, `mode := unwinding`. **Removed:** `R`'s activations, their `wait` members, and its `savepoint` edges. **Resources:** told to cancel (phase `cancelling`). **Children:** runs owned by `R.scope` are cancelled. **Cleanup:** `cleanup[R]` is created. **Finalizers:** the head finalizer is scheduled as a cleanup slice (B3, B8). **Replacement (Y#2):** `cancel(R, replace)` affects only the run itself: its activations, resources, children and finalizers. It has **no debtor-side effect**: the computation's creditors keep waiting for the replacement's coherent result. **Debtor side (R#14), for an ordinary cancel only:** `wait` creditors of the cancelled entity receive `err ::cancelled`; for a computation, cancelling its **current** run is an invalidation of its dependents (§4.5.3). Cancelling a stale run invalidates nothing, because the epoch step already did. Then T13. |
 | T15 | `resource-ack(Z)` | **Requires:** no edge has `Z` as debtor (Z#6). Its wait edge is consumed when `Z` fires, or removed with its activation on cancel. Removes `Z` from its run's resources and from `res`, then T13. The host "offload returned" item is a fire (refused while `cancelling`) followed by an acknowledgement. |
 | T16 | `open-scope` / `close-scope(S)` | **Close** cancels all work owned by `S` and its subtree, and closes the explicit child scopes in that subtree (W#9). It closes every source they own; such sources are detached by Rule R step 3 if their owner is removed. A closed source is final and read-only, and survives only through its own reasons (R#15). A scope row is removed once its subtree has no rows other than closed scopes. |
