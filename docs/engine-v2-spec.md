@@ -142,7 +142,11 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     effects and its resources' completions, so cleanup joins (L2); a done
     task leaves its owner scope when its run retires, not when it finishes,
     so a cleanup entry keeps its tombstone and owner chain; the root scope
-    is never removed.
+    is never removed;
+  - Z#57 (§4.3, Z#53): `take`/`acquire` on a closed source consumes what is
+    left; when nothing is, the effect fails at once with `err ::closed` (the
+    take item is still committed, its wait edge consumed), instead of
+    parking a run that nothing can wake.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -596,8 +600,8 @@ They are never dependencies. All operations are atomic commits (D0).
 |---|---|
 | signal, cell | `write(X, v)` (T2), `track` (dep edge) |
 | deferred | `deliver(X, v)` once: fires all `wait` edges and finalizes the deferred; `await` in a computation is a dep edge that is consumed at once if the deferred is final |
-| mailbox | `post(X, v)` appends to the queue; `take(X)` is a wait edge; FIFO, each message is delivered to exactly one waiter atomically; cancelling a waiter removes it from the queue order |
-| semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count; cancelling a waiter removes it |
+| mailbox | `post(X, v)` appends to the queue; `take(X)` is a wait edge; FIFO, each message is delivered to exactly one waiter atomically; cancelling a waiter removes it from the queue order; on a closed, empty mailbox `take` fails at once with `err ::closed` (Z#57) |
+| semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count; cancelling a waiter removes it; on a closed semaphore without permits `acquire` fails at once with `err ::closed` (Z#57) |
 
 **Operation by kind (Z#54).** `track` applies to signals and cells only.
 `await` on a mailbox is `take`. `await` on a semaphore, `await-all` or

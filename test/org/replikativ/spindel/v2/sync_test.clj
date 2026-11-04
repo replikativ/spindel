@@ -183,3 +183,24 @@
           (testing "a host read of a mailbox or semaphore is refused"
             (is (thrown-with-msg? Exception #"Z#54" (v2/value m 100 nil)))
             (is (thrown-with-msg? Exception #"Z#54" (v2/value s 100 nil)))))))))
+
+(deftest consuming-a-closed-source
+  ;; Z#57: take/acquire on a closed source consume what is left, then fail
+  ;; at once with err ::closed instead of parking forever
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [src (promise) gk (v2/deferred)
+              k (task (let [m (v2/mailbox) s (v2/semaphore 1)]
+                        (v2/post! m :left)
+                        (deliver src [m s])
+                        (await gk)))
+              [m s] (deref src 1000 nil)
+              closed (fn [t] (let [[tag v] (outcome t)] (when (= :err tag) (:spindel/closed (ex-data v)))))]
+          (v2/cancel-task! k)                   ; closes the scope's sources (T16)
+          (v2/value (v2/signal 0) 100 nil)
+          (is (= [:ok :left] (outcome (task (take! m)))) "a closed mailbox still hands out its backlog")
+          (is (closed (task (take! m))) "then fails at once")
+          (is (closed (task (await m))) "await on a mailbox is take (Z#54)")
+          (is (= [:ok true] (outcome (task (acquire! s)))) "a closed semaphore still hands out its permits")
+          (is (closed (task (acquire! s)))))))))

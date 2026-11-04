@@ -2005,12 +2005,20 @@
     (let [w (cw)
           at (next-at! r)
           aid (alloc-id! w)]
-      (if (available? x)
+      (cond
+        (available? x)
         (let [v (consume! x)]
           (alloc-id! w)                             ; the consumed wait edge
           (s! x rw/VERSION (inc (gl x rw/VERSION)))
           (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
           (k v))
+        ;; Z#57: closed and empty, nothing can arrive: fail at once, like a
+        ;; waiter woken by the close (Z#53)
+        (closed? x)
+        (do (alloc-id! w)                           ; the consumed wait edge
+            (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+            (ek (closed-ex)))
+        :else
         (let [members (object-array 1)
               a (new-activation! w aid r :one k ek members (object-array 1) 1)
               e (link! w rw/EK-WAIT a x at)]
