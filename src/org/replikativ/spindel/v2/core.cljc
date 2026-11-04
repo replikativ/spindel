@@ -788,6 +788,11 @@
         ;; re-resolve: a fork effect in this slice made `r` a shared basis row
         (aset c 2 (num (dec (long (aget c 2)))))
         (let [w (cw) r (rv w r)]
+          ;; a done run whose slice still holds the flag (a cleanup slice, or a
+          ;; cancelled run unwinding) returns here: an explicit item
+          (when (and (g r rw/R-SLICE) (== rw/ACT-DONE (gl r rw/R-ACT)))
+            (s! r rw/R-SLICE false)
+            (commit! w [:slice-exit (g r rw/ID)]))
           (s! r rw/R-SLICE false)
           (set-active! prev)
           (retire-check! w r))))))
@@ -1080,6 +1085,8 @@
           (s! e rw/E-BASE v)
           (s! e rw/E-SEEN (g x rw/VERSION))
           (s! e rw/E-ARMED true)
+          ;; Z#48: a closed (final) source delivers once; its edge is consumed
+          (when (final? x) (remove-dep! w e))
           (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] (if reused? 0 (g e rw/ID))])
           (k (iv/->Interval old v nil)))))
     (unwind! ek)))
@@ -2142,7 +2149,7 @@
 
 (defn forked-ex [] (ex-info "forked" {:spindel/forked true}))
 
-(declare join! cancel-resource!)
+(declare join! cancel-resource! resource-fire! resource-ack!)
 
 (declare sp-deliver!)
 

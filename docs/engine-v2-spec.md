@@ -105,7 +105,12 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#47 (D3/Q4): `fork` is an effect of task runs (a computation's body
     cannot fork); the parent continues with `[:parent W']`, the child's copy
     of the run resumes at the effect with `[:child nil]`; forking from a
-    nested slice (an inline demand) is refused for now.
+    nested slice (an inline demand) is refused for now;
+  - Z#48 (I5, T7): `track` on a closed (final) source delivers its value
+    once and its dep edge is consumed at once, as `await` on a final debtor
+    (T6, T10);
+  - Z#49 (log): a done run's slice that returns with the slice still held
+    (a cleanup slice, an unwinding run) is the item `slice-exit r`.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
