@@ -26,16 +26,28 @@
          deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
-;; Active run (B6: continuations close over no engine object)
+;; Execution context: the world being processed and the run holding the slice
+;; on this thread (B6: continuations close over no engine object; F1: rows
+;; hold no pointer to a world, the world is the one being processed).
 
-#?(:clj (def ^ThreadLocal active-tl (ThreadLocal.))
-   :cljs (def active-cell #js {:run nil}))
+#?(:clj (def ^ThreadLocal ctx-tl (proxy [ThreadLocal] [] (initialValue [] (object-array 2))))
+   :cljs (def ctx-cell (object-array 2)))
 
-(defn active-run []
-  #?(:clj (.get active-tl) :cljs (.-run active-cell)))
+(defn- ctx ^objects [] #?(:clj (.get ctx-tl) :cljs ctx-cell))
 
-(defn- set-active! [r]
-  #?(:clj (.set active-tl r) :cljs (set! (.-run active-cell) r)))
+(defn active-run [] (aget (ctx) 1))
+(defn- set-active! [r] (aset (ctx) 1 r))
+
+(defn cw
+  "The world this thread is processing."
+  [] (aget (ctx) 0))
+
+(defn- enter-world!
+  "Makes `w` the processed world; returns the previous one for `leave-world!`."
+  [w]
+  (let [c (ctx) prev (aget c 0)] (aset c 0 w) prev))
+
+(defn- leave-world! [prev] (aset (ctx) 0 prev))
 
 ;; ---------------------------------------------------------------------------
 ;; World, ids, gate
@@ -68,7 +80,6 @@
     (s! s rw/S-OPEN true)
     (s! s rw/S-TASKS (hs/oset))
     (s! s rw/S-CHILDREN (alist))
-    (s! s rw/S-WORLD w)
     (when parent (aadd! (g parent rw/S-CHILDREN) s))
     (register! w s)))
 
@@ -279,7 +290,7 @@
   [c]
   (when (and (needs-run? c) (hot? c) (not (g c rw/C-QUEUED)) (eligible? c))
     (s! c rw/C-QUEUED true)
-    (aadd! (g (g c rw/WORLD) rw/W-READY) c)))
+    (aadd! (g (cw) rw/W-READY) c)))
 
 ;; ---------------------------------------------------------------------------
 ;; Retention counts and demand (§3, §10.8, §10.10)
@@ -291,7 +302,7 @@
 (defn- ref-dec! [row]
   (let [n (dec (gl row rw/REFS))]
     (s! row rw/REFS n)
-    (when (zero? n) (aadd! (g (g row rw/WORLD) rw/W-RQ) row))))
+    (when (zero? n) (aadd! (g (cw) rw/W-RQ) row))))
 
 (declare hot-inc! hot-dec!)
 
@@ -510,7 +521,7 @@
 
 (defn- pending-zero! [c]
   (cond
-    (live? c) (settle! (g c rw/WORLD) c)
+    (live? c) (settle! (cw) c)
     :else (maybe-schedule! c)))
 
 ;; ---------------------------------------------------------------------------
@@ -532,7 +543,6 @@
     (s! r rw/TYPE rw/T-RUN)
     (s! r rw/ID (alloc-id! w))
     (s! r rw/R-SCOPE (alloc-id! w))          ; run scope id; T4/T5/T11 order: run, scope
-    (s! r rw/R-WORLD w)
     (s! r rw/R-OF x)
     (s! r rw/R-EPOCH epoch)
     (s! r rw/R-ACT rw/ACT-ACTIVE)
@@ -676,7 +686,7 @@
       (finally
         (s! r rw/R-SLICE false)
         (set-active! prev)
-        (retire-check! (g r rw/R-WORLD) r)))))
+        (retire-check! (cw) r)))))
 
 (defn- ok-k [v] (complete! (active-run) v false))
 (defn- err-k [t] (complete! (active-run) t true))
@@ -713,7 +723,7 @@
   "T12."
   [r v err?]
   (when (and r (== rw/ACT-ACTIVE (gl r rw/R-ACT)))
-    (let [w (g r rw/R-WORLD)
+    (let [w (cw)
           x (g r rw/R-OF)]
       (s! r rw/R-ACT rw/ACT-DONE)
       (if (comp? x)
@@ -934,20 +944,20 @@
   []
   (when-let [r (active-run)]
     (s! r rw/R-FINS (inc (fins r)))
-    (commit! (g r rw/R-WORLD) [:finally-enter (g r rw/ID)])))
+    (commit! (cw) [:finally-enter (g r rw/ID)])))
 
 (defn exit-finally!
   "A `finally` region closes; its block runs now."
   []
   (when-let [r (active-run)]
     (s! r rw/R-FINS (max 0 (dec (fins r))))
-    (commit! (g r rw/R-WORLD) [:finally-exit (g r rw/ID)])))
+    (commit! (cw) [:finally-exit (g r rw/ID)])))
 
 (defn track-effect!
   "T7."
   [x k ek]
   (if-let [r (valid-run)]
-    (let [w (g r rw/R-WORLD)
+    (let [w (cw)
           c (g r rw/R-OF)
           at (next-at! r)]
       (if-not (comp? c)
@@ -1065,7 +1075,7 @@
   (if-not (valid-run)
     (unwind! ek)
   (let [r (valid-run)]
-    (let [w (g r rw/R-WORLD)
+    (let [w (cw)
           x (g r rw/R-OF)
           at (next-at! r)
           aid (alloc-id! w)
@@ -1242,7 +1252,6 @@
   (let [x (object-array size)]
     (s! x rw/TYPE type)
     (s! x rw/ID (alloc-id! w))
-    (s! x rw/WORLD w)
     (s! x rw/OUTS (alist))
     (s! x rw/REFS 0)
     (s! x rw/HOT 0)
@@ -1297,7 +1306,7 @@
   [site inputs body]
   (if-let [r (active-run)]
     (when (valid-run)
-      (let [w (g r rw/R-WORLD)
+      (let [w (cw)
             c (g r rw/R-OF)
             at (next-at! r)]
         (if-not (comp? c)
@@ -1361,7 +1370,7 @@
   [site inputs body]
   (if-let [r (active-run)]
     (when (valid-run)
-      (let [w (g r rw/R-WORLD)
+      (let [w (cw)
             x (g r rw/R-OF)
             at (next-at! r)]
         (if (comp? x)
@@ -1595,7 +1604,8 @@
   [w]
   (let [lk (g w rw/W-LOCK)]
     (when (hs/try-lock! lk)
-      (try (run-turn! w) (finally (hs/unlock! lk))))
+      (let [prev (enter-world! w)]
+        (try (run-turn! w) (finally (hs/unlock! lk) (leave-world! prev)))))
     (handoff! w)))
 
 (defn- work-pending? [w]
@@ -1623,15 +1633,18 @@
   (let [lk (g w rw/W-LOCK)]
     (cond
       (g w rw/W-RELEASED) (throw (released-ex))
-      (hs/held? lk) (f)
+      (hs/held? lk) (if (identical? w (cw))
+                      (f)
+                      (let [prev (enter-world! w)] (try (f) (finally (leave-world! prev)))))
       ;; Fast path: nothing queued and the gate is free, so running the item
       ;; now keeps FIFO order without an ingress node.
       (and (g w rw/W-INLINE) (hs/mpsc-empty? (ingress w)) (hs/try-lock! lk))
-      (let [v (try (s! w rw/W-DRAINING true)
+      (let [prev (enter-world! w)
+            v (try (s! w rw/W-DRAINING true)
                    (let [v (try (f) (finally (s! w rw/W-DRAINING false)))]
                      (run-turn! w)
                      v)
-                   (finally (hs/unlock! lk)))]
+                   (finally (hs/unlock! lk) (leave-world! prev)))]
         (handoff! w)
         v)
       :else
@@ -1640,7 +1653,7 @@
           nil))))
 
 (defn- world-of [h]
-  (if (instance? Handle h) (.-w ^Handle h) (g h rw/WORLD)))
+  (if (instance? Handle h) (.-w ^Handle h) (cw)))
 
 ;; ---------------------------------------------------------------------------
 ;; Host API
@@ -1679,7 +1692,7 @@
    runs in creation order) or by the task run's current scope, which retains
    it only through edges and handles (§5.2)."
   [r kind v init]
-  (let [w (g r rw/R-WORLD)
+  (let [w (cw)
         x (g r rw/R-OF)
         at (next-at! r)]
     (if (comp? x)
@@ -1751,7 +1764,7 @@
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
   (if-let [r (valid-run)]
-    (let [w (g r rw/R-WORLD)
+    (let [w (cw)
           at (next-at! r)
           aid (alloc-id! w)]
       (if (available? x)
@@ -1798,7 +1811,7 @@
   "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
   [h v]
   (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)]
+    (let [x (row-of h) w (cw)]
       (if (closed? x)
         (refuse! w [:post (g x rw/ID) [:opaque v]])
         (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
@@ -1817,7 +1830,7 @@
   "Gives the permit to the first armed waiter, or returns it (§4.3)."
   [h]
   (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)]
+    (let [x (row-of h) w (cw)]
       (if (closed? x)
         (refuse! w [:release (g x rw/ID)])
         (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
@@ -1836,7 +1849,7 @@
    A second delivery is refused."
   [h v]
   (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)]
+    (let [x (row-of h) w (cw)]
       (if (final? x)
         (refuse! w [:deliver (g x rw/ID) [:opaque v]])
         (do (s! x rw/X-VALUE v)
@@ -1849,7 +1862,7 @@
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
   [h v]
   (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)]
+    (let [x (row-of h) w (cw)]
       (if (closed? x)
         (refuse! w [:write (g x rw/ID) [:opaque v]])
         (do
@@ -1888,7 +1901,7 @@
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
   (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)
+    (let [x (row-of h) w (cw)
           pins (g w rw/W-PINS)
           n (long (or (hs/mget pins x) 0))]
       (hs/mput! pins x (inc n))
@@ -1898,7 +1911,7 @@
 
 (defn unpin! [h]
   (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)
+    (let [x (row-of h) w (cw)
           pins (g w rw/W-PINS)
           n (long (or (hs/mget pins x) 0))]
       (if (zero? n)
@@ -1932,7 +1945,7 @@
   "T14 from the host on a task."
   [h]
   (gated (world-of h)
-    (let [k (row-of h) w (g k rw/WORLD)]
+    (let [k (row-of h) w (cw)]
       (if-let [r (let [r (g k rw/K-RUN)] (when (and r (not (g r rw/R-SLICE))) r))]
         (do (cancel! w r ::cancelled)
             (commit! w [:cancel (g r rw/ID)]))
@@ -2052,7 +2065,7 @@
 (defn- arm-and-park!
   "T17 then T6 on the new resource: the run waits for its fire."
   [r kind k ek start!]
-  (let [w (g r rw/R-WORLD)
+  (let [w (cw)
         at (next-at! r)
         z (new-resource! w r kind at)
         _ (commit! w [:arm (g r rw/ID) kind (g z rw/ID)])
@@ -2134,7 +2147,7 @@
    while open (§3.1). Used by `with-scope`."
   []
   (let [r (or (active-run) (throw (ex-info "with-scope outside a body" {})))
-        w (g r rw/R-WORLD)
+        w (cw)
         s (new-scope w (alloc-id! w) :explicit (current-scope! w r))]
     (aadd! (or (g r rw/R-SCOPES) (let [l (alist)] (s! r rw/R-SCOPES l) l)) s)
     (commit! w [:open-scope (g r rw/ID) (g s rw/ID)])
@@ -2143,7 +2156,7 @@
 (defn close-scope-fx!
   "T16 close at the end of `with-scope`: cancels the work it still owns."
   [s]
-  (let [w (g s rw/S-WORLD)]
+  (let [w (cw)]
     (when-let [r (active-run)]
       (when-let [ss (g r rw/R-SCOPES)]
         (let [i (hs/last-index-of ss s)]
