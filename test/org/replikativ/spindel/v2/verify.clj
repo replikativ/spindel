@@ -235,7 +235,7 @@
      :pins (into (sorted-map) (map (fn [[i [_ n]]] [i n])) (f w rw/W-PINS))
      :pending-act nil
      :released false
-     :next-id (aget ^longs (f w rw/W-NEXT) 0)}))
+     :next-id (.get ^java.util.concurrent.atomic.AtomicLong (f w rw/W-NEXT))}))
 
 (defn projecting-hook
   "A world hook that attaches the projection to every log entry, and runs
