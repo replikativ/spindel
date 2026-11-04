@@ -79,7 +79,8 @@
 (def ^:const W-RELEASED 23)
 (def ^:const W-EPOCH 24)     ; M5: this world's owner epoch (identity object)
 (def ^:const W-FWD 25)       ; M5: row ID -> this world's copy (stage 1b)
-(def ^:const W-SIZE 26)
+(def ^:const W-ARMED 26)     ; armed resources (fork refuses while > 0, for now)
+(def ^:const W-SIZE 27)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -188,7 +189,8 @@
 (def ^:const E-IDX 12)       ; position in the debtor's OUTS
 (def ^:const E-ACT 13)       ; activation while an unfilled member
 (def ^:const E-SLOT 14)
-(def ^:const E-SIZE 15)
+(def ^:const E-ORIGIN 15)    ; host edges: id of the world whose host made them (Z#45)
+(def ^:const E-SIZE 16)
 
 (def ^:const EK-DEP 0)
 (def ^:const EK-WAIT 1)

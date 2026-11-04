@@ -145,17 +145,22 @@
      :cljs (if (zero? (.-v state)) (do (set! (.-v state) 2) true) false)))
 
 ;; ---------------------------------------------------------------------------
-;; Insertion-ordered identity sets (scope task lists): O(1) add and remove
+;; Insertion-ordered sets of rows keyed by row ID (scope task lists): O(1) add
+;; and remove; identity is the stable ID, so a row and its copy in a forked
+;; world are the same member (M5).
 
-#?(:clj
-   (deftype IdKey [x]
-     Object
-     (equals [_ o] (and (instance? IdKey o) (identical? x (.-x ^IdKey o))))
-     (hashCode [_] (System/identityHashCode x))))
-
-(defn oset [] #?(:clj (java.util.LinkedHashMap.) :cljs (js/Set.)))
-(defn oset-add! [s x] #?(:clj (.put ^java.util.LinkedHashMap s (IdKey. x) x) :cljs (.add s x)) nil)
-(defn oset-del! [s x] #?(:clj (some? (.remove ^java.util.LinkedHashMap s (IdKey. x))) :cljs (.delete s x)))
+(defn oset [] #?(:clj (java.util.LinkedHashMap.) :cljs (js/Map.)))
+(defn oset-add! [s id x] #?(:clj (.put ^java.util.LinkedHashMap s id x) :cljs (.set s id x)) nil)
+(defn oset-del! [s id] #?(:clj (some? (.remove ^java.util.LinkedHashMap s id)) :cljs (.delete s id)))
 (defn oset-count [s] #?(:clj (.size ^java.util.LinkedHashMap s) :cljs (.-size s)))
 (defn oset-vals "A snapshot vector, in insertion order." [s]
   #?(:clj (vec (.values ^java.util.LinkedHashMap s)) :cljs (vec (es6-iterator-seq (.values s)))))
+(defn oset-copy [s] #?(:clj (java.util.LinkedHashMap. ^java.util.Map s) :cljs (js/Map. s)))
+
+(defn mcopy "A shallow copy of a host map." [m]
+  #?(:clj (cond (instance? java.util.IdentityHashMap m) (java.util.IdentityHashMap. ^java.util.Map m)
+                (instance? java.util.LinkedHashMap m) (java.util.LinkedHashMap. ^java.util.Map m)
+                :else (java.util.HashMap. ^java.util.Map m))
+     :cljs (js/Map. m)))
+(defn lcopy "A shallow copy of a list." [l] #?(:clj (java.util.ArrayList. ^java.util.Collection l) :cljs (.slice l)))
+(defn dcopy "A shallow copy of a deque." [q] #?(:clj (java.util.ArrayDeque. ^java.util.Collection q) :cljs (.slice q)))

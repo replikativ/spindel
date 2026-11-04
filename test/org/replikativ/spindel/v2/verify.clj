@@ -17,7 +17,16 @@
           done? (== rw/ACT-DONE (long (f r rw/R-ACT)))]
       (when (or current? (not done?)) r))))
 
-(defn- successors [row]
+(def ^:dynamic *reg* nil)
+
+(defn- canon
+  "M5: the world's current row for a reference (copies are registered by ID)."
+  [x]
+  (if (and *reg* (instance? (Class/forName "[Ljava.lang.Object;") x))
+    (or (.get ^java.util.Map *reg* (aget ^objects x rw/ID)) x)
+    x))
+
+(defn- successors* [row]
   (condp == (t row)
     rw/T-COMP (when-not (f row rw/C-IDLE)
                 (concat (some-> (current-or-predecessor row) list)
@@ -40,20 +49,28 @@
     rw/T-EDGE [(f row rw/E-DEBTOR)]
     nil))
 
+(defn- successors [row] (map canon (successors* row)))
+
+(declare live*)
+
 (defn live
   "The least set containing the roots and closed under `successors`."
   [w]
+  (binding [*reg* (f w rw/W-REG)]
+  (live* w)))
+
+(defn- live* [w]
   (let [reg (rows w)
-        roots (concat [(f w rw/W-ROOT)]
+        roots (map canon (concat [(f w rw/W-ROOT)]
                       ;; open explicit scopes (§3.1)
                       (filter #(and (== rw/T-SCOPE (t %)) (= :explicit (f % rw/S-KIND)) (f % rw/S-OPEN)) reg)
-                      (keys (f w rw/W-PINS))
+                      (map first (vals (f w rw/W-PINS)))
                       ;; observe edges, and host awaits (pending host promises)
                       (filter #(and (== rw/T-EDGE (t %))
                                     (let [k (long (f % rw/E-KIND))]
                                       (or (== k rw/EK-OBSERVE)
                                           (and (== k rw/EK-WAIT) (fn? (f % rw/E-CRED))))))
-                              reg))
+                              reg)))
         seen (java.util.IdentityHashMap.)]
     (loop [todo (vec roots)]
       (when-let [x (peek todo)]
@@ -215,7 +232,7 @@
                     (keep (fn [r] (when (== rw/ACT-DONE (long (f r rw/R-ACT))) [(id r) {:rows []}])))
                     (get by rw/T-RUN))
      :pubs {} :forks {}
-     :pins (into (sorted-map) (map (fn [[x n]] [(id x) n])) (f w rw/W-PINS))
+     :pins (into (sorted-map) (map (fn [[i [_ n]]] [i n])) (f w rw/W-PINS))
      :pending-act nil
      :released false
      :next-id (aget ^longs (f w rw/W-NEXT) 0)}))
