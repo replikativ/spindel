@@ -81,7 +81,11 @@
 (def ^:const W-FWD 25)       ; M5: row ID -> this world's copy (stage 1b)
 (def ^:const W-ARMED 26)     ; armed resources: ordered set by ID (dormant in a fork, §8.1)
 (def ^:const W-DORMANT 27)   ; a fork's inherited armed resources, activated at its first turn
-(def ^:const W-SIZE 28)
+(def ^:const W-SP-HANDLERS 28) ; savepoint handlers {site handler} (§8.2)
+(def ^:const W-SAVEPOINTS 29)  ; pending savepoint activations, ordered set by ID
+(def ^:const W-SP-DORMANT 30)  ; a fork's inherited pending savepoints (fail err ::forked)
+(def ^:const W-PENDING-ACT 31) ; an instantiated fork's pending activation (S3)
+(def ^:const W-SIZE 32)
 
 ;; Scope
 (def ^:const S-PARENT 2)

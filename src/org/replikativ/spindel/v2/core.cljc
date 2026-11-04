@@ -1626,7 +1626,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Drain
 
-(defn- resume! [w a]
+(defn- resume-act! [w a]
   (let [r (rv w (g a rw/A-RUN))
         k (g a rw/A-R) ek (g a rw/A-E)]
     (cond
@@ -1672,7 +1672,7 @@
         (rule-r! w)
         true)
       (pos? (acount start)) (do (start! w (pop-first! w start)) (rule-r! w) true)
-      (pos? (acount resume)) (do (resume! w (pop-first! w resume)) (rule-r! w) true)
+      (pos? (acount resume)) (do (resume-act! w (pop-first! w resume)) (rule-r! w) true)
       (pos? (acount ready))
       (let [c (pop-first! w ready)]
         (s! c rw/C-QUEUED false)
@@ -1702,7 +1702,7 @@
    true when work remains."
   [w]
   (s! w rw/W-DRAINING true)
-  (when (g w rw/W-DORMANT) (activate-dormant! w))
+  (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w))
   (try
     (loop [n (gl w rw/W-BUDGET)]
       (if (zero? n)
@@ -2144,12 +2144,24 @@
 
 (declare join! cancel-resource!)
 
+(declare sp-deliver!)
+
 (defn- activate-dormant!
   "§8.1: a fork's inherited armed resources, at its first turn. A timer
    re-arms for its remaining time; any other resource (offload, external
    wait) never had a physical counterpart here: it fires err ::forked into
    its edges and joins at once."
   [w]
+  ;; S3/§8.1: pending savepoints a fork inherited, other than its pending
+  ;; activation, fail with err ::forked (the child has no publication for them)
+  (when-let [as (g w rw/W-SP-DORMANT)]
+    (s! w rw/W-SP-DORMANT nil)
+    (let [pending (g w rw/W-PENDING-ACT)]
+      (doseq [a0 as]
+        (when-not (and pending (== (id-of a0) (long pending)))
+          (let [a (rv w a0) r (rv w (g a rw/A-RUN))]
+            (when (and (identical? a (rv w (g r rw/R-ACTV))) (== rw/ACT-PARKED (gl r rw/R-ACT)))
+              (sp-deliver! w a [(forked-ex) true])))))))
   (when-let [zs (g w rw/W-DORMANT)]
     (s! w rw/W-DORMANT nil)
     (doseq [z0 zs]
@@ -2373,7 +2385,13 @@
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
     (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
     (s! c rw/W-ARMED nil)
-    (s! c rw/W-DORMANT (when (and armed (pos? (hs/oset-count armed))) (hs/oset-vals armed)))
+    ;; dormant: this world's armed resources and pending savepoints, plus what
+    ;; it still holds dormant itself (a basis is never run, only forked)
+    (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
+    (let [sps (g w rw/W-SAVEPOINTS)]
+      (s! c rw/W-SAVEPOINTS nil)
+      (s! c rw/W-PENDING-ACT nil)
+      (s! c rw/W-SP-DORMANT (seq (concat (when sps (hs/oset-vals sps)) (g w rw/W-SP-DORMANT)))))
     (when-let [reg (g w rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
@@ -2427,6 +2445,116 @@
 
 (defn fork [] (throw (ex-info "fork outside a body" {})))
 
+;; ---------------------------------------------------------------------------
+;; Savepoints (§8.2, S1-S7)
+
+(defn install-handlers!
+  "Merges `table` ({site handler}) into `w`'s savepoint handlers; a handler is
+   called with the publication after the publishing commit (H3). `:default`
+   matches every site without its own entry."
+  [w table]
+  (s! w rw/W-SP-HANDLERS (merge (g w rw/W-SP-HANDLERS) table))
+  w)
+
+(defn- sp-deliver!
+  "Resumes the run parked on savepoint activation `a` with `res` (T9's
+   savepoint branch): the activation goes, the run becomes active and its
+   slice is scheduled."
+  [w a res]
+  (let [r (rv w (g a rw/A-RUN))]
+    (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (id-of a)))
+    (s! r rw/R-ACTV nil)
+    (s! r rw/R-ACT rw/ACT-ACTIVE)
+    (s! a rw/A-RESULT res)
+    (s! a rw/A-RESUMED true)
+    (unregister! w a)                  ; resumed: a delivery carrier now
+    (aadd! (g w rw/W-RESUME) a)))
+
+(defn savepoint-effect!
+  "S1 `(savepoint site payload)`: with a handler for `site`, the run parks
+   and a publication is offered to it, holding a frozen basis of the world at
+   this commit; without one the effect is the identity on `payload`."
+  [site payload k ek]
+  (if-let [r (valid-run)]
+    (let [w (cw)
+          handlers (g w rw/W-SP-HANDLERS)
+          h (or (get handlers site) (get handlers :default))]
+      (cond
+        (nil? h) (k payload)
+        (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
+        (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
+        :else
+        (let [aid (alloc-id! w)
+              a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 1)]
+          (s! a rw/A-INLINE false)
+          (park! r a)
+          (hs/oset-add! (or (g w rw/W-SAVEPOINTS) (let [s (hs/oset)] (s! w rw/W-SAVEPOINTS s) s)) aid a)
+          (commit! w [:savepoint (g r rw/ID) [:opaque site] [:opaque payload] aid])
+          ;; the basis is a fork of this commit that is never run, only forked
+          (let [basis (fork-world* w)
+                pub {:world w :act aid :site site :payload payload :basis basis
+                     :state (atom :pending)}]
+            ;; the parent's own copy of the run keeps no slice (it is parked)
+            (set-active! (rv w r))
+            (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]])
+            nil))))
+    (unwind! ek)))
+
+(defn savepoint [_ _] (throw (ex-info "savepoint outside a body" {})))
+
+(defn- pub-act [w pub]
+  (let [a (get (g w rw/W-FWD) (:act pub))]
+    (rv w (or a (some #(when (== (id-of %) (long (:act pub))) %) (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))
+
+(defn resume!
+  "S2: continues the publication's own world with `v`, at most once."
+  [pub v]
+  (let [w (:world pub)]
+    (when (compare-and-set! (:state pub) :pending :resumed)
+      (gated w
+        (when-let [a (pub-act w pub)]
+          (sp-deliver! w a [v false])
+          (commit! w [:resume-savepoint (:act pub) [:opaque v]]))))
+    nil))
+
+(defn abandon!
+  "S7: cancels the run suspended at the publication with err ::abandoned."
+  [pub]
+  (let [w (:world pub)]
+    (when (compare-and-set! (:state pub) :pending :abandoned)
+      (gated w
+        (when-let [a (pub-act w pub)]
+          (let [r (rv w (g a rw/A-RUN))]
+            (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (:act pub)))
+            (cancel! w r ::abandoned)
+            (commit! w [:abandon-savepoint (:act pub)])))))
+    nil))
+
+(defn instantiate
+  "S3: a frozen fork of the publication's basis, not yet activated: the
+   run's copy is parked on its savepoint, which is the fork's pending
+   activation. Any number of instances are independent."
+  [pub]
+  (let [b (:basis pub)
+        c (fork-world* b)]
+    (s! c rw/W-PENDING-ACT (:act pub))
+    c))
+
+(defn activate!
+  "S4: resumes an instantiated fork's pending activation with `v`."
+  [w v]
+  (gated w
+    (let [aid (g w rw/W-PENDING-ACT)]
+      (when aid
+        (s! w rw/W-PENDING-ACT nil)
+        (let [a (rv w (get (g w rw/W-FWD) aid
+                           (some #(when (== (id-of %) (long aid)) %)
+                                 (concat (g w rw/W-SP-DORMANT)
+                                         (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals)))))]
+          (sp-deliver! w a [v false])
+          (commit! w [:activate aid [:opaque v]])))))
+  w)
+
 (defn offload [_] (throw (ex-info "offload outside a body" {})))
 
 (defn sleep [_] (throw (ex-info "sleep outside a body" {})))
@@ -2451,6 +2579,8 @@
        (fn [[xs]] `(await-all-effect! ~xs ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-any [_ctx r e]
        (fn [[xs]] `(await-any-effect! ~xs ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-savepoint [_ctx r e]
+       (fn [[site payload]] `(savepoint-effect! ~site ~payload ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-fork [_ctx r e]
        (fn [_] `(fork-effect! ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
@@ -2467,6 +2597,7 @@
         'org.replikativ.spindel.v2.core/take! `bp-consume
         'org.replikativ.spindel.v2.core/offload `bp-offload
         'org.replikativ.spindel.v2.core/fork `bp-fork
+        'org.replikativ.spindel.v2.core/savepoint `bp-savepoint
         'org.replikativ.spindel.v2.core/sleep `bp-sleep
         'org.replikativ.spindel.v2.core/acquire! `bp-consume})
      (declare register-finally)
