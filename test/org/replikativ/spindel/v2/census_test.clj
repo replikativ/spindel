@@ -80,3 +80,27 @@
         (is (thrown? Exception (v2/write! x 1)) "host operations fail after release")
         (System/gc)
         (is (<= (left) 4) (str "rows left: " (left) " (root scope and handle-held rows)"))))))
+
+(deftest task-loop-with-deferreds-and-timers
+  ;; §0 census: a dvergr-style loop creating a fresh computation, a deferred
+  ;; and a timer per iteration stays at a constant row count.
+  (let [w (v2/world {:verify? true})]
+    (binding [v2/*world* w]
+      (let [mb (v2/mailbox)
+            loop-task (task (loop [acc 0]
+                              (let [m (take! mb)]
+                                (if (= m :stop)
+                                  acc
+                                  (let [d (v2/deferred)
+                                        k (task (v2/sleep 0) (v2/deliver! d m))
+                                        c (spin (* 2 m))]
+                                    (recur (+ acc (await c) (await d))))))))]
+        (dotimes [i 20] (v2/post! mb i))
+        (Thread/sleep 100)
+        (let [before (total (census w))]
+          (dotimes [i 300] (v2/post! mb i))
+          (Thread/sleep 300)
+          (let [after (total (census w))]
+            (is (<= after (+ before 3)) (str "rows grew from " before " to " after))))
+        (v2/post! mb :stop)
+        (is (number? (v2/value loop-task 5000 ::timeout)))))))

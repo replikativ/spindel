@@ -22,7 +22,7 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare row-of world-of cancel-resource! demand! settle! pending-zero! rule-r! complete! validate!
+(declare create-source-top-host! row-of world-of cancel-resource! demand! settle! pending-zero! rule-r! complete! validate!
          deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
@@ -1584,7 +1584,47 @@
     (s! x rw/X-OPEN true)
     (register! w x)))
 
+(defn- create-source-in-run!
+  "T1 inside a run: owned by the computation (in its basis, adopted by later
+   runs in creation order) or by the task run's current scope, which retains
+   it only through edges and handles (§5.2)."
+  [r kind v init]
+  (let [w (g r rw/R-WORLD)
+        x (g r rw/R-OF)
+        at (next-at! r)]
+    (if (comp? x)
+      (let [key (creation-key! r -1)
+            old (adopt! x key)]
+        (if (and old (source? old))
+          (do (s! old rw/AT at)
+              (let [h (handle! w old)]
+                (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
+                            [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g old rw/ID)])
+                h))
+          (let [s (new-source! w kind v x key at)]
+            (s! s rw/HANDLES 0)
+            (when init (init s))
+            (aadd! (g x rw/C-BASIS) s)
+            (ref-inc! s)
+            (let [h (handle! w s)]
+              (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
+                          [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
+              h))))
+      (let [s (new-source! w kind v (current-scope! w r) 0 at)]
+        (s! s rw/HANDLES 0)
+        (when init (init s))
+        (aadd! (g w rw/W-RQ) s)
+        (let [h (handle! w s)]
+          (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
+                      [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
+          h)))))
+
 (defn- create-source-top! [w kind v init]
+  (if-let [r (active-run)]
+    (if (valid-run) (create-source-in-run! r kind v init) (throw (ex-info "source creation in a cancelled run" {})))
+    (create-source-top-host! w kind v init)))
+
+(defn- create-source-top-host! [w kind v init]
   (let [h (top-handle w)]
     (gated w
       (let [x (new-source! w kind v (g w rw/W-ROOT) 0 0)]
