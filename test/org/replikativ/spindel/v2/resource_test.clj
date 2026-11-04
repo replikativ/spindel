@@ -96,3 +96,32 @@
           (v2/write! x 3)
           (is (wait-until #(= [4 9] @seen)))
           (u))))))
+
+(defn- reg-size [w] (count (aget ^objects w rw/W-REG)))
+
+(deftest finalizers-act-after-release
+  ;; Z#56: a cleanup slice of a released world may still deliver (Z#40)
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred) d2 (v2/deferred) ran (atom nil)
+              _ (task (try (await d) (finally (v2/deliver! d2 :from-finally) (reset! ran :done))))]
+          (v2/value (v2/signal 0) 100 nil)
+          (let [left (v2/release-world! w)]
+            (is (wait-until #(= :done @ran)) "the finalizer ran to its end")
+            (is (wait-until #(zero? (left))))))))))
+
+(deftest offload-joins-after-release
+  ;; Z#56: an offload running at release completes into the released world,
+  ;; joins, and its run retires
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [started (promise)
+              _ (task (offload #(do (deliver started true)
+                                    (try (Thread/sleep 300) (catch InterruptedException _ (Thread/sleep 50)))
+                                    :done)))]
+          (deref started 1000 nil)
+          (let [left (v2/release-world! w)]
+            (is (wait-until #(zero? (left))) "no rows left once the offload returned")
+            (is (= 1 (reg-size w)) "only the root scope")))))))

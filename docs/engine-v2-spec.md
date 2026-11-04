@@ -137,7 +137,12 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     errors;
   - Z#55 (T15, T17): a resource effect is one effect and one item
     `arm st kind k fresh` (resource, activation, wait edge allocated in that
-    order); T15 retires the run (T13) within its own item, as Z#49/Z#51 do.
+    order); T15 retires the run (T13) within its own item, as Z#49/Z#51 do;
+  - Z#56 (T21, §3.2, I1): a released world still accepts its finalizers'
+    effects and its resources' completions, so cleanup joins (L2); a done
+    task leaves its owner scope when its run retires, not when it finishes,
+    so a cleanup entry keeps its tombstone and owner chain; the root scope
+    is never removed.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -754,7 +759,7 @@ Transitions are built from a small set of primitive table edits (§11).
 | T18 | `resource-fire(Z, v)` | **Requires:** `Z` is `armed` (Z#14). `armed` becomes `fired`, exactly once, and every armed `wait` edge with debtor `Z` fires (T9) (Z#6). `Z` remains outstanding until its acknowledgement (T15). |
 | T19 | `handle-drop(H)` | `handles -= 1`; Rule R applies §3.4. A publication handle reaching 0 abandons it (S7). |
 | T20 | `pin` / `unpin` | Increments or decrements the row's pin count (Z#16). An `unpin` at count 0 is refused. A row is a root while its count is > 0. |
-| T21 | `release-world` | **Sets** `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. **Then** T16 on the root scope. **Completes** when no rows remain except cleanup entries, which are reported until they are retired (L2). |
+| T21 | `release-world` | **Sets** `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. Not revoked (Z#56): the effects of a cleanup slice (a finalizer may deliver, post, release, write and close, Z#40) and the completions of outstanding resources, which still fire and join. **Then** T16 on the root scope, which stays as the administrative allowance (I11a). **Completes** when no rows remain except cleanup entries, which are reported until they are retired (L2). |
 | T22 | `host-await(d)` / `host-unawait(E)` (Z#27) | **Await:** adds a `wait` edge with creditor host on `d` (demanding it, T5/T11), and validates `d` if it is idle. A root while it exists. **Fire:** when `d` settles or becomes final, the edge is consumed and the host promise receives the result. **Unawait:** a host that stops waiting removes the edge. |
 
 ### 5.2 Ownership of created rows (R#9)

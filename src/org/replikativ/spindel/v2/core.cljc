@@ -727,6 +727,7 @@
   [w s]
   (when (and (not (g s rw/S-OPEN))
              (not (g s rw/S-HELD))
+             (not= :root (g s rw/S-KIND))       ; the administrative allowance (I11a)
              (zero? (hs/oset-count (g s rw/S-TASKS)))
              (zero? (acount (g s rw/S-CHILDREN))))
     (unregister! w s)
@@ -755,6 +756,8 @@
       (dotimes [i (acount cs)] (close-scope! w (rv w (anth cs i))))))
   (remove-scope-if-empty! w s))
 
+(declare release-ownership!)
+
 (defn- retire!
   "T13, in Z#18 order."
   [w r]
@@ -766,7 +769,9 @@
     (when-let [s (rv w (g r rw/R-SROW))]
       (s! s rw/S-HELD false)
       (close-scope! w s))
-    (unregister! w r)))
+    (unregister! w r)
+    ;; the tombstone and its owner chain go with the run (Z#56)
+    (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))))
 
 (defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
 
@@ -871,8 +876,19 @@
     (s! c rw/C-ADOPT-BASE nil)
     (dotimes [i (acount bs)] (ref-dec! w (rv w (g (rv w (anth bs i)) rw/E-DEBTOR))))))
 
+(defn- release-ownership!
+  "A done task leaves its owner scope once its run has retired: until then the
+   cleanup entry keeps it as a tombstone, and its owner chain (§3.2, Z#56)."
+  [w k]
+  (let [owner (rv w (g k rw/OWNER))]
+    (when (and owner (not (fn? owner)) (== rw/T-SCOPE (gl owner rw/TYPE)))
+      (when (hs/oset-del! (g owner rw/S-TASKS) (id-of k))
+        (ref-dec! w k))
+      (remove-scope-if-empty! w owner))))
+
 (defn- finish-task!
-  "Sets a task's result and fires its creditors; ownership retention ends."
+  "Sets a task's result and fires its creditors; ownership retention ends
+   with its run (release-ownership!)."
   [w k v err?]
   (when-not (g k rw/K-DONE)
     (s! k rw/K-DONE true)
@@ -880,12 +896,8 @@
     (s! k rw/K-ERR (boolean err?))
     (s! k rw/VERSION (inc (gl k rw/VERSION)))
     (settle! w k)
-    (let [owner (rv w (g k rw/OWNER))]
-      (when (and owner (not (fn? owner)) (== rw/T-SCOPE (gl owner rw/TYPE)))
-        (when (hs/oset-del! (g owner rw/S-TASKS) (id-of k))
-          (ref-dec! w k))
-        (do
-          (remove-scope-if-empty! w owner))))))
+    (when-not (rv w (g k rw/K-RUN))
+      (release-ownership! w k))))
 
 (defn- complete!
   "T12."
@@ -1837,15 +1849,20 @@
 
 (defn released-ex [] (ex-info "world released" {:spindel/released true}))
 
-(defn host!
-  "H1: a host operation `f` of world `w`. A thread that already holds the
-   world (inside a slice or a callback) runs it at once; any other thread
-   enqueues it, then tries the gate (H2) unless the world is not inline.
-   A released world refuses host operations (T21)."
-  [w f]
+(defn- ingress!
+  "H1: an item `f` of world `w`. A thread that already holds the world
+   (inside a slice or a callback) runs it at once; any other thread enqueues
+   it, then tries the gate (H2) unless the world is not inline. `admit?`
+   items are host operations, which a released world refuses (T21), except
+   the effects of a run's own slice: a finalizer of a cleanup entry may
+   still deliver, post, release and write (Z#40, Z#56). Completions of
+   outstanding resources are not admissions: they join (L2)."
+  [w f admit?]
   (let [lk (g w rw/W-LOCK)]
     (cond
-      (g w rw/W-RELEASED) (throw (released-ex))
+      (and admit? (g w rw/W-RELEASED)
+           (not (and (identical? w (cw)) (active-run))))
+      (throw (released-ex))
       (hs/held? lk) (if (identical? w (cw))
                       (f)
                       (let [prev (enter-world! w)] (try (f) (finally (leave-world! prev)))))
@@ -1864,6 +1881,8 @@
       (do (hs/mpsc-add! (ingress w) f)
           (if (g w rw/W-INLINE) (process! w) (handoff! w))
           nil))))
+
+(defn host! [w f] (ingress! w f true))
 
 (defn- world-of
   "The world a host operation on `h` acts on. Inside a slice it is the
@@ -2349,7 +2368,8 @@
 
 (defn- join! [w z res]
   ;; the callback captured the row before any later fork: resolve it in `w`
-  (host! w #(let [z (rv w z)] (resource-fire! w z res) (resource-ack! w z))))
+  ;; a completion, not an admission: accepted after release (T21, L2)
+  (ingress! w #(let [z (rv w z)] (resource-fire! w z res) (resource-ack! w z)) false))
 
 (defn offload-effect!
   "`(offload f)`: runs the plain function `f` on the world's executor,
@@ -2407,7 +2427,8 @@
             (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
       (commit! w [:release-world])
       (s! w rw/W-RELEASED true)))
-  (fn [] (when-let [reg (g w rw/W-REG)] (hs/msize reg))))
+  ;; the root scope is the administrative allowance (I11a): not a row left
+  (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
 
 (defn open-scope!
   "T16 open: an explicit scope, child of the run's current scope, a root
