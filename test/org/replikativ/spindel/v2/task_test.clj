@@ -23,7 +23,8 @@
      :sources (get fr rw/T-SOURCE 0)}))
 
 (defn- outcome [h]
-  (try [:ok (v2/value h)] (catch Exception e [:err (or (ex-data e) e)])))
+  (try (let [v (v2/value h 100 ::pending)] (if (= ::pending v) [:pending] [:ok v]))
+       (catch Exception e [:err (or (ex-data e) e)])))
 
 (deftest top-level-task
   (checked
@@ -63,7 +64,7 @@
       (binding [v2/*world* w]
         (let [d (v2/deferred)
               t (task (* 2 (await d)))]
-          (is (thrown? Exception (v2/value t)) "not finished yet")
+          (is (= ::pending (v2/value t 50 ::pending)) "not finished yet")
           (v2/deliver! d 21)
           (is (= 42 (v2/value t)))
           (is (= 0 (:edges (census w))) "the wait edge was consumed"))))))

@@ -23,7 +23,8 @@
      :acts (get fr rw/T-ACT 0)}))
 
 (defn- outcome [h]
-  (try [:ok (v2/value h)] (catch Exception e [:err e])))
+  (try (let [v (v2/value h 100 ::pending)] (if (= ::pending v) [:pending] [:ok v]))
+       (catch Exception e [:err e])))
 
 (deftest mailbox-fifo
   (checked

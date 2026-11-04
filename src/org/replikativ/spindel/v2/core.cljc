@@ -21,7 +21,7 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare drain! demand! settle! pending-zero! rule-r! complete! validate!
+(declare demand! settle! pending-zero! rule-r! complete! validate!
          deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
@@ -40,6 +40,9 @@
 ;; World, ids, gate
 
 (def ^:dynamic *world* nil)
+
+#?(:clj (def default-executor
+          (delay (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor))))
 
 (defn- alloc-id! ^long [w]
   (let [^longs n (g w rw/W-NEXT)
@@ -74,7 +77,7 @@
   "A new world. `:verify? true` keeps an id->row registry and a commit log
    (test only); `:hook` runs after every commit in verify mode."
   ([] (world {}))
-  ([{:keys [verify? hook]}]
+  ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
    (let [w (object-array rw/W-SIZE)
          next (long-array 1)]
      (aset next 0 1)
@@ -89,6 +92,11 @@
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
      (s! w rw/W-CALLBACKS (alist))
+     (s! w rw/W-INGRESS #?(:clj (java.util.concurrent.ConcurrentLinkedQueue.) :cljs (array)))
+     (s! w rw/W-SCHEDULED #?(:clj (java.util.concurrent.atomic.AtomicBoolean. false) :cljs (volatile! false)))
+     (s! w rw/W-EXEC (or executor #?(:clj @default-executor :cljs nil)))
+     (s! w rw/W-INLINE (boolean inline?))
+     (s! w rw/W-BUDGET (long budget))
      (when verify?
        (s! w rw/W-REG #?(:clj (java.util.LinkedHashMap.) :cljs (js/Map.)))
        (s! w rw/W-LOG (alist))
@@ -98,16 +106,15 @@
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
      w)))
 
+(declare host!)
+
 #?(:clj
-   (defmacro gated [w & body]
-     (if (rw/cljs? &env)
-       `(do ~@body)
-       (let [gw (with-meta (gensym "gw") {:tag 'objects})
-             lk (with-meta (gensym "lock") {:tag 'java.util.concurrent.locks.ReentrantLock})]
-         `(let [~gw ~w
-                ~lk (aget ~gw rw/W-LOCK)]
-            (.lock ~lk)
-            (try ~@body (finally (.unlock ~lk))))))))
+   (defmacro gated
+     "H1: runs `body` as a host item of world `w`: directly when this thread
+      already holds the world (a slice or a callback), else enqueued and
+      processed per H2. Returns the body's value when it ran before return."
+     [w & body]
+     `(host! ~w (fn [] ~@body))))
 
 (defn cancelled-ex
   "The error a cancelled entity's creditors and cleanup slices receive."
@@ -1029,13 +1036,18 @@
            (or (== i (alength a))
                (and (same-capture? (aget a i) (aget b i)) (recur (inc i))))))))
 
-(deftype Handle [row]
+(definterface IHandle (getRow []) (setRow [r]))
+
+(deftype Handle [w ^:volatile-mutable row]
+  IHandle
+  (getRow [_] row)
+  (setRow [_ r] (set! row r))
   #?@(:clj [clojure.lang.IDeref
-            (deref [_] (value row))]))
+            (deref [this] (value this))]))
 
 (defn row-of
   "The row behind a handle."
-  [h] (if (instance? Handle h) (.-row ^Handle h) h))
+  [h] (if (instance? Handle h) (.getRow ^Handle h) h))
 
 (defn- debtor-row [w type size owner key at handles]
   (let [x (object-array size)]
@@ -1104,7 +1116,7 @@
           (let [child (new-comp! w (run-scope! w r) 0 at inputs body 0)]
             (aadd! (g w rw/W-RQ) child)
             (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-            (->Handle child))
+            (->Handle w child))
           (let [key (creation-key! r site)
                 child (adopt! c key)]
             (if child
@@ -1122,21 +1134,22 @@
                             (mark-from! child)
                             (maybe-schedule! child)))))
                   (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-                  (->Handle child))
+                  (->Handle w child))
               ;; M3: a body creation starts with the body's (weak) handle
               ;; (Z#13); until weak handles exist it takes none.
               (let [child (new-comp! w c key at inputs body 0)]
                 (aadd! (g c rw/C-BASIS) child)
                 (ref-inc! child)
                 (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-                (->Handle child)))))))
-    (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))]
+                (->Handle w child)))))))
+    (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
+          h (->Handle w nil)]
       (gated w
         (let [c (new-comp! w (g w rw/W-ROOT) 0 0 inputs body 1)]
+          (.setRow ^Handle h c)
           (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
-          (commit! w [:create-comp-top (g c rw/ID)])
-          (drain! w)
-          (->Handle c))))))
+          (commit! w [:create-comp-top (g c rw/ID)])))
+      h)))
 
 (defn- new-task! [w owner key at inputs body handles]
   (let [k (debtor-row w rw/T-TASK rw/K-SIZE owner key at handles)]
@@ -1166,7 +1179,7 @@
             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS)))
               (do (s! old rw/AT at)
                   (commit! w [:spawn (g r rw/ID) site (g old rw/ID)])
-                  (->Handle old))
+                  (->Handle w old))
               (do (when old                       ; changed captures: replace it
                     (let [basis (g x rw/C-BASIS)
                           i #?(:clj (.indexOf ^java.util.ArrayList basis old) :cljs (.indexOf basis old))]
@@ -1178,24 +1191,25 @@
                     (ref-inc! k)
                     (start-task! w k)
                     (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
-                    (->Handle k)))))
+                    (->Handle w k)))))
           (let [s (run-scope! w r)
                 k (new-task! w s 0 at inputs body 0)]
             (aadd! (g s rw/S-TASKS) k)
             (ref-inc! k)
             (start-task! w k)
             (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
-            (->Handle k)))))
-    (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))]
+            (->Handle w k)))))
+    (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
+          h (->Handle w nil)]
       (gated w
         (let [s (g w rw/W-ROOT)
               k (new-task! w s 0 0 inputs body 1)]
+          (.setRow ^Handle h k)
           (aadd! (g s rw/S-TASKS) k)
           (ref-inc! k)
           (start-task! w k)
-          (commit! w [:spawn-top (g k rw/ID)])
-          (drain! w)
-          (->Handle k))))))
+          (commit! w [:spawn-top (g k rw/ID)])))
+      h)))
 
 ;; ---------------------------------------------------------------------------
 ;; Idle validation (§3.4, R#3)
@@ -1307,38 +1321,111 @@
     #?(:clj (.remove ^java.util.ArrayList l (int 0)) :cljs (.shift l))
     x))
 
-(defn- drain! [w]
-  (when-not (or (g w rw/W-DRAINING) (active-run))
-    (s! w rw/W-DRAINING true)
-    (try
-      (let [ready (g w rw/W-READY)
-            resume (g w rw/W-RESUME)
-            start (g w rw/W-START)]
-        (loop []
-          (cond
-            (pos? (acount (g w rw/W-CLEANUP)))
-            (let [[r ek ex] (pop-first! (g w rw/W-CLEANUP))]
-              (commit! w [:finalize (g r rw/ID)])
-              (slice! r #(ek ex))
-              (rule-r! w)
-              (recur))
-            (pos? (acount start)) (do (start! w (pop-first! start)) (rule-r! w) (recur))
-            (pos? (acount resume)) (do (resume! w (pop-first! resume)) (rule-r! w) (recur))
-            (pos? (acount ready))
-            (let [c (pop-first! ready)]
-              (s! c rw/C-QUEUED false)
-              (when (and (hot? c) (needs-run? c) (eligible? c))
-                (dispatch! w c))
-              (rule-r! w)
-              (recur))
-            :else (rule-r! w))))
-      (finally (s! w rw/W-DRAINING false)))
-    (let [cbs (g w rw/W-CALLBACKS)]
-      (when (pos? (acount cbs))
-        (let [batch (acopy cbs)]
-          (aclear! cbs)
-          (dotimes [i (acount batch)]
-            (let [[cb [v err?]] (anth batch i)] (cb v err?))))))))
+(defn- drain-step!
+  "One unit of internal work (a cleanup slice, a task start, a resumption or
+   a dispatch), then Rule R. False when there is none."
+  [w]
+  (let [ready (g w rw/W-READY)
+        resume (g w rw/W-RESUME)
+        start (g w rw/W-START)
+        cleanup (g w rw/W-CLEANUP)]
+    (cond
+      (pos? (acount cleanup))
+      (let [[r ek ex] (pop-first! cleanup)]
+        (commit! w [:finalize (g r rw/ID)])
+        (slice! r #(ek ex))
+        (rule-r! w)
+        true)
+      (pos? (acount start)) (do (start! w (pop-first! start)) (rule-r! w) true)
+      (pos? (acount resume)) (do (resume! w (pop-first! resume)) (rule-r! w) true)
+      (pos? (acount ready))
+      (let [c (pop-first! ready)]
+        (s! c rw/C-QUEUED false)
+        (when (and (hot? c) (needs-run? c) (eligible? c))
+          (dispatch! w c))
+        (rule-r! w)
+        true)
+      :else false)))
+
+(defn- run-callbacks!
+  "Host callbacks run between items, on the processing thread (H3)."
+  [w]
+  (let [cbs (g w rw/W-CALLBACKS)]
+    (when (pos? (acount cbs))
+      (let [batch (acopy cbs)]
+        (aclear! cbs)
+        (dotimes [i (acount batch)]
+          (let [[cb [v err?]] (anth batch i)] (cb v err?)))
+        true))))
+
+(defn- ingress ^java.util.concurrent.ConcurrentLinkedQueue [w] (g w rw/W-INGRESS))
+
+(defn- run-turn!
+  "H2: processes ingress items and internal work up to the budget. Returns
+   true when work remains."
+  [w]
+  (s! w rw/W-DRAINING true)
+  (try
+    (loop [n (gl w rw/W-BUDGET)]
+      (if (zero? n)
+        true
+        (if-let [item (.poll (ingress w))]
+          (do (item) (recur (dec n)))
+          (cond (drain-step! w) (recur (dec n))
+                (run-callbacks! w) (recur n)
+                :else false))))
+    (finally (s! w rw/W-DRAINING false))))
+
+(declare handoff!)
+
+(defn- process!
+  "H2: try the gate; the winner runs a bounded turn, then hands off."
+  [w]
+  (let [^java.util.concurrent.locks.ReentrantLock lk (g w rw/W-LOCK)]
+    (when (.tryLock lk)
+      (try (run-turn! w) (finally (.unlock lk))))
+    (handoff! w)))
+
+(defn- work-pending? [w]
+  (or (not (.isEmpty (ingress w)))
+      (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
+      (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))
+      (pos? (acount (g w rw/W-CALLBACKS)))))
+
+(defn- handoff!
+  "H2: after releasing the gate, queued work is never stranded: schedule the
+   world's drainer when work remains and none is scheduled."
+  [w]
+  (let [^java.util.concurrent.atomic.AtomicBoolean sched (g w rw/W-SCHEDULED)]
+    (when (and (work-pending? w) (.compareAndSet sched false true))
+      (let [^java.util.concurrent.Executor ex (g w rw/W-EXEC)]
+        (.execute ex ^Runnable (fn [] (.set sched false) (process! w)))))))
+
+(defn host!
+  "H1: a host operation `f` of world `w`. A thread that already holds the
+   world (inside a slice or a callback) runs it at once; any other thread
+   enqueues it, then tries the gate (H2) unless the world is not inline."
+  [w f]
+  (let [^java.util.concurrent.locks.ReentrantLock lk (g w rw/W-LOCK)]
+    (cond
+      (.isHeldByCurrentThread lk) (f)
+      ;; Fast path: nothing queued and the gate is free, so running the item
+      ;; now keeps FIFO order without an ingress node.
+      (and (g w rw/W-INLINE) (.isEmpty (ingress w)) (.tryLock lk))
+      (let [v (try (s! w rw/W-DRAINING true)
+                   (let [v (try (f) (finally (s! w rw/W-DRAINING false)))]
+                     (run-turn! w)
+                     v)
+                   (finally (.unlock lk)))]
+        (handoff! w)
+        v)
+      :else
+      (do (.add (ingress w) f)
+          (if (g w rw/W-INLINE) (process! w) (handoff! w))
+          nil))))
+
+(defn- world-of [h]
+  (if (instance? Handle h) (.-w ^Handle h) (g h rw/WORLD)))
 
 ;; ---------------------------------------------------------------------------
 ;; Host API
@@ -1350,14 +1437,20 @@
     (s! x rw/X-OPEN true)
     (register! w x)))
 
+(defn- create-source-top! [w kind v init]
+  (let [h (->Handle w nil)]
+    (gated w
+      (let [x (new-source! w kind v (g w rw/W-ROOT) 0 0)]
+        (when init (init x))
+        (.setRow ^Handle h x)
+        (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID)
+                    ([:signal :cell :deferred :mailbox :semaphore] kind) [:opaque v] (g x rw/ID)])))
+    h))
+
 (defn signal
   "T1 at top level: a signal in `w` (default `*world*`)."
   ([v] (signal *world* v))
-  ([w v]
-   (gated w
-     (let [x (new-source! w rw/SRC-SIGNAL v (g w rw/W-ROOT) 0 0)]
-       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :signal [:opaque v] (g x rw/ID)])
-       (->Handle x)))))
+  ([w v] (create-source-top! w rw/SRC-SIGNAL v nil)))
 
 (defn- mailbox? [x] (== rw/SRC-MAILBOX (gl x rw/X-KIND)))
 
@@ -1400,7 +1493,7 @@
     (unwind! ek)))
 
 (defn- serve-waiter!
-  "The first waiter whose activation can still receive, or nil. Waiters of
+  "The first waiter whose activation can still receive gets `v`. Waiters of
    stale or cancelled runs are skipped (§4.5.4)."
   [w x v]
   (let [q (deque x rw/X-WAITERS)]
@@ -1418,78 +1511,61 @@
 (defn mailbox
   "T1 at top level: a FIFO mailbox (§4.3)."
   ([] (mailbox *world*))
-  ([w]
-   (gated w
-     (let [x (new-source! w rw/SRC-MAILBOX (java.util.ArrayDeque.) (g w rw/W-ROOT) 0 0)]
-       (s! x rw/X-WAITERS (java.util.ArrayDeque.))
-       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :mailbox [:opaque nil] (g x rw/ID)])
-       (->Handle x)))))
+  ([w] (create-source-top! w rw/SRC-MAILBOX (java.util.ArrayDeque.)
+                           #(s! % rw/X-WAITERS (java.util.ArrayDeque.)))))
 
 (defn post!
   "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
   [h v]
-  (let [x (row-of h) w (g x rw/WORLD)]
-    (gated w
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)]
       (s! x rw/VERSION (inc (gl x rw/VERSION)))
       (when-not (serve-waiter! w x v)
         (.addLast (deque x rw/X-VALUE) v))
-      (commit! w [:post (g x rw/ID) [:opaque v]])
-      (drain! w))
-    nil))
+      (commit! w [:post (g x rw/ID) [:opaque v]])))
+  nil)
 
 (defn semaphore
   "T1 at top level: a counting semaphore with `n` permits (§4.3)."
   ([n] (semaphore *world* n))
-  ([w n]
-   (gated w
-     (let [x (new-source! w rw/SRC-SEMAPHORE (long n) (g w rw/W-ROOT) 0 0)]
-       (s! x rw/X-WAITERS (java.util.ArrayDeque.))
-       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :semaphore [:opaque n] (g x rw/ID)])
-       (->Handle x)))))
+  ([w n] (create-source-top! w rw/SRC-SEMAPHORE (long n)
+                             #(s! % rw/X-WAITERS (java.util.ArrayDeque.)))))
 
 (defn sem-release!
   "Gives the permit to the first armed waiter, or returns it (§4.3)."
   [h]
-  (let [x (row-of h) w (g x rw/WORLD)]
-    (gated w
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)]
       (s! x rw/VERSION (inc (gl x rw/VERSION)))
       (when-not (serve-waiter! w x true)
         (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
-      (commit! w [:release (g x rw/ID)])
-      (drain! w))
-    nil))
+      (commit! w [:release (g x rw/ID)])))
+  nil)
 
 (defn deferred
   "T1 at top level: a deferred, delivered once (§4.3)."
   ([] (deferred *world*))
-  ([w]
-   (gated w
-     (let [x (new-source! w rw/SRC-DEFERRED nil (g w rw/W-ROOT) 0 0)]
-       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :deferred [:opaque nil] (g x rw/ID)])
-       (->Handle x)))))
+  ([w] (create-source-top! w rw/SRC-DEFERRED nil nil)))
 
 (defn deliver!
   "Delivers a deferred once: fires its edges and finalizes it (§4.3, T10).
    A second delivery is refused."
   [h v]
-  (let [x (row-of h)
-        w (g x rw/WORLD)]
-    (gated w
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)]
       (if (final? x)
         (refuse! w [:deliver (g x rw/ID) [:opaque v]])
         (do (s! x rw/X-VALUE v)
             (s! x rw/VERSION 1)
             (settle! w x)
-            (commit! w [:deliver (g x rw/ID) [:opaque v]])
-            (drain! w))))
-    v))
+            (commit! w [:deliver (g x rw/ID) [:opaque v]])))))
+  v)
 
 (defn write!
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
   [h v]
-  (let [x (row-of h)
-        w (g x rw/WORLD)]
-    (gated w
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)]
       (s! x rw/X-VALUE v)
       (s! x rw/VERSION (inc (gl x rw/VERSION)))
       (let [outs (acopy (g x rw/OUTS))]
@@ -1497,104 +1573,117 @@
           (let [e (anth outs i) k (gl e rw/E-KIND)]
             (cond (== k rw/EK-DEP) (fire-dep! w e)
                   (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-      (commit! w [:write (g x rw/ID) [:opaque v]])
-      (drain! w))
-    v))
+      (commit! w [:write (g x rw/ID) [:opaque v]])))
+  v)
 
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
   [h cb]
-  (let [d (row-of h)
-        w (g d rw/WORLD)
-        e (gated w
-            (let [e (link! w rw/EK-OBSERVE cb d 0)]
-              (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-              (deliver-observe! w e)
-              (commit! w [:observe (g d rw/ID) (g e rw/ID)])
-              (demand! w d)
-              (drain! w)
-              e))]
+  (let [w (world-of h)
+        ev (volatile! nil)]
+    (gated w
+      (let [d (row-of h)
+            e (link! w rw/EK-OBSERVE cb d 0)]
+        (vreset! ev e)
+        (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+        (deliver-observe! w e)
+        (commit! w [:observe (g d rw/ID) (g e rw/ID)])
+        (demand! w d)))
     (fn []
       (gated w
-        (when (linked? e)
-          (unlink! w e)
-          (commit! w [:unobserve (g e rw/ID)])
-          (drain! w))))))
+        (when-let [e @ev]
+          (when (linked? e)
+            (unlink! w e)
+            (commit! w [:unobserve (g e rw/ID)]))))
+      nil)))
 
 (defn pin!
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
-  (let [x (row-of h) w (g x rw/WORLD)]
-    (gated w
-      (let [^java.util.Map pins (g w rw/W-PINS)
-            n (long (or (.get pins x) 0))]
-        (.put pins x (inc n))
-        (ref-inc! x)
-        (commit! w [:pin (g x rw/ID)])
-        (drain! w)))
-    h))
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)
+          ^java.util.Map pins (g w rw/W-PINS)
+          n (long (or (.get pins x) 0))]
+      (.put pins x (inc n))
+      (ref-inc! x)
+      (commit! w [:pin (g x rw/ID)])))
+  h)
 
 (defn unpin! [h]
-  (let [x (row-of h) w (g x rw/WORLD)]
-    (gated w
-      (let [^java.util.Map pins (g w rw/W-PINS)
-            n (long (or (.get pins x) 0))]
-        (if (zero? n)
-          (refuse! w [:unpin (g x rw/ID)])
-          (do (if (== n 1) (.remove pins x) (.put pins x (dec n)))
-              (ref-dec! x)
-              (commit! w [:unpin (g x rw/ID)])
-              (drain! w)))))
-    h))
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)
+          ^java.util.Map pins (g w rw/W-PINS)
+          n (long (or (.get pins x) 0))]
+      (if (zero? n)
+        (refuse! w [:unpin (g x rw/ID)])
+        (do (if (== n 1) (.remove pins x) (.put pins x (dec n)))
+            (ref-dec! x)
+            (commit! w [:unpin (g x rw/ID)])))))
+  h)
 
 (defn release!
-  "T19 by hand (weak handles arrive with M3)."
+  "T19 by hand (weak handles arrive with M3c)."
   [h]
-  (let [x (row-of h) w (g x rw/WORLD)]
-    (gated w
+  (gated (world-of h)
+    (let [x (row-of h) w (g x rw/WORLD)]
       (if (zero? (gl x rw/HANDLES))
         (refuse! w [:handle-drop (g x rw/ID)])
         (do (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
             (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))
-            (commit! w [:handle-drop (g x rw/ID)])
-            (drain! w))))
-    nil))
+            (commit! w [:handle-drop (g x rw/ID)])))))
+  nil)
 
 (defn cancel-task!
   "T14 from the host on a task."
   [h]
-  (let [k (row-of h) w (g k rw/WORLD)]
-    (gated w
+  (gated (world-of h)
+    (let [k (row-of h) w (g k rw/WORLD)]
       (if-let [r (g k rw/K-RUN)]
         (do (cancel! w r ::cancelled)
-            (commit! w [:cancel (g r rw/ID)])
-            (drain! w))
-        (refuse! w [:cancel (g k rw/ID)])))
-    nil))
+            (commit! w [:cancel (g r rw/ID)]))
+        (refuse! w [:cancel (g k rw/ID)]))))
+  nil)
 
-(defn value
-  "Host read (T22). A computation or task is demanded through a host wait
-   edge for the duration of the read; this requires it to finish within the
-   drain (blocking host awaits arrive with ingress, M3)."
-  [h]
-  (let [d (row-of h)
-        w (g d rw/WORLD)]
-    (if (source? d)
-      (g d rw/X-VALUE)
-      (let [res (volatile! nil)]
-        (gated w
-          (let [e (link! w rw/EK-WAIT (fn [v err?] (vreset! res [v err?])) d 0)]
+(defn value-async
+  "T22/H3: demands `h` through a host wait edge and calls `(cb v err?)` once
+   it settles. Returns a fn that withdraws the wait (host-unawait)."
+  [h cb]
+  (let [w (world-of h)
+        ev (volatile! nil)]
+    (gated w
+      (let [d (row-of h)]
+        (if (and (source? d) (not (deferred? d)))
+          (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+          (let [e (link! w rw/EK-WAIT cb d 0)]
+            (vreset! ev e)
             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
             (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
             (if (settled? d)
-              (vreset! res (debtor-result d))
-              (do (demand! w d) (drain! w)))
-            (when (linked? e)
-              (unlink! w e)
-              (commit! w [:host-unawait (g e rw/ID)]))
-            (drain! w)))
-        (let [[v err?] (or @res (throw (ex-info "computation did not complete synchronously" {:id (g d rw/ID)})))]
-          (if err? (throw v) v))))))
+              (fire-wait! w e)
+              (demand! w d))))))
+    (fn []
+      (gated w
+        (when-let [e @ev]
+          (when (linked? e)
+            (unlink! w e)
+            (commit! w [:host-unawait (g e rw/ID)]))))
+      nil)))
+
+(defn value
+  "Host read (H3): blocks the calling host thread on a host promise, outside
+   the gate. Never call it inside a body (B7). With a timeout, returns
+   `timeout-val` when the result is not there in time."
+  ([h] (value h nil nil))
+  ([h timeout-ms timeout-val]
+   (when (active-run) (throw (ex-info "blocking value inside a body (B7)" {})))
+   #?(:clj
+      (let [p (promise)
+            unawait (value-async h (fn [v err?] (deliver p [v err?])))
+            res (if timeout-ms (deref p timeout-ms ::timeout) @p)]
+        (if (= ::timeout res)
+          (do (unawait) timeout-val)
+          (let [[v err?] res] (if err? (throw v) v))))
+      :cljs (throw (ex-info "blocking value is JVM-only; use value-async" {})))))
 
 (defn track [_] (throw (ex-info "track outside a body" {})))
 (defn await [_] (throw (ex-info "await outside a body" {})))

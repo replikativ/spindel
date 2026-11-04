@@ -61,7 +61,12 @@
 (def ^:const W-HOOK 14)      ; verify mode: (fn [w item]) after every commit
 (def ^:const W-START 15)     ; task runs whose first slice is pending
 (def ^:const W-CLEANUP 16)   ; [run ek]: cleanup slices of cancelled runs with finalizers
-(def ^:const W-SIZE 17)
+(def ^:const W-INGRESS 17)   ; H1: MPSC queue of host items (fns)
+(def ^:const W-SCHEDULED 18) ; H2: AtomicBoolean, a drainer is scheduled
+(def ^:const W-EXEC 19)      ; the world's executor (drainer, offload)
+(def ^:const W-INLINE 20)    ; H2: host threads may process items inline
+(def ^:const W-BUDGET 21)    ; H2: items + slices per inline turn
+(def ^:const W-SIZE 22)
 
 ;; Scope
 (def ^:const S-PARENT 2)

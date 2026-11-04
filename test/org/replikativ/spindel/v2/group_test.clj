@@ -22,7 +22,8 @@
      :edges (get fr rw/T-EDGE 0) :acts (get fr rw/T-ACT 0)}))
 
 (defn- outcome [h]
-  (try [:ok (v2/value h)] (catch Exception e [:err e])))
+  (try (let [v (v2/value h 100 ::pending)] (if (= ::pending v) [:pending] [:ok v]))
+       (catch Exception e [:err e])))
 
 (deftest task-await-all
   (checked
@@ -32,7 +33,7 @@
               c (spin (* 10 (iv/get-new (track x))))
               d (v2/deferred)
               t (task (await-all [c d c]))]
-          (is (= :err (first (outcome t))))
+          (is (= :pending (first (outcome t))))
           (v2/deliver! d :d)
           (is (= [20 :d 20] (v2/value t)))
           (is (= 0 (:edges (census w)))))))))
