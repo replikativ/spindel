@@ -13,6 +13,7 @@
   (:require [org.replikativ.spindel.v2.rows :as rw
              #?@(:clj [:refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
             [org.replikativ.spindel.incremental.interval :as iv]
+            [org.replikativ.spindel.v2.host :as hs]
             [is.simm.partial-cps.runtime :as pr]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
@@ -41,8 +42,6 @@
 
 (def ^:dynamic *world* nil)
 
-#?(:clj (def default-executor
-          (delay (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor))))
 
 (defn- alloc-id! ^long [w]
   (let [^longs n (g w rw/W-NEXT)
@@ -52,12 +51,12 @@
 
 (defn- register! [w row]
   (when-let [reg (g w rw/W-REG)]
-    (.put ^java.util.Map reg (g row rw/ID) row))
+    (hs/mput! reg (g row rw/ID) row))
   row)
 
 (defn- unregister! [w row]
   (when-let [reg (g w rw/W-REG)]
-    (.remove ^java.util.Map reg (g row rw/ID)))
+    (hs/mdel! reg (g row rw/ID)))
   nil)
 
 (defn- new-scope [w id kind parent]
@@ -82,7 +81,7 @@
          next (long-array 1)]
      (aset next 0 1)
      (s! w rw/TYPE rw/T-WORLD)
-     (s! w rw/W-LOCK #?(:clj (java.util.concurrent.locks.ReentrantLock.) :cljs nil))
+     (s! w rw/W-LOCK (hs/lock))
      (s! w rw/W-NEXT next)
      (s! w rw/W-READY (alist))
      (s! w rw/W-RESUME (alist))
@@ -90,19 +89,19 @@
      (s! w rw/W-CLEANUP (alist))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
-     (s! w rw/W-PINS #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
+     (s! w rw/W-PINS (hs/imap))
      (s! w rw/W-CALLBACKS (alist))
-     (s! w rw/W-INGRESS #?(:clj (java.util.concurrent.ConcurrentLinkedQueue.) :cljs (array)))
-     (s! w rw/W-SCHEDULED #?(:clj (java.util.concurrent.atomic.AtomicBoolean. false) :cljs (volatile! false)))
-     (s! w rw/W-EXEC (or executor #?(:clj @default-executor :cljs nil)))
+     (s! w rw/W-INGRESS (hs/mpsc))
+     (s! w rw/W-SCHEDULED (hs/flag false))
+     (s! w rw/W-EXEC (or executor (hs/executor)))
      (s! w rw/W-INLINE (boolean inline?))
      (s! w rw/W-BUDGET (long budget))
-     (s! w rw/W-ROOTS #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
+     (s! w rw/W-ROOTS (hs/imap))
      (s! w rw/W-RELEASED false)
      (when verify?
-       (s! w rw/W-REG #?(:clj (java.util.LinkedHashMap.) :cljs (js/Map.)))
+       (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
-       (s! w rw/W-INTERN #?(:clj (java.util.HashMap.) :cljs (js/Map.)))
+       (s! w rw/W-INTERN (hs/vmap))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
@@ -254,7 +253,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Retention counts and demand (§3, §10.8, §10.10)
 
-(defn- roots-map ^java.util.Map [w] (g w rw/W-ROOTS))
+(defn- roots-map [w] (g w rw/W-ROOTS))
 
 (defn- ref-inc! [row] (s! row rw/REFS (inc (gl row rw/REFS))))
 
@@ -307,7 +306,7 @@
     (ref-inc! debtor)
     (when (demands? e) (hot-inc! debtor))
     (when (or (== kind rw/EK-OBSERVE) (and (== kind rw/EK-WAIT) (fn? cred)))
-      (.put (roots-map w) e true))
+      (hs/mput! (roots-map w) e true))
     (register! w e)))
 
 (defn- linked? [e]
@@ -335,7 +334,7 @@
       (s! last-e rw/E-IDX i))
     (when (demands? e) (hot-dec! debtor))
     (s! e rw/E-ACT nil)
-    (.remove (roots-map w) e)
+    (hs/mdel! (roots-map w) e)
     (unregister! w e)
     (unmark! e)
     (ref-dec! debtor)))
@@ -347,9 +346,9 @@
   (when (linked? e)
   (let [c (g e rw/E-CRED)
         ins (g c rw/C-INS)
-        i #?(:clj (.indexOf ^java.util.ArrayList ins e) :cljs (.indexOf ins e))]
+        i (hs/index-of ins e)]
     (when-not (neg? i)
-      #?(:clj (.remove ^java.util.ArrayList ins (int i)) :cljs (.splice ins i 1))
+      (hs/remove-at! ins i)
       (when-let [r (g c rw/C-RUN)]
         (when (> (gl r rw/R-CURSOR) i) (s! r rw/R-CURSOR (dec (gl r rw/R-CURSOR))))))
     (unlink! w e))))
@@ -532,8 +531,8 @@
     (unregister! w s)
     (when-let [p (g s rw/S-PARENT)]
       (let [cs (g p rw/S-CHILDREN)
-            i #?(:clj (.indexOf ^java.util.ArrayList cs s) :cljs (.indexOf cs s))]
-        (when-not (neg? i) #?(:clj (.remove ^java.util.ArrayList cs (int i)) :cljs (.splice cs i 1)))
+            i (hs/index-of cs s)]
+        (when-not (neg? i) (hs/remove-at! cs i))
         (remove-scope-if-empty! w p)))))
 
 (defn- close-scope!
@@ -658,9 +657,9 @@
     (let [owner (g k rw/OWNER)]
       (when (and owner (not (fn? owner)) (== rw/T-SCOPE (gl owner rw/TYPE)))
         (let [ts (g owner rw/S-TASKS)
-              i #?(:clj (.indexOf ^java.util.ArrayList ts k) :cljs (.indexOf ts k))]
+              i (hs/index-of ts k)]
           (when-not (neg? i)
-            #?(:clj (.remove ^java.util.ArrayList ts (int i)) :cljs (.splice ts i 1))
+            (hs/remove-at! ts i)
             (ref-dec! k))
           (remove-scope-if-empty! w owner))))))
 
@@ -708,13 +707,13 @@
 (defn- restore-ordinals! [c r]
   (when-let [basis (g c rw/C-BASIS)]
     (when (pos? (acount basis))
-      (let [^java.util.Map ords #?(:clj (java.util.HashMap.) :cljs (js/Map.))]
+      (let [ords (hs/vmap)]
         (dotimes [i (acount basis)]
           (let [key (gl (anth basis i) rw/KEY)
-                site (bit-shift-right key 32)
-                nxt (inc (bit-and key 0xffffffff))
-                cur (long (or (.get ords site) 0))]
-            (when (> nxt cur) #?(:clj (.put ords site nxt) :cljs (.set ords site nxt)))))
+                site (quot key 1048576)
+                nxt (inc (mod key 1048576))
+                cur (long (or (hs/mget ords site) 0))]
+            (when (> nxt cur) (hs/mput! ords site nxt))))
         (s! r rw/R-ORD ords)))))
 
 (defn- dispatch!
@@ -1096,19 +1095,13 @@
            (or (== i (alength a))
                (and (same-capture? (aget a i) (aget b i)) (recur (inc i))))))))
 
-(definterface IHandle (getRow []) (setRow [r]))
-
 ;; A host handle (§1): weak, never a liveness reason. `cell` holds the row
 ;; (set when the creating item commits); `dropped` makes T19 happen once,
 ;; by `release!` or by the Cleaner after the handle is collected (M3c).
 (deftype Handle [w ^objects cell dropped]
-  IHandle
-  (getRow [_] (aget cell 0))
-  (setRow [_ r] (aset cell 0 r))
   #?@(:clj [clojure.lang.IDeref
             (deref [this] (value this))]))
 
-#?(:clj (def ^:private cleaner (delay (java.lang.ref.Cleaner/create))))
 
 (declare host! handle-drop!)
 
@@ -1117,24 +1110,23 @@
    cleaning action holds the cell and the flag, never the handle."
   [w row]
   (let [cell (object-array 1)
-        dropped #?(:clj (java.util.concurrent.atomic.AtomicBoolean. false) :cljs (volatile! false))
+        dropped (hs/flag false)
         h (Handle. w cell dropped)]
     (aset cell 0 row)
-    #?(:clj (.register ^java.lang.ref.Cleaner @cleaner h
-                       ^Runnable (fn []
-                                   (when (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean dropped false true)
-                                     (host! w #(when-let [x (aget cell 0)] (handle-drop! w x)))))))
+    (hs/on-collect! h (fn []
+                        (when (hs/flag-cas! dropped false true)
+                          (host! w #(when-let [x (aget cell 0)] (handle-drop! w x))))))
     h))
 
 (defn- handle!
   "The row's live handle, or a new one (+1 handle, Z#29). A row has at most
    one live handle object."
   [w row]
-  (or #?(:clj (when-let [^java.lang.ref.WeakReference ref (g row rw/HREF)] (.get ref)) :cljs nil)
+  (or (hs/deref-weak (g row rw/HREF))
       (let [h (new-handle w row)
             again? (some? (g row rw/HREF))]
         (s! row rw/HANDLES (inc (gl row rw/HANDLES)))
-        #?(:clj (s! row rw/HREF (java.lang.ref.WeakReference. h)))
+        (s! row rw/HREF (hs/weak h))
         (when again? (commit! w [:handle-new (g row rw/ID)]))
         h)))
 
@@ -1146,12 +1138,12 @@
 (defn- bind-handle!
   "The creating item commits: the handle names its row, which holds it weakly."
   [h row]
-  (.setRow ^Handle h row)
-  #?(:clj (s! row rw/HREF (java.lang.ref.WeakReference. h))))
+  (aset ^objects (.-cell ^Handle h) 0 row)
+  (s! row rw/HREF (hs/weak h)))
 
 (defn row-of
   "The row behind a handle."
-  [h] (if (instance? Handle h) (.getRow ^Handle h) h))
+  [h] (if (instance? Handle h) (aget ^objects (.-cell ^Handle h) 0) h))
 
 (defn- debtor-row [w type size owner key at handles]
   (let [x (object-array size)]
@@ -1189,10 +1181,10 @@
           (if (== (long key) (gl x rw/KEY)) i (recur (inc i))))))))
 
 (defn- creation-key! [r site]
-  (let [^java.util.Map ords (or (g r rw/R-ORD) (let [m #?(:clj (java.util.HashMap.) :cljs (js/Map.))] (s! r rw/R-ORD m) m))
-        ord (long (or (.get ords site) 0))]
-    #?(:clj (.put ords site (inc ord)) :cljs (.set ords site (inc ord)))
-    (bit-or (bit-shift-left (long site) 32) ord)))
+  (let [ords (or (g r rw/R-ORD) (let [m (hs/vmap)] (s! r rw/R-ORD m) m))
+        ord (long (or (hs/mget ords site) 0))]
+    (hs/mput! ords site (inc ord))
+    (+ (* (long site) 1048576) ord)))   ; site < 2^30, ord < 2^20: exact in JS doubles
 
 (defn- adopt!
   "The creation of `c` with `key`, from its basis or its adoption basis."
@@ -1289,8 +1281,8 @@
                     h))
               (do (when old                       ; changed captures: replace it
                     (let [basis (g x rw/C-BASIS)
-                          i #?(:clj (.indexOf ^java.util.ArrayList basis old) :cljs (.indexOf basis old))]
-                      #?(:clj (.remove ^java.util.ArrayList basis (int i)) :cljs (.splice basis i 1))
+                          i (hs/index-of basis old)]
+                      (hs/remove-at! basis i)
                       (when-let [or* (g old rw/K-RUN)] (cancel! w or* ::cancelled))
                       (ref-dec! old)))
                   (let [k (new-task! w x key at inputs body 0)]
@@ -1427,7 +1419,7 @@
 
 (defn- pop-first! [l]
   (let [x (anth l 0)]
-    #?(:clj (.remove ^java.util.ArrayList l (int 0)) :cljs (.shift l))
+    (hs/remove-first! l)
     x))
 
 (defn- drain-step!
@@ -1467,7 +1459,7 @@
           (let [[cb [v err?]] (anth batch i)] (cb v err?)))
         true))))
 
-(defn- ingress ^java.util.concurrent.ConcurrentLinkedQueue [w] (g w rw/W-INGRESS))
+(defn- ingress [w] (g w rw/W-INGRESS))
 
 (defn- run-turn!
   "H2: processes ingress items and internal work up to the budget. Returns
@@ -1478,7 +1470,7 @@
     (loop [n (gl w rw/W-BUDGET)]
       (if (zero? n)
         true
-        (if-let [item (.poll (ingress w))]
+        (if-let [item (hs/mpsc-poll! (ingress w))]
           (do (item) (recur (dec n)))
           (cond (drain-step! w) (recur (dec n))
                 (run-callbacks! w) (recur n)
@@ -1490,13 +1482,13 @@
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off."
   [w]
-  (let [^java.util.concurrent.locks.ReentrantLock lk (g w rw/W-LOCK)]
-    (when (.tryLock lk)
-      (try (run-turn! w) (finally (.unlock lk))))
+  (let [lk (g w rw/W-LOCK)]
+    (when (hs/try-lock! lk)
+      (try (run-turn! w) (finally (hs/unlock! lk))))
     (handoff! w)))
 
 (defn- work-pending? [w]
-  (or (not (.isEmpty (ingress w)))
+  (or (not (hs/mpsc-empty? (ingress w)))
       (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
       (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))
       (pos? (acount (g w rw/W-CALLBACKS)))))
@@ -1505,10 +1497,9 @@
   "H2: after releasing the gate, queued work is never stranded: schedule the
    world's drainer when work remains and none is scheduled."
   [w]
-  (let [^java.util.concurrent.atomic.AtomicBoolean sched (g w rw/W-SCHEDULED)]
-    (when (and (work-pending? w) (.compareAndSet sched false true))
-      (let [^java.util.concurrent.Executor ex (g w rw/W-EXEC)]
-        (.execute ex ^Runnable (fn [] (.set sched false) (process! w)))))))
+  (let [sched (g w rw/W-SCHEDULED)]
+    (when (and (work-pending? w) (hs/flag-cas! sched false true))
+      (hs/execute! (g w rw/W-EXEC) (fn [] (hs/flag-set! sched false) (process! w))))))
 
 (defn released-ex [] (ex-info "world released" {:spindel/released true}))
 
@@ -1518,22 +1509,22 @@
    enqueues it, then tries the gate (H2) unless the world is not inline.
    A released world refuses host operations (T21)."
   [w f]
-  (let [^java.util.concurrent.locks.ReentrantLock lk (g w rw/W-LOCK)]
+  (let [lk (g w rw/W-LOCK)]
     (cond
       (g w rw/W-RELEASED) (throw (released-ex))
-      (.isHeldByCurrentThread lk) (f)
+      (hs/held? lk) (f)
       ;; Fast path: nothing queued and the gate is free, so running the item
       ;; now keeps FIFO order without an ingress node.
-      (and (g w rw/W-INLINE) (.isEmpty (ingress w)) (.tryLock lk))
+      (and (g w rw/W-INLINE) (hs/mpsc-empty? (ingress w)) (hs/try-lock! lk))
       (let [v (try (s! w rw/W-DRAINING true)
                    (let [v (try (f) (finally (s! w rw/W-DRAINING false)))]
                      (run-turn! w)
                      v)
-                   (finally (.unlock lk)))]
+                   (finally (hs/unlock! lk)))]
         (handoff! w)
         v)
       :else
-      (do (.add (ingress w) f)
+      (do (hs/mpsc-add! (ingress w) f)
           (if (g w rw/W-INLINE) (process! w) (handoff! w))
           nil))))
 
@@ -1567,16 +1558,16 @@
 
 (defn- mailbox? [x] (== rw/SRC-MAILBOX (gl x rw/X-KIND)))
 
-(defn- deque ^java.util.ArrayDeque [x i] (g x i))
+(defn- deque [x i] (g x i))
 
 (defn- available? [x]
   (if (mailbox? x)
-    (not (.isEmpty (deque x rw/X-VALUE)))
+    (not (hs/dq-empty? (deque x rw/X-VALUE)))
     (pos? (gl x rw/X-VALUE))))
 
 (defn- consume! [x]
   (if (mailbox? x)
-    (.pollFirst (deque x rw/X-VALUE))
+    (hs/dq-poll! (deque x rw/X-VALUE))
     (do (s! x rw/X-VALUE (dec (gl x rw/X-VALUE))) true)))
 
 (defn consume-effect!
@@ -1597,7 +1588,7 @@
               a (new-activation! w aid r :one k ek members (object-array 1) 1)
               e (link! w rw/EK-WAIT a x 0)]
           (aset members 0 e)
-          (.addLast (deque x rw/X-WAITERS) e)
+          (hs/dq-push! (deque x rw/X-WAITERS) e)
           (park! r a)
           (s! a rw/A-INLINE false)
           (commit! w [:take (g r rw/ID) (g x rw/ID) aid])
@@ -1611,7 +1602,7 @@
   [w x v]
   (let [q (deque x rw/X-WAITERS)]
     (loop []
-      (when-let [e (.pollFirst q)]
+      (when-let [e (hs/dq-poll! q)]
         (let [a (g e rw/E-CRED)
               r (g a rw/A-RUN)]
           (if (and (linked? e) (identical? a (g r rw/R-ACTV)) (run-current? r)
@@ -1624,8 +1615,8 @@
 (defn mailbox
   "T1 at top level: a FIFO mailbox (§4.3)."
   ([] (mailbox *world*))
-  ([w] (create-source-top! w rw/SRC-MAILBOX (java.util.ArrayDeque.)
-                           #(s! % rw/X-WAITERS (java.util.ArrayDeque.)))))
+  ([w] (create-source-top! w rw/SRC-MAILBOX (hs/deque)
+                           #(s! % rw/X-WAITERS (hs/deque)))))
 
 (defn post!
   "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
@@ -1634,7 +1625,7 @@
     (let [x (row-of h) w (g x rw/WORLD)]
       (s! x rw/VERSION (inc (gl x rw/VERSION)))
       (when-not (serve-waiter! w x v)
-        (.addLast (deque x rw/X-VALUE) v))
+        (hs/dq-push! (deque x rw/X-VALUE) v))
       (commit! w [:post (g x rw/ID) [:opaque v]])))
   nil)
 
@@ -1642,7 +1633,7 @@
   "T1 at top level: a counting semaphore with `n` permits (§4.3)."
   ([n] (semaphore *world* n))
   ([w n] (create-source-top! w rw/SRC-SEMAPHORE (long n)
-                             #(s! % rw/X-WAITERS (java.util.ArrayDeque.)))))
+                             #(s! % rw/X-WAITERS (hs/deque)))))
 
 (defn sem-release!
   "Gives the permit to the first armed waiter, or returns it (§4.3)."
@@ -1715,9 +1706,9 @@
   [h]
   (gated (world-of h)
     (let [x (row-of h) w (g x rw/WORLD)
-          ^java.util.Map pins (g w rw/W-PINS)
-          n (long (or (.get pins x) 0))]
-      (.put pins x (inc n))
+          pins (g w rw/W-PINS)
+          n (long (or (hs/mget pins x) 0))]
+      (hs/mput! pins x (inc n))
       (ref-inc! x)
       (commit! w [:pin (g x rw/ID)])))
   h)
@@ -1725,11 +1716,11 @@
 (defn unpin! [h]
   (gated (world-of h)
     (let [x (row-of h) w (g x rw/WORLD)
-          ^java.util.Map pins (g w rw/W-PINS)
-          n (long (or (.get pins x) 0))]
+          pins (g w rw/W-PINS)
+          n (long (or (hs/mget pins x) 0))]
       (if (zero? n)
         (refuse! w [:unpin (g x rw/ID)])
-        (do (if (== n 1) (.remove pins x) (.put pins x (dec n)))
+        (do (if (== n 1) (hs/mdel! pins x) (hs/mput! pins x (dec n)))
             (ref-dec! x)
             (commit! w [:unpin (g x rw/ID)])))))
   h)
@@ -1749,8 +1740,7 @@
   (when (instance? Handle h)
     (let [^Handle h h
           dropped (.-dropped h)]
-      (when #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean dropped false true)
-               :cljs (when-not @dropped (vreset! dropped true) true))
+      (when (hs/flag-cas! dropped false true)
         (let [w (.-w h)]
           (gated w (when-let [x (row-of h)] (handle-drop! w x)))))))
   nil)
@@ -1819,12 +1809,6 @@
 ;; ---------------------------------------------------------------------------
 ;; Resources (T15, T17, T18): offload and timers
 
-#?(:clj
-   (def ^:private timer-exec
-     (delay (doto (java.util.concurrent.ScheduledThreadPoolExecutor.
-                   1 (reify java.util.concurrent.ThreadFactory
-                       (newThread [_ r] (doto (Thread. ^Runnable r "spindel-v2-timer") (.setDaemon true)))))
-              (.setRemoveOnCancelPolicy true)))))
 
 (defn- new-resource!
   "T17: an outstanding resource owned by `r`, with `at = R.effect-index`."
@@ -1855,9 +1839,9 @@
     (refuse! w [:resource-ack (g z rw/ID)])
     (let [r (g z rw/OWNER)
           zs (g r rw/R-RES)
-          i #?(:clj (.indexOf ^java.util.ArrayList zs z) :cljs (.indexOf zs z))]
+          i (hs/index-of zs z)]
       (when-not (neg? i)
-        #?(:clj (.remove ^java.util.ArrayList zs (int i)) :cljs (.splice zs i 1))
+        (hs/remove-at! zs i)
         (when (zero? (acount zs)) (s! r rw/R-RES nil))
         (unregister! w z)
         (commit! w [:resource-ack (g z rw/ID)])
@@ -1871,13 +1855,7 @@
   (when (== rw/Z-ARMED (gl z rw/Z-PHASE))
     (s! z rw/Z-PHASE rw/Z-CANCELLING)
     (let [ctl (g z rw/Z-CTL)
-          joined? #?(:clj (if (instance? java.util.concurrent.Future ctl)
-                            (.cancel ^java.util.concurrent.Future ctl false)
-                            (let [{:keys [^java.util.concurrent.atomic.AtomicInteger state thread]} ctl]
-                              (if (.compareAndSet state 0 2)
-                                true
-                                (do (some-> ^Thread @thread .interrupt) false))))
-                     :cljs false)]
+          joined? (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl))]
       (when joined? (resource-ack! w z)))))
 
 (defn- arm-and-park!
@@ -1899,7 +1877,6 @@
     (start! w z)
     nil))
 
-(defn- exec-of ^java.util.concurrent.Executor [w] (g w rw/W-EXEC))
 
 (defn- join! [w z res]
   (host! w #(do (resource-fire! w z res) (resource-ack! w z))))
@@ -1913,20 +1890,14 @@
     (arm-and-park!
      r :offload k ek
      (fn [w z]
-       #?(:clj
-          (let [state (java.util.concurrent.atomic.AtomicInteger. 0)
-                thread (volatile! nil)]
-            (s! z rw/Z-CTL {:state state :thread thread})
-            (.execute ^java.util.concurrent.Executor (exec-of w)
-                      ^Runnable
+       (let [ctl (hs/offload-ctl)]
+         (s! z rw/Z-CTL ctl)
+         (hs/execute! (g w rw/W-EXEC)
                       (fn []
-                        (when (.compareAndSet state 0 1)
-                          (vreset! thread (Thread/currentThread))
-                          (let [res (try [(f) false] (catch Throwable t [t true]))]
-                            (vreset! thread nil)
-                            (Thread/interrupted)
-                            (join! w z res))))))
-          :cljs (js/setTimeout #(join! w z (try [(f) false] (catch :default t [t true]))) 0))))
+                        (when (hs/ctl-start! ctl)
+                          (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
+                            (hs/ctl-finish! ctl)
+                            (join! w z res))))))))
     (unwind! ek)))
 
 (defn sleep-effect!
@@ -1936,10 +1907,7 @@
     (arm-and-park!
      r :timer k ek
      (fn [w z]
-       #?(:clj (s! z rw/Z-CTL (.schedule ^java.util.concurrent.ScheduledExecutorService @timer-exec
-                                         ^Runnable (fn [] (join! w z [nil false]))
-                                         (long ms) java.util.concurrent.TimeUnit/MILLISECONDS))
-          :cljs (js/setTimeout #(join! w z [nil false]) ms))))
+       (s! z rw/Z-CTL (hs/schedule! ms (fn [] (join! w z [nil false]))))))
     (unwind! ek)))
 
 (defn release-world!
@@ -1950,19 +1918,19 @@
   [w]
   (gated w
     (let [ex (released-ex)
-          ^java.util.Map roots (g w rw/W-ROOTS)]
-      (doseq [e (vec (.keySet roots))]
+          roots (g w rw/W-ROOTS)]
+      (doseq [e (hs/mkeys roots)]
         (when (linked? e)
           (let [cb (g e rw/E-CRED)]
             (unlink! w e)
             (aadd! (g w rw/W-CALLBACKS) [cb [ex true]]))))
-      (let [^java.util.Map pins (g w rw/W-PINS)]
-        (doseq [[x n] (vec pins)] (dotimes [_ n] (ref-dec! x)))
-        (.clear pins))
+      (let [pins (g w rw/W-PINS)]
+        (doseq [[x n] (hs/mentries pins)] (dotimes [_ n] (ref-dec! x)))
+        (hs/mclear! pins))
       (close-scope! w (g w rw/W-ROOT))
       (commit! w [:release-world])
       (s! w rw/W-RELEASED true)))
-  (fn [] (when-let [reg (g w rw/W-REG)] (.size ^java.util.Map reg))))
+  (fn [] (when-let [reg (g w rw/W-REG)] (hs/msize reg))))
 
 (defn open-scope!
   "T16 open: an explicit scope, child of the run's current scope, a root
@@ -1981,8 +1949,8 @@
   (let [w (g s rw/S-WORLD)]
     (when-let [r (active-run)]
       (when-let [ss (g r rw/R-SCOPES)]
-        (let [i #?(:clj (.lastIndexOf ^java.util.ArrayList ss s) :cljs (.lastIndexOf ss s))]
-          (when-not (neg? i) #?(:clj (.remove ^java.util.ArrayList ss (int i)) :cljs (.splice ss i 1))))))
+        (let [i (hs/last-index-of ss s)]
+          (when-not (neg? i) (hs/remove-at! ss i)))))
     (close-scope! w s)
     (commit! w [:close-scope (g s rw/ID)])
     nil))
@@ -1999,8 +1967,8 @@
                 (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
           (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
           (let [ts (g old rw/S-TASKS)
-                i #?(:clj (.indexOf ^java.util.ArrayList ts k) :cljs (.indexOf ts k))]
-            (when-not (neg? i) #?(:clj (.remove ^java.util.ArrayList ts (int i)) :cljs (.splice ts i 1)))
+                i (hs/index-of ts k)]
+            (when-not (neg? i) (hs/remove-at! ts i))
             (aadd! (g s rw/S-TASKS) k)
             (s! k rw/OWNER s)
             (remove-scope-if-empty! w old)
