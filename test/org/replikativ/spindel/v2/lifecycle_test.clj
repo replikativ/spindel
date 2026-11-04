@@ -176,3 +176,97 @@
           (v2/deliver! gate :go)
           (is (= [:ok :parent-done] (outcome t)))
           (is (wait-until #(= :ran @fin)) "the child was released at the task's end"))))))
+
+;; --- regressions from the astra phase review (m5-lifecycle-impl-astra-review.md)
+
+(deftest discarding-a-fork-keeps-the-source-timer
+  ;; 1: a fork's inherited timer is dormant; discarding the fork before its
+  ;; first turn joins it locally and leaves the source's controller alone
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [t (task (sleep 100) :woke)]
+          (Thread/sleep 10)
+          (v2/discard! (v2/fork! w))
+          (is (= [:ok :woke] (outcome t)) "the source's timer still fires"))))))
+
+(deftest activation-after-the-owner-is-released
+  ;; 2: the owner world is released; activating its instance releases the
+  ;; instance instead of registering it in a closed root
+  (checked
+    (let [w (vworld) pubs (atom []) ran (atom false)]
+      (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+      (binding [v2/*world* w]
+        (task (do (v2/savepoint :s nil) (reset! ran true)))
+        (is (wait-until #(seq @pubs)))
+        (let [c (v2/instantiate (first @pubs))]
+          (v2/release-world! w)
+          (v2/activate! c 1)
+          (is (wait-until #(aget ^objects c rw/W-RELEASED)))
+          (Thread/sleep 20)
+          (is (false? @ran) "the instance's body did not run"))))))
+
+(defn- dropped-session
+  "A world whose handler keeps its publications; returns weak references to
+   the world and the publication only."
+  []
+  (let [w (v2/world) pubs (atom [])]
+    (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+    (binding [v2/*world* w] (task (v2/savepoint :s nil)))
+    (wait-until #(seq @pubs))
+    [(java.lang.ref.WeakReference. w) (java.lang.ref.WeakReference. (first @pubs))]))
+
+(deftest a-dropped-session-is-collected
+  ;; 3: world -> handler -> atom -> publication must not be kept alive by the
+  ;; publication's own collection action
+  (is (collected? (dropped-session))))
+
+(deftest queued-activation-activates-dormant-work
+  ;; 4: activate! through queued ingress (inline? false) still fails the other
+  ;; inherited savepoints with ::forked
+  (checked
+    (let [w (vworld {:inline? false}) pubs (atom {})]
+      (v2/install-handlers! w {:default (fn [p] (swap! pubs assoc (:payload p) p))})
+      (binding [v2/*world* w]
+        (let [a (task (try (v2/savepoint :s :a) (catch Exception e (if (:spindel/forked (ex-data e)) :forked (throw e)))))
+              b (task (v2/savepoint :s :b))]
+          (is (wait-until #(= 2 (count @pubs))))
+          (let [i (doto (v2/instantiate (get @pubs :b)) (v2/activate! :went))]
+            (is (= [:ok :went] (outcome (v2/in-world i b))))
+            (is (= [:ok :forked] (outcome (v2/in-world i a))) "the dormant savepoint was failed"))
+          (v2/abandon! (get @pubs :a))
+          (v2/abandon! (get @pubs :b)))))))
+
+(deftest unborn-instances-refuse-reads
+  ;; 5: a read would demand (run) computations in a world that never ran
+  (checked
+    (let [w (vworld) pubs (atom []) runs (atom 0)]
+      (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+      (binding [v2/*world* w]
+        (let [x (v2/signal 1)
+              c (spin (swap! runs inc) (* 2 (org.replikativ.spindel.incremental.interval/get-new (track x))))
+              _ (task (v2/savepoint :s nil))]
+          (is (wait-until #(seq @pubs)))
+          (let [i (v2/instantiate (first @pubs))]
+            (is (= :unborn (try (v2/value (v2/in-world i c) 100 nil) (catch Exception e (when (:spindel/unborn (ex-data e)) :unborn)))))
+            (is (thrown? Exception (v2/observe! (v2/in-world i c) (fn [_ _]))))
+            (is (zero? @runs) "no computation ran in the unborn instance")
+            (v2/write! (v2/in-world i x) 5)
+            (is (= 5 (v2/value (v2/in-world (doto i (v2/activate! nil)) x))) "writes before activation stay allowed"))
+          (v2/abandon! (first @pubs)))))))
+
+(deftest discarding-an-unborn-instance-runs-nothing
+  ;; 6: discard of an instance that never ran is a drop: no copied finalizer
+  (checked
+    (let [w (vworld) pubs (atom []) fin (atom 0)]
+      (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+      (binding [v2/*world* w]
+        (task (try (v2/savepoint :s nil) (finally (swap! fin inc))))
+        (is (wait-until #(seq @pubs)))
+        (let [i (v2/instantiate (first @pubs))]
+          (v2/discard! i)
+          (Thread/sleep 20)
+          (is (aget ^objects i rw/W-RELEASED))
+          (is (zero? @fin) "the copied finalizer did not run"))
+        (v2/abandon! (first @pubs))
+        (is (wait-until #(= 1 @fin)) "the source's own finalizer runs once")))))

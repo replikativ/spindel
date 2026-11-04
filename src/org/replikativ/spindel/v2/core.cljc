@@ -754,11 +754,21 @@
 (defn- holder-child [^objects h] (or (aget h 0) (hs/deref-weak (aget h 1))))
 (defn- holder-dead? [^objects h] (or (hs/flag? (aget h 2)) (nil? (holder-child h))))
 
+(defn- release-child!
+  "Releases `child` (T21 in it) through its ingress; scheduled after this
+   world's gate is released (E3)."
+  [w child]
+  (hs/mpsc-add! (g child rw/W-INGRESS) #(release-world* child))
+  (aadd! (g w rw/W-AFTER) child))
+
 (defn- own-child!
-  "F2: the fork marker of `child` in `w`, owned by the scope with id `sid`,
-   held strongly or weakly (see above)."
-  [w sid child strong?]
-  (let [h (doto (object-array 3)
+  "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
+   weakly (see above). An owner that has closed releases the child at once."
+  [w scope child strong?]
+  (if (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
+    (do (release-child! w child) child)
+  (let [sid (id-of scope)
+        h (doto (object-array 3)
             (aset 0 (when strong? child)) (aset 1 (hs/weak child)) (aset 2 (hs/flag false)))
         m (or (g w rw/W-OWNED) (let [m (hs/vmap)] (s! w rw/W-OWNED m) m))
         ^objects e (or (hs/mget m sid) (let [e (object-array [(alist) 16])]
@@ -773,7 +783,7 @@
       (aset e 1 #?(:clj (num (max 16 (* 2 (acount l)))) :cljs (max 16 (* 2 (acount l))))))
     (aadd! l h)
     (s! child rw/W-HOLDER h)
-    child))
+    child)))
 
 (defn- release-owned!
   "F2: the owner scope `sid` closed: each live child is released (T21) through
@@ -789,8 +799,7 @@
               c (holder-child h)]
           (aset h 0 nil)
           (when (and c (hs/flag-cas! (aget h 2) false true))
-            (hs/mpsc-add! (g c rw/W-INGRESS) #(release-world* c))
-            (aadd! (g w rw/W-AFTER) c))))))))
+            (release-child! w c))))))))
 
 (defn- close-scope!
   "T16: cancels the work owned by the subtree, closes its scopes and the
@@ -804,7 +813,7 @@
         (when-let [x (hs/deref-weak (rv w (anth xs i)))] (close-source! w x))))
     (let [ts (hs/oset-vals (g s rw/S-TASKS))]
       (doseq [t ts]
-        (when-let [r (rv w (g t rw/K-RUN))] (cancel! w r ::cancelled))))
+        (when-let [r (rv w (g (rv w t) rw/K-RUN))] (cancel! w r ::cancelled))))
     (let [cs (acopy (g s rw/S-CHILDREN))]
       (dotimes [i (acount cs)] (close-scope! w (rv w (anth cs i)))))
     (release-owned! w (id-of s)))
@@ -874,12 +883,12 @@
         (aadd! (g w rw/W-CLEANUP) [r (g a rw/A-E) (cancelled-ex reason)])))
     ;; Resources are told to cancel; they join through their acknowledgement.
     (when-let [zs (g r rw/R-RES)]
-      (doseq [z (vec zs)] (cancel-resource! w z)))
+      (doseq [z (vec zs)] (cancel-resource! w (rv w z))))   ; M5: this world's copy, never the basis
     ;; children: runs owned by the run scope
     (when-let [s (rv w (g r rw/R-SROW))]
       (let [ts (hs/oset-vals (g s rw/S-TASKS))]
         (doseq [t ts]
-          (when-let [cr (rv w (g t rw/K-RUN))] (cancel! w cr reason)))))
+          (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr reason)))))
     (let [x (rv w (g r rw/R-OF))]
       (when (task? x)
         ;; debtor side (R#14): the task fails with ::cancelled
@@ -982,7 +991,7 @@
           (when-let [s (rv w (g r rw/R-SROW))]
             (let [ts (hs/oset-vals (g s rw/S-TASKS))]
               (doseq [t ts]
-                (when-let [cr (rv w (g t rw/K-RUN))] (cancel! w cr ::cancelled)))))
+                (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr ::cancelled)))))
           (finish-task! w x v err?)
           (s! r rw/R-SLICE false)
           (retire-check! w r)
@@ -2196,11 +2205,15 @@
       (commit! w [:write (g x rw/ID) [:opaque v]])))))
   v)
 
+(defn unborn-ex []
+  (ex-info "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
+
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
   [h cb]
   (let [w (world-of h)
         ev (volatile! nil)]
+    (when (g w rw/W-UNBORN) (throw (unborn-ex)))
     (gated w
       (let [d (row-of h)
             e (link! w rw/EK-OBSERVE cb d 0)]
@@ -2290,6 +2303,8 @@
     (gated w
       (let [d (row-of h)]
         (cond
+          (g w rw/W-UNBORN)
+          (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
           (consuming? d)
           (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
           (and (source? d) (not (deferred? d)))
@@ -2415,6 +2430,13 @@
         (retire-check! w r)
         (commit! w [:resource-ack (g z rw/ID)])))))
 
+(defn- take-dormant! [w z]
+  (when-let [zs (g w rw/W-DORMANT)]
+    (let [id (id-of z)]
+      (when (some #(== id (id-of %)) zs)
+        (s! w rw/W-DORMANT (seq (remove #(== id (id-of %)) zs)))
+        true))))
+
 (defn- cancel-resource!
   "T14: an armed resource is told to cancel. One that provably never started
    (or whose timer was unscheduled) joins at once; a running offload is
@@ -2424,7 +2446,10 @@
     (s! z rw/Z-PHASE rw/Z-CANCELLING)
     (hs/oset-del! (armed-set w) (id-of z))
     (let [ctl (g z rw/Z-CTL)
-          joined? (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl))]
+          ;; §8.1: an inherited resource still dormant here holds the source's
+          ;; controller; it joins at once and never touches that controller
+          joined? (or (take-dormant! w z)
+                      (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl)))]
       ;; the acknowledgement is its own item, after the cancelling one
       (when joined? (aadd! (g w rw/W-ACKS) z)))))
 
@@ -2505,6 +2530,10 @@
     (when-let [^objects h (g w rw/W-HOLDER)]
       (aset h 0 nil)
       (hs/flag-set! (aget h 2) true))
+    (if (g w rw/W-UNBORN)
+      ;; E4: an instance that never ran is discarded as if dropped: nothing
+      ;; in it runs, its copied finalizers included
+      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true))
     (let [ex (released-ex)
           roots (g w rw/W-ROOTS)]
       (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -2523,7 +2552,7 @@
             (s! x rw/HANDLES 0)
             (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
       (commit! w [:release-world])
-      (s! w rw/W-RELEASED true))))
+      (s! w rw/W-RELEASED true)))))
 
 (defn open-scope!
   "T16 open: an explicit scope, child of the run's current scope, a root
@@ -2630,7 +2659,7 @@
       (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
       (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
       (let [c (fork-world* w)]
-        (own-child! w (id-of (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+        (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
         (commit! w [:fork-host (g c rw/ID)])
         (vreset! res c)))
     (handoff! @res)
@@ -2660,7 +2689,7 @@
         (aadd! (g w rw/W-RESUME) a)
         (unregister! w a)                 ; a delivery carrier, not a parked activation
         (let [child (fork-world* w)]
-          (own-child! w (id-of owner) child true)
+          (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
           (remove-row! (g w rw/W-RESUME) a)
           (let [r (rv w r)]
@@ -2695,11 +2724,15 @@
    holds the world, the activation id and the state, never the publication."
   [w aid site payload basis]
   (let [state (atom :pending)
-        p (Publication. w aid site payload basis state)]
+        p (Publication. w aid site payload basis state)
+        ;; weakly: the world may reach the publication (a handler storing it),
+        ;; and a strong reference here would keep that cycle alive forever
+        ww (hs/weak w)]
     (hs/on-collect! p (fn []
                         (when (= :pending @state)
-                          (try (abandon-act! w aid state)
-                               (catch #?(:clj Throwable :cljs :default) _ nil)))))
+                          (when-let [w (hs/deref-weak ww)]
+                            (try (abandon-act! w aid state)
+                                 (catch #?(:clj Throwable :cljs :default) _ nil))))))
     p))
 
 (defn install-handlers!
@@ -2810,18 +2843,29 @@
   "S4: resumes an instantiated fork's pending activation with `v`. The fork
    is born here: the root scope of the publication's world owns it (F2)."
   [w v]
-  (when-let [pw (g w rw/W-PUB-WORLD)]
-    (s! w rw/W-PUB-WORLD nil)
-    (host! pw #(own-child! pw (id-of (g pw rw/W-ROOT)) w false)))
   (gated w
-    (s! w rw/W-UNBORN false)
-    (let [aid (g w rw/W-PENDING-ACT)]
+    (when-let [pw (g w rw/W-PUB-WORLD)]
+      (s! w rw/W-PUB-WORLD nil)
+      ;; F2: the owner's table is the publication world's; its gate is only
+      ;; tried, never waited for. A released owner releases the instance.
+      (try (host! pw #(own-child! pw (rv pw (g pw rw/W-ROOT)) w false))
+           (catch #?(:clj Exception :cljs :default) _
+             (release-world* w))))                 ; still unborn: nothing runs
+    (let [aid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
+          ;; looked up before the dormant pass below empties the dormant list
+          a (when aid
+              (rv w (get (g w rw/W-FWD) aid
+                         (some #(when (== (id-of %) (long aid)) %)
+                               (concat (g w rw/W-SP-DORMANT)
+                                       (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))]
+      (when (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))
+        (s! w rw/W-UNBORN false)
+        ;; inherited resources and savepoints: this item is the first turn's
+        ;; work, so they are activated here, not at a later turn entry
+        (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w)))
       (when aid
         (s! w rw/W-PENDING-ACT nil)
-        (let [a (rv w (get (g w rw/W-FWD) aid
-                           (some #(when (== (id-of %) (long aid)) %)
-                                 (concat (g w rw/W-SP-DORMANT)
-                                         (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals)))))]
+        (do
           (if (and a (sp-deliver! w a [v false]))
             (commit! w [:activate aid [:opaque v]])
             (refuse! w [:activate aid [:opaque v]]))))))

@@ -98,18 +98,20 @@
   "§3.2 cleanup table: a done run that is not retired keeps its run scope and
    that scope's subtree as storage."
   [w]
+  (binding [*reg* (f w rw/W-REG)]
   (let [seen (java.util.IdentityHashMap.)]
-    (loop [todo (vec (mapcat #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
-                                ;; the run row, its scope subtree, its entity as a tombstone
-                                (concat (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]) (f % rw/R-RES)))
-                             (rows w)))]
+    (loop [todo (vec (map canon
+                          (mapcat #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
+                                     ;; the run row, its scope subtree, its entity as a tombstone
+                                     (concat (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]) (f % rw/R-RES)))
+                                  (rows w))))]
       (when-let [x (peek todo)]
         (let [todo (pop todo)]
           (if (.containsKey seen x)
             (recur todo)
             (do (.put seen x true)
-                (recur (into todo (when (== rw/T-SCOPE (t x)) (f x rw/S-CHILDREN)))))))))
-    seen))
+                (recur (into todo (when (== rw/T-SCOPE (t x)) (map canon (f x rw/S-CHILDREN))))))))))
+    seen)))
 
 (defn violations
   "Rows the engine keeps that the reference does not, and non-idle

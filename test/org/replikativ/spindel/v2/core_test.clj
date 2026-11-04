@@ -143,3 +143,26 @@
             (is (= 1 @runs) "no re-run")
             (is (= 1 (:edges (census w))) "only the observe edge remains")
             (unobserve)))))))
+
+(deftest no-fired-sibling-outlives-a-reentry
+  ;; Z#59 (the model's L5 counterexample): a group await gives two dep edges at
+  ;; one site; both fire; the re-run does not await again. No fired sibling
+  ;; may survive, and a later write must not mark the creditor forever.
+  (checked
+    (let [w (vworld) n (atom 0)]
+      (binding [v2/*world* w]
+        (let [a (v2/signal 1) b (v2/signal 2)
+              c (spin (if (= 1 (swap! n inc)) (v2/await-all [a b]) :no-await))
+              d (spin [:saw (await c)])
+              seen (atom [])]
+          (v2/observe! d (fn [v _] (swap! seen conj v)))
+          (v2/call-in! w #(do (v2/write! a 10) (v2/write! b 20)))   ; both fire in one item
+          (is (= [:saw :no-await] (v2/value d 1000 ::timeout)))
+          (is (= [[true] []]
+                 (v2/call-in! w #(mapv (fn [x] (mapv (fn [e] (boolean (aget ^objects e rw/E-ARMED)))
+                                                     (aget ^objects (v2/row-of x) rw/OUTS)))
+                                       [a b])))
+              "E (on a) is re-armed by the restart; its fired sibling (on b) was cut")
+          (v2/write! b 30)
+          (is (= [:saw :no-await] (v2/value d 1000 ::timeout)) "the creditor settles after a later write")
+          (is (zero? (v2/call-in! w #(aget ^objects (v2/row-of d) rw/C-PENDING))) "nothing is left pending"))))))
