@@ -66,7 +66,9 @@
 (def ^:const W-EXEC 19)      ; the world's executor (drainer, offload)
 (def ^:const W-INLINE 20)    ; H2: host threads may process items inline
 (def ^:const W-BUDGET 21)    ; H2: items + slices per inline turn
-(def ^:const W-SIZE 22)
+(def ^:const W-ROOTS 22)     ; observe edges and host waits (roots, §3.1) for T21
+(def ^:const W-RELEASED 23)
+(def ^:const W-SIZE 24)
 
 ;; Scope
 (def ^:const S-PARENT 2)

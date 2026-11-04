@@ -64,3 +64,19 @@
         (let [c (census w)]
           (is (<= (get c rw/T-COMP 0) 2) (str "census " c))
           (is (zero? (get c rw/T-EDGE 0)) (str "census " c)))))))
+
+(deftest release-world-reclaims-everything
+  (let [w (v2/world {:verify? true})
+        released (atom [])]
+    (binding [v2/*world* w]
+      (let [x (v2/signal 0)
+            c (spin (* 2 (iv/get-new (track x))))
+            u (v2/observe! c (fn [v err?] (when err? (swap! released conj v))))
+            d (v2/deferred)
+            t (task (try (await d) (finally nil)))
+            left (v2/release-world! w)]
+        (is (= 1 (count @released)) "the observer was told")
+        (is (:spindel/released (ex-data (first @released))))
+        (is (thrown? Exception (v2/write! x 1)) "host operations fail after release")
+        (System/gc)
+        (is (<= (left) 4) (str "rows left: " (left) " (root scope and handle-held rows)"))))))

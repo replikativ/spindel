@@ -97,6 +97,8 @@
      (s! w rw/W-EXEC (or executor #?(:clj @default-executor :cljs nil)))
      (s! w rw/W-INLINE (boolean inline?))
      (s! w rw/W-BUDGET (long budget))
+     (s! w rw/W-ROOTS #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
+     (s! w rw/W-RELEASED false)
      (when verify?
        (s! w rw/W-REG #?(:clj (java.util.LinkedHashMap.) :cljs (js/Map.)))
        (s! w rw/W-LOG (alist))
@@ -302,6 +304,8 @@
     (aadd! outs e)
     (ref-inc! debtor)
     (when (demands? e) (hot-inc! debtor))
+    (when (or (== kind rw/EK-OBSERVE) (and (== kind rw/EK-WAIT) (fn? cred)))
+      (.put ^java.util.Map (g w rw/W-ROOTS) e true))
     (register! w e)))
 
 (defn- linked? [e]
@@ -329,6 +333,7 @@
       (s! last-e rw/E-IDX i))
     (when (demands? e) (hot-dec! debtor))
     (s! e rw/E-ACT nil)
+    (.remove ^java.util.Map (g w rw/W-ROOTS) e)
     (unregister! w e)
     (unmark! e)
     (ref-dec! debtor)))
@@ -1495,13 +1500,17 @@
       (let [^java.util.concurrent.Executor ex (g w rw/W-EXEC)]
         (.execute ex ^Runnable (fn [] (.set sched false) (process! w)))))))
 
+(defn released-ex [] (ex-info "world released" {:spindel/released true}))
+
 (defn host!
   "H1: a host operation `f` of world `w`. A thread that already holds the
    world (inside a slice or a callback) runs it at once; any other thread
-   enqueues it, then tries the gate (H2) unless the world is not inline."
+   enqueues it, then tries the gate (H2) unless the world is not inline.
+   A released world refuses host operations (T21)."
   [w f]
   (let [^java.util.concurrent.locks.ReentrantLock lk (g w rw/W-LOCK)]
     (cond
+      (g w rw/W-RELEASED) (throw (released-ex))
       (.isHeldByCurrentThread lk) (f)
       ;; Fast path: nothing queued and the gate is free, so running the item
       ;; now keeps FIFO order without an ingress node.
@@ -1922,6 +1931,28 @@
                                          (long ms) java.util.concurrent.TimeUnit/MILLISECONDS))
           :cljs (js/setTimeout #(join! w z [nil false]) ms))))
     (unwind! ek)))
+
+(defn release-world!
+  "T21: revokes the roots (observe callbacks and host waits receive
+   ::released, pins are dropped), closes the root scope, and lets Rule R
+   reclaim the rest. Later host operations fail with ::released. Returns a
+   fn reporting the rows left (cleanup entries until they retire, L2)."
+  [w]
+  (gated w
+    (let [ex (released-ex)
+          ^java.util.Map roots (g w rw/W-ROOTS)]
+      (doseq [e (vec (.keySet roots))]
+        (when (linked? e)
+          (let [cb (g e rw/E-CRED)]
+            (unlink! w e)
+            (aadd! (g w rw/W-CALLBACKS) [cb [ex true]]))))
+      (let [^java.util.Map pins (g w rw/W-PINS)]
+        (doseq [[x n] (vec pins)] (dotimes [_ n] (ref-dec! x)))
+        (.clear pins))
+      (close-scope! w (g w rw/W-ROOT))
+      (commit! w [:release-world])
+      (s! w rw/W-RELEASED true)))
+  (fn [] (when-let [reg (g w rw/W-REG)] (.size ^java.util.Map reg))))
 
 (defn offload [_] (throw (ex-info "offload outside a body" {})))
 (defn sleep [_] (throw (ex-info "sleep outside a body" {})))
