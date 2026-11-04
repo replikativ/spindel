@@ -1044,12 +1044,54 @@
 
 (definterface IHandle (getRow []) (setRow [r]))
 
-(deftype Handle [w ^:volatile-mutable row]
+;; A host handle (§1): weak, never a liveness reason. `cell` holds the row
+;; (set when the creating item commits); `dropped` makes T19 happen once,
+;; by `release!` or by the Cleaner after the handle is collected (M3c).
+(deftype Handle [w ^objects cell dropped]
   IHandle
-  (getRow [_] row)
-  (setRow [_ r] (set! row r))
+  (getRow [_] (aget cell 0))
+  (setRow [_ r] (aset cell 0 r))
   #?@(:clj [clojure.lang.IDeref
             (deref [this] (value this))]))
+
+#?(:clj (def ^:private cleaner (delay (java.lang.ref.Cleaner/create))))
+
+(declare host! handle-drop!)
+
+(defn- new-handle
+  "A fresh handle object for `w`; T19 is enqueued when it is collected. The
+   cleaning action holds the cell and the flag, never the handle."
+  [w row]
+  (let [cell (object-array 1)
+        dropped #?(:clj (java.util.concurrent.atomic.AtomicBoolean. false) :cljs (volatile! false))
+        h (Handle. w cell dropped)]
+    (aset cell 0 row)
+    #?(:clj (.register ^java.lang.ref.Cleaner @cleaner h
+                       ^Runnable (fn []
+                                   (when (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean dropped false true)
+                                     (host! w #(when-let [x (aget cell 0)] (handle-drop! w x)))))))
+    h))
+
+(defn- handle!
+  "The row's live handle, or a new one (+1 handle, Z#29). A row has at most
+   one live handle object."
+  [w row]
+  (or #?(:clj (when-let [^java.lang.ref.WeakReference ref (g row rw/HREF)] (.get ref)) :cljs nil)
+      (let [h (new-handle w row)]
+        (s! row rw/HANDLES (inc (gl row rw/HANDLES)))
+        #?(:clj (s! row rw/HREF (java.lang.ref.WeakReference. h)))
+        h)))
+
+(defn- top-handle
+  "A handle returned before its creating item commits (H1)."
+  [w]
+  (new-handle w nil))
+
+(defn- bind-handle!
+  "The creating item commits: the handle names its row, which holds it weakly."
+  [h row]
+  (.setRow ^Handle h row)
+  #?(:clj (s! row rw/HREF (java.lang.ref.WeakReference. h))))
 
 (defn row-of
   "The row behind a handle."
@@ -1121,12 +1163,13 @@
           ;; Created by a task run: owned by the run scope, retained by demand.
           (let [child (new-comp! w (run-scope! w r) 0 at inputs body 0)]
             (aadd! (g w rw/W-RQ) child)
-            (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-            (->Handle w child))
+            (let [h (handle! w child)]
+              (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+              h))
           (let [key (creation-key! r site)
                 child (adopt! c key)]
             (if child
-              (do (s! child rw/AT at)   ; M3: adoption adds a (weak) handle (Z#13)
+              (do (s! child rw/AT at)   ; adoption reuses the live handle, or makes one (Z#29)
                   (when (comp? child)
                     (when-not (same-inputs? inputs (g child rw/C-INPUTS))
                       ;; W#5: like a write to the rerun source.
@@ -1139,20 +1182,21 @@
                             (s! child rw/C-RESTART true)
                             (mark-from! child)
                             (maybe-schedule! child)))))
-                  (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-                  (->Handle w child))
-              ;; M3: a body creation starts with the body's (weak) handle
-              ;; (Z#13); until weak handles exist it takes none.
+                  (let [h (handle! w child)]
+                    (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+                    h))
+              ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
               (let [child (new-comp! w c key at inputs body 0)]
                 (aadd! (g c rw/C-BASIS) child)
                 (ref-inc! child)
-                (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-                (->Handle w child)))))))
+                (let [h (handle! w child)]
+                  (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+                  h)))))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
-          h (->Handle w nil)]
+          h (top-handle w)]
       (gated w
         (let [c (new-comp! w (g w rw/W-ROOT) 0 0 inputs body 1)]
-          (.setRow ^Handle h c)
+          (bind-handle! h c)
           (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
           (commit! w [:create-comp-top (g c rw/ID)])))
       h)))
@@ -1184,8 +1228,9 @@
                 old (adopt! x key)]
             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS)))
               (do (s! old rw/AT at)
-                  (commit! w [:spawn (g r rw/ID) site (g old rw/ID)])
-                  (->Handle w old))
+                  (let [h (handle! w old)]
+                    (commit! w [:spawn (g r rw/ID) site (g old rw/ID)])
+                    h))
               (do (when old                       ; changed captures: replace it
                     (let [basis (g x rw/C-BASIS)
                           i #?(:clj (.indexOf ^java.util.ArrayList basis old) :cljs (.indexOf basis old))]
@@ -1196,21 +1241,23 @@
                     (aadd! (g x rw/C-BASIS) k)
                     (ref-inc! k)
                     (start-task! w k)
-                    (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
-                    (->Handle w k)))))
+                    (let [h (handle! w k)]
+                      (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
+                      h)))))
           (let [s (run-scope! w r)
                 k (new-task! w s 0 at inputs body 0)]
             (aadd! (g s rw/S-TASKS) k)
             (ref-inc! k)
             (start-task! w k)
-            (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
-            (->Handle w k)))))
+            (let [h (handle! w k)]
+              (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
+              h)))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
-          h (->Handle w nil)]
+          h (top-handle w)]
       (gated w
         (let [s (g w rw/W-ROOT)
               k (new-task! w s 0 0 inputs body 1)]
-          (.setRow ^Handle h k)
+          (bind-handle! h k)
           (aadd! (g s rw/S-TASKS) k)
           (ref-inc! k)
           (start-task! w k)
@@ -1444,11 +1491,11 @@
     (register! w x)))
 
 (defn- create-source-top! [w kind v init]
-  (let [h (->Handle w nil)]
+  (let [h (top-handle w)]
     (gated w
       (let [x (new-source! w kind v (g w rw/W-ROOT) 0 0)]
         (when init (init x))
-        (.setRow ^Handle h x)
+        (bind-handle! h x)
         (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID)
                     ([:signal :cell :deferred :mailbox :semaphore] kind) [:opaque v] (g x rw/ID)])))
     h))
@@ -1627,16 +1674,25 @@
             (commit! w [:unpin (g x rw/ID)])))))
   h)
 
+(defn- handle-drop!
+  "T19: `handles -= 1`; Rule R applies §3.4."
+  [w x]
+  (if (zero? (gl x rw/HANDLES))
+    (refuse! w [:handle-drop (g x rw/ID)])
+    (do (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
+        (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))
+        (commit! w [:handle-drop (g x rw/ID)]))))
+
 (defn release!
-  "T19 by hand (weak handles arrive with M3c)."
+  "T19 by hand: drops this handle now instead of at collection."
   [h]
-  (gated (world-of h)
-    (let [x (row-of h) w (g x rw/WORLD)]
-      (if (zero? (gl x rw/HANDLES))
-        (refuse! w [:handle-drop (g x rw/ID)])
-        (do (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
-            (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))
-            (commit! w [:handle-drop (g x rw/ID)])))))
+  (when (instance? Handle h)
+    (let [^Handle h h
+          dropped (.-dropped h)]
+      (when #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean dropped false true)
+               :cljs (when-not @dropped (vreset! dropped true) true))
+        (let [w (.-w h)]
+          (gated w (when-let [x (row-of h)] (handle-drop! w x)))))))
   nil)
 
 (defn cancel-task!

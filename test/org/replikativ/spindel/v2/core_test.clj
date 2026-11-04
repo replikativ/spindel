@@ -105,6 +105,7 @@
         (is (= 4 @child-runs) "existing children are adopted, only the new one runs")
         (v2/write! n 1)
         (is (= [5 14 0] @seen))
+        (verify/gc-settle! w)
         (let [{:keys [comps]} (census w)]
           (is (<= comps 2) "released children are demoted and dropped once unreferenced")))))))
 (deftest repeated-churn-is-bounded

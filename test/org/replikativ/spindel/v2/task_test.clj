@@ -56,7 +56,10 @@
       (binding [v2/*world* w]
         (let [t (task (let [k (task 5)] (+ 1 (await k))))]
           (is (= 6 (v2/value t)))
-          (is (= {:tasks 1 :runs 0} (select-keys (census w) [:tasks :runs]))))))))
+          (verify/gc-settle! w)
+          (is (= {:tasks 1 :runs 0} (select-keys (census w) [:tasks :runs]))
+              "the child is gone; the outer task stays for its live handle")
+          (is (= 6 (v2/value t))))))))
 
 (deftest parked-task-on-deferred
   (checked

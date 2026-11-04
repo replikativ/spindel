@@ -224,3 +224,12 @@
 (defn log
   "The commit log; `[:opaque v]` payloads become interned Nats."
   [w] (mapv (fn [e] (update e :item #(opaque w %))) (f w rw/W-LOG)))
+
+(defn gc-settle!
+  "Forces collection so weak handles drop (T19), then waits for the world to
+   process the drops (the census gate, §0)."
+  [w]
+  (dotimes [_ 3] (System/gc) (Thread/sleep 20))
+  ((requiring-resolve 'org.replikativ.spindel.v2.core/call-in!) w (fn [] nil))
+  (Thread/sleep 20)
+  ((requiring-resolve 'org.replikativ.spindel.v2.core/call-in!) w (fn [] nil)))

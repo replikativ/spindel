@@ -87,54 +87,55 @@
 (def ^:const VERSION 8)
 (def ^:const KEY 9)          ; creation key in the creator's basis
 (def ^:const AT 10)          ; creation site index in the creator's run
+(def ^:const HREF 11)        ; weak reference to the row's live host handle (M3c)
 
 ;; Computation
-(def ^:const C-INPUTS 11)
-(def ^:const C-BODY 12)
-(def ^:const C-RUN 13)
-(def ^:const C-EPOCH 14)
-(def ^:const C-DONE-EPOCH 15)
-(def ^:const C-PENDING 16)
-(def ^:const C-RANK 17)
-(def ^:const C-RESULT 18)
-(def ^:const C-ERR 19)
-(def ^:const C-IDLE 20)
-(def ^:const C-VALIDITY 21)
-(def ^:const C-BASIS 22)     ; list of created rows
-(def ^:const C-ADOPT 23)     ; T11 adoption basis (list) or nil
-(def ^:const C-ADOPT-BASE 24); T11 adoption baselines: list of edges removed from the suffix, or nil
-(def ^:const C-INS 25)       ; dep edges, ordered by at
-(def ^:const C-QUEUED 26)
-(def ^:const C-RESTART 27)   ; T3 changed inputs: the next run restarts from the body
-(def ^:const C-SIZE 28)
+(def ^:const C-INPUTS 12)
+(def ^:const C-BODY 13)
+(def ^:const C-RUN 14)
+(def ^:const C-EPOCH 15)
+(def ^:const C-DONE-EPOCH 16)
+(def ^:const C-PENDING 17)
+(def ^:const C-RANK 18)
+(def ^:const C-RESULT 19)
+(def ^:const C-ERR 20)
+(def ^:const C-IDLE 21)
+(def ^:const C-VALIDITY 22)
+(def ^:const C-BASIS 23)     ; list of created rows
+(def ^:const C-ADOPT 24)     ; T11 adoption basis (list) or nil
+(def ^:const C-ADOPT-BASE 25); T11 adoption baselines: list of edges removed from the suffix, or nil
+(def ^:const C-INS 26)       ; dep edges, ordered by at
+(def ^:const C-QUEUED 27)
+(def ^:const C-RESTART 28)   ; T3 changed inputs: the next run restarts from the body
+(def ^:const C-SIZE 29)
 
 ;; Task
-(def ^:const K-BODY 11)
-(def ^:const K-INPUTS 12)
-(def ^:const K-RUN 13)
-(def ^:const K-RESULT 14)
-(def ^:const K-ERR 15)
-(def ^:const K-DONE 16)
-(def ^:const K-SIZE 17)
+(def ^:const K-BODY 12)
+(def ^:const K-INPUTS 13)
+(def ^:const K-RUN 14)
+(def ^:const K-RESULT 15)
+(def ^:const K-ERR 16)
+(def ^:const K-DONE 17)
+(def ^:const K-SIZE 18)
 
 ;; Source
-(def ^:const X-KIND 11)
-(def ^:const X-VALUE 12)
-(def ^:const X-OPEN 13)
-(def ^:const X-WAITERS 14)   ; mailbox/semaphore: FIFO of waiting wait edges
-(def ^:const X-SIZE 15)
+(def ^:const X-KIND 12)
+(def ^:const X-VALUE 13)
+(def ^:const X-OPEN 14)
+(def ^:const X-WAITERS 15)   ; mailbox/semaphore: FIFO of waiting wait edges
+(def ^:const X-SIZE 16)
 
 ;; Resource (§1, T15-T18)
-(def ^:const Z-KIND 11)      ; :offload :timer
-(def ^:const Z-PHASE 12)     ; 0 armed, 1 fired, 2 cancelling
-(def ^:const Z-RESULT 13)
-(def ^:const Z-ERR 14)
-(def ^:const Z-CTL 15)       ; host control: offload wrapper or ScheduledFuture
-(def ^:const Z-SIZE 16)
+(def ^:const Z-KIND 12)      ; :offload :timer
+(def ^:const Z-PHASE 13)     ; 0 armed, 1 fired, 2 cancelling
+(def ^:const Z-RESULT 14)
+(def ^:const Z-ERR 15)
+(def ^:const Z-CTL 16)       ; host control: offload wrapper or ScheduledFuture
+(def ^:const Z-SIZE 17)
 
-(def ^:const Z-ARMED 0)
-(def ^:const Z-FIRED 1)
-(def ^:const Z-CANCELLING 2)
+(def ^:const Z-ARMED 1)
+(def ^:const Z-FIRED 2)
+(def ^:const Z-CANCELLING 3)
 
 ;; Run
 (def ^:const R-WORLD 2)
