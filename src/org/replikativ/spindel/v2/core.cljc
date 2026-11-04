@@ -1986,7 +1986,7 @@
         (let [v (consume! x)]
           (alloc-id! w)                             ; the consumed wait edge
           (s! x rw/VERSION (inc (gl x rw/VERSION)))
-          (commit! w [:take (g r rw/ID) (g x rw/ID) aid])
+          (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
           (k v))
         (let [members (object-array 1)
               a (new-activation! w aid r :one k ek members (object-array 1) 1)
@@ -1995,7 +1995,7 @@
           (hs/dq-push! (deque x rw/X-WAITERS) e)
           (park! r a)
           (s! a rw/A-INLINE false)
-          (commit! w [:take (g r rw/ID) (g x rw/ID) aid])
+          (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
           (notify-blocked! (rv w (g r rw/R-OF)) 0)
           nil)))
     (unwind! ek)))
