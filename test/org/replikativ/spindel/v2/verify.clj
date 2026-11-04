@@ -116,22 +116,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Projection of the engine state to the §2 tables (oracle input, §11.4)
 
-(deftype IdentityKey [x]
-  Object
-  (equals [_ o] (and (instance? IdentityKey o) (identical? x (.-x ^IdentityKey o))))
-  (hashCode [_] (System/identityHashCode x)))
-
-(defn- by-identity? [x]
-  (or (fn? x) (.isArray (class x))
-      (not (or (number? x) (string? x) (keyword? x) (symbol? x) (boolean? x) (char? x) (coll? x)))))
-
-(defn- intern! [w x]
-  (if (nil? x)
-    0
-    (let [^java.util.Map m (f w rw/W-INTERN)
-          k (if (by-identity? x) (->IdentityKey x) x)]
-      (or (.get m k)
-          (let [n (inc (.size m))] (.put m k n) n)))))
+(defn- intern! [w x] ((requiring-resolve 'org.replikativ.spindel.v2.core/intern-opaque!) w x))
 
 (defn- id [row] (when row (f row rw/ID)))
 
@@ -239,14 +224,9 @@
        (.set log i (assoc (.get log i) :proj (projection w))))
      (when inner (inner w item)))))
 
-(defn- opaque [w x]
-  (cond (and (vector? x) (= :opaque (first x))) (intern! w (second x))
-        (vector? x) (mapv #(opaque w %) x)
-        :else x))
-
 (defn log
-  "The commit log; `[:opaque v]` payloads become interned Nats."
-  [w] (mapv (fn [e] (update e :item #(opaque w %))) (f w rw/W-LOG)))
+  "The commit log (opaque payloads are interned Nats already)."
+  [w] (vec (f w rw/W-LOG)))
 
 (defn gc-settle!
   "Forces collection so weak handles drop (T19), then waits for the world to

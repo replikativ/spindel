@@ -101,7 +101,7 @@
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
-       (s! w rw/W-INTERN (hs/vmap))
+       (s! w rw/W-INTERN #?(:clj [(java.util.HashMap.) (java.util.WeakHashMap.) (long-array 1)] :cljs nil))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
@@ -133,8 +133,31 @@
 
 (defn logging? [w] (some? (g w rw/W-LOG)))
 
-(defn log-commit! [w item]
-  (let [log (g w rw/W-LOG)]
+(defn- by-identity? [x]
+  (not (or (number? x) (string? x) (keyword? x) (symbol? x) (boolean? x) (char? x)
+           (and (coll? x) (not (record? x))))))
+
+(defn intern-opaque!
+  "Verify mode: the Nat for an opaque value. Plain values intern by
+   equality; identity objects (fns, arrays, handles) are held weakly, so the
+   log retains nothing a body would not (census)."
+  [w x]
+  #?(:clj (if (nil? x)
+            0
+            (let [[^java.util.Map strong ^java.util.Map weak ^longs n] (g w rw/W-INTERN)
+                  ^java.util.Map m (if (by-identity? x) weak strong)]
+              (or (.get m x)
+                  (let [v (aset n 0 (inc (aget n 0)))] (.put m x v) v))))
+     :cljs 0))
+
+(defn- opaque-item [w x]
+  (cond (and (vector? x) (= :opaque (first x)) (== 2 (count x))) (intern-opaque! w (second x))
+        (vector? x) (mapv #(opaque-item w %) x)
+        :else x))
+
+(defn log-commit! [w item0]
+  (let [log (g w rw/W-LOG)
+        item (opaque-item w item0)]
     (aadd! log {:item item :accepted true})
     (when-let [hook (g w rw/W-HOOK)] (hook w item)))
   nil)
@@ -682,7 +705,7 @@
                 (s! x rw/C-ERR (boolean err?)))
               (s! x rw/C-DONE-EPOCH (g r rw/R-EPOCH))
               (release-adoption! w x)))
-          (commit! w [:complete (g r rw/ID) (if err? :err :ok) [:opaque v]])
+          (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]])
           (when (live? x) (settle! w x)))
         (do
           ;; Q10: children not awaited and not detached are cancelled
@@ -691,7 +714,7 @@
               (dotimes [i (acount ts)]
                 (when-let [cr (g (anth ts i) rw/K-RUN)] (cancel! w cr ::cancelled)))))
           (finish-task! w x v err?)
-          (commit! w [:complete (g r rw/ID) (if err? :err :ok) [:opaque v]])))))
+          (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]])))))
   nil)
 
 ;; ---------------------------------------------------------------------------
@@ -753,9 +776,10 @@
                 (if (or restart? (> (gl x rw/AT) at)) (aadd! ab x) (aadd! kept x))))
             (s! c rw/C-BASIS kept)
             (s! c rw/C-ADOPT ab))))
-      (let [r (new-run! w c (g c rw/C-EPOCH))
+      (let [t5? (and (nil? e) (zero? (acount ins)))
+            r (new-run! w c (g c rw/C-EPOCH))
             k (when e (g e rw/E-CONT))]
-        (commit! w [:dispatch (g c rw/ID) (g r rw/ID)])
+        (commit! w [(if t5? :start :dispatch) (g c rw/ID) (g r rw/ID)])
         (if (and e k)
           ;; Resume E's continuation with E's delivery; E is consumed (re-armed).
           (let [d (g e rw/E-DEBTOR)]
@@ -892,7 +916,7 @@
           at (next-at! r)]
       (if-not (comp? c)
         ;; Inside a task: a snapshot read with no edge (Q1, Z#19).
-        (do (commit! w [:track (g r rw/ID) (g x rw/ID)])
+        (do (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] 0])
             (k (iv/->Interval nil (g x rw/X-VALUE) nil)))
         (let [[e reused?] (site-edge! w r c x at (reentrant-k r k) ek)
               v (g x rw/X-VALUE)
@@ -902,7 +926,7 @@
           (s! e rw/E-BASE v)
           (s! e rw/E-SEEN (g x rw/VERSION))
           (s! e rw/E-ARMED true)
-          (commit! w [:track (g r rw/ID) (g x rw/ID) (g e rw/ID)])
+          (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] (if reused? 0 (g e rw/ID))])
           (k (iv/->Interval old v nil)))))
     (unwind! ek)))
 
@@ -962,7 +986,7 @@
   (when (and (= :any (g a rw/A-MODE)) (not (comp? (g r rw/R-OF))))
     (cancel-losers! w r (g a rw/A-MEMBERS)))
   (release-members! w a)
-  (commit! w [:resume (g a rw/ID)])
+  (commit! w [:schedule (g r rw/ID)])
   (group-result (g a rw/A-MODE) (g a rw/A-SLOTS) (g a rw/A-WINNER)))
 
 (defn- notify-blocked!
@@ -984,6 +1008,15 @@
               (when (and (some? a) (not (fn? a)) (act? a))
                 (notify-blocked! (g (g a rw/A-RUN) rw/R-OF) (inc (long depth)))))))))))
 
+(defn- mine-of
+  "The `any` loser candidates of an await (T6): member tasks the run created
+   (owned by its run scope)."
+  [r ds]
+  (let [s (g r rw/R-SROW)]
+    (vec (for [d ds :let [d (row-of d)]
+               :when (and (task? d) s (identical? s (g d rw/OWNER)))]
+           (g d rw/ID)))))
+
 (defn- await-group!
   "T6: an activation over `ds` with `mode` (:one :all :any)."
   [ds mode k ek]
@@ -1001,13 +1034,17 @@
           refused (volatile! nil)
           ;; group sites restart (Y#3); `one` sites re-enter when allowed (§2)
           kk (when (= mode :one) (reentrant-k r k))]
-      ;; Member edges in debtor-list order; a repeated debtor shares its edge.
+      ;; Reactivation of valid idle debtors first, then member edges in
+      ;; debtor-list order (the model's allocation order).
+      (dotimes [i n]
+        (let [d (row-of (nth ds i))]
+          (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))))
+      ;; Member edges; a repeated debtor shares its edge.
       (dotimes [i n]
         (let [d (row-of (nth ds i))
               prev (loop [j 0] (when (< j i)
                                  (let [m (aget members j)]
                                    (if (and m (identical? d (g m rw/E-DEBTOR))) m (recur (inc j))))))]
-          (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
           (cond
             prev (aset members i prev)
             in-comp? (let [[e _] (site-edge! w r x d at kk ek)]
@@ -1048,7 +1085,7 @@
                                     (let [e (anth ins i)]
                                       (when (and (identical? d (g e rw/E-DEBTOR)) (== at (gl e rw/E-AT)))
                                         (remove-dep! w e)))))))))
-            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
+            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode [:opaque k] aid (mine-of r ds)])
             (continue! (group-result mode slots @winner) k ek))
           (let [a (new-activation! w aid r mode k ek members slots @remaining)]
             (dotimes [i n]
@@ -1057,7 +1094,7 @@
                   (s! e rw/E-ACT a)
                   (s! e rw/E-CRED a))))
             (park! r a)
-            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
+            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode [:opaque k] aid (mine-of r ds)])
             (notify-blocked! x 0)
             ;; Demanded debtors run on the host stack (I10).
             (dotimes [i n]
@@ -1212,7 +1249,7 @@
           (let [child (new-comp! w (run-scope! w r) 0 at inputs body 0)]
             (aadd! (g w rw/W-RQ) child)
             (let [h (handle! w child)]
-              (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+              (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque inputs] [:opaque body]])
               h))
           (let [key (creation-key! r site)
                 child (adopt! c key)]
@@ -1231,14 +1268,14 @@
                             (mark-from! child)
                             (maybe-schedule! child)))))
                   (let [h (handle! w child)]
-                    (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+                    (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque inputs] [:opaque body]])
                     h))
               ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
               (let [child (new-comp! w c key at inputs body 0)]
                 (aadd! (g c rw/C-BASIS) child)
                 (ref-inc! child)
                 (let [h (handle! w child)]
-                  (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+                  (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque inputs] [:opaque body]])
                   h)))))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)]
@@ -1246,7 +1283,7 @@
         (let [c (new-comp! w (g w rw/W-ROOT) 0 0 inputs body 1)]
           (bind-handle! h c)
           (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
-          (commit! w [:create-comp-top (g c rw/ID)])))
+          (commit! w [:create-comp-top (g (g w rw/W-ROOT) rw/ID) (g c rw/ID) [:opaque inputs] [:opaque body]])))
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
@@ -1277,7 +1314,7 @@
             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS)))
               (do (s! old rw/AT at)
                   (let [h (handle! w old)]
-                    (commit! w [:spawn (g r rw/ID) site (g old rw/ID)])
+                    (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID)])
                     h))
               (do (when old                       ; changed captures: replace it
                     (let [basis (g x rw/C-BASIS)
@@ -1290,7 +1327,7 @@
                     (ref-inc! k)
                     (start-task! w k)
                     (let [h (handle! w k)]
-                      (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
+                      (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID)])
                       h)))))
           (let [s (current-scope! w r)
                 k (new-task! w s 0 at inputs body 0)]
@@ -1298,7 +1335,7 @@
             (ref-inc! k)
             (start-task! w k)
             (let [h (handle! w k)]
-              (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
+              (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID)])
               h)))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)]
@@ -1309,7 +1346,7 @@
           (aadd! (g s rw/S-TASKS) k)
           (ref-inc! k)
           (start-task! w k)
-          (commit! w [:spawn-top (g k rw/ID)])))
+          (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID)])))
       h)))
 
 ;; ---------------------------------------------------------------------------
@@ -1336,7 +1373,10 @@
             (s! e rw/E-BASE base)
             (aadd! ins e)))
         (s! c rw/C-DONE-EPOCH (g c rw/C-EPOCH)))
-      (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH))))))
+      ;; B2: an invalid idle computation with a result steps its epoch so it
+      ;; stays dirty while it runs; a fresh one needs no step.
+      (when (some? (g c rw/C-DONE-EPOCH))
+        (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Demand
@@ -1414,7 +1454,7 @@
 (defn- start! [w r]
   (when (== rw/ACT-ACTIVE (gl r rw/R-ACT))
     (let [k (g r rw/R-OF)]
-      (commit! w [:start (g r rw/ID)])
+      (commit! w [:schedule (g r rw/ID)])
       (slice! r #((g k rw/K-BODY) ok-k err-k)))))
 
 (defn- pop-first! [l]
@@ -1548,7 +1588,8 @@
         (when init (init x))
         (bind-handle! h x)
         (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID)
-                    ([:signal :cell :deferred :mailbox :semaphore] kind) [:opaque v] (g x rw/ID)])))
+                    ([:signal :cell :deferred :mailbox :semaphore] kind)
+                    [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)])))
     h))
 
 (defn signal
@@ -1691,7 +1732,7 @@
         (vreset! ev e)
         (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
         (deliver-observe! w e)
-        (commit! w [:observe (g d rw/ID) (g e rw/ID)])
+        (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
         (demand! w d)))
     (fn []
       (gated w
@@ -1829,7 +1870,7 @@
       (s! z rw/Z-ERR (boolean err?))
       (let [outs (acopy (g z rw/OUTS))]
         (dotimes [i (acount outs)] (fire-wait! w (anth outs i))))
-      (commit! w [:resource-fire (g z rw/ID) (if err? :err :ok) [:opaque v]]))
+      (commit! w [:resource-fire (g z rw/ID) (if err? 2 1) [:opaque v]]))
     (refuse! w [:resource-fire (g z rw/ID)])))
 
 (defn- resource-ack!
@@ -1872,7 +1913,7 @@
     (aset members 0 e)
     (park! r a)
     (s! a rw/A-INLINE false)
-    (commit! w [:await (g r rw/ID) [(g z rw/ID)] :one aid])
+    (commit! w [:await (g r rw/ID) [(g z rw/ID)] :one [:opaque k] aid []])
     (notify-blocked! (g r rw/R-OF) 0)
     (start! w z)
     nil))
