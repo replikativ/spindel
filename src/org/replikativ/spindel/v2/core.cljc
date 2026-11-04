@@ -18,7 +18,7 @@
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.rows :refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]]
-                            [org.replikativ.spindel.v2.core :refer [gated commit! rv]])))
+                            [org.replikativ.spindel.v2.core :refer [gated commit! rv ingress-body]])))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -107,7 +107,6 @@
      (s! w rw/W-RESUME (alist))
      (s! w rw/W-START (alist))
      (s! w rw/W-CLEANUP (alist))
-     (s! w rw/W-ACKS (alist))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS (hs/vmap))
@@ -1830,16 +1829,16 @@
   (let [ready (g w rw/W-READY)
         resume (g w rw/W-RESUME)
         start (g w rw/W-START)
-        cleanup (g w rw/W-CLEANUP)
-        acks (g w rw/W-ACKS)]
+        cleanup (g w rw/W-CLEANUP)]
     (cond
-      ;; T15 for a resource that joined at its cancel (Z#55)
-      (pos? (acount acks)) (do (resource-ack! w (pop-first! w acks)) (rule-r! w) true)
       (pos? (acount cleanup))
-      (let [[r ek ex] (pop-first! w cleanup)]
-        (s! r rw/R-SLICE true)
-        (commit! w [:finalize (g r rw/ID)])
-        (slice! r #(ek ex))
+      (let [[r ek ex :as entry] (pop-first! w cleanup)]
+        (if (nil? ek)
+          ;; T15 for a resource that joined at its cancel (Z#55): [z]
+          (resource-ack! w (rv w r))
+          (do (s! r rw/R-SLICE true)
+              (commit! w [:finalize (g r rw/ID)])
+              (slice! r #(ek ex))))
         (rule-r! w)
         true)
       (pos? (acount start)) (do (start! w (pop-first! w start)) (rule-r! w) true)
@@ -1878,13 +1877,13 @@
     ;; dormant resources wait for activate!
     (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT))) (activate-dormant! w))
     (try
-      (loop [n (gl w rw/W-BUDGET)]
+      (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
         (if (zero? n)
           true
           (if-let [item (hs/mpsc-poll! (ingress w))]
-            (do (item) (recur (dec n)))
-            (cond (and (not (g w rw/W-UNBORN)) (drain-step! w)) (recur (dec n))
-                  (run-callbacks! w) (recur n)
+            (do (item) (recur (dec n) (and unborn? (g w rw/W-UNBORN))))
+            (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
+                  (run-callbacks! w) (recur n unborn?)
                   :else false))))
       (finally (s! w rw/W-DRAINING false)))))
 
@@ -1918,8 +1917,7 @@
       (pos? (acount (g w rw/W-CALLBACKS)))
       (and (not (g w rw/W-UNBORN))          ; E4: an unborn instance's work waits
            (or (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
-               (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))
-               (pos? (acount (g w rw/W-ACKS)))))))
+               (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))))))
 
 (defn- handoff!
   "H2: after releasing the gate, queued work is never stranded: schedule the
@@ -1931,41 +1929,66 @@
 
 (defn released-ex [] (ex-info "world released" {:spindel/released true}))
 
-(defn- ingress!
-  "H1: an item `f` of world `w`. A thread that already holds the world
-   (inside a slice or a callback) runs it at once; any other thread enqueues
-   it, then tries the gate (H2) unless the world is not inline. `admit?`
-   items are host operations, which a released world refuses (T21), except
-   the effects of a run's own slice: a finalizer of a cleanup entry may
-   still deliver, post, release and write (Z#40, Z#56). Completions of
-   outstanding resources are not admissions: they join (L2)."
-  [w f admit?]
-  (let [lk (g w rw/W-LOCK)]
-    (cond
-      (and admit? (g w rw/W-RELEASED)
-           (not (and (identical? w (cw)) (active-run))))
-      (throw (released-ex))
-      (hs/held? lk) (if (identical? w (cw))
-                      (f)
-                      (let [prev (enter-world! w)] (try (f) (finally (leave-world! prev)))))
-      ;; Fast path: nothing queued and the gate is free, so running the item
-      ;; now keeps FIFO order without an ingress node.
-      (and (g w rw/W-INLINE) (hs/mpsc-empty? (ingress w)) (hs/try-lock! lk))
-      (let [prev (enter-world! w)
-            v (try (s! w rw/W-DRAINING true)
-                   (let [v (try (f) (finally (s! w rw/W-DRAINING false)))]
-                     (run-turn! w)
-                     v)
-                   (finally (let [cs (take-after! w)]
-                              (hs/unlock! lk) (leave-world! prev) (run-after! cs))))]
-        (handoff! w)
-        v)
-      :else
-      (do (hs/mpsc-add! (ingress w) f)
-          (if (g w rw/W-INLINE) (process! w) (handoff! w))
-          nil))))
+#?(:clj
+   (defmacro ingress-body
+     "The body of host!/internal!: `admit?` is a literal, so the release
+      check folds away for internal items."
+     [w f admit?]
+     (let [w' (gensym "w") f' (gensym "f") lk (gensym "lk") prev (gensym "prev")
+           v (gensym "v") l (gensym "l") cs (gensym "cs")]
+       `(let [~w' ~w ~f' ~f ~lk (g ~w' rw/W-LOCK)]
+          (cond
+            ~@(cond
+                (true? admit?)
+                [`(and (g ~w' rw/W-RELEASED) (not (and (identical? ~w' (cw)) (active-run))))
+                 `(throw (released-ex))]
+                (false? admit?) []
+                :else
+                [`(and ~admit? (g ~w' rw/W-RELEASED) (not (and (identical? ~w' (cw)) (active-run))))
+                 `(throw (released-ex))])
+            (hs/held? ~lk) (if (identical? ~w' (cw))
+                             (~f')
+                             (let [~prev (enter-world! ~w')] (try (~f') (finally (leave-world! ~prev)))))
+            ;; Fast path: nothing queued and the gate is free, so running the
+            ;; item now keeps FIFO order without an ingress node.
+            (and (g ~w' rw/W-INLINE) (hs/mpsc-empty? (ingress ~w')) (hs/try-lock! ~lk))
+            (let [~prev (enter-world! ~w')
+                  ~v (try (s! ~w' rw/W-DRAINING true)
+                          (let [~v (try (~f') (finally (s! ~w' rw/W-DRAINING false)))]
+                            (run-turn! ~w')
+                            ~v)
+                          (finally
+                            (let [~l (g ~w' rw/W-AFTER)]
+                              (if (zero? (acount ~l))
+                                (do (hs/unlock! ~lk) (leave-world! ~prev))
+                                (let [~cs (take-after! ~w')]
+                                  (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))))]
+              (handoff! ~w')
+              ~v)
+            :else
+            (do (hs/mpsc-add! (ingress ~w') ~f')
+                (if (g ~w' rw/W-INLINE) (process! ~w') (handoff! ~w'))
+                nil))))))
 
-(defn host! [w f] (ingress! w f true))
+(defn- ingress* [w f admit?]
+  (ingress-body w f admit?))
+
+(defn host!
+  "H1: a host operation `f` of world `w`. A thread that already holds the
+   world (inside a slice or a callback) runs it at once; any other thread
+   enqueues it, then tries the gate (H2) unless the world is not inline. A
+   released world refuses host operations (T21), except the effects of a
+   run's own slice: a finalizer of a cleanup entry may still deliver, post,
+   release and write (Z#40, Z#56)."
+  [w f]
+  (ingress* w f true))
+
+(defn- internal!
+  "A completion of an outstanding resource: not an admission, so it is
+   accepted after release and joins (T21, L2)."
+  [w f]
+  (ingress* w f false))
+
 
 (defn- world-of
   "The world a host operation on `h` acts on. Inside a slice it is the
@@ -2451,7 +2474,7 @@
           joined? (or (take-dormant! w z)
                       (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl)))]
       ;; the acknowledgement is its own item, after the cancelling one
-      (when joined? (aadd! (g w rw/W-ACKS) z)))))
+      (when joined? (aadd! (g w rw/W-CLEANUP) [z])))))
 
 (defn- arm-and-park!
   "T17 then T6 on the new resource, one effect and one commit (Z#55): the
@@ -2476,7 +2499,7 @@
 (defn- join! [w z res]
   ;; the callback captured the row before any later fork: resolve it in `w`
   ;; a completion, not an admission: accepted after release (T21, L2)
-  (ingress! w #(let [z (rv w z)] (resource-fire! w z res) (resource-ack! w z)) false))
+  (internal! w #(let [z (rv w z)] (resource-fire! w z res) (resource-ack! w z))))
 
 (defn offload-effect!
   "`(offload f)`: runs the plain function `f` on the world's executor,
@@ -2633,7 +2656,7 @@
     (s! c rw/W-AFTER (alist))
     (s! c rw/W-UNBORN false)
     (s! c rw/W-PUB-WORLD nil)
-    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ rw/W-ACKS]]
+    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
       (s! c i (hs/lcopy (g w i))))
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
     (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))

@@ -85,13 +85,12 @@
 (def ^:const W-SAVEPOINTS 29)  ; pending savepoint activations, ordered set by ID
 (def ^:const W-SP-DORMANT 30)  ; a fork's inherited pending savepoints (fail err ::forked)
 (def ^:const W-PENDING-ACT 31) ; an instantiated fork's pending activation (S3)
-(def ^:const W-ACKS 32)        ; resources joined at cancel, acknowledged as their own item (Z#55)
-(def ^:const W-OWNED 33)       ; fork ownership: owner scope id -> [holders prune-threshold] (F2, E1)
-(def ^:const W-HOLDER 34)      ; this fork's holder in its owner's table (E1)
-(def ^:const W-UNBORN 35)      ; an instance before activate! (E4)
-(def ^:const W-AFTER 36)       ; child worlds to schedule after the gate is released (E3)
-(def ^:const W-PUB-WORLD 37)   ; an unborn instance's publication world, its owner at activation
-(def ^:const W-SIZE 38)
+(def ^:const W-OWNED 32)       ; fork ownership: owner scope id -> [holders prune-threshold] (F2, E1)
+(def ^:const W-HOLDER 33)      ; this fork's holder in its owner's table (E1)
+(def ^:const W-UNBORN 34)      ; an instance before activate! (E4)
+(def ^:const W-AFTER 35)       ; child worlds to schedule after the gate is released (E3)
+(def ^:const W-PUB-WORLD 36)   ; an unborn instance's publication world, its owner at activation
+(def ^:const W-SIZE 37)
 
 ;; Scope
 (def ^:const S-PARENT 2)

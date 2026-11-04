@@ -161,7 +161,11 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     dep edge on the written source fires (armed); T11's `E` is the earliest
     fired dep edge in creation order and its suffix is every dep edge created
     after it, siblings at `E`'s site included, so no fired edge outlives a
-    re-entry.
+    re-entry;
+  - Z#60 (§3.4, A#6): validation visits each idle computation at most once
+    per demand and terminates by the acyclicity of validity entries, not by
+    rank (ranks track live dep edges only); invariant I14 states the
+    acyclicity.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -565,7 +569,13 @@ filter in step 3 then gives I3, and L1 follows.
    - a later change re-runs `C` from the beginning.
 4. **Invalid:** `C` is re-run (T5).
 
-Validation recurses in decreasing rank, so it terminates (A#6).
+Each idle computation is validated at most once per demand: validating
+it clears its idle flag, so every later path reaches it as non-idle and
+only compares versions. The walk is linear in the idle computations it
+reaches. It terminates because the validity graph is acyclic: its entries
+are recorded from `dep` edges, which are acyclic (I12), and an idle
+computation's entries are frozen until it is validated. Ranks do not bound
+it: they are maintained for live `dep` edges only (Z#60, I14).
 
 `version` increments on each completion whose result differs from the
 previous one. The comparison is `=`, evaluated inside the completing slice
@@ -818,6 +828,7 @@ Invariants hold after every commit.
 | I11b | **Bounded fan-out (W#13):** no table is keyed by history. Each row's references are bounded by its current content: <br>• a computation's edges, `basis` and adoption are bounded by its last two runs' effect indices; <br>• an activation's members by its `ds`; <br>• a run's finalizers by the lexical nesting depth; <br>• a source's delta log by `B`; <br>• a mailbox's queue by (posted − taken). <br>Combined with I11a, retained rows are a function of the obligations' current content. The constant factor is measured by the census gate. Physical pages are bounded separately (F5). |
 | I12 | **Rank (A#6):** for every `dep` edge between computations, `rank(creditor) > rank(debtor)`. **Adding an edge** that would violate this raises the creditor's rank and propagates the raise to its creditors. **A cycle:** if the propagation reaches the edge's debtor, the transition refuses with `::cycle`. |
 | I13 | **Coherence as guards (A#5, W#1):** T9 fills a slot from a computation only if that computation is `live`. T12 sets a result only for a current run. |
+| I14 | **Validity is acyclic (Z#60):** the graph whose nodes are idle computations and whose edges go from each to the computation debtors in its `validity` has no cycle. Validation (§3.4) relies on it to terminate. After reactivation a computation holds armed `dep` edges on its debtors, so a cycle through a later demotion would require a `dep` cycle, which I12 refuses. |
 
 | # | Temporal law |
 |---|---|

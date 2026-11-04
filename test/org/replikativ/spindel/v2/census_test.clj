@@ -99,8 +99,10 @@
         (Thread/sleep 100)
         (let [before (total (census w))]
           (dotimes [i 300] (v2/post! mb i))
-          (Thread/sleep 300)
-          (let [after (total (census w))]
+          ;; settles once the in-flight iterations finish; a leak never does
+          (let [after (loop [n 0]
+                        (let [t (total (census w))]
+                          (if (or (<= t (+ before 3)) (> n 100)) t (do (Thread/sleep 50) (recur (inc n))))))]
             (is (<= after (+ before 3)) (str "rows grew from " before " to " after))))
         (v2/post! mb :stop)
         (is (number? (v2/value loop-task 5000 ::timeout)))))))
