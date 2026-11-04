@@ -154,3 +154,32 @@
         (let [{:keys [task comp]} (waiter-on-closed mk op)]
           (is (= [:err {:spindel/closed true}] task))
           (is (= [[:caught {:spindel/closed true}]] comp)))))))
+
+(defn- invalid [t]
+  (let [[tag v] (outcome t)] (when (= :err tag) (:spindel/invalid (ex-data v)))))
+
+(deftest operations-by-source-kind
+  ;; Z#54: await on a mailbox takes; track is for signals and cells; other
+  ;; reads of a mailbox or semaphore are errors
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [m (v2/mailbox) s (v2/semaphore 1) d (v2/deferred) x (v2/signal 1)]
+          (testing "await on a mailbox takes, FIFO"
+            (let [a (task (await m)) b (task (await m))]
+              (v2/post! m :one)
+              (v2/post! m :two)
+              (is (= [[:ok :one] [:ok :two]] [(outcome a) (outcome b)]))))
+          (testing "await on a semaphore is refused; acquire! still works"
+            (is (= :await (invalid (task (await s)))))
+            (is (= [:ok true] (outcome (task (acquire! s))))))
+          (testing "group awaits with a consuming member are refused"
+            (is (= :all (invalid (task (v2/await-all [d m])))))
+            (is (= :any (invalid (task (v2/await-any [s d]))))))
+          (testing "track on a non-signal is refused"
+            (is (= :track (invalid (task (track m)))))
+            (is (= :track (invalid (task (track d)))))
+            (is (= [:ok 1] (outcome (task (iv/get-new (track x)))))))
+          (testing "a host read of a mailbox or semaphore is refused"
+            (is (thrown-with-msg? Exception #"Z#54" (v2/value m 100 nil)))
+            (is (thrown-with-msg? Exception #"Z#54" (v2/value s 100 nil)))))))))

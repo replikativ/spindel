@@ -1124,9 +1124,13 @@
     (s! r rw/R-FINS (max 0 (dec (fins r))))
     (commit! (cw) [:finally-exit (g r rw/ID)])))
 
+(defn- invalid-op [op msg] (ex-info msg {:spindel/invalid op}))
+
 (defn track-effect!
-  "T7."
+  "T7, on signals and cells (Z#54)."
   [x k ek]
+  (if-not (and (source? x) (<= (gl x rw/X-KIND) rw/SRC-CELL))
+    (ek (invalid-op :track "track is for signals and cells"))
   (if-let [r (valid-run)]
     (let [w (cw)
           c (rv w (g r rw/R-OF))
@@ -1147,7 +1151,7 @@
           (when (final? x) (remove-dep! w e))
           (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] (if reused? 0 (g e rw/ID))])
           (k (iv/->Interval old v nil)))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 (defn- new-activation! [w aid r mode k ek ^objects members ^objects slots remaining]
   (let [a (rw/new-row (g w rw/W-EPOCH) rw/A-SIZE)]
@@ -1335,13 +1339,31 @@
                   (when (g a rw/A-RESUMED) (aadd! (g w rw/W-RESUME) a))
                   nil))))))))))
 
-(defn await-effect!
-  "T6 with mode `one`."
-  [d k ek]
-  (await-group! [d] :one k ek))
+(declare consume-effect!)
 
-(defn await-all-effect! [ds k ek] (await-group! (vec ds) :all k ek))
-(defn await-any-effect! [ds k ek] (await-group! (vec ds) :any k ek))
+(defn- consuming?
+  "A mailbox or a semaphore: read only by its consuming operation (Z#54)."
+  [x]
+  (and (source? x)
+       (let [kind (gl x rw/X-KIND)] (or (== kind rw/SRC-MAILBOX) (== kind rw/SRC-SEMAPHORE)))))
+
+(defn await-effect!
+  "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
+  [d k ek]
+  (if (consuming? d)
+    (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
+      (consume-effect! d k ek)
+      (ek (invalid-op :await "await on a semaphore: use acquire!")))
+    (await-group! [d] :one k ek)))
+
+(defn- group-effect! [ds mode k ek]
+  (let [ds (vec ds)]
+    (if (some #(consuming? (row-of %)) ds)
+      (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
+      (await-group! ds mode k ek))))
+
+(defn await-all-effect! [ds k ek] (group-effect! ds :all k ek))
+(defn await-any-effect! [ds k ek] (group-effect! ds :any k ek))
 
 (defn- same-capture?
   "Formalism §1.6: `identical?`, or for a scalar the same value of the same type."
@@ -2162,8 +2184,12 @@
         ev (volatile! nil)]
     (gated w
       (let [d (row-of h)]
-        (if (and (source? d) (not (deferred? d)))
+        (cond
+          (consuming? d)
+          (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
+          (and (source? d) (not (deferred? d)))
           (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+          :else
           ;; T22 allocates the host-wait edge first (the model's order); a
           ;; debtor that is settled consumes it at once, so no edge row is made.
           (let [eid (alloc-id! w)

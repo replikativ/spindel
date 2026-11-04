@@ -130,7 +130,11 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     wakes its waiters (`dep` and `wait` edges alike): with the value for a
     signal, a cell or a delivered deferred, with `err ::closed` for a
     mailbox, a semaphore or an undelivered deferred. No run stays parked on
-    a final debtor.
+    a final debtor;
+  - Z#54 (§4.3): `track` is for signals and cells; `await` on a mailbox is
+    `take`; `await` on a semaphore, a group await with a consuming member,
+    `track` on another kind and a host read of a mailbox or semaphore are
+    errors.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -586,6 +590,12 @@ They are never dependencies. All operations are atomic commits (D0).
 | deferred | `deliver(X, v)` once: fires all `wait` edges and finalizes the deferred; `await` in a computation is a dep edge that is consumed at once if the deferred is final |
 | mailbox | `post(X, v)` appends to the queue; `take(X)` is a wait edge; FIFO, each message is delivered to exactly one waiter atomically; cancelling a waiter removes it from the queue order |
 | semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count; cancelling a waiter removes it |
+
+**Operation by kind (Z#54).** `track` applies to signals and cells only.
+`await` on a mailbox is `take`. `await` on a semaphore, `await-all` or
+`await-any` with a mailbox or semaphore member, and `track` on any other
+kind fail the effect with `err` (no commit). The host read of a mailbox or
+semaphore (T22) is refused.
 
 **Offload.** `offload(f)` arms a resource `Z` that runs the plain function
 `f` on a host executor, outside every world, and parks the run on a `wait`
