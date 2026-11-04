@@ -452,13 +452,16 @@
         ok (fn [x] (vreset! last-value x))
         fail (fn [e] (throw e))
         step! (case kind
-                :l0 (fn [] (let [i (vswap! input inc)] (v2/value-async (binding [v2/*world* w] (v2/task i)) (fn [v err?] (if err? (fail v) (ok v))))))
+                :l0 (fn [] (let [i (vswap! input inc)] (v2/value-async (v2/task i) (fn [v err?] (if err? (fail v) (ok v))))))
                 :task-await (fn [] (let [i (vswap! input inc)
                                          d (v2/deferred w)
-                                         t (binding [v2/*world* w] (v2/task (inc (v2/await d))))]
+                                         t (v2/task (inc (v2/await d)))]
                                      (v2/value-async t (fn [v err?] (if err? (fail v) (ok v))))
                                      (v2/deliver! d i))))
-        measurement (measure-updates step! warmup n)]
+        ;; *world* is bound once, outside the measured loop (missionary has no
+        ;; ambient context to bind)
+        measurement (binding [v2/*world* w] (measure-updates step! warmup n))]
+    #?(:clj (v2/call-in! w (fn [] nil)))   ; the world has processed every item
     (when-not (= (cond-> (+ n warmup) (= kind :task-await) inc) @last-value)
       (throw (ex-info "v2 lifecycle mismatch" {:kind kind :observed @last-value})))
     measurement))

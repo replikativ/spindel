@@ -1153,9 +1153,14 @@
         dropped (hs/flag false)
         h (Handle. w cell dropped)]
     (aset cell 0 row)
-    (hs/on-collect! h (fn []
-                        (when (hs/flag-cas! dropped false true)
-                          (host! w #(when-let [x (aget cell 0)] (handle-drop! w x))))))
+    ;; T19 on collection matters only where the engine keeps rows that have no
+    ;; engine reason: the verify registry. In production such rows are held by
+    ;; their handles alone, so the host GC frees them with the handle, and no
+    ;; Cleaner traffic competes for the gate (§1, G1).
+    (when (some? (g w rw/W-REG))
+      (hs/on-collect! h (fn []
+                          (when (hs/flag-cas! dropped false true)
+                            (host! w #(when-let [x (aget cell 0)] (handle-drop! w x)))))))
     h))
 
 (defn- handle!
