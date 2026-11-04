@@ -126,3 +126,59 @@
           (u)
           (is (= 0 (:runs (census w))) "demotion cancels the computation's tasks")
           (is (= 0 (:edges (census w)))))))))
+
+(deftest explicit-scope-cancels-its-tasks
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              log (atom [])
+              t (task (let [r (v2/with-scope
+                                (task (try (await d) (finally (swap! log conj :inner))))
+                                (await (task :yield))   ; the inner task starts and parks first
+                                :scoped)]
+                        (swap! log conj :after)
+                        r))]
+          (is (= :scoped (v2/value t 1000 ::timeout)))
+          (is (= [:after :inner] @log)
+              "the scope's task was cancelled at scope exit; its cleanup slice runs next (T14)")
+          (is (= 0 (:runs (census w)))))))))
+
+(deftest detach-outlives-the-creator
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              child (atom nil)
+              t (task (reset! child (v2/detach! (task (await d)) (v2/root-scope w))) :parent-done)]
+          (is (= :parent-done (v2/value t 1000 ::timeout)))
+          (v2/deliver! d :late)
+          (is (= :late (v2/value @child 1000 ::timeout)) "the detached child was not cancelled"))))))
+
+(deftest explicit-scope-cancels-its-tasks
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              log (atom [])
+              t (task (let [r (v2/with-scope
+                                (task (try (await d) (finally (swap! log conj :inner))))
+                                (await (task :yield))   ; the inner task starts and parks first
+                                :scoped)]
+                        (swap! log conj :after)
+                        r))]
+          (is (= :scoped (v2/value t 1000 ::timeout)))
+          (is (= [:after :inner] @log)
+              "the scope's task was cancelled at scope exit; its cleanup slice runs next (T14)")
+          (is (= 0 (:runs (census w)))))))))
+
+(deftest detach-outlives-the-creator
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              child (atom nil)
+              t (task (reset! child (v2/detach! (task (await d)) (v2/root-scope w))) :parent-done)]
+          (is (= :parent-done (v2/value t 1000 ::timeout)))
+          (v2/deliver! d :late)
+          (is (= :late (v2/value @child 1000 ::timeout)) "the detached child was not cancelled"))))))

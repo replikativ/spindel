@@ -21,7 +21,7 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare cancel-resource! demand! settle! pending-zero! rule-r! complete! validate!
+(declare row-of world-of cancel-resource! demand! settle! pending-zero! rule-r! complete! validate!
          deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
@@ -254,6 +254,8 @@
 ;; ---------------------------------------------------------------------------
 ;; Retention counts and demand (§3, §10.8, §10.10)
 
+(defn- roots-map ^java.util.Map [w] (g w rw/W-ROOTS))
+
 (defn- ref-inc! [row] (s! row rw/REFS (inc (gl row rw/REFS))))
 
 (defn- ref-dec! [row]
@@ -305,7 +307,7 @@
     (ref-inc! debtor)
     (when (demands? e) (hot-inc! debtor))
     (when (or (== kind rw/EK-OBSERVE) (and (== kind rw/EK-WAIT) (fn? cred)))
-      (.put ^java.util.Map (g w rw/W-ROOTS) e true))
+      (.put (roots-map w) e true))
     (register! w e)))
 
 (defn- linked? [e]
@@ -333,7 +335,7 @@
       (s! last-e rw/E-IDX i))
     (when (demands? e) (hot-dec! debtor))
     (s! e rw/E-ACT nil)
-    (.remove ^java.util.Map (g w rw/W-ROOTS) e)
+    (.remove (roots-map w) e)
     (unregister! w e)
     (unmark! e)
     (ref-dec! debtor)))
@@ -512,6 +514,14 @@
             s (new-scope w (g r rw/R-SCOPE) :run parent)]
         (s! r rw/R-SROW s)
         s)))
+
+(defn- current-scope!
+  "The innermost open explicit scope of the run, else its run scope."
+  [w r]
+  (let [ss (g r rw/R-SCOPES)]
+    (if (and ss (pos? (acount ss)))
+      (anth ss (dec (acount ss)))
+      (run-scope! w r))))
 
 (defn- remove-scope-if-empty!
   "T16/Z#18: a closed scope row goes once its subtree has no rows left."
@@ -1290,7 +1300,7 @@
                     (let [h (handle! w k)]
                       (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
                       h)))))
-          (let [s (run-scope! w r)
+          (let [s (current-scope! w r)
                 k (new-task! w s 0 at inputs body 0)]
             (aadd! (g s rw/S-TASKS) k)
             (ref-inc! k)
@@ -1954,7 +1964,53 @@
       (s! w rw/W-RELEASED true)))
   (fn [] (when-let [reg (g w rw/W-REG)] (.size ^java.util.Map reg))))
 
+(defn open-scope!
+  "T16 open: an explicit scope, child of the run's current scope, a root
+   while open (§3.1). Used by `with-scope`."
+  []
+  (let [r (or (active-run) (throw (ex-info "with-scope outside a body" {})))
+        w (g r rw/R-WORLD)
+        s (new-scope w (alloc-id! w) :explicit (current-scope! w r))]
+    (aadd! (or (g r rw/R-SCOPES) (let [l (alist)] (s! r rw/R-SCOPES l) l)) s)
+    (commit! w [:open-scope (g r rw/ID) (g s rw/ID)])
+    s))
+
+(defn close-scope-fx!
+  "T16 close at the end of `with-scope`: cancels the work it still owns."
+  [s]
+  (let [w (g s rw/S-WORLD)]
+    (when-let [r (active-run)]
+      (when-let [ss (g r rw/R-SCOPES)]
+        (let [i #?(:clj (.lastIndexOf ^java.util.ArrayList ss s) :cljs (.lastIndexOf ss s))]
+          (when-not (neg? i) #?(:clj (.remove ^java.util.ArrayList ss (int i)) :cljs (.splice ss i 1))))))
+    (close-scope! w s)
+    (commit! w [:close-scope (g s rw/ID)])
+    nil))
+
+(defn detach!
+  "Q10: re-owns a running task to an outer scope `s` (an explicit scope, or
+   the world's root with `(root-scope w)`), so it outlives its creator."
+  [h s]
+  (let [w (world-of h)]
+    (gated w
+      (let [k (row-of h)
+            old (g k rw/OWNER)]
+        (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
+                (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
+          (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
+          (let [ts (g old rw/S-TASKS)
+                i #?(:clj (.indexOf ^java.util.ArrayList ts k) :cljs (.indexOf ts k))]
+            (when-not (neg? i) #?(:clj (.remove ^java.util.ArrayList ts (int i)) :cljs (.splice ts i 1)))
+            (aadd! (g s rw/S-TASKS) k)
+            (s! k rw/OWNER s)
+            (remove-scope-if-empty! w old)
+            (commit! w [:detach (g k rw/ID) (g s rw/ID)])))))
+    h))
+
+(defn root-scope [w] (g w rw/W-ROOT))
+
 (defn offload [_] (throw (ex-info "offload outside a body" {})))
+
 (defn sleep [_] (throw (ex-info "sleep outside a body" {})))
 
 (defn track [_] (throw (ex-info "track outside a body" {})))
@@ -2041,6 +2097,14 @@
        [& body]
        (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
          `(create-comp! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))
+     (defmacro with-scope
+       "An explicit scope (T16): tasks spawned inside are owned by it and are
+        cancelled when it closes, at normal exit, on error or on cancel."
+       [& body]
+       (let [s (gensym "scope")]
+         `(let [~s (open-scope!)]
+            (~'try (do (enter-finally!) ~@body)
+              (~'finally (exit-finally!) (close-scope-fx! ~s))))))
      (defmacro task
        "A task (T4): started at once; structured child of the creating run."
        [& body]

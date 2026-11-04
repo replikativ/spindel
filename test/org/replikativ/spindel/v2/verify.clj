@@ -45,6 +45,8 @@
   [w]
   (let [reg (rows w)
         roots (concat [(f w rw/W-ROOT)]
+                      ;; open explicit scopes (§3.1)
+                      (filter #(and (== rw/T-SCOPE (t %)) (= :explicit (f % rw/S-KIND)) (f % rw/S-OPEN)) reg)
                       (keys (f w rw/W-PINS))
                       ;; observe edges, and host awaits (pending host promises)
                       (filter #(and (== rw/T-EDGE (t %))

@@ -154,7 +154,8 @@
 (def ^:const R-CURSOR 13)    ; position in the computation's INS
 (def ^:const R-ORD 14)       ; creation ordinals per site
 (def ^:const R-SROW 15)      ; the run scope row, once materialized
-(def ^:const R-SIZE 16)
+(def ^:const R-SCOPES 16)    ; open explicit scopes of the run, innermost last
+(def ^:const R-SIZE 17)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)
