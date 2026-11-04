@@ -120,3 +120,26 @@
           (is (<= (:comps c) 3) (str "census " c))
           (is (<= (:edges c) 4) (str "census " c))
           (is (<= (:runs c) 2) (str "census " c))))))))
+
+(deftest reactivation-on-a-closed-source-takes-no-edge
+  ;; Z#51: the source closed while the computation was idle; its value is
+  ;; still valid, so reactivation keeps the result and consumes the edge
+  (checked
+    (let [w (vworld)
+          runs (atom 0)]
+      (binding [v2/*world* w]
+        (let [sig (promise)
+              gate (v2/deferred)
+              t (v2/task (do (deliver sig (v2/signal 5)) (await gate) :done))
+              s (deref sig 1000 nil)
+              c (spin (swap! runs inc) (* 2 (iv/get-new (track s))))
+              seen (atom [])
+              unobserve (v2/observe! c (fn [v _] (swap! seen conj v)))]
+          (unobserve)
+          (v2/deliver! gate :go)
+          (is (= :done (v2/value t 1000 ::timeout)))
+          (let [unobserve (v2/observe! c (fn [v _] (swap! seen conj v)))]
+            (is (= [10 10] @seen) "the result is reused")
+            (is (= 1 @runs) "no re-run")
+            (is (= 1 (:edges (census w))) "only the observe edge remains")
+            (unobserve)))))))

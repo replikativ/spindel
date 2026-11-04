@@ -119,3 +119,22 @@
           (is (= :woke (v2/value sleeper 2000 ::timeout)))
           (deliver release :done)
           (is (= :done (v2/value waiter 2000 ::timeout)) "the parent's offload is unaffected"))))))
+
+(deftest idle-validity-reads-the-child-copy
+  ;; reactivation compares each validity version against this world's copy of
+  ;; the debtor, not the frozen basis row
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [x (v2/signal 1)
+              c (spin (* 10 (iv/get-new (track x))))
+              unobserve (v2/observe! c (fn [_ _]))]
+          (unobserve)                                   ; c is idle with validity [x 1]
+          (let [child (v2/fork! w)
+                cx (v2/in-world child x)
+                cc (v2/in-world child c)
+                seen (atom [])]
+            (v2/write! cx 2)
+            (v2/observe! cc (fn [v _] (swap! seen conj v)))
+            (is (= [20] @seen) "the child's write invalidates the idle result")
+            (is (= 10 (v2/value c)) "the parent keeps its own")))))))

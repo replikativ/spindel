@@ -814,23 +814,26 @@
         c (ctx)]
     (s! r rw/R-SLICE true)
     (set-active! r)
-    (aset c 2 (num (inc (long (aget c 2)))))
+    (aset c 2 #?(:clj (num (inc (long (aget c 2)))) :cljs (inc (aget c 2))))
     (try
       (try (force! (f))
            (catch #?(:clj Throwable :cljs :default) t
              (complete! (or (active-run) r) t true)))
       (finally
         ;; re-resolve: a fork effect in this slice made `r` a shared basis row
-        (aset c 2 (num (dec (long (aget c 2)))))
+        (aset c 2 #?(:clj (num (dec (long (aget c 2)))) :cljs (dec (aget c 2))))
         (let [w (cw) r (rv w r)]
           ;; a done run whose slice still holds the flag (a cleanup slice, or a
           ;; cancelled run unwinding) returns here: an explicit item
-          (when (and (g r rw/R-SLICE) (== rw/ACT-DONE (gl r rw/R-ACT)))
-            (s! r rw/R-SLICE false)
-            (commit! w [:slice-exit (g r rw/ID)]))
-          (s! r rw/R-SLICE false)
-          (set-active! prev)
-          (retire-check! w r))))))
+          ;; (Z#49); T13 retires it within that item, as T12 does (Z#34)
+          (if (and (g r rw/R-SLICE) (== rw/ACT-DONE (gl r rw/R-ACT)))
+            (do (s! r rw/R-SLICE false)
+                (set-active! prev)
+                (retire-check! w r)
+                (commit! w [:slice-exit (g r rw/ID)]))
+            (do (s! r rw/R-SLICE false)
+                (set-active! prev)
+                (retire-check! w r))))))))
 
 (defn- ok-k [v] (complete! (active-run) v false))
 (defn- err-k [t] (complete! (active-run) t true))
@@ -1577,19 +1580,24 @@
   (let [vs (g c rw/C-VALIDITY)
         ok? (and (not= :invalid vs)
                  (every? (fn [[d ver]]
-                           (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-                           (and (== (long ver) (gl d rw/VERSION))
-                                (or (source? d) (live? d))))
+                           (let [d (rv w d)]
+                             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                             (and (== (long ver) (gl d rw/VERSION))
+                                  (or (source? d) (live? d)))))
                          vs))]
     (s! c rw/C-IDLE false)
     (s! c rw/C-VALIDITY nil)
     (if (and ok? (some? (g c rw/C-DONE-EPOCH)))
       (let [ins (g c rw/C-INS)]
         (doseq [[d ver at base] (when (sequential? vs) vs)]
-          (let [e (link! w rw/EK-DEP c d at)]
-            (s! e rw/E-SEEN ver)
-            (s! e rw/E-BASE base)
-            (aadd! ins e)))
+          ;; Z#51: a final debtor whose version still matches keeps the value
+          ;; valid but takes no edge (consumed, as T6/T10/Z#48)
+          (let [d (rv w d)]
+            (when-not (final? d)
+              (let [e (link! w rw/EK-DEP c d at)]
+                (s! e rw/E-SEEN ver)
+                (s! e rw/E-BASE base)
+                (aadd! ins e)))))
         (s! c rw/C-DONE-EPOCH (g c rw/C-EPOCH)))
       ;; B2: an invalid idle computation with a result steps its epoch so it
       ;; stays dirty while it runs; a fresh one needs no step.

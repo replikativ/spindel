@@ -115,7 +115,11 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     (T12); a filled activation resumes its run only when that run is parked
     on it, so a cancelled run never continues, and a savepoint `resume` or
     `activate` whose run is no longer parked there is refused (T9, S2, S4);
-    `cancel(R, replace)` on a task run is an ordinary cancel (Y#2).
+    `cancel(R, replace)` on a task run is an ordinary cancel (Y#2);
+  - Z#51 (I5, §3.4): reactivation takes no dep edge on a debtor that became
+    final while the computation was idle; a matching version keeps the
+    result valid and the edge is consumed, as T6/T10/Z#48. In `slice-exit r`
+    (Z#49), T13 retires the run within the item, as T12 does (Z#34).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -511,7 +515,8 @@ filter in step 3 then gives I3, and L1 follows.
 3. **Valid, and the demand is reactive** (`observe` or `dep`):
    - `C` is reactivated: `idle := false` and `done-epoch := epoch`;
    - it gets `dep` edges on its `validity` debtors whose `cont` is
-     **restart**, with baselines equal to the recorded state;
+     **restart**, with baselines equal to the recorded state; a debtor
+     that is final gets no edge (Z#51);
    - a later change re-runs `C` from the beginning.
 4. **Invalid:** `C` is re-run (T5).
 
