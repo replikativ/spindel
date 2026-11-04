@@ -61,3 +61,42 @@
   (vec (for [k [:fanout :chain :diamond :fanin :switch :switch-reactive :child]]
          (let [r (run k n n)]
            (assoc r :x-mcp (/ (Math/round (* 100.0 (/ (:ns r) (mcp-ns k)))) 100.0))))))
+
+;; ---------------------------------------------------------------------------
+;; Load-insensitive cost: retired user instructions on this thread (perf)
+
+(defn- thread-tid []
+  (let [p (str (java.nio.file.Files/readSymbolicLink (java.nio.file.Paths/get "/proc/thread-self" (make-array String 0))))]
+    (Long/parseLong (last (clojure.string/split p #"/")))))
+
+(defn instructions
+  "Retired user instructions while `(f)` runs on this thread."
+  [f]
+  (let [tid (thread-tid)
+        out (java.io.File/createTempFile "perf" ".csv")
+        pb (doto (ProcessBuilder. ["perf" "stat" "-x," "-e" "instructions:u" "-t" (str tid) "-o" (str out)])
+             (.redirectErrorStream true))
+        p (.start pb)]
+    (Thread/sleep 200)
+    (f)
+    (.waitFor (.start (ProcessBuilder. ["kill" "-INT" (str (.pid p))])))
+    (.waitFor p)
+    ;; hybrid CPUs report one line per core type (cpu_atom, cpu_core): sum them
+    (let [lines (filter #(re-find #"instructions" %) (clojure.string/split-lines (slurp out)))]
+      (.delete out)
+      (reduce + (for [l lines :let [v (first (clojure.string/split l #","))]
+                      :when (re-matches #"\d+" v)]
+                  (Long/parseLong v))))))
+
+(defn instr-per-update [kind n]
+  (let [w (v2/world)]
+    (binding [v2/*world* w]
+      (let [source (v2/signal 0)
+            roots (graph kind source)
+            cancels (mapv #(v2/observe! % (fn [_ _])) roots)
+            input (volatile! 0)
+            upd #(v2/write! source (vswap! input inc))]
+        (dotimes [_ n] (upd))
+        (let [i (instructions #(dotimes [_ n] (upd)))]
+          (doseq [c cancels] (c))
+          (long (/ i n)))))))

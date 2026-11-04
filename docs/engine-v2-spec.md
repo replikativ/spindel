@@ -79,7 +79,23 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     deferred, so delivery marks nothing; it fires and finalizes (§4.3);
   - Z#37: host cancel of a run that holds the slice is refused (D0); posts,
     releases and writes to a closed source are refused; release-world drops
-    every handle count to 0 (T21).
+    every handle count to 0 (T21);
+  - Z#38 (I1): a cleanup entry retains its run scope's ancestors as storage,
+    so a scope's parent exists while any descendant scope is kept;
+  - Z#39 (I5, T14): a cancelled entity becomes final; its dep creditors get
+    the error delivery and their edges are removed (T10); T11 consuming an
+    E whose debtor is final removes E instead of re-arming it;
+  - Z#40 (B8, I9): a finalizer may write, deliver, post, release and close,
+    nothing else: no creation, no track, no await, no offload; an unwinding
+    run therefore holds no armed resource;
+  - Z#41 (Z#26): `detach` re-parents the task's run scope to the new owner;
+  - Z#42 (I10): demoting a computation steps its epoch when it cancels the
+    current run, so a run kept in cleanup is stale;
+  - Z#43 (T12, B-contract): completion with open finally regions is refused
+    (the CPS body cannot produce it);
+  - Z#44 (D0): host operations issued inside a slice (write, deliver, post,
+    release, cancel, ...) are effects of the slice-holding run, processed at
+    once; ingress from other threads is processed between slices.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
