@@ -56,7 +56,15 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#28: T6 always allocates the activation id, even on the fast path;
   - Z#29: `handles` counts live handle objects. A row has at most one; an
     adoption reuses it while it is live and adds 1 only when it makes a new
-    one (item `handle-new`), and T19 is its collection or explicit release.
+    one (item `handle-new`), and T19 is its collection or explicit release;
+  - Z#30: a settle fires every dep out-edge whose consumed version differs
+    from the debtor's version (covers a debtor that completed changed while
+    pending and then settles through the unchanged path);
+  - Z#31: `await` on a signal or cell reads its current value at once (in a
+    computation through a dep edge, like `track`; in a task as a snapshot);
+  - Z#32: computations are never final in layer 1 (T3 replacement and
+    explicit re-execution can always re-run them), so dep edges on them are
+    not finalized (D1, T10).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
