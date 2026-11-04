@@ -3977,6 +3977,45 @@
                           rt-state)))
      @removed)))
 
+(defn final-spin?
+  "Whether spin `id` can no longer re-complete on its own: completed, not
+  running, clean, and not signal-dependent (directly or through its reactive
+  awaits). Explicit re-execution is NOT detected: `keyed/rerun!`,
+  `trace/update`, `what-if` and `mark-dirty!` can re-complete a spin this
+  predicate calls final."
+  [context id]
+  (let [state (rtp/get-state context [])
+        node (get-in state [:nodes id])]
+    (boolean (and node
+                  (:completed? node)
+                  (not (:running? node))
+                  (not (nodes/dirty? node))
+                  (not (signal-dependent? state id (volatile! {})))))))
+
+(defn consume-final-await!
+  "Opt-in (`:spindel/await-retention :consume-final`): retire the await
+  registration `registration` of `parent-id` on the final child `child-id`
+  once its value was delivered, so a finished await retains nothing. The
+  parent's tracking edge to the child goes too, unless another await of the
+  parent still targets the child. Removal is by registration: a newer await
+  at the same continuation id is never removed in its place."
+  [context parent-id child-id cont-id registration]
+  (when (remove-continuation! context parent-id cont-id {:only-registration registration})
+    (rtp/swap-state! context []
+                     (fn [rt-state]
+                       (let [event [:spin/complete child-id]
+                             still-awaited? (some #(= event (:event-key %))
+                                                  (vals (get-in rt-state [:await-conts parent-id])))]
+                         (if still-awaited?
+                           rt-state
+                           (cond-> rt-state
+                             (get-in rt-state [:spin-tracking parent-id :spins])
+                             (update-in [:spin-tracking parent-id :spins] disj child-id)
+
+                             (get-in rt-state [:nodes child-id])
+                             (update-in [:nodes child-id] nodes/remove-observer parent-id)))))))
+  nil)
+
 (defn earliest-continuation
   "Get the earliest continuation for a spin subscribed to a signal or
   spin completion.

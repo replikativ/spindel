@@ -176,6 +176,29 @@
   [await-ctx]
   (or ec/*execution-context* await-ctx))
 
+(defn- consume-final-awaits?
+  "Opt-in, per world (inherited by forks through :bindings): retire an await
+  registration once it delivered the value of a final child. Not compatible
+  with explicit re-execution (`keyed/rerun!`, `trace/update`, `what-if`,
+  `mark-dirty!`) of signal-independent spins: their awaiters would miss the
+  re-completion."
+  [ctx]
+  (= :consume-final (get-in ctx [:bindings :spindel/await-retention])))
+
+(defn- consuming-callbacks
+  "Wrap the parent's resolve/reject so that the delivery of a final child's
+  result retires the registration recorded in `reg` (set once the cont map
+  exists). A child that is not final keeps its reactive registration; a later
+  delivery re-checks."
+  [ctx parent-id child-id cont-id reg resolve reject]
+  (let [consume! (fn []
+                   (when-let [r @reg]
+                     (let [rt (or ec/*execution-context* ctx)]
+                       (when (simple/final-spin? rt child-id)
+                         (simple/consume-final-await! rt parent-id child-id cont-id r)))))]
+    [(fn [v] (consume!) (resolve v))
+     (fn [e] (consume!) (reject e))]))
+
 (defn- await-spin
   "Direct await handler for Spin.
 
@@ -188,7 +211,13 @@
   (let [awaited-spin-id (spin-core/spin-id spin-ref)
         noop (fn [& _] nil)
         ctx (ec/current-execution-context)
-        rebuild? (ctx/rebuild-mode? ctx)]
+        rebuild? (ctx/rebuild-mode? ctx)
+        consume-reg (volatile! nil)
+        [resolve reject] (if (and (consume-final-awaits? ctx) (not rebuild?))
+                           (consuming-callbacks ctx spin-id awaited-spin-id
+                                                (await-spin-cont-id spin-id awaited-spin-id source-loc)
+                                                consume-reg resolve reject)
+                           [resolve reject])]
 
     ;; Track spin dependency
     (ec/deps-track-spin! spin-id awaited-spin-id)
@@ -226,7 +255,8 @@
           ;; running multiple times overwrites instead of accumulating stale
           ;; continuations.
           (let [cont (spin-await-cont-map spin-id spin-ref awaited-spin-id resolve reject source-loc true
-                                          (capture-slice-state ctx spin-id))]
+                                          (capture-slice-state ctx spin-id))
+                _ (vreset! consume-reg (:registration cont))]
             (when is-reactive-spin
               (ec/continuation-add! spin-id cont))
             (if-let [cancellation (when is-reactive-spin
@@ -358,6 +388,7 @@
                                             resolve reject source-loc
                                             is-reactive-spin
                                             (capture-slice-state ctx spin-id))
+              _ (vreset! consume-reg (:registration cont-map))
               ;; Pre-register so any async completion has a subscriber.
               _ (ec/continuation-add! spin-id cont-map)
               _ (log/debug :await/registered-continuation {:parent-id spin-id :awaited-id awaited-spin-id})
