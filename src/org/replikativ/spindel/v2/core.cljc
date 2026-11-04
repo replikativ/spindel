@@ -84,6 +84,7 @@
      (s! w rw/W-READY (alist))
      (s! w rw/W-RESUME (alist))
      (s! w rw/W-START (alist))
+     (s! w rw/W-CLEANUP (alist))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
@@ -107,6 +108,13 @@
                 ~lk (aget ~gw rw/W-LOCK)]
             (.lock ~lk)
             (try ~@body (finally (.unlock ~lk))))))))
+
+(defn cancelled-ex
+  "The error a cancelled entity's creditors and cleanup slices receive."
+  [reason]
+  (ex-info "cancelled" {:spindel/cancelled reason}))
+
+(defn cancelled? [t] (some? (:spindel/cancelled (ex-data t))))
 
 (defn- force! [x]
   (loop [x x]
@@ -525,9 +533,13 @@
     (when-let [s (g r rw/R-SROW)] (close-scope! w s))
     (unregister! w r)))
 
-(defn- retire-check! [w r]
+(defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
+
+(defn- retire-check!
+  "T13: retired iff done, no slice, no finalizers, no resources."
+  [w r]
   (when (and (== rw/ACT-DONE (gl r rw/R-ACT)) (not (g r rw/R-SLICE))
-             (nil? (g r rw/R-FINS)) (nil? (g r rw/R-RES)))
+             (zero? (fins r)) (nil? (g r rw/R-RES)))
     (retire! w r)))
 
 (defn- release-members!
@@ -558,7 +570,12 @@
    (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
      (s! r rw/R-ACT rw/ACT-DONE)
      (s! r rw/R-MODE 1)
-     (drop-activation! w r)
+     ;; Finalizers (T14, B3): a parked run with open finally regions unwinds
+     ;; in a cleanup slice through its activation's error continuation. A run
+     ;; whose slice is on the stack unwinds at its next effect.
+     (when-let [a (drop-activation! w r)]
+       (when (pos? (fins r))
+         (aadd! (g w rw/W-CLEANUP) [r (g a rw/A-E) (cancelled-ex reason)])))
      ;; children: runs owned by the run scope
      (when-let [s (g r rw/R-SROW)]
        (let [ts (acopy (g s rw/S-TASKS))]
@@ -567,7 +584,7 @@
      (let [x (g r rw/R-OF)]
        (when (and (task? x) (not replace?))
          ;; debtor side (R#14): the task fails with ::cancelled
-         (finish-task! w x reason true)))
+         (finish-task! w x (cancelled-ex reason) true)))
      (retire-check! w r))))
 
 (defn- slice!
@@ -736,11 +753,20 @@
 
 (defn- valid-run
   "The active run if an effect token is valid (§2): the run exists, holds the
-   slice and is not done. (Unwinding finalizer slices arrive with M2d.)"
+   slice and is not done."
   []
   (let [r (active-run)]
     (when-not r (throw (ex-info "effect outside a body" {})))
     (when (and (g r rw/R-SLICE) (not (== rw/ACT-DONE (gl r rw/R-ACT)))) r)))
+
+(defn- unwind!
+  "An effect of a cancelled run: with open finally regions the body unwinds
+   through `ek` (the cleanup continues in this slice, B8); otherwise the
+   continuation is dropped (L4)."
+  [ek]
+  (let [r (active-run)]
+    (when (and r (g r rw/R-SLICE) (== rw/ACT-DONE (gl r rw/R-ACT)) (pos? (fins r)))
+      (ek (cancelled-ex ::cancelled)))))
 
 (defn- next-at! ^long [r]
   (let [at (gl r rw/R-EIDX)]
@@ -785,12 +811,22 @@
   "§2: `cont` is the continuation only for `one` awaits in a run without
    finalizers or resources."
   [r k]
-  (when (and (nil? (g r rw/R-FINS)) (nil? (g r rw/R-RES))) k))
+  (when (and (zero? (fins r)) (nil? (g r rw/R-RES))) k))
+
+(defn enter-finally!
+  "Body contract: a `finally` region opens (rewritten by the body macros)."
+  []
+  (when-let [r (active-run)] (s! r rw/R-FINS (inc (fins r)))))
+
+(defn exit-finally!
+  "A `finally` region closes; its block runs now."
+  []
+  (when-let [r (active-run)] (s! r rw/R-FINS (max 0 (dec (fins r))))))
 
 (defn track-effect!
   "T7."
   [x k ek]
-  (when-let [r (valid-run)]
+  (if-let [r (valid-run)]
     (let [w (g r rw/R-WORLD)
           c (g r rw/R-OF)
           at (next-at! r)]
@@ -807,7 +843,8 @@
           (s! e rw/E-SEEN (g x rw/VERSION))
           (s! e rw/E-ARMED true)
           (commit! w [:track (g r rw/ID) (g x rw/ID) (g e rw/ID)])
-          (k (iv/->Interval old v nil)))))))
+          (k (iv/->Interval old v nil)))))
+    (unwind! ek)))
 
 (defn- new-activation! [w aid r mode k ek ^objects members ^objects slots remaining]
   (let [a (object-array rw/A-SIZE)]
@@ -890,7 +927,9 @@
 (defn- await-group!
   "T6: an activation over `ds` with `mode` (:one :all :any)."
   [ds mode k ek]
-  (when-let [r (valid-run)]
+  (if-not (valid-run)
+    (unwind! ek)
+  (let [r (valid-run)]
     (let [w (g r rw/R-WORLD)
           x (g r rw/R-OF)
           at (next-at! r)
@@ -963,7 +1002,7 @@
                 (s! r rw/R-SLICE true)
                 (set-active! r)
                 (continue! res k ek))
-              (do (s! a rw/A-INLINE false) nil))))))))
+              (do (s! a rw/A-INLINE false) nil)))))))))
 
 (defn await-effect!
   "T6 with mode `one`."
@@ -1277,6 +1316,12 @@
             start (g w rw/W-START)]
         (loop []
           (cond
+            (pos? (acount (g w rw/W-CLEANUP)))
+            (let [[r ek ex] (pop-first! (g w rw/W-CLEANUP))]
+              (commit! w [:finalize (g r rw/ID)])
+              (slice! r #(ek ex))
+              (rule-r! w)
+              (recur))
             (pos? (acount start)) (do (start! w (pop-first! start)) (rule-r! w) (recur))
             (pos? (acount resume)) (do (resume! w (pop-first! resume)) (rule-r! w) (recur))
             (pos? (acount ready))
@@ -1313,6 +1358,106 @@
      (let [x (new-source! w rw/SRC-SIGNAL v (g w rw/W-ROOT) 0 0)]
        (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :signal [:opaque v] (g x rw/ID)])
        (->Handle x)))))
+
+(defn- mailbox? [x] (== rw/SRC-MAILBOX (gl x rw/X-KIND)))
+
+(defn- deque ^java.util.ArrayDeque [x i] (g x i))
+
+(defn- available? [x]
+  (if (mailbox? x)
+    (not (.isEmpty (deque x rw/X-VALUE)))
+    (pos? (gl x rw/X-VALUE))))
+
+(defn- consume! [x]
+  (if (mailbox? x)
+    (.pollFirst (deque x rw/X-VALUE))
+    (do (s! x rw/X-VALUE (dec (gl x rw/X-VALUE))) true)))
+
+(defn consume-effect!
+  "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
+   a wait edge, never a dependency (§4.3). Waiters are served FIFO."
+  [x k ek]
+  (if-let [r (valid-run)]
+    (let [w (g r rw/R-WORLD)
+          _ (next-at! r)
+          aid (alloc-id! w)]
+      (if (available? x)
+        (let [v (consume! x)]
+          (alloc-id! w)                             ; the consumed wait edge
+          (s! x rw/VERSION (inc (gl x rw/VERSION)))
+          (commit! w [:take (g r rw/ID) (g x rw/ID) aid])
+          (k v))
+        (let [members (object-array 1)
+              a (new-activation! w aid r :one k ek members (object-array 1) 1)
+              e (link! w rw/EK-WAIT a x 0)]
+          (aset members 0 e)
+          (.addLast (deque x rw/X-WAITERS) e)
+          (park! r a)
+          (s! a rw/A-INLINE false)
+          (commit! w [:take (g r rw/ID) (g x rw/ID) aid])
+          (notify-blocked! (g r rw/R-OF) 0)
+          nil)))
+    (unwind! ek)))
+
+(defn- serve-waiter!
+  "The first waiter whose activation can still receive, or nil. Waiters of
+   stale or cancelled runs are skipped (§4.5.4)."
+  [w x v]
+  (let [q (deque x rw/X-WAITERS)]
+    (loop []
+      (when-let [e (.pollFirst q)]
+        (let [a (g e rw/E-CRED)
+              r (g a rw/A-RUN)]
+          (if (and (linked? e) (identical? a (g r rw/R-ACTV)) (run-current? r)
+                   (== rw/ACT-PARKED (gl r rw/R-ACT)))
+            (do (unlink! w e)
+                (slot-fill! w a e [v false])
+                true)
+            (recur)))))))
+
+(defn mailbox
+  "T1 at top level: a FIFO mailbox (§4.3)."
+  ([] (mailbox *world*))
+  ([w]
+   (gated w
+     (let [x (new-source! w rw/SRC-MAILBOX (java.util.ArrayDeque.) (g w rw/W-ROOT) 0 0)]
+       (s! x rw/X-WAITERS (java.util.ArrayDeque.))
+       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :mailbox [:opaque nil] (g x rw/ID)])
+       (->Handle x)))))
+
+(defn post!
+  "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
+  [h v]
+  (let [x (row-of h) w (g x rw/WORLD)]
+    (gated w
+      (s! x rw/VERSION (inc (gl x rw/VERSION)))
+      (when-not (serve-waiter! w x v)
+        (.addLast (deque x rw/X-VALUE) v))
+      (commit! w [:post (g x rw/ID) [:opaque v]])
+      (drain! w))
+    nil))
+
+(defn semaphore
+  "T1 at top level: a counting semaphore with `n` permits (§4.3)."
+  ([n] (semaphore *world* n))
+  ([w n]
+   (gated w
+     (let [x (new-source! w rw/SRC-SEMAPHORE (long n) (g w rw/W-ROOT) 0 0)]
+       (s! x rw/X-WAITERS (java.util.ArrayDeque.))
+       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :semaphore [:opaque n] (g x rw/ID)])
+       (->Handle x)))))
+
+(defn sem-release!
+  "Gives the permit to the first armed waiter, or returns it (§4.3)."
+  [h]
+  (let [x (row-of h) w (g x rw/WORLD)]
+    (gated w
+      (s! x rw/VERSION (inc (gl x rw/VERSION)))
+      (when-not (serve-waiter! w x true)
+        (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
+      (commit! w [:release (g x rw/ID)])
+      (drain! w))
+    nil))
 
 (defn deferred
   "T1 at top level: a deferred, delivered once (§4.3)."
@@ -1454,6 +1599,8 @@
 (defn track [_] (throw (ex-info "track outside a body" {})))
 (defn await [_] (throw (ex-info "await outside a body" {})))
 (defn await-all [_] (throw (ex-info "await-all outside a body" {})))
+(defn take! [_] (throw (ex-info "take! outside a body" {})))
+(defn acquire! [_] (throw (ex-info "acquire! outside a body" {})))
 (defn await-any [_] (throw (ex-info "await-any outside a body" {})))
 
 ;; ---------------------------------------------------------------------------
@@ -1469,16 +1616,56 @@
        (fn [[xs]] `(await-all-effect! ~xs ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-any [_ctx r e]
        (fn [[xs]] `(await-any-effect! ~xs ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-consume [_ctx r e]
+       (fn [[x]] `(consume-effect! (row-of ~x) ~r ~e)))
      (def ^:private breakpoints
        {'org.replikativ.spindel.v2.core/track `bp-track
         'org.replikativ.spindel.v2.core/await `bp-await
         'org.replikativ.spindel.v2.core/await-all `bp-await-all
-        'org.replikativ.spindel.v2.core/await-any `bp-await-any})
+        'org.replikativ.spindel.v2.core/await-any `bp-await-any
+        'org.replikativ.spindel.v2.core/take! `bp-consume
+        'org.replikativ.spindel.v2.core/acquire! `bp-consume})
+     (declare register-finally)
+     (defn- catch-or-finally? [x] (and (seq? x) (#{'catch 'finally} (first x))))
+     (defn- opaque-head? [h]
+       (or (#{'quote 'fn 'fn* 'reify 'deftype 'proxy 'letfn 'letfn*} h)
+           (and (symbol? h)
+                (let [v (resolve h)]
+                  (and (var? v)
+                       (#{'org.replikativ.spindel.v2.core/spin 'org.replikativ.spindel.v2.core/task}
+                        (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v)))))))))
+     (defn- register-finally
+       "Body contract (§7): each literal `try` with a `finally` registers its
+        region with the run, so cancellation can unwind through it (T14).
+        Nested bodies and closures are left alone (they register their own)."
+       [form]
+       (cond
+         (seq? form)
+         (let [h (first form)]
+           (cond
+             (opaque-head? h) form
+             (= 'try h)
+             (let [clauses (map register-finally (rest form))
+                   [body cfs] (split-with (complement catch-or-finally?) clauses)]
+               (if (some #(= 'finally (first %)) cfs)
+                 (with-meta
+                   `(~'try (do (enter-finally!) ~@body)
+                     ~@(map (fn [c] (if (= 'finally (first c))
+                                      (list* 'finally `(exit-finally!) (rest c))
+                                      c))
+                            cfs))
+                   (meta form))
+                 (with-meta (cons 'try clauses) (meta form))))
+             :else (with-meta (apply list (map register-finally form)) (meta form))))
+         (vector? form) (with-meta (mapv register-finally form) (meta form))
+         (map? form) (with-meta (into {} (map (fn [[k v]] [(register-finally k) (register-finally v)])) form) (meta form))
+         (set? form) (with-meta (into #{} (map register-finally) form) (meta form))
+         :else form))
      (defn- body-fn [env body]
        (let [r (gensym "r") e (gensym "e")
              params {:r r :e e :env env :breakpoints breakpoints
                      :opaque-scopes #{`spin `task}}]
-         `(fn [~r ~e] ~(ioc/invert params (cons 'do body)))))
+         `(fn [~r ~e] ~(ioc/invert params (register-finally (cons 'do body))))))
      (defn- site-of [form]
        (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta form)) (:column (meta form))])))
      (defmacro spin

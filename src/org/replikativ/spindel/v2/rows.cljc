@@ -60,7 +60,8 @@
 (def ^:const W-INTERN 13)    ; verify mode: opaque value -> nat
 (def ^:const W-HOOK 14)      ; verify mode: (fn [w item]) after every commit
 (def ^:const W-START 15)     ; task runs whose first slice is pending
-(def ^:const W-SIZE 16)
+(def ^:const W-CLEANUP 16)   ; [run ek]: cleanup slices of cancelled runs with finalizers
+(def ^:const W-SIZE 17)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -115,7 +116,8 @@
 (def ^:const X-KIND 11)
 (def ^:const X-VALUE 12)
 (def ^:const X-OPEN 13)
-(def ^:const X-SIZE 14)
+(def ^:const X-WAITERS 14)   ; mailbox/semaphore: FIFO of waiting wait edges
+(def ^:const X-SIZE 15)
 
 ;; Run
 (def ^:const R-WORLD 2)

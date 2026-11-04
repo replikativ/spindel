@@ -79,9 +79,10 @@
    that scope's subtree as storage."
   [w]
   (let [seen (java.util.IdentityHashMap.)]
-    (loop [todo (vec (keep #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
-                              (f % rw/R-SROW))
-                           (rows w)))]
+    (loop [todo (vec (mapcat #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
+                                ;; the run row, its scope subtree, its entity as a tombstone
+                                (remove nil? [% (f % rw/R-SROW) (f % rw/R-OF)]))
+                             (rows w)))]
       (when-let [x (peek todo)]
         (let [todo (pop todo)]
           (if (.containsKey seen x)
