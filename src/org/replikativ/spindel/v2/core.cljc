@@ -186,11 +186,49 @@
 
 (defn- hot? [row] (pos? (gl row rw/HOT)))
 
-(defn- maybe-schedule!
-  "§4.5.7: a hot needs-run computation whose dirty debtors have settled is
-   queued for dispatch. (Blocked debtors arrive with M2b.)"
+(declare blocked?)
+
+(defn- eligible?
+  "§4.5.7: every dirty computation debtor (a marked in-edge) has settled or
+   is blocked."
   [c]
-  (when (and (needs-run? c) (zero? (gl c rw/C-PENDING)) (hot? c) (not (g c rw/C-QUEUED)))
+  (or (zero? (gl c rw/C-PENDING))
+      (let [ins (g c rw/C-INS)]
+        (loop [i 0]
+          (if (< i (acount ins))
+            (let [e (anth ins i)]
+              (if (and (g e rw/E-MARKED) (not (blocked? (g e rw/E-DEBTOR) 0)))
+                false
+                (recur (inc i))))
+            true)))))
+
+(defn- blocked?
+  "§4.5.6, the least predicate: the entity's current run is parked and every
+   unfilled member's debtor is a source or a blocked entity. A cycle is not
+   blocked (a user deadlock)."
+  [x depth]
+  (and (< (long depth) 64)
+       (let [r (cond (comp? x) (let [r (g x rw/C-RUN)] (when (current? x r) r))
+                     (task? x) (g x rw/K-RUN))]
+         (and r (== rw/ACT-PARKED (gl r rw/R-ACT))
+              (let [a (g r rw/R-ACTV)
+                    ^objects ms (when a (g a rw/A-MEMBERS))]
+                (and ms
+                     (loop [i 0 any? false]
+                       (if (< i (alength ms))
+                         (if-let [e (aget ms i)]
+                           (let [d (g e rw/E-DEBTOR)]
+                             (if (or (source? d) (blocked? d (inc (long depth))))
+                               (recur (inc i) true)
+                               false))
+                           (recur (inc i) any?))
+                         any?))))))))
+
+(defn- maybe-schedule!
+  "§4.5.7: a hot needs-run computation that is eligible is queued for
+   dispatch."
+  [c]
+  (when (and (needs-run? c) (hot? c) (not (g c rw/C-QUEUED)) (eligible? c))
     (s! c rw/C-QUEUED true)
     (aadd! (g (g c rw/WORLD) rw/W-READY) c)))
 
@@ -323,12 +361,26 @@
         (task? d) [(g d rw/K-RESULT) (boolean (g d rw/K-ERR))]
         :else [(g d rw/X-VALUE) false]))
 
-(defn- fill-slot! [w a slot res]
-  (let [^objects sl (g a rw/A-SLOTS)] (aset sl (int slot) res))
-  (let [n (dec (gl a rw/A-REMAINING))]
-    (s! a rw/A-REMAINING n)
-    (when (and (zero? n) (not (g a rw/A-INLINE)))
-      (aadd! (g w rw/W-RESUME) a))))
+(defn- act-done? [a]
+  (or (zero? (gl a rw/A-REMAINING)) (some? (g a rw/A-WINNER))))
+
+(defn- slot-fill!
+  "Fills every slot whose member is `e` (Z#7). A complete activation that is
+   not on the host stack is queued for resumption."
+  [w a e res]
+  (when-not (act-done? a)
+    (let [^objects ms (g a rw/A-MEMBERS)
+          ^objects sl (g a rw/A-SLOTS)
+          n (alength ms)]
+      (dotimes [i n]
+        (when (identical? e (aget ms i))
+          (aset ms i nil)
+          (aset sl i res)
+          (s! a rw/A-REMAINING (dec (gl a rw/A-REMAINING)))
+          (when (and (= :any (g a rw/A-MODE)) (nil? (g a rw/A-WINNER)))
+            (s! a rw/A-WINNER i))))
+      (when (and (act-done? a) (not (g a rw/A-INLINE)))
+        (aadd! (g w rw/W-RESUME) a)))))
 
 (defn- fill!
   "T9 delivery into the activation `a` that dep edge `e` is an unfilled
@@ -340,7 +392,7 @@
       (s! e rw/E-ACT nil)
       (s! e rw/E-ARMED true)
       (s! e rw/E-SEEN (g d rw/VERSION))
-      (fill-slot! w a (g e rw/E-SLOT) (debtor-result d)))))
+      (slot-fill! w a e (debtor-result d)))))
 
 (defn- fire-wait!
   "T9 on a wait edge: fills its activation's slot, or resolves the host
@@ -354,7 +406,7 @@
       (let [r (g cred rw/A-RUN)]
         (when (and (identical? cred (g r rw/R-ACTV)) (run-current? r)
                    (== rw/ACT-PARKED (gl r rw/R-ACT)))
-          (fill-slot! w cred (g e rw/E-SLOT) res)))
+          (slot-fill! w cred e res)))
       (aadd! (g w rw/W-CALLBACKS) [cred res]))))
 
 (defn- fire-dep!
@@ -478,22 +530,23 @@
              (nil? (g r rw/R-FINS)) (nil? (g r rw/R-RES)))
     (retire! w r)))
 
-(defn- drop-activation!
-  "Removes the run's activation: wait members go with it, dep members stay
-   with the computation (W#2)."
-  [w r]
+(defn- release-members!
+  "An activation is removed: dep members stay with the computation (W#2),
+   wait members are removed with it (D2)."
+  [w a]
+  (let [^objects ms (g a rw/A-MEMBERS)]
+    (dotimes [i (alength ms)]
+      (when-let [e (aget ms i)]
+        (aset ms i nil)
+        (if (== rw/EK-DEP (gl e rw/E-KIND))
+          (s! e rw/E-ACT nil)
+          (when (linked? e) (unlink! w e))))))
+  (unregister! w a))
+
+(defn- drop-activation! [w r]
   (when-let [a (g r rw/R-ACTV)]
     (s! r rw/R-ACTV nil)
-    (let [x (g r rw/R-OF)]
-      (when (comp? x)
-        (let [ins (g x rw/C-INS)]
-          (dotimes [i (acount ins)]
-            (let [e (anth ins i)] (when (identical? a (g e rw/E-ACT)) (s! e rw/E-ACT nil)))))))
-    ;; wait members are removed with their activation (D2)
-    (when-let [ws (g a rw/A-WAITS)]
-      (dotimes [i (acount ws)]
-        (let [e (anth ws i)] (when (linked? e) (unlink! w e)))))
-    (unregister! w a)
+    (release-members! w a)
     a))
 
 (defn- cancel!
@@ -756,14 +809,15 @@
           (commit! w [:track (g r rw/ID) (g x rw/ID) (g e rw/ID)])
           (k (iv/->Interval old v nil)))))))
 
-(defn- new-activation! [w aid r k ek n]
+(defn- new-activation! [w aid r mode k ek ^objects members ^objects slots remaining]
   (let [a (object-array rw/A-SIZE)]
     (s! a rw/TYPE rw/T-ACT)
     (s! a rw/ID aid)
     (s! a rw/A-RUN r)
-    (s! a rw/A-MODE :one)
-    (s! a rw/A-SLOTS (object-array n))
-    (s! a rw/A-REMAINING n)
+    (s! a rw/A-MODE mode)
+    (s! a rw/A-SLOTS slots)
+    (s! a rw/A-MEMBERS members)
+    (s! a rw/A-REMAINING remaining)
     (s! a rw/A-R k)
     (s! a rw/A-E ek)
     (s! a rw/A-INLINE true)
@@ -774,74 +828,150 @@
   (s! r rw/R-ACT rw/ACT-PARKED)
   (s! r rw/R-SLICE false))
 
-(defn- resume-inline! [w r a k ek]
-  (s! r rw/R-ACTV nil)
-  (s! r rw/R-ACT rw/ACT-ACTIVE)
-  (s! r rw/R-SLICE true)
-  (set-active! r)
-  (unregister! w a)
-  (commit! w [:resume (g a rw/ID)])
-  (let [[v err?] (let [^objects sl (g a rw/A-SLOTS)] (aget sl 0))]
-    (if err? (ek v) (k v))))
+(defn- group-result
+  "The delivery of a complete activation: `one` its slot, `all` the vector of
+   values (or the first error in slot order), `any` the winning slot."
+  [mode ^objects slots winner]
+  (case mode
+    :one (aget slots 0)
+    :any (aget slots (int winner))
+    :all (let [n (alength slots)]
+           (loop [i 0 acc (transient [])]
+             (if (< i n)
+               (let [[v err?] (aget slots i)]
+                 (if err? [v true] (recur (inc i) (conj! acc v))))
+               [(persistent! acc) false])))))
 
 (defn- continue! [res k ek]
   (let [[v err?] res] (if err? (ek v) (k v))))
 
-(defn- await-in-comp! [w r c d k ek at aid]
-  (let [[e _] (site-edge! w r c d at (reentrant-k r k) ek)]
-    (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
-    (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-    (if (settled? d)
-      (do (s! e rw/E-SEEN (g d rw/VERSION))
-          (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
-          (let [res (debtor-result d)]
-            (when (final? d) (remove-dep! w e))   ; consumed at once (§4.3)
-            (continue! res k ek)))
-      (let [a (new-activation! w aid r k ek 1)]
-        (s! e rw/E-ACT a)
-        (s! e rw/E-SLOT 0)
-        (park! r a)
-        (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
-        ;; The demanded debtor's first slice runs on the host stack (I10).
-        (demand! w d)
-        (if (and (zero? (gl a rw/A-REMAINING)) (current? c r))
-          (do (when (final? d) (remove-dep! w e))
-              (resume-inline! w r a k ek))
-          (do (s! a rw/A-INLINE false) nil))))))
+(defn- cancel-losers!
+  "`any` in a task run: loser tasks created by the run, with no other
+   creditor, are cancelled (T6)."
+  [w r ^objects members]
+  (let [s (g r rw/R-SROW)]
+    (dotimes [i (alength members)]
+      (when-let [e (aget members i)]
+        (let [d (g e rw/E-DEBTOR)]
+          (when (and s (task? d) (identical? s (g d rw/OWNER))
+                     (== 1 (acount (g d rw/OUTS))) (g d rw/K-RUN))
+            (cancel! w (g d rw/K-RUN) ::cancelled)))))))
 
-(defn- await-in-task! [w r d k ek aid]
-  (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-  (cond
-    (and (source? d) (not (deferred? d)))       ; a task reads a signal once
-    (do (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
-        (k (g d rw/X-VALUE)))
-    (settled? d)
-    (do (alloc-id! w)                           ; the consumed wait edge (Z#28)
-        (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
-        (continue! (debtor-result d) k ek))
-    :else
-    (let [a (new-activation! w aid r k ek 1)
-          e (link! w rw/EK-WAIT a d 0)]
-      (s! e rw/E-SLOT 0)
-      (s! a rw/A-WAITS (doto (alist) (aadd! e)))
-      (park! r a)
-      (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
-      (demand! w d)
-      (if (zero? (gl a rw/A-REMAINING))
-        (resume-inline! w r a k ek)
-        (do (s! a rw/A-INLINE false) nil)))))
+(defn- finish-activation!
+  "Removes a complete activation and returns its delivery."
+  [w r a]
+  (s! r rw/R-ACTV nil)
+  (s! r rw/R-ACT rw/ACT-ACTIVE)
+  (when (and (= :any (g a rw/A-MODE)) (not (comp? (g r rw/R-OF))))
+    (cancel-losers! w r (g a rw/A-MEMBERS)))
+  (release-members! w a)
+  (commit! w [:resume (g a rw/ID)])
+  (group-result (g a rw/A-MODE) (g a rw/A-SLOTS) (g a rw/A-WINNER)))
 
-(defn await-effect!
-  "T6 with mode `one`."
-  [d k ek]
+(defn- notify-blocked!
+  "§4.5.6-7: `x` parked. Creditors with a marked edge from it may now be
+   eligible, and entities parked on it may now be blocked in turn."
+  [x depth]
+  (when (< (long depth) 64)
+    (let [outs (g x rw/OUTS)]
+      (dotimes [i (acount outs)]
+        (let [e (anth outs i)
+              k (gl e rw/E-KIND)]
+          (cond
+            (== k rw/EK-DEP)
+            (let [c (g e rw/E-CRED)]
+              (when (g e rw/E-MARKED) (maybe-schedule! c))
+              (when (g e rw/E-ACT) (notify-blocked! c (inc (long depth)))))
+            (== k rw/EK-WAIT)
+            (let [a (g e rw/E-CRED)]
+              (when (and (some? a) (not (fn? a)) (act? a))
+                (notify-blocked! (g (g a rw/A-RUN) rw/R-OF) (inc (long depth)))))))))))
+
+(defn- await-group!
+  "T6: an activation over `ds` with `mode` (:one :all :any)."
+  [ds mode k ek]
   (when-let [r (valid-run)]
     (let [w (g r rw/R-WORLD)
           x (g r rw/R-OF)
           at (next-at! r)
-          aid (alloc-id! w)]
-      (if (comp? x)
-        (await-in-comp! w r x d k ek at aid)
-        (await-in-task! w r d k ek aid)))))
+          aid (alloc-id! w)
+          n (count ds)
+          members (object-array n)
+          slots (object-array n)
+          in-comp? (comp? x)
+          ;; group sites restart (Y#3); `one` sites re-enter when allowed (§2)
+          kk (when (= mode :one) (reentrant-k r k))]
+      ;; Member edges in debtor-list order; a repeated debtor shares its edge.
+      (dotimes [i n]
+        (let [d (row-of (nth ds i))
+              prev (loop [j 0] (when (< j i)
+                                 (let [m (aget members j)]
+                                   (if (and m (identical? d (g m rw/E-DEBTOR))) m (recur (inc j))))))]
+          (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+          (cond
+            prev (aset members i prev)
+            in-comp? (let [[e _] (site-edge! w r x d at kk ek)]
+                       (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
+                       (aset members i e))
+            (and (source? d) (not (deferred? d))) nil       ; a task reads a signal once
+            (settled? d) (alloc-id! w)                      ; consumed at once (Z#28)
+            :else (aset members i (link! w rw/EK-WAIT nil d 0)))))
+      ;; Fast path: settled members fill their slots in this commit.
+      (let [remaining (volatile! n)
+            winner (volatile! nil)]
+        (dotimes [i n]
+          (let [d (row-of (nth ds i))
+                e (aget members i)]
+            (when (and (nil? @winner) (or (nil? e) (settled? d)))
+              (when e (s! e rw/E-SEEN (g d rw/VERSION)))
+              (aset slots i (debtor-result d))
+              (aset members i nil)
+              (vswap! remaining dec)
+              (when (= mode :any) (vreset! winner i)))))
+        (if (or (zero? @remaining) (some? @winner))
+          (do
+            ;; complete at once: unfilled any-losers and final dep edges go
+            (dotimes [i n]
+              (when-let [e (aget members i)]
+                (aset members i nil)
+                (when (and (== rw/EK-WAIT (gl e rw/E-KIND)) (linked? e)) (unlink! w e))))
+            (when in-comp?
+              (doseq [d ds] (let [d (row-of d)]
+                              (when (final? d)
+                                (let [ins (g x rw/C-INS)]
+                                  (dotimes [i (acount ins)]
+                                    (let [e (anth ins i)]
+                                      (when (and (identical? d (g e rw/E-DEBTOR)) (== at (gl e rw/E-AT)))
+                                        (remove-dep! w e)))))))))
+            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
+            (continue! (group-result mode slots @winner) k ek))
+          (let [a (new-activation! w aid r mode k ek members slots @remaining)]
+            (dotimes [i n]
+              (when-let [e (aget members i)]
+                (if (== rw/EK-DEP (gl e rw/E-KIND))
+                  (s! e rw/E-ACT a)
+                  (s! e rw/E-CRED a))))
+            (park! r a)
+            (commit! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
+            (notify-blocked! x 0)
+            ;; Demanded debtors run on the host stack (I10).
+            (dotimes [i n]
+              (when-not (act-done? a)
+                (demand! w (row-of (nth ds i)))))
+            (if (and (act-done? a) (identical? a (g r rw/R-ACTV)) (run-current? r))
+              (let [res (finish-activation! w r a)]
+                (s! r rw/R-SLICE true)
+                (set-active! r)
+                (continue! res k ek))
+              (do (s! a rw/A-INLINE false) nil))))))))
+
+(defn await-effect!
+  "T6 with mode `one`."
+  [d k ek]
+  (await-group! [d] :one k ek))
+
+(defn await-all-effect! [ds k ek] (await-group! (vec ds) :all k ek))
+(defn await-any-effect! [ds k ek] (await-group! (vec ds) :any k ek))
 
 (defn- same-capture?
   "Formalism §1.6: `identical?`, or for a scalar the same value of the same type."
@@ -1063,7 +1193,7 @@
   (cond
     (comp? d)
     (do (when (g d rw/C-IDLE) (validate! w d))
-        (when (and (needs-run? d) (zero? (gl d rw/C-PENDING)))
+        (when (and (needs-run? d) (eligible? d))
           (dispatch! w d)))
     (task? d) nil))
 
@@ -1123,13 +1253,9 @@
 (defn- resume! [w a]
   (let [r (g a rw/A-RUN)]
     (when (and (identical? a (g r rw/R-ACTV)) (run-current? r) (== rw/ACT-PARKED (gl r rw/R-ACT)))
-      (s! r rw/R-ACTV nil)
-      (s! r rw/R-ACT rw/ACT-ACTIVE)
-      (unregister! w a)
-      (commit! w [:resume (g a rw/ID)])
-      (let [[v err?] (let [^objects sl (g a rw/A-SLOTS)] (aget sl 0))
+      (let [res (finish-activation! w r a)
             k (g a rw/A-R) ek (g a rw/A-E)]
-        (slice! r (if err? #(ek v) #(k v)))))))
+        (slice! r #(continue! res k ek))))))
 
 (defn- start! [w r]
   (when (== rw/ACT-ACTIVE (gl r rw/R-ACT))
@@ -1156,7 +1282,7 @@
             (pos? (acount ready))
             (let [c (pop-first! ready)]
               (s! c rw/C-QUEUED false)
-              (when (and (hot? c) (zero? (gl c rw/C-PENDING)) (needs-run? c))
+              (when (and (hot? c) (needs-run? c) (eligible? c))
                 (dispatch! w c))
               (rule-r! w)
               (recur))
@@ -1327,6 +1453,8 @@
 
 (defn track [_] (throw (ex-info "track outside a body" {})))
 (defn await [_] (throw (ex-info "await outside a body" {})))
+(defn await-all [_] (throw (ex-info "await-all outside a body" {})))
+(defn await-any [_] (throw (ex-info "await-any outside a body" {})))
 
 ;; ---------------------------------------------------------------------------
 ;; Body macros (partial-cps)
@@ -1337,9 +1465,15 @@
        (fn [[x]] `(track-effect! (row-of ~x) ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await [_ctx r e]
        (fn [[x]] `(await-effect! (row-of ~x) ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-all [_ctx r e]
+       (fn [[xs]] `(await-all-effect! ~xs ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-any [_ctx r e]
+       (fn [[xs]] `(await-any-effect! ~xs ~r ~e)))
      (def ^:private breakpoints
        {'org.replikativ.spindel.v2.core/track `bp-track
-        'org.replikativ.spindel.v2.core/await `bp-await})
+        'org.replikativ.spindel.v2.core/await `bp-await
+        'org.replikativ.spindel.v2.core/await-all `bp-await-all
+        'org.replikativ.spindel.v2.core/await-any `bp-await-any})
      (defn- body-fn [env body]
        (let [r (gensym "r") e (gensym "e")
              params {:r r :e e :env env :breakpoints breakpoints

@@ -32,7 +32,7 @@
     rw/T-ACT (let [x (f (f row rw/A-RUN) rw/R-OF)]
                (concat (when (== rw/T-COMP (t x))
                          (filter #(identical? row (f % rw/E-ACT)) (f x rw/C-INS)))
-                       (f row rw/A-WAITS)))
+                       (filter #(and % (== rw/EK-WAIT (long (f % rw/E-KIND)))) (f row rw/A-MEMBERS))))
     rw/T-SCOPE (concat (some-> (f row rw/S-PARENT) list)
                        (keep #(f % rw/K-RUN) (f row rw/S-TASKS)))
     rw/T-TASK (some-> (f row rw/K-RUN) list)
@@ -58,7 +58,7 @@
           (if (.containsKey seen x)
             (recur todo)
             (do (.put seen x true)
-                (recur (into todo (successors x))))))))
+                (recur (into todo (remove nil?) (successors x))))))))
     seen))
 
 (defn- admitted?
