@@ -31,6 +31,15 @@
      (defmacro acopy [l] (if (cljs? &env) `(.slice ~l)
                              (let [x (al)] `(let [~x ~l] (java.util.ArrayList. ~x)))))))
 
+;; M5 owner epochs: every row has one extra last slot holding the epoch of the
+;; world incarnation that owns it.
+(defn new-row
+  "A row of `size` fields plus its owner-epoch slot."
+  ^objects [epoch size]
+  (let [a (object-array (inc (long size)))]
+    (aset a (long size) epoch)
+    a))
+
 ;; Row types
 (def ^:const T-WORLD 0)
 (def ^:const T-SCOPE 1)
@@ -68,7 +77,9 @@
 (def ^:const W-BUDGET 21)    ; H2: items + slices per inline turn
 (def ^:const W-ROOTS 22)     ; observe edges and host waits (roots, §3.1) for T21
 (def ^:const W-RELEASED 23)
-(def ^:const W-SIZE 24)
+(def ^:const W-EPOCH 24)     ; M5: this world's owner epoch (identity object)
+(def ^:const W-FWD 25)       ; M5: row ID -> this world's copy (stage 1b)
+(def ^:const W-SIZE 26)
 
 ;; Scope
 (def ^:const S-PARENT 2)
