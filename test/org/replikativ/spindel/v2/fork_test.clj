@@ -17,6 +17,9 @@
      ~@body
      (is (empty? @*divergences*) (str "Rule R divergences: " (vec (take 3 @*divergences*))))))
 
+(defn- wait-until [f]
+  (loop [n 0] (cond (f) true (> n 500) false :else (do (Thread/sleep 5) (recur (inc n))))))
+
 (deftest fork-isolation
   (checked
     (let [w (vworld)]
@@ -93,16 +96,23 @@
     (let [w (vworld)]
       (binding [v2/*world* w]
         (let [x (v2/signal 1)
+              out (promise)
+              gate (v2/deferred)
               t (task (let [[side child] (v2/fork)]
                         (v2/write! x (if (= side :child) 20 10))
-                        [side child]))
-              [side child] (v2/value t 1000 ::timeout)]
-          (is (= :parent side))
+                        (when (= side :parent) (deliver out child))
+                        (when (= side :parent) (await gate))
+                        side))
+              child (deref out 1000 nil)]
           (is (some? child))
           (is (= 10 (v2/value x)) "the parent wrote 10")
-          (let [[cside _] (v2/value (v2/in-world child t) 1000 ::timeout)]
-            (is (= :child cside) "the child's copy resumed with the child-side result")
-            (is (= 20 (v2/value (v2/in-world child x))) "and wrote in the child")))))))
+          (is (= :child (v2/value (v2/in-world child t) 1000 ::timeout))
+              "the child's copy resumed with the child-side result")
+          (is (= 20 (v2/value (v2/in-world child x))) "and wrote in the child")
+          (v2/deliver! gate :done)
+          (is (= :parent (v2/value t 1000 ::timeout)))
+          ;; F2: the fork is owned by the task's run scope, released when it retires
+          (is (wait-until #(aget ^objects child rw/W-RELEASED)) "the task's end releases its fork"))))))
 
 (deftest dormant-resources-in-a-fork
   ;; §8.1: a timer re-arms in the fork; an offload fails with err ::forked.

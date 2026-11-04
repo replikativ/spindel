@@ -51,6 +51,7 @@
 (defn flag-cas! [f old new]
   #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean f (boolean old) (boolean new))
      :cljs (if (= (.-v f) old) (do (set! (.-v f) new) true) false)))
+(defn flag? [f] #?(:clj (.get ^java.util.concurrent.atomic.AtomicBoolean f) :cljs (.-v f)))
 (defn flag-set! [f v] #?(:clj (.set ^java.util.concurrent.atomic.AtomicBoolean f (boolean v)) :cljs (set! (.-v f) v)) nil)
 
 (defn lock [] #?(:clj (java.util.concurrent.locks.ReentrantLock.) :cljs #js {:held false}))

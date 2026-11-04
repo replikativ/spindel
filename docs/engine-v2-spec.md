@@ -146,7 +146,17 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#57 (§4.3, Z#53): `take`/`acquire` on a closed source consumes what is
     left; when nothing is, the effect fails at once with `err ::closed` (the
     take item is still committed, its wait edge consumed), instead of
-    parking a run that nothing can wake.
+    parking a run that nothing can wake;
+  - Z#58 (F2, Q12, S3, S7; lifecycle design v2): forks are owned through
+    markers in a per-world table (never inherited); owner close and
+    `discard` release the child through its ingress, scheduled after the
+    parent's gate is left; `fork`-effect markers are strong, root-owned
+    markers (host forks, activated instances) weak, so an unreachable
+    root-owned fork is collected without running its stuck finalizers; an
+    instance is
+    unborn until activation, gets its marker there, and is collected
+    without running anything when dropped unactivated; a dropped pending
+    publication abandons its run.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -912,7 +922,13 @@ The child `W′` gets:
   - `discard(W′)` is called explicitly; or
   - **idle release (Q12):** `W′` has no runs, no pins, no `observe` edges,
     no open explicit scopes, no `pending-activation` and no handles. Its
-    administrative root scope does not count.
+    administrative root scope does not count. Realized physically (Z#58):
+    a marker of the `fork` effect holds `W′` strongly (its owner scope
+    bounds it); a marker of a host fork or an activated instance (owned by
+    the root scope) holds it weakly. Such a `W′` stays reachable while
+    anything can still act in it (the host, a timer, an offload, a drainer);
+    once nothing can, it is collected. Its parked runs can never resume, so
+    their finalizers do not run.
 
   Dropping the last handle of a fork that still has live work does not
   release it. Its work is owned through `M`.
@@ -939,7 +955,10 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   keeps only its basis.
 - **S3 – instantiate.** `instantiate(P)` creates a frozen fork `W′` of
   `basis` *without activating it*:
-  - its marker is owned by the handler's current scope;
+  - its marker is created at activation (S4), owned by the root scope of the
+    publication's world (the handler runs as host code, Z#58);
+  - until activation `W′` is **unborn** (Z#58): host items commit, but its
+    inherited work and dormant resources wait for S4;
   - `R`'s copy in `W′` is parked on its copied `savepoint` edge, which
     becomes `W′.pending-activation`;
   - every other inherited `savepoint` edge fires `err ::forked` (§8.1);
@@ -960,8 +979,12 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
     while `E_sp` is still armed, `R` is cancelled (T14). Its creditors
     receive `err ::abandoned`. The basis is freed once no fork made from it
     remains.
-  - **Pending fork:** dropping or discarding an unactivated `W′` abandons
-    its `pending-activation` and releases `W′` (F2).
+  - **Pending fork:** dropping an unactivated `W′` collects it without running
+    anything: nothing in it ever ran, and running the finalizers it copied
+    would repeat the source's side effects once per dropped particle
+    (Z#58). Discarding it releases it (F4).
+  - **Collection** of a publication while `E_sp` is armed abandons it. The
+    publication is read-only host data, so it is never copied by accident.
   - The handler returning without resuming is **not** abandonment. `P`
     stays valid while it has handles.
 

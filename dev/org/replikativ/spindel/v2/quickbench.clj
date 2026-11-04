@@ -88,7 +88,39 @@
                       :when (re-matches #"\d+" v)]
                   (Long/parseLong v))))))
 
+(declare instr-per-update*)
+
+(defn- instr-lifecycle
+  "Instructions per task lifecycle (:l0, :task-await) or per host read of a
+   settled computation (:host-read), as in missionary_comparison."
+  [kind n]
+  (let [w (v2/world)
+        input (volatile! 0)
+        sink (volatile! nil)
+        cb (fn [v err?] (when err? (throw v)) (vreset! sink v))]
+    (binding [v2/*world* w]
+      (let [x (v2/signal 1)
+            c (spin (* 2 (iv/get-new (track x))))
+            _ (v2/observe! c (fn [_ _]))
+            step (case kind
+                   :l0 #(v2/value-async (v2/task (vswap! input inc)) cb)
+                   :task-await #(let [i (vswap! input inc)
+                                      d (v2/deferred w)
+                                      t (v2/task (inc (await d)))]
+                                  (v2/value-async t cb)
+                                  (v2/deliver! d i))
+                   :host-read #(v2/value-async c cb))]
+        (dotimes [_ n] (step))
+        (v2/call-in! w (fn [] nil))
+        (let [i (instructions #(do (dotimes [_ n] (step)) (v2/call-in! w (fn [] nil))))]
+          (long (/ i n)))))))
+
 (defn instr-per-update [kind n]
+  (if (#{:l0 :task-await :host-read} kind)
+    (instr-lifecycle kind n)
+    (instr-per-update* kind n)))
+
+(defn instr-per-update* [kind n]
   (let [w (v2/world)]
     (binding [v2/*world* w]
       (let [source (v2/signal 0)

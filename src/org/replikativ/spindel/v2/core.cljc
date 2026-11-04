@@ -119,6 +119,8 @@
      (s! w rw/W-BUDGET (long budget))
      (s! w rw/W-ROOTS (hs/lmap))
      (s! w rw/W-RELEASED false)
+     (s! w rw/W-UNBORN false)
+     (s! w rw/W-AFTER (alist))
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
@@ -739,9 +741,60 @@
 
 (declare close-source!)
 
+(declare release-world*)
+
+;; Fork ownership (F2; lifecycle design v2 E1-E3, Z#58). A holder is
+;; [strong-child weak-child released-flag]. A fork made by the (fork) effect is
+;; held strongly by the forking run's scope: its lifetime is bounded by that
+;; scope, whose close releases it and runs its finalizers. A host fork and an
+;; activated instance are held weakly by the root scope: while anything can
+;; still act in them (the host, a timer, an offload thread, a drainer) they
+;; are reachable and the root's close releases them; once nothing can, they
+;; are collected (nothing in them can run again).
+(defn- holder-child [^objects h] (or (aget h 0) (hs/deref-weak (aget h 1))))
+(defn- holder-dead? [^objects h] (or (hs/flag? (aget h 2)) (nil? (holder-child h))))
+
+(defn- own-child!
+  "F2: the fork marker of `child` in `w`, owned by the scope with id `sid`,
+   held strongly or weakly (see above)."
+  [w sid child strong?]
+  (let [h (doto (object-array 3)
+            (aset 0 (when strong? child)) (aset 1 (hs/weak child)) (aset 2 (hs/flag false)))
+        m (or (g w rw/W-OWNED) (let [m (hs/vmap)] (s! w rw/W-OWNED m) m))
+        ^objects e (or (hs/mget m sid) (let [e (object-array [(alist) 16])]
+                                         (hs/mput! m sid e) e))
+        l (aget e 0)]
+    ;; dead holders (released, or collected) are pruned when the list doubles
+    (when (>= (acount l) (long (aget e 1)))
+      (loop [i (dec (acount l))]
+        (when-not (neg? i)
+          (when (holder-dead? (anth l i)) (hs/remove-at! l i))
+          (recur (dec i))))
+      (aset e 1 #?(:clj (num (max 16 (* 2 (acount l)))) :cljs (max 16 (* 2 (acount l))))))
+    (aadd! l h)
+    (s! child rw/W-HOLDER h)
+    child))
+
+(defn- release-owned!
+  "F2: the owner scope `sid` closed: each live child is released (T21) through
+   its own ingress. The child is scheduled only after this world's gate is
+   released (W-AFTER), so no thread takes two gates (E3)."
+  [w sid]
+  (when-let [m (g w rw/W-OWNED)]
+    (when-let [^objects e (hs/mget m sid)]
+      (hs/mdel! m sid)
+      (let [l (aget e 0)]
+      (dotimes [i (acount l)]
+        (let [^objects h (anth l i)
+              c (holder-child h)]
+          (aset h 0 nil)
+          (when (and c (hs/flag-cas! (aget h 2) false true))
+            (hs/mpsc-add! (g c rw/W-INGRESS) #(release-world* c))
+            (aadd! (g w rw/W-AFTER) c))))))))
+
 (defn- close-scope!
   "T16: cancels the work owned by the subtree, closes its scopes and the
-   sources they own."
+   sources they own, and releases the forks it owns (F2)."
   [w s]
   (when (g s rw/S-OPEN)
     (s! s rw/S-OPEN false)
@@ -753,7 +806,8 @@
       (doseq [t ts]
         (when-let [r (rv w (g t rw/K-RUN))] (cancel! w r ::cancelled))))
     (let [cs (acopy (g s rw/S-CHILDREN))]
-      (dotimes [i (acount cs)] (close-scope! w (rv w (anth cs i))))))
+      (dotimes [i (acount cs)] (close-scope! w (rv w (anth cs i)))))
+    (release-owned! w (id-of s)))
   (remove-scope-if-empty! w s))
 
 (declare release-ownership!)
@@ -1810,19 +1864,34 @@
    true when work remains."
   [w]
   (s! w rw/W-DRAINING true)
-  (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w))
-  (try
-    (loop [n (gl w rw/W-BUDGET)]
-      (if (zero? n)
-        true
-        (if-let [item (hs/mpsc-poll! (ingress w))]
-          (do (item) (recur (dec n)))
-          (cond (drain-step! w) (recur (dec n))
-                (run-callbacks! w) (recur n)
-                :else false))))
-    (finally (s! w rw/W-DRAINING false))))
+  (let [unborn? (g w rw/W-UNBORN)]
+    ;; E4: an unborn instance commits host items only: its inherited work and
+    ;; dormant resources wait for activate!
+    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT))) (activate-dormant! w))
+    (try
+      (loop [n (gl w rw/W-BUDGET)]
+        (if (zero? n)
+          true
+          (if-let [item (hs/mpsc-poll! (ingress w))]
+            (do (item) (recur (dec n)))
+            (cond (and (not (g w rw/W-UNBORN)) (drain-step! w)) (recur (dec n))
+                  (run-callbacks! w) (recur n)
+                  :else false))))
+      (finally (s! w rw/W-DRAINING false)))))
 
 (declare handoff! activate-dormant!)
+
+(defn- take-after!
+  "Under the gate: the child worlds released during this turn (E3)."
+  [w]
+  (let [l (g w rw/W-AFTER)]
+    (when (pos? (acount l))
+      (let [cs (acopy l)] (aclear! l) cs))))
+
+(defn- run-after!
+  "After the gate is released: schedule the released children's drains."
+  [cs]
+  (when cs (dotimes [i (acount cs)] (handoff! (anth cs i)))))
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off."
@@ -1830,14 +1899,18 @@
   (let [lk (g w rw/W-LOCK)]
     (when (hs/try-lock! lk)
       (let [prev (enter-world! w)]
-        (try (run-turn! w) (finally (hs/unlock! lk) (leave-world! prev)))))
+        (try (run-turn! w)
+             (finally (let [cs (take-after! w)]
+                        (hs/unlock! lk) (leave-world! prev) (run-after! cs))))))
     (handoff! w)))
 
 (defn- work-pending? [w]
   (or (not (hs/mpsc-empty? (ingress w)))
-      (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
-      (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))
-      (pos? (acount (g w rw/W-ACKS))) (pos? (acount (g w rw/W-CALLBACKS)))))
+      (pos? (acount (g w rw/W-CALLBACKS)))
+      (and (not (g w rw/W-UNBORN))          ; E4: an unborn instance's work waits
+           (or (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
+               (pos? (acount (g w rw/W-START))) (pos? (acount (g w rw/W-CLEANUP)))
+               (pos? (acount (g w rw/W-ACKS)))))))
 
 (defn- handoff!
   "H2: after releasing the gate, queued work is never stranded: schedule the
@@ -1874,7 +1947,8 @@
                    (let [v (try (f) (finally (s! w rw/W-DRAINING false)))]
                      (run-turn! w)
                      v)
-                   (finally (hs/unlock! lk) (leave-world! prev)))]
+                   (finally (let [cs (take-after! w)]
+                              (hs/unlock! lk) (leave-world! prev) (run-after! cs))))]
         (handoff! w)
         v)
       :else
@@ -2415,7 +2489,22 @@
    reclaim the rest. Later host operations fail with ::released. Returns a
    fn reporting the rows left (cleanup entries until they retire, L2)."
   [w]
-  (gated w
+  (gated w (release-world* w))
+  ;; the root scope is the administrative allowance (I11a): not a row left
+  (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
+
+(defn discard!
+  "F4: releases a fork (T21 in it); its owner's marker goes (F2)."
+  [w]
+  (release-world! w))
+
+(defn- release-world*
+  "T21 inside `w`'s gate. Also the owner-close release of a fork (F2)."
+  [w]
+  (when-not (g w rw/W-RELEASED)
+    (when-let [^objects h (g w rw/W-HOLDER)]
+      (aset h 0 nil)
+      (hs/flag-set! (aget h 2) true))
     (let [ex (released-ex)
           roots (g w rw/W-ROOTS)]
       (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -2434,9 +2523,7 @@
             (s! x rw/HANDLES 0)
             (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
       (commit! w [:release-world])
-      (s! w rw/W-RELEASED true)))
-  ;; the root scope is the administrative allowance (I11a): not a row left
-  (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
+      (s! w rw/W-RELEASED true))))
 
 (defn open-scope!
   "T16 open: an explicit scope, child of the run's current scope, a root
@@ -2511,6 +2598,12 @@
     (s! c rw/W-SCHEDULED (hs/flag false))
     (s! c rw/W-DRAINING false)
     (s! c rw/W-CALLBACKS (alist))
+    ;; lifecycle state is the world's own, never inherited (spec §8.1 D3)
+    (s! c rw/W-OWNED nil)
+    (s! c rw/W-HOLDER nil)
+    (s! c rw/W-AFTER (alist))
+    (s! c rw/W-UNBORN false)
+    (s! c rw/W-PUB-WORLD nil)
     (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ rw/W-ACKS]]
       (s! c i (hs/lcopy (g w i))))
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
@@ -2535,7 +2628,9 @@
   (let [res (volatile! nil)]
     (gated w
       (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
+      (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
       (let [c (fork-world* w)]
+        (own-child! w (id-of (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
         (commit! w [:fork-host (g c rw/ID)])
         (vreset! res c)))
     (handoff! @res)
@@ -2554,6 +2649,7 @@
       (ek (ex-info "fork in a nested slice is not supported yet" {}))
       :else
       (let [w (cw)
+            owner (current-scope! w r)            ; F2: materialized before the boundary
             aid (alloc-id! w)
             a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)]
         ;; the child's view: the run resumed at the effect with its delivery
@@ -2564,13 +2660,15 @@
         (aadd! (g w rw/W-RESUME) a)
         (unregister! w a)                 ; a delivery carrier, not a parked activation
         (let [child (fork-world* w)]
+          (own-child! w (id-of owner) child true)
           ;; the parent takes the delivery back and continues on its own copy
           (remove-row! (g w rw/W-RESUME) a)
           (let [r (rv w r)]
             (s! r rw/R-SLICE true)
             (set-active! r)
             (commit! w [:fork (g r rw/ID) (g child rw/ID)])
-            (handoff! child)
+            ;; scheduled after the parent's gate is released (E3)
+            (aadd! (g w rw/W-AFTER) child)
             (k [:parent child])))))
     (unwind! ek)))
 
@@ -2578,6 +2676,31 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Savepoints (§8.2, S1-S7)
+
+(deftype Publication [world act site payload basis state]
+  #?@(:clj [clojure.lang.ILookup
+            (valAt [this k] (.valAt this k nil))
+            (valAt [_ k nf] (case k :world world :act act :site site :payload payload
+                                    :basis basis :state state nf))]
+      :cljs [ILookup
+             (-lookup [this k] (-lookup this k nil))
+             (-lookup [_ k nf] (case k :world world :act act :site site :payload payload
+                                       :basis basis :state state nf))]))
+
+(declare abandon-act!)
+
+(defn- publication
+  "S1: a read-only publication (no assoc, so it is never copied by accident).
+   Dropping it while pending abandons its run (S7): the collection action
+   holds the world, the activation id and the state, never the publication."
+  [w aid site payload basis]
+  (let [state (atom :pending)
+        p (Publication. w aid site payload basis state)]
+    (hs/on-collect! p (fn []
+                        (when (= :pending @state)
+                          (try (abandon-act! w aid state)
+                               (catch #?(:clj Throwable :cljs :default) _ nil)))))
+    p))
 
 (defn install-handlers!
   "Merges `table` ({site handler}) into `w`'s savepoint handlers; a handler is
@@ -2628,8 +2751,7 @@
           (commit! w [:savepoint (g r rw/ID) [:opaque site] [:opaque payload] aid])
           ;; the basis is a fork of this commit that is never run, only forked
           (let [basis (fork-world* w)
-                pub {:world w :act aid :site site :payload payload :basis basis
-                     :state (atom :pending)}]
+                pub (publication w aid site payload basis)]
             ;; the parent's own copy of the run keeps no slice (it is parked)
             (set-active! (rv w r))
             (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]])
@@ -2638,9 +2760,9 @@
 
 (defn savepoint [_ _] (throw (ex-info "savepoint outside a body" {})))
 
-(defn- pub-act [w pub]
-  (let [a (get (g w rw/W-FWD) (:act pub))]
-    (rv w (or a (some #(when (== (id-of %) (long (:act pub))) %) (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))
+(defn- sp-act [w aid]
+  (let [a (get (g w rw/W-FWD) aid)]
+    (rv w (or a (some #(when (== (id-of %) (long aid)) %) (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))
 
 (defn resume!
   "S2: continues the publication's own world with `v`, at most once."
@@ -2648,24 +2770,26 @@
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
       (gated w
-        (let [a (pub-act w pub)]
+        (let [a (sp-act w (:act pub))]
           (if (and a (sp-deliver! w a [v false]))
             (commit! w [:resume-savepoint (:act pub) [:opaque v]])
             (refuse! w [:resume-savepoint (:act pub) [:opaque v]])))))
     nil))
 
+(defn- abandon-act! [w aid state]
+  (when (compare-and-set! state :pending :abandoned)
+    (gated w
+      (when-let [a (sp-act w aid)]
+        (let [r (rv w (g a rw/A-RUN))]
+          (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps aid))
+          (cancel! w r ::abandoned)
+          (commit! w [:abandon-savepoint aid])))))
+  nil)
+
 (defn abandon!
   "S7: cancels the run suspended at the publication with err ::abandoned."
   [pub]
-  (let [w (:world pub)]
-    (when (compare-and-set! (:state pub) :pending :abandoned)
-      (gated w
-        (when-let [a (pub-act w pub)]
-          (let [r (rv w (g a rw/A-RUN))]
-            (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (:act pub)))
-            (cancel! w r ::abandoned)
-            (commit! w [:abandon-savepoint (:act pub)])))))
-    nil))
+  (abandon-act! (:world pub) (:act pub) (:state pub)))
 
 (defn instantiate
   "S3: a frozen fork of the publication's basis, not yet activated: the
@@ -2675,12 +2799,22 @@
   (let [b (:basis pub)
         c (fork-world* b)]
     (s! c rw/W-PENDING-ACT (:act pub))
+    ;; E4: unborn until activate!: host items commit, but its inherited work
+    ;; and dormant resources wait; dropped unactivated, it is collected
+    ;; without running anything (it never ran)
+    (s! c rw/W-UNBORN true)
+    (s! c rw/W-PUB-WORLD (:world pub))
     c))
 
 (defn activate!
-  "S4: resumes an instantiated fork's pending activation with `v`."
+  "S4: resumes an instantiated fork's pending activation with `v`. The fork
+   is born here: the root scope of the publication's world owns it (F2)."
   [w v]
+  (when-let [pw (g w rw/W-PUB-WORLD)]
+    (s! w rw/W-PUB-WORLD nil)
+    (host! pw #(own-child! pw (id-of (g pw rw/W-ROOT)) w false)))
   (gated w
+    (s! w rw/W-UNBORN false)
     (let [aid (g w rw/W-PENDING-ACT)]
       (when aid
         (s! w rw/W-PENDING-ACT nil)
