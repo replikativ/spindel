@@ -1349,7 +1349,7 @@
           (aadd! (g s rw/S-TASKS) k)
           (ref-inc! k)
           (start-task! w k)
-          (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID)])))
+          (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
       h)))
 
 ;; ---------------------------------------------------------------------------
