@@ -49,7 +49,11 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#22: on restart, E's baseline advances when the new run reads it;
   - Z#23: computations owned by a removed scope get `owner := ⊥`;
   - Z#24: validity uses the version each edge last consumed;
-  - Z#25: detach also runs after the filter; T13 clears `K.run`; T10 cascades fully.
+  - Z#25: detach also runs after the filter; T13 clears `K.run`; T10 cascades fully;
+  - Z#26: a task run's scope has the task's owner scope as parent; a
+    computation run's scope has none;
+  - Z#27: pending host waits are roots (T22);
+  - Z#28: T6 always allocates the activation id, even on the fast path.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -174,6 +178,9 @@ These belong to yggdrasil and dvergr, which build on §9.
       bodies, result equality and `swap!` functions.
 - **Scope** `S`: a lifetime container. Scopes form a tree from the world root.
   Every run has a *run scope*, and explicit scopes come from `with-scope`.
+  A task run's scope has the task's owner scope as its parent; a
+  computation run's scope has no parent, because computations are retained
+  by demand only (Z#26).
 - **Computation** `C` (`spin`):
   - a body with a deterministic id, captured inputs and a cached result;
   - reactive: `track`, and `await` on non-final debtors, are *dependencies*.
@@ -327,7 +334,8 @@ suffix sites get the same `at` as in the predecessor.
 3. `observe` edges;
 4. explicit scopes that are open;
 5. `pending-activation`, until it is activated or abandoned;
-6. publications with `handles > 0` whose edge is armed (S7, Z#4).
+6. publications with `handles > 0` whose edge is armed (S7, Z#4);
+7. pending host waits: `wait` edges whose creditor is the host (T22, Z#27).
 
 ### 3.2 Retention edges
 
@@ -635,9 +643,9 @@ Transitions are built from a small set of primitive table edits (§11).
 | T1 | `create-source(kind, v)` | Owner is the current scope; inside a computation run, the computation (§5.2). |
 | T2 | `write(X, v)` | `version += 1`; deltas are logged; mark, fire `dep` edges and deliver to `observe` edges per §4.5.1 (Z#9). |
 | T3 | `create-comp(id, inputs, body)` | **Absent id:** a `fresh` computation is created. **Present, equal inputs** (the conservative capture comparison, formalism §1.6): it is adopted. **Present, different inputs (W#5):** body and inputs are replaced at the same id, and the change is handled exactly like a write to `C`'s rerun source. Marking (§4.5.1) dirties `C`'s transitive dependents. `C.epoch += 1`, and the replacement run starts from the body (restart). An idle entry is replaced by a `fresh` one. In every case the creator records `C` (§5.2) before Rule R. |
-| T4 | `spawn(body)` | Creates task `K` owned per §5.2 and starts its run (fresh stamp, run scope). |
+| T4 | `spawn(body)` | Creates task `K` owned per §5.2 and starts its run (fresh stamp, run scope with parent `K.owner`, Z#26). |
 | T5 | `start(C)` | **Applies to:** a `fresh` computation, or an invalid idle one. The new run starts from the body, with a fresh stamp and `R.epoch := C.epoch`. |
-| T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit. **`one`/`all`:** the run resumes when `remaining = 0`. **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
+| T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. Its id is always allocated, even when the fast path fills every slot in the same commit and `A` is removed at once (Z#28). **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit. **`one`/`all`:** the run resumes when `remaining = 0`. **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
 | T7 | `track(R, X)` | **Domain:** `X` is a signal or a cell; otherwise it is refused (Z#17). Inside a computation: a `dep` edge per §4.4, read immediately. Inside a task: a snapshot read with no edge, which allocates nothing (Q1, Z#19). |
 | T8 | `observe(host, d, cb)` / `unobserve` | Adds or removes an `observe` edge with `seen = none`; validates `d` if it is idle. **Initial delivery (Z#15):** if `d` is a source, or a `live` computation, its current `(value, version)` is delivered in the same commit. Otherwise `d` is demanded (T5, or T11) and the first delivery happens when it settles changed. |
 | T9 | `fire(E, result)` | Requires `E` to be `armed`; then `E` becomes `fired`. **`wait` edge:** fill its activation's slot, at the index recorded with the member (Z#7); a member listed at several indices fills all of them. **`dep` edge** of `C`: if `E` is a member of an activation of `C`'s current run, fill the slot (delivery) and re-arm `E` per §4.2. Otherwise this is an invalidation (§4.5.3), and `E` stays `fired` as a re-entry point. **`savepoint` edge (X#6):** fill its activation's slot, resume the run once, and remove the edge; the publication keeps only its basis. **`observe` edge:** per §4.2; it stays `armed` (Z#9). **Slots:** a filled activation resumes per T6. If its run is stale, the slot is not filled (§4.5.4). |
@@ -653,6 +661,7 @@ Transitions are built from a small set of primitive table edits (§11).
 | T19 | `handle-drop(H)` | `handles -= 1`; Rule R applies §3.4. A publication handle reaching 0 abandons it (S7). |
 | T20 | `pin` / `unpin` | Increments or decrements the row's pin count (Z#16). An `unpin` at count 0 is refused. A row is a root while its count is > 0. |
 | T21 | `release-world` | **Sets** `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. **Then** T16 on the root scope. **Completes** when no rows remain except cleanup entries, which are reported until they are retired (L2). |
+| T22 | `host-await(d)` / `host-unawait(E)` (Z#27) | **Await:** adds a `wait` edge with creditor host on `d` (demanding it, T5/T11), and validates `d` if it is idle. A root while it exists. **Fire:** when `d` settles or becomes final, the edge is consumed and the host promise receives the result. **Unawait:** a host that stops waiting removes the edge. |
 
 ### 5.2 Ownership of created rows (R#9)
 

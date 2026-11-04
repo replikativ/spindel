@@ -59,13 +59,17 @@
 (def ^:const W-CALLBACKS 12) ; host callbacks to run after the drain
 (def ^:const W-INTERN 13)    ; verify mode: opaque value -> nat
 (def ^:const W-HOOK 14)      ; verify mode: (fn [w item]) after every commit
-(def ^:const W-SIZE 15)
+(def ^:const W-START 15)     ; task runs whose first slice is pending
+(def ^:const W-SIZE 16)
 
 ;; Scope
 (def ^:const S-PARENT 2)
-(def ^:const S-KIND 3)
+(def ^:const S-KIND 3)       ; :root :run :explicit
 (def ^:const S-OPEN 4)
-(def ^:const S-SIZE 5)
+(def ^:const S-TASKS 5)      ; running tasks owned by the scope
+(def ^:const S-CHILDREN 6)   ; child scopes (explicit scopes, run scopes of owned tasks)
+(def ^:const S-WORLD 7)
+(def ^:const S-SIZE 8)
 
 ;; Debtor rows (computation, source, task)
 (def ^:const WORLD 2)
@@ -98,6 +102,15 @@
 (def ^:const C-RESTART 27)   ; T3 changed inputs: the next run restarts from the body
 (def ^:const C-SIZE 28)
 
+;; Task
+(def ^:const K-BODY 11)
+(def ^:const K-INPUTS 12)
+(def ^:const K-RUN 13)
+(def ^:const K-RESULT 14)
+(def ^:const K-ERR 15)
+(def ^:const K-DONE 16)
+(def ^:const K-SIZE 17)
+
 ;; Source
 (def ^:const X-KIND 11)
 (def ^:const X-VALUE 12)
@@ -118,7 +131,8 @@
 (def ^:const R-ACTV 12)      ; the activation the run is parked on
 (def ^:const R-CURSOR 13)    ; position in the computation's INS
 (def ^:const R-ORD 14)       ; creation ordinals per site
-(def ^:const R-SIZE 15)
+(def ^:const R-SROW 15)      ; the run scope row, once materialized
+(def ^:const R-SIZE 16)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)
@@ -153,7 +167,8 @@
 (def ^:const A-R 6)
 (def ^:const A-E 7)
 (def ^:const A-INLINE 8)     ; the awaiting frame is still on the host stack (I10)
-(def ^:const A-SIZE 9)
+(def ^:const A-WAITS 9)      ; wait members (edges with this activation as creditor)
+(def ^:const A-SIZE 10)
 
 (def ^:const SRC-SIGNAL 0)
 (def ^:const SRC-CELL 1)

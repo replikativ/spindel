@@ -26,9 +26,16 @@
                         (f row rw/C-ADOPT)
                         (map #(f % rw/E-DEBTOR) (f row rw/C-ADOPT-BASE))))
     rw/T-RUN (when-not (== rw/ACT-DONE (long (f row rw/R-ACT)))
-               (concat [(f row rw/R-OF)] (some-> (f row rw/R-ACTV) list)))
-    rw/T-ACT (let [c (f (f row rw/A-RUN) rw/R-OF)]
-               (filter #(identical? row (f % rw/E-ACT)) (f c rw/C-INS)))
+               (concat [(f row rw/R-OF)]
+                       (some-> (f row rw/R-ACTV) list)
+                       (some-> (f row rw/R-SROW) list)))
+    rw/T-ACT (let [x (f (f row rw/A-RUN) rw/R-OF)]
+               (concat (when (== rw/T-COMP (t x))
+                         (filter #(identical? row (f % rw/E-ACT)) (f x rw/C-INS)))
+                       (f row rw/A-WAITS)))
+    rw/T-SCOPE (concat (some-> (f row rw/S-PARENT) list)
+                       (keep #(f % rw/K-RUN) (f row rw/S-TASKS)))
+    rw/T-TASK (some-> (f row rw/K-RUN) list)
     rw/T-EDGE [(f row rw/E-DEBTOR)]
     nil))
 
@@ -60,15 +67,35 @@
   (condp == (t row)
     rw/T-COMP (and (f row rw/C-IDLE) (pos? (long (f row rw/HANDLES))))
     rw/T-SOURCE (pos? (long (f row rw/HANDLES)))
+    rw/T-TASK (and (f row rw/K-DONE) (pos? (long (f row rw/HANDLES))))
+    ;; a closed scope stays until its subtree is empty (Z#18)
+    rw/T-SCOPE (not (f row rw/S-OPEN))
     ;; a run whose slice is still on the host stack retires at slice exit (T13)
     rw/T-RUN (boolean (f row rw/R-SLICE))
     false))
+
+(defn- cleanup-rows
+  "§3.2 cleanup table: a done run that is not retired keeps its run scope and
+   that scope's subtree as storage."
+  [w]
+  (let [seen (java.util.IdentityHashMap.)]
+    (loop [todo (vec (keep #(when (and (== rw/T-RUN (t %)) (== rw/ACT-DONE (long (f % rw/R-ACT))))
+                              (f % rw/R-SROW))
+                           (rows w)))]
+      (when-let [x (peek todo)]
+        (let [todo (pop todo)]
+          (if (.containsKey seen x)
+            (recur todo)
+            (do (.put seen x true)
+                (recur (into todo (when (== rw/T-SCOPE (t x)) (f x rw/S-CHILDREN)))))))))
+    seen))
 
 (defn violations
   "Rows the engine keeps that the reference does not, and non-idle
    computations outside live (§3.3 normalization)."
   [w]
-  (let [lv (live w)]
+  (let [lv (live w)
+        _ (.putAll ^java.util.IdentityHashMap lv ^java.util.Map (cleanup-rows w))]
     (vec (for [row (rows w)
                :when (not (.containsKey ^java.util.IdentityHashMap lv row))
                :when (not (admitted? row))]
@@ -85,11 +112,20 @@
 ;; ---------------------------------------------------------------------------
 ;; Projection of the engine state to the §2 tables (oracle input, §11.4)
 
+(deftype IdentityKey [x]
+  Object
+  (equals [_ o] (and (instance? IdentityKey o) (identical? x (.-x ^IdentityKey o))))
+  (hashCode [_] (System/identityHashCode x)))
+
+(defn- by-identity? [x]
+  (or (fn? x) (.isArray (class x))
+      (not (or (number? x) (string? x) (keyword? x) (symbol? x) (boolean? x) (char? x) (coll? x)))))
+
 (defn- intern! [w x]
   (if (nil? x)
     0
     (let [^java.util.Map m (f w rw/W-INTERN)
-          k (if (fn? x) (System/identityHashCode x) x)]
+          k (if (by-identity? x) (->IdentityKey x) x)]
       (or (.get m k)
           (let [n (inc (.size m))] (.put m k n) n)))))
 
@@ -178,4 +214,11 @@
        (.set log i (assoc (.get log i) :proj (projection w))))
      (when inner (inner w item)))))
 
-(defn log [w] (vec (f w rw/W-LOG)))
+(defn- opaque [w x]
+  (cond (and (vector? x) (= :opaque (first x))) (intern! w (second x))
+        (vector? x) (mapv #(opaque w %) x)
+        :else x))
+
+(defn log
+  "The commit log; `[:opaque v]` payloads become interned Nats."
+  [w] (mapv (fn [e] (update e :item #(opaque w %))) (f w rw/W-LOG)))

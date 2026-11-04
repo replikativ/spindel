@@ -1,11 +1,14 @@
 (ns org.replikativ.spindel.v2.core
-  "Engine v2, layer 1 core (docs/engine-v2-spec.md). M1 scope: sources
-   (signal, cell), computations, observe, pins, Rule R by retention counts.
+  "Engine v2, layer 1 core (docs/engine-v2-spec.md).
+
+   Scope so far: sources (signal, cell), computations, tasks with run scopes
+   and structured cancellation, observe, pins, host waits, Rule R by
+   retention counts.
 
    One world executes one slice at a time (D0). Every host entry takes the
-   world gate, performs its transition, then drains: resumptions, eligible
-   dispatches and Rule R, until nothing is left. Host callbacks run after
-   the drain."
+   world gate, performs its transition, then drains: task starts,
+   resumptions, eligible dispatches and Rule R, until nothing is left. Host
+   callbacks run after the drain."
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.v2.rows :as rw
              #?@(:clj [:refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
@@ -18,8 +21,8 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare drain! demand! settle! pending-zero! rule-r! complete! fail! validate!
-         deliver-observe! value)
+(declare drain! demand! settle! pending-zero! rule-r! complete! validate!
+         deliver-observe! value cancel! finish-task!)
 
 ;; ---------------------------------------------------------------------------
 ;; Active run (B6: continuations close over no engine object)
@@ -54,9 +57,22 @@
     (.remove ^java.util.Map reg (g row rw/ID)))
   nil)
 
+(defn- new-scope [w id kind parent]
+  (let [s (object-array rw/S-SIZE)]
+    (s! s rw/TYPE rw/T-SCOPE)
+    (s! s rw/ID id)
+    (s! s rw/S-PARENT parent)
+    (s! s rw/S-KIND kind)
+    (s! s rw/S-OPEN true)
+    (s! s rw/S-TASKS (alist))
+    (s! s rw/S-CHILDREN (alist))
+    (s! s rw/S-WORLD w)
+    (when parent (aadd! (g parent rw/S-CHILDREN) s))
+    (register! w s)))
+
 (defn world
   "A new world. `:verify? true` keeps an id->row registry and a commit log
-   (test only)."
+   (test only); `:hook` runs after every commit in verify mode."
   ([] (world {}))
   ([{:keys [verify? hook]}]
    (let [w (object-array rw/W-SIZE)
@@ -67,6 +83,7 @@
      (s! w rw/W-NEXT next)
      (s! w rw/W-READY (alist))
      (s! w rw/W-RESUME (alist))
+     (s! w rw/W-START (alist))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
@@ -74,17 +91,10 @@
      (when verify?
        (s! w rw/W-REG #?(:clj (java.util.LinkedHashMap.) :cljs (js/Map.)))
        (s! w rw/W-LOG (alist))
-       (s! w rw/W-INTERN #?(:clj (java.util.IdentityHashMap.) :cljs (js/Map.)))
+       (s! w rw/W-INTERN #?(:clj (java.util.HashMap.) :cljs (js/Map.)))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
-     (let [root (object-array rw/S-SIZE)]
-       (s! root rw/TYPE rw/T-SCOPE)
-       (s! root rw/ID (alloc-id! w))
-       (s! root rw/S-PARENT nil)
-       (s! root rw/S-KIND :root)
-       (s! root rw/S-OPEN true)
-       (s! w rw/W-ROOT root)
-       (register! w root))
+     (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
      w)))
 
 #?(:clj
@@ -132,7 +142,9 @@
 ;; Status (§2)
 
 (defn- comp? [row] (== rw/T-COMP (gl row rw/TYPE)))
+(defn- task? [row] (== rw/T-TASK (gl row rw/TYPE)))
 (defn- source? [row] (== rw/T-SOURCE (gl row rw/TYPE)))
+(defn- act? [row] (== rw/T-ACT (gl row rw/TYPE)))
 
 (defn- live? [c]
   (and (not (g c rw/C-IDLE))
@@ -143,17 +155,40 @@
 (defn- current? [c r]
   (and (some? r) (== (gl r rw/R-EPOCH) (gl c rw/C-EPOCH))))
 
+(defn- run-current?
+  "A task run is always current; a computation run iff its epoch matches."
+  [r]
+  (let [x (g r rw/R-OF)]
+    (or (not (comp? x)) (current? x r))))
+
 (defn- needs-run? [c]
   (and (not (g c rw/C-IDLE))
        (not (and (some? (g c rw/C-DONE-EPOCH))
                  (== (gl c rw/C-DONE-EPOCH) (gl c rw/C-EPOCH))))
        (not (current? c (g c rw/C-RUN)))))
 
+(defn- deferred? [d] (and (source? d) (== rw/SRC-DEFERRED (gl d rw/X-KIND))))
+
+(defn- final?
+  "D1, for the kinds implemented so far."
+  [d]
+  (cond (task? d) (boolean (g d rw/K-DONE))
+        (deferred? d) (pos? (gl d rw/VERSION))
+        :else false))
+
+(defn- settled?
+  "A debtor whose result can be consumed now."
+  [d]
+  (cond (comp? d) (live? d)
+        (task? d) (boolean (g d rw/K-DONE))
+        (deferred? d) (pos? (gl d rw/VERSION))
+        :else true))
+
 (defn- hot? [row] (pos? (gl row rw/HOT)))
 
 (defn- maybe-schedule!
   "§4.5.7: a hot needs-run computation whose dirty debtors have settled is
-   queued for dispatch. (Blocked debtors arrive with M2.)"
+   queued for dispatch. (Blocked debtors arrive with M2b.)"
   [c]
   (when (and (needs-run? c) (zero? (gl c rw/C-PENDING)) (hot? c) (not (g c rw/C-QUEUED)))
     (s! c rw/C-QUEUED true)
@@ -214,6 +249,11 @@
     (when (demands? e) (hot-inc! debtor))
     (register! w e)))
 
+(defn- linked? [e]
+  (let [outs (g (g e rw/E-DEBTOR) rw/OUTS)
+        i (gl e rw/E-IDX)]
+    (and (< i (acount outs)) (identical? e (anth outs i)))))
+
 (defn- unmark! [e]
   (when (g e rw/E-MARKED)
     (s! e rw/E-MARKED false)
@@ -237,6 +277,20 @@
     (unregister! w e)
     (unmark! e)
     (ref-dec! debtor)))
+
+(defn- remove-dep!
+  "Removes a dep edge from its computation's INS (T10, D2), keeping the
+   running run's cursor on the same next site."
+  [w e]
+  (when (linked? e)
+  (let [c (g e rw/E-CRED)
+        ins (g c rw/C-INS)
+        i #?(:clj (.indexOf ^java.util.ArrayList ins e) :cljs (.indexOf ins e))]
+    (when-not (neg? i)
+      #?(:clj (.remove ^java.util.ArrayList ins (int i)) :cljs (.splice ins i 1))
+      (when-let [r (g c rw/C-RUN)]
+        (when (> (gl r rw/R-CURSOR) i) (s! r rw/R-CURSOR (dec (gl r rw/R-CURSOR))))))
+    (unlink! w e))))
 
 ;; ---------------------------------------------------------------------------
 ;; Mark and settle (§4.5)
@@ -265,38 +319,57 @@
 (defn- debtor-result
   "[value err?] of a settled debtor."
   [d]
-  (if (comp? d)
-    [(g d rw/C-RESULT) (boolean (g d rw/C-ERR))]
-    [(g d rw/X-VALUE) false]))
+  (cond (comp? d) [(g d rw/C-RESULT) (boolean (g d rw/C-ERR))]
+        (task? d) [(g d rw/K-RESULT) (boolean (g d rw/K-ERR))]
+        :else [(g d rw/X-VALUE) false]))
+
+(defn- fill-slot! [w a slot res]
+  (let [^objects sl (g a rw/A-SLOTS)] (aset sl (int slot) res))
+  (let [n (dec (gl a rw/A-REMAINING))]
+    (s! a rw/A-REMAINING n)
+    (when (and (zero? n) (not (g a rw/A-INLINE)))
+      (aadd! (g w rw/W-RESUME) a))))
 
 (defn- fill!
-  "T9 delivery into the activation `a` that `e` is an unfilled member of."
+  "T9 delivery into the activation `a` that dep edge `e` is an unfilled
+   member of."
   [w e a]
   (let [r (g a rw/A-RUN)
-        c (g e rw/E-CRED)
         d (g e rw/E-DEBTOR)]
-    (when (and (current? c r) (== rw/ACT-PARKED (gl r rw/R-ACT)))   ; §4.5.4
+    (when (and (run-current? r) (== rw/ACT-PARKED (gl r rw/R-ACT)))   ; §4.5.4
       (s! e rw/E-ACT nil)
       (s! e rw/E-ARMED true)
       (s! e rw/E-SEEN (g d rw/VERSION))
-      (let [^objects sl (g a rw/A-SLOTS)] (aset sl (int (g e rw/E-SLOT)) (debtor-result d)))
-      (let [n (dec (gl a rw/A-REMAINING))]
-        (s! a rw/A-REMAINING n)
-        (when (and (zero? n) (not (g a rw/A-INLINE)))
-          (aadd! (g w rw/W-RESUME) a))))))
+      (fill-slot! w a (g e rw/E-SLOT) (debtor-result d)))))
+
+(defn- fire-wait!
+  "T9 on a wait edge: fills its activation's slot, or resolves the host
+   promise; the edge is consumed (D2)."
+  [w e]
+  (let [cred (g e rw/E-CRED)
+        d (g e rw/E-DEBTOR)
+        res (debtor-result d)]
+    (unlink! w e)
+    (if (and (some? cred) (not (fn? cred)) (act? cred))
+      (let [r (g cred rw/A-RUN)]
+        (when (and (identical? cred (g r rw/R-ACTV)) (run-current? r)
+                   (== rw/ACT-PARKED (gl r rw/R-ACT)))
+          (fill-slot! w cred (g e rw/E-SLOT) res)))
+      (aadd! (g w rw/W-CALLBACKS) [cred res]))))
 
 (defn- fire-dep!
   "T9 on a dep edge whose debtor changed."
   [w e]
   (when (g e rw/E-ARMED)
     (let [a (g e rw/E-ACT)]
-      (if (and a (current? (g e rw/E-CRED) (g a rw/A-RUN)))
+      (if (and a (run-current? (g a rw/A-RUN)))
         (fill! w e a)
         (invalidate! e)))))
 
 (defn- settle!
-  "§4.5.2: `d` became live. Changed out-edges fire before they are unmarked;
-   unfilled members of a current activation are delivered either way (Z#20)."
+  "§4.5.2: `d` became live (or final). Changed out-edges fire before they
+   are unmarked; unfilled members of a current activation are delivered
+   either way (Z#20). Wait edges are consumed."
   [w d]
   (let [outs (acopy (g d rw/OUTS))
         ver (g d rw/VERSION)]
@@ -310,10 +383,14 @@
                 (when (not= ver (g e rw/E-SEEN)) (fire-dep! w e)))
               (unmark! e))
           (== k rw/EK-OBSERVE) (deliver-observe! w e)
-          (== k rw/EK-WAIT)
-          (let [cb (g e rw/E-CRED)]
-            (unlink! w e)
-            (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])))))))
+          (== k rw/EK-WAIT) (fire-wait! w e))))
+    ;; T10: dep edges on a final debtor are removed after their delivery.
+    (when (final? d)
+      (let [outs (acopy (g d rw/OUTS))]
+        (dotimes [i (acount outs)]
+          (let [e (anth outs i)]
+            (when (and (== rw/EK-DEP (gl e rw/E-KIND)) (g e rw/E-ARMED) (nil? (g e rw/E-ACT)))
+              (remove-dep! w e))))))))
 
 (defn- pending-zero! [c]
   (cond
@@ -327,49 +404,118 @@
   (let [d (g e rw/E-DEBTOR)
         ver (g d rw/VERSION)
         seen (g e rw/E-SEEN)]
-    (when (or (nil? seen) (> (long ver) (long seen)))
+    (when (and (settled? d) (or (nil? seen) (> (long ver) (long seen))))
       (s! e rw/E-SEEN ver)
       (aadd! (g w rw/W-CALLBACKS) [(g e rw/E-CRED) (debtor-result d)]))))
 
 ;; ---------------------------------------------------------------------------
-;; Runs
+;; Runs and scopes
 
-(defn- new-run! [w c epoch]
+(defn- new-run! [w x epoch]
   (let [r (object-array rw/R-SIZE)]
     (s! r rw/TYPE rw/T-RUN)
     (s! r rw/ID (alloc-id! w))
-    (s! r rw/R-SCOPE (alloc-id! w))          ; run scope id (Z: T5/T11 order run, scope)
+    (s! r rw/R-SCOPE (alloc-id! w))          ; run scope id; T4/T5/T11 order: run, scope
     (s! r rw/R-WORLD w)
-    (s! r rw/R-OF c)
+    (s! r rw/R-OF x)
     (s! r rw/R-EPOCH epoch)
     (s! r rw/R-ACT rw/ACT-ACTIVE)
     (s! r rw/R-MODE 0)
     (s! r rw/R-SLICE false)
     (s! r rw/R-EIDX 0)
     (s! r rw/R-CURSOR 0)
-    (s! c rw/C-RUN r)
+    (if (comp? x) (s! x rw/C-RUN r) (s! x rw/K-RUN r))
     (register! w r)))
 
-(defn- retire! [w r]
-  (let [c (g r rw/R-OF)]
-    (when (identical? r (g c rw/C-RUN)) (s! c rw/C-RUN nil))
+(defn- run-scope!
+  "The run scope row of `r`, materialized on first use (Z#26 parent rule)."
+  [w r]
+  (or (g r rw/R-SROW)
+      (let [x (g r rw/R-OF)
+            owner (g x rw/OWNER)
+            parent (when (and (task? x) owner (== rw/T-SCOPE (gl owner rw/TYPE))) owner)
+            s (new-scope w (g r rw/R-SCOPE) :run parent)]
+        (s! r rw/R-SROW s)
+        s)))
+
+(defn- remove-scope-if-empty!
+  "T16/Z#18: a closed scope row goes once its subtree has no rows left."
+  [w s]
+  (when (and (not (g s rw/S-OPEN))
+             (zero? (acount (g s rw/S-TASKS)))
+             (zero? (acount (g s rw/S-CHILDREN))))
+    (unregister! w s)
+    (when-let [p (g s rw/S-PARENT)]
+      (let [cs (g p rw/S-CHILDREN)
+            i #?(:clj (.indexOf ^java.util.ArrayList cs s) :cljs (.indexOf cs s))]
+        (when-not (neg? i) #?(:clj (.remove ^java.util.ArrayList cs (int i)) :cljs (.splice cs i 1)))
+        (remove-scope-if-empty! w p)))))
+
+(defn- close-scope!
+  "T16: cancels the work owned by the subtree, closes its scopes."
+  [w s]
+  (when (g s rw/S-OPEN)
+    (s! s rw/S-OPEN false)
+    (let [ts (acopy (g s rw/S-TASKS))]
+      (dotimes [i (acount ts)]
+        (when-let [r (g (anth ts i) rw/K-RUN)] (cancel! w r ::cancelled))))
+    (let [cs (acopy (g s rw/S-CHILDREN))]
+      (dotimes [i (acount cs)] (close-scope! w (anth cs i)))))
+  (remove-scope-if-empty! w s))
+
+(defn- retire!
+  "T13, in Z#18 order."
+  [w r]
+  (let [x (g r rw/R-OF)]
+    (if (comp? x)
+      (when (identical? r (g x rw/C-RUN)) (s! x rw/C-RUN nil))
+      (when (identical? r (g x rw/K-RUN)) (s! x rw/K-RUN nil)))
+    (when-let [s (g r rw/R-SROW)] (close-scope! w s))
     (unregister! w r)))
 
-(defn- cancel-replace!
-  "T14 `cancel(R, replace)`: affects only the run (Y#2). M1 runs hold no
-   finalizers or resources, so the run retires at once."
+(defn- retire-check! [w r]
+  (when (and (== rw/ACT-DONE (gl r rw/R-ACT)) (not (g r rw/R-SLICE))
+             (nil? (g r rw/R-FINS)) (nil? (g r rw/R-RES)))
+    (retire! w r)))
+
+(defn- drop-activation!
+  "Removes the run's activation: wait members go with it, dep members stay
+   with the computation (W#2)."
   [w r]
-  (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
-    (s! r rw/R-ACT rw/ACT-DONE)
-    (s! r rw/R-MODE 1)
-    (when-let [a (g r rw/R-ACTV)]
-      (s! r rw/R-ACTV nil)
-      ;; dep members stay with the computation (W#2)
-      (let [ins (g (g r rw/R-OF) rw/C-INS)]
-        (dotimes [i (acount ins)]
-          (let [e (anth ins i)] (when (identical? a (g e rw/E-ACT)) (s! e rw/E-ACT nil)))))
-      (unregister! w a))
-    (when-not (g r rw/R-SLICE) (retire! w r))))
+  (when-let [a (g r rw/R-ACTV)]
+    (s! r rw/R-ACTV nil)
+    (let [x (g r rw/R-OF)]
+      (when (comp? x)
+        (let [ins (g x rw/C-INS)]
+          (dotimes [i (acount ins)]
+            (let [e (anth ins i)] (when (identical? a (g e rw/E-ACT)) (s! e rw/E-ACT nil)))))))
+    ;; wait members are removed with their activation (D2)
+    (when-let [ws (g a rw/A-WAITS)]
+      (dotimes [i (acount ws)]
+        (let [e (anth ws i)] (when (linked? e) (unlink! w e)))))
+    (unregister! w a)
+    a))
+
+(defn- cancel!
+  "T14 `cancel(R)` (`reason` ::cancelled) or, with `replace? true`,
+   `cancel(R, replace)` (Y#2). Runs hold no finalizers or resources yet
+   (M2d/M3), so a run outside a slice retires at once."
+  ([w r reason] (cancel! w r reason false))
+  ([w r reason replace?]
+   (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
+     (s! r rw/R-ACT rw/ACT-DONE)
+     (s! r rw/R-MODE 1)
+     (drop-activation! w r)
+     ;; children: runs owned by the run scope
+     (when-let [s (g r rw/R-SROW)]
+       (let [ts (acopy (g s rw/S-TASKS))]
+         (dotimes [i (acount ts)]
+           (when-let [cr (g (anth ts i) rw/K-RUN)] (cancel! w cr reason)))))
+     (let [x (g r rw/R-OF)]
+       (when (and (task? x) (not replace?))
+         ;; debtor side (R#14): the task fails with ::cancelled
+         (finish-task! w x reason true)))
+     (retire-check! w r))))
 
 (defn- slice!
   "Runs `f` as a slice of `r` on the host stack, restoring the caller's
@@ -379,43 +525,76 @@
     (s! r rw/R-SLICE true)
     (set-active! r)
     (try
-      (try (force! (f)) (catch #?(:clj Throwable :cljs :default) t (fail! (or (active-run) r) t)))
+      (try (force! (f))
+           (catch #?(:clj Throwable :cljs :default) t
+             (complete! (or (active-run) r) t true)))
       (finally
         (s! r rw/R-SLICE false)
         (set-active! prev)
-        (when (== rw/ACT-DONE (gl r rw/R-ACT)) (retire! (g r rw/R-WORLD) r))))))
+        (retire-check! (g r rw/R-WORLD) r)))))
 
 (defn- ok-k [v] (complete! (active-run) v false))
 (defn- err-k [t] (complete! (active-run) t true))
-(defn- fail! [r t] (complete! r t true))
 
 (defn- release-adoption! [w c]
   (when-let [ab (g c rw/C-ADOPT)]
     (s! c rw/C-ADOPT nil)
-    (dotimes [i (acount ab)] (ref-dec! (anth ab i))))
+    (dotimes [i (acount ab)]
+      (let [x (anth ab i)]
+        ;; §5.2: a task the new run did not re-spawn is cancelled
+        (when (and (task? x) (g x rw/K-RUN)) (cancel! w (g x rw/K-RUN) ::cancelled))
+        (ref-dec! x))))
   (when-let [bs (g c rw/C-ADOPT-BASE)]
     (s! c rw/C-ADOPT-BASE nil)
     (dotimes [i (acount bs)] (ref-dec! (g (anth bs i) rw/E-DEBTOR)))))
+
+(defn- finish-task!
+  "Sets a task's result and fires its creditors; ownership retention ends."
+  [w k v err?]
+  (when-not (g k rw/K-DONE)
+    (s! k rw/K-DONE true)
+    (s! k rw/K-RESULT v)
+    (s! k rw/K-ERR (boolean err?))
+    (s! k rw/VERSION (inc (gl k rw/VERSION)))
+    (settle! w k)
+    (let [owner (g k rw/OWNER)]
+      (when (and owner (not (fn? owner)) (== rw/T-SCOPE (gl owner rw/TYPE)))
+        (let [ts (g owner rw/S-TASKS)
+              i #?(:clj (.indexOf ^java.util.ArrayList ts k) :cljs (.indexOf ts k))]
+          (when-not (neg? i)
+            #?(:clj (.remove ^java.util.ArrayList ts (int i)) :cljs (.splice ts i 1))
+            (ref-dec! k))
+          (remove-scope-if-empty! w owner))))))
 
 (defn- complete!
   "T12."
   [r v err?]
   (when (and r (== rw/ACT-ACTIVE (gl r rw/R-ACT)))
     (let [w (g r rw/R-WORLD)
-          c (g r rw/R-OF)]
+          x (g r rw/R-OF)]
       (s! r rw/R-ACT rw/ACT-DONE)
-      (when (current? c r)
-        (let [changed? (or (nil? (g c rw/C-DONE-EPOCH))
-                           (not= (boolean err?) (boolean (g c rw/C-ERR)))
-                           (not= v (g c rw/C-RESULT)))]
-          (when changed?
-            (s! c rw/VERSION (inc (gl c rw/VERSION)))
-            (s! c rw/C-RESULT v)
-            (s! c rw/C-ERR (boolean err?)))
-          (s! c rw/C-DONE-EPOCH (g r rw/R-EPOCH))
-          (release-adoption! w c)))
-      (commit! w [:complete (g r rw/ID) (if err? :err :ok)])
-      (when (live? c) (settle! w c))))
+      (if (comp? x)
+        (do
+          (when (current? x r)
+            (let [changed? (or (nil? (g x rw/C-DONE-EPOCH))
+                               (not= (boolean err?) (boolean (g x rw/C-ERR)))
+                               (not= v (g x rw/C-RESULT)))]
+              (when changed?
+                (s! x rw/VERSION (inc (gl x rw/VERSION)))
+                (s! x rw/C-RESULT v)
+                (s! x rw/C-ERR (boolean err?)))
+              (s! x rw/C-DONE-EPOCH (g r rw/R-EPOCH))
+              (release-adoption! w x)))
+          (commit! w [:complete (g r rw/ID) (if err? :err :ok) [:opaque v]])
+          (when (live? x) (settle! w x)))
+        (do
+          ;; Q10: children not awaited and not detached are cancelled
+          (when-let [s (g r rw/R-SROW)]
+            (let [ts (acopy (g s rw/S-TASKS))]
+              (dotimes [i (acount ts)]
+                (when-let [cr (g (anth ts i) rw/K-RUN)] (cancel! w cr ::cancelled)))))
+          (finish-task! w x v err?)
+          (commit! w [:complete (g r rw/ID) (if err? :err :ok) [:opaque v]])))))
   nil)
 
 ;; ---------------------------------------------------------------------------
@@ -428,6 +607,18 @@
         (let [e (anth ins i)]
           (if (g e rw/E-ARMED) (recur (inc i)) i))))))
 
+(defn- restore-ordinals! [c r]
+  (when-let [basis (g c rw/C-BASIS)]
+    (when (pos? (acount basis))
+      (let [^java.util.Map ords #?(:clj (java.util.HashMap.) :cljs (js/Map.))]
+        (dotimes [i (acount basis)]
+          (let [key (gl (anth basis i) rw/KEY)
+                site (bit-shift-right key 32)
+                nxt (inc (bit-and key 0xffffffff))
+                cur (long (or (.get ords site) 0))]
+            (when (> nxt cur) #?(:clj (.put ords site nxt) :cljs (.set ords site nxt)))))
+        (s! r rw/R-ORD ords)))))
+
 (defn- dispatch!
   "T11 (and T5 for a computation without a fired edge): starts the
    computation's next run, re-entering at its earliest fired dep edge when
@@ -435,15 +626,15 @@
   [w c]
   (s! c rw/C-QUEUED false)
   (when (needs-run? c)
-    (when-let [old (g c rw/C-RUN)] (cancel-replace! w old))
+    (when-let [old (g c rw/C-RUN)] (cancel! w old ::cancelled true))
     (let [ins (g c rw/C-INS)
           restart? (g c rw/C-RESTART)
           ei (when-not restart? (earliest-fired c))
           e (when ei (anth ins ei))
           at (if e (gl e rw/E-AT) -1)]
       (s! c rw/C-RESTART false)
-      ;; Suffix: dep edges after E move their baselines to adoption (§4.4) and
-      ;; keep retaining their debtors there (Z#21).
+      ;; Suffix: dep edges after E keep their debtors through the adoption
+      ;; baselines (§4.4, Z#21).
       (let [keep (if ei (inc (long ei)) (if restart? 0 (acount ins)))]
         (when (> (acount ins) keep)
           (let [bs (or (g c rw/C-ADOPT-BASE) (alist))]
@@ -471,17 +662,7 @@
         (if (and e k)
           ;; Resume E's continuation with E's delivery; E is consumed (re-armed).
           (let [d (g e rw/E-DEBTOR)]
-            ;; Creation ordinals continue after the prefix creations.
-            (when-let [basis (g c rw/C-BASIS)]
-              (when (pos? (acount basis))
-                (let [ords #?(:clj (java.util.HashMap.) :cljs (js/Map.))]
-                  (dotimes [i (acount basis)]
-                    (let [key (gl (anth basis i) rw/KEY)
-                          site (bit-shift-right key 32)
-                          nxt (inc (bit-and key 0xffffffff))
-                          cur (long (or (.get ords site) 0))]
-                      (when (> nxt cur) #?(:clj (.put ords site nxt) :cljs (.set ords site nxt)))))
-                  (s! r rw/R-ORD ords))))
+            (restore-ordinals! c r)
             (s! r rw/R-CURSOR (inc (long ei)))
             (s! r rw/R-EIDX (inc at))
             (s! e rw/E-ARMED true)
@@ -492,18 +673,21 @@
                 (slice! r #(k (iv/->Interval old v nil))))
               (let [[v err?] (debtor-result d)]
                 (slice! r (if err? #((g e rw/E-ERRK) v) #(k v))))))
-          ;; Restart from the body. E (if any) is re-armed; its baseline advances
-          ;; when the new run reads it (Z#22).
+          ;; Restart from the body. E (if any) is re-armed; its baseline
+          ;; advances when the new run reads it (Z#22).
           (do (when e (s! e rw/E-ARMED true))
               (slice! r #((g c rw/C-BODY) ok-k err-k))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Body effects
 
-(defn- current-comp-run []
+(defn- valid-run
+  "The active run if an effect token is valid (§2): the run exists, holds the
+   slice and is not done. (Unwinding finalizer slices arrive with M2d.)"
+  []
   (let [r (active-run)]
     (when-not r (throw (ex-info "effect outside a body" {})))
-    r))
+    (when (and (g r rw/R-SLICE) (not (== rw/ACT-DONE (gl r rw/R-ACT)))) r)))
 
 (defn- next-at! ^long [r]
   (let [at (gl r rw/R-EIDX)]
@@ -553,23 +737,42 @@
 (defn track-effect!
   "T7."
   [x k ek]
-  (let [r (current-comp-run)
-        w (g r rw/R-WORLD)
-        c (g r rw/R-OF)
-        at (next-at! r)
-        [e reused?] (site-edge! w r c x at (reentrant-k r k) ek)
-        v (g x rw/X-VALUE)
-        old (if reused?
-              (g e rw/E-BASE)
-              (when-let [b (adoption-baseline! c at x)] (g b rw/E-BASE)))
-        iv (if (or reused? (some? old) (some? (g e rw/E-SEEN)))
-             (iv/->Interval old v nil)
-             (iv/->Interval nil v nil))]
-    (s! e rw/E-BASE v)
-    (s! e rw/E-SEEN (g x rw/VERSION))
-    (s! e rw/E-ARMED true)
-    (commit! w [:track (g r rw/ID) (g x rw/ID) (g e rw/ID)])
-    (k iv)))
+  (when-let [r (valid-run)]
+    (let [w (g r rw/R-WORLD)
+          c (g r rw/R-OF)
+          at (next-at! r)]
+      (if-not (comp? c)
+        ;; Inside a task: a snapshot read with no edge (Q1, Z#19).
+        (do (commit! w [:track (g r rw/ID) (g x rw/ID)])
+            (k (iv/->Interval nil (g x rw/X-VALUE) nil)))
+        (let [[e reused?] (site-edge! w r c x at (reentrant-k r k) ek)
+              v (g x rw/X-VALUE)
+              old (if reused?
+                    (g e rw/E-BASE)
+                    (when-let [b (adoption-baseline! c at x)] (g b rw/E-BASE)))]
+          (s! e rw/E-BASE v)
+          (s! e rw/E-SEEN (g x rw/VERSION))
+          (s! e rw/E-ARMED true)
+          (commit! w [:track (g r rw/ID) (g x rw/ID) (g e rw/ID)])
+          (k (iv/->Interval old v nil)))))))
+
+(defn- new-activation! [w aid r k ek n]
+  (let [a (object-array rw/A-SIZE)]
+    (s! a rw/TYPE rw/T-ACT)
+    (s! a rw/ID aid)
+    (s! a rw/A-RUN r)
+    (s! a rw/A-MODE :one)
+    (s! a rw/A-SLOTS (object-array n))
+    (s! a rw/A-REMAINING n)
+    (s! a rw/A-R k)
+    (s! a rw/A-E ek)
+    (s! a rw/A-INLINE true)
+    (register! w a)))
+
+(defn- park! [r a]
+  (s! r rw/R-ACTV a)
+  (s! r rw/R-ACT rw/ACT-PARKED)
+  (s! r rw/R-SLICE false))
 
 (defn- resume-inline! [w r a k ek]
   (s! r rw/R-ACTV nil)
@@ -581,44 +784,64 @@
   (let [[v err?] (let [^objects sl (g a rw/A-SLOTS)] (aget sl 0))]
     (if err? (ek v) (k v))))
 
-(defn await-effect!
-  "T6 with mode `one` on a computation or a source."
-  [d k ek]
-  (let [r (current-comp-run)
-        w (g r rw/R-WORLD)
-        c (g r rw/R-OF)
-        at (next-at! r)
-        aid (alloc-id! w)
-        [e _] (site-edge! w r c d at (reentrant-k r k) ek)]
-    (when (source? d) (s! e rw/E-BASE (g d rw/X-VALUE)))
+(defn- continue! [res k ek]
+  (let [[v err?] res] (if err? (ek v) (k v))))
+
+(defn- await-in-comp! [w r c d k ek at aid]
+  (let [[e _] (site-edge! w r c d at (reentrant-k r k) ek)]
+    (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
     (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-    (if (or (source? d) (live? d))
+    (if (settled? d)
       (do (s! e rw/E-SEEN (g d rw/VERSION))
           (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
-          (let [[v err?] (debtor-result d)]
-            (if err? (ek v) (k v))))
-      (let [a (object-array rw/A-SIZE)]
-        (s! a rw/TYPE rw/T-ACT)
-        (s! a rw/ID aid)
-        (s! a rw/A-RUN r)
-        (s! a rw/A-MODE :one)
-        (s! a rw/A-SLOTS (object-array 1))
-        (s! a rw/A-REMAINING 1)
-        (s! a rw/A-R k)
-        (s! a rw/A-E ek)
-        (s! a rw/A-INLINE true)
-        (register! w a)
+          (let [res (debtor-result d)]
+            (when (final? d) (remove-dep! w e))   ; consumed at once (§4.3)
+            (continue! res k ek)))
+      (let [a (new-activation! w aid r k ek 1)]
         (s! e rw/E-ACT a)
         (s! e rw/E-SLOT 0)
-        (s! r rw/R-ACTV a)
-        (s! r rw/R-ACT rw/ACT-PARKED)
-        (s! r rw/R-SLICE false)
+        (park! r a)
         (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
         ;; The demanded debtor's first slice runs on the host stack (I10).
         (demand! w d)
         (if (and (zero? (gl a rw/A-REMAINING)) (current? c r))
-          (resume-inline! w r a k ek)
+          (do (when (final? d) (remove-dep! w e))
+              (resume-inline! w r a k ek))
           (do (s! a rw/A-INLINE false) nil))))))
+
+(defn- await-in-task! [w r d k ek aid]
+  (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+  (cond
+    (and (source? d) (not (deferred? d)))       ; a task reads a signal once
+    (do (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
+        (k (g d rw/X-VALUE)))
+    (settled? d)
+    (do (alloc-id! w)                           ; the consumed wait edge (Z#28)
+        (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
+        (continue! (debtor-result d) k ek))
+    :else
+    (let [a (new-activation! w aid r k ek 1)
+          e (link! w rw/EK-WAIT a d 0)]
+      (s! e rw/E-SLOT 0)
+      (s! a rw/A-WAITS (doto (alist) (aadd! e)))
+      (park! r a)
+      (commit! w [:await (g r rw/ID) [(g d rw/ID)] :one aid])
+      (demand! w d)
+      (if (zero? (gl a rw/A-REMAINING))
+        (resume-inline! w r a k ek)
+        (do (s! a rw/A-INLINE false) nil)))))
+
+(defn await-effect!
+  "T6 with mode `one`."
+  [d k ek]
+  (when-let [r (valid-run)]
+    (let [w (g r rw/R-WORLD)
+          x (g r rw/R-OF)
+          at (next-at! r)
+          aid (alloc-id! w)]
+      (if (comp? x)
+        (await-in-comp! w r x d k ek at aid)
+        (await-in-task! w r d k ek aid)))))
 
 (defn- same-capture?
   "Formalism §1.6: `identical?`, or for a scalar the same value of the same type."
@@ -645,24 +868,23 @@
   "The row behind a handle."
   [h] (if (instance? Handle h) (.-row ^Handle h) h))
 
-(defn- linked? [e]
-  (let [outs (g (g e rw/E-DEBTOR) rw/OUTS)
-        i (gl e rw/E-IDX)]
-    (and (< i (acount outs)) (identical? e (anth outs i)))))
+(defn- debtor-row [w type size owner key at handles]
+  (let [x (object-array size)]
+    (s! x rw/TYPE type)
+    (s! x rw/ID (alloc-id! w))
+    (s! x rw/WORLD w)
+    (s! x rw/OUTS (alist))
+    (s! x rw/REFS 0)
+    (s! x rw/HOT 0)
+    (s! x rw/HANDLES handles)
+    (s! x rw/OWNER owner)
+    (s! x rw/VERSION 0)
+    (s! x rw/KEY key)
+    (s! x rw/AT at)
+    x))
 
 (defn- new-comp! [w owner key at inputs body handles]
-  (let [c (object-array rw/C-SIZE)]
-    (s! c rw/TYPE rw/T-COMP)
-    (s! c rw/ID (alloc-id! w))
-    (s! c rw/WORLD w)
-    (s! c rw/OUTS (alist))
-    (s! c rw/REFS 0)
-    (s! c rw/HOT 0)
-    (s! c rw/HANDLES handles)
-    (s! c rw/OWNER owner)
-    (s! c rw/VERSION 0)
-    (s! c rw/KEY key)
-    (s! c rw/AT at)
+  (let [c (debtor-row w rw/T-COMP rw/C-SIZE owner key at handles)]
     (s! c rw/C-INPUTS inputs)
     (s! c rw/C-BODY body)
     (s! c rw/C-EPOCH 1)
@@ -681,48 +903,64 @@
         (let [x (anth l i)]
           (if (== (long key) (gl x rw/KEY)) i (recur (inc i))))))))
 
+(defn- creation-key! [r site]
+  (let [^java.util.Map ords (or (g r rw/R-ORD) (let [m #?(:clj (java.util.HashMap.) :cljs (js/Map.))] (s! r rw/R-ORD m) m))
+        ord (long (or (.get ords site) 0))]
+    #?(:clj (.put ords site (inc ord)) :cljs (.set ords site (inc ord)))
+    (bit-or (bit-shift-left (long site) 32) ord)))
+
+(defn- adopt!
+  "The creation of `c` with `key`, from its basis or its adoption basis."
+  [c key]
+  (let [basis (or (g c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
+        bi (find-created basis key)
+        ab (g c rw/C-ADOPT)
+        ai (when-not bi (find-created ab key))]
+    (cond bi (anth basis bi)
+          ai (let [x (anth ab ai)]
+               (aput! ab ai (anth ab (dec (acount ab)))) (apop! ab)
+               (aadd! basis x)   ; the adoption reference moves to the basis
+               x))))
+
 (defn create-comp!
   "T3. `site` is a macro-time int, `inputs` the captured values."
   [site inputs body]
   (if-let [r (active-run)]
-    (let [w (g r rw/R-WORLD)
-          c (g r rw/R-OF)
-          at (next-at! r)
-          ords (or (g r rw/R-ORD) (let [m #?(:clj (java.util.HashMap.) :cljs (js/Map.))] (s! r rw/R-ORD m) m))
-          ord (long (or #?(:clj (.get ^java.util.HashMap ords site) :cljs (.get ords site)) 0))
-          _ #?(:clj (.put ^java.util.HashMap ords site (inc ord)) :cljs (.set ords site (inc ord)))
-          key (bit-or (bit-shift-left (long site) 32) ord)
-          basis (or (g c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
-          bi (find-created basis key)
-          ab (g c rw/C-ADOPT)
-          ai (when-not bi (find-created ab key))
-          child (cond bi (anth basis bi)
-                      ai (let [x (anth ab ai)]
-                           (aput! ab ai (anth ab (dec (acount ab)))) (apop! ab)
-                           (aadd! basis x)   ; the adoption reference moves to the basis
-                           x))]
-      (if child
-        (do (s! child rw/AT at)   ; M3: adoption adds a (weak) handle (Z#13)
-            (when-not (same-inputs? inputs (g child rw/C-INPUTS))
-              ;; W#5: like a write to the rerun source.
-              (s! child rw/C-INPUTS inputs)
-              (s! child rw/C-BODY body)
-              (if (g child rw/C-IDLE)
-                (do (s! child rw/C-IDLE false) (s! child rw/C-VALIDITY nil)
-                    (s! child rw/C-EPOCH (inc (gl child rw/C-EPOCH))))
-                (do (s! child rw/C-EPOCH (inc (gl child rw/C-EPOCH)))
-                    (s! child rw/C-RESTART true)
-                    (mark-from! child)
-                    (maybe-schedule! child))))
+    (when (valid-run)
+      (let [w (g r rw/R-WORLD)
+            c (g r rw/R-OF)
+            at (next-at! r)]
+        (if-not (comp? c)
+          ;; Created by a task run: owned by the run scope, retained by demand.
+          (let [child (new-comp! w (run-scope! w r) 0 at inputs body 0)]
+            (aadd! (g w rw/W-RQ) child)
             (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
             (->Handle child))
-        ;; M3: a body creation starts with the body's (weak) handle (Z#13);
-        ;; until weak handles exist it takes none.
-        (let [child (new-comp! w c key at inputs body 0)]
-          (aadd! basis child)
-          (ref-inc! child)
-          (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
-          (->Handle child))))
+          (let [key (creation-key! r site)
+                child (adopt! c key)]
+            (if child
+              (do (s! child rw/AT at)   ; M3: adoption adds a (weak) handle (Z#13)
+                  (when (comp? child)
+                    (when-not (same-inputs? inputs (g child rw/C-INPUTS))
+                      ;; W#5: like a write to the rerun source.
+                      (s! child rw/C-INPUTS inputs)
+                      (s! child rw/C-BODY body)
+                      (if (g child rw/C-IDLE)
+                        (do (s! child rw/C-IDLE false) (s! child rw/C-VALIDITY nil)
+                            (s! child rw/C-EPOCH (inc (gl child rw/C-EPOCH))))
+                        (do (s! child rw/C-EPOCH (inc (gl child rw/C-EPOCH)))
+                            (s! child rw/C-RESTART true)
+                            (mark-from! child)
+                            (maybe-schedule! child)))))
+                  (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+                  (->Handle child))
+              ;; M3: a body creation starts with the body's (weak) handle
+              ;; (Z#13); until weak handles exist it takes none.
+              (let [child (new-comp! w c key at inputs body 0)]
+                (aadd! (g c rw/C-BASIS) child)
+                (ref-inc! child)
+                (commit! w [:create-comp (g r rw/ID) site (g child rw/ID)])
+                (->Handle child)))))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))]
       (gated w
         (let [c (new-comp! w (g w rw/W-ROOT) 0 0 inputs body 1)]
@@ -731,20 +969,79 @@
           (drain! w)
           (->Handle c))))))
 
+(defn- new-task! [w owner key at inputs body handles]
+  (let [k (debtor-row w rw/T-TASK rw/K-SIZE owner key at handles)]
+    (s! k rw/K-BODY body)
+    (s! k rw/K-INPUTS inputs)
+    (s! k rw/K-DONE false)
+    (register! w k)))
+
+(defn- start-task! [w k]
+  (let [r (new-run! w k 0)]
+    (aadd! (g w rw/W-START) r)
+    r))
+
+(defn spawn!
+  "T4. Inside a computation run the task is a creation in its basis,
+   adopted by later runs (§5.2); inside a task run it is a structured child
+   of the run scope (Q10); at top level it is owned by the root scope."
+  [site inputs body]
+  (if-let [r (active-run)]
+    (when (valid-run)
+      (let [w (g r rw/R-WORLD)
+            x (g r rw/R-OF)
+            at (next-at! r)]
+        (if (comp? x)
+          (let [key (creation-key! r site)
+                old (adopt! x key)]
+            (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS)))
+              (do (s! old rw/AT at)
+                  (commit! w [:spawn (g r rw/ID) site (g old rw/ID)])
+                  (->Handle old))
+              (do (when old                       ; changed captures: replace it
+                    (let [basis (g x rw/C-BASIS)
+                          i #?(:clj (.indexOf ^java.util.ArrayList basis old) :cljs (.indexOf basis old))]
+                      #?(:clj (.remove ^java.util.ArrayList basis (int i)) :cljs (.splice basis i 1))
+                      (when-let [or* (g old rw/K-RUN)] (cancel! w or* ::cancelled))
+                      (ref-dec! old)))
+                  (let [k (new-task! w x key at inputs body 0)]
+                    (aadd! (g x rw/C-BASIS) k)
+                    (ref-inc! k)
+                    (start-task! w k)
+                    (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
+                    (->Handle k)))))
+          (let [s (run-scope! w r)
+                k (new-task! w s 0 at inputs body 0)]
+            (aadd! (g s rw/S-TASKS) k)
+            (ref-inc! k)
+            (start-task! w k)
+            (commit! w [:spawn (g r rw/ID) site (g k rw/ID)])
+            (->Handle k)))))
+    (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))]
+      (gated w
+        (let [s (g w rw/W-ROOT)
+              k (new-task! w s 0 0 inputs body 1)]
+          (aadd! (g s rw/S-TASKS) k)
+          (ref-inc! k)
+          (start-task! w k)
+          (commit! w [:spawn-top (g k rw/ID)])
+          (drain! w)
+          (->Handle k))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Idle validation (§3.4, R#3)
 
 (defn- validate!
   "Idle `c` becomes live with restart edges when every debtor in its
-   validity still has the recorded version; otherwise it must run."
+   validity still has the recorded version (Z#24); otherwise it must run."
   [w c]
   (let [vs (g c rw/C-VALIDITY)
         ok? (and (not= :invalid vs)
                  (every? (fn [[d ver]]
-                      (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-                      (and (== (long ver) (gl d rw/VERSION))
-                           (or (source? d) (live? d))))
-                    vs))]
+                           (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                           (and (== (long ver) (gl d rw/VERSION))
+                                (or (source? d) (live? d))))
+                         vs))]
     (s! c rw/C-IDLE false)
     (s! c rw/C-VALIDITY nil)
     (if (and ok? (some? (g c rw/C-DONE-EPOCH)))
@@ -763,10 +1060,12 @@
 (defn- demand!
   "Runs a demanded debtor that needs a run and is eligible (T6 demand)."
   [w d]
-  (when (comp? d)
-    (when (g d rw/C-IDLE) (validate! w d))
-    (when (and (needs-run? d) (zero? (gl d rw/C-PENDING)))
-      (dispatch! w d))))
+  (cond
+    (comp? d)
+    (do (when (g d rw/C-IDLE) (validate! w d))
+        (when (and (needs-run? d) (zero? (gl d rw/C-PENDING)))
+          (dispatch! w d)))
+    (task? d) nil))
 
 ;; ---------------------------------------------------------------------------
 ;; Rule R (§3.3) by retention counts
@@ -774,7 +1073,7 @@
 (defn- demote!
   "§3.3 step 1.3: a computation outside `live`."
   [w c]
-  (when-let [r (g c rw/C-RUN)] (cancel-replace! w r))
+  (when-let [r (g c rw/C-RUN)] (cancel! w r ::cancelled true))
   (let [ins (g c rw/C-INS)
         validity (loop [acc []]
                    (if (pos? (acount ins))
@@ -786,7 +1085,10 @@
                      acc))]
     (when-let [b (g c rw/C-BASIS)]
       (s! c rw/C-BASIS nil)
-      (dotimes [i (acount b)] (ref-dec! (anth b i))))
+      (dotimes [i (acount b)]
+        (let [x (anth b i)]
+          (when (and (task? x) (g x rw/K-RUN)) (cancel! w (g x rw/K-RUN) ::cancelled))
+          (ref-dec! x))))
     (release-adoption! w c)
     (s! c rw/C-PENDING 0)
     (if (or (some? (g c rw/C-DONE-EPOCH)) (pos? (gl c rw/HANDLES)))
@@ -808,6 +1110,9 @@
               (do (when-not (g row rw/C-IDLE) (demote! w row))
                   (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)))
                     (unregister! w row)))
+              (task? row)
+              (when (and (g row rw/K-DONE) (zero? (gl row rw/HANDLES)))
+                (unregister! w row))
               (source? row)
               (when (zero? (gl row rw/HANDLES)) (unregister! w row)))))
         (recur)))))
@@ -816,9 +1121,8 @@
 ;; Drain
 
 (defn- resume! [w a]
-  (let [r (g a rw/A-RUN)
-        c (g r rw/R-OF)]
-    (when (and (identical? a (g r rw/R-ACTV)) (current? c r) (== rw/ACT-PARKED (gl r rw/R-ACT)))
+  (let [r (g a rw/A-RUN)]
+    (when (and (identical? a (g r rw/R-ACTV)) (run-current? r) (== rw/ACT-PARKED (gl r rw/R-ACT)))
       (s! r rw/R-ACTV nil)
       (s! r rw/R-ACT rw/ACT-ACTIVE)
       (unregister! w a)
@@ -827,23 +1131,30 @@
             k (g a rw/A-R) ek (g a rw/A-E)]
         (slice! r (if err? #(ek v) #(k v)))))))
 
+(defn- start! [w r]
+  (when (== rw/ACT-ACTIVE (gl r rw/R-ACT))
+    (let [k (g r rw/R-OF)]
+      (commit! w [:start (g r rw/ID)])
+      (slice! r #((g k rw/K-BODY) ok-k err-k)))))
+
+(defn- pop-first! [l]
+  (let [x (anth l 0)]
+    #?(:clj (.remove ^java.util.ArrayList l (int 0)) :cljs (.shift l))
+    x))
+
 (defn- drain! [w]
   (when-not (or (g w rw/W-DRAINING) (active-run))
     (s! w rw/W-DRAINING true)
     (try
       (let [ready (g w rw/W-READY)
-            resume (g w rw/W-RESUME)]
+            resume (g w rw/W-RESUME)
+            start (g w rw/W-START)]
         (loop []
           (cond
-            (pos? (acount resume))
-            (let [a (anth resume 0)]
-              #?(:clj (.remove ^java.util.ArrayList resume (int 0)) :cljs (.shift resume))
-              (resume! w a)
-              (rule-r! w)
-              (recur))
+            (pos? (acount start)) (do (start! w (pop-first! start)) (rule-r! w) (recur))
+            (pos? (acount resume)) (do (resume! w (pop-first! resume)) (rule-r! w) (recur))
             (pos? (acount ready))
-            (let [c (anth ready 0)]
-              #?(:clj (.remove ^java.util.ArrayList ready (int 0)) :cljs (.shift ready))
+            (let [c (pop-first! ready)]
               (s! c rw/C-QUEUED false)
               (when (and (hot? c) (zero? (gl c rw/C-PENDING)) (needs-run? c))
                 (dispatch! w c))
@@ -861,20 +1172,8 @@
 ;; ---------------------------------------------------------------------------
 ;; Host API
 
-
 (defn- new-source! [w kind v owner key at]
-  (let [x (object-array rw/X-SIZE)]
-    (s! x rw/TYPE rw/T-SOURCE)
-    (s! x rw/ID (alloc-id! w))
-    (s! x rw/WORLD w)
-    (s! x rw/OUTS (alist))
-    (s! x rw/REFS 0)
-    (s! x rw/HOT 0)
-    (s! x rw/HANDLES 1)
-    (s! x rw/OWNER owner)
-    (s! x rw/VERSION 0)
-    (s! x rw/KEY key)
-    (s! x rw/AT at)
+  (let [x (debtor-row w rw/T-SOURCE rw/X-SIZE owner key at 1)]
     (s! x rw/X-KIND kind)
     (s! x rw/X-VALUE v)
     (s! x rw/X-OPEN true)
@@ -886,8 +1185,33 @@
   ([w v]
    (gated w
      (let [x (new-source! w rw/SRC-SIGNAL v (g w rw/W-ROOT) 0 0)]
-       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :signal (g x rw/ID)])
+       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :signal [:opaque v] (g x rw/ID)])
        (->Handle x)))))
+
+(defn deferred
+  "T1 at top level: a deferred, delivered once (§4.3)."
+  ([] (deferred *world*))
+  ([w]
+   (gated w
+     (let [x (new-source! w rw/SRC-DEFERRED nil (g w rw/W-ROOT) 0 0)]
+       (commit! w [:create-source-top (g (g w rw/W-ROOT) rw/ID) :deferred [:opaque nil] (g x rw/ID)])
+       (->Handle x)))))
+
+(defn deliver!
+  "Delivers a deferred once: fires its edges and finalizes it (§4.3, T10).
+   A second delivery is refused."
+  [h v]
+  (let [x (row-of h)
+        w (g x rw/WORLD)]
+    (gated w
+      (if (final? x)
+        (refuse! w [:deliver (g x rw/ID) [:opaque v]])
+        (do (s! x rw/X-VALUE v)
+            (s! x rw/VERSION 1)
+            (settle! w x)
+            (commit! w [:deliver (g x rw/ID) [:opaque v]])
+            (drain! w))))
+    v))
 
 (defn write!
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
@@ -902,7 +1226,7 @@
           (let [e (anth outs i) k (gl e rw/E-KIND)]
             (cond (== k rw/EK-DEP) (fire-dep! w e)
                   (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-      (commit! w [:write (g x rw/ID)])
+      (commit! w [:write (g x rw/ID) [:opaque v]])
       (drain! w))
     v))
 
@@ -914,7 +1238,7 @@
         e (gated w
             (let [e (link! w rw/EK-OBSERVE cb d 0)]
               (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-              (when (or (source? d) (live? d)) (deliver-observe! w e))
+              (deliver-observe! w e)
               (commit! w [:observe (g d rw/ID) (g e rw/ID)])
               (demand! w d)
               (drain! w)
@@ -965,9 +1289,22 @@
             (drain! w))))
     nil))
 
+(defn cancel-task!
+  "T14 from the host on a task."
+  [h]
+  (let [k (row-of h) w (g k rw/WORLD)]
+    (gated w
+      (if-let [r (g k rw/K-RUN)]
+        (do (cancel! w r ::cancelled)
+            (commit! w [:cancel (g r rw/ID)])
+            (drain! w))
+        (refuse! w [:cancel (g k rw/ID)])))
+    nil))
+
 (defn value
-  "Host read. A computation is demanded through a host wait edge for the
-   duration of the read; M1 requires it to finish synchronously."
+  "Host read (T22). A computation or task is demanded through a host wait
+   edge for the duration of the read; this requires it to finish within the
+   drain (blocking host awaits arrive with ingress, M3)."
   [h]
   (let [d (row-of h)
         w (g d rw/WORLD)]
@@ -976,9 +1313,9 @@
       (let [res (volatile! nil)]
         (gated w
           (let [e (link! w rw/EK-WAIT (fn [v err?] (vreset! res [v err?])) d 0)]
-            (when (g d rw/C-IDLE) (validate! w d))
+            (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
             (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
-            (if (live? d)
+            (if (settled? d)
               (vreset! res (debtor-result d))
               (do (demand! w d) (drain! w)))
             (when (linked? e)
@@ -992,7 +1329,7 @@
 (defn await [_] (throw (ex-info "await outside a body" {})))
 
 ;; ---------------------------------------------------------------------------
-;; Body macro (partial-cps)
+;; Body macros (partial-cps)
 
 #?(:clj
    (do
@@ -1003,14 +1340,21 @@
      (def ^:private breakpoints
        {'org.replikativ.spindel.v2.core/track `bp-track
         'org.replikativ.spindel.v2.core/await `bp-await})
+     (defn- body-fn [env body]
+       (let [r (gensym "r") e (gensym "e")
+             params {:r r :e e :env env :breakpoints breakpoints
+                     :opaque-scopes #{`spin `task}}]
+         `(fn [~r ~e] ~(ioc/invert params (cons 'do body)))))
+     (defn- site-of [form]
+       (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta form)) (:column (meta form))])))
      (defmacro spin
        "A cached reactive computation (T3). Inside a body it is created in the
         running computation's basis and adopted by later runs."
        [& body]
-       (let [r (gensym "r") e (gensym "e")
-             params {:r r :e e :env &env :breakpoints breakpoints
-                     :opaque-scopes #{`spin}}
-             frees (vec (sort (free-vars/free-variables-or-all &env (cons 'do body))))
-             site (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta &form)) (:column (meta &form))]))]
-         `(create-comp! ~site (object-array ~frees)
-                        (fn [~r ~e] ~(ioc/invert params (cons 'do body))))))))
+       (let [frees (vec (sort (free-vars/free-variables-or-all &env (cons 'do body))))]
+         `(create-comp! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))
+     (defmacro task
+       "A task (T4): started at once; structured child of the creating run."
+       [& body]
+       (let [frees (vec (sort (free-vars/free-variables-or-all &env (cons 'do body))))]
+         `(spawn! ~(site-of &form) (object-array ~frees) ~(body-fn &env body))))))

@@ -1,0 +1,124 @@
+(ns org.replikativ.spindel.v2.task-test
+  (:refer-clojure :exclude [await])
+  (:require [clojure.test :refer [deftest is testing]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await]]
+            [org.replikativ.spindel.v2.rows :as rw]
+            [org.replikativ.spindel.v2.verify :as verify]
+            [org.replikativ.spindel.incremental.interval :as iv]))
+
+(def ^:dynamic *divergences* nil)
+
+(defn- vworld []
+  (v2/world {:verify? true :hook (verify/checking-hook *divergences*)}))
+
+(defmacro checked [& body]
+  `(binding [*divergences* (atom [])]
+     ~@body
+     (is (empty? @*divergences*) (str "Rule R divergences: " (vec (take 3 @*divergences*))))))
+
+(defn- census [w]
+  (let [fr (frequencies (map #(aget ^objects % rw/TYPE) (vals (aget ^objects w rw/W-REG))))]
+    {:comps (get fr rw/T-COMP 0) :tasks (get fr rw/T-TASK 0) :runs (get fr rw/T-RUN 0)
+     :edges (get fr rw/T-EDGE 0) :acts (get fr rw/T-ACT 0) :scopes (get fr rw/T-SCOPE 0)
+     :sources (get fr rw/T-SOURCE 0)}))
+
+(defn- outcome [h]
+  (try [:ok (v2/value h)] (catch Exception e [:err (or (ex-data e) e)])))
+
+(deftest top-level-task
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [t (task (+ 1 2))]
+          (is (= 3 (v2/value t)))
+          (is (= 1 (:tasks (census w))) "kept for its handle")
+          (v2/release! t)
+          (is (= 0 (:tasks (census w))))
+          (is (= 0 (:runs (census w)))))))))
+
+(deftest task-awaits-computation-once
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [x (v2/signal 2)
+              runs (atom 0)
+              c (spin (* 10 (iv/get-new (track x))))
+              t (task (swap! runs inc) (await c))]
+          (is (= 20 (v2/value t)))
+          (v2/write! x 3)
+          (is (= 20 (v2/value t)) "a task's await does not re-run on change")
+          (is (= 1 @runs)))))))
+
+(deftest task-awaits-child-task
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [t (task (let [k (task 5)] (+ 1 (await k))))]
+          (is (= 6 (v2/value t)))
+          (is (= {:tasks 1 :runs 0} (select-keys (census w) [:tasks :runs]))))))))
+
+(deftest parked-task-on-deferred
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              t (task (* 2 (await d)))]
+          (is (thrown? Exception (v2/value t)) "not finished yet")
+          (v2/deliver! d 21)
+          (is (= 42 (v2/value t)))
+          (is (= 0 (:edges (census w))) "the wait edge was consumed"))))))
+
+(deftest children-are-cancelled-at-completion
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              child (atom nil)
+              t (task (reset! child (task (await d))) :done)]
+          (is (= :done (v2/value t)))
+          (is (= [:err {}] (update (outcome @child) 1 (constantly {}))) "Q10: the unawaited child was cancelled")
+          (is (= 0 (:edges (census w))) "its wait edge went with it")
+          (is (= 0 (:runs (census w)))))))))
+
+(deftest host-cancel
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              t (task (await d))]
+          (v2/cancel-task! t)
+          (is (= :err (first (outcome t))))
+          (v2/deliver! d 1)
+          (is (= 0 (:edges (census w)))))))))
+
+(deftest computation-awaits-deferred
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [d (v2/deferred)
+              c (spin (inc (await d)))
+              seen (atom [])
+              u (v2/observe! c (fn [v _] (swap! seen conj v)))]
+          (is (= [] @seen))
+          (v2/deliver! d 1)
+          (is (= [2] @seen))
+          (is (= 1 (:edges (census w))) "only the observe edge; the final deferred's dep edge is gone")
+          (u))))))
+
+(deftest computation-tasks-are-adopted-and-cancelled
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [x (v2/signal 0)
+              gate (v2/deferred)
+              starts (atom 0)
+              c (spin (let [v (iv/get-new (track x))
+                            k (task (swap! starts inc) (await gate) v)]
+                        (quot v 10)))
+              u (v2/observe! c (fn [_ _]))]
+          (is (= 1 @starts))
+          (v2/write! x 1)
+          (is (= 2 @starts) "changed captures replace the task")
+          (u)
+          (is (= 0 (:runs (census w))) "demotion cancels the computation's tasks")
+          (is (= 0 (:edges (census w)))))))))
