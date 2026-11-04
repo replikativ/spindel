@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.v2spike :as s]
             [org.replikativ.spindel.v2paged :as p]
+            [org.replikativ.spindel.v2fwd :as fw]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
 (defn- s-graph [kind src]
@@ -83,3 +84,28 @@
          (let [a (run-s k n) b (run-p k n) c (run-p k n :forked? true)]
            {:kind k :ptr (:ns a) :paged (:ns b) :x (/ (Math/round (* 100.0 (/ (:ns b) (max 1 (:ns a))))) 100.0)
             :paged-forked (:ns c) :ptr-bytes (:bytes a) :paged-bytes (:bytes b) :same (= (:last a) (:last b) (:last c))}))))
+
+(defn- f-graph [kind src]
+  (let [leaf (fn [] (fw/cmp (iv/get-new (fw/track src))))]
+    (case kind
+      :fanout (mapv (fn [_] (leaf)) (range 100))
+      :chain [(reduce (fn [prev _] (fw/cmp (inc (fw/await prev)))) (leaf) (range 50))]
+      :diamond (let [b (fw/cmp (* 2 (iv/get-new (fw/track src)))) c (fw/cmp (* 3 (iv/get-new (fw/track src))))
+                     d (fw/cmp (+ (fw/await b) (fw/await c))) e (fw/cmp (* 2 (fw/await d))) f (fw/cmp (* 3 (fw/await d)))]
+                 [(fw/cmp (+ (fw/await e) (fw/await f)))])
+      :switch (let [l (fw/cmp 10) r (fw/cmp 20)]
+                [(fw/cmp (let [n (iv/get-new (fw/track src))] (+ n (fw/await (if (even? n) l r)))))])
+      :child [(fw/cmp (let [n (iv/get-new (fw/track src)) c (fw/cmp (* 2 n))] (fw/await c)))])))
+
+(defn run-f [kind n]
+  (let [w (fw/world)]
+    (binding [fw/*world* w]
+      (let [src (fw/source w 0) roots (f-graph kind src) last (volatile! nil)
+            _ (doseq [r roots] (fw/observe! r #(vreset! last %) #(throw %)))
+            i (volatile! 0)]
+        (assoc (measure #(fw/set-source! src (vswap! i inc)) n) :last @last)))))
+
+(defn report-fwd [n]
+  (vec (for [k [:fanout :chain :diamond :switch :child]]
+         (let [a (run-s k n) b (run-f k n)]
+           {:kind k :x (/ (Math/round (* 100.0 (/ (:ns b) (max 1 (:ns a))))) 100.0) :same (= (:last a) (:last b))}))))
