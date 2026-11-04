@@ -35,7 +35,7 @@
                          (filter #(identical? row (f % rw/E-ACT)) (f x rw/C-INS)))
                        (filter #(and % (== rw/EK-WAIT (long (f % rw/E-KIND)))) (f row rw/A-MEMBERS))))
     rw/T-SCOPE (concat (some-> (f row rw/S-PARENT) list)
-                       (keep #(f % rw/K-RUN) (f row rw/S-TASKS)))
+                       (keep #(f % rw/K-RUN) (.values ^java.util.Map (f row rw/S-TASKS))))
     rw/T-TASK (some-> (f row rw/K-RUN) list)
     rw/T-EDGE [(f row rw/E-DEBTOR)]
     nil))

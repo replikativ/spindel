@@ -143,3 +143,19 @@
             true
             (do (some-> ^Thread @thread .interrupt) false))
      :cljs (if (zero? (.-v state)) (do (set! (.-v state) 2) true) false)))
+
+;; ---------------------------------------------------------------------------
+;; Insertion-ordered identity sets (scope task lists): O(1) add and remove
+
+#?(:clj
+   (deftype IdKey [x]
+     Object
+     (equals [_ o] (and (instance? IdKey o) (identical? x (.-x ^IdKey o))))
+     (hashCode [_] (System/identityHashCode x))))
+
+(defn oset [] #?(:clj (java.util.LinkedHashMap.) :cljs (js/Set.)))
+(defn oset-add! [s x] #?(:clj (.put ^java.util.LinkedHashMap s (IdKey. x) x) :cljs (.add s x)) nil)
+(defn oset-del! [s x] #?(:clj (some? (.remove ^java.util.LinkedHashMap s (IdKey. x))) :cljs (.delete s x)))
+(defn oset-count [s] #?(:clj (.size ^java.util.LinkedHashMap s) :cljs (.-size s)))
+(defn oset-vals "A snapshot vector, in insertion order." [s]
+  #?(:clj (vec (.values ^java.util.LinkedHashMap s)) :cljs (vec (es6-iterator-seq (.values s)))))

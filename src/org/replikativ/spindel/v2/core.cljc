@@ -66,7 +66,7 @@
     (s! s rw/S-PARENT parent)
     (s! s rw/S-KIND kind)
     (s! s rw/S-OPEN true)
-    (s! s rw/S-TASKS (alist))
+    (s! s rw/S-TASKS (hs/oset))
     (s! s rw/S-CHILDREN (alist))
     (s! s rw/S-WORLD w)
     (when parent (aadd! (g parent rw/S-CHILDREN) s))
@@ -566,7 +566,7 @@
   "T16/Z#18: a closed scope row goes once its subtree has no rows left."
   [w s]
   (when (and (not (g s rw/S-OPEN))
-             (zero? (acount (g s rw/S-TASKS)))
+             (zero? (hs/oset-count (g s rw/S-TASKS)))
              (zero? (acount (g s rw/S-CHILDREN))))
     (unregister! w s)
     (when-let [p (g s rw/S-PARENT)]
@@ -587,9 +587,9 @@
       (s! s rw/S-SOURCES nil)
       (dotimes [i (acount xs)]
         (when-let [x (hs/deref-weak (anth xs i))] (close-source! w x))))
-    (let [ts (acopy (g s rw/S-TASKS))]
-      (dotimes [i (acount ts)]
-        (when-let [r (g (anth ts i) rw/K-RUN)] (cancel! w r ::cancelled))))
+    (let [ts (hs/oset-vals (g s rw/S-TASKS))]
+      (doseq [t ts]
+        (when-let [r (g t rw/K-RUN)] (cancel! w r ::cancelled))))
     (let [cs (acopy (g s rw/S-CHILDREN))]
       (dotimes [i (acount cs)] (close-scope! w (anth cs i)))))
   (remove-scope-if-empty! w s))
@@ -653,9 +653,9 @@
        (doseq [z (vec zs)] (cancel-resource! w z)))
      ;; children: runs owned by the run scope
      (when-let [s (g r rw/R-SROW)]
-       (let [ts (acopy (g s rw/S-TASKS))]
-         (dotimes [i (acount ts)]
-           (when-let [cr (g (anth ts i) rw/K-RUN)] (cancel! w cr reason)))))
+       (let [ts (hs/oset-vals (g s rw/S-TASKS))]
+         (doseq [t ts]
+           (when-let [cr (g t rw/K-RUN)] (cancel! w cr reason)))))
      (let [x (g r rw/R-OF)]
        (when (and (task? x) (not replace?))
          ;; debtor side (R#14): the task fails with ::cancelled
@@ -704,11 +704,9 @@
     (settle! w k)
     (let [owner (g k rw/OWNER)]
       (when (and owner (not (fn? owner)) (== rw/T-SCOPE (gl owner rw/TYPE)))
-        (let [ts (g owner rw/S-TASKS)
-              i (hs/index-of ts k)]
-          (when-not (neg? i)
-            (hs/remove-at! ts i)
-            (ref-dec! k))
+        (when (hs/oset-del! (g owner rw/S-TASKS) k)
+          (ref-dec! k))
+        (do
           (remove-scope-if-empty! w owner))))))
 
 (defn- complete!
@@ -738,9 +736,9 @@
         (do
           ;; Q10: children not awaited and not detached are cancelled
           (when-let [s (g r rw/R-SROW)]
-            (let [ts (acopy (g s rw/S-TASKS))]
-              (dotimes [i (acount ts)]
-                (when-let [cr (g (anth ts i) rw/K-RUN)] (cancel! w cr ::cancelled)))))
+            (let [ts (hs/oset-vals (g s rw/S-TASKS))]
+              (doseq [t ts]
+                (when-let [cr (g t rw/K-RUN)] (cancel! w cr ::cancelled)))))
           (finish-task! w x v err?)
           (s! r rw/R-SLICE false)
           (retire-check! w r)
@@ -1389,7 +1387,7 @@
                       h)))))
           (let [s (current-scope! w r)
                 k (new-task! w s 0 at inputs body 0)]
-            (aadd! (g s rw/S-TASKS) k)
+            (hs/oset-add! (g s rw/S-TASKS) k)
             (ref-inc! k)
             (start-task! w k)
             (let [h (handle! w k)]
@@ -1401,7 +1399,7 @@
         (let [s (g w rw/W-ROOT)
               k (new-task! w s 0 0 inputs body 1)]
           (bind-handle! h k)
-          (aadd! (g s rw/S-TASKS) k)
+          (hs/oset-add! (g s rw/S-TASKS) k)
           (ref-inc! k)
           (start-task! w k)
           (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
@@ -2165,10 +2163,9 @@
         (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
                 (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
           (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
-          (let [ts (g old rw/S-TASKS)
-                i (hs/index-of ts k)]
-            (when-not (neg? i) (hs/remove-at! ts i))
-            (aadd! (g s rw/S-TASKS) k)
+          (do
+            (hs/oset-del! (g old rw/S-TASKS) k)
+            (hs/oset-add! (g s rw/S-TASKS) k)
             (s! k rw/OWNER s)
             (remove-scope-if-empty! w old)
             (commit! w [:detach (g k rw/ID) (g s rw/ID)])))))
