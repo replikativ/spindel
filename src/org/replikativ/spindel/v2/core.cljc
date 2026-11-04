@@ -772,37 +772,39 @@
 (defn- drop-activation! [w r]
   (when-let [a (rv w (g r rw/R-ACTV))]
     (s! r rw/R-ACTV nil)
+    ;; a savepoint activation leaves the pending set: its publication can no
+    ;; longer resume the run
+    (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (id-of a)))
     (release-members! w a)
     a))
 
 (defn- cancel!
-  "T14 `cancel(R)` (`reason` ::cancelled) or, with `replace? true`,
-   `cancel(R, replace)` (Y#2). Runs hold no finalizers or resources yet
-   (M2d/M3), so a run outside a slice retires at once."
-  ([w r reason] (cancel! w r reason false))
-  ([w r reason replace?]
-   (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
-     (s! r rw/R-ACT rw/ACT-DONE)
-     (s! r rw/R-MODE 1)
-     ;; Finalizers (T14, B3): a parked run with open finally regions unwinds
-     ;; in a cleanup slice through its activation's error continuation. A run
-     ;; whose slice is on the stack unwinds at its next effect.
-     (when-let [a (drop-activation! w r)]
-       (when (pos? (fins r))
-         (aadd! (g w rw/W-CLEANUP) [r (g a rw/A-E) (cancelled-ex reason)])))
-     ;; Resources are told to cancel; they join through their acknowledgement.
-     (when-let [zs (g r rw/R-RES)]
-       (doseq [z (vec zs)] (cancel-resource! w z)))
-     ;; children: runs owned by the run scope
-     (when-let [s (rv w (g r rw/R-SROW))]
-       (let [ts (hs/oset-vals (g s rw/S-TASKS))]
-         (doseq [t ts]
-           (when-let [cr (rv w (g t rw/K-RUN))] (cancel! w cr reason)))))
-     (let [x (rv w (g r rw/R-OF))]
-       (when (and (task? x) (not replace?))
-         ;; debtor side (R#14): the task fails with ::cancelled
-         (finish-task! w x (cancelled-ex reason) true)))
-     (retire-check! w r))))
+  "T14 `cancel(R)`. Also `cancel(R, replace)` (Y#2): only T11 and demotion
+   issue a replace, always on a computation run, which has no debtor side, so
+   it is the same operation; on a task run a replace is an ordinary cancel."
+  [w r reason]
+  (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
+    (s! r rw/R-ACT rw/ACT-DONE)
+    (s! r rw/R-MODE 1)
+    ;; Finalizers (T14, B3): a parked run with open finally regions unwinds
+    ;; in a cleanup slice through its activation's error continuation. A run
+    ;; whose slice is on the stack unwinds at its next effect.
+    (when-let [a (drop-activation! w r)]
+      (when (pos? (fins r))
+        (aadd! (g w rw/W-CLEANUP) [r (g a rw/A-E) (cancelled-ex reason)])))
+    ;; Resources are told to cancel; they join through their acknowledgement.
+    (when-let [zs (g r rw/R-RES)]
+      (doseq [z (vec zs)] (cancel-resource! w z)))
+    ;; children: runs owned by the run scope
+    (when-let [s (rv w (g r rw/R-SROW))]
+      (let [ts (hs/oset-vals (g s rw/S-TASKS))]
+        (doseq [t ts]
+          (when-let [cr (rv w (g t rw/K-RUN))] (cancel! w cr reason)))))
+    (let [x (rv w (g r rw/R-OF))]
+      (when (task? x)
+        ;; debtor side (R#14): the task fails with ::cancelled
+        (finish-task! w x (cancelled-ex reason) true)))
+    (retire-check! w r)))
 
 (defn- slice!
   "Runs `f` as a slice of `r` on the host stack, restoring the caller's
@@ -926,7 +928,7 @@
   [w c]
   (s! c rw/C-QUEUED false)
   (when (needs-run? w c)
-    (when-let [old (rv w (g c rw/C-RUN))] (cancel! w old ::cancelled true))
+    (when-let [old (rv w (g c rw/C-RUN))] (cancel! w old ::cancelled))
     (let [ins (g c rw/C-INS)
           restart? (g c rw/C-RESTART)
           ei (when-not restart? (earliest-fired w c))
@@ -1617,7 +1619,7 @@
   "§3.3 step 1.3: a computation outside `live`."
   [w c]
   (when-let [r (rv w (g c rw/C-RUN))]
-    (cancel! w r ::cancelled true)
+    (cancel! w r ::cancelled)
     ;; a cancelled run that survives in cleanup must not count as current (I10)
     (when (current? c r) (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))
   (let [ins (g c rw/C-INS)
@@ -2499,16 +2501,21 @@
 (defn- sp-deliver!
   "Resumes the run parked on savepoint activation `a` with `res` (T9's
    savepoint branch): the activation goes, the run becomes active and its
-   slice is scheduled."
+   slice is scheduled. Only a run still parked on `a` resumes; false
+   otherwise (it was cancelled meanwhile)."
   [w a res]
   (let [r (rv w (g a rw/A-RUN))]
-    (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (id-of a)))
-    (s! r rw/R-ACTV nil)
-    (s! r rw/R-ACT rw/ACT-ACTIVE)
-    (s! a rw/A-RESULT res)
-    (s! a rw/A-RESUMED true)
-    (unregister! w a)                  ; resumed: a delivery carrier now
-    (aadd! (g w rw/W-RESUME) a)))
+    (if (and (== rw/ACT-PARKED (gl r rw/R-ACT))
+             (some-> (rv w (g r rw/R-ACTV)) (identical? a)))
+      (do (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (id-of a)))
+          (s! r rw/R-ACTV nil)
+          (s! r rw/R-ACT rw/ACT-ACTIVE)
+          (s! a rw/A-RESULT res)
+          (s! a rw/A-RESUMED true)
+          (unregister! w a)                  ; resumed: a delivery carrier now
+          (aadd! (g w rw/W-RESUME) a)
+          true)
+      false)))
 
 (defn savepoint-effect!
   "S1 `(savepoint site payload)`: with a handler for `site`, the run parks
@@ -2552,9 +2559,10 @@
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
       (gated w
-        (when-let [a (pub-act w pub)]
-          (sp-deliver! w a [v false])
-          (commit! w [:resume-savepoint (:act pub) [:opaque v]]))))
+        (let [a (pub-act w pub)]
+          (if (and a (sp-deliver! w a [v false]))
+            (commit! w [:resume-savepoint (:act pub) [:opaque v]])
+            (refuse! w [:resume-savepoint (:act pub) [:opaque v]])))))
     nil))
 
 (defn abandon!
@@ -2591,8 +2599,9 @@
                            (some #(when (== (id-of %) (long aid)) %)
                                  (concat (g w rw/W-SP-DORMANT)
                                          (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals)))))]
-          (sp-deliver! w a [v false])
-          (commit! w [:activate aid [:opaque v]])))))
+          (if (and a (sp-deliver! w a [v false]))
+            (commit! w [:activate aid [:opaque v]])
+            (refuse! w [:activate aid [:opaque v]]))))))
   w)
 
 (defn offload [_] (throw (ex-info "offload outside a body" {})))

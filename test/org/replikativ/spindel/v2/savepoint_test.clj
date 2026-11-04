@@ -63,3 +63,18 @@
           (let [i (doto (v2/instantiate (get @pubs :b)) (v2/activate! :went))]
             (is (= [:ok :went] (outcome i b)))
             (is (= [:ok :forked] (outcome i a)) "a has no publication in b's instance")))))))
+
+(deftest resume-after-cancel-is-refused
+  (checked
+    (let [w (vworld)
+          pubs (atom [])
+          ran (atom false)]
+      (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+      (binding [v2/*world* w]
+        (let [t (task (do (v2/savepoint :s nil) (reset! ran true) :after))]
+          (v2/value (v2/signal 0) 100 nil)
+          (v2/cancel-task! t)
+          (v2/resume! (first @pubs) 7)
+          (v2/value (v2/signal 0) 100 nil)
+          (is (false? @ran) "a cancelled run does not continue from its savepoint")
+          (is (:spindel/cancelled (second (outcome w t)))))))))
