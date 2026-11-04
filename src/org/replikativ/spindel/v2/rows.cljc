@@ -192,7 +192,9 @@
 (def ^:const A-INLINE 8)     ; the awaiting frame is still on the host stack (I10)
 (def ^:const A-MEMBERS 9)    ; object array: the unfilled member edge per slot (Z#7), nil once filled
 (def ^:const A-WINNER 10)    ; `any`: the slot that resumed it
-(def ^:const A-SIZE 11)
+(def ^:const A-RESULT 11)    ; the delivery, once resumed at the fill (T6/T9)
+(def ^:const A-RESUMED 12)
+(def ^:const A-SIZE 13)
 
 (def ^:const SRC-SIGNAL 0)
 (def ^:const SRC-CELL 1)

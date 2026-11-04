@@ -64,7 +64,13 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     computation through a dep edge, like `track`; in a task as a snapshot);
   - Z#32: computations are never final in layer 1 (T3 replacement and
     explicit re-execution can always re-run them), so dep edges on them are
-    not finalized (D1, T10).
+    not finalized (D1, T10);
+  - Z#33: demand reactivates an idle computation in the demanding
+    transition (`idle := false`, validity checked); a fresh or invalid one
+    then starts by T5;
+  - Z#34: a filled activation resumes its run in the filling commit; the
+    run's next slice, like a new run's first, is a scheduling choice
+    (`schedule r`); T12 includes the slice's exit.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3

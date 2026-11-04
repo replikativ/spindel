@@ -414,6 +414,8 @@
 (defn- act-done? [a]
   (or (zero? (gl a rw/A-REMAINING)) (some? (g a rw/A-WINNER))))
 
+(declare resume-at-fill!)
+
 (defn- slot-fill!
   "Fills every slot whose member is `e` (Z#7). A complete activation that is
    not on the host stack is queued for resumption."
@@ -429,8 +431,7 @@
           (s! a rw/A-REMAINING (dec (gl a rw/A-REMAINING)))
           (when (and (= :any (g a rw/A-MODE)) (nil? (g a rw/A-WINNER)))
             (s! a rw/A-WINNER i))))
-      (when (and (act-done? a) (not (g a rw/A-INLINE)))
-        (aadd! (g w rw/W-RESUME) a)))))
+      (when (act-done? a) (resume-at-fill! w a)))))
 
 (defn- fill!
   "T9 delivery into the activation `a` that dep edge `e` is an unfilled
@@ -580,6 +581,7 @@
     (if (comp? x)
       (when (identical? r (g x rw/C-RUN)) (s! x rw/C-RUN nil))
       (when (identical? r (g x rw/K-RUN)) (s! x rw/K-RUN nil)))
+    (s! r rw/R-MODE 2)                       ; retired
     (when-let [s (g r rw/R-SROW)] (close-scope! w s))
     (unregister! w r)))
 
@@ -589,7 +591,7 @@
   "T13: retired iff done, no slice, no finalizers, no resources."
   [w r]
   (when (and (== rw/ACT-DONE (gl r rw/R-ACT)) (not (g r rw/R-SLICE))
-             (zero? (fins r)) (nil? (g r rw/R-RES)))
+             (zero? (fins r)) (nil? (g r rw/R-RES)) (not (== 2 (gl r rw/R-MODE))))
     (retire! w r)))
 
 (defn- release-members!
@@ -708,8 +710,11 @@
                 (s! x rw/C-ERR (boolean err?)))
               (s! x rw/C-DONE-EPOCH (g r rw/R-EPOCH))
               (release-adoption! w x)))
-          (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]])
-          (when (live? x) (settle! w x)))
+          (when (live? x) (settle! w x))
+          ;; T12 includes slice exit (the model folds it): retire now if allowed
+          (s! r rw/R-SLICE false)
+          (retire-check! w r)
+          (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]]))
         (do
           ;; Q10: children not awaited and not detached are cancelled
           (when-let [s (g r rw/R-SROW)]
@@ -717,6 +722,8 @@
               (dotimes [i (acount ts)]
                 (when-let [cr (g (anth ts i) rw/K-RUN)] (cancel! w cr ::cancelled)))))
           (finish-task! w x v err?)
+          (s! r rw/R-SLICE false)
+          (retire-check! w r)
           (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]])))))
   nil)
 
@@ -781,26 +788,30 @@
             (s! c rw/C-ADOPT ab))))
       (let [t5? (and (nil? e) (zero? (acount ins)))
             r (new-run! w c (g c rw/C-EPOCH))
-            k (when e (g e rw/E-CONT))]
+            k (when e (g e rw/E-CONT))
+            ;; E is consumed in this commit (T11): re-armed with its delivery
+            go (if (and e k)
+                 (let [d (g e rw/E-DEBTOR)]
+                   (restore-ordinals! c r)
+                   (s! r rw/R-CURSOR (inc (long ei)))
+                   (s! r rw/R-EIDX (inc at))
+                   (s! e rw/E-ARMED true)
+                   (s! e rw/E-SEEN (g d rw/VERSION))
+                   (if (source? d)
+                     (let [old (g e rw/E-BASE) v (g d rw/X-VALUE)]
+                       (s! e rw/E-BASE v)
+                       #(k (iv/->Interval old v nil)))
+                     (let [[v err?] (debtor-result d)]
+                       (if err? #((g e rw/E-ERRK) v) #(k v)))))
+                 ;; Restart from the body. E (if any) is re-armed; its baseline
+                 ;; advances when the new run reads it (Z#22).
+                 (do (when e (s! e rw/E-ARMED true))
+                     #((g c rw/C-BODY) ok-k err-k)))]
         (commit! w [(if t5? :start :dispatch) (g c rw/ID) (g r rw/ID)])
-        (if (and e k)
-          ;; Resume E's continuation with E's delivery; E is consumed (re-armed).
-          (let [d (g e rw/E-DEBTOR)]
-            (restore-ordinals! c r)
-            (s! r rw/R-CURSOR (inc (long ei)))
-            (s! r rw/R-EIDX (inc at))
-            (s! e rw/E-ARMED true)
-            (s! e rw/E-SEEN (g d rw/VERSION))
-            (if (source? d)
-              (let [old (g e rw/E-BASE) v (g d rw/X-VALUE)]
-                (s! e rw/E-BASE v)
-                (slice! r #(k (iv/->Interval old v nil))))
-              (let [[v err?] (debtor-result d)]
-                (slice! r (if err? #((g e rw/E-ERRK) v) #(k v))))))
-          ;; Restart from the body. E (if any) is re-armed; its baseline
-          ;; advances when the new run reads it (Z#22).
-          (do (when e (s! e rw/E-ARMED true))
-              (slice! r #((g c rw/C-BODY) ok-k err-k))))))))
+        ;; the new run's first slice is a scheduling choice (D0)
+        (s! r rw/R-SLICE true)
+        (commit! w [:schedule (g r rw/ID)])
+        (slice! r go)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Body effects
@@ -903,12 +914,16 @@
 (defn enter-finally!
   "Body contract: a `finally` region opens (rewritten by the body macros)."
   []
-  (when-let [r (active-run)] (s! r rw/R-FINS (inc (fins r)))))
+  (when-let [r (active-run)]
+    (s! r rw/R-FINS (inc (fins r)))
+    (commit! (g r rw/R-WORLD) [:finally-enter (g r rw/ID)])))
 
 (defn exit-finally!
   "A `finally` region closes; its block runs now."
   []
-  (when-let [r (active-run)] (s! r rw/R-FINS (max 0 (dec (fins r))))))
+  (when-let [r (active-run)]
+    (s! r rw/R-FINS (max 0 (dec (fins r))))
+    (commit! (g r rw/R-WORLD) [:finally-exit (g r rw/ID)])))
 
 (defn track-effect!
   "T7."
@@ -981,16 +996,22 @@
                      (== 1 (acount (g d rw/OUTS))) (g d rw/K-RUN))
             (cancel! w (g d rw/K-RUN) ::cancelled)))))))
 
-(defn- finish-activation!
-  "Removes a complete activation and returns its delivery."
-  [w r a]
-  (s! r rw/R-ACTV nil)
-  (s! r rw/R-ACT rw/ACT-ACTIVE)
-  (when (and (= :any (g a rw/A-MODE)) (not (comp? (g r rw/R-OF))))
-    (cancel-losers! w r (g a rw/A-MEMBERS)))
-  (release-members! w a)
-  (commit! w [:schedule (g r rw/ID)])
-  (group-result (g a rw/A-MODE) (g a rw/A-SLOTS) (g a rw/A-WINNER)))
+(defn- resume-at-fill!
+  "T6/T9: a complete activation resumes its run in the filling commit: the
+   activation goes, the run becomes active, and its slice waits for a
+   scheduling choice ([:schedule r]). An activation whose awaiting frame is
+   still on the host stack continues there instead (I10)."
+  [w a]
+  (let [r (g a rw/A-RUN)]
+    (s! r rw/R-ACTV nil)
+    (s! r rw/R-ACT rw/ACT-ACTIVE)
+    (when (and (= :any (g a rw/A-MODE)) (not (comp? (g r rw/R-OF))))
+      (cancel-losers! w r (g a rw/A-MEMBERS)))
+    (release-members! w a)
+    (s! a rw/A-RESULT (group-result (g a rw/A-MODE) (g a rw/A-SLOTS) (g a rw/A-WINNER)))
+    (s! a rw/A-RESUMED true)
+    (when-not (g a rw/A-INLINE)
+      (aadd! (g w rw/W-RESUME) a))))
 
 (defn- notify-blocked!
   "§4.5.6-7: `x` parked. Creditors with a marked edge from it may now be
@@ -1057,7 +1078,7 @@
                              (aset members i e))))
             (and (source? d) (not (deferred? d))) nil       ; a task reads a signal once
             (settled? d) (alloc-id! w)                      ; consumed at once (Z#28)
-            :else (aset members i (link! w rw/EK-WAIT nil d 0)))))
+            :else (aset members i (link! w rw/EK-WAIT nil d at)))))
       (if-let [d @refused]
         (do (refuse! w [:await (g r rw/ID) (mapv #(g (row-of %) rw/ID) ds) mode aid])
             (ek (cycle-ex x d)))
@@ -1103,12 +1124,14 @@
             (dotimes [i n]
               (when-not (act-done? a)
                 (demand! w (row-of (nth ds i)))))
-            (if (and (act-done? a) (identical? a (g r rw/R-ACTV)) (run-current? r))
-              (let [res (finish-activation! w r a)]
-                (s! r rw/R-SLICE true)
-                (set-active! r)
-                (continue! res k ek))
-              (do (s! a rw/A-INLINE false) nil))))))))))
+            (if (and (g a rw/A-RESUMED) (== rw/ACT-ACTIVE (gl r rw/R-ACT)) (run-current? r))
+              (do (s! r rw/R-SLICE true)
+                  (set-active! r)
+                  (commit! w [:schedule (g r rw/ID)])
+                  (continue! (g a rw/A-RESULT) k ek))
+              (do (s! a rw/A-INLINE false)
+                  (when (g a rw/A-RESUMED) (aadd! (g w rw/W-RESUME) a))
+                  nil))))))))))
 
 (defn await-effect!
   "T6 with mode `one`."
@@ -1384,7 +1407,10 @@
       ;; B2: an invalid idle computation with a result steps its epoch so it
       ;; stays dirty while it runs; a fresh one needs no step.
       (when (some? (g c rw/C-DONE-EPOCH))
-        (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))))
+        (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))
+    ;; a demand that consumes the value without an edge (a task's fast path)
+    ;; leaves it unreferenced: Rule R demotes it again (§3.3)
+    (when (zero? (gl c rw/REFS)) (aadd! (g w rw/W-RQ) c))))
 
 ;; ---------------------------------------------------------------------------
 ;; Demand
@@ -1453,15 +1479,26 @@
 ;; Drain
 
 (defn- resume! [w a]
-  (let [r (g a rw/A-RUN)]
-    (when (and (identical? a (g r rw/R-ACTV)) (run-current? r) (== rw/ACT-PARKED (gl r rw/R-ACT)))
-      (let [res (finish-activation! w r a)
-            k (g a rw/A-R) ek (g a rw/A-E)]
-        (slice! r #(continue! res k ek))))))
+  (let [r (g a rw/A-RUN)
+        k (g a rw/A-R) ek (g a rw/A-E)]
+    (cond
+      ;; the resumed run gets its slice: a scheduling choice (D0)
+      (and (== rw/ACT-ACTIVE (gl r rw/R-ACT)) (run-current? r))
+      (do (s! r rw/R-SLICE true)
+          (commit! w [:schedule (g r rw/ID)])
+          (slice! r #(continue! (g a rw/A-RESULT) k ek)))
+      ;; cancelled between its resumption and its slice, with open finally
+      ;; regions: it unwinds through the error continuation (T14)
+      (and (== rw/ACT-DONE (gl r rw/R-ACT)) (pos? (fins r)) (not (g r rw/R-SLICE)))
+      (do (s! r rw/R-SLICE true)
+          (commit! w [:finalize (g r rw/ID)])
+          (slice! r #(ek (cancelled-ex ::cancelled))))
+      :else (retire-check! w r))))
 
 (defn- start! [w r]
   (when (== rw/ACT-ACTIVE (gl r rw/R-ACT))
     (let [k (g r rw/R-OF)]
+      (s! r rw/R-SLICE true)
       (commit! w [:schedule (g r rw/ID)])
       (slice! r #((g k rw/K-BODY) ok-k err-k)))))
 
@@ -1481,6 +1518,7 @@
     (cond
       (pos? (acount cleanup))
       (let [[r ek ex] (pop-first! cleanup)]
+        (s! r rw/R-SLICE true)
         (commit! w [:finalize (g r rw/ID)])
         (slice! r #(ek ex))
         (rule-r! w)
@@ -1665,7 +1703,7 @@
   [x k ek]
   (if-let [r (valid-run)]
     (let [w (g r rw/R-WORLD)
-          _ (next-at! r)
+          at (next-at! r)
           aid (alloc-id! w)]
       (if (available? x)
         (let [v (consume! x)]
@@ -1675,7 +1713,7 @@
           (k v))
         (let [members (object-array 1)
               a (new-activation! w aid r :one k ek members (object-array 1) 1)
-              e (link! w rw/EK-WAIT a x 0)]
+              e (link! w rw/EK-WAIT a x at)]
           (aset members 0 e)
           (hs/dq-push! (deque x rw/X-WAITERS) e)
           (park! r a)
@@ -1867,10 +1905,11 @@
           (let [e (link! w rw/EK-WAIT cb d 0)]
             (vreset! ev e)
             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-            (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
             (if (settled? d)
-              (fire-wait! w e)
-              (demand! w d))))))
+              (do (fire-wait! w e)
+                  (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
+              (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
+                  (demand! w d)))))))
     (fn []
       (gated w
         (when-let [e @ev]
@@ -1957,7 +1996,7 @@
         aid (alloc-id! w)
         members (object-array 1)
         a (new-activation! w aid r :one k ek members (object-array 1) 1)
-        e (link! w rw/EK-WAIT a z 0)]
+        e (link! w rw/EK-WAIT a z at)]
     (aset members 0 e)
     (park! r a)
     (s! a rw/A-INLINE false)
