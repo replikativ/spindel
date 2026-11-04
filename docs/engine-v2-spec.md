@@ -95,7 +95,17 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     (the CPS body cannot produce it);
   - Z#44 (D0): host operations issued inside a slice (write, deliver, post,
     release, cancel, ...) are effects of the slice-holding run, processed at
-    once; ingress from other threads is processed between slices.
+    once; ingress from other threads is processed between slices;
+  - Z#45 (§8.1): observe edges and host waits a fork inherits keep their
+    demand in the child, but their callbacks belong to the parent's host
+    and are not called there;
+  - Z#46 (B6, Z#44): a host operation issued inside a slice acts on the
+    slice's world, whatever world its handle was made in, so a body copied
+    into a fork addresses the fork;
+  - Z#47 (D3/Q4): `fork` is an effect of task runs (a computation's body
+    cannot fork); the parent continues with `[:parent W']`, the child's copy
+    of the run resumes at the effect with `[:child nil]`; forking from a
+    nested slice (an inline demand) is refused for now.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3

@@ -164,3 +164,5 @@
      :cljs (js/Map. m)))
 (defn lcopy "A shallow copy of a list." [l] #?(:clj (java.util.ArrayList. ^java.util.Collection l) :cljs (.slice l)))
 (defn dcopy "A shallow copy of a deque." [q] #?(:clj (java.util.ArrayDeque. ^java.util.Collection q) :cljs (.slice q)))
+
+(defn now-ms [] #?(:clj (System/currentTimeMillis) :cljs (.now js/Date)))

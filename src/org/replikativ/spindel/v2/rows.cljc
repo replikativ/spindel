@@ -79,8 +79,9 @@
 (def ^:const W-RELEASED 23)
 (def ^:const W-EPOCH 24)     ; M5: this world's owner epoch (identity object)
 (def ^:const W-FWD 25)       ; M5: row ID -> this world's copy (stage 1b)
-(def ^:const W-ARMED 26)     ; armed resources (fork refuses while > 0, for now)
-(def ^:const W-SIZE 27)
+(def ^:const W-ARMED 26)     ; armed resources: ordered set by ID (dormant in a fork, §8.1)
+(def ^:const W-DORMANT 27)   ; a fork's inherited armed resources, activated at its first turn
+(def ^:const W-SIZE 28)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -147,7 +148,8 @@
 (def ^:const Z-RESULT 14)
 (def ^:const Z-ERR 15)
 (def ^:const Z-CTL 16)       ; host control: offload wrapper or ScheduledFuture
-(def ^:const Z-SIZE 17)
+(def ^:const Z-DEADLINE 17)  ; timers: wall-clock deadline (ms), for re-arming in a fork (§8.1)
+(def ^:const Z-SIZE 18)
 
 (def ^:const Z-ARMED 1)
 (def ^:const Z-FIRED 2)

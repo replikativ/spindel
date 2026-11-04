@@ -31,11 +31,11 @@
 ;; hold no pointer to a world, the world is the one being processed).
 
 #?(:clj (def ^ThreadLocal ctx-tl (ThreadLocal.))
-   :cljs (def ctx-cell (object-array 2)))
+   :cljs (def ctx-cell (doto (object-array 3) (aset 2 0))))
 
 (defn- ctx ^objects []
   #?(:clj (let [c (.get ctx-tl)]
-            (if (nil? c) (let [c (object-array 2)] (.set ctx-tl c) c) c))
+            (if (nil? c) (let [c (object-array 3)] (aset c 2 (num 0)) (.set ctx-tl c) c) c))
      :cljs ctx-cell))
 
 (defn active-run [] (aget (ctx) 1))
@@ -211,7 +211,8 @@
     (aset c (unchecked-dec-int (alength c)) (aget ^objects w rw/W-EPOCH))
     (copy-containers! c)
     (aset ^objects w rw/W-FWD (assoc (aget ^objects w rw/W-FWD) (aget c rw/ID) c))
-    (when-let [reg (aget ^objects w rw/W-REG)] (hs/mput! reg (aget c rw/ID) c))
+    (when-let [reg (aget ^objects w rw/W-REG)]
+      (when (some? (hs/mget reg (aget c rw/ID))) (hs/mput! reg (aget c rw/ID) c)))
     c))
 
 (defn- force! [x]
@@ -774,17 +775,22 @@
   "Runs `f` as a slice of `r` on the host stack, restoring the caller's
    active run afterwards (I10)."
   [r f]
-  (let [prev (active-run)]
+  (let [prev (active-run)
+        c (ctx)]
     (s! r rw/R-SLICE true)
     (set-active! r)
+    (aset c 2 (num (inc (long (aget c 2)))))
     (try
       (try (force! (f))
            (catch #?(:clj Throwable :cljs :default) t
              (complete! (or (active-run) r) t true)))
       (finally
-        (s! r rw/R-SLICE false)
-        (set-active! prev)
-        (retire-check! (cw) r)))))
+        ;; re-resolve: a fork effect in this slice made `r` a shared basis row
+        (aset c 2 (num (dec (long (aget c 2)))))
+        (let [w (cw) r (rv w r)]
+          (s! r rw/R-SLICE false)
+          (set-active! prev)
+          (retire-check! w r))))))
 
 (defn- ok-k [v] (complete! (active-run) v false))
 (defn- err-k [t] (complete! (active-run) t true))
@@ -1689,11 +1695,14 @@
 
 (defn- ingress [w] (g w rw/W-INGRESS))
 
+(declare activate-dormant!)
+
 (defn- run-turn!
   "H2: processes ingress items and internal work up to the budget. Returns
    true when work remains."
   [w]
   (s! w rw/W-DRAINING true)
+  (when (g w rw/W-DORMANT) (activate-dormant! w))
   (try
     (loop [n (gl w rw/W-BUDGET)]
       (if (zero? n)
@@ -1705,7 +1714,7 @@
                 :else false))))
     (finally (s! w rw/W-DRAINING false))))
 
-(declare handoff!)
+(declare handoff! activate-dormant!)
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off."
@@ -1760,8 +1769,14 @@
           (if (g w rw/W-INLINE) (process! w) (handoff! w))
           nil))))
 
-(defn- world-of [h]
-  (if (instance? Handle h) (.-w ^Handle h) (cw)))
+(defn- world-of
+  "The world a host operation on `h` acts on. Inside a slice it is the
+   slice's world (Z#44: such operations are effects of the running run, and
+   a body copied into a fork addresses the fork); outside, the handle's."
+  [h]
+  (if (and (active-run) (cw))
+    (cw)
+    (if (instance? Handle h) (.-w ^Handle h) (cw))))
 
 ;; ---------------------------------------------------------------------------
 ;; Host API
@@ -2122,13 +2137,38 @@
 ;; Resources (T15, T17, T18): offload and timers
 
 
+(defn- armed-set [w]
+  (or (g w rw/W-ARMED) (let [s (hs/oset)] (s! w rw/W-ARMED s) s)))
+
+(defn forked-ex [] (ex-info "forked" {:spindel/forked true}))
+
+(declare join! cancel-resource!)
+
+(defn- activate-dormant!
+  "§8.1: a fork's inherited armed resources, at its first turn. A timer
+   re-arms for its remaining time; any other resource (offload, external
+   wait) never had a physical counterpart here: it fires err ::forked into
+   its edges and joins at once."
+  [w]
+  (when-let [zs (g w rw/W-DORMANT)]
+    (s! w rw/W-DORMANT nil)
+    (doseq [z0 zs]
+      (let [z (rv w z0)]
+        (when (== rw/Z-ARMED (gl z rw/Z-PHASE))
+          (if (and (= :timer (g z rw/Z-KIND)) (g z rw/Z-DEADLINE))
+            (let [left (max 0 (- (long (g z rw/Z-DEADLINE)) (hs/now-ms)))]
+              (hs/oset-add! (armed-set w) (id-of z) z)
+              (s! z rw/Z-CTL (hs/schedule! left (fn [] (join! w z [nil false])))))
+            (do (resource-fire! w z [(forked-ex) true])
+                (resource-ack! w z))))))))
+
 (defn- new-resource!
   "T17: an outstanding resource owned by `r`, with `at = R.effect-index`."
   [w r kind at]
   (let [z (debtor-row w rw/T-RES rw/Z-SIZE r 0 at 0)]
     (s! z rw/Z-KIND kind)
     (s! z rw/Z-PHASE rw/Z-ARMED)
-    (s! w rw/W-ARMED (inc (long (or (g w rw/W-ARMED) 0))))
+    (hs/oset-add! (armed-set w) (id-of z) z)
     (aadd! (or (g r rw/R-RES) (let [l (alist)] (s! r rw/R-RES l) l)) z)
     (register! w z)))
 
@@ -2138,7 +2178,7 @@
   (if (== rw/Z-ARMED (gl z rw/Z-PHASE))
     (let [[v err?] res]
       (s! z rw/Z-PHASE rw/Z-FIRED)
-      (s! w rw/W-ARMED (dec (long (g w rw/W-ARMED))))
+      (hs/oset-del! (armed-set w) (id-of z))
       (s! z rw/Z-RESULT v)
       (s! z rw/Z-ERR (boolean err?))
       (let [outs (acopy (g z rw/OUTS))]
@@ -2168,7 +2208,7 @@
   [w z]
   (when (== rw/Z-ARMED (gl z rw/Z-PHASE))
     (s! z rw/Z-PHASE rw/Z-CANCELLING)
-    (s! w rw/W-ARMED (dec (long (g w rw/W-ARMED))))
+    (hs/oset-del! (armed-set w) (id-of z))
     (let [ctl (g z rw/Z-CTL)
           joined? (if (hs/timer? ctl) (hs/unschedule! ctl) (hs/ctl-cancel! ctl))]
       (when joined? (resource-ack! w z)))))
@@ -2194,7 +2234,8 @@
 
 
 (defn- join! [w z res]
-  (host! w #(do (resource-fire! w z res) (resource-ack! w z))))
+  ;; the callback captured the row before any later fork: resolve it in `w`
+  (host! w #(let [z (rv w z)] (resource-fire! w z res) (resource-ack! w z))))
 
 (defn offload-effect!
   "`(offload f)`: runs the plain function `f` on the world's executor,
@@ -2222,6 +2263,7 @@
     (arm-and-park!
      r :timer k ek
      (fn [w z]
+       (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
        (s! z rw/Z-CTL (hs/schedule! ms (fn [] (join! w z [nil false]))))))
     (unwind! ek)))
 
@@ -2308,39 +2350,82 @@
   [w h]
   (new-handle w (aget ^objects (.-cell ^Handle h) 0)))
 
+(defn- fork-world*
+  "D3: the frozen copy-on-write fork of `w`, at the current commit. O(1) in
+   the world's rows: both worlds get fresh epochs, so every existing row is a
+   shared basis that each world copies on first access; the forward map (row
+   ID -> copy) is shared persistently. The child gets fresh administration
+   and copies of the queues, pins and roots (work in flight, design v3 §6);
+   its inherited armed resources are dormant until its first turn (§8.1)."
+  [w]
+  (let [c (aclone ^objects w)
+        armed (g w rw/W-ARMED)]
+    (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
+    (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
+    (s! c rw/ID (alloc-id! w))
+    (s! c rw/W-LOCK (hs/lock))
+    (s! c rw/W-INGRESS (hs/mpsc))
+    (s! c rw/W-SCHEDULED (hs/flag false))
+    (s! c rw/W-DRAINING false)
+    (s! c rw/W-CALLBACKS (alist))
+    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
+      (s! c i (hs/lcopy (g w i))))
+    (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
+    (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
+    (s! c rw/W-ARMED nil)
+    (s! c rw/W-DORMANT (when (and armed (pos? (hs/oset-count armed))) (hs/oset-vals armed)))
+    (when-let [reg (g w rw/W-REG)]
+      (s! c rw/W-REG (hs/mcopy reg))
+      (s! c rw/W-LOG (alist)))
+    c))
+
 (defn fork!
-  "D3 (host form, at a quiescent point): a frozen copy-on-write fork of `w`.
-   O(1) in the world's rows: both worlds get fresh epochs, so every existing
-   row becomes a shared basis that each world copies on first access; the
-   forward map (row ID -> copy) is shared persistently. The child gets fresh
-   administration (gate, ingress, callbacks) and copies of the queues, pins
-   and roots (work in flight, design v3 §6). Refused while a slice runs or
-   while armed resources exist (dormant resources come later, §8.1).
-   Returns the child world."
+  "D3, host form: a frozen fork of `w` between slices. Returns the child
+   world; act on it through `in-world` handles."
   [w]
   (let [res (volatile! nil)]
     (gated w
-      (when (active-run) (throw (ex-info "fork inside a slice is not supported yet (D3/Q4)" {})))
-      (when (pos? (long (or (g w rw/W-ARMED) 0)))
-        (throw (ex-info "fork with armed resources is not supported yet (dormant resources, §8.1)" {})))
-      (let [c (aclone ^objects w)]
-        (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
-        (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
-        (s! c rw/ID (alloc-id! w))
-        (s! c rw/W-LOCK (hs/lock))
-        (s! c rw/W-INGRESS (hs/mpsc))
-        (s! c rw/W-SCHEDULED (hs/flag false))
-        (s! c rw/W-DRAINING false)
-        (s! c rw/W-CALLBACKS (alist))
-        (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
-          (s! c i (hs/lcopy (g w i))))
-        (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
-        (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
-        (when-let [reg (g w rw/W-REG)]
-          (s! c rw/W-REG (hs/mcopy reg))
-          (s! c rw/W-LOG (alist)))
+      (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
+      (let [c (fork-world* w)]
+        (commit! w [:fork-host (g c rw/ID)])
         (vreset! res c)))
+    (handoff! @res)
     @res))
+
+(defn fork-effect!
+  "D3/Q4 `(fork)` in a task body: the fork boundary is this effect's commit.
+   The parent continues with [:parent child-world]; in the child the run
+   exists parked at the effect and resumes with [:child nil] (Q4)."
+  [k ek]
+  (if-let [r (valid-run)]
+    (cond
+      (comp? (rv (cw) (g r rw/R-OF)))
+      (ek (ex-info "fork in a computation body is not supported" {}))
+      (> (long (or (aget (ctx) 2) 0)) 1)
+      (ek (ex-info "fork in a nested slice is not supported yet" {}))
+      :else
+      (let [w (cw)
+            aid (alloc-id! w)
+            a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)]
+        ;; the child's view: the run resumed at the effect with its delivery
+        (s! a rw/A-RESULT [[:child nil] false])
+        (s! a rw/A-RESUMED true)
+        (s! a rw/A-INLINE false)
+        (s! r rw/R-SLICE false)
+        (aadd! (g w rw/W-RESUME) a)
+        (unregister! w a)                 ; a delivery carrier, not a parked activation
+        (let [child (fork-world* w)]
+          ;; the parent takes the delivery back and continues on its own copy
+          (remove-row! (g w rw/W-RESUME) a)
+          (let [r (rv w r)]
+            (s! r rw/R-SLICE true)
+            (set-active! r)
+            (commit! w [:fork (g r rw/ID) (g child rw/ID)])
+            (handoff! child)
+            (k [:parent child])))))
+    (unwind! ek)))
+
+(defn fork [] (throw (ex-info "fork outside a body" {})))
 
 (defn offload [_] (throw (ex-info "offload outside a body" {})))
 
@@ -2366,6 +2451,8 @@
        (fn [[xs]] `(await-all-effect! ~xs ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-any [_ctx r e]
        (fn [[xs]] `(await-any-effect! ~xs ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-fork [_ctx r e]
+       (fn [_] `(fork-effect! ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
        (fn [[f]] `(offload-effect! ~f ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-sleep [_ctx r e]
@@ -2379,6 +2466,7 @@
         'org.replikativ.spindel.v2.core/await-any `bp-await-any
         'org.replikativ.spindel.v2.core/take! `bp-consume
         'org.replikativ.spindel.v2.core/offload `bp-offload
+        'org.replikativ.spindel.v2.core/fork `bp-fork
         'org.replikativ.spindel.v2.core/sleep `bp-sleep
         'org.replikativ.spindel.v2.core/acquire! `bp-consume})
      (declare register-finally)

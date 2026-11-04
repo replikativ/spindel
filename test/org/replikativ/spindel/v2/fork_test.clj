@@ -85,3 +85,37 @@
               (assert (= i (v2/value (v2/in-world f c))))))
           (is (= before (count (vals (aget ^objects w rw/W-REG)))) "forks never add rows to the parent")
           (is (= 0 (v2/value c))))))))
+
+(deftest fork-effect-in-a-task
+  ;; D3/Q4: the parent continues with [:parent child]; the child's copy of
+  ;; the run resumes at the effect with [:child nil].
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [x (v2/signal 1)
+              t (task (let [[side child] (v2/fork)]
+                        (v2/write! x (if (= side :child) 20 10))
+                        [side child]))
+              [side child] (v2/value t 1000 ::timeout)]
+          (is (= :parent side))
+          (is (some? child))
+          (is (= 10 (v2/value x)) "the parent wrote 10")
+          (let [[cside _] (v2/value (v2/in-world child t) 1000 ::timeout)]
+            (is (= :child cside) "the child's copy resumed with the child-side result")
+            (is (= 20 (v2/value (v2/in-world child x))) "and wrote in the child")))))))
+
+(deftest dormant-resources-in-a-fork
+  ;; §8.1: a timer re-arms in the fork; an offload fails with err ::forked.
+  (checked
+    (let [w (vworld)]
+      (binding [v2/*world* w]
+        (let [release (promise)
+              sleeper (task (v2/sleep 50) :woke)
+              waiter (task (try (v2/offload #(deref release 5000 :late))
+                                (catch Exception e (if (:spindel/forked (ex-data e)) :forked (throw e)))))
+              child (v2/fork! w)]
+          (is (= :woke (v2/value (v2/in-world child sleeper) 2000 ::timeout)) "the timer re-armed in the child")
+          (is (= :forked (v2/value (v2/in-world child waiter) 2000 ::timeout)) "the offload has no counterpart in the child")
+          (is (= :woke (v2/value sleeper 2000 ::timeout)))
+          (deliver release :done)
+          (is (= :done (v2/value waiter 2000 ::timeout)) "the parent's offload is unaffected"))))))
