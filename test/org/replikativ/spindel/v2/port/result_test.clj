@@ -8,7 +8,7 @@
 
 (use-fixtures :each checking)
 
-(deftest ^:gap test-ok-construction
+(deftest test-ok-construction
   (testing "ok creates success result"
     (let [r ((required-api 'ok) 42)]
       (is ((required-api 'ok?) r))
@@ -26,7 +26,7 @@
       (is ((required-api 'ok?) r))
       (is (= {:a 1 :b [2 3]} ((required-api 'unwrap) r))))))
 
-(deftest ^:gap test-error-construction
+(deftest test-error-construction
   (testing "error creates error result"
     (let [ex (ex-info "test error" {})
           r ((required-api 'error) ex)]
@@ -44,7 +44,7 @@
           (is (= "test error" (ex-message e)))
           (is (= {:data 123} (ex-data e))))))))
 
-(deftest ^:gap test-match
+(deftest test-match
   (testing "match calls ok-fn on success"
     (let [r ((required-api 'ok) 42)
           result ((required-api 'match) r
@@ -75,7 +75,7 @@
                              (fn [e] (reset! called [:error e])))
       (is (= [:ok 42] @called)))))
 
-(deftest ^:gap test-result-equality
+(deftest test-result-equality
   (testing "ok results with same value are equal"
     (is (= ((required-api 'ok) 42) ((required-api 'ok) 42))))
 
@@ -94,7 +94,7 @@
     (is (= ((required-api 'ok) nil) ((required-api 'ok) nil)))
     (is (not= ((required-api 'ok) nil) ((required-api 'ok) 0)))))
 
-(deftest ^:gap test-result-predicates
+(deftest test-result-predicates
   (testing "ok? and error? are mutually exclusive"
     (let [ok-result ((required-api 'ok) 42)
           error-result ((required-api 'error) (ex-info "test" {}))]

@@ -139,31 +139,31 @@
   (with-world [w]
     (is (thrown? AssertionError (v2/value (spin (assert false "Assertion failed")) 2000 ::timeout)))))
 
-(deftest ^:gap test-attempt-captures-ok
+(deftest test-attempt-captures-ok
   (with-world [w]
     (let [c (spin (let [f (await ((required-api 'attempt) (spin 42)))] (f)))]
       (is (= [:ok 42] (outcome c))))))
 
-(deftest ^:gap test-attempt-captures-error
+(deftest test-attempt-captures-error
   (with-world [w]
     (let [risky (spin (throw (ex-info "boom" {:x 1})))
           c (spin (let [f (await ((required-api 'attempt) risky))]
                     (try (f) :no-throw (catch Throwable e [:caught (ex-message e)]))))]
       (is (= [:ok [:caught "boom"]] (outcome c))))))
 
-(deftest ^:gap test-absolve-unwraps-ok
+(deftest test-absolve-unwraps-ok
   (with-world [w]
     (let [wrapped (spin (fn [] 99))
           c (spin (await ((required-api 'absolve) wrapped)))]
       (is (= [:ok 99] (outcome c))))))
 
-(deftest ^:gap test-absolve-rethrows-error
+(deftest test-absolve-rethrows-error
   (with-world [w]
     (let [wrapped (spin (fn [] (throw (ex-info "kaboom" {}))))
           c (spin (await ((required-api 'absolve) wrapped)))]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"kaboom" (v2/value c 2000 ::timeout))))))
 
-(deftest ^:gap test-attempt-absolve-roundtrip
+(deftest test-attempt-absolve-roundtrip
   (with-world [w]
     (let [c (spin (await ((required-api 'absolve) ((required-api 'attempt) (spin 7)))))]
       (is (= [:ok 7] (outcome c))))))

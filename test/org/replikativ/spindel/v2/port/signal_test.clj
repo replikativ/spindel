@@ -417,13 +417,13 @@
     (swap! s inc)
     (let [view (v2/value c)] (is (= 11 (:new view))) (is (= 10 (:old view))))))
 
-(deftest ^:gap test-signal-swap-changed
+(deftest test-signal-swap-changed
   (when-let [swap-changed? (api 'swap-changed?)]
     (let [s (v2/signal 0)]
       (is (true? (swap-changed? s inc))) (is (= 1 @s))
       (is (false? (swap-changed? s identity))) (is (= 1 @s)))))
 
-(deftest ^:gap test-swap-await-async-f
+(deftest test-swap-await-async-f
   (when-let [swap-await! (api 'swap-await!)]
     (let [s (v2/signal 10)
           async-x2 (fn [c] (spin (v2/sleep 1) (* c 2)))]

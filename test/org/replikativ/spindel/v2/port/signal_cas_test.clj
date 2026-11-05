@@ -12,7 +12,7 @@
     (is (true? (compare-and-set! s cur :b))) (is (= :b @s))
     (is (false? (compare-and-set! s cur :c))) (is (= :b @s))))
 
-(deftest ^:gap test-swap-await-remerges-concurrent-write
+(deftest test-swap-await-remerges-concurrent-write
   (when-let [swap-await! (api 'swap-await!)]
     (let [s (v2/signal #{}) gate (v2/deferred) calls (atom 0)
           join (fn [cur item] (let [n (swap! calls inc)]
@@ -23,7 +23,7 @@
       (is (= #{:a :b} (v2/value t)))
       (is (= #{:a :b} @s)))))
 
-(deftest ^:gap test-signalref-watchable-and-fork-correct
+(deftest test-signalref-watchable-and-fork-correct
   (let [s (v2/signal 0) rc (atom []) fc (atom [])]
     (add-watch s :root (fn [_ _ o n] (swap! rc conj [o n])))
     (let [child (v2/fork! v2/*world*) cs (v2/in-world child s)]

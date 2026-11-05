@@ -47,7 +47,7 @@
           s (spin (await b))]
       (is (= :yes (v2/value s 5000 ::timeout))))))
 
-(deftest ^:gap a-pool-that-refuses-the-work-rejects-the-spin
+(deftest a-pool-that-refuses-the-work-rejects-the-spin
   (do
     (let [gate (promise)
           pool (ThreadPoolExecutor. 1 1 0 TimeUnit/SECONDS (SynchronousQueue.) (ThreadPoolExecutor$AbortPolicy.))
@@ -66,7 +66,7 @@
       (is (= [1 1] (v2/value s 5000 ::timeout)))
       (is (= 1 @calls)))))
 
-(deftest ^:gap a-caller-runs-pool-is-refused
+(deftest a-caller-runs-pool-is-refused
   (let [pool (ThreadPoolExecutor. 1 1 0 TimeUnit/SECONDS (SynchronousQueue.) (ThreadPoolExecutor$CallerRunsPolicy.))]
     (do
       (is (thrown? clojure.lang.ExceptionInfo (comb/blocking (fn [] 1) {:pool pool}))))

@@ -13,7 +13,7 @@
     (is (= [2 3] (reset! a [2 3]))) (is (= [2 3] @a))
     (is (= [2 3 4 5] (swap! a conj 4 5))) (is (= [2 3 4 5] @a))))
 
-(deftest ^:gap test-atom-metadata
+(deftest test-atom-metadata
   (is (= {:doc "Test atom"} (meta ((api 'atom) [] :meta {:doc "Test atom"})))))
 
 (deftest test-atom-in-spin-context
@@ -21,7 +21,7 @@
                                  (swap! cache conj 1)
                                  (swap! cache conj 2)))))))
 
-(deftest ^:gap test-atom-watchers
+(deftest test-atom-watchers
   (let [a (v2/atom 0) calls (atom [])]
     (add-watch a :watch (fn [k _ old new] (swap! calls conj {:key k :old old :new new})))
     (swap! a inc)
@@ -38,7 +38,7 @@
       (binding [v2/*world* child] (is (= [1 2 3 4] @a)))
       (finally (v2/release-world! child)))))
 
-(deftest ^:gap test-atom-execution-context
+(deftest test-atom-execution-context
   (let [a (v2/atom 42) calls (atom [])]
     (is (= 42 @a))
     (add-watch a :test-watcher (fn [k _ old new] (swap! calls conj {:key k :old old :new new})))
@@ -47,7 +47,7 @@
     (is (= 42 (:old (first @calls))))
     (is (= 43 (:new (first @calls))))))
 
-(deftest ^:gap test-atom-backend-abstraction
+(deftest test-atom-backend-abstraction
   (let [atoms (mapv v2/atom [1 2 3]) calls (mapv (fn [_] (atom [])) atoms)]
     (is (= [1 2 3] (mapv deref atoms)))
     (doseq [[a seen] (map vector atoms calls)]
@@ -55,7 +55,7 @@
       (swap! a inc))
     (is (= [1 1 1] (mapv #(count @%) calls)))))
 
-(deftest ^:gap test-fork-watcher-fires-on-fork-mutation
+(deftest test-fork-watcher-fires-on-fork-mutation
   (let [a (v2/atom 0) rc (atom []) fc (atom [])]
 
     (let [child (v2/fork! v2/*world*)]
@@ -69,7 +69,7 @@
 
         (finally (v2/release-world! child))))))
 
-(deftest ^:gap test-fork-watcher-parent-stays-silent
+(deftest test-fork-watcher-parent-stays-silent
   (let [a (v2/atom 0) rc (atom []) fc (atom [])]
     (add-watch a :root (fn [_ _ o n] (swap! rc conj [o n])))
     (let [child (v2/fork! v2/*world*)]
@@ -83,7 +83,7 @@
         (is (= [[0 1]] @rc))
         (finally (v2/release-world! child))))))
 
-(deftest ^:gap test-fork-watcher-independence
+(deftest test-fork-watcher-independence
   (let [a (v2/atom 0) rc (atom []) fc (atom [])]
     (add-watch a :root (fn [_ _ o n] (swap! rc conj [o n])))
     (let [child (v2/fork! v2/*world*)]
@@ -97,7 +97,7 @@
         (is (= [[0 1]] @rc))
         (finally (v2/release-world! child))))))
 
-(deftest ^:gap test-restored-context-watcher-without-prior-atom
+(deftest test-restored-context-watcher-without-prior-atom
   (let [a (v2/atom 0) rc (atom []) fc (atom [])]
 
     (let [child (v2/fork! v2/*world*)]
@@ -111,7 +111,7 @@
 
         (finally (v2/release-world! child))))))
 
-(deftest ^:gap atom-cas-identity-and-watch-semantics
+(deftest atom-cas-identity-and-watch-semantics
   (let [initial (with-meta [:value] {:identity :first})
         equal-value (with-meta [:value] {:identity :second})
         a (v2/atom initial) calls (atom [])]
@@ -135,7 +135,7 @@
       (is (= :initial @a))
       (finally (v2/release-world! other)))))
 
-(deftest ^:gap watches-are-selected-at-value-commit
+(deftest watches-are-selected-at-value-commit
   (doseq [mutate! [(fn [a] (swap! a inc)) (fn [a] (compare-and-set! a 0 1))]]
     (let [a (v2/atom 0) calls (atom []) committed (promise) continue (promise)]
       (add-watch a :before (fn [k _ o n]
