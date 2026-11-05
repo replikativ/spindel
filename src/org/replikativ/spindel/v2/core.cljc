@@ -1397,7 +1397,8 @@
                 (when in-comp?
                   (doseq [d ds] (let [d (row-of d)]
                                   (when (final? d)
-                                    (let [ins (g x rw/C-INS)]
+                                    ;; a copy: remove-dep! shrinks C.ins
+                                    (let [ins (acopy (g x rw/C-INS))]
                                       (dotimes [i (acount ins)]
                                         (let [e (rv w (anth ins i))]
                                           (when (and (identical? d (rv w (g e rw/E-DEBTOR))) (== at (gl e rw/E-AT)))
@@ -2394,6 +2395,8 @@
 ;; ---------------------------------------------------------------------------
 ;; World state (M6 R1): application data of a world, outside the reactive
 ;; graph, forked by value. Engine references go in as world-neutral refs.
+
+(defn handle? [x] (instance? Handle x))
 
 (deftype Ref [^objects cell])
 

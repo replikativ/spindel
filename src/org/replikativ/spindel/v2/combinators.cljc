@@ -64,3 +64,54 @@
   ([f opts]
    (let [g #?(:clj (bound-fn* f) :cljs f)]
      (spin (v2/offload g opts)))))
+
+;; ---------------------------------------------------------------------------
+;; Rate operators (old semantics: compositions of a timer with the source).
+;; `source` is a handle (awaited) or a plain value such as a tracked interval
+;; (returned as is). Inside a computation that tracks a signal, the enclosing
+;; computation re-runs on a change, which re-arms the timer: debounce.
+
+(defn debounce
+  "A computation that waits `ms`, then delivers `source`'s value."
+  [source ms]
+  (if (v2/handle? source)
+    (spin (v2/sleep ms) (await source))
+    (spin (v2/sleep ms) source)))
+
+(defn throttle
+  "A computation that waits 1000/`max-hz` ms, then delivers
+   `(merge-fn nil value)`."
+  [source max-hz merge-fn]
+  (let [ms (/ 1000 max-hz)]
+    (if (v2/handle? source)
+      (spin (v2/sleep ms) (merge-fn nil (await source)))
+      (spin (v2/sleep ms) (merge-fn nil source)))))
+
+(defn sample
+  "A computation that waits `ms`, then delivers `source`'s current value."
+  [source ms]
+  (debounce source ms))
+
+(defn relieve
+  "A computation of `source`'s latest value: a run whose value was overtaken
+   while it waited delivers the newest one."
+  [source]
+  (let [latest (clojure.core/atom nil)
+        version (clojure.core/atom 0)]
+    (if (v2/handle? source)
+      (spin (let [mine (swap! version inc)
+                  v (await source)]
+              (reset! latest v)
+              (if (= @version mine) v @latest)))
+      (spin source))))
+
+(defn accumulate
+  "A computation tracking `signal` that merges each new interval into the
+   ones not yet delivered, with the associative `merge-fn` (e.g.
+   iv/merge-intervals), so rate control loses no deltas."
+  [signal merge-fn]
+  (let [acc (clojure.core/atom nil)]
+    (spin (let [cur (v2/track signal)
+                merged (merge-fn @acc cur)]
+            (reset! acc merged)
+            merged))))
