@@ -1,0 +1,138 @@
+(ns org.replikativ.spindel.v2.host-fork-model-test
+  "Bounded operational bridge model, not the external engine proof."
+  (:require [clojure.test :refer [deftest is]]))
+
+(defn- successors [s]
+  (keep identity
+        [(when (= :new (:phase s))
+           (assoc s :phase (if (:valid? s) :queued :refused)))
+         (when (= :queued (:phase s)) (assoc s :phase :claimed :gate? true))
+         (when (and (= :node (:platform s)) (= :queued (:phase s)))
+           (assoc s :phase :canceled :closure? false))
+         (when (and (not (:gate? s)) (not (:closed? s))) (assoc s :closed? true))
+         (when (= :claimed (:phase s))
+           (if (or (:closed? s) (:unborn? s))
+             (assoc s :phase :refused :closure? false)
+             (assoc s :phase :committed :allocated 1 :owned? true :outbox :pending :closure? false)))
+         (when (and (:gate? s) (#{:committed :refused} (:phase s))) (assoc s :gate? false))
+         (when (and (= :committed (:phase s)) (not (:returned? s))) (assoc s :returned? true))
+         (when (and (= :committed (:phase s)) (not (:callback-threw? s))) (assoc s :callback-threw? true))
+         (when (and (= :pending (:outbox s)) (not (:gate? s))) (assoc s :outbox :dispatched))]))
+
+(defn- reachable [initial]
+  (loop [seen #{initial} todo [initial]]
+    (if-let [s (peek todo)]
+      (let [fresh (remove seen (successors s))]
+        (recur (into seen fresh) (into (pop todo) fresh))) seen)))
+
+(deftest canceled-or-refused-host-control-cannot-later-allocate
+  (doseq [platform [:jvm :node] valid? [false true] unborn? [false true]]
+    (let [states (reachable {:platform platform :valid? valid? :unborn? unborn?
+                             :phase :new :gate? false :closed? false :closure? true
+                             :allocated 0 :owned? false :returned? false
+                             :callback-threw? false :outbox :none})]
+      (doseq [s states]
+        (is (<= (:allocated s) 1))
+        (when (#{:canceled :refused} (:phase s)) (is (zero? (:allocated s))))
+        (when (pos? (:allocated s)) (is (:owned? s)) (is (:valid? s)) (is (not (:unborn? s))))
+        (when (:returned? s) (is (= :committed (:phase s))) (is (:owned? s)))
+        (when (= :dispatched (:outbox s)) (is (not (:gate? s))))
+        (doseq [next (successors s)]
+          (when (#{:canceled :refused} (:phase s)) (is (= (:allocated s) (:allocated next))))))
+      (doseq [s states :when (empty? (successors s))]
+        (is (#{:canceled :refused :committed} (:phase s)))
+        (when (= :committed (:phase s))
+          (is (:returned? s)) (is (= :dispatched (:outbox s)))
+          (is (:callback-threw? s) "callback failure cannot suppress the accepted outbox"))))))
+
+(defn- transport-successors [s]
+  (let [js-turn-can-finish? (or (= :jvm (:platform s))
+                                (not= :claimed (:entry s)) (not= :absent (:outcome s)))]
+    (keep identity
+          [(when (and (= :pending (:entry s))
+                      (or (= :jvm (:platform s)) (= :running (:transport s))))
+             (assoc s :entry :claimed :closure? false))
+           (when (and (= :claimed (:entry s)) (= :absent (:outcome s)))
+             (assoc s :outcome (if (:fail? s) :own-error :nil-value)
+                    :mutations (if (:fail? s) 0 1)))
+           (when (and (= :running (:transport s)) js-turn-can-finish?)
+             (assoc s :transport :returned))
+           (when (and (= :running (:transport s)) js-turn-can-finish?)
+             (assoc s :transport :turn-error))
+           (when (and (= :pending (:entry s))
+                      (or (= :turn-error (:transport s))
+                          (and (= :node (:platform s)) (= :returned (:transport s)))))
+             (assoc s :entry :canceled :closure? false))
+           (when (and (= :canceled (:entry s)) (nil? (:delivered s)))
+             (assoc s :delivered (if (= :turn-error (:transport s)) :turn-error :unsupported)))
+           (when (and (not= :absent (:outcome s)) (= :turn-error (:transport s)) (zero? (:reports s)))
+             (assoc s :reports 1))
+           (when (and (not= :absent (:outcome s)) (nil? (:delivered s))
+                      (not= :running (:transport s))
+                      (or (= :returned (:transport s)) (= 1 (:reports s))))
+             (assoc s :delivered (:outcome s)))])))
+
+(deftest synchronous-control-transport-claim-cancel-and-outcome-priority
+  (doseq [platform [:jvm :node] fail? [false true]]
+    (let [initial {:platform platform :fail? fail? :entry :pending :closure? true
+                   :outcome :absent :transport :running :delivered nil :reports 0 :mutations 0}
+          states (loop [seen #{initial} todo [initial]]
+                   (if-let [s (peek todo)]
+                     (let [fresh (remove seen (transport-successors s))]
+                       (recur (into seen fresh) (into (pop todo) fresh))) seen))]
+      (doseq [s states]
+        (is (<= (:reports s) 1))
+        (when (= :canceled (:entry s))
+          (is (not (:closure? s))) (is (zero? (:mutations s))) (is (= :absent (:outcome s))))
+        (when (#{:own-error :nil-value} (:delivered s))
+          (is (= (:outcome s) (:delivered s)))
+          (is (= :claimed (:entry s)))
+          (when (= :turn-error (:transport s)) (is (= 1 (:reports s)))))
+        (when (#{:turn-error :unsupported} (:delivered s))
+          (is (= :canceled (:entry s))) (is (zero? (:reports s))))
+        (doseq [next (transport-successors s)]
+          (when (= :canceled (:entry s)) (is (= :canceled (:entry next))))
+          (when (:delivered s) (is (= (:delivered s) (:delivered next)))))
+        (when (empty? (transport-successors s))
+          (is (some? (:delivered s))))))))
+
+(defn- wait-successors [s]
+  (keep identity
+        [(when (= :pending (:entry s)) (assoc s :entry :claimed))
+         (when (and (= :claimed (:entry s)) (= :absent (:outcome s)))
+           (assoc s :outcome (if (:fail? s) :own-error :nil-value)))
+         (when (and (= :waiting (:phase s)) (< (:interrupts s) 2))
+           (-> s (update :interrupts inc) (assoc :flag? true)))
+         (when (and (= :waiting (:phase s)) (:flag? s))
+           (if (= :pending (:entry s))
+             (assoc s :entry :canceled :phase :delivered :delivered :interruption :flag? false)
+             (assoc s :flag? false :remembered? true)))
+         (when (and (= :waiting (:phase s)) (not (:flag? s)) (not= :absent (:outcome s)))
+           (assoc s :phase :reporting))
+         (when (and (= :reporting (:phase s)) (not (:reported? s)))
+           (assoc s :reported? true :log-flag (:flag? s)))
+         (when (and (= :reporting (:phase s)) (:reported? s))
+           (assoc s :phase :delivered :delivered (:outcome s) :flag? (:remembered? s)))]))
+
+(deftest interrupted-wait-cancels-pending-or-preserves-claimed-outcome-and-status
+  (doseq [fail? [false true] published? [false true] transport-interrupted? [false true]]
+    (let [initial {:fail? fail? :entry (if (or published? transport-interrupted?) :claimed :pending)
+                   :outcome (if published? (if fail? :own-error :nil-value) :absent)
+                   :phase :waiting :interrupts 0 :flag? false :remembered? transport-interrupted?
+                   :reported? false :log-flag nil :delivered nil}
+          states (loop [seen #{initial} todo [initial]]
+                   (if-let [s (peek todo)]
+                     (let [fresh (remove seen (wait-successors s))]
+                       (recur (into seen fresh) (into (pop todo) fresh))) seen))]
+      (doseq [s states]
+        (when (= :canceled (:entry s))
+          (is (= :absent (:outcome s)))
+          (is (= :interruption (:delivered s))))
+        (when (:reported? s) (is (false? (:log-flag s))))
+        (when (and (= :delivered (:phase s)) (= :claimed (:entry s)))
+          (is (= (:outcome s) (:delivered s)))
+          (when (or transport-interrupted? (pos? (:interrupts s))) (is (:flag? s))))
+        (doseq [next (wait-successors s)]
+          (when (= :canceled (:entry s)) (is (= :canceled (:entry next))))
+          (when (:delivered s) (is (= (:delivered s) (:delivered next)))))
+        (when (empty? (wait-successors s)) (is (= :delivered (:phase s))))))))

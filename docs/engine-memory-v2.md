@@ -1202,3 +1202,37 @@ The pure model covers the lifecycle/control plane; functional tests remain
 responsible for real CPS execution, values, interval/delta behavior and public
 subsystems. Allocation profiles and retained-heap probes check physical costs
 that logical transition replay cannot establish.
+
+### Ordinary host fork control lifetime
+
+Ordinary `fork!` uses the same cancellable synchronous control bridge as the
+accepted World host controls. JVM waiting is outside gates; same-world host
+callbacks may return a child directly. Node cancellation clears an unclaimed
+allocation closure before refusing an unsupported synchronous turn; a queue
+entry may remain inert until consumed, but no ordinal, epoch, ID, custody or
+metadata registration occurs later. Validate source lifecycle under its gate,
+preflight predictable capacity refusal, then allocate/install weak root custody,
+commit and place exactly the accepted child's handoff in W-AFTER. The outer gate
+owner drains that outbox after unlocking, even if the callback throws. Do not
+retain allocation closure/payload history or turn weak ordinary custody into a
+strong World root. This preserves D3 and does not implement S3R cloning.
+
+The internal synchronous bridge applies the existing clearable HostIngress cell
+on JVM and Node. A dispatch error atomically cancels only an unclaimed runnable;
+claim-winning JVM races keep ownership until the actual outcome arrives outside
+gates. Completed success (including nil) or own exception takes priority over a
+distinct later turn error, which is logged once through the stable engine event.
+No fork-specific result flag, capability rollback or retained runtime error history
+is added. A canceled queue entry retains only its inert phase/result transport,
+never the allocation closure. The separate legacy host-call! and generic callback
+progress limitations are not silently repaired by this lifetime rule.
+
+A JVM interrupted promise wait uses that same claim/cancel cell: cancel a pending
+runnable and propagate interruption, or retain claim-winning result ownership and
+wait outside gates through repeated interruptions. The bridge remembers only a
+wait-state boolean, never a second resource/result flag or interrupt history.
+After retrieving the outcome and reporting a distinct displaced turn error,
+restore interrupt status in the final delivery/finally path, including own-error
+delivery. Only the promise wait catches InterruptedException; f's stored exception
+is not reclassified as cancellation. Already-published outcomes remain owned when
+the caller's interrupt bit is set before awaiting them.

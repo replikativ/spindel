@@ -3581,27 +3581,58 @@
   (when (or (active-run) *cleanup-registration?*)
     (throw (invalid-op op "world host control is unavailable inside engine execution"))))
 
-(defn- internal-result-action [entry box]
+(defn- internal-result-action [entry result]
   (fn []
     (when-let [old (claim-host-entry! entry :claimed)]
-      (vreset! box (try [((:run old)) nil]
-                        (catch #?(:clj Throwable :cljs :default) error [nil error]))))))
+      (let [outcome (try [((:run old)) false]
+                         (catch #?(:clj Throwable :cljs :default) error [error true]))]
+        #?(:clj (deliver result outcome) :cljs (vreset! result outcome))))))
+
+#?(:clj
+   (defn- await-internal-result [entry result interrupted?]
+     (loop [interrupted? interrupted?]
+       (let [[outcome wait-interrupted?]
+             (try [@result false] (catch InterruptedException error [error true]))]
+         (if wait-interrupted?
+           (do
+             (cancel-host-entry! entry)
+             (if (= :canceled (:phase @(.-state ^HostIngress entry)))
+               (throw outcome)
+               (recur true)))
+           [outcome interrupted?])))))
 
 (defn- internal-call! [w f]
   (cond
     (and (identical? w (cw)) (holding-gate?)) (f)
     (holding-gate?) (throw (invalid-op :world-control "cannot enter a foreign world gate"))
     :else
-    #?(:clj (let [p (promise)]
-              (internal! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
-              (let [[v t] @p] (if t (throw t) v)))
-       :cljs (let [box (volatile! nil)
-                   entry (prepare-host-entry! (host-control) f nil false)]
-               (internal! w (internal-result-action entry box))
-               (when-not @box
-                 (cancel-host-entry! entry)
-                 (throw (invalid-op :world-control "requires a synchronous host turn")))
-               (let [[v t] @box] (if t (throw t) v))))))
+    (let [result #?(:clj (promise) :cljs (volatile! nil))
+          entry (prepare-host-entry! (host-control) f nil false)
+          [turn-error turn-failed?]
+          (try (internal! w (internal-result-action entry result)) [nil false]
+               (catch #?(:clj Throwable :cljs :default) error [error true]))]
+      (when turn-failed?
+        ;; The atomic claim/cancel cell decides whether execution is still ours
+        ;; to prevent, or an accepted control outcome is already owed.
+        (cancel-host-entry! entry)
+        (when (= :canceled (:phase @(.-state ^HostIngress entry)))
+          (throw turn-error)))
+      #?(:cljs
+         (when-not @result
+           (cancel-host-entry! entry)
+           (throw (invalid-op :world-control "requires a synchronous host turn"))))
+      ;; A JVM executor may have claimed before cancellation and not yet
+      ;; published. This wait is outside all gates. Nil success is a real pair.
+      (let [[outcome interrupted?]
+            #?(:clj (await-internal-result entry result (and turn-failed? (instance? InterruptedException turn-error)))
+               :cljs [@result false])]
+        (try
+          (when turn-failed? (log/error :engine/host-control-turn-failed {:error turn-error}))
+          (let [[value failed?] outcome] (if failed? (throw value) value))
+          (finally
+            ;; Keep the remembered status through diagnostics, then restore it
+            ;; for both successful value and the control's own error delivery.
+            #?(:clj (when interrupted? (.interrupt (Thread/currentThread))) :cljs nil)))))))
 
 (defn- owner-world [^WorldHostOwner owner target]
   (when-not (and (instance? WorldHostOwner owner)
@@ -4110,21 +4141,34 @@
      c)))
 
 (defn fork!
-  "D3, host form: a frozen fork of `w` between slices. Returns the child
-   world; act on it through `in-world` handles."
+  "D3, host form: return a committed frozen fork between slices. JVM callers
+   wait outside gates; Node requires a synchronous turn. Same-world host
+   callbacks may allocate; child execution is handed off after parent unlock."
   [w]
   (ordinary-admission! :fork)
-  (let [res (volatile! nil)]
-    (gated w
-           (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-           (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-           (let [_ (next-acquisition-order w)
-                 c (fork-world* w)]
-             (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
-             (commit! w [:fork-host (g c rw/ID)])
-             (vreset! res c)))
-    (handoff! @res)
-    @res))
+  (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
+  (when-not (and #?(:clj (instance? (Class/forName "[Ljava.lang.Object;") w)
+                    :cljs (array? w))
+                 (= (inc rw/W-SIZE) (alength ^objects w))
+                 (= rw/T-WORLD (aget ^objects w rw/TYPE)))
+    (throw (invalid-op :fork "expected a world")))
+  (when (and (holding-gate?) (not (identical? w (cw))))
+    (throw (invalid-op :fork "cannot fork through a foreign world gate")))
+  (internal-call!
+   w
+   (fn []
+     ;; Internal control bypasses ordinary host admission: restore all ordinary
+     ;; lifecycle checks under this source gate, before any allocation/mutation.
+     (when (or (g w rw/W-RELEASED) (:requested? (g w rw/W-CLOSE)))
+       (throw (released-ex)))
+     (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+     (next-acquisition-order w)
+     (let [c (fork-world* w)]
+       (own-child! w (rv w (g w rw/W-ROOT)) c false)
+       (commit! w [:fork-host (g c rw/ID)])
+       ;; The outer gate owner drains this outbox even if a callback throws.
+       (aadd! (g w rw/W-AFTER) c)
+       c))))
 
 (defn fork-effect!
   "D3/Q4 `(fork)` in a task body: the fork boundary is this effect's commit.

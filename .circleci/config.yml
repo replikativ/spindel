@@ -106,6 +106,30 @@ jobs:
       - run:
           name: Verify unoptimized cleanup retention with real Node garbage collection
           command: node --expose-gc target/cleanup-gc-none/main.js
+      - run:
+          name: Compile v2 host-fork and control-result smoke tests
+          command: |
+            rm -rf target/host-fork-smoke
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/host-fork-smoke/out" :output-to "target/host-fork-smoke/main.js"}' -c org.replikativ.spindel.v2.host-fork-smoke
+      - run:
+          name: Run v2 host-fork and control-result smoke tests
+          command: node target/host-fork-smoke/main.js
+      - run:
+          name: Compile v2 host-fork retention probes
+          command: |
+            rm -rf target/host-fork-gc
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/host-fork-gc/out" :output-to "target/host-fork-gc/main.js"}' -c org.replikativ.spindel.v2.host-fork-gc
+      - run:
+          name: Verify host-fork retention with real Node garbage collection
+          command: node --expose-gc target/host-fork-gc/main.js
+      - run:
+          name: Compile unoptimized v2 host-fork retention probes
+          command: |
+            rm -rf target/host-fork-gc-none
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :none :elide-asserts false :output-dir "target/host-fork-gc-none/out" :output-to "target/host-fork-gc-none/main.js"}' -c org.replikativ.spindel.v2.host-fork-gc
+      - run:
+          name: Verify unoptimized host-fork retention with real Node garbage collection
+          command: node --expose-gc target/host-fork-gc-none/main.js
 
 workflows:
   build-test-and-deploy:
